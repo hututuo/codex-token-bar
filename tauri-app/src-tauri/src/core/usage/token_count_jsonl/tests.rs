@@ -272,6 +272,7 @@ fn exact_index_retries_an_incomplete_tail_after_the_jsonl_line_is_completed() {
 #[test]
 fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_prefix_rehash_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -301,10 +302,46 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     let old_timepoint = dashboard_snapshot(&root).unwrap();
     assert_eq!(old_timepoint.stats.total_tokens, 120);
     assert_eq!(old_timepoint.stats.total_calls, 1);
+    assert_eq!(
+        ExactUsageIndex::prefix_rehash_count_for_testing(),
+        1,
+        "an active append must still revalidate the complete scan-start prefix"
+    );
 
     let after_append = dashboard_snapshot(&root).unwrap();
     assert_eq!(after_append.stats.total_tokens, 170);
     assert_eq!(after_append.stats.total_calls, 2);
+    assert_eq!(
+        ExactUsageIndex::prefix_rehash_count_for_testing(),
+        1,
+        "a stable follow-up scan must not rehash an unchanged file"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_stable_cold_scan_does_not_read_the_complete_prefix_twice() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_prefix_rehash_count_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019estable-prefix-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 120);
+    assert_eq!(
+        ExactUsageIndex::prefix_rehash_count_for_testing(),
+        0,
+        "stable files should trust the hash produced by the parsing pass"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }

@@ -17,7 +17,7 @@ use crate::models::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -84,6 +84,7 @@ type AfterFileCommitHook = Box<dyn FnOnce(&Path) -> Result<(), String>>;
 thread_local! {
     static AFTER_PREFIX_SCAN_HOOK: RefCell<Option<AfterPrefixScanHook>> = RefCell::new(None);
     static AFTER_FILE_COMMIT_HOOK: RefCell<Option<AfterFileCommitHook>> = RefCell::new(None);
+    static PREFIX_REHASH_COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
 impl ExactUsageIndex {
@@ -170,6 +171,16 @@ impl ExactUsageIndex {
         AFTER_FILE_COMMIT_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(hook));
         });
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_prefix_rehash_count_for_testing() {
+        PREFIX_REHASH_COUNT.with(|count| count.set(0));
+    }
+
+    #[cfg(test)]
+    pub(super) fn prefix_rehash_count_for_testing() -> u64 {
+        PREFIX_REHASH_COUNT.with(Cell::get)
     }
 
     pub(super) fn sync(
@@ -2180,6 +2191,10 @@ fn validate_same_file_prefix(
     let path_before = file_signature(path)?;
     validate_prefix_identity(start_signature, handle_before, path_before)?;
 
+    if handle_before == start_signature && path_before == start_signature {
+        return Ok(());
+    }
+
     let current_hash = hash_file_prefix(handle, start_signature.size, path)?;
 
     let handle_after = file_signature_from_handle(handle, path)?;
@@ -2210,6 +2225,9 @@ fn hash_file_prefix(
     prefix_size: u64,
     path: &Path,
 ) -> Result<[u8; 32], String> {
+    #[cfg(test)]
+    PREFIX_REHASH_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+
     handle.seek(SeekFrom::Start(0)).map_err(|error| {
         format!(
             "无法定位会话文件前缀以完成一致性校验：{}（{}）",
