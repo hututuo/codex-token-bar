@@ -1674,9 +1674,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let digest = SHA256.hash(data: Data(file.path.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return driver.url
-            .deletingLastPathComponent()
-            .appendingPathComponent("staging", isDirectory: true)
+        return stagingDirectoryURL
             .appendingPathComponent("\(digest).sqlite")
     }
 
@@ -1687,10 +1685,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func removeStagingDirectory() {
-        let directory = driver.url
+        try? fileManager.removeItem(at: stagingDirectoryURL)
+        _ = rmdir(stagingRootURL.path)
+    }
+
+    private var stagingRootURL: URL {
+        driver.url
             .deletingLastPathComponent()
             .appendingPathComponent("staging", isDirectory: true)
-        try? fileManager.removeItem(at: directory)
+    }
+
+    private var stagingDirectoryURL: URL {
+        stagingRootURL.appendingPathComponent(
+            driver.url.lastPathComponent,
+            isDirectory: true
+        )
     }
 
     private func optionalOffsetBinding(_ value: UInt64?) throws -> SQLiteBinding {

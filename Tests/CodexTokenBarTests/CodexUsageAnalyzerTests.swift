@@ -1497,6 +1497,100 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testExactHistoryIndexKeepsInterruptedStagesIsolatedAcrossCodexHomes() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerStageIsolation")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let firstHome = try makeCodexHome()
+        let secondHome = try makeCodexHome()
+        let firstSessionID = "019eaaaa-bbbb-cccc-dddd-stagehomeone"
+        let secondSessionID = "019eaaaa-bbbb-cccc-dddd-stagehometwo"
+        let firstFile = firstHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(firstSessionID).jsonl")
+        let secondFile = secondHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(secondSessionID).jsonl")
+        let now = Date()
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: firstFile, atomically: true, encoding: .utf8)
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-30),
+            total: Usage(input: 50, cachedInput: 10, output: 10, reasoning: 0, total: 60),
+            last: Usage(input: 50, cachedInput: 10, output: 10, reasoning: 0, total: 60)
+        ).appending("\n").write(to: secondFile, atomically: true, encoding: .utf8)
+
+        let firstAnalyzer = CodexUsageAnalyzer(dataSource: dataSource(for: firstHome))
+        let secondAnalyzer = CodexUsageAnalyzer(dataSource: dataSource(for: secondHome))
+        let firstParseCount = ThreadSafeCounter()
+        let firstParser: CodexUsageHistoryIndex.SessionParser = {
+            file, parsedSessionID, request, insertFingerprint, emit in
+            firstParseCount.increment()
+            return try firstAnalyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        let secondParser: CodexUsageHistoryIndex.SessionParser = {
+            file, parsedSessionID, request, insertFingerprint, emit in
+            try secondAnalyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        let interruptedFirst = try CodexUsageHistoryIndex(codexHome: firstHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(
+            try interruptedFirst.synchronize(
+                files: [firstFile],
+                sessionID: firstAnalyzer.sessionID(from:),
+                parser: firstParser
+            )
+        )
+        XCTAssertEqual(firstParseCount.value, 1)
+
+        let completedSecond = try CodexUsageHistoryIndex(codexHome: secondHome)
+        _ = try completedSecond.synchronize(
+            files: [secondFile],
+            sessionID: secondAnalyzer.sessionID(from:),
+            parser: secondParser
+        )
+
+        let resumedFirst = try CodexUsageHistoryIndex(codexHome: firstHome)
+        let resumedResult = try resumedFirst.synchronize(
+            files: [firstFile],
+            sessionID: firstAnalyzer.sessionID(from:),
+            parser: firstParser
+        )
+
+        XCTAssertEqual(resumedResult.changedFiles, 1)
+        XCTAssertEqual(
+            firstParseCount.value,
+            1,
+            "Cleaning another Codex Home must not discard this index's durable stage"
+        )
+        var total = 0
+        try resumedFirst.forEachStoredEvent { total += $0.event.tokens }
+        XCTAssertEqual(total, 120)
+    }
+
     func testExactHistoryIndexSerializesConcurrentGenerationThroughAggregationAndRefreshesActiveAppend() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerConcurrentGeneration")
