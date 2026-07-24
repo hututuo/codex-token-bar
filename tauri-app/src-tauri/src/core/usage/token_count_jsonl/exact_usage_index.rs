@@ -505,9 +505,24 @@ impl ExactUsageIndex {
                 DROP TABLE IF EXISTS temp.dashboard_session_rows;
                 DROP TABLE IF EXISTS temp.published_events;
                 DROP TABLE IF EXISTS temp.published_files;
-                CREATE TEMP TABLE published_events AS
+                -- Materialize the small published file set first, then join the
+                -- indexed event table directly. Selecting main.published_events
+                -- here would evaluate the published-files grouping a second time.
+                CREATE TEMP TABLE published_files AS
                 SELECT *
-                FROM main.published_events;
+                FROM main.published_files;
+                CREATE UNIQUE INDEX published_files_path_snapshot_idx
+                    ON published_files(path);
+                CREATE TEMP TABLE published_events AS
+                SELECT e.*
+                FROM main.events e
+                JOIN published_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path;
+                CREATE INDEX published_events_timestamp_snapshot_idx
+                    ON published_events(timestamp);
+                CREATE INDEX published_events_session_snapshot_idx
+                    ON published_events(session_id, timestamp, file_path, ordinal);
                 CREATE TEMP TABLE dashboard_turn_positions AS
                 SELECT
                     id,
@@ -516,17 +531,8 @@ impl ExactUsageIndex {
                         ORDER BY timestamp ASC, file_path ASC, ordinal ASC
                     ) AS turn_index_in_session
                 FROM published_events;
-                CREATE TEMP TABLE published_files AS
-                SELECT *
-                FROM main.published_files;
-                CREATE INDEX published_events_timestamp_snapshot_idx
-                    ON published_events(timestamp);
-                CREATE INDEX published_events_session_snapshot_idx
-                    ON published_events(session_id, timestamp, file_path, ordinal);
                 CREATE UNIQUE INDEX dashboard_turn_positions_id_idx
                     ON dashboard_turn_positions(id);
-                CREATE UNIQUE INDEX published_files_path_snapshot_idx
-                    ON published_files(path);
                 CREATE TEMP TABLE dashboard_session_rows AS
                 SELECT
                     e.session_id,
