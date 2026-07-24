@@ -2487,6 +2487,46 @@ fn marker_failure_warning_is_deduplicated_for_fresh_and_cached_snapshots() {
 }
 
 #[test]
+fn exact_index_source_change_check_detects_append_and_delete() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session = session_dir.join("rollout-019esource-change-0000-0000-fast.jsonl");
+    write_lines(
+        &session,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    dashboard_snapshot(&root).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    assert!(!index.sources_changed(&root, &mut warnings).unwrap());
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+    assert!(index.sources_changed(&root, &mut warnings).unwrap());
+    drop(index);
+
+    dashboard_snapshot(&root).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    fs::remove_file(&session).unwrap();
+    assert!(index.sources_changed(&root, &mut warnings).unwrap());
+    drop(index);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refresh() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
