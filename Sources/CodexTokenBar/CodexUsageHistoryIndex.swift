@@ -135,9 +135,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let auditChunkIndex: UInt64
     }
 
-    private struct SourceUpdateResult {
-        let parseResult: CodexUsageAnalyzer.IndexedSessionParseResult
-        let incremental: Bool
+    private struct FullRebuildJob {
+        let file: URL
+        let sessionID: String
+        let observedSignature: SourceSignature
+    }
+
+    private struct StagedFullRebuild {
+        let job: FullRebuildJob
+        let databaseURL: URL
+        let committedSignature: SourceSignature
+        let eventCount: Int
+        let resumeOffset: UInt64
+        let parserState: CodexUsageAnalyzer.IndexedSessionParserState
     }
 
     private enum AppendCheckpointError: Error {
@@ -152,6 +162,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
     private static let disabledCacheEnvironmentKey = "CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"
     private static let operationLocks = CodexUsageHistoryIndexOperationLockRegistry()
+    private static let stagingTestState = CodexUsageHistoryStagingTestState()
     private static let ephemeralRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("CodexTokenBarSwift-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         .appendingPathComponent(indexNamespace, isDirectory: true)
@@ -204,10 +215,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             .waitForPendingAcquisition(timeout: timeout)
     }
 
+    static func failNextImportAfterStagingForTesting() {
+        stagingTestState.armFailure()
+    }
+
     func synchronize(
         files: [URL],
         sessionID: (URL) -> String,
-        parser: SessionParser
+        parser: @escaping SessionParser
     ) throws -> SynchronizationResult {
         try withExclusiveAccess {
             try synchronizeExclusively(files: files, sessionID: sessionID, parser: parser)
@@ -217,13 +232,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func synchronizeExclusively(
         files: [URL],
         sessionID: (URL) -> String,
-        parser: SessionParser
+        parser: @escaping SessionParser
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
         var changedFiles = 0
         var unchangedFiles = 0
         var indexedEvents = 0
         var incrementallyParsedFiles = 0
+        var fullRebuildJobs: [FullRebuildJob] = []
 
         try driver.withConnection { connection in
             try configure(connection)
@@ -248,7 +264,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     }
 
                     let parsedSessionID = sessionID(canonicalFile)
-                    let result: SourceUpdateResult
                     if let existing,
                        canAttemptAppend(from: existing, to: observed),
                        let appended = try appendSource(
@@ -260,31 +275,46 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                            connection: connection,
                            parser: parser
                        ) {
-                        result = SourceUpdateResult(
-                            parseResult: appended,
-                            incremental: true
-                        )
+                        changedFiles += 1
+                        indexedEvents += appended.eventCount
+                        incrementallyParsedFiles += 1
                     } else {
-                        result = SourceUpdateResult(
-                            parseResult: try rebuildSource(
+                        fullRebuildJobs.append(
+                            FullRebuildJob(
                                 file: canonicalFile,
                                 sessionID: parsedSessionID,
-                                observedSignature: observed,
-                                generation: generation,
-                                connection: connection,
-                                parser: parser
-                            ),
-                            incremental: false
+                                observedSignature: observed
+                            )
                         )
-                    }
-                    changedFiles += 1
-                    indexedEvents += result.parseResult.eventCount
-                    if result.incremental {
-                        incrementallyParsedFiles += 1
                     }
                 }
             }
+        }
 
+        let stagedRebuilds = try stageFullRebuilds(
+            fullRebuildJobs,
+            parser: parser
+        )
+        if Self.stagingTestState.consumeFailure() {
+            throw SQLiteDatabaseError(
+                operation: "Injected exact usage staging interruption",
+                code: SQLITE_ABORT,
+                message: "Testing interruption after durable staging",
+                path: driver.url.path
+            )
+        }
+        try driver.withConnection { connection in
+            try configure(connection)
+            for staged in stagedRebuilds {
+                try importStagedFullRebuild(
+                    staged,
+                    generation: generation,
+                    connection: connection
+                )
+                changedFiles += 1
+                indexedEvents += staged.eventCount
+                removeStagingDatabase(at: staged.databaseURL)
+            }
             try connection.transaction { transaction in
                 try transaction.execute(
                     "DELETE FROM sources WHERE last_seen_generation <> ?;",
@@ -292,6 +322,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
         }
+        removeStagingDirectory()
 
         return SynchronizationResult(
             changedFiles: changedFiles,
@@ -1044,14 +1075,438 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         )
     }
 
-    private func rebuildSource(
-        file: URL,
-        sessionID: String,
-        observedSignature: SourceSignature,
-        generation: String,
-        connection: SQLiteDatabaseConnection,
+    private final class StageCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [StagedFullRebuild] = []
+        private var firstError: Error?
+
+        func append(_ value: StagedFullRebuild) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        func record(_ error: Error) {
+            lock.lock()
+            if firstError == nil {
+                firstError = error
+            }
+            lock.unlock()
+        }
+
+        func result() throws -> [StagedFullRebuild] {
+            lock.lock()
+            defer { lock.unlock() }
+            if let firstError {
+                throw firstError
+            }
+            return values
+        }
+    }
+
+    private final class SessionParserBox: @unchecked Sendable {
+        let parser: SessionParser
+
+        init(_ parser: @escaping SessionParser) {
+            self.parser = parser
+        }
+    }
+
+    private func stageFullRebuilds(
+        _ jobs: [FullRebuildJob],
+        parser: @escaping SessionParser
+    ) throws -> [StagedFullRebuild] {
+        guard !jobs.isEmpty else { return [] }
+        let jobs = jobs.sorted {
+            if $0.observedSignature.size == $1.observedSignature.size {
+                return $0.file.path < $1.file.path
+            }
+            return $0.observedSignature.size > $1.observedSignature.size
+        }
+        let queue = OperationQueue()
+        queue.name = "CodexUsageHistoryIndex.cold-build"
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = coldBuildWorkerCount(jobCount: jobs.count)
+        let heavyFileGate = NSLock()
+        let collector = StageCollector()
+        let parserBox = SessionParserBox(parser)
+        let heavyThreshold: UInt64 = 512 * 1_024 * 1_024
+
+        for job in jobs {
+            queue.addOperation { [self] in
+                autoreleasepool {
+                    let isHeavy = job.observedSignature.size >= heavyThreshold
+                    if isHeavy {
+                        heavyFileGate.lock()
+                    }
+                    defer {
+                        if isHeavy {
+                            heavyFileGate.unlock()
+                        }
+                    }
+                    do {
+                        collector.append(
+                            try stageFullRebuild(job, parser: parserBox.parser)
+                        )
+                    } catch {
+                        collector.record(error)
+                    }
+                }
+            }
+        }
+        queue.waitUntilAllOperationsAreFinished()
+        return try collector.result().sorted {
+            if $0.job.observedSignature.size == $1.job.observedSignature.size {
+                return $0.job.file.path < $1.job.file.path
+            }
+            return $0.job.observedSignature.size > $1.job.observedSignature.size
+        }
+    }
+
+    private func coldBuildWorkerCount(jobCount: Int) -> Int {
+        guard jobCount > 1 else { return 1 }
+        let process = ProcessInfo.processInfo
+        let cores = process.activeProcessorCount
+        let memory = process.physicalMemory
+        let resourceCap: Int
+        if cores >= 8, memory >= 16 * 1_024 * 1_024 * 1_024 {
+            resourceCap = 4
+        } else if cores >= 4, memory >= 8 * 1_024 * 1_024 * 1_024 {
+            resourceCap = 3
+        } else {
+            resourceCap = 2
+        }
+        return min(jobCount, resourceCap)
+    }
+
+    private func stageFullRebuild(
+        _ job: FullRebuildJob,
         parser: SessionParser
-    ) throws -> CodexUsageAnalyzer.IndexedSessionParseResult {
+    ) throws -> StagedFullRebuild {
+        let databaseURL = stagingDatabaseURL(for: job.file)
+        if let reusable = try reusableStage(
+            at: databaseURL,
+            for: job
+        ) {
+            return reusable
+        }
+        removeStagingDatabase(at: databaseURL)
+        let stage = SQLiteDatabaseDriver(
+            url: databaseURL,
+            busyTimeoutMilliseconds: 30_000,
+            enableWAL: false,
+            fileManager: fileManager
+        )
+        return try stage.withConnection { connection in
+            try connection.execute(
+                """
+                PRAGMA synchronous=FULL;
+                PRAGMA temp_store=FILE;
+                PRAGMA cache_size=-4096;
+
+                CREATE TABLE manifest (
+                    complete INTEGER PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    modified_at REAL NOT NULL,
+                    content_probe TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    inode TEXT NOT NULL,
+                    status_changed_seconds INTEGER NOT NULL,
+                    status_changed_nanoseconds INTEGER NOT NULL,
+                    event_count INTEGER NOT NULL,
+                    resume_offset INTEGER NOT NULL,
+                    previous_total_tokens INTEGER,
+                    fork_replay_started_at REAL,
+                    is_skipping_fork_replay INTEGER NOT NULL,
+                    last_skipped_fork_replay_token_at REAL,
+                    current_user_prompt_offset INTEGER,
+                    assistant_start_offset INTEGER
+                );
+
+                CREATE TABLE fingerprints (
+                    value TEXT PRIMARY KEY
+                ) WITHOUT ROWID;
+
+                CREATE TABLE events (
+                    source_offset INTEGER PRIMARY KEY,
+                    timestamp REAL NOT NULL,
+                    tokens INTEGER NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    user_prompt_offset INTEGER,
+                    assistant_start_offset INTEGER
+                ) WITHOUT ROWID;
+
+                CREATE TABLE chunks (
+                    chunk_index INTEGER PRIMARY KEY,
+                    byte_count INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL
+                ) WITHOUT ROWID;
+                """
+            )
+            return try connection.transaction { transaction in
+                let fingerprintStatement = try transaction.prepare(
+                    "INSERT OR IGNORE INTO fingerprints(value) VALUES (?);"
+                )
+                let eventStatement = try transaction.prepare(
+                    """
+                    INSERT INTO events(
+                        source_offset,
+                        timestamp,
+                        tokens,
+                        input_tokens,
+                        cached_input_tokens,
+                        output_tokens,
+                        reasoning_output_tokens,
+                        user_prompt_offset,
+                        assistant_start_offset
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """
+                )
+                let result = try parser(
+                    job.file,
+                    job.sessionID,
+                    .full(endOffset: job.observedSignature.size),
+                    { fingerprint in
+                        try fingerprintStatement.execute([
+                            .text(fingerprint.databaseKey)
+                        ]) > 0
+                    },
+                    { indexedEvent in
+                        let event = indexedEvent.event
+                        let userPromptOffset: SQLiteBinding
+                        if let offset = indexedEvent.userPromptOffset {
+                            userPromptOffset = .int64(try sqliteInt64(offset))
+                        } else {
+                            userPromptOffset = .null
+                        }
+                        let assistantStartOffset: SQLiteBinding
+                        if let offset = indexedEvent.assistantStartOffset {
+                            assistantStartOffset = .int64(try sqliteInt64(offset))
+                        } else {
+                            assistantStartOffset = .null
+                        }
+                        _ = try eventStatement.execute([
+                            .int64(try sqliteInt64(indexedEvent.sourceOffset)),
+                            .date(event.timestamp),
+                            .int(event.tokens),
+                            .int(event.inputTokens),
+                            .int(min(event.cachedInputTokens, event.inputTokens)),
+                            .int(event.outputTokens),
+                            .int(event.reasoningOutputTokens),
+                            userPromptOffset,
+                            assistantStartOffset
+                        ])
+                    }
+                )
+                guard result.lastOffset == job.observedSignature.size else {
+                    throw CodexUsageSourceChangedError(path: job.file.path)
+                }
+                let finalSignature = try sourceSignature(for: job.file)
+                let committedSignature: SourceSignature
+                if finalSignature == job.observedSignature {
+                    committedSignature = finalSignature
+                } else if finalSignature.deviceID == job.observedSignature.deviceID,
+                          finalSignature.inode == job.observedSignature.inode,
+                          finalSignature.size >= job.observedSignature.size,
+                          try contentHash(
+                              for: job.file,
+                              length: job.observedSignature.size
+                          ) == result.contentHash {
+                    committedSignature = finalSignature.size == job.observedSignature.size
+                        ? finalSignature
+                        : job.observedSignature
+                } else {
+                    throw CodexUsageSourceChangedError(path: job.file.path)
+                }
+
+                let chunkStatement = try transaction.prepare(
+                    """
+                    INSERT INTO chunks(chunk_index, byte_count, sha256)
+                    VALUES (?, ?, ?);
+                    """
+                )
+                for chunk in result.chunkHashes {
+                    _ = try chunkStatement.execute([
+                        .int64(try sqliteInt64(chunk.index)),
+                        .int64(try sqliteInt64(chunk.byteCount)),
+                        .text(chunk.sha256)
+                    ])
+                }
+                let state = result.state
+                try transaction.execute(
+                    """
+                    INSERT INTO manifest(
+                        complete,
+                        session_id,
+                        size_bytes,
+                        modified_at,
+                        content_probe,
+                        device_id,
+                        inode,
+                        status_changed_seconds,
+                        status_changed_nanoseconds,
+                        event_count,
+                        resume_offset,
+                        previous_total_tokens,
+                        fork_replay_started_at,
+                        is_skipping_fork_replay,
+                        last_skipped_fork_replay_token_at,
+                        current_user_prompt_offset,
+                        assistant_start_offset
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .text(job.sessionID),
+                        .int64(try sqliteInt64(committedSignature.size)),
+                        .double(committedSignature.modifiedAt),
+                        .text(committedSignature.contentProbe),
+                        .text(String(committedSignature.deviceID)),
+                        .text(String(committedSignature.inode)),
+                        .int64(committedSignature.statusChangedSeconds),
+                        .int64(committedSignature.statusChangedNanoseconds),
+                        .int(result.eventCount),
+                        .int64(try sqliteInt64(result.resumeOffset)),
+                        .optionalInt(state.previousTotalTokens),
+                        .optionalDate(state.forkReplayStartedAt),
+                        .int(state.isSkippingForkReplay ? 1 : 0),
+                        .optionalDate(state.lastSkippedForkReplayTokenAt),
+                        try optionalOffsetBinding(state.currentUserPromptOffset),
+                        try optionalOffsetBinding(state.assistantStartOffset)
+                    ]
+                )
+                return StagedFullRebuild(
+                    job: job,
+                    databaseURL: databaseURL,
+                    committedSignature: committedSignature,
+                    eventCount: result.eventCount,
+                    resumeOffset: result.resumeOffset,
+                    parserState: result.state
+                )
+            }
+        }
+    }
+
+    private func reusableStage(
+        at databaseURL: URL,
+        for job: FullRebuildJob
+    ) throws -> StagedFullRebuild? {
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return nil
+        }
+        do {
+            let stage = SQLiteDatabaseDriver(
+                url: databaseURL,
+                readOnly: true,
+                busyTimeoutMilliseconds: 1_000,
+                fileManager: fileManager
+            )
+            let quickCheck = try stage.readRows("PRAGMA quick_check;") {
+                $0.text(0) ?? ""
+            }
+            guard quickCheck == ["ok"] else {
+                removeStagingDatabase(at: databaseURL)
+                return nil
+            }
+            let rows: [StagedFullRebuild?] = try stage.readRows(
+                """
+                SELECT
+                    session_id,
+                    size_bytes,
+                    modified_at,
+                    content_probe,
+                    device_id,
+                    inode,
+                    status_changed_seconds,
+                    status_changed_nanoseconds,
+                    event_count,
+                    resume_offset,
+                    previous_total_tokens,
+                    fork_replay_started_at,
+                    is_skipping_fork_replay,
+                    last_skipped_fork_replay_token_at,
+                    current_user_prompt_offset,
+                    assistant_start_offset
+                FROM manifest
+                WHERE complete = 1
+                LIMIT 1;
+                """
+            ) { row in
+                guard row.text(0) == job.sessionID,
+                      let rawSize = row.int64(1),
+                      rawSize >= 0,
+                      let modifiedAt = row.double(2),
+                      let contentProbe = row.text(3),
+                      let deviceID = row.text(4).flatMap(UInt64.init),
+                      let inode = row.text(5).flatMap(UInt64.init),
+                      let changedSeconds = row.int64(6),
+                      let changedNanoseconds = row.int64(7),
+                      let eventCount = row.int(8),
+                      let rawResumeOffset = row.int64(9),
+                      rawResumeOffset >= 0 else {
+                    return nil
+                }
+                let signature = SourceSignature(
+                    size: UInt64(rawSize),
+                    modifiedAt: modifiedAt,
+                    contentProbe: contentProbe,
+                    deviceID: deviceID,
+                    inode: inode,
+                    statusChangedSeconds: changedSeconds,
+                    statusChangedNanoseconds: changedNanoseconds
+                )
+                guard signature == job.observedSignature else {
+                    return nil
+                }
+                return StagedFullRebuild(
+                    job: job,
+                    databaseURL: databaseURL,
+                    committedSignature: signature,
+                    eventCount: eventCount,
+                    resumeOffset: UInt64(rawResumeOffset),
+                    parserState: CodexUsageAnalyzer.IndexedSessionParserState(
+                        previousTotalTokens: row.int(10),
+                        forkReplayStartedAt: row.double(11).map {
+                            Date(timeIntervalSince1970: $0)
+                        },
+                        isSkippingForkReplay: row.int(12) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(13).map {
+                            Date(timeIntervalSince1970: $0)
+                        },
+                        currentUserPromptOffset: row.int64(14).flatMap {
+                            $0 >= 0 ? UInt64($0) : nil
+                        },
+                        assistantStartOffset: row.int64(15).flatMap {
+                            $0 >= 0 ? UInt64($0) : nil
+                        }
+                    )
+                )
+            }
+            if let reusable = rows.compactMap({ $0 }).first {
+                return reusable
+            }
+        } catch {
+            removeStagingDatabase(at: databaseURL)
+            return nil
+        }
+        removeStagingDatabase(at: databaseURL)
+        return nil
+    }
+
+    private func importStagedFullRebuild(
+        _ staged: StagedFullRebuild,
+        generation: String,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        let stage = SQLiteDatabaseDriver(
+            url: staged.databaseURL,
+            readOnly: true,
+            busyTimeoutMilliseconds: 1_000,
+            fileManager: fileManager
+        )
         try connection.transaction { transaction in
             try transaction.execute(
                 """
@@ -1066,34 +1521,35 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     status_changed_seconds,
                     status_changed_nanoseconds,
                     last_seen_generation
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     session_id = excluded.session_id,
                     last_seen_generation = excluded.last_seen_generation;
                 """,
                 bindings: [
-                    .text(file.path),
-                    .text(sessionID),
-                    .int64(try sqliteInt64(observedSignature.size)),
-                    .double(observedSignature.modifiedAt),
-                    .text(observedSignature.contentProbe),
-                    .text(String(observedSignature.deviceID)),
-                    .text(String(observedSignature.inode)),
-                    .int64(observedSignature.statusChangedSeconds),
-                    .int64(observedSignature.statusChangedNanoseconds),
+                    .text(staged.job.file.path),
+                    .text(staged.job.sessionID),
+                    .int64(try sqliteInt64(staged.committedSignature.size)),
+                    .double(staged.committedSignature.modifiedAt),
+                    .text(staged.committedSignature.contentProbe),
+                    .text(String(staged.committedSignature.deviceID)),
+                    .text(String(staged.committedSignature.inode)),
+                    .int64(staged.committedSignature.statusChangedSeconds),
+                    .int64(staged.committedSignature.statusChangedNanoseconds),
                     .text(generation)
                 ]
             )
-            guard let source = try indexedSource(path: file.path, connection: transaction) else {
+            guard let source = try indexedSource(
+                path: staged.job.file.path,
+                connection: transaction
+            ) else {
                 throw SQLiteDatabaseError(
-                    operation: "Resolve exact usage source",
+                    operation: "Resolve staged exact usage source",
                     code: -1,
                     message: "Source row was not created",
                     path: driver.url.path
                 )
             }
-
             try transaction.execute(
                 "DELETE FROM events WHERE source_id = ?;",
                 bindings: [.int64(source.id)]
@@ -1106,14 +1562,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 "DELETE FROM source_chunks WHERE source_id = ?;",
                 bindings: [.int64(source.id)]
             )
-            try transaction.execute("DELETE FROM scan_fingerprints;")
 
             let fingerprintStatement = try transaction.prepare(
-                "INSERT OR IGNORE INTO scan_fingerprints(value) VALUES (?);"
+                "INSERT INTO source_fingerprints(source_id, value) VALUES (?, ?);"
             )
-            let persistentFingerprintStatement = try transaction.prepare(
-                "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
-            )
+            try stage.forEachRow("SELECT value FROM fingerprints ORDER BY value;") { row in
+                guard let value = row.text(0) else { return }
+                _ = try fingerprintStatement.execute([
+                    .int64(source.id),
+                    .text(value)
+                ])
+            }
             let eventStatement = try transaction.prepare(
                 """
                 INSERT INTO events(
@@ -1127,93 +1586,116 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     reasoning_output_tokens,
                     user_prompt_offset,
                     assistant_start_offset
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
             )
-
-            let result = try parser(
-                file,
-                sessionID,
-                .full(endOffset: observedSignature.size),
-                { fingerprint in
-                    let key = fingerprint.databaseKey
-                    let inserted = try fingerprintStatement.execute([.text(key)]) > 0
-                    if inserted {
-                        _ = try persistentFingerprintStatement.execute([
-                            .int64(source.id),
-                            .text(key)
-                        ])
-                    }
-                    return inserted
-                },
-                { indexedEvent in
-                    let event = indexedEvent.event
-                    let userPromptOffset: SQLiteBinding
-                    if let offset = indexedEvent.userPromptOffset {
-                        userPromptOffset = .int64(try sqliteInt64(offset))
-                    } else {
-                        userPromptOffset = .null
-                    }
-                    let assistantStartOffset: SQLiteBinding
-                    if let offset = indexedEvent.assistantStartOffset {
-                        assistantStartOffset = .int64(try sqliteInt64(offset))
-                    } else {
-                        assistantStartOffset = .null
-                    }
-                    try eventStatement.execute([
-                        .int64(source.id),
-                        .int64(try sqliteInt64(indexedEvent.sourceOffset)),
-                        .date(event.timestamp),
-                        .int(event.tokens),
-                        .int(event.inputTokens),
-                        .int(min(event.cachedInputTokens, event.inputTokens)),
-                        .int(event.outputTokens),
-                        .int(event.reasoningOutputTokens),
-                        userPromptOffset,
-                        assistantStartOffset
-                    ])
+            try stage.forEachRow(
+                """
+                SELECT
+                    source_offset,
+                    timestamp,
+                    tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    user_prompt_offset,
+                    assistant_start_offset
+                FROM events
+                ORDER BY source_offset;
+                """
+            ) { row in
+                guard let sourceOffset = row.int64(0),
+                      let timestamp = row.double(1),
+                      let tokens = row.int(2),
+                      let inputTokens = row.int(3),
+                      let cachedInputTokens = row.int(4),
+                      let outputTokens = row.int(5),
+                      let reasoningOutputTokens = row.int(6) else {
+                    return
                 }
+                _ = try eventStatement.execute([
+                    .int64(source.id),
+                    .int64(sourceOffset),
+                    .double(timestamp),
+                    .int(tokens),
+                    .int(inputTokens),
+                    .int(cachedInputTokens),
+                    .int(outputTokens),
+                    .int(reasoningOutputTokens),
+                    row.int64(7).map(SQLiteBinding.int64) ?? .null,
+                    row.int64(8).map(SQLiteBinding.int64) ?? .null
+                ])
+            }
+            let chunkStatement = try transaction.prepare(
+                """
+                INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
+                VALUES (?, ?, ?, ?);
+                """
             )
-
-            let finalSignature = try sourceSignature(for: file)
-            guard result.lastOffset == observedSignature.size else {
-                throw CodexUsageSourceChangedError(path: file.path)
+            try stage.forEachRow(
+                "SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index;"
+            ) { row in
+                guard let chunkIndex = row.int64(0),
+                      let byteCount = row.int64(1),
+                      let sha256 = row.text(2) else {
+                    return
+                }
+                _ = try chunkStatement.execute([
+                    .int64(source.id),
+                    .int64(chunkIndex),
+                    .int64(byteCount),
+                    .text(sha256)
+                ])
             }
-            let committedSignature: SourceSignature
-            if finalSignature == observedSignature {
-                committedSignature = finalSignature
-            } else if finalSignature.deviceID == observedSignature.deviceID,
-                      finalSignature.inode == observedSignature.inode,
-                      finalSignature.size >= observedSignature.size,
-                      try contentHash(for: file, length: observedSignature.size) == result.contentHash {
-                // Codex appends to the active JSONL while a refresh is running. The parser reads
-                // exactly the size observed at the start, so this commits a complete point-in-time
-                // prefix instead of aborting the entire history scan. The deliberately older stored
-                // signature makes the next refresh pick up bytes appended after that boundary.
-                committedSignature = finalSignature.size == observedSignature.size
-                    ? finalSignature
-                    : observedSignature
-            } else {
-                throw CodexUsageSourceChangedError(path: file.path)
-            }
-            try replaceSourceChunks(
-                sourceID: source.id,
-                startingAt: 0,
-                chunks: result.chunkHashes,
-                connection: transaction
+            let parseResult = CodexUsageAnalyzer.IndexedSessionParseResult(
+                eventCount: staged.eventCount,
+                lastOffset: staged.committedSignature.size,
+                resumeOffset: staged.resumeOffset,
+                endedWithNewline: staged.resumeOffset == staged.committedSignature.size,
+                contentHash: "",
+                state: staged.parserState,
+                chunkHashes: [],
+                validationChunkHash: nil
             )
             try saveSourceCheckpoint(
                 sourceID: source.id,
-                sessionID: sessionID,
-                signature: committedSignature,
+                sessionID: staged.job.sessionID,
+                signature: staged.committedSignature,
                 generation: generation,
-                parseResult: result,
+                parseResult: parseResult,
                 auditChunkIndex: 0,
                 connection: transaction
             )
-            return result
         }
+    }
+
+    private func stagingDatabaseURL(for file: URL) -> URL {
+        let digest = SHA256.hash(data: Data(file.path.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return driver.url
+            .deletingLastPathComponent()
+            .appendingPathComponent("staging", isDirectory: true)
+            .appendingPathComponent("\(digest).sqlite")
+    }
+
+    private func removeStagingDatabase(at url: URL) {
+        try? fileManager.removeItem(at: url)
+        try? fileManager.removeItem(atPath: url.path + "-wal")
+        try? fileManager.removeItem(atPath: url.path + "-shm")
+    }
+
+    private func removeStagingDirectory() {
+        let directory = driver.url
+            .deletingLastPathComponent()
+            .appendingPathComponent("staging", isDirectory: true)
+        try? fileManager.removeItem(at: directory)
+    }
+
+    private func optionalOffsetBinding(_ value: UInt64?) throws -> SQLiteBinding {
+        guard let value else { return .null }
+        return .int64(try sqliteInt64(value))
     }
 
     private func sourceSignature(for file: URL) throws -> SourceSignature {
@@ -1337,6 +1819,25 @@ private final class CodexUsageHistoryIndexOperationLockRegistry: @unchecked Send
         let created = CodexUsageHistoryIndexOperationGate(name: path)
         locks[path] = created
         return created
+    }
+}
+
+private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFailNextImport = false
+
+    func armFailure() {
+        lock.lock()
+        shouldFailNextImport = true
+        lock.unlock()
+    }
+
+    func consumeFailure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = shouldFailNextImport
+        shouldFailNextImport = false
+        return value
     }
 }
 

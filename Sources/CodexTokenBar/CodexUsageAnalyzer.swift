@@ -1,6 +1,6 @@
 import Foundation
 
-final class CodexUsageAnalyzer {
+final class CodexUsageAnalyzer: @unchecked Sendable {
     let fileManager = FileManager.default
     let calendar = Calendar.current
     let dataSource: CodexDataSource

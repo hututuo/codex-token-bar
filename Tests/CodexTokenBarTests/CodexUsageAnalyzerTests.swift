@@ -1123,6 +1123,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             total: Usage(input: 50, cachedInput: 0, output: 10, reasoning: 0, total: 60),
             last: Usage(input: 50, cachedInput: 0, output: 10, reasoning: 0, total: 60)
         ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+        let replacementDuringParse = try tokenCountLine(
+            timestamp: now.addingTimeInterval(-5),
+            total: Usage(input: 80, cachedInput: 0, output: 10, reasoning: 0, total: 90),
+            last: Usage(input: 80, cachedInput: 0, output: 10, reasoning: 0, total: 90)
+        ).appending("\n")
 
         XCTAssertThrowsError(
             try index.synchronize(
@@ -1136,11 +1141,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )
-                try tokenCountLine(
-                    timestamp: now.addingTimeInterval(-5),
-                    total: Usage(input: 80, cachedInput: 0, output: 10, reasoning: 0, total: 90),
-                    last: Usage(input: 80, cachedInput: 0, output: 10, reasoning: 0, total: 90)
-                ).appending("\n").write(to: file, atomically: true, encoding: .utf8)
+                try replacementDuringParse.write(
+                    to: file,
+                    atomically: true,
+                    encoding: .utf8
+                )
                 return result
             }
         ) { error in
@@ -1184,7 +1189,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 insertFingerprint: insertFingerprint,
                 emit: emit
             )
-            try appendLines([appendedLine], to: file)
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(appendedLine.appending("\n").utf8))
+            try handle.close()
             return result
         }
 
@@ -1340,6 +1348,153 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(refreshed.stats.totalCalls, 2)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+    }
+
+    func testExactHistoryIndexColdBuildParsesMultipleFilesConcurrently() throws {
+        let codexHome = try makeCodexHome()
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        var files: [URL] = []
+        for index in 0..<4 {
+            let sessionID = "019eaaaa-bbbb-cccc-dddd-parallel\(index)"
+            let file = sessions.appendingPathComponent(
+                "2026-06-17-\(sessionID).jsonl"
+            )
+            try tokenCountLine(
+                timestamp: Date().addingTimeInterval(TimeInterval(index)),
+                total: Usage(
+                    input: 100 + index,
+                    cachedInput: 0,
+                    output: 20,
+                    reasoning: 0,
+                    total: 120 + index
+                ),
+                last: Usage(
+                    input: 100 + index,
+                    cachedInput: 0,
+                    output: 20,
+                    reasoning: 0,
+                    total: 120 + index
+                )
+            ).appending("\n").write(
+                to: file,
+                atomically: true,
+                encoding: .utf8
+            )
+            files.append(file)
+        }
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let probe = ConcurrentParserProbe()
+
+        let result = try index.synchronize(
+            files: files,
+            sessionID: analyzer.sessionID(from:)
+        ) { file, sessionID, request, insertFingerprint, emit in
+            probe.enter()
+            defer { probe.leave() }
+            Thread.sleep(forTimeInterval: 0.05)
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: sessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        XCTAssertEqual(result.changedFiles, 4)
+        XCTAssertGreaterThanOrEqual(probe.peak, 2)
+        var total = 0
+        try index.forEachStoredEvent { total += $0.event.tokens }
+        XCTAssertEqual(total, 120 + 121 + 122 + 123)
+    }
+
+    func testExactHistoryIndexReusesCompletedStagingAfterInterruptedImport() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerStageRecovery")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-stagerecover"
+        let file = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        let secretPrompt = "staging secret prompt 314159"
+        let secretAnswer = "staging secret answer 271828"
+        try [
+            messageLine(
+                timestamp: now.addingTimeInterval(-80),
+                type: "user_message",
+                message: secretPrompt
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-70),
+                type: "agent_message",
+                message: secretAnswer
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n").write(
+            to: file,
+            atomically: true,
+            encoding: .utf8
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let parseCount = ThreadSafeCounter()
+        let parser: CodexUsageHistoryIndex.SessionParser = {
+            file, parsedSessionID, request, insertFingerprint, emit in
+            parseCount.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        let interrupted = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+
+        XCTAssertThrowsError(
+            try interrupted.synchronize(
+                files: [file],
+                sessionID: analyzer.sessionID(from:),
+                parser: parser
+            )
+        )
+        XCTAssertEqual(parseCount.value, 1)
+        let stagedCache = try cacheDataContents(under: swiftUsageCacheRoot(in: cacheRoot))
+        XCTAssertNil(stagedCache.range(of: Data(secretPrompt.utf8)))
+        XCTAssertNil(stagedCache.range(of: Data(secretAnswer.utf8)))
+
+        let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let result = try resumed.synchronize(
+            files: [file],
+            sessionID: analyzer.sessionID(from:),
+            parser: parser
+        )
+
+        XCTAssertEqual(result.changedFiles, 1)
+        XCTAssertEqual(parseCount.value, 1)
+        var total = 0
+        try resumed.forEachStoredEvent { total += $0.event.tokens }
+        XCTAssertEqual(total, 120)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: swiftUsageCacheRoot(in: cacheRoot)
+                    .appendingPathComponent("staging", isDirectory: true)
+                    .path
+            )
+        )
     }
 
     func testExactHistoryIndexSerializesConcurrentGenerationThroughAggregationAndRefreshesActiveAppend() throws {
@@ -2501,6 +2656,48 @@ private struct ConcurrentUsageIndexObservation {
     let totalTokens: Int
 }
 
+private final class ConcurrentParserProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = 0
+    private var maximum = 0
+
+    var peak: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return maximum
+    }
+
+    func enter() {
+        lock.lock()
+        active += 1
+        maximum = max(maximum, active)
+        lock.unlock()
+    }
+
+    func leave() {
+        lock.lock()
+        active -= 1
+        lock.unlock()
+    }
+}
+
+private final class ThreadSafeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
+    }
+}
+
 private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
     private let index: CodexUsageHistoryIndex
     private let analyzer: CodexUsageAnalyzer
@@ -2524,16 +2721,12 @@ private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
     ) throws -> ConcurrentUsageIndexObservation {
         try index.withExclusiveAccess {
             exclusiveAccessEntered?.signal()
-            var didGateParser = false
+            let parserGate = ConcurrentParserGate(target: parserGateFile)
             let synchronization = try index.synchronize(
                 files: files,
                 sessionID: analyzer.sessionID(from:)
             ) { [analyzer] file, sessionID, request, insertFingerprint, emit in
-                if !didGateParser,
-                   let parserGateFile,
-                   file.resolvingSymlinksInPath().path
-                    == parserGateFile.resolvingSymlinksInPath().path {
-                    didGateParser = true
+                if parserGate.claimIfTarget(file) {
                     parserReachedGate?.signal()
                     guard releaseParser?.wait(timeout: .now() + 5) != .timedOut else {
                         throw NSError(
@@ -2567,6 +2760,28 @@ private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
                 totalTokens: totalTokens
             )
         }
+    }
+}
+
+private final class ConcurrentParserGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let targetPath: String?
+    private var claimed = false
+
+    init(target: URL?) {
+        targetPath = target?.resolvingSymlinksInPath().path
+    }
+
+    func claimIfTarget(_ file: URL) -> Bool {
+        guard let targetPath,
+              file.resolvingSymlinksInPath().path == targetPath else {
+            return false
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
     }
 }
 
