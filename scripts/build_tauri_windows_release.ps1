@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.8.2",
+    [string]$Version = "0.8.3",
     [ValidateSet("x64", "arm64", "both")]
     [string]$Arch = "both",
     [switch]$SkipNpmCi,
