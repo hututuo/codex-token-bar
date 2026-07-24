@@ -105,6 +105,7 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
             reader: radarReader,
             feedReader: DashboardRuntimeEmptyRadarFeedReader(),
             detailReader: DashboardRuntimeFailingRadarDetailReader(),
+            crowdReader: DashboardRuntimeFailingCrowdRadarReader(),
             detailRefreshDefaults: defaults
         )
         let usageStore = CodexUsageStore(
@@ -637,6 +638,12 @@ private actor DashboardRuntimeSuspendedRadarReader: CodexRadarReading {
 
 private actor DashboardRuntimeEmptyRadarFeedReader: CodexRadarFeedReading {
     func readFeed(from url: URL) async throws -> [CodexRadarFeedItem] { [] }
+}
+
+private actor DashboardRuntimeFailingCrowdRadarReader: CodexCrowdRadarReading {
+    func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
+        throw DashboardRuntimeTestError()
+    }
 }
 
 private actor DashboardRuntimeFailingRadarDetailReader: CodexRadarDetailReading {
