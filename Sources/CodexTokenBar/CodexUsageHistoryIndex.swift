@@ -215,6 +215,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             .waitForPendingAcquisition(timeout: timeout)
     }
 
+    static func liveOperationGateCountForTesting() -> Int {
+        operationLocks.liveLockCount
+    }
+
     static func failNextImportAfterStagingForTesting() {
         stagingTestState.armFailure()
     }
@@ -1817,17 +1821,33 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
 private final class CodexUsageHistoryIndexOperationLockRegistry: @unchecked Sendable {
     private let registryLock = NSLock()
-    private var locks: [String: CodexUsageHistoryIndexOperationGate] = [:]
+    private var locks: [String: WeakOperationGate] = [:]
 
     func lock(for path: String) -> CodexUsageHistoryIndexOperationGate {
         registryLock.lock()
         defer { registryLock.unlock() }
-        if let existing = locks[path] {
+        if let existing = locks[path]?.value {
             return existing
         }
+        locks = locks.filter { $0.value.value != nil }
         let created = CodexUsageHistoryIndexOperationGate(name: path)
-        locks[path] = created
+        locks[path] = WeakOperationGate(created)
         return created
+    }
+
+    var liveLockCount: Int {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        locks = locks.filter { $0.value.value != nil }
+        return locks.count
+    }
+}
+
+private final class WeakOperationGate {
+    weak var value: CodexUsageHistoryIndexOperationGate?
+
+    init(_ value: CodexUsageHistoryIndexOperationGate) {
+        self.value = value
     }
 }
 

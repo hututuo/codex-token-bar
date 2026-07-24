@@ -1591,6 +1591,24 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(total, 120)
     }
 
+    func testExactHistoryIndexReleasesUnusedOperationGates() throws {
+        let baseline = CodexUsageHistoryIndex.liveOperationGateCountForTesting()
+        let codexHome = try makeCodexHome()
+
+        let countWhileRetained = try autoreleasepool {
+            let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+            return withExtendedLifetime(index) {
+                CodexUsageHistoryIndex.liveOperationGateCountForTesting()
+            }
+        }
+
+        XCTAssertEqual(countWhileRetained, baseline + 1)
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.liveOperationGateCountForTesting(),
+            baseline
+        )
+    }
+
     func testExactHistoryIndexSerializesConcurrentGenerationThroughAggregationAndRefreshesActiveAppend() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerConcurrentGeneration")
