@@ -904,8 +904,11 @@ extension CodexUsageAnalyzer {
 
     struct SessionLineStreamResult {
         let lastOffset: UInt64
+        let resumeOffset: UInt64
         let endedWithNewline: Bool
         let contentHash: String
+        let chunkHashes: [IndexedChunkHash]
+        let validationChunkHash: IndexedChunkHash?
     }
 
     struct TokenCacheAccumulator {

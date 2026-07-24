@@ -1108,11 +1108,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ = try index.synchronize(
             files: [sessionFile],
             sessionID: analyzer.sessionID(from:)
-        ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
             try analyzer.parseSessionIntoHistoryIndex(
                 file: file,
                 sessionID: parsedSessionID,
-                endingAt: endOffset,
+                request: request,
                 insertFingerprint: insertFingerprint,
                 emit: emit
             )
@@ -1128,11 +1128,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try index.synchronize(
                 files: [sessionFile],
                 sessionID: analyzer.sessionID(from:)
-            ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
                 let result = try analyzer.parseSessionIntoHistoryIndex(
                     file: file,
                     sessionID: parsedSessionID,
-                    endingAt: endOffset,
+                    request: request,
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )
@@ -1176,11 +1176,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ = try index.synchronize(
             files: [sessionFile],
             sessionID: analyzer.sessionID(from:)
-        ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
             let result = try analyzer.parseSessionIntoHistoryIndex(
                 file: file,
                 sessionID: parsedSessionID,
-                endingAt: endOffset,
+                request: request,
                 insertFingerprint: insertFingerprint,
                 emit: emit
             )
@@ -1195,11 +1195,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         _ = try index.synchronize(
             files: [sessionFile],
             sessionID: analyzer.sessionID(from:)
-        ) { file, parsedSessionID, endOffset, insertFingerprint, emit in
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
             try analyzer.parseSessionIntoHistoryIndex(
                 file: file,
                 sessionID: parsedSessionID,
-                endingAt: endOffset,
+                request: request,
                 insertFingerprint: insertFingerprint,
                 emit: emit
             )
@@ -1207,6 +1207,139 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var refreshedTotal = 0
         try index.forEachStoredEvent { refreshedTotal += $0.event.tokens }
         XCTAssertEqual(refreshedTotal, 230)
+    }
+
+    func testExactHistoryIndexAppendReadsOnlyTailChunkAndSuffix() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-byteappend"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        var source = Data(#"{"padding":""#.utf8)
+        let mebibyte = Data(repeating: UInt8(ascii: "x"), count: 1_024 * 1_024)
+        for _ in 0..<12 {
+            source.append(mebibyte)
+        }
+        source.append(Data("\"}\n".utf8))
+        source.append(
+            Data(
+                try tokenCountLine(
+                    timestamp: now.addingTimeInterval(-60),
+                    total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                    last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+                ).appending("\n").utf8
+            )
+        )
+        try source.write(to: sessionFile)
+        let originalSize = UInt64(source.count)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        var coldRequests: [CodexUsageAnalyzer.IndexedSessionParseRequest] = []
+        let cold = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            coldRequests.append(request)
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        XCTAssertEqual(cold.changedFiles, 1)
+        XCTAssertEqual(cold.incrementallyParsedFiles, 0)
+        XCTAssertEqual(coldRequests.map(\.hashingStartOffset), [0])
+        XCTAssertEqual(coldRequests.map(\.endOffset), [originalSize])
+
+        let appendedLine = try tokenCountLine(
+            timestamp: now.addingTimeInterval(-10),
+            total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 150),
+            last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
+        )
+        try appendLines([appendedLine], to: sessionFile)
+        let refreshedSize = UInt64(
+            try XCTUnwrap(
+                FileManager.default.attributesOfItem(atPath: sessionFile.path)[.size] as? NSNumber
+            ).uint64Value
+        )
+
+        var appendRequests: [CodexUsageAnalyzer.IndexedSessionParseRequest] = []
+        let refreshed = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            appendRequests.append(request)
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        XCTAssertEqual(refreshed.incrementallyParsedFiles, 1)
+        let request = try XCTUnwrap(appendRequests.first)
+        XCTAssertEqual(request.parsingStartOffset, originalSize)
+        XCTAssertLessThanOrEqual(
+            request.endOffset - request.hashingStartOffset,
+            4 * 1_024 * 1_024 + refreshedSize - originalSize
+        )
+        var total = 0
+        try index.forEachStoredEvent { total += $0.event.tokens }
+        XCTAssertEqual(total, 150)
+    }
+
+    func testExactHistoryIndexRollingAuditRebuildsAfterMiddleRewriteAndAppend() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-auditappend"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        let originalLine = try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        )
+        var source = Data(originalLine.appending("\n").utf8)
+        source.append(Data(#"{"padding":""#.utf8))
+        let mebibyte = Data(repeating: UInt8(ascii: "z"), count: 1_024 * 1_024)
+        for _ in 0..<9 {
+            source.append(mebibyte)
+        }
+        source.append(Data("\"}\n".utf8))
+        try source.write(to: sessionFile)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        let before = try String(contentsOf: sessionFile, encoding: .utf8)
+        let rewritten = before.replacingOccurrences(
+            of: "\"total_tokens\":120",
+            with: "\"total_tokens\":121"
+        )
+        XCTAssertEqual(before.utf8.count, rewritten.utf8.count)
+        try rewritten.write(to: sessionFile, atomically: false, encoding: .utf8)
+        try appendLines([
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 151),
+                last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
+            )
+        ], to: sessionFile)
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        let refreshed = try analyzer.load()
+
+        XCTAssertEqual(refreshed.stats.totalTokens, 151)
+        XCTAssertEqual(refreshed.stats.totalCalls, 2)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
     }
 
     func testExactHistoryIndexSerializesConcurrentGenerationThroughAggregationAndRefreshesActiveAppend() throws {
@@ -1475,13 +1608,76 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         XCTAssertEqual(updated.stats.totalTokens, 230)
         XCTAssertEqual(updated.stats.totalCalls, 2)
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 1)
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 2)
 
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 230)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+    }
+
+    func testPersistentExactHistoryIndexMigratesV2WithoutDiscardingEvents() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV2Migration")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-v2migration"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute(
+            "UPDATE schema_meta SET value = '2' WHERE key = 'schema_version';"
+        )
+        try database.execute(
+            "UPDATE sources SET append_ready = 0, resume_offset = NULL;"
+        )
+        try database.execute("DROP TABLE source_chunks;")
+        try database.execute("DROP TABLE source_fingerprints;")
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 1)
+        let schemaVersion = try XCTUnwrap(
+            database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.compactMap { $0 }.first
+        )
+        XCTAssertEqual(schemaVersion, "3")
+
+        try appendLines([
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 150),
+                last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
+            )
+        ], to: sessionFile)
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
     }
 
     func testExactHistoryIndexDetectsSameSizeMiddleRewriteWithRestoredModificationDate() throws {
@@ -2332,7 +2528,7 @@ private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
             let synchronization = try index.synchronize(
                 files: files,
                 sessionID: analyzer.sessionID(from:)
-            ) { [analyzer] file, sessionID, endOffset, insertFingerprint, emit in
+            ) { [analyzer] file, sessionID, request, insertFingerprint, emit in
                 if !didGateParser,
                    let parserGateFile,
                    file.resolvingSymlinksInPath().path
@@ -2350,7 +2546,7 @@ private final class ConcurrentUsageIndexWorker: @unchecked Sendable {
                 return try analyzer.parseSessionIntoHistoryIndex(
                     file: file,
                     sessionID: sessionID,
-                    endingAt: endOffset,
+                    request: request,
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )

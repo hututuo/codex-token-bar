@@ -21,6 +21,105 @@ enum CodexUsageDiscoveryError: LocalizedError {
     }
 }
 
+private struct IndexedSessionChunkHasher {
+    private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
+
+    private var absoluteOffset: UInt64
+    private var chunkIndex: UInt64
+    private var chunkByteCount: UInt64 = 0
+    private var chunkHasher = SHA256()
+    private var chunks: [CodexUsageAnalyzer.IndexedChunkHash] = []
+    private let validationBoundary: UInt64?
+    private var validationChunkHash: CodexUsageAnalyzer.IndexedChunkHash?
+
+    init(hashingStartOffset: UInt64, validationBoundary: UInt64?) {
+        precondition(hashingStartOffset % Self.chunkSize == 0)
+        absoluteOffset = hashingStartOffset
+        chunkIndex = hashingStartOffset / Self.chunkSize
+        self.validationBoundary = validationBoundary
+    }
+
+    mutating func update(_ data: Data) {
+        var consumed = 0
+        while consumed < data.count {
+            let chunkRemaining = Self.chunkSize - chunkByteCount
+            let validationRemaining = validationBoundary.flatMap { boundary in
+                boundary > absoluteOffset ? boundary - absoluteOffset : nil
+            } ?? UInt64.max
+            let amount = min(
+                UInt64(data.count - consumed),
+                min(chunkRemaining, validationRemaining)
+            )
+            if amount == 0 {
+                captureValidationHash()
+                continue
+            }
+            let count = Int(amount)
+            chunkHasher.update(data: data[consumed..<(consumed + count)])
+            chunkByteCount += amount
+            absoluteOffset += amount
+            consumed += count
+            if chunkByteCount == Self.chunkSize {
+                finishChunk()
+            }
+            captureValidationHash()
+        }
+    }
+
+    mutating func finish() -> (
+        chunks: [CodexUsageAnalyzer.IndexedChunkHash],
+        validationChunkHash: CodexUsageAnalyzer.IndexedChunkHash?
+    ) {
+        if chunkByteCount > 0 {
+            finishChunk()
+        }
+        return (chunks, validationChunkHash)
+    }
+
+    private mutating func finishChunk() {
+        guard chunkByteCount > 0 else { return }
+        let snapshot = chunkHasher
+        chunks.append(
+            CodexUsageAnalyzer.IndexedChunkHash(
+                index: chunkIndex,
+                byteCount: chunkByteCount,
+                sha256: snapshot.finalize()
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+            )
+        )
+        chunkIndex += 1
+        chunkByteCount = 0
+        chunkHasher = SHA256()
+    }
+
+    private mutating func captureValidationHash() {
+        guard let validationBoundary,
+              absoluteOffset == validationBoundary,
+              validationChunkHash == nil,
+              validationBoundary > 0 else {
+            return
+        }
+        if chunkByteCount == 0 {
+            validationChunkHash = chunks.last
+        } else {
+            let snapshot = chunkHasher
+            validationChunkHash = CodexUsageAnalyzer.IndexedChunkHash(
+                index: chunkIndex,
+                byteCount: chunkByteCount,
+                sha256: snapshot.finalize()
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+            )
+        }
+    }
+}
+
+private func isCompleteIndexedJSONLine(_ data: Data) -> Bool {
+    guard !data.isEmpty else { return true }
+    return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil
+}
+
 extension CodexUsageAnalyzer {
     private static let forkReplayExitGrace: TimeInterval = 2
 
@@ -40,17 +139,37 @@ extension CodexUsageAnalyzer {
         insertFingerprint: (UsageSnapshotFingerprint) throws -> Bool,
         emit: (IndexedTokenEvent) throws -> Void
     ) throws -> IndexedSessionParseResult {
-        var previousTotal: Int?
-        var currentUserPromptOffset: UInt64?
-        var assistantStartOffset: UInt64?
-        var forkReplayStartedAt: Date?
-        var isSkippingForkReplay = false
-        var lastSkippedForkReplayTokenAt: Date?
+        try parseSessionIntoHistoryIndex(
+            file: file,
+            sessionID: sessionID,
+            request: .full(endOffset: endOffset),
+            insertFingerprint: insertFingerprint,
+            emit: emit
+        )
+    }
+
+    func parseSessionIntoHistoryIndex(
+        file: URL,
+        sessionID: String,
+        request: IndexedSessionParseRequest,
+        insertFingerprint: (UsageSnapshotFingerprint) throws -> Bool,
+        emit: (IndexedTokenEvent) throws -> Void
+    ) throws -> IndexedSessionParseResult {
+        var previousTotal = request.initialState.previousTotalTokens
+        var currentUserPromptOffset = request.initialState.currentUserPromptOffset
+        var assistantStartOffset = request.initialState.assistantStartOffset
+        var forkReplayStartedAt = request.initialState.forkReplayStartedAt
+        var isSkippingForkReplay = request.initialState.isSkippingForkReplay
+        var lastSkippedForkReplayTokenAt =
+            request.initialState.lastSkippedForkReplayTokenAt
         var eventCount = 0
 
         let stream = try streamIndexedSessionLines(
             from: file,
-            endingAt: endOffset
+            startingAt: request.parsingStartOffset,
+            endingAt: request.endOffset,
+            chunkHashingFrom: request.hashingStartOffset,
+            validationBoundary: request.validationBoundary
         ) { lineOffset, lineString in
             try autoreleasepool {
                 if forkReplayStartedAt == nil,
@@ -143,8 +262,19 @@ extension CodexUsageAnalyzer {
         return IndexedSessionParseResult(
             eventCount: eventCount,
             lastOffset: stream.lastOffset,
+            resumeOffset: stream.resumeOffset,
             endedWithNewline: stream.endedWithNewline,
-            contentHash: stream.contentHash
+            contentHash: stream.contentHash,
+            state: IndexedSessionParserState(
+                previousTotalTokens: previousTotal,
+                forkReplayStartedAt: forkReplayStartedAt,
+                isSkippingForkReplay: isSkippingForkReplay,
+                lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
+                currentUserPromptOffset: currentUserPromptOffset,
+                assistantStartOffset: assistantStartOffset
+            ),
+            chunkHashes: stream.chunkHashes,
+            validationChunkHash: stream.validationChunkHash
         )
     }
 
@@ -640,17 +770,47 @@ extension CodexUsageAnalyzer {
         from file: URL,
         startingAt offset: UInt64 = 0,
         endingAt endOffset: UInt64? = nil,
+        chunkHashingFrom hashingStartOffset: UInt64? = nil,
+        validationBoundary: UInt64? = nil,
         handleLine: (UInt64, String) throws -> Void
     ) throws -> SessionLineStreamResult {
+        let hashingOffset = hashingStartOffset ?? offset
+        guard hashingOffset <= offset,
+              endOffset.map({ offset <= $0 }) ?? true else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        if let validationBoundary,
+           validationBoundary < hashingOffset
+            || endOffset.map({ validationBoundary > $0 }) == true {
+            throw CocoaError(.fileReadCorruptFile)
+        }
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
-        if offset > 0 {
-            try handle.seek(toOffset: offset)
+        if hashingOffset > 0 {
+            try handle.seek(toOffset: hashingOffset)
+        }
+
+        var hasher = SHA256()
+        var chunkHasher = hashingStartOffset.map {
+            IndexedSessionChunkHasher(
+                hashingStartOffset: $0,
+                validationBoundary: validationBoundary
+            )
+        }
+        var skipRemaining = offset - hashingOffset
+        while skipRemaining > 0 {
+            let requested = Int(min(skipRemaining, 1_048_576))
+            let data = handle.readData(ofLength: requested)
+            guard !data.isEmpty else {
+                throw CodexUsageSourceChangedError(path: file.path)
+            }
+            hasher.update(data: data)
+            chunkHasher?.update(data)
+            skipRemaining -= UInt64(data.count)
         }
 
         var pending = Data()
         var pendingStartOffset = offset
-        var hasher = SHA256()
         let newline = Data([0x0A])
         let needles = [
             Data(#""token_count""#.utf8),
@@ -676,6 +836,7 @@ extension CodexUsageAnalyzer {
                 reachedEnd = true
             } else {
                 hasher.update(data: data)
+                chunkHasher?.update(data)
                 pending.append(data)
             }
 
@@ -703,18 +864,27 @@ extension CodexUsageAnalyzer {
             }
         }
 
+        var resumeOffset = pendingStartOffset
         if !pending.isEmpty {
-            if needles.contains(where: { pending.range(of: $0) != nil }) {
-                try handleLine(pendingStartOffset, String(decoding: pending, as: UTF8.self))
+            let line = String(decoding: pending, as: UTF8.self)
+            if isCompleteIndexedJSONLine(pending) {
+                if needles.contains(where: { pending.range(of: $0) != nil }) {
+                    try handleLine(pendingStartOffset, line)
+                }
+                resumeOffset = pendingStartOffset + UInt64(pending.count)
             }
             pendingStartOffset += UInt64(pending.count)
         }
+        let chunkResult = chunkHasher?.finish()
         return SessionLineStreamResult(
             lastOffset: pendingStartOffset,
+            resumeOffset: resumeOffset,
             endedWithNewline: pending.isEmpty,
             contentHash: hasher.finalize()
                 .map { String(format: "%02x", $0) }
-                .joined()
+                .joined(),
+            chunkHashes: chunkResult?.chunks ?? [],
+            validationChunkHash: chunkResult?.validationChunkHash
         )
     }
 

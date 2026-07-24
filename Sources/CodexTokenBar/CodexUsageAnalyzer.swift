@@ -138,11 +138,11 @@ final class CodexUsageAnalyzer {
             let synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
                 sessionID: sessionID(from:)
-            ) { [self] file, sessionID, endOffset, insertFingerprint, emit in
+            ) { [self] file, sessionID, request, insertFingerprint, emit in
                 try parseSessionIntoHistoryIndex(
                     file: file,
                     sessionID: sessionID,
-                    endingAt: endOffset,
+                    request: request,
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )
@@ -150,10 +150,14 @@ final class CodexUsageAnalyzer {
             trace?.mark("historyIndex.synchronized", metadata: [
                 "changedFiles": String(synchronization.changedFiles),
                 "unchangedFiles": String(synchronization.unchangedFiles),
-                "indexedEvents": String(synchronization.indexedEvents)
+                "indexedEvents": String(synchronization.indexedEvents),
+                "incrementalFiles": String(synchronization.incrementallyParsedFiles)
             ])
-            for _ in 0..<synchronization.changedFiles {
+            for _ in 0..<(synchronization.changedFiles - synchronization.incrementallyParsedFiles) {
                 Self.sessionEventCache.recordFullSessionParseForTesting()
+            }
+            for _ in 0..<synchronization.incrementallyParsedFiles {
+                Self.sessionEventCache.recordIncrementalSessionParseForTesting()
             }
 
             var currentSessionID: String?
