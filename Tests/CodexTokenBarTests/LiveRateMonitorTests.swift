@@ -1670,6 +1670,24 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertNotEqual(LiveRateMonitor.displayBucket(9.4), LiveRateMonitor.displayBucket(9.6))
     }
 
+    func testActiveLiveRatePublicationIsLimitedToOneVisibleUpdatePerSecond() {
+        XCTAssertFalse(LiveRateSnapshotPublicationPolicy.shouldEvaluate(
+            now: 100.99,
+            lastPublishedAt: 100,
+            hasActiveRollingWindow: true
+        ))
+        XCTAssertTrue(LiveRateSnapshotPublicationPolicy.shouldEvaluate(
+            now: 101,
+            lastPublishedAt: 100,
+            hasActiveRollingWindow: true
+        ))
+        XCTAssertTrue(LiveRateSnapshotPublicationPolicy.shouldEvaluate(
+            now: 100.01,
+            lastPublishedAt: 100,
+            hasActiveRollingWindow: false
+        ))
+    }
+
     func testRolloutParserDoesNotCountAgentMessageDuplicateAsInstantRollingOutput() {
         let text = String(repeating: "streamed answer ", count: 200)
         let lines = [

@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, State};
 
 const LIVE_RATE_SNAPSHOT_EVENT: &str = "live-rate-snapshot";
 const FAST_STREAM_INTERVAL: Duration = Duration::from_millis(250);
+const WEBVIEW_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
 const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(15);
@@ -743,6 +744,7 @@ impl LiveRateMonitorRegistry {
         let registry = self.clone();
         async_runtime::spawn(async move {
             let mut last_active_at: Option<Instant> = None;
+            let mut last_webview_emit_at: Option<Instant> = None;
             loop {
                 if let Err(error) = emit_detected_source_transition(&app) {
                     startup_trace::mark_performance(format!(
@@ -822,6 +824,13 @@ impl LiveRateMonitorRegistry {
                     .is_some_and(|last_active| last_active.elapsed() <= ACTIVE_STREAM_HOLD);
                 let emit_webview = request.emit_webview;
                 let update_native_tray = request.update_native_tray;
+                let should_emit_webview = should_emit_webview_snapshot(
+                    emit_webview,
+                    last_webview_emit_at.map(|last_emitted| last_emitted.elapsed()),
+                );
+                if !emit_webview {
+                    last_webview_emit_at = None;
+                }
                 match with_valid_codex_home_source(&source_token, || {
                     if update_native_tray {
                         registry.publish_native_tray_if_current(
@@ -832,14 +841,18 @@ impl LiveRateMonitorRegistry {
                         )?;
                     }
                     registry.publish_stream_if_current(loop_generation, || {
-                        if emit_webview {
+                        if should_emit_webview {
                             app.emit(LIVE_RATE_SNAPSHOT_EVENT, snapshot)
                                 .map_err(|error| error.to_string())?;
                         }
                         Ok(())
                     })
                 }) {
-                    Ok(true) => {}
+                    Ok(true) => {
+                        if should_emit_webview {
+                            last_webview_emit_at = Some(Instant::now());
+                        }
+                    }
                     Ok(false) => break,
                     Err(error) => {
                         startup_trace::mark_performance(format!(
@@ -1100,6 +1113,15 @@ fn selected_subscription_for_source<'a>(
 
 async fn sleep_stream_interval(duration: Duration) {
     tokio::time::sleep(duration).await;
+}
+
+fn should_emit_webview_snapshot(
+    has_webview_subscriber: bool,
+    elapsed_since_last_emit: Option<Duration>,
+) -> bool {
+    has_webview_subscriber
+        && elapsed_since_last_emit
+            .is_none_or(|elapsed| elapsed >= WEBVIEW_STREAM_INTERVAL)
 }
 
 async fn run_blocking_command<T, F>(work: F) -> Result<T, String>
@@ -1447,6 +1469,22 @@ fn result_status<T>(result: &Result<T, String>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_live_rate_stream_preserves_collection_and_limits_surface_publication() {
+        assert_eq!(FAST_STREAM_INTERVAL, Duration::from_millis(250));
+        assert_eq!(WEBVIEW_STREAM_INTERVAL, Duration::from_secs(1));
+        assert!(should_emit_webview_snapshot(true, None));
+        assert!(!should_emit_webview_snapshot(
+            true,
+            Some(Duration::from_millis(999))
+        ));
+        assert!(should_emit_webview_snapshot(
+            true,
+            Some(Duration::from_secs(1))
+        ));
+        assert!(!should_emit_webview_snapshot(false, None));
+    }
 
     #[test]
     fn initial_tray_write_failure_keeps_interest_off_and_same_settings_retryable() {

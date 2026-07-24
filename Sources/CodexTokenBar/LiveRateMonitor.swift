@@ -3,6 +3,18 @@ import Darwin
 import SwiftUI
 import TiktokenSwift
 
+enum LiveRateSnapshotPublicationPolicy {
+    static let activeInterval: TimeInterval = 1.0
+
+    nonisolated static func shouldEvaluate(
+        now: TimeInterval,
+        lastPublishedAt: TimeInterval,
+        hasActiveRollingWindow: Bool
+    ) -> Bool {
+        !hasActiveRollingWindow || now - lastPublishedAt >= activeInterval
+    }
+}
+
 @MainActor
 final class LiveRateMonitor: ObservableObject {
     enum DisplayRateScope {
@@ -34,7 +46,6 @@ final class LiveRateMonitor: ObservableObject {
     private let idleFallbackPollInterval: TimeInterval = 2.0
     private let rolloutFallbackPollInterval: TimeInterval = 1.0
     let activeFastPollHoldSeconds: TimeInterval = 10.0
-    private let snapshotPublishInterval: TimeInterval = 0.25
     private let startupBackfillSeconds: TimeInterval = 4.0
     private let minimumRateSpanSeconds: TimeInterval = 0.4
     nonisolated private static let selectedSessionDisplayRateCap: Double = 80
@@ -1208,7 +1219,12 @@ final class LiveRateMonitor: ObservableObject {
             }
         }
 
-        guard now - lastSnapshotPublishAt >= snapshotPublishInterval || !hasActiveRollingWindow(now: now) else {
+        let activeRollingWindow = hasActiveRollingWindow(now: now)
+        guard LiveRateSnapshotPublicationPolicy.shouldEvaluate(
+            now: now,
+            lastPublishedAt: lastSnapshotPublishAt,
+            hasActiveRollingWindow: activeRollingWindow
+        ) else {
             return
         }
         lastSnapshotPublishAt = now
