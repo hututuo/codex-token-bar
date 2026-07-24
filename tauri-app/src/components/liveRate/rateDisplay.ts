@@ -82,3 +82,11 @@ export function liveRateDisplayBucket(snapshot: LiveRateSnapshot): string {
     snapshot.warnings.map((warning) => `${warning.source}:${warning.message}`).join("~"),
   ].join("|");
 }
+
+export function changedLiveRateDisplayBucket(
+  previousBucket: string,
+  snapshot: LiveRateSnapshot,
+): string | null {
+  const bucket = liveRateDisplayBucket(snapshot);
+  return bucket === previousBucket ? null : bucket;
+}

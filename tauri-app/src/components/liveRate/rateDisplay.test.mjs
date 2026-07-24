@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import {
+  changedLiveRateDisplayBucket,
   displayRawRate,
   formatLiveRateValue,
   liveRateDisplayBucket,
@@ -91,6 +92,18 @@ test("live rate display buckets include warning identity and message", () => {
   }));
 
   assert.notEqual(first, second);
+});
+
+test("unchanged visible live-rate buckets do not request another surface render", () => {
+  const first = snapshot({ tokensPerSecond: 42.14 });
+  const bucket = changedLiveRateDisplayBucket("", first);
+
+  assert.equal(typeof bucket, "string");
+  assert.equal(changedLiveRateDisplayBucket(bucket, snapshot({ tokensPerSecond: 42.13 })), null);
+  assert.notEqual(
+    changedLiveRateDisplayBucket(bucket, snapshot({ tokensPerSecond: 42.26 })),
+    null,
+  );
 });
 
 test("rate bars use shared transform fill styles instead of width animation", async () => {

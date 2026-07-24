@@ -2,7 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import { readLiveRateSnapshotStrict } from "../api/liveClient";
-import { smoothLiveRateSnapshot } from "../components/liveRate/rateDisplay";
+import {
+  changedLiveRateDisplayBucket,
+  smoothLiveRateSnapshot,
+} from "../components/liveRate/rateDisplay";
 import { desktopPlatform } from "../platform/desktop";
 import {
   createLiveRateLeaseController,
@@ -76,6 +79,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
   const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
   const lastLiveActivityAtMsRef = useRef(0);
   const lastSmoothedLiveRateRef = useRef<LiveRateSnapshot | null>(null);
+  const lastLiveRateDisplayBucketRef = useRef("");
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
   const sourceKeyRef = useRef<string | null>(sourceKey);
   const leaseControllerRef = useRef<LiveRateLeaseController | null | undefined>(undefined);
@@ -111,6 +115,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
       sourceKeyRef.current = sourceKey;
       usageSummaryRef.current = null;
       lastSmoothedLiveRateRef.current = null;
+      lastLiveRateDisplayBucketRef.current = "";
       lastLiveActivityAtMsRef.current = 0;
       setLastLiveActivityAtMs(0);
       setRawSnapshot(emptyFloatingPanelSnapshot);
@@ -212,6 +217,14 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
       const smoothed = smoothLiveRateSnapshot(liveRate, lastSmoothedLiveRateRef.current);
       lastSmoothedLiveRateRef.current = smoothed;
       markLiveUsageActivity(smoothed);
+      const bucket = changedLiveRateDisplayBucket(
+        lastLiveRateDisplayBucketRef.current,
+        smoothed,
+      );
+      if (bucket === null) {
+        return;
+      }
+      lastLiveRateDisplayBucketRef.current = bucket;
       setRawSnapshot(floatingSnapshotForLiveRate(smoothed, usageSummaryRef.current));
     };
 

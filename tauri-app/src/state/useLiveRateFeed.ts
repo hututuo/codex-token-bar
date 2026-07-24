@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { readLiveRateSnapshotStrict } from "../api/liveClient";
 import {
-  liveRateDisplayBucket,
+  changedLiveRateDisplayBucket,
   smoothLiveRateSnapshot,
 } from "../components/liveRate/rateDisplay";
 import type { PlatformCommandResult } from "../platform/desktopBridge";
@@ -79,9 +79,9 @@ dependencies: Partial<LiveRateFeedDependencies> = {},
 
     const publishSnapshot = (liveRate: LiveRateSnapshot) => {
       const smoothed = smoothLiveRateSnapshot(liveRate, lastSmoothedSnapshotRef.current);
-      const bucket = liveRateDisplayBucket(smoothed);
+      const bucket = changedLiveRateDisplayBucket(lastDisplayBucketRef.current, smoothed);
       lastSmoothedSnapshotRef.current = smoothed;
-      if (bucket === lastDisplayBucketRef.current) {
+      if (bucket === null) {
         return;
       }
       lastDisplayBucketRef.current = bucket;
