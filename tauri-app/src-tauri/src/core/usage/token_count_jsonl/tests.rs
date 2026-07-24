@@ -450,6 +450,171 @@ fn exact_index_stable_cold_scan_does_not_read_the_complete_prefix_twice() {
 }
 
 #[test]
+fn exact_index_parallel_stages_large_cold_files() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let padding = vec![b'p'; EXACT_INDEX_CHUNK_SIZE as usize];
+    let mut expected_total = 0_u64;
+    for index in 0_u64..4 {
+        let file = session_dir.join(format!(
+            "rollout-019eparallel-{index:04}-0000-0000-exact.jsonl"
+        ));
+        let mut handle = std::io::BufWriter::new(fs::File::create(file).unwrap());
+        handle.write_all(br#"{"padding":""#).unwrap();
+        handle.write_all(&padding).unwrap();
+        handle.write_all(b"\"}\n").unwrap();
+        let total = 120 + index;
+        expected_total += total;
+        writeln!(
+            handle,
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-07-20T01:00:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 100 + index,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 20,
+                            "total_tokens": total
+                        }
+                    }
+                }
+            })
+        )
+        .unwrap();
+        handle.flush().unwrap();
+    }
+    ExactUsageIndex::reset_stage_concurrency_for_testing(75);
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+
+    assert!(
+        ExactUsageIndex::stage_peak_concurrency_for_testing() >= 2,
+        "large cold files must be parsed by more than one staging worker"
+    );
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        expected_total
+    );
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_reuses_private_staging_after_an_interrupted_import() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let mut staging_path = index_path.as_os_str().to_os_string();
+    staging_path.push(".staging");
+    let staging_path = PathBuf::from(staging_path);
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019estage-recovery-0000-0000-exact.jsonl");
+    let secret_question = "SECRET_STAGING_PROMPT_MUST_NOT_PERSIST_314159";
+    let secret_answer = "SECRET_STAGING_ANSWER_MUST_NOT_PERSIST_271828";
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    writeln!(
+        handle,
+        r#"{{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{{"type":"user_message","message":"{secret_question}"}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        handle,
+        r#"{{"timestamp":"2026-07-20T01:00:20Z","type":"event_msg","payload":{{"type":"agent_message","message":"{secret_answer}"}}}}"#
+    )
+    .unwrap();
+    handle.write_all(br#"{"padding":""#).unwrap();
+    handle
+        .write_all(&vec![b's'; EXACT_INDEX_CHUNK_SIZE as usize])
+        .unwrap();
+    handle.write_all(b"\"}\n").unwrap();
+    writeln!(
+        handle,
+        "{}",
+        serde_json::json!({
+            "timestamp": "2026-07-20T01:01:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 20,
+                        "total_tokens": 120
+                    }
+                }
+            }
+        })
+    )
+    .unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+
+    ExactUsageIndex::fail_after_staging_once_for_testing();
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("injected interruption"), "{error}");
+    drop(interrupted);
+
+    let mut inspected_stage = false;
+    for entry in fs::read_dir(&staging_path).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.is_file() {
+            continue;
+        }
+        inspected_stage = true;
+        let bytes = fs::read(path).unwrap();
+        assert!(!bytes
+            .windows(secret_question.len())
+            .any(|window| window == secret_question.as_bytes()));
+        assert!(!bytes
+            .windows(secret_answer.len())
+            .any(|window| window == secret_answer.as_bytes()));
+    }
+    assert!(
+        inspected_stage,
+        "the interrupted build must leave a durable stage"
+    );
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    resumed.sync(&root, &mut Vec::new()).unwrap();
+
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing().0,
+        0,
+        "the retry must reuse the complete stage instead of rereading the source"
+    );
+    assert_eq!(
+        resumed
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+    assert!(
+        !staging_path.exists(),
+        "successful publication must remove stale staging databases"
+    );
+    drop(resumed);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_migrates_v4_without_discarding_published_events() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

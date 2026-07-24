@@ -23,6 +23,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::thread;
 use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
@@ -36,6 +41,7 @@ const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
+const PARALLEL_STAGING_MIN_BYTES: u64 = EXACT_INDEX_CHUNK_SIZE;
 
 pub(super) struct ExactUsageIndex {
     connection: Connection,
@@ -76,6 +82,30 @@ struct IndexedFileCheckpoint {
     audit_chunk_index: u64,
 }
 
+#[derive(Clone, Debug)]
+struct FullRebuildJob {
+    file: PathBuf,
+    path: String,
+    session_id: String,
+    signature: FileSignature,
+}
+
+#[derive(Clone, Debug)]
+struct StagedFullRebuild {
+    job: FullRebuildJob,
+    database_path: PathBuf,
+    prefix_sha256: [u8; 32],
+    resume_offset: u64,
+    parser_state: ExactSessionParserState,
+    event_count: u64,
+}
+
+struct StagedFullRebuildResult {
+    order: usize,
+    result: Result<StagedFullRebuild, String>,
+    warnings: Vec<LocalDataWarning>,
+}
+
 struct IndexedTurnCandidate {
     usage: TurnCacheUsage,
     file_path: PathBuf,
@@ -97,9 +127,19 @@ thread_local! {
     static AFTER_PREFIX_SCAN_HOOK: RefCell<Option<AfterPrefixScanHook>> = RefCell::new(None);
     static AFTER_FILE_COMMIT_HOOK: RefCell<Option<AfterFileCommitHook>> = RefCell::new(None);
     static PREFIX_REHASH_COUNT: Cell<u64> = const { Cell::new(0) };
-    static FULL_SCAN_BYTES: Cell<u64> = const { Cell::new(0) };
-    static APPEND_SCAN_BYTES: Cell<u64> = const { Cell::new(0) };
 }
+#[cfg(test)]
+static FULL_SCAN_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static APPEND_SCAN_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static FAIL_AFTER_STAGING: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static STAGE_ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static STAGE_PEAK_WORKERS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
 
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
@@ -211,16 +251,33 @@ impl ExactUsageIndex {
 
     #[cfg(test)]
     pub(super) fn reset_scan_bytes_for_testing() {
-        FULL_SCAN_BYTES.with(|bytes| bytes.set(0));
-        APPEND_SCAN_BYTES.with(|bytes| bytes.set(0));
+        FULL_SCAN_BYTES.store(0, Ordering::SeqCst);
+        APPEND_SCAN_BYTES.store(0, Ordering::SeqCst);
     }
 
     #[cfg(test)]
     pub(super) fn scan_bytes_for_testing() -> (u64, u64) {
         (
-            FULL_SCAN_BYTES.with(Cell::get),
-            APPEND_SCAN_BYTES.with(Cell::get),
+            FULL_SCAN_BYTES.load(Ordering::SeqCst),
+            APPEND_SCAN_BYTES.load(Ordering::SeqCst),
         )
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_after_staging_once_for_testing() {
+        FAIL_AFTER_STAGING.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_stage_concurrency_for_testing(delay_milliseconds: u64) {
+        STAGE_ACTIVE_WORKERS.store(0, Ordering::SeqCst);
+        STAGE_PEAK_WORKERS.store(0, Ordering::SeqCst);
+        STAGE_DELAY_MILLISECONDS.store(delay_milliseconds, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn stage_peak_concurrency_for_testing() -> usize {
+        STAGE_PEAK_WORKERS.load(Ordering::SeqCst)
     }
 
     pub(super) fn sync(
@@ -231,15 +288,34 @@ impl ExactUsageIndex {
         prune_published_tombstone_versions(&self.connection)?;
         prepare_scan_temp_tables(&self.connection)?;
         let generation = begin_or_resume_generation(&mut self.connection)?;
+        let mut full_rebuild_jobs = Vec::new();
         visit_session_files(
             &mut self.connection,
             codex_home,
             warnings,
             |connection, file, warnings| {
-                process_session_file(connection, generation, codex_home, file, warnings)
+                if let Some(job) =
+                    process_session_file(connection, generation, codex_home, file, warnings)?
+                {
+                    full_rebuild_jobs.push(job);
+                }
+                Ok(())
             },
         )?;
-        finalize_generation(&mut self.connection, generation, codex_home, warnings)
+        let index_path = database_path(codex_home)?;
+        let staged = stage_full_rebuilds(&full_rebuild_jobs, &index_path, codex_home, warnings)?;
+        #[cfg(test)]
+        if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
+            return Err("injected interruption after durable exact token staging".into());
+        }
+        for staged_file in staged {
+            import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
+            remove_index_storage(&staged_file.database_path)?;
+            run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
+        }
+        let revision = finalize_generation(&mut self.connection, generation, codex_home, warnings)?;
+        remove_staging_directory(&index_path)?;
+        Ok(revision)
     }
 
     pub(super) fn revision(&self) -> Result<u64, String> {
@@ -1057,6 +1133,136 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
     }
 }
 
+struct StagingEventSink<'transaction> {
+    transaction: &'transaction Transaction<'transaction>,
+    ordinal: u64,
+}
+
+impl ExactSessionEventSink for StagingEventSink<'_> {
+    fn insert_fingerprint(
+        &mut self,
+        fingerprint: &UsageSnapshotFingerprint,
+    ) -> Result<bool, String> {
+        let encoded = encode_fingerprint(fingerprint);
+        self.transaction
+            .execute(
+                "INSERT OR IGNORE INTO fingerprints(fingerprint) VALUES (?1)",
+                params![encoded.as_slice()],
+            )
+            .map(|inserted| inserted > 0)
+            .map_err(|error| format!("无法写入精确 token 暂存去重状态：{error}"))
+    }
+
+    fn insert_event(&mut self, event: &ExactTokenEvent) -> Result<(), String> {
+        self.ordinal = self.ordinal.saturating_add(1);
+        self.transaction
+            .execute(
+                r#"
+                INSERT INTO events(
+                    ordinal,
+                    timestamp,
+                    tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    user_prompt_start,
+                    user_prompt_end,
+                    assistant_response_start,
+                    assistant_response_end
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "#,
+                params![
+                    checked_i64(self.ordinal, "暂存事件序号")?,
+                    event.timestamp.unix_timestamp(),
+                    checked_i64(event.tokens, "暂存 token 总数")?,
+                    checked_i64(event.input_tokens, "暂存输入 token")?,
+                    checked_i64(event.cached_input_tokens, "暂存缓存输入 token")?,
+                    checked_i64(event.output_tokens, "暂存输出 token")?,
+                    checked_optional_i64(
+                        event.source_offsets.user_prompt.map(|range| range.start),
+                        "暂存用户问题起始位置",
+                    )?,
+                    checked_optional_i64(
+                        event.source_offsets.user_prompt.map(|range| range.end),
+                        "暂存用户问题结束位置",
+                    )?,
+                    checked_optional_i64(
+                        event
+                            .source_offsets
+                            .assistant_response
+                            .map(|range| range.start),
+                        "暂存回答起始位置",
+                    )?,
+                    checked_optional_i64(
+                        event
+                            .source_offsets
+                            .assistant_response
+                            .map(|range| range.end),
+                        "暂存回答结束位置",
+                    )?,
+                ],
+            )
+            .map(|_| ())
+            .map_err(|error| format!("无法写入精确 token 暂存事件：{error}"))
+    }
+}
+
+struct StageManifest {
+    path: String,
+    session_id: String,
+    size: i64,
+    modified_ns: String,
+    device_id: String,
+    file_id: String,
+    changed_ns: String,
+    prefix_sha256: Vec<u8>,
+    resume_offset: i64,
+    previous_total_tokens: Option<i64>,
+    fork_replay_started_ns: Option<String>,
+    fork_replay_active: bool,
+    last_skipped_fork_replay_token_ns: Option<String>,
+    current_user_prompt_start: Option<i64>,
+    current_user_prompt_end: Option<i64>,
+    assistant_response_start: Option<i64>,
+    assistant_response_end: Option<i64>,
+    event_count: i64,
+    fingerprint_count: i64,
+    chunk_count: i64,
+}
+
+#[cfg(test)]
+struct StageActivityGuard;
+
+#[cfg(test)]
+impl StageActivityGuard {
+    fn begin() -> Self {
+        let active = STAGE_ACTIVE_WORKERS.fetch_add(1, Ordering::SeqCst) + 1;
+        STAGE_PEAK_WORKERS.fetch_max(active, Ordering::SeqCst);
+        let delay = STAGE_DELAY_MILLISECONDS.load(Ordering::SeqCst);
+        if delay > 0 {
+            thread::sleep(StdDuration::from_millis(delay));
+        }
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for StageActivityGuard {
+    fn drop(&mut self) {
+        STAGE_ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(not(test))]
+struct StageActivityGuard;
+
+#[cfg(not(test))]
+impl StageActivityGuard {
+    fn begin() -> Self {
+        Self
+    }
+}
+
 fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> [u8; 9 * 8] {
     let mut encoded = [0_u8; 9 * 8];
     for (index, value) in fingerprint.iter().enumerate() {
@@ -1064,6 +1270,873 @@ fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> [u8; 9 * 8] {
         encoded[start..start + 8].copy_from_slice(&value.to_le_bytes());
     }
     encoded
+}
+
+fn stage_full_rebuilds(
+    jobs: &[FullRebuildJob],
+    index_path: &Path,
+    codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<Vec<StagedFullRebuild>, String> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    ensure_staging_directory(index_path)?;
+    let mut ordered_jobs = jobs.to_vec();
+    ordered_jobs.sort_by(|left, right| {
+        right
+            .signature
+            .size
+            .cmp(&left.signature.size)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    let mut results = if ordered_jobs.len() == 1 {
+        let mut local_warnings = Vec::new();
+        vec![StagedFullRebuildResult {
+            order: 0,
+            result: stage_or_reuse_full_rebuild(
+                &ordered_jobs[0],
+                index_path,
+                codex_home,
+                None,
+                &mut local_warnings,
+            ),
+            warnings: local_warnings,
+        }]
+    } else {
+        let next_job = AtomicUsize::new(0);
+        let collected = Mutex::new(Vec::with_capacity(ordered_jobs.len()));
+        let heavy_file_gate = Mutex::new(());
+        let worker_count = cold_build_worker_count(ordered_jobs.len());
+        thread::scope(|scope| {
+            for _ in 0..worker_count {
+                scope.spawn(|| loop {
+                    let order = next_job.fetch_add(1, Ordering::SeqCst);
+                    let Some(job) = ordered_jobs.get(order) else {
+                        break;
+                    };
+                    let mut local_warnings = Vec::new();
+                    let result = stage_or_reuse_full_rebuild(
+                        job,
+                        index_path,
+                        codex_home,
+                        Some(&heavy_file_gate),
+                        &mut local_warnings,
+                    );
+                    collected
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(StagedFullRebuildResult {
+                            order,
+                            result,
+                            warnings: local_warnings,
+                        });
+                });
+            }
+        });
+        collected
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
+    #[cfg(test)]
+    STAGE_DELAY_MILLISECONDS.store(0, Ordering::SeqCst);
+
+    results.sort_by_key(|result| result.order);
+    let mut staged = Vec::with_capacity(results.len());
+    let mut first_error = None;
+    for mut result in results {
+        warnings.append(&mut result.warnings);
+        match result.result {
+            Ok(value) => staged.push(value),
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(staged)
+}
+
+fn cold_build_worker_count(job_count: usize) -> usize {
+    if job_count <= 1 {
+        return 1;
+    }
+    let available = thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(2);
+    let resource_cap = if available >= 8 {
+        4
+    } else if available >= 4 {
+        3
+    } else {
+        2
+    };
+    job_count.min(resource_cap)
+}
+
+fn stage_or_reuse_full_rebuild(
+    job: &FullRebuildJob,
+    index_path: &Path,
+    codex_home: &Path,
+    heavy_file_gate: Option<&Mutex<()>>,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<StagedFullRebuild, String> {
+    let database_path = staging_database_path(index_path, &job.path);
+    if let Some(staged) = reusable_staged_full_rebuild(&database_path, job)? {
+        return Ok(staged);
+    }
+
+    const HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
+    let _heavy_guard = if job.signature.size >= HEAVY_FILE_BYTES {
+        heavy_file_gate.map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    } else {
+        None
+    };
+    build_staged_full_rebuild(job, database_path, codex_home, warnings)
+}
+
+fn build_staged_full_rebuild(
+    job: &FullRebuildJob,
+    database_path: PathBuf,
+    codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<StagedFullRebuild, String> {
+    let _activity = StageActivityGuard::begin();
+    remove_index_storage(&database_path)?;
+    let mut handle = fs::File::open(&job.file).map_err(|error| {
+        format!(
+            "读取精确 token 暂存源文件失败：{}（{}）",
+            job.file.display(),
+            error
+        )
+    })?;
+    let current_signature = file_signature_from_handle(&handle, &job.file)?;
+    if current_signature != job.signature {
+        return Err(format!(
+            "会话文件在进入并行暂存前发生变化，将在下一次刷新重试：{}",
+            relative_display_path(codex_home, &job.file)
+        ));
+    }
+
+    let mut stage = open_staging_connection(&database_path)?;
+    initialize_staging_schema(&stage)?;
+    let transaction = stage
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始精确 token 单文件暂存事务：{error}"))?;
+    let mut sink = StagingEventSink {
+        transaction: &transaction,
+        ordinal: 0,
+    };
+    let parsed = stream_session_file_exact(
+        &job.file,
+        &mut handle,
+        job.signature.size,
+        &job.session_id,
+        &mut sink,
+        warnings,
+    )?;
+    let event_count = sink.ordinal;
+    drop(sink);
+    #[cfg(test)]
+    FULL_SCAN_BYTES.fetch_add(job.signature.size, Ordering::SeqCst);
+    run_after_prefix_scan_hook_for_testing(&job.file);
+
+    if parsed.bytes_read != job.signature.size {
+        return Err(format!(
+            "会话文件固定前缀未完整扫描，将在下一次刷新重试：{}",
+            relative_display_path(codex_home, &job.file)
+        ));
+    }
+    validate_same_file_prefix(&job.file, &mut handle, job.signature, parsed.prefix_sha256)
+        .map_err(|reason| {
+            format!(
+                "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
+                relative_display_path(codex_home, &job.file),
+                reason
+            )
+        })?;
+
+    {
+        let mut insert_chunk = transaction
+            .prepare(
+                r#"
+                INSERT INTO chunks(chunk_index, byte_count, sha256)
+                VALUES (?1, ?2, ?3)
+                "#,
+            )
+            .map_err(|error| format!("无法准备精确 token 暂存分块写入：{error}"))?;
+        for chunk in &parsed.chunk_hashes {
+            insert_chunk
+                .execute(params![
+                    checked_i64(chunk.index, "暂存分块序号")?,
+                    checked_i64(chunk.byte_count, "暂存分块字节数")?,
+                    chunk.sha256.as_slice(),
+                ])
+                .map_err(|error| format!("无法写入精确 token 暂存分块：{error}"))?;
+        }
+    }
+    let fingerprint_count = transaction
+        .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| format!("无法统计精确 token 暂存去重状态：{error}"))?;
+    let state = parsed.state;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO manifest(
+                complete,
+                path,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                event_count,
+                fingerprint_count,
+                chunk_count
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            "#,
+            params![
+                &job.path,
+                &job.session_id,
+                checked_i64(job.signature.size, "暂存会话文件大小")?,
+                job.signature.modified_ns.to_string(),
+                job.signature.identity.device_id.to_string(),
+                job.signature.identity.file_id.to_string(),
+                job.signature.changed_ns.to_string(),
+                parsed.prefix_sha256.as_slice(),
+                checked_i64(parsed.resume_offset, "暂存会话文件续扫位置")?,
+                checked_optional_i64(state.previous_total_tokens, "暂存累计 token")?,
+                timestamp_ns_text(state.fork_replay_started_at),
+                state.fork_replay_active,
+                timestamp_ns_text(state.last_skipped_fork_replay_token_at),
+                checked_optional_i64(
+                    state.current_user_prompt.map(|range| range.start),
+                    "暂存检查点用户问题起始位置",
+                )?,
+                checked_optional_i64(
+                    state.current_user_prompt.map(|range| range.end),
+                    "暂存检查点用户问题结束位置",
+                )?,
+                checked_optional_i64(
+                    state.assistant_response.map(|range| range.start),
+                    "暂存检查点回答起始位置",
+                )?,
+                checked_optional_i64(
+                    state.assistant_response.map(|range| range.end),
+                    "暂存检查点回答结束位置",
+                )?,
+                checked_i64(event_count, "暂存事件数量")?,
+                fingerprint_count,
+                checked_i64(parsed.chunk_hashes.len() as u64, "暂存分块数量")?,
+            ],
+        )
+        .map_err(|error| format!("无法完成精确 token 单文件暂存清单：{error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法耐久提交精确 token 单文件暂存：{error}"))?;
+    quick_check_index(&stage)?;
+
+    Ok(StagedFullRebuild {
+        job: job.clone(),
+        database_path,
+        prefix_sha256: parsed.prefix_sha256,
+        resume_offset: parsed.resume_offset,
+        parser_state: parsed.state,
+        event_count,
+    })
+}
+
+fn open_staging_connection(path: &Path) -> Result<Connection, String> {
+    let connection = Connection::open(path).map_err(|error| {
+        format!(
+            "无法打开精确 token 单文件暂存 {}：{}",
+            path.display(),
+            error
+        )
+    })?;
+    connection
+        .busy_timeout(StdDuration::from_secs(30))
+        .map_err(|error| format!("无法设置精确 token 暂存等待时间：{error}"))?;
+    connection
+        .execute_batch(
+            r#"
+            PRAGMA journal_mode = DELETE;
+            PRAGMA synchronous = FULL;
+            PRAGMA temp_store = FILE;
+            PRAGMA cache_size = -4096;
+            "#,
+        )
+        .map_err(|error| format!("无法配置精确 token 单文件暂存：{error}"))?;
+    Ok(connection)
+}
+
+fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE manifest (
+                complete INTEGER PRIMARY KEY CHECK(complete = 1),
+                path TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                modified_ns TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                changed_ns TEXT NOT NULL,
+                prefix_sha256 BLOB NOT NULL,
+                resume_offset INTEGER NOT NULL,
+                previous_total_tokens INTEGER,
+                fork_replay_started_ns TEXT,
+                fork_replay_active INTEGER NOT NULL,
+                last_skipped_fork_replay_token_ns TEXT,
+                current_user_prompt_start INTEGER,
+                current_user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                event_count INTEGER NOT NULL,
+                fingerprint_count INTEGER NOT NULL,
+                chunk_count INTEGER NOT NULL
+            ) WITHOUT ROWID;
+
+            CREATE TABLE fingerprints (
+                fingerprint BLOB PRIMARY KEY
+            ) WITHOUT ROWID;
+
+            CREATE TABLE events (
+                ordinal INTEGER PRIMARY KEY,
+                timestamp INTEGER NOT NULL,
+                tokens INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                user_prompt_start INTEGER,
+                user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER
+            ) WITHOUT ROWID;
+
+            CREATE TABLE chunks (
+                chunk_index INTEGER PRIMARY KEY,
+                byte_count INTEGER NOT NULL,
+                sha256 BLOB NOT NULL
+            ) WITHOUT ROWID;
+            "#,
+        )
+        .map_err(|error| format!("无法初始化精确 token 单文件暂存结构：{error}"))
+}
+
+fn reusable_staged_full_rebuild(
+    database_path: &Path,
+    job: &FullRebuildJob,
+) -> Result<Option<StagedFullRebuild>, String> {
+    if !existing_regular_index(database_path)? {
+        return Ok(None);
+    }
+    let reusable = (|| {
+        let stage = sqlite::open_read_only(database_path, StdDuration::from_secs(1))
+            .map_err(|error| format!("无法只读打开精确 token 单文件暂存：{error}"))?;
+        validated_staged_full_rebuild(&stage, database_path, job)
+    })();
+    match reusable {
+        Ok(Some(staged)) => Ok(Some(staged)),
+        Ok(None) | Err(_) => {
+            remove_index_storage(database_path)?;
+            Ok(None)
+        }
+    }
+}
+
+fn validated_staged_full_rebuild(
+    connection: &Connection,
+    database_path: &Path,
+    job: &FullRebuildJob,
+) -> Result<Option<StagedFullRebuild>, String> {
+    quick_check_index(connection)?;
+    let manifest = connection
+        .query_row(
+            r#"
+            SELECT
+                path,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                event_count,
+                fingerprint_count,
+                chunk_count
+            FROM manifest
+            WHERE complete = 1
+            LIMIT 1
+            "#,
+            [],
+            |row| {
+                Ok(StageManifest {
+                    path: row.get(0)?,
+                    session_id: row.get(1)?,
+                    size: row.get(2)?,
+                    modified_ns: row.get(3)?,
+                    device_id: row.get(4)?,
+                    file_id: row.get(5)?,
+                    changed_ns: row.get(6)?,
+                    prefix_sha256: row.get(7)?,
+                    resume_offset: row.get(8)?,
+                    previous_total_tokens: row.get(9)?,
+                    fork_replay_started_ns: row.get(10)?,
+                    fork_replay_active: row.get(11)?,
+                    last_skipped_fork_replay_token_ns: row.get(12)?,
+                    current_user_prompt_start: row.get(13)?,
+                    current_user_prompt_end: row.get(14)?,
+                    assistant_response_start: row.get(15)?,
+                    assistant_response_end: row.get(16)?,
+                    event_count: row.get(17)?,
+                    fingerprint_count: row.get(18)?,
+                    chunk_count: row.get(19)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("无法读取精确 token 单文件暂存清单：{error}"))?;
+    let Some(manifest) = manifest else {
+        return Ok(None);
+    };
+    if manifest.path != job.path
+        || manifest.session_id != job.session_id
+        || !job.signature.matches_stored(
+            nonnegative_u64(manifest.size),
+            &manifest.modified_ns,
+            &manifest.device_id,
+            &manifest.file_id,
+            &manifest.changed_ns,
+        )
+        || manifest.size < 0
+        || manifest.resume_offset < 0
+        || nonnegative_u64(manifest.resume_offset) > job.signature.size
+        || manifest.event_count < 0
+        || manifest.fingerprint_count < 0
+        || manifest.chunk_count < 0
+    {
+        return Ok(None);
+    }
+    let prefix_sha256: [u8; 32] = match manifest.prefix_sha256.as_slice().try_into() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let event_count = connection
+        .query_row("SELECT COUNT(*) FROM events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| format!("无法验证精确 token 暂存事件数量：{error}"))?;
+    let fingerprint_count = connection
+        .query_row("SELECT COUNT(*) FROM fingerprints", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| format!("无法验证精确 token 暂存去重数量：{error}"))?;
+    let chunk_count = connection
+        .query_row("SELECT COUNT(*) FROM chunks", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| format!("无法验证精确 token 暂存分块数量：{error}"))?;
+    let malformed_hashes = connection
+        .query_row(
+            r#"
+            SELECT
+                EXISTS(SELECT 1 FROM fingerprints WHERE length(fingerprint) <> 72),
+                EXISTS(SELECT 1 FROM chunks WHERE length(sha256) <> 32)
+            "#,
+            [],
+            |row| Ok(row.get::<_, bool>(0)? || row.get::<_, bool>(1)?),
+        )
+        .map_err(|error| format!("无法验证精确 token 暂存哈希形状：{error}"))?;
+    let expected_chunks = job
+        .signature
+        .size
+        .checked_sub(1)
+        .map_or(0, |offset| offset / EXACT_INDEX_CHUNK_SIZE + 1);
+    if event_count != manifest.event_count
+        || fingerprint_count != manifest.fingerprint_count
+        || chunk_count != manifest.chunk_count
+        || nonnegative_u64(chunk_count) != expected_chunks
+        || malformed_hashes
+    {
+        return Ok(None);
+    }
+    let fork_replay_started_at = parse_timestamp_ns(manifest.fork_replay_started_ns.clone());
+    let last_skipped_fork_replay_token_at =
+        parse_timestamp_ns(manifest.last_skipped_fork_replay_token_ns.clone());
+    if manifest.fork_replay_started_ns.is_some() && fork_replay_started_at.is_none()
+        || manifest.last_skipped_fork_replay_token_ns.is_some()
+            && last_skipped_fork_replay_token_at.is_none()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(StagedFullRebuild {
+        job: job.clone(),
+        database_path: database_path.to_path_buf(),
+        prefix_sha256,
+        resume_offset: nonnegative_u64(manifest.resume_offset),
+        parser_state: ExactSessionParserState {
+            previous_total_tokens: manifest.previous_total_tokens.map(nonnegative_u64),
+            fork_replay_started_at,
+            fork_replay_active: manifest.fork_replay_active,
+            last_skipped_fork_replay_token_at,
+            current_user_prompt: source_range_from_columns(
+                manifest.current_user_prompt_start,
+                manifest.current_user_prompt_end,
+            ),
+            assistant_response: source_range_from_columns(
+                manifest.assistant_response_start,
+                manifest.assistant_response_end,
+            ),
+        },
+        event_count: nonnegative_u64(manifest.event_count),
+    }))
+}
+
+fn import_staged_full_rebuild(
+    connection: &mut Connection,
+    generation: i64,
+    staged: &StagedFullRebuild,
+) -> Result<(), String> {
+    let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
+        .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
+    let validated = validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job)?
+        .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始精确 token 暂存导入事务：{error}"))?;
+    ensure_active_build_generation(&transaction, generation)?;
+    transaction
+        .execute(
+            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
+            params![generation, &validated.job.path],
+        )
+        .map_err(|error| format!("无法清理本轮待重建会话版本：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO files(
+                generation,
+                path,
+                deleted,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256
+            ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                generation,
+                &validated.job.path,
+                &validated.job.session_id,
+                checked_i64(validated.job.signature.size, "导入会话文件大小")?,
+                validated.job.signature.modified_ns.to_string(),
+                validated.job.signature.identity.device_id.to_string(),
+                validated.job.signature.identity.file_id.to_string(),
+                validated.job.signature.changed_ns.to_string(),
+                validated.prefix_sha256.as_slice(),
+            ],
+        )
+        .map_err(|error| format!("无法登记待导入的精确 token 会话：{error}"))?;
+
+    {
+        let mut select = stage
+            .prepare("SELECT fingerprint FROM fingerprints ORDER BY fingerprint")
+            .map_err(|error| format!("无法读取精确 token 暂存去重状态：{error}"))?;
+        let rows = select
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(|error| format!("无法遍历精确 token 暂存去重状态：{error}"))?;
+        let mut insert = transaction
+            .prepare(
+                r#"
+                INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
+                VALUES (?1, ?2, ?3)
+                "#,
+            )
+            .map_err(|error| format!("无法准备精确 token 去重导入：{error}"))?;
+        for row in rows {
+            let fingerprint =
+                row.map_err(|error| format!("无法解码精确 token 暂存去重状态：{error}"))?;
+            insert
+                .execute(params![
+                    generation,
+                    &validated.job.path,
+                    fingerprint.as_slice()
+                ])
+                .map_err(|error| format!("无法导入精确 token 去重状态：{error}"))?;
+        }
+    }
+
+    let mut imported_events = 0_u64;
+    {
+        let mut select = stage
+            .prepare(
+                r#"
+                SELECT
+                    ordinal,
+                    timestamp,
+                    tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    user_prompt_start,
+                    user_prompt_end,
+                    assistant_response_start,
+                    assistant_response_end
+                FROM events
+                ORDER BY ordinal
+                "#,
+            )
+            .map_err(|error| format!("无法读取精确 token 暂存事件：{error}"))?;
+        let rows = select
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                ))
+            })
+            .map_err(|error| format!("无法遍历精确 token 暂存事件：{error}"))?;
+        let mut insert = transaction
+            .prepare(
+                r#"
+                INSERT INTO events(
+                    file_generation,
+                    file_path,
+                    ordinal,
+                    timestamp,
+                    session_id,
+                    tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    user_prompt_start,
+                    user_prompt_end,
+                    assistant_response_start,
+                    assistant_response_end
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                "#,
+            )
+            .map_err(|error| format!("无法准备精确 token 暂存事件导入：{error}"))?;
+        for row in rows {
+            let (
+                ordinal,
+                timestamp,
+                tokens,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                user_prompt_start,
+                user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+            ) = row.map_err(|error| format!("无法解码精确 token 暂存事件：{error}"))?;
+            insert
+                .execute(params![
+                    generation,
+                    &validated.job.path,
+                    ordinal,
+                    timestamp,
+                    &validated.job.session_id,
+                    tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    user_prompt_start,
+                    user_prompt_end,
+                    assistant_response_start,
+                    assistant_response_end,
+                ])
+                .map_err(|error| format!("无法导入精确 token 暂存事件：{error}"))?;
+            imported_events = imported_events.saturating_add(1);
+        }
+    }
+    if imported_events != validated.event_count {
+        return Err(format!(
+            "精确 token 暂存事件导入数量不一致：预期 {}，实际 {}",
+            validated.event_count, imported_events
+        ));
+    }
+
+    {
+        let mut select = stage
+            .prepare("SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index")
+            .map_err(|error| format!("无法读取精确 token 暂存分块：{error}"))?;
+        let rows = select
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|error| format!("无法遍历精确 token 暂存分块：{error}"))?;
+        let mut insert = transaction
+            .prepare(
+                r#"
+                INSERT INTO file_chunks(
+                    file_generation,
+                    file_path,
+                    chunk_index,
+                    byte_count,
+                    sha256
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+            )
+            .map_err(|error| format!("无法准备精确 token 暂存分块导入：{error}"))?;
+        for row in rows {
+            let (chunk_index, byte_count, sha256) =
+                row.map_err(|error| format!("无法解码精确 token 暂存分块：{error}"))?;
+            insert
+                .execute(params![
+                    generation,
+                    &validated.job.path,
+                    chunk_index,
+                    byte_count,
+                    sha256.as_slice(),
+                ])
+                .map_err(|error| format!("无法导入精确 token 暂存分块：{error}"))?;
+        }
+    }
+    save_file_checkpoint(
+        &transaction,
+        generation,
+        &validated.job.path,
+        validated.job.signature,
+        validated.resume_offset,
+        validated.parser_state,
+        0,
+    )?;
+    set_metadata(&transaction, "building_changed", "1")?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交精确 token 单文件暂存导入：{error}"))
+}
+
+fn ensure_staging_directory(index_path: &Path) -> Result<(), String> {
+    let directory = staging_directory(index_path);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "拒绝使用符号链接形式的精确 token 暂存目录：{}",
+                directory.display()
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(format!(
+                "精确 token 暂存路径不是目录：{}",
+                directory.display()
+            ));
+        }
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "无法检查精确 token 暂存目录 {}：{}",
+                directory.display(),
+                error
+            ));
+        }
+    }
+    fs::create_dir_all(&directory).map_err(|error| {
+        format!(
+            "无法创建精确 token 暂存目录 {}：{}",
+            directory.display(),
+            error
+        )
+    })?;
+    let metadata = fs::symlink_metadata(&directory).map_err(|error| {
+        format!(
+            "无法复核精确 token 暂存目录 {}：{}",
+            directory.display(),
+            error
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "精确 token 暂存目录身份异常：{}",
+            directory.display()
+        ));
+    }
+    Ok(())
+}
+
+fn remove_staging_directory(index_path: &Path) -> Result<(), String> {
+    let directory = staging_directory(index_path);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "拒绝删除符号链接形式的精确 token 暂存目录：{}",
+            directory.display()
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(format!(
+            "精确 token 暂存路径不是目录：{}",
+            directory.display()
+        )),
+        Ok(_) => fs::remove_dir_all(&directory).map_err(|error| {
+            format!(
+                "无法清理精确 token 暂存目录 {}：{}",
+                directory.display(),
+                error
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "无法检查精确 token 暂存目录 {}：{}",
+            directory.display(),
+            error
+        )),
+    }
+}
+
+fn staging_directory(index_path: &Path) -> PathBuf {
+    let mut value = index_path.as_os_str().to_os_string();
+    value.push(".staging");
+    PathBuf::from(value)
+}
+
+fn staging_database_path(index_path: &Path, source_path: &str) -> PathBuf {
+    let digest = Sha256::digest(source_path.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    staging_directory(index_path).join(format!("{digest}.sqlite3"))
 }
 
 fn prepare_scan_temp_tables(connection: &Connection) -> Result<(), String> {
@@ -1341,7 +2414,7 @@ fn process_session_file(
     codex_home: &Path,
     file: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-) -> Result<(), String> {
+) -> Result<Option<FullRebuildJob>, String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path = canonical.to_string_lossy().into_owned();
     let newly_seen = connection
@@ -1352,7 +2425,7 @@ fn process_session_file(
         .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?
         > 0;
     if !newly_seen {
-        return Ok(());
+        return Ok(None);
     }
     prune_obsolete_file_versions(connection, &path)?;
 
@@ -1395,7 +2468,7 @@ fn process_session_file(
             },
         );
     if unchanged {
-        return Ok(());
+        return Ok(None);
     }
 
     if let Some(checkpoint) = indexed_file_checkpoint(connection, &path, generation)? {
@@ -1413,10 +2486,43 @@ fn process_session_file(
                 warnings,
             )?
         {
-            return Ok(());
+            return Ok(None);
         }
     }
 
+    if signature.size < PARALLEL_STAGING_MIN_BYTES {
+        rebuild_session_file_direct(
+            connection,
+            generation,
+            codex_home,
+            file,
+            &path,
+            &mut handle,
+            signature,
+            warnings,
+        )?;
+        return Ok(None);
+    }
+
+    Ok(Some(FullRebuildJob {
+        file: canonical,
+        path,
+        session_id: session_id_from_file(file),
+        signature,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rebuild_session_file_direct(
+    connection: &mut Connection,
+    generation: i64,
+    codex_home: &Path,
+    file: &Path,
+    path: &str,
+    handle: &mut fs::File,
+    signature: FileSignature,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<(), String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始单文件精确 token 索引事务：{error}"))?;
@@ -1424,7 +2530,7 @@ fn process_session_file(
     transaction
         .execute(
             "DELETE FROM files WHERE generation = ?1 AND path = ?2",
-            params![generation, &path],
+            params![generation, path],
         )
         .map_err(|error| format!("无法清理本轮变更会话的旧文件版本：{error}"))?;
     transaction
@@ -1445,7 +2551,7 @@ fn process_session_file(
             "#,
             params![
                 generation,
-                &path,
+                path,
                 session_id_from_file(file),
                 checked_i64(signature.size, "会话文件大小")?,
                 signature.modified_ns.to_string(),
@@ -1463,49 +2569,46 @@ fn process_session_file(
     let mut sink = SqliteEventSink {
         transaction: &transaction,
         file_generation: generation,
-        file_path: &path,
+        file_path: path,
         ordinal: 0,
     };
     let parsed = stream_session_file_exact(
         file,
-        &mut handle,
+        handle,
         signature.size,
         &session_id,
         &mut sink,
         warnings,
     )?;
     #[cfg(test)]
-    FULL_SCAN_BYTES.with(|bytes| bytes.set(bytes.get().saturating_add(signature.size)));
+    FULL_SCAN_BYTES.fetch_add(signature.size, Ordering::SeqCst);
     drop(sink);
     debug_assert_eq!(parsed.bytes_read, signature.size);
 
     run_after_prefix_scan_hook_for_testing(file);
-    validate_same_file_prefix(file, &mut handle, signature, parsed.prefix_sha256).map_err(
-        |reason| {
-            format!(
-                "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
-                relative_display_path(codex_home, file),
-                reason
-            )
-        },
-    )?;
+    validate_same_file_prefix(file, handle, signature, parsed.prefix_sha256).map_err(|reason| {
+        format!(
+            "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
+            relative_display_path(codex_home, file),
+            reason
+        )
+    })?;
     transaction
         .execute(
             "UPDATE files SET prefix_sha256 = ?3 WHERE generation = ?1 AND path = ?2",
-            params![generation, &path, parsed.prefix_sha256.as_slice()],
+            params![generation, path, parsed.prefix_sha256.as_slice()],
         )
         .map_err(|error| format!("无法保存会话文件前缀校验值：{error}"))?;
-    replace_file_chunks(&transaction, generation, &path, 0, &parsed.chunk_hashes)?;
+    replace_file_chunks(&transaction, generation, path, 0, &parsed.chunk_hashes)?;
     save_file_checkpoint(
         &transaction,
         generation,
-        &path,
+        path,
         signature,
         parsed.resume_offset,
         parsed.state,
         0,
     )?;
-
     if parsed.bytes_read != signature.size {
         return Err(format!(
             "会话文件固定前缀未完整扫描，将在下一次刷新重试：{}",
@@ -1516,8 +2619,7 @@ fn process_session_file(
     transaction
         .commit()
         .map_err(|error| format!("无法提交单文件精确 token 索引：{error}"))?;
-    run_after_file_commit_hook_for_testing(file)?;
-    Ok(())
+    run_after_file_commit_hook_for_testing(file)
 }
 
 fn indexed_file_checkpoint(
@@ -1805,13 +2907,10 @@ fn append_session_file(
         warnings,
     )?;
     #[cfg(test)]
-    APPEND_SCAN_BYTES.with(|bytes| {
-        bytes.set(
-            bytes
-                .get()
-                .saturating_add(signature.size.saturating_sub(hashing_start_offset)),
-        )
-    });
+    APPEND_SCAN_BYTES.fetch_add(
+        signature.size.saturating_sub(hashing_start_offset),
+        Ordering::SeqCst,
+    );
     drop(sink);
     run_after_prefix_scan_hook_for_testing(file);
 
