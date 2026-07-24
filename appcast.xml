@@ -3,6 +3,61 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.8.2</title>
+            <pubDate>Fri, 24 Jul 2026 20:31:13 +0800</pubDate>
+            <sparkle:version>802</sparkle:version>
+            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.8.2
+
+v0.8.2 重做了 macOS Swift 原生版和 Windows Tauri 版的本地精确历史统计。目标不是限制可读取的历史，而是在保留完整、精确结果的前提下，让大体量 Codex 历史能够持续复用索引、增量更新并快速恢复。
+
+## 主要更新
+
+- **无限历史的精确索引**：历史统计改用可重建的本地 SQLite 外存索引，不再用文件数、字节数、事件数或扫描时长上限换取性能。只要原始 Codex JSONL 仍在，统计就覆盖全部可读取历史。
+- **字节级增量续扫**：记录每个源文件已经确认处理到的字节位置。文件只在尾部增长时，从上次结束位置继续解析；文件被截断、替换或中段改变时，会安全重建受影响部分。
+- **更快的首次建库**：Swift 与 Tauri 都会并行准备历史分片；Tauri 使用一个重任务配合多个轻任务工作线程，并通过 SQLite 批量事务导入，显著降低大型历史首次索引的等待时间。
+- **稳定复用已有索引**：同一索引格式下，软件更新、重启和日常刷新都会继续使用现有精确索引，不会因为重新构建 App 而无故全量重扫。
+- **更轻的活动刷新**：稳定历史直接复用已聚合快照，只有真正变化的会话进入增量解析。活跃使用期间的精确历史刷新由分钟级降到数秒级。
+- **断点恢复**：Tauri 的建库过程使用可恢复代次和暂存状态。异常退出或系统中断后，可从已确认进度继续，而不是丢弃所有工作。
+- **隐私边界不变**：索引只保存统计所需的数值、时间、文件身份和源偏移，不保存会话正文，也不上传本地用量、历史或索引数据。
+- **雷达测试隔离**：Dashboard 运行时测试不再访问真实 Radar 网络，减少测试噪声和外部服务依赖。
+
+## 升级说明
+
+- 从 v0.8.0 首次升级到 v0.8.2 时，因为 v0.8.0 没有这套精确 SQLite 索引，需要完成一次初始建库；之后同格式版本会直接复用。
+- 精确索引是缓存，不是数据源。删除索引不会删除 Codex 会话，只会在下次统计时重新建立。
+- macOS 构建采用 ad-hoc 签名且未 Apple notarize；Windows 安装器未使用商业代码签名证书。请只从官方 Release 下载并核对 SHA256，系统可能显示未知开发者或未知发布者提示。
+
+---
+
+## English
+
+# Codex Token Bar v0.8.2
+
+v0.8.2 rebuilds exact local history accounting for both the native macOS Swift app and the Windows Tauri app. It improves performance without limiting readable history: complete results are retained while large Codex histories become incrementally indexed, resumable, and reusable across launches.
+
+## Highlights
+
+- **Exact indexing without history caps**: usage history now uses a rebuildable local SQLite index. Performance no longer depends on file-count, byte, event, or scan-time limits; all readable source history remains in scope.
+- **Byte-level incremental scanning**: the index records the confirmed source offset for every file. Append-only growth resumes from the previous endpoint, while truncation, replacement, or earlier-file changes safely rebuild the affected data.
+- **Faster first index**: Swift and Tauri prepare history shards in parallel. Tauri combines one heavy worker with several light workers and imports through batched SQLite transactions to reduce first-index time on large histories.
+- **Persistent index reuse**: app updates, relaunches, and routine refreshes reuse the existing exact index when its format remains compatible. Rebuilding the app does not trigger an unnecessary full scan.
+- **Lighter active refreshes**: stable history reuses aggregated snapshots and only changed conversations enter incremental parsing. Exact refreshes during active use drop from minutes to seconds on the tested large local history.
+- **Resumable construction**: Tauri keeps recoverable generations and staging state. An interruption can continue from confirmed progress instead of discarding the complete build.
+- **Unchanged privacy boundary**: the index stores only numeric statistics, timestamps, file identity, and source offsets required for accounting. It does not store conversation text or upload local usage, history, or index data.
+- **Isolated Radar tests**: Dashboard runtime tests no longer access the live Radar network, reducing external dependency and test noise.
+
+## Upgrade notes
+
+- The first upgrade from v0.8.0 to v0.8.2 performs a one-time initial index build because v0.8.0 did not contain this exact SQLite index. Later compatible releases reuse it.
+- The exact index is a cache, not the source of truth. Deleting it does not delete Codex conversations; it only causes the index to be rebuilt.
+- The macOS build is ad-hoc signed and not Apple-notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
+]]></description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.2/CodexTokenBar-v0.8.2-macos-arm64.app.zip" length="7642615" type="application/octet-stream" sparkle:edSignature="mJrxuPg0MKbVTJXkPbbG3EV3VmKkTicXKYoxObnpHWpI33S55Sd3gbK9hGPvD09GfeDh7iz5nONTnumwerY5BA=="/>
+        </item>
+        <item>
             <title>0.8.0</title>
             <pubDate>Thu, 23 Jul 2026 22:46:10 +0800</pubDate>
             <sparkle:version>800</sparkle:version>
@@ -255,63 +310,6 @@ This update keeps the Mac build on the native Swift lane. It focuses on live-rat
 - The app remains ad-hoc signed and is not Apple notarized. Verify the SHA256 checksum before opening if macOS warns about an unidentified developer.
 ]]></description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.0/CodexTokenBar-v0.7.0-macos-arm64.app.zip" length="6032281" type="application/octet-stream" sparkle:edSignature="QvMI136NPWmZ5roYPA+NRglUz//IWJNvE9nzcwsTb1G5qjBDhCMdGLsSaLu6EEOzSPdh9z2U774/UY2Zz3G4Dw=="/>
-        </item>
-        <item>
-            <title>0.6.0</title>
-            <pubDate>Wed, 24 Jun 2026 12:48:08 +0800</pubDate>
-            <sparkle:version>600</sparkle:version>
-            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.6.0
-
-这次是一次比较大的功能更新：Codex Token Bar 接入了 Codex 雷达站，并把推荐动作、模型 IQ、主模型建议和额度预估带进主界面与悬浮窗。同时，悬浮窗、重置卡详情和 README 预览也一起更新。
-
-## 更新亮点
-
-- 接入 Codex 雷达站：主界面新增 `Codex 雷达 codexradar.com` 信息区，可以看到建议动作、24h / 48h 概率、今日主模型、IQ 分数、环境压力和额度预估。
-- 新增雷达详情卡片：把 IQ 趋势、模型对比、额度预估、Tibo 观察、近日日志等信息整理到一个中央详情视图，并用曲线图和表格展示可对比数据。
-- 悬浮窗同步雷达信息：小窗可以显示建议动作、24h / 48h 概率、今日主模型 IQ、其他模型对比，以及 5h / 7d 额度进度。
-- 主模型选择更聪明：优先选择 IQ 分数最高的模型；如果分数相同，优先推荐消耗更低的模型。
-- 悬浮窗模块可配置：速率与速率条、趣味化余量、总/今/次调用、5h / 7d 额度和雷达信息都可以开关、排序，并随内容自适应大小。
-- 改进悬浮窗文字可读性：文字颜色会根据背景亮度自动调整，同时减少中间灰色区域，让浅色和深色背景上都更清楚。
-- 重置卡详情增强：现在可以清楚看到每张重置卡的到期日期、剩余时间、发放来源、兑换状态和关联用户。
-- README 预览图更新：换成新界面的主界面、悬浮窗、雷达详情、重置卡详情和最近 24 小时曲线截图。
-
-## 更新说明
-
-- 雷达站数据默认每 10 分钟刷新一次，来自公开 JSON 订阅；App 会在主界面标明来源。
-- 本地 token、缓存命中、会话统计和重置卡信息仍然来自本机 Codex 数据与本地账号接口。
-- Codex Token Bar 仍然不会上传 prompt、输出、日志、会话内容或账号额度。
-- Sparkle 更新仍然需要用户确认，不会在后台静默替换 App。
-- 当前构建仍是 ad-hoc 签名，尚未 Apple notarize。如果 macOS 提示“未知开发者”，请从官方 Release 下载并校验 SHA256 后再打开。
-
----
-
-## English
-
-This is a major feature update. Codex Token Bar now integrates Codex Radar, bringing suggested actions, model IQ, recommended models, and quota estimates into both the dashboard and the floating panel. The floating panel, reset-credit details, and README screenshots were updated as well.
-
-## Highlights
-
-- Adds Codex Radar integration: the dashboard now includes a `Codex 雷达 codexradar.com` section with suggested action, 24h / 48h probabilities, today's primary model, IQ score, environment pressure, and quota estimates.
-- Adds a Radar detail card: IQ trends, model comparisons, quota estimates, Tibo observations, and recent logs are organized into a central detail view with charts and tables.
-- Syncs Radar data into the floating panel: the small window can show suggested action, 24h / 48h probabilities, today's primary model IQ, other model comparisons, and 5h / 7d quota progress.
-- Improves primary model selection: the app prefers the highest IQ score, and when scores tie it recommends the lower-cost model.
-- Makes floating-panel modules configurable: speed, speed bar, playful quota hint, total/today/current calls, 5h / 7d quota, and Radar information can be toggled, reordered, and auto-sized.
-- Improves floating-panel text readability: text tone adapts to background brightness while reducing the muddy gray middle range.
-- Enhances reset-credit details: each reset credit now clearly shows expiry date, remaining time, grant source, redemption status, and linked user.
-- Refreshes README screenshots with the new dashboard, floating panel, Radar detail, reset-credit detail, and recent 24-hour chart.
-
-## Update Notes
-
-- Radar data refreshes every 10 minutes by default and comes from the public JSON feed. The dashboard credits the source.
-- Local token usage, cache hit rates, session statistics, and reset-credit data still come from local Codex files and local account endpoints.
-- Codex Token Bar still does not upload prompts, outputs, logs, conversation content, or quota data.
-- Sparkle updates still require user confirmation; the app does not silently replace itself in the background.
-- The app remains ad-hoc signed and is not Apple notarized. Verify the SHA256 checksum before opening if macOS warns about an unidentified developer.
-]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.6.0/CodexTokenBar-v0.6.0-macos-arm64.app.zip" length="5862345" type="application/octet-stream" sparkle:edSignature="/AeSmrjaoyDFTHTCqA6WiSmxjboOWQhZz/WB2Tvp+QoJ0oS3kcq+U9pXSnziOIMfZKF6SmKTwCs6kG7I4PqUAQ=="/>
         </item>
     </channel>
 </rss>
