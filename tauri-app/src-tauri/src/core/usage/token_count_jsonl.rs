@@ -4,15 +4,13 @@ use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration as StdDuration, SystemTime};
+use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -33,6 +31,8 @@ use exact_usage_index::ExactUsageIndex;
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
 static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+static USAGE_SUMMARY_SOURCE_SCAN_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, bool)>>> =
+    OnceLock::new();
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
@@ -40,6 +40,8 @@ static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>>
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
 const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 16;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
+const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
+const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,8 +174,7 @@ pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, St
     let mut index = ExactUsageIndex::open(codex_home)?;
     let signature = dashboard_index_signature(codex_home, index.revision()?);
     let mut warnings = Vec::new();
-    let changed = index.sources_changed(codex_home, &mut warnings)?;
-    if changed {
+    if usage_summary_sources_changed(&mut index, codex_home, &mut warnings)? {
         schedule_usage_summary_refresh(codex_home);
     }
     if let Some(summary) = cached_usage_summary(&signature) {
@@ -193,6 +194,39 @@ pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, St
         store_usage_summary_cache(signature, summary.clone());
     }
     last_trusted.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
+}
+
+fn usage_summary_sources_changed(
+    index: &mut ExactUsageIndex,
+    codex_home: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<bool, String> {
+    let cache =
+        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = Instant::now();
+    cache.retain(|_, (scanned_at, _)| {
+        now.duration_since(*scanned_at) < USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION
+    });
+    if let Some((scanned_at, changed)) = cache.get(codex_home) {
+        if now.duration_since(*scanned_at) < USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL {
+            return Ok(*changed);
+        }
+    }
+
+    let changed = index.sources_changed(codex_home, warnings)?;
+    cache.insert(codex_home.to_path_buf(), (Instant::now(), changed));
+    Ok(changed)
+}
+
+fn mark_usage_summary_sources_synced(codex_home: &Path) {
+    let cache =
+        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(codex_home.to_path_buf(), (Instant::now(), false));
+    }
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
@@ -253,7 +287,9 @@ fn schedule_usage_summary_refresh(codex_home: &Path) {
     }
 
     std::thread::spawn(move || {
-        let _ = usage_summary(&key);
+        if usage_summary(&key).is_ok() {
+            mark_usage_summary_sources_synced(&key);
+        }
         if let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() {
             if let Ok(mut guard) = in_flight.lock() {
                 guard.remove(&key);
@@ -710,6 +746,11 @@ pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     }
     let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
     if let Ok(mut guard) = in_flight.lock() {
+        guard.clear();
+    }
+    let source_scan_cache =
+        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = source_scan_cache.lock() {
         guard.clear();
     }
     DASHBOARD_SCAN_SIGNATURE_COUNT.store(0, Ordering::Relaxed);
