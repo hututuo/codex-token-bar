@@ -1051,10 +1051,31 @@ pub(crate) fn with_valid_codex_home_source<T>(
     source_token: &CodexHomeSourceToken,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    with_codex_home_transition_state(|transition| {
+    with_valid_codex_home_source_in_state(
+        codex_home_transition_state(),
+        source_token,
+        operation,
+    )
+}
+
+fn with_valid_codex_home_source_in_state<T>(
+    state: &Mutex<CodexHomeTransitionState>,
+    source_token: &CodexHomeSourceToken,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    validate_codex_home_source_in_mutex(state, source_token)?;
+    let result = operation()?;
+    validate_codex_home_source_in_mutex(state, source_token)?;
+    Ok(result)
+}
+
+fn validate_codex_home_source_in_mutex(
+    state: &Mutex<CodexHomeTransitionState>,
+    source_token: &CodexHomeSourceToken,
+) -> Result<(), String> {
+    with_locked_codex_home_transition_state(state, |transition| {
         refresh_codex_home_source_identity(transition)?;
-        validate_codex_home_source_in_state(transition, source_token)?;
-        operation()
+        validate_codex_home_source_in_state(transition, source_token)
     })
 }
 
@@ -1716,6 +1737,31 @@ mod tests {
 
         remove_source_test_directory(home_a);
         remove_source_test_directory(home_b);
+    }
+
+    #[test]
+    fn validated_source_operation_runs_outside_transition_lock() {
+        let home = disposable_source_test_directory("validated-operation-lock");
+        let mut transition = CodexHomeTransitionState::default();
+        let source = resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap()
+        .source_token();
+        let state = Mutex::new(transition);
+
+        let result = with_valid_codex_home_source_in_state(&state, &source, || {
+            assert!(
+                state.try_lock().is_ok(),
+                "validated operation must not inherit the transition mutex"
+            );
+            Ok::<_, String>(42)
+        })
+        .unwrap();
+
+        assert_eq!(result, 42);
+        remove_source_test_directory(home);
     }
 
     #[test]

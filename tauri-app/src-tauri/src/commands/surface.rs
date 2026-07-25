@@ -1,8 +1,8 @@
 use crate::platform;
 
 #[tauri::command]
-pub fn show_floating_window(app: tauri::AppHandle) -> Result<bool, String> {
-    platform::show_floating_window(&app)
+pub async fn show_floating_window(app: tauri::AppHandle) -> Result<bool, String> {
+    platform::show_floating_window_from_command(&app).await
 }
 
 #[tauri::command]

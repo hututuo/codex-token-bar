@@ -2,7 +2,7 @@ use crate::core::startup_trace;
 use crate::models::AppSettingsSnapshot;
 use super::StartupLaunchMode;
 use std::{
-    sync::{mpsc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use tauri::{
@@ -295,7 +295,7 @@ pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     startup_trace::mark("floating window show start");
     if app.get_webview_window("floating").is_none() {
         startup_trace::mark("floating window create start");
-        if let Err(error) = create_floating_window_on_main_thread(app) {
+        if let Err(error) = create_floating_window(app).map_err(|error| error.to_string()) {
             if app.get_webview_window("floating").is_none() {
                 let message = error;
                 startup_trace::mark(&format!("floating window create failed: {message}"));
@@ -322,6 +322,24 @@ pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     }
     startup_trace::mark("floating window show end");
     Ok(visible)
+}
+
+pub async fn show_floating_window_from_command(
+    app: &tauri::AppHandle,
+) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let app_for_call = app.clone();
+    let app_for_window = app.clone();
+    startup_trace::mark("floating window main dispatch start");
+    app_for_call
+        .run_on_main_thread(move || {
+            let result = show_floating_window(&app_for_window);
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    startup_trace::mark("floating window main dispatch end");
+    rx.await
+        .map_err(|_| "悬浮窗主线程操作在完成前被取消".to_string())?
 }
 
 pub fn hide_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -606,26 +624,6 @@ fn schedule_status_panel_press_timeout(app: tauri::AppHandle, generation: u64) {
         tokio::time::sleep(STATUS_PANEL_PRESS_TIMEOUT).await;
         let _ = cancel_status_panel_press(&app, Some(generation));
     });
-}
-
-fn create_floating_window_on_main_thread(app: &tauri::AppHandle) -> Result<(), String> {
-    let (tx, rx) = mpsc::channel();
-    let app_for_call = app.clone();
-    let app_for_window = app.clone();
-    startup_trace::mark("floating window main dispatch start");
-    app_for_call
-        .run_on_main_thread(move || {
-            startup_trace::mark("floating window build on main start");
-            let result =
-                create_floating_window(&app_for_window).map_err(|error| error.to_string());
-            startup_trace::mark("floating window build on main end");
-            let _ = tx.send(result);
-        })
-        .map_err(|error| error.to_string())?;
-    startup_trace::mark("floating window main dispatch end");
-
-    rx.recv_timeout(Duration::from_secs(3))
-        .map_err(|_| "创建悬浮窗超时".to_string())?
 }
 
 pub fn set_status_tray_readout_native(

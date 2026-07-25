@@ -732,12 +732,15 @@ impl LiveRateMonitorRegistry {
         loop_generation: u64,
         publish: impl FnOnce() -> Result<(), String>,
     ) -> Result<bool, String> {
-        let stream = self.stream.lock().map_err(|error| error.to_string())?;
-        if !stream.running || stream.loop_generation != loop_generation {
-            return Ok(false);
+        {
+            let stream = self.stream.lock().map_err(|error| error.to_string())?;
+            if !stream.running || stream.loop_generation != loop_generation {
+                return Ok(false);
+            }
         }
         publish()?;
-        Ok(true)
+        let stream = self.stream.lock().map_err(|error| error.to_string())?;
+        Ok(stream.running && stream.loop_generation == loop_generation)
     }
 
     fn spawn_stream_loop(&self, app: AppHandle, loop_generation: u64) {
@@ -1878,6 +1881,34 @@ mod tests {
         assert!(registry
             .test_publish_stream_if_current(new.loop_generation, || Ok(()))
             .unwrap());
+    }
+
+    #[test]
+    fn stream_publish_callback_can_reenter_registry_without_stream_lock() {
+        let registry = LiveRateMonitorRegistry::default();
+        let source = live_source_for_test("source-a", 1);
+        let active = registry.test_start_subscription(
+            source,
+            "compact-owner",
+            1,
+            None,
+            false,
+        );
+        let callback_registry = registry.clone();
+        let lease_id = active.lease.lease_id.clone();
+
+        let still_current = registry
+            .test_publish_stream_if_current(active.loop_generation, || {
+                assert!(!callback_registry.test_stop_subscription(&lease_id));
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(
+            !still_current,
+            "post-publish validation must observe the reentrant stop"
+        );
+        assert_eq!(registry.test_stream_state(), (0, false, None));
     }
 
     #[test]
