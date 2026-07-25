@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 mod backups;
 mod report;
@@ -33,6 +33,8 @@ use session_files::{
 use session_index::{
     latest_thread_index_missing, scan_session_index, scan_session_index_in,
 };
+#[cfg(test)]
+use sqlite_state::sync_sqlite_provider;
 use sqlite_state::{
     repair_sqlite_providers_from_snapshot_in, scan_sqlite, scan_sqlite_in,
     sync_sqlite_provider_from_snapshot_in, SQLiteScan,
@@ -138,18 +140,19 @@ impl ProviderRecoveryStatus {
     }
 }
 
+#[derive(Clone)]
 pub struct ProviderRecoveryState {
-    status: Mutex<ProviderRecoveryStatus>,
+    status: Arc<Mutex<ProviderRecoveryStatus>>,
 }
 
 impl Default for ProviderRecoveryState {
     fn default() -> Self {
         Self {
-            status: Mutex::new(ProviderRecoveryStatus::blocked(
+            status: Arc::new(Mutex::new(ProviderRecoveryStatus::blocked(
                 "startupNotInitialized",
                 None,
                 "Provider startup recovery 尚未完成，写操作保持禁用。",
-            )),
+            ))),
         }
     }
 }

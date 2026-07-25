@@ -3,6 +3,7 @@ import {
   createProviderBackup,
   discoverProviderOperationOwnership,
   listProviderBackups,
+  migrateProviderHistory,
   readProviderOperationStatus,
   rollbackProviderBackup,
   scanProviderRepair,
@@ -174,6 +175,20 @@ export function ProviderRepairCard({
     await run("sync", () => syncProviderHistory(markOperationUncertain), applyResult);
   }
 
+  async function runMigration() {
+    const confirmed = window.confirm(
+      `将 ${snapshot.migrationCandidateCount} 个历史会话的 Provider 元数据迁移为 ${snapshot.detectedProvider}。\n\n只改会话首行和 SQLite Provider 字段，不改模型、消息、时间戳或会话名称；操作前会创建差量恢复点。是否继续？`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    await run(
+      "sync",
+      () => migrateProviderHistory(snapshot.detectedProvider, markOperationUncertain),
+      applyResult,
+    );
+  }
+
   async function runVerify() {
     await run("verify", verifyProviderRepair, applyResult);
   }
@@ -247,9 +262,15 @@ export function ProviderRepairCard({
 
       <ProviderRepairSteps steps={snapshot.steps} />
 
+      <p className="repair-action-note">
+        安全修复只校准 SQLite 元数据，不改历史文件；“迁移历史”才会显式改写候选会话的首行 Provider。
+      </p>
+
       <ProviderRepairActions
         busy={busy}
+        migrationCandidateCount={snapshot.migrationCandidateCount}
         onBackup={runBackup}
+        onMigrate={runMigration}
         onScan={runScan}
         onSync={runSync}
         onVerify={runVerify}

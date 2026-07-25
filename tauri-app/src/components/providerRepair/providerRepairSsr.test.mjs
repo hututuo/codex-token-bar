@@ -13,13 +13,13 @@ test("ProviderRepairActions allows sync without reusing a selected stale backup"
     const { buildProviderRepairActionModel } = await load("/src/components/providerRepair/actionModel.ts");
     const { ProviderRepairActions } = await load("/src/components/providerRepair/ProviderRepairActions.tsx");
 
-    const model = buildProviderRepairActionModel({ busy: false });
+    const model = buildProviderRepairActionModel({ busy: false, migrationCandidateCount: 2 });
     assert.equal(model.sync.disabled, false);
     assert.equal(model.sync.reason, null);
     assert.equal(model.backup.disabled, false);
 
     const html = renderComponent(ProviderRepairActions, actionProps());
-    const syncButton = findButton(html, "3 同步修复");
+    const syncButton = findButton(html, "3 安全修复");
     assert.doesNotMatch(syncButton.attrs, /disabled=""/);
     assert.doesNotMatch(html, /请先创建备份/);
   });
@@ -30,12 +30,12 @@ test("ProviderRepairActions disables conflicting actions while an operation is i
     const { buildProviderRepairActionModel } = await load("/src/components/providerRepair/actionModel.ts");
     const { ProviderRepairActions } = await load("/src/components/providerRepair/ProviderRepairActions.tsx");
 
-    const model = buildProviderRepairActionModel({ busy: true });
-    assert.deepEqual(Object.values(model).map((action) => action.disabled), [true, true, true, true]);
+    const model = buildProviderRepairActionModel({ busy: true, migrationCandidateCount: 2 });
+    assert.deepEqual(Object.values(model).map((action) => action.disabled), [true, true, true, true, true]);
     assert.equal(model.sync.reason, "正在执行修复操作，请等待当前步骤完成。");
 
     const html = renderComponent(ProviderRepairActions, actionProps({ busy: true }));
-    for (const label of ["1 扫描", "2 创建备份", "3 同步修复", "4 验证"]) {
+    for (const label of ["1 扫描", "2 创建备份", "3 安全修复", "4 迁移历史 (2)", "5 验证"]) {
       assert.match(findButton(html, label).attrs, /disabled=""/);
     }
     assert.doesNotMatch(html, /请先创建备份/);
@@ -111,7 +111,8 @@ test("ProviderRepairCard SSR starts from safe non-destructive actions", async ()
 });
 
 function findButton(html, text) {
-  const pattern = new RegExp(`<button(?<attrs>[^>]*)>${text}</button>`);
+  const escapedText = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<button(?<attrs>[^>]*)>${escapedText}</button>`);
   const match = html.match(pattern);
   assert.ok(match, `Expected button "${text}" in ${html}`);
   return {
@@ -122,7 +123,9 @@ function findButton(html, text) {
 function actionProps(overrides = {}) {
   return {
     busy: false,
+    migrationCandidateCount: 2,
     onBackup: () => {},
+    onMigrate: () => {},
     onScan: () => {},
     onSync: () => {},
     onVerify: () => {},

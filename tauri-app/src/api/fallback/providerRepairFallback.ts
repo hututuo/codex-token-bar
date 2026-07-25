@@ -8,6 +8,9 @@ export const fallbackProviderRepairSnapshot: ProviderRepairSnapshot = {
   providerSource: "本地扫描",
   sessionFilesFound: 0,
   inconsistentCount: 0,
+  migrationCandidateCount: 0,
+  invalidSessionFiles: 0,
+  ambiguousThreadCount: 0,
   status: "会话修复状态待读取。",
   steps: [
     { label: "扫描", status: "未扫描", done: false, healthy: true },

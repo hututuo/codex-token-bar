@@ -83,6 +83,7 @@ pub fn run() {
             commands::provider_repair::list_provider_backups,
             commands::provider_repair::create_provider_backup,
             commands::provider_repair::sync_provider_history,
+            commands::provider_repair::migrate_provider_history,
             commands::provider_repair::verify_provider_repair,
             commands::provider_repair::rollback_provider_backup,
             commands::provider_repair::read_provider_operation_status,

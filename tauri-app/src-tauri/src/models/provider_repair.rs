@@ -7,6 +7,9 @@ pub struct ProviderRepairSnapshot {
     pub provider_source: String,
     pub session_files_found: u32,
     pub inconsistent_count: u32,
+    pub migration_candidate_count: u32,
+    pub invalid_session_files: u32,
+    pub ambiguous_thread_count: u32,
     pub status: String,
     pub steps: Vec<ProviderRepairStep>,
 }

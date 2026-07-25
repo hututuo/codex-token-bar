@@ -49,6 +49,9 @@ pub(super) fn snapshot_from_report(report: ProviderRepairReport) -> ProviderRepa
         provider_source: report.target.source.clone(),
         session_files_found: report.session_scan.files_found,
         inconsistent_count: report.inconsistent_count,
+        migration_candidate_count: report.session_mismatches,
+        invalid_session_files: report.session_scan.invalid_files,
+        ambiguous_thread_count: report.ambiguous_threads,
         status,
         steps: vec![
             ProviderRepairStep {
@@ -93,6 +96,9 @@ pub(super) fn error_snapshot(codex_home: &Path, message: String) -> ProviderRepa
         provider_source: "读取失败".into(),
         session_files_found: 0,
         inconsistent_count: 1,
+        migration_candidate_count: 0,
+        invalid_session_files: 0,
+        ambiguous_thread_count: 0,
         status: format!("扫描失败：{message}"),
         steps: vec![
             ProviderRepairStep {

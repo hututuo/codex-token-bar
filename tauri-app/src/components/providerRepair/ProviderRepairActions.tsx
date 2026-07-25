@@ -2,7 +2,9 @@ import { buildProviderRepairActionModel } from "./actionModel";
 
 interface ProviderRepairActionsProps {
   busy: boolean;
+  migrationCandidateCount: number;
   onBackup: () => void;
+  onMigrate: () => void;
   onScan: () => void;
   onSync: () => void;
   onVerify: () => void;
@@ -10,12 +12,14 @@ interface ProviderRepairActionsProps {
 
 export function ProviderRepairActions({
   busy,
+  migrationCandidateCount,
   onBackup,
+  onMigrate,
   onScan,
   onSync,
   onVerify,
 }: ProviderRepairActionsProps) {
-  const actions = buildProviderRepairActionModel({ busy });
+  const actions = buildProviderRepairActionModel({ busy, migrationCandidateCount });
 
   return (
     <>
@@ -43,6 +47,14 @@ export function ProviderRepairActions({
           type="button"
         >
           {actions.sync.label}
+        </button>
+        <button
+          disabled={actions.migrate.disabled}
+          onClick={onMigrate}
+          title={actions.migrate.reason ?? undefined}
+          type="button"
+        >
+          {actions.migrate.label}
         </button>
         <button
           disabled={actions.verify.disabled}

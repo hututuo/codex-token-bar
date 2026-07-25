@@ -20,84 +20,143 @@ fn execute_provider_mutation_command<T>(
 }
 
 #[tauri::command]
-pub fn scan_provider_repair(
+pub async fn scan_provider_repair(
     window: tauri::WebviewWindow,
 ) -> Result<ProviderRepairSnapshot, String> {
     require_window_label(&window, "scan_provider_repair")?;
-    Ok(local_source().scan_provider_repair())
+    let codex_home = local_source().codex_home().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        provider_repair_core::scan_provider_repair(&codex_home)
+    })
+    .await
+    .map_err(|error| format!("Provider 扫描后台任务异常结束：{error}"))
 }
 
 #[tauri::command]
-pub fn list_provider_backups(
+pub async fn list_provider_backups(
     window: tauri::WebviewWindow,
 ) -> Result<Vec<ProviderRepairBackupInfo>, String> {
     require_window_label(&window, "list_provider_backups")?;
-    provider_repair_core::list_provider_backups()
+    tauri::async_runtime::spawn_blocking(provider_repair_core::list_provider_backups)
+        .await
+        .map_err(|error| format!("Provider 备份列表后台任务异常结束：{error}"))?
 }
 
 #[tauri::command]
-pub fn create_provider_backup(
+pub async fn create_provider_backup(
     window: tauri::WebviewWindow,
     recovery_state: tauri::State<'_, ProviderRecoveryState>,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "create_provider_backup")?;
-    let source = local_source();
-    execute_provider_mutation_command(
-        "create_provider_backup",
-        source.codex_home(),
-        recovery_state.inner(),
-        &operation_id,
-        provider_repair_core::create_provider_backup,
-    )
+    let codex_home = local_source().codex_home().to_path_buf();
+    let recovery_state = recovery_state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_provider_mutation_command(
+            "create_provider_backup",
+            &codex_home,
+            &recovery_state,
+            &operation_id,
+            provider_repair_core::create_provider_backup,
+        )
+    })
+    .await
+    .map_err(provider_background_task_error)?
 }
 
 #[tauri::command]
-pub fn sync_provider_history(
+pub async fn sync_provider_history(
     window: tauri::WebviewWindow,
     recovery_state: tauri::State<'_, ProviderRecoveryState>,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "sync_provider_history")?;
-    let source = local_source();
-    execute_provider_mutation_command(
-        "sync_provider_history",
-        source.codex_home(),
-        recovery_state.inner(),
-        &operation_id,
-        provider_repair_core::sync_provider_history,
-    )
+    let codex_home = local_source().codex_home().to_path_buf();
+    let recovery_state = recovery_state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_provider_mutation_command(
+            "sync_provider_history",
+            &codex_home,
+            &recovery_state,
+            &operation_id,
+            provider_repair_core::sync_provider_history,
+        )
+    })
+    .await
+    .map_err(provider_background_task_error)?
 }
 
 #[tauri::command]
-pub fn verify_provider_repair(
+pub async fn migrate_provider_history(
+    window: tauri::WebviewWindow,
+    recovery_state: tauri::State<'_, ProviderRecoveryState>,
+    target_provider: String,
+    operation_id: String,
+) -> Result<ProviderRepairActionResult, ProviderOperationError> {
+    require_window_label(&window, "migrate_provider_history")?;
+    let codex_home = local_source().codex_home().to_path_buf();
+    let recovery_state = recovery_state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_provider_mutation_command(
+            "migrate_provider_history",
+            &codex_home,
+            &recovery_state,
+            &operation_id,
+            |home, operation_id| {
+                provider_repair_core::migrate_provider_history(
+                    home,
+                    &target_provider,
+                    operation_id,
+                )
+            },
+        )
+    })
+    .await
+    .map_err(provider_background_task_error)?
+}
+
+#[tauri::command]
+pub async fn verify_provider_repair(
     window: tauri::WebviewWindow,
 ) -> Result<ProviderRepairActionResult, String> {
     require_window_label(&window, "verify_provider_repair")?;
-    let source = local_source();
-    Ok(provider_repair_core::verify_provider_repair(
-        source.codex_home(),
-    ))
+    let codex_home = local_source().codex_home().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        provider_repair_core::verify_provider_repair(&codex_home)
+    })
+    .await
+    .map_err(|error| format!("Provider 验证后台任务异常结束：{error}"))
 }
 
 #[tauri::command]
-pub fn rollback_provider_backup(
+pub async fn rollback_provider_backup(
     window: tauri::WebviewWindow,
     recovery_state: tauri::State<'_, ProviderRecoveryState>,
     backup_id: String,
     operation_id: String,
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     require_window_label(&window, "rollback_provider_backup")?;
-    let source = local_source();
-    execute_provider_mutation_command(
-        "rollback_provider_backup",
-        source.codex_home(),
-        recovery_state.inner(),
-        &operation_id,
-        |home, operation_id| {
-            provider_repair_core::rollback_provider_backup(home, &backup_id, operation_id)
-        },
-    )
+    let codex_home = local_source().codex_home().to_path_buf();
+    let recovery_state = recovery_state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_provider_mutation_command(
+            "rollback_provider_backup",
+            &codex_home,
+            &recovery_state,
+            &operation_id,
+            |home, operation_id| {
+                provider_repair_core::rollback_provider_backup(home, &backup_id, operation_id)
+            },
+        )
+    })
+    .await
+    .map_err(provider_background_task_error)?
+}
+
+fn provider_background_task_error(error: impl std::fmt::Display) -> ProviderOperationError {
+    ProviderOperationError::Failed {
+        message: format!("Provider 后台任务异常结束：{error}"),
+    }
 }
 
 #[cfg(test)]

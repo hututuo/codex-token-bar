@@ -59,6 +59,17 @@ export function syncProviderHistory(
   return callProviderMutation("sync_provider_history", undefined, onUncertain);
 }
 
+export function migrateProviderHistory(
+  targetProvider: string,
+  onUncertain?: (operationId: string) => void,
+): Promise<ProviderRepairActionResult> {
+  return callProviderMutation(
+    "migrate_provider_history",
+    { targetProvider },
+    onUncertain,
+  );
+}
+
 export function verifyProviderRepair(): Promise<ProviderRepairActionResult> {
   return callCommandStrict<ProviderRepairActionResult>("verify_provider_repair", undefined, 30_000);
 }

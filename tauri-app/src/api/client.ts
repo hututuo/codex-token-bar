@@ -47,6 +47,7 @@ export {
   createProviderBackup,
   discoverProviderOperationOwnership,
   listProviderBackups,
+  migrateProviderHistory,
   readProviderOperationStatus,
   rollbackProviderBackup,
   scanProviderRepair,

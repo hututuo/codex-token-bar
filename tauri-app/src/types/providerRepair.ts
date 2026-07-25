@@ -10,6 +10,9 @@ export interface ProviderRepairSnapshot {
   providerSource: string;
   sessionFilesFound: number;
   inconsistentCount: number;
+  migrationCandidateCount: number;
+  invalidSessionFiles: number;
+  ambiguousThreadCount: number;
   status: string;
   steps: ProviderRepairStep[];
 }
