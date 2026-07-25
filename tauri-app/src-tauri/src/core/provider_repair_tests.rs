@@ -157,7 +157,7 @@ model_provider = "codex_local_access""#,
             r#"model_provider = "codex_local_access"
 ["#,
             "openai",
-            "默认 openai",
+            "读取失败",
         ),
     ];
 
@@ -758,6 +758,76 @@ fn running_codex_guard_does_not_block_scan_verify_or_explicit_backup_paths() {
 }
 
 #[test]
+fn sqlite_home_resolution_matches_official_config_environment_and_fallback_precedence() {
+    let fixture = temp_root("provider-sqlite-home-resolution");
+    let home = fixture.join("home");
+    let configured = fixture.join("configured-state");
+    let environment = fixture.join("environment-state");
+    let working_directory = fixture.join("working");
+    let relative_environment = working_directory.join("relative-state");
+    for directory in [
+        &home,
+        &configured,
+        &environment,
+        &working_directory,
+        &relative_environment,
+    ] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    let mut config = toml::Table::new();
+    config.insert(
+        "sqlite_home".into(),
+        toml::Value::String(configured.display().to_string()),
+    );
+    fs::write(home.join("config.toml"), toml::to_string(&config).unwrap()).unwrap();
+
+    let roots = storage_roots::ProviderStorageRoots::open_with_environment(
+        &home,
+        Some(environment.clone().into_os_string()),
+        &working_directory,
+    )
+    .unwrap();
+    assert_eq!(
+        roots.sqlite_home.canonical_path(),
+        configured.canonicalize().unwrap()
+    );
+
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let roots = storage_roots::ProviderStorageRoots::open_with_environment(
+        &home,
+        Some("relative-state".into()),
+        &working_directory,
+    )
+    .unwrap();
+    assert_eq!(
+        roots.sqlite_home.canonical_path(),
+        relative_environment.canonicalize().unwrap()
+    );
+
+    let roots = storage_roots::ProviderStorageRoots::open_with_environment(
+        &home,
+        None,
+        &working_directory,
+    )
+    .unwrap();
+    assert_eq!(
+        roots.sqlite_home.canonical_path(),
+        home.canonicalize().unwrap()
+    );
+
+    fs::write(home.join("config.toml"), "sqlite_home = \"relative\"\n").unwrap();
+    let error = storage_roots::ProviderStorageRoots::open_with_environment(
+        &home,
+        None,
+        &working_directory,
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("绝对路径"), "{error}");
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
 fn safe_repair_aligns_sqlite_to_each_canonical_session_without_rewriting_history_or_index() {
     let root = temp_root("provider-sync-core");
     let backup_root = root.join("backups");
@@ -805,6 +875,202 @@ fn safe_repair_aligns_sqlite_to_each_canonical_session_without_rewriting_history
     assert_eq!(after.inconsistent_count, 0);
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn safe_repair_uses_separate_sqlite_home_and_leaves_codex_home_decoy_database_untouched() {
+    let fixture = temp_root("provider-separate-sqlite-home");
+    let home = fixture.join("home");
+    let sqlite_home = fixture.join("sqlite-home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::create_dir_all(&sqlite_home).unwrap();
+    write_test_auth_subject(&home, "separate-sqlite-account");
+    let mut config = toml::Table::new();
+    config.insert(
+        "model_provider".into(),
+        toml::Value::String("openai".into()),
+    );
+    config.insert(
+        "sqlite_home".into(),
+        toml::Value::String(sqlite_home.display().to_string()),
+    );
+    fs::write(home.join("config.toml"), toml::to_string(&config).unwrap()).unwrap();
+    write_session(
+        &home.join("sessions/thread.jsonl"),
+        "thread",
+        "codex_local_access",
+    );
+    create_state_database(&sqlite_home, &[("thread", "openai", 0)]);
+    create_state_database(&home, &[("thread", "decoy-provider", 0)]);
+
+    let before = scan_provider_repair(&home);
+    assert_eq!(
+        PathBuf::from(&before.sqlite_home).canonicalize().unwrap(),
+        sqlite_home.canonicalize().unwrap()
+    );
+    assert_eq!(before.inconsistent_count, 1);
+
+    let outcome = sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+        &home,
+        &backup_root,
+        ProviderSyncMode::Repair,
+        None,
+        scan_provider_repair_result_for_home,
+        |_, _| Ok(()),
+        || Ok(false),
+    )
+    .unwrap();
+
+    assert_eq!(
+        sqlite_provider_for_thread(&sqlite_home, "thread"),
+        "codex_local_access"
+    );
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "thread"),
+        "decoy-provider"
+    );
+    assert_eq!(
+        PathBuf::from(&outcome.backup.sqlite_home)
+            .canonicalize()
+            .unwrap(),
+        sqlite_home.canonicalize().unwrap()
+    );
+    assert!(!outcome.backup.session_index);
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(PathBuf::from(&outcome.backup.path).join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(!manifest["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|member| member["relative_path"] == "config.toml"
+            || member["relative_path"] == "session_index.jsonl"));
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn separate_sqlite_home_rollback_and_startup_recovery_never_touch_decoy_database() {
+    let fixture = temp_root("provider-separate-sqlite-rollback");
+    let home = fixture.join("home");
+    let sqlite_home = fixture.join("sqlite-home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::create_dir_all(&sqlite_home).unwrap();
+    write_test_auth_subject(&home, "separate-sqlite-rollback-account");
+    let mut config = toml::Table::new();
+    config.insert(
+        "model_provider".into(),
+        toml::Value::String("openai".into()),
+    );
+    config.insert(
+        "sqlite_home".into(),
+        toml::Value::String(sqlite_home.display().to_string()),
+    );
+    fs::write(home.join("config.toml"), toml::to_string(&config).unwrap()).unwrap();
+    write_session(
+        &home.join("sessions/thread.jsonl"),
+        "thread",
+        "codex_local_access",
+    );
+    create_state_database(&sqlite_home, &[("thread", "openai", 0)]);
+    create_state_database(&home, &[("thread", "decoy-provider", 0)]);
+
+    let outcome = sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+        &home,
+        &backup_root,
+        ProviderSyncMode::Repair,
+        None,
+        scan_provider_repair_result_for_home,
+        |_, _| Ok(()),
+        || Ok(false),
+    )
+    .unwrap();
+    assert_eq!(
+        sqlite_provider_for_thread(&sqlite_home, "thread"),
+        "codex_local_access"
+    );
+
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let pinned_sqlite_home = PinnedHome::open(&sqlite_home).unwrap();
+    backups::restore_provider_backup_files_with_pinned_roots_verification(
+        &pinned_home,
+        &pinned_sqlite_home,
+        &outcome.backup,
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(sqlite_provider_for_thread(&sqlite_home, "thread"), "openai");
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "thread"),
+        "decoy-provider"
+    );
+
+    let connection = Connection::open(sqlite_home.join("state_5.sqlite")).unwrap();
+    connection
+        .execute(
+            "UPDATE threads SET model_provider = 'codex_local_access' WHERE id = 'thread';",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let recovery_path = backups::simulate_restore_crash_at_with_roots(
+        &home,
+        &sqlite_home,
+        &outcome.backup,
+        backups::RestoreCrashPoint::MidApply,
+    )
+    .unwrap();
+    assert!(recovery_path.exists());
+    assert_eq!(sqlite_provider_for_thread(&sqlite_home, "thread"), "openai");
+
+    fs::write(home.join("config.toml"), "damaged while restore was in-flight").unwrap();
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+    assert!(!status.blocked, "{status:?}");
+    assert!(!recovery_path.exists());
+    assert_eq!(
+        sqlite_provider_for_thread(&sqlite_home, "thread"),
+        "codex_local_access"
+    );
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "thread"),
+        "decoy-provider"
+    );
+
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn custom_provider_migration_requires_an_explicit_config_target() {
+    let fixture = temp_root("provider-explicit-migration-target");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "explicit-migration-target-account");
+    write_session(
+        &home.join("sessions/thread.jsonl"),
+        "thread",
+        "custom-provider",
+    );
+    create_state_database(&home, &[("thread", "custom-provider", 0)]);
+
+    let error = sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+        &home,
+        &backup_root,
+        ProviderSyncMode::Migrate,
+        Some("custom-provider"),
+        scan_provider_repair_result_for_home,
+        |_, _| Ok(()),
+        || Ok(false),
+    )
+    .unwrap_err();
+    assert!(error.contains("config.toml"), "{error}");
+    assert!(!backup_root.exists());
+
+    fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
@@ -3831,6 +4097,8 @@ fn backup_info_for_home(root: &Path) -> crate::models::ProviderRepairBackupInfo 
         path: "/tmp/backup".into(),
         codex_home: codex_home_identity(root),
         codex_home_fingerprint: codex_home_fingerprint(root),
+        sqlite_home: codex_home_identity(root),
+        sqlite_home_fingerprint: codex_home_fingerprint(root),
         target_provider: "openai".into(),
         session_files: 0,
         state_database: true,

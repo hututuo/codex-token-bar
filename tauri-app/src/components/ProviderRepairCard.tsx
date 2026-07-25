@@ -251,6 +251,7 @@ export function ProviderRepairCard({
           <span>
             provider {snapshot.detectedProvider} · {snapshot.providerSource} · {snapshot.sessionFilesFound} 个会话文件
           </span>
+          <span title={snapshot.sqliteHome}>SQLite {compactStoragePath(snapshot.sqliteHome)}</span>
         </div>
         <button className="toolbar-button" disabled={busy} onClick={runScan} type="button">
           重新扫描
@@ -285,4 +286,9 @@ export function ProviderRepairCard({
       />
     </section>
   );
+}
+
+function compactStoragePath(path: string) {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.length <= 2 ? path : `.../${parts.slice(-2).join("/")}`;
 }

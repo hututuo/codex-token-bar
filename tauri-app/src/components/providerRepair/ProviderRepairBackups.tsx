@@ -42,15 +42,18 @@ export function ProviderRepairBackups({
                   <em>{legacyUnsupported ? "旧版备份，仅供查看" : backup.targetProvider}</em>
                 </button>
                 <small>
-                  JSONL {backup.sessionFiles} · SQLite {backup.stateDatabase ? "已备份" : "无"} · 索引{" "}
-                  {backup.sessionIndex ? "已备份" : "无"}
+                  会话首行 {backup.sessionFiles} · SQLite {backup.stateDatabase ? "一致性快照" : "无"} ·
+                  上下文文件 {backup.sessionIndex ? "兼容备份" : "未改动"}
                 </small>
                 <small title={backup.codexHome}>目录 {compactCodexHome(backup.codexHome)}</small>
+                {backup.sqliteHome !== backup.codexHome ? (
+                  <small title={backup.sqliteHome}>SQLite {compactCodexHome(backup.sqliteHome)}</small>
+                ) : null}
                 {legacyUnsupported ? (
                   <>
                     <small className="repair-backup-path" title={backup.path}>备份路径 {backup.path}</small>
                     <small>{backup.restoreUnsupportedReason}</small>
-                    <small>请创建新的 v2 恢复点后再回滚。</small>
+                    <small>请创建新的差量恢复点后再回滚。</small>
                   </>
                 ) : null}
                 <button

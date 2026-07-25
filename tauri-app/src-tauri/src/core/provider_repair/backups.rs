@@ -21,6 +21,7 @@ use super::safe_fs::{
     physical_file_identity, AtomicInstallPhase, HomeGenerationIdentity, PinnedHome,
 };
 use super::session_files::{find_session_files, write_file_atomically};
+use super::storage_roots::ProviderStorageRoots;
 
 const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 3;
 const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 3;
@@ -40,6 +41,10 @@ struct BackupManifest {
     created_at: String,
     codex_home: String,
     codex_home_fingerprint: String,
+    #[serde(default)]
+    sqlite_home: Option<String>,
+    #[serde(default)]
+    sqlite_home_fingerprint: Option<String>,
     target_provider: String,
     members: Vec<BackupMember>,
 }
@@ -74,6 +79,12 @@ struct RestoreJournal {
     codex_home_fingerprint: String,
     home_generation: HomeGenerationIdentity,
     account_identity: String,
+    #[serde(default)]
+    sqlite_home: Option<String>,
+    #[serde(default)]
+    sqlite_home_fingerprint: Option<String>,
+    #[serde(default)]
+    sqlite_home_generation: Option<HomeGenerationIdentity>,
     source_backup_id: String,
     source_backup_path: String,
     members: Vec<BackupMember>,
@@ -215,8 +226,10 @@ fn create_provider_backup_files_at_with_hooks(
     create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         &pinned_home,
+        &pinned_home,
         target_provider,
         false,
+        true,
         None,
         hook,
         &mut copy_hook,
@@ -233,8 +246,10 @@ pub(super) fn create_provider_backup_files_at_with_pinned_hook(
     create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         pinned_home,
+        pinned_home,
         target_provider,
         false,
+        true,
         None,
         hook,
         &mut copy_hook,
@@ -251,7 +266,9 @@ pub(super) fn create_provider_backup_files_at_with_pinned_stopped_hook(
     create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         pinned_home,
+        pinned_home,
         target_provider,
+        true,
         true,
         None,
         hook,
@@ -270,8 +287,32 @@ pub(super) fn create_provider_backup_files_at_with_pinned_selection_stopped_hook
     create_provider_backup_files_at_with_pinned_mode(
         backup_root,
         pinned_home,
+        pinned_home,
         target_provider,
         true,
+        true,
+        Some(session_relative_paths),
+        hook,
+        &mut copy_hook,
+    )
+}
+
+pub(super) fn create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    target_provider: &str,
+    session_relative_paths: &[PathBuf],
+    hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
+) -> Result<ProviderRepairBackupInfo, String> {
+    let mut copy_hook = no_session_copy_hook;
+    create_provider_backup_files_at_with_pinned_mode(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+        target_provider,
+        true,
+        false,
         Some(session_relative_paths),
         hook,
         &mut copy_hook,
@@ -281,8 +322,10 @@ pub(super) fn create_provider_backup_files_at_with_pinned_selection_stopped_hook
 fn create_provider_backup_files_at_with_pinned_mode(
     backup_root: &Path,
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     target_provider: &str,
     codex_stopped: bool,
+    include_context_members: bool,
     session_relative_paths: Option<&[PathBuf]>,
     mut hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
     session_copy_hook: &mut impl FnMut(&Path) -> Result<(), String>,
@@ -295,8 +338,10 @@ fn create_provider_backup_files_at_with_pinned_mode(
         &backup_path,
         backup_root,
         pinned_home,
+        sqlite_home,
         target_provider,
         codex_stopped,
+        include_context_members,
         session_relative_paths,
         &mut hook,
         session_copy_hook,
@@ -313,37 +358,43 @@ fn build_complete_backup(
     backup_path: &Path,
     backup_root: &Path,
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     target_provider: &str,
     codex_stopped: bool,
+    include_context_members: bool,
     session_relative_paths: Option<&[PathBuf]>,
     hook: &mut impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
     session_copy_hook: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut members = Vec::new();
+    if include_context_members {
+        members.push(
+            backup_regular_member(
+                pinned_home,
+                backup_path,
+                "config.toml",
+                "config.toml.before",
+                "fixed",
+            )
+            .map_err(|error| format!("备份 config.toml 失败：{error}"))?,
+        );
+    }
     members.push(
-        backup_regular_member(
-            pinned_home,
-            backup_path,
-            "config.toml",
-            "config.toml.before",
-            "fixed",
-        )
-        .map_err(|error| format!("备份 config.toml 失败：{error}"))?,
-    );
-    members.push(
-        backup_sqlite_member(pinned_home, backup_path, codex_stopped)
+        backup_sqlite_member(sqlite_home, backup_path, codex_stopped)
             .map_err(|error| format!("备份 state_5.sqlite 失败：{error}"))?,
     );
-    members.push(
-        backup_regular_member(
-            pinned_home,
-            backup_path,
-            "session_index.jsonl",
-            "session_index.jsonl.before",
-            "fixed",
-        )
-        .map_err(|error| format!("备份 session_index.jsonl 失败：{error}"))?,
-    );
+    if include_context_members {
+        members.push(
+            backup_regular_member(
+                pinned_home,
+                backup_path,
+                "session_index.jsonl",
+                "session_index.jsonl.before",
+                "fixed",
+            )
+            .map_err(|error| format!("备份 session_index.jsonl 失败：{error}"))?,
+        );
+    }
     members.push(absent_member("state_5.sqlite-wal", "sqliteSidecar"));
     members.push(absent_member("state_5.sqlite-shm", "sqliteSidecar"));
 
@@ -395,6 +446,8 @@ fn build_complete_backup(
         created_at: format_now_rfc3339(),
         codex_home: pinned_home.canonical_path().display().to_string(),
         codex_home_fingerprint: pinned_home_fingerprint(pinned_home),
+        sqlite_home: Some(sqlite_home.canonical_path().display().to_string()),
+        sqlite_home_fingerprint: Some(pinned_home_fingerprint(sqlite_home)),
         target_provider: target_provider.to_string(),
         members,
     };
@@ -660,6 +713,14 @@ pub(super) fn verified_session_relative_paths(
     {
         return Err("备份 manifest 与恢复点身份不一致。".into());
     }
+    if manifest
+        .sqlite_home_fingerprint
+        .as_deref()
+        .unwrap_or(&manifest.codex_home_fingerprint)
+        != backup.sqlite_home_fingerprint
+    {
+        return Err("备份 manifest 与恢复点的 SQLite Home 身份不一致。".into());
+    }
     manifest
         .members
         .iter()
@@ -675,6 +736,14 @@ pub(super) fn verified_member_relative_paths(
     if manifest.id != backup.id || manifest.codex_home_fingerprint != backup.codex_home_fingerprint
     {
         return Err("备份 manifest 与恢复点身份不一致。".into());
+    }
+    if manifest
+        .sqlite_home_fingerprint
+        .as_deref()
+        .unwrap_or(&manifest.codex_home_fingerprint)
+        != backup.sqlite_home_fingerprint
+    {
+        return Err("备份 manifest 与恢复点的 SQLite Home 身份不一致。".into());
     }
     manifest
         .members
@@ -722,6 +791,14 @@ pub(super) fn verified_sqlite_snapshot(
     if manifest.id != backup.id || manifest.codex_home_fingerprint != backup.codex_home_fingerprint
     {
         return Err("备份 manifest 与恢复点身份不一致。".into());
+    }
+    if manifest
+        .sqlite_home_fingerprint
+        .as_deref()
+        .unwrap_or(&manifest.codex_home_fingerprint)
+        != backup.sqlite_home_fingerprint
+    {
+        return Err("备份 manifest 与恢复点的 SQLite Home 身份不一致。".into());
     }
     let sqlite = manifest
         .members
@@ -773,15 +850,73 @@ fn ensure_backup_matches_pinned_home(
     Ok(())
 }
 
+fn ensure_backup_matches_pinned_roots(
+    backup: &ProviderRepairBackupInfo,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<(), String> {
+    ensure_backup_matches_pinned_home(backup, pinned_home)?;
+    if backup.sqlite_home_fingerprint.trim().is_empty() {
+        return Err(
+            "这个恢复点缺少 SQLite Home 绑定信息，请为当前目录重新创建恢复点。".into(),
+        );
+    }
+    if Path::new(&backup.sqlite_home) != sqlite_home.canonical_path() {
+        return Err(format!(
+            "恢复点记录的 SQLite Home 路径是 {}，当前固定目录是 {}。即使 fingerprint 碰巧相同，也已拒绝回滚。",
+            backup.sqlite_home,
+            sqlite_home.canonical_path().display()
+        ));
+    }
+    let expected = pinned_home_fingerprint(sqlite_home);
+    if backup.sqlite_home_fingerprint != expected {
+        return Err(format!(
+            "恢复点的 SQLite 库位于 {}，当前生效 SQLite Home 是 {}。为避免修错数据库，已拒绝回滚。",
+            backup.sqlite_home,
+            sqlite_home.canonical_path().display()
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn restore_provider_backup_files_with_verification(
     codex_home: &Path,
     backup: &ProviderRepairBackupInfo,
     verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
 ) -> Result<(), String> {
-    let pinned_home = PinnedHome::open(codex_home)?;
+    let roots = ProviderStorageRoots::open(codex_home)?;
     let mut probe = crate::platform::codex_desktop_is_running;
     restore_provider_backup_files_with_home(
-        &pinned_home,
+        &roots.codex_home,
+        &roots.sqlite_home,
+        backup,
+        &mut noop_restore_hook,
+        &mut probe,
+        verify,
+        None,
+    )
+    .map(|_| ())
+}
+
+pub(super) fn restore_provider_backup_files_with_pinned_roots_verification(
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    backup: &ProviderRepairBackupInfo,
+    verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
+) -> Result<(), String> {
+    let backup_path = PathBuf::from(&backup.path);
+    let backup_root = backup_path
+        .parent()
+        .ok_or_else(|| "备份目录缺少父目录".to_string())?;
+    reconcile_unfinished_restore_transactions_with_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )?;
+    let mut probe = || Ok(false);
+    restore_provider_backup_files_with_home(
+        pinned_home,
+        sqlite_home,
         backup,
         &mut noop_restore_hook,
         &mut probe,
@@ -803,6 +938,7 @@ pub(super) fn restore_provider_backup_files_with_pinned_verification(
     reconcile_unfinished_restore_transactions_with_home(backup_root, pinned_home)?;
     let mut probe = || Ok(false);
     restore_provider_backup_files_with_home(
+        pinned_home,
         pinned_home,
         backup,
         &mut noop_restore_hook,
@@ -855,6 +991,7 @@ pub(super) fn restore_provider_backup_files_at_with_verification_and_hook(
     let mut probe = || Ok(false);
     restore_provider_backup_files_with_home(
         &pinned_home,
+        &pinned_home,
         backup,
         &mut hook,
         &mut probe,
@@ -880,6 +1017,7 @@ pub(super) fn restore_provider_backup_files_at_with_probe_and_hook(
     reconcile_unfinished_restore_transactions_with_home(backup_root, &pinned_home)?;
     restore_provider_backup_files_with_home(
         &pinned_home,
+        &pinned_home,
         backup,
         &mut hook,
         &mut probe,
@@ -899,25 +1037,47 @@ enum RestoreStopPoint {
 
 fn restore_provider_backup_files_with_home(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     backup: &ProviderRepairBackupInfo,
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
     probe: &mut impl FnMut() -> Result<bool, String>,
     verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
     stop: Option<RestoreStopPoint>,
 ) -> Result<Option<PathBuf>, String> {
-    ensure_backup_matches_pinned_home(backup, pinned_home)?;
+    ensure_backup_matches_pinned_roots(backup, pinned_home, sqlite_home)?;
     let backup_path = PathBuf::from(&backup.path);
     let manifest = validate_backup_manifest(&backup_path)?;
     if manifest.id != backup.id || manifest.codex_home_fingerprint != backup.codex_home_fingerprint
     {
         return Err("备份 manifest 与所选恢复点身份不一致。".into());
     }
-    let member_paths = manifest
+    if manifest
+        .sqlite_home
+        .as_deref()
+        .unwrap_or(&manifest.codex_home)
+        != backup.sqlite_home
+        || manifest
+            .sqlite_home_fingerprint
+            .as_deref()
+            .unwrap_or(&manifest.codex_home_fingerprint)
+            != backup.sqlite_home_fingerprint
+    {
+        return Err("备份 manifest 与所选恢复点的 SQLite Home 身份不一致。".into());
+    }
+    let codex_member_paths = manifest
         .members
         .iter()
+        .filter(|member| !is_sqlite_member(member))
         .map(|member| manifest_path(&member.relative_path))
         .collect::<Result<Vec<_>, _>>()?;
-    let initial_guard = pinned_home.capture_mutation_guard(&member_paths)?;
+    let sqlite_member_paths = manifest
+        .members
+        .iter()
+        .filter(|member| is_sqlite_member(member))
+        .map(|member| manifest_path(&member.relative_path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let initial_guard = pinned_home.capture_mutation_guard(&codex_member_paths)?;
+    let initial_sqlite_guard = sqlite_home.capture_storage_guard(&sqlite_member_paths)?;
 
     let backup_root = backup_path
         .parent()
@@ -925,6 +1085,7 @@ fn restore_provider_backup_files_with_home(
     let (recovery_id, recovery_path) = create_unique_directory(backup_root, ".restore-recovery-")?;
     let mut journal = match capture_and_publish_live_state(
         pinned_home,
+        sqlite_home,
         backup_root,
         &recovery_path,
         &recovery_id,
@@ -950,6 +1111,7 @@ fn restore_provider_backup_files_with_home(
     let restore_result: Result<bool, String> = (|| {
         ensure_codex_stopped(probe, "恢复首次写入前")?;
         pinned_home.verify_mutation_guard(&initial_guard)?;
+        sqlite_home.verify_storage_guard(&initial_sqlite_guard)?;
         if validate_backup_manifest(&backup_path)? != manifest {
             return Err("恢复源 manifest 在首次写入前发生变化，已拒绝写入。".into());
         }
@@ -963,6 +1125,7 @@ fn restore_provider_backup_files_with_home(
         mutation_started = true;
         if apply_restore_members(
             pinned_home,
+            sqlite_home,
             &backup_path,
             &manifest.members,
             hook,
@@ -971,11 +1134,14 @@ fn restore_provider_backup_files_with_home(
             return Ok(true);
         }
         hook(RestorePhase::Verify, 0, pinned_home.canonical_path())?;
-        verify_installed_members(pinned_home, &manifest.members)?;
+        verify_installed_members(pinned_home, sqlite_home, &manifest.members)?;
         verify(pinned_home)
             .map_err(|error| format!("恢复后的 Provider 强验证失败：{error}"))?;
         pinned_home.verify_mutation_scope(&initial_guard)?;
-        let committed_guard = pinned_home.capture_mutation_guard(&member_paths)?;
+        sqlite_home.verify_storage_scope(&initial_sqlite_guard)?;
+        let committed_guard = pinned_home.capture_mutation_guard(&codex_member_paths)?;
+        let committed_sqlite_guard =
+            sqlite_home.capture_storage_guard(&sqlite_member_paths)?;
         transition_restore_journal(
             &recovery_path,
             &mut journal,
@@ -988,7 +1154,9 @@ fn restore_provider_backup_files_with_home(
         }
         ensure_codex_stopped(probe, "恢复最终提交前")?;
         pinned_home.verify_mutation_scope(&initial_guard)?;
+        sqlite_home.verify_storage_scope(&initial_sqlite_guard)?;
         pinned_home.verify_mutation_guard(&committed_guard)?;
+        sqlite_home.verify_storage_guard(&committed_sqlite_guard)?;
         if validate_backup_manifest(&backup_path)? != manifest {
             return Err("恢复源 manifest 在最终提交前发生变化，已拒绝提交。".into());
         }
@@ -1015,9 +1183,16 @@ fn restore_provider_backup_files_with_home(
             ));
         }
         let compensation_errors =
-            compensate_restore(pinned_home, &recovery_path, &journal.members, hook);
+            compensate_restore(
+                pinned_home,
+                sqlite_home,
+                &recovery_path,
+                &journal.members,
+                hook,
+            );
         if compensation_errors.is_empty() {
-            if let Err(verification_error) = verify_installed_members(pinned_home, &journal.members)
+            if let Err(verification_error) =
+                verify_installed_members(pinned_home, sqlite_home, &journal.members)
             {
                 return Err(format!(
                     "恢复失败：{error}；恢复补偿强验证失败：{verification_error}；恢复材料保留于 {}，原恢复点仍保留。",
@@ -1046,6 +1221,7 @@ fn restore_provider_backup_files_with_home(
 
 fn capture_and_publish_live_state(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     backup_root: &Path,
     recovery_path: &Path,
     recovery_id: &str,
@@ -1073,7 +1249,12 @@ fn capture_and_publish_live_state(
             captured.push(absent_member(&member.relative_path, &member.kind));
             continue;
         }
-        let Some(source) = pinned_home.open_file(relative)? else {
+        let member_home = if is_sqlite_member(member) {
+            sqlite_home
+        } else {
+            pinned_home
+        };
+        let Some(source) = member_home.open_file(relative)? else {
             captured.push(absent_member(&member.relative_path, &member.kind));
             continue;
         };
@@ -1084,7 +1265,7 @@ fn capture_and_publish_live_state(
                 fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
             drop(source);
-            create_consistent_sqlite_snapshot_from_pinned_closed(pinned_home, &target)?;
+            create_consistent_sqlite_snapshot_from_pinned_closed(sqlite_home, &target)?;
             (
                 fs::metadata(&target)
                     .map_err(|error| error.to_string())?
@@ -1119,6 +1300,9 @@ fn capture_and_publish_live_state(
         codex_home_fingerprint: source_manifest.codex_home_fingerprint.clone(),
         home_generation,
         account_identity,
+        sqlite_home: Some(sqlite_home.canonical_path().display().to_string()),
+        sqlite_home_fingerprint: Some(pinned_home_fingerprint(sqlite_home)),
+        sqlite_home_generation: Some(sqlite_home.generation_identity()?),
         source_backup_id: source_manifest.id.clone(),
         source_backup_path: canonical_source_backup_path.display().to_string(),
         members: captured.clone(),
@@ -1138,6 +1322,7 @@ fn capture_and_publish_live_state(
 
 fn apply_restore_members(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     source_root: &Path,
     members: &[BackupMember],
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
@@ -1146,7 +1331,14 @@ fn apply_restore_members(
     for (index, member) in ordered_restore_members(members).into_iter().enumerate() {
         let relative = Path::new(&member.relative_path);
         hook(RestorePhase::Apply, index, relative)?;
-        install_logical_member(pinned_home, source_root, member, index, hook)
+        install_logical_member(
+            pinned_home,
+            sqlite_home,
+            source_root,
+            member,
+            index,
+            hook,
+        )
             .map_err(|error| format!("应用恢复成员 {} 失败：{error}", member.relative_path))?;
         if stop_after_first_change && member.kind != "sqliteSidecar" && member.present {
             return Ok(true);
@@ -1157,6 +1349,7 @@ fn apply_restore_members(
 
 fn compensate_restore(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     recovery_path: &Path,
     recovery_members: &[BackupMember],
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
@@ -1170,7 +1363,14 @@ fn compensate_restore(
         let result = match hook(RestorePhase::Compensate, index, relative) {
             Ok(()) => {
                 let mut install_hook = noop_restore_hook;
-                install_logical_member(pinned_home, recovery_path, member, index, &mut install_hook)
+                install_logical_member(
+                    pinned_home,
+                    sqlite_home,
+                    recovery_path,
+                    member,
+                    index,
+                    &mut install_hook,
+                )
             }
             Err(error) => Err(error),
         };
@@ -1194,16 +1394,26 @@ fn ordered_restore_members(members: &[BackupMember]) -> Vec<&BackupMember> {
     ordered
 }
 
+fn is_sqlite_member(member: &BackupMember) -> bool {
+    member.kind == "sqlite" || member.kind == "sqliteSidecar"
+}
+
 fn install_logical_member(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     source_root: &Path,
     member: &BackupMember,
     index: usize,
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
 ) -> Result<(), String> {
     if member.kind == "sqlite" {
-        return install_sqlite_unit(pinned_home, source_root, member, index, hook);
+        return install_sqlite_unit(sqlite_home, source_root, member, index, hook);
     }
+    let pinned_home = if member.kind == "sqliteSidecar" {
+        sqlite_home
+    } else {
+        pinned_home
+    };
     let relative = manifest_path(&member.relative_path)?;
     validate_relative_member_path(&relative, &member.kind)?;
     if member.kind == "sessionPrefix" {
@@ -1453,14 +1663,15 @@ fn verify_pinned_sqlite_integrity(pinned_home: &PinnedHome) -> Result<(), String
 
 fn verify_installed_members(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     members: &[BackupMember],
 ) -> Result<(), String> {
     for member in members {
         let relative = manifest_path(&member.relative_path)?;
         if member.kind == "sqlite" {
-            verify_installed_sqlite(pinned_home, member.present)?;
+            verify_installed_sqlite(sqlite_home, member.present)?;
             if member.present {
-                verify_exact_member(pinned_home, member, &relative)?;
+                verify_exact_member(sqlite_home, member, &relative)?;
             }
             continue;
         }
@@ -1469,7 +1680,12 @@ fn verify_installed_members(
             continue;
         }
         if member.kind == "sqliteSidecar" || !member.present {
-            if pinned_home.open_file(&relative)?.is_some() {
+            let member_home = if member.kind == "sqliteSidecar" {
+                sqlite_home
+            } else {
+                pinned_home
+            };
+            if member_home.open_file(&relative)?.is_some() {
                 return Err(format!(
                     "恢复成员 tombstone 验证失败，文件仍存在：{}",
                     member.relative_path
@@ -1573,6 +1789,36 @@ pub(super) fn simulate_restore_crash_at(
     let mut probe = || Ok(false);
     restore_provider_backup_files_with_home(
         &pinned_home,
+        &pinned_home,
+        backup,
+        &mut hook,
+        &mut probe,
+        |_| Ok(()),
+        Some(stop),
+    )?
+    .ok_or_else(|| "fixture 未停在请求的恢复阶段".to_string())
+}
+
+#[cfg(test)]
+pub(super) fn simulate_restore_crash_at_with_roots(
+    codex_home: &Path,
+    sqlite_home: &Path,
+    backup: &ProviderRepairBackupInfo,
+    point: RestoreCrashPoint,
+) -> Result<PathBuf, String> {
+    let pinned_home = PinnedHome::open(codex_home)?;
+    let pinned_sqlite_home = PinnedHome::open(sqlite_home)?;
+    let stop = match point {
+        RestoreCrashPoint::Prepared => RestoreStopPoint::Prepared,
+        RestoreCrashPoint::MidApply => RestoreStopPoint::MidApply,
+        RestoreCrashPoint::Verified => RestoreStopPoint::Verified,
+        RestoreCrashPoint::Committed => RestoreStopPoint::Committed,
+    };
+    let mut hook = |_, _, _: &Path| Ok(());
+    let mut probe = || Ok(false);
+    restore_provider_backup_files_with_home(
+        &pinned_home,
+        &pinned_sqlite_home,
         backup,
         &mut hook,
         &mut probe,
@@ -1601,17 +1847,136 @@ pub(super) fn has_unfinished_restore_transactions_for_home_with_pinned(
     backup_root: &Path,
     pinned_home: &PinnedHome,
 ) -> Result<bool, RestoreRecoveryBlocked> {
-    Ok(!unfinished_restore_transactions_for_home(backup_root, pinned_home)?.is_empty())
+    Ok(!unfinished_restore_transactions_for_home(backup_root, pinned_home, pinned_home)?.is_empty())
+}
+
+pub(super) fn has_unfinished_restore_transactions_for_roots(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<bool, RestoreRecoveryBlocked> {
+    Ok(!unfinished_restore_transactions_for_home(backup_root, pinned_home, sqlite_home)?.is_empty())
 }
 
 pub(super) fn first_unfinished_restore_transaction_for_home_with_pinned(
     backup_root: &Path,
     pinned_home: &PinnedHome,
 ) -> Result<Option<PathBuf>, RestoreRecoveryBlocked> {
-    Ok(unfinished_restore_transactions_for_home(backup_root, pinned_home)?
+    Ok(unfinished_restore_transactions_for_home(backup_root, pinned_home, pinned_home)?
         .into_iter()
         .map(|(path, _)| path)
         .next())
+}
+
+pub(super) fn first_unfinished_restore_transaction_for_roots(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<Option<PathBuf>, RestoreRecoveryBlocked> {
+    Ok(unfinished_restore_transactions_for_home(backup_root, pinned_home, sqlite_home)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .next())
+}
+
+pub(super) fn sqlite_home_for_unfinished_restore_transactions(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+) -> Result<Option<PinnedHome>, RestoreRecoveryBlocked> {
+    let candidates = unfinished_restore_transaction_paths_at(backup_root)
+        .map_err(|error| recovery_blocked("journalDiscoveryFailed", None, error))?;
+    let current_home_fingerprint = pinned_home_fingerprint(pinned_home);
+    let mut selected_sqlite_home: Option<(PathBuf, String, PathBuf)> = None;
+
+    for recovery_path in candidates {
+        let journal = read_restore_journal(&recovery_path).map_err(|error| {
+            recovery_blocked("journalInvalid", Some(&recovery_path), error)
+        })?;
+        validate_recovery_journal(&recovery_path, &journal).map_err(|error| {
+            recovery_blocked("journalInvalid", Some(&recovery_path), error)
+        })?;
+        if journal.codex_home_fingerprint
+            != codex_home_fingerprint_for_identity(&journal.codex_home)
+        {
+            return Err(recovery_blocked(
+                "journalInvalid",
+                Some(&recovery_path),
+                "journal 的 Codex Home 路径与 fingerprint 不一致，无法安全归属",
+            ));
+        }
+        if journal.codex_home_fingerprint != current_home_fingerprint {
+            continue;
+        }
+        validate_journal_source_backup(backup_root, &journal).map_err(|error| {
+            recovery_blocked("sourceBackupMismatch", Some(&recovery_path), error)
+        })?;
+
+        let sqlite_home = PathBuf::from(
+            journal
+                .sqlite_home
+                .as_deref()
+                .unwrap_or(&journal.codex_home),
+        );
+        let sqlite_home_fingerprint = journal
+            .sqlite_home_fingerprint
+            .clone()
+            .unwrap_or_else(|| journal.codex_home_fingerprint.clone());
+        if sqlite_home_fingerprint
+            != codex_home_fingerprint_for_identity(&sqlite_home.to_string_lossy())
+        {
+            return Err(recovery_blocked(
+                "journalInvalid",
+                Some(&recovery_path),
+                "journal 的 SQLite Home 路径与 fingerprint 不一致，无法安全归属",
+            ));
+        }
+
+        if let Some((selected_path, selected_fingerprint, selected_recovery_path)) =
+            selected_sqlite_home.as_ref()
+        {
+            if selected_path != &sqlite_home || selected_fingerprint != &sqlite_home_fingerprint {
+                return Err(recovery_blocked(
+                    "sqliteHomeConflict",
+                    Some(&recovery_path),
+                    format!(
+                        "同一 Codex Home 存在互相冲突的 SQLite Home 恢复事务：{} 与 {}",
+                        selected_recovery_path.display(),
+                        recovery_path.display()
+                    ),
+                ));
+            }
+        } else {
+            selected_sqlite_home =
+                Some((sqlite_home, sqlite_home_fingerprint, recovery_path.clone()));
+        }
+    }
+
+    let Some((sqlite_home, expected_fingerprint, recovery_path)) = selected_sqlite_home else {
+        return Ok(None);
+    };
+    let pinned_sqlite_home = PinnedHome::open(&sqlite_home).map_err(|error| {
+        recovery_blocked(
+            "sqliteHomeUnavailable",
+            Some(&recovery_path),
+            format!(
+                "无法固定恢复 journal 记录的 SQLite Home {}：{error}",
+                sqlite_home.display()
+            ),
+        )
+    })?;
+    if pinned_sqlite_home.canonical_path() != sqlite_home
+        || pinned_home_fingerprint(&pinned_sqlite_home) != expected_fingerprint
+    {
+        return Err(recovery_blocked(
+            "sqliteHomeMismatch",
+            Some(&recovery_path),
+            format!(
+                "恢复 journal 记录的 SQLite Home 已重定向或身份不一致：{}",
+                sqlite_home.display()
+            ),
+        ));
+    }
+    Ok(Some(pinned_sqlite_home))
 }
 
 fn unfinished_restore_transaction_paths_at(backup_root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -1645,21 +2010,51 @@ fn reconcile_unfinished_restore_transactions_with_home(
     backup_root: &Path,
     pinned_home: &PinnedHome,
 ) -> Result<(), String> {
-    reconcile_unfinished_restore_transactions_with_diagnostics(backup_root, pinned_home)
-        .map_err(|blocked| blocked.message)
+    reconcile_unfinished_restore_transactions_with_roots(backup_root, pinned_home, pinned_home)
+}
+
+pub(super) fn reconcile_unfinished_restore_transactions_with_roots(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<(), String> {
+    reconcile_unfinished_restore_transactions_with_roots_diagnostics(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )
+    .map_err(|blocked| blocked.message)
 }
 
 pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
     backup_root: &Path,
     pinned_home: &PinnedHome,
 ) -> Result<(), RestoreRecoveryBlocked> {
-    let transactions = unfinished_restore_transactions_for_home(backup_root, pinned_home)?;
+    reconcile_unfinished_restore_transactions_with_roots_diagnostics(
+        backup_root,
+        pinned_home,
+        pinned_home,
+    )
+}
+
+pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<(), RestoreRecoveryBlocked> {
+    let transactions =
+        unfinished_restore_transactions_for_home(backup_root, pinned_home, sqlite_home)?;
 
     for (recovery_path, journal) in transactions {
         let mut hook = noop_restore_hook;
         if journal.phase != RestoreJournalPhase::Committed {
-            let errors =
-                compensate_restore(pinned_home, &recovery_path, &journal.members, &mut hook);
+            let errors = compensate_restore(
+                pinned_home,
+                sqlite_home,
+                &recovery_path,
+                &journal.members,
+                &mut hook,
+            );
             if !errors.is_empty() {
                 return Err(recovery_blocked(
                     "compensationFailed",
@@ -1667,9 +2062,15 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
                     format!("恢复事务补偿未完成：{}", errors.join("；")),
                 ));
             }
-            verify_installed_members(pinned_home, &journal.members).map_err(|error| {
-                recovery_blocked("compensationVerificationFailed", Some(&recovery_path), error)
-            })?;
+            verify_installed_members(pinned_home, sqlite_home, &journal.members).map_err(
+                |error| {
+                    recovery_blocked(
+                        "compensationVerificationFailed",
+                        Some(&recovery_path),
+                        error,
+                    )
+                },
+            )?;
         }
         cleanup_recovery_path(backup_root, &recovery_path, &mut hook).map_err(|error| {
             recovery_blocked("recoveryCleanupFailed", Some(&recovery_path), error)
@@ -1681,11 +2082,14 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
 fn unfinished_restore_transactions_for_home(
     backup_root: &Path,
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
 ) -> Result<Vec<(PathBuf, RestoreJournal)>, RestoreRecoveryBlocked> {
     let candidates = unfinished_restore_transaction_paths_at(backup_root)
         .map_err(|error| recovery_blocked("journalDiscoveryFailed", None, error))?;
     let current_home_fingerprint = pinned_home_fingerprint(pinned_home);
+    let current_sqlite_home_fingerprint = pinned_home_fingerprint(sqlite_home);
     let mut current_home_identity = None;
+    let mut current_sqlite_generation = None;
     let mut transactions = Vec::new();
 
     for recovery_path in candidates {
@@ -1704,11 +2108,35 @@ fn unfinished_restore_transactions_for_home(
                 "journal 的 Codex Home 路径与 fingerprint 不一致，无法安全归属",
             ));
         }
+        if journal.codex_home_fingerprint != current_home_fingerprint {
+            continue;
+        }
         validate_journal_source_backup(backup_root, &journal).map_err(|error| {
             recovery_blocked("sourceBackupMismatch", Some(&recovery_path), error)
         })?;
-        if journal.codex_home_fingerprint != current_home_fingerprint {
-            continue;
+        let journal_sqlite_home = journal.sqlite_home.as_deref().unwrap_or(&journal.codex_home);
+        let journal_sqlite_home_fingerprint = journal
+            .sqlite_home_fingerprint
+            .as_deref()
+            .unwrap_or(&journal.codex_home_fingerprint);
+        if journal_sqlite_home_fingerprint
+            != codex_home_fingerprint_for_identity(journal_sqlite_home)
+        {
+            return Err(recovery_blocked(
+                "journalInvalid",
+                Some(&recovery_path),
+                "journal 的 SQLite Home 路径与 fingerprint 不一致，无法安全归属",
+            ));
+        }
+        if journal_sqlite_home_fingerprint != current_sqlite_home_fingerprint {
+            return Err(recovery_blocked(
+                "sqliteHomeMismatch",
+                Some(&recovery_path),
+                format!(
+                    "journal 的 SQLite Home 是 {journal_sqlite_home}，当前生效目录是 {}",
+                    sqlite_home.canonical_path().display()
+                ),
+            ));
         }
         let (current_generation, current_account) = match &current_home_identity {
             Some(identity) => identity,
@@ -1745,6 +2173,35 @@ fn unfinished_restore_transactions_for_home(
                 "journal 的账号身份与当前 Home 账号不一致",
             ));
         }
+        if current_sqlite_generation.is_none() {
+            current_sqlite_generation =
+                Some(sqlite_home.generation_identity().map_err(|error| {
+                    recovery_blocked(
+                        "sqliteHomeGenerationUnavailable",
+                        Some(&recovery_path),
+                        error,
+                    )
+                })?);
+        }
+        let current_sqlite_generation_value =
+            current_sqlite_generation.as_ref().ok_or_else(|| {
+                recovery_blocked(
+                    "sqliteHomeGenerationUnavailable",
+                    Some(&recovery_path),
+                    "当前 SQLite Home generation 未初始化，已拒绝恢复",
+                )
+            })?;
+        let journal_sqlite_generation = journal
+            .sqlite_home_generation
+            .as_ref()
+            .unwrap_or(&journal.home_generation);
+        if journal_sqlite_generation != current_sqlite_generation_value {
+            return Err(recovery_blocked(
+                "sqliteHomeGenerationMismatch",
+                Some(&recovery_path),
+                "journal 的 SQLite Home generation 与当前固定目录句柄不一致",
+            ));
+        }
         transactions.push((recovery_path, journal));
     }
     Ok(transactions)
@@ -1773,8 +2230,16 @@ fn validate_journal_source_backup(
     let manifest = validate_backup_manifest(&canonical_source)?;
     if manifest.id != journal.source_backup_id
         || manifest.codex_home_fingerprint != journal.codex_home_fingerprint
+        || manifest
+            .sqlite_home_fingerprint
+            .as_deref()
+            .unwrap_or(&manifest.codex_home_fingerprint)
+            != journal
+                .sqlite_home_fingerprint
+                .as_deref()
+                .unwrap_or(&journal.codex_home_fingerprint)
     {
-        return Err("journal 源备份 ID、路径或 Home 身份不一致".into());
+        return Err("journal 源备份 ID、路径或 Home/SQLite Home 身份不一致".into());
     }
     Ok(())
 }
@@ -1836,6 +2301,23 @@ fn validate_recovery_journal(recovery_path: &Path, journal: &RestoreJournal) -> 
             .is_some_and(|name| name.to_string_lossy().starts_with(".restore-quarantine-"))
     {
         return Err("恢复事务 ID 与目录不一致".into());
+    }
+    if journal.schema_version >= 3 {
+        let sqlite_home = journal
+            .sqlite_home
+            .as_deref()
+            .ok_or_else(|| "v3 恢复 journal 缺少 sqlite_home。".to_string())?;
+        let sqlite_home_fingerprint = journal
+            .sqlite_home_fingerprint
+            .as_deref()
+            .ok_or_else(|| "v3 恢复 journal 缺少 sqlite_home_fingerprint。".to_string())?;
+        if journal.sqlite_home_generation.is_none()
+            || !Path::new(sqlite_home).is_absolute()
+            || sqlite_home_fingerprint
+                != codex_home_fingerprint_for_identity(sqlite_home)
+        {
+            return Err("v3 恢复 journal 的 SQLite Home 身份无效。".into());
+        }
     }
     validate_member_set(
         recovery_path,
@@ -1937,6 +2419,22 @@ fn validate_backup_manifest(backup_path: &Path) -> Result<BackupManifest, String
     }
     if backup_path.file_name().and_then(|name| name.to_str()) != Some(manifest.id.as_str()) {
         return Err("备份 manifest ID 与目录不一致。".into());
+    }
+    if manifest.schema_version >= 3 {
+        let sqlite_home = manifest
+            .sqlite_home
+            .as_deref()
+            .ok_or_else(|| "v3 备份 manifest 缺少 sqlite_home。".to_string())?;
+        let sqlite_home_fingerprint = manifest
+            .sqlite_home_fingerprint
+            .as_deref()
+            .ok_or_else(|| "v3 备份 manifest 缺少 sqlite_home_fingerprint。".to_string())?;
+        if !Path::new(sqlite_home).is_absolute()
+            || sqlite_home_fingerprint
+                != codex_home_fingerprint_for_identity(sqlite_home)
+        {
+            return Err("v3 备份 manifest 的 SQLite Home 路径或 fingerprint 无效。".into());
+        }
     }
 
     validate_member_set(
@@ -2059,18 +2557,18 @@ fn validate_member_set(
             _ => return Err(format!("备份成员状态不完整：{}", member.relative_path)),
         }
     }
-    if [
-        ("config.toml", config_members),
-        ("state_5.sqlite", sqlite_members),
-        ("session_index.jsonl", index_members),
-        ("state_5.sqlite-wal", wal_members),
-        ("state_5.sqlite-shm", shm_members),
-    ]
-    .iter()
-    .any(|(_, count)| *count != 1)
+    let context_members_valid = if schema_version >= 3 {
+        config_members == index_members && config_members <= 1
+    } else {
+        config_members == 1 && index_members == 1
+    };
+    if !context_members_valid
+        || sqlite_members != 1
+        || wal_members != 1
+        || shm_members != 1
     {
         return Err(format!(
-            "备份 manifest v2 必需成员数量无效：config={config_members}, sqlite={sqlite_members}, index={index_members}, wal={wal_members}, shm={shm_members}"
+            "备份 manifest 必需成员数量无效：config={config_members}, sqlite={sqlite_members}, index={index_members}, wal={wal_members}, shm={shm_members}"
         ));
     }
     Ok(())
@@ -2208,12 +2706,22 @@ fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
             (member.kind == "session" || member.kind == "sessionPrefix") && member.present
         })
         .count();
+    let sqlite_home = manifest
+        .sqlite_home
+        .clone()
+        .unwrap_or_else(|| manifest.codex_home.clone());
+    let sqlite_home_fingerprint = manifest
+        .sqlite_home_fingerprint
+        .clone()
+        .unwrap_or_else(|| manifest.codex_home_fingerprint.clone());
     Ok(ProviderRepairBackupInfo {
         id: manifest.id,
         created_at: manifest.created_at,
         path: path.display().to_string(),
         codex_home: manifest.codex_home,
         codex_home_fingerprint: manifest.codex_home_fingerprint,
+        sqlite_home,
+        sqlite_home_fingerprint,
         target_provider: manifest.target_provider,
         session_files: u32::try_from(session_files).unwrap_or(u32::MAX),
         state_database: manifest
@@ -2261,6 +2769,16 @@ fn read_legacy_backup_info(path: &Path, value: &Value) -> Result<ProviderRepairB
             .unwrap_or("unknown")
             .into(),
         codex_home_fingerprint: value
+            .get("codex_home_fingerprint")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        sqlite_home: value
+            .get("codex_home")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .into(),
+        sqlite_home_fingerprint: value
             .get("codex_home_fingerprint")
             .and_then(Value::as_str)
             .unwrap_or("")

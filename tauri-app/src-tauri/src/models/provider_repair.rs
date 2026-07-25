@@ -5,6 +5,7 @@ use serde::Serialize;
 pub struct ProviderRepairSnapshot {
     pub detected_provider: String,
     pub provider_source: String,
+    pub sqlite_home: String,
     pub session_files_found: u32,
     pub inconsistent_count: u32,
     pub migration_candidate_count: u32,
@@ -38,6 +39,8 @@ pub struct ProviderRepairBackupInfo {
     pub path: String,
     pub codex_home: String,
     pub codex_home_fingerprint: String,
+    pub sqlite_home: String,
+    pub sqlite_home_fingerprint: String,
     pub target_provider: String,
     pub session_files: u32,
     pub state_database: bool,

@@ -32,7 +32,7 @@ export function ProviderRepairPanel({
           <div>
             <span>高级修复</span>
             <h2>会话消失修复</h2>
-            <p>先扫描并创建完整备份；同步修复只在你确认后执行。</p>
+            <p>先扫描并创建差量恢复点；安全修复与历史迁移严格分开。</p>
           </div>
           <button
             className="repair-panel-close"
@@ -57,7 +57,7 @@ export function ProviderRepairPanel({
 
         <footer className="repair-panel-foot">
           <span>Codex Desktop 运行时仍可扫描、验证和创建备份；同步与回滚会被后端拒绝。</span>
-          <span>所有同步都会先创建完整备份，可从备份列表回滚。</span>
+          <span>写操作会先保存 SQLite 一致性快照和必要的会话首行，不再复制整份历史文件。</span>
         </footer>
       </section>
     </div>

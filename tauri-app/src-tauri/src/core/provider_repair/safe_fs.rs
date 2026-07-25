@@ -54,8 +54,13 @@ struct PinnedMemberState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PinnedMutationGuard {
-    home_generation: HomeGenerationIdentity,
+    storage: PinnedStorageGuard,
     account_identity: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PinnedStorageGuard {
+    root_generation: HomeGenerationIdentity,
     members: Vec<PinnedMemberState>,
 }
 
@@ -328,6 +333,20 @@ impl PinnedHome {
         &self,
         relatives: &[PathBuf],
     ) -> Result<PinnedMutationGuard, String> {
+        let storage = self.capture_storage_guard(relatives)?;
+        let account_identity = self
+            .account_identity_fingerprint()?
+            .ok_or_else(|| "Provider commit 前无法确认稳定账号身份，已拒绝写入。".to_string())?;
+        Ok(PinnedMutationGuard {
+            storage,
+            account_identity,
+        })
+    }
+
+    pub(super) fn capture_storage_guard(
+        &self,
+        relatives: &[PathBuf],
+    ) -> Result<PinnedStorageGuard, String> {
         let mut logical_members = HashSet::new();
         let mut physical_members = HashSet::new();
         let mut members = Vec::with_capacity(relatives.len());
@@ -351,12 +370,8 @@ impl PinnedHome {
             members.push(state);
         }
         members.sort_by(|left, right| left.relative.cmp(&right.relative));
-        let account_identity = self
-            .account_identity_fingerprint()?
-            .ok_or_else(|| "Provider commit 前无法确认稳定账号身份，已拒绝写入。".to_string())?;
-        Ok(PinnedMutationGuard {
-            home_generation: self.generation_identity()?,
-            account_identity,
+        Ok(PinnedStorageGuard {
+            root_generation: self.generation_identity()?,
             members,
         })
     }
@@ -366,19 +381,12 @@ impl PinnedHome {
         expected: &PinnedMutationGuard,
     ) -> Result<(), String> {
         self.ensure_canonical_path_identity()?;
-        let relatives = expected
-            .members
-            .iter()
-            .map(|member| member.relative.clone())
-            .collect::<Vec<_>>();
+        let relatives = expected.storage.member_paths();
         let actual = self.capture_mutation_guard(&relatives)?;
-        if actual.home_generation != expected.home_generation {
-            return Err("Provider commit 前 Codex Home generation 已变化，已拒绝提交。".into());
-        }
         if actual.account_identity != expected.account_identity {
             return Err("Provider commit 前账号身份已变化，已拒绝提交。".into());
         }
-        if actual.members != expected.members {
+        if actual.storage != expected.storage {
             return Err("Provider commit 前待写成员 descriptor 身份、内容或 expected set 已变化，已拒绝提交。".into());
         }
         Ok(())
@@ -389,7 +397,7 @@ impl PinnedHome {
         expected: &PinnedMutationGuard,
     ) -> Result<(), String> {
         self.ensure_canonical_path_identity()?;
-        if self.generation_identity()? != expected.home_generation {
+        if self.generation_identity()? != expected.storage.root_generation {
             return Err("Provider commit 前 Codex Home generation 已变化，已拒绝提交。".into());
         }
         let account_identity = self
@@ -397,6 +405,32 @@ impl PinnedHome {
             .ok_or_else(|| "Provider commit 前账号身份变为未知，已拒绝提交。".to_string())?;
         if account_identity != expected.account_identity {
             return Err("Provider commit 前账号身份已变化，已拒绝提交。".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn verify_storage_guard(
+        &self,
+        expected: &PinnedStorageGuard,
+    ) -> Result<(), String> {
+        self.ensure_canonical_path_identity()?;
+        let actual = self.capture_storage_guard(&expected.member_paths())?;
+        if &actual != expected {
+            return Err(
+                "Provider commit 前 SQLite 根目录或待写成员身份、内容发生变化，已拒绝提交。"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn verify_storage_scope(
+        &self,
+        expected: &PinnedStorageGuard,
+    ) -> Result<(), String> {
+        self.ensure_canonical_path_identity()?;
+        if self.generation_identity()? != expected.root_generation {
+            return Err("Provider commit 前 SQLite 根目录 generation 已变化，已拒绝提交。".into());
         }
         Ok(())
     }
@@ -1141,6 +1175,15 @@ impl PinnedHome {
             "无法为 Provider 目标创建唯一临时文件：{}",
             relative.display()
         ))
+    }
+}
+
+impl PinnedStorageGuard {
+    fn member_paths(&self) -> Vec<PathBuf> {
+        self.members
+            .iter()
+            .map(|member| member.relative.clone())
+            .collect()
     }
 }
 

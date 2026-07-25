@@ -6,6 +6,7 @@ import type {
 export const fallbackProviderRepairSnapshot: ProviderRepairSnapshot = {
   detectedProvider: "待读取",
   providerSource: "本地扫描",
+  sqliteHome: "待读取",
   sessionFilesFound: 0,
   inconsistentCount: 0,
   migrationCandidateCount: 0,

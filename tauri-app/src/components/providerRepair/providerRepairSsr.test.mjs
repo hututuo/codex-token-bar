@@ -64,7 +64,7 @@ test("ProviderRepairBackups renders rollback only for real backups and disables 
     }));
 
     assert.match(html, /repair-backup repair-backup--active/);
-    assert.match(html, /JSONL 7 · SQLite 已备份 · 索引 已备份/);
+    assert.match(html, /会话首行 7 · SQLite 一致性快照 ·\s*上下文文件 兼容备份/);
     assert.match(html, /目录 \.\.\.\/test\/\.codex/);
     const rollbackButton = findButton(html, "回滚");
     assert.match(rollbackButton.attrs, /class="repair-rollback-button"/);
@@ -88,7 +88,7 @@ test("ProviderRepairBackups keeps v1 backups visible but disables unsupported ro
     assert.match(html, /\/tmp\/provider-repair\/legacy-backup-1/);
     assert.match(html, /repair-backup-path/);
     assert.match(html, /旧版 v1 清单缺少可验证的成员摘要。/);
-    assert.match(html, /请创建新的 v2 恢复点后再回滚。/);
+    assert.match(html, /请创建新的差量恢复点后再回滚。/);
     const rollbackButton = findButton(html, "不支持回滚");
     assert.match(rollbackButton.attrs, /disabled=""/);
   });
@@ -151,6 +151,8 @@ function backupFixture(overrides = {}) {
     path: "/tmp/provider-repair/backup-1",
     codexHome: "/Users/test/.codex",
     codexHomeFingerprint: "fingerprint",
+    sqliteHome: "/Users/test/.codex",
+    sqliteHomeFingerprint: "fingerprint",
     targetProvider: "codex",
     sessionFiles: 7,
     stateDatabase: true,
@@ -165,8 +167,12 @@ function snapshotFixture(overrides = {}) {
   return {
     detectedProvider: "codex",
     providerSource: "本地扫描",
+    sqliteHome: "/Users/test/.codex",
     sessionFilesFound: 7,
     inconsistentCount: 0,
+    migrationCandidateCount: 0,
+    invalidSessionFiles: 0,
+    ambiguousThreadCount: 0,
     status: "扫描完成，等待用户确认。",
     steps: [
       { label: "扫描", status: "已扫描", done: true, healthy: true },

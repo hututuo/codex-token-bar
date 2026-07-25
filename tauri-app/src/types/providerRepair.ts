@@ -8,6 +8,7 @@ export interface ProviderRepairStep {
 export interface ProviderRepairSnapshot {
   detectedProvider: string;
   providerSource: string;
+  sqliteHome: string;
   sessionFilesFound: number;
   inconsistentCount: number;
   migrationCandidateCount: number;
@@ -23,6 +24,8 @@ export interface ProviderRepairBackupInfo {
   path: string;
   codexHome: string;
   codexHomeFingerprint: string;
+  sqliteHome: string;
+  sqliteHomeFingerprint: string;
   targetProvider: string;
   sessionFiles: number;
   stateDatabase: boolean;

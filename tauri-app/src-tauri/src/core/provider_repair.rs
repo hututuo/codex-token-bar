@@ -10,14 +10,14 @@ mod backups;
 mod report;
 mod safe_fs;
 mod session_files;
-mod session_index;
 mod sqlite_state;
+mod storage_roots;
 mod target_provider;
 
 use backups::{
     backup_by_id, ensure_backup_matches_codex_home, provider_backup_root,
-    create_provider_backup_files_at_with_pinned_selection_stopped_hook,
-    restore_provider_backup_files_with_pinned_verification,
+    create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook,
+    restore_provider_backup_files_with_pinned_roots_verification,
     restore_provider_backup_files_with_verification,
 };
 #[cfg(test)]
@@ -30,15 +30,13 @@ use session_files::{
     find_session_files, parse_session_provider_record, rewrite_session_provider_relative_in,
     scan_session_providers, SessionScan,
 };
-use session_index::{
-    latest_thread_index_missing, scan_session_index, scan_session_index_in,
-};
 #[cfg(test)]
 use sqlite_state::sync_sqlite_provider;
 use sqlite_state::{
     repair_sqlite_providers_from_snapshot_in, scan_sqlite, scan_sqlite_in,
     sync_sqlite_provider_from_snapshot_in, SQLiteScan,
 };
+use storage_roots::{open_sqlite_home_for_pinned, ProviderStorageRoots};
 use target_provider::{detect_target_provider, detect_target_provider_from_config};
 
 const MAX_FINISHED_PROVIDER_OPERATIONS: usize = 256;
@@ -420,21 +418,40 @@ pub fn create_provider_backup(
 ) -> Result<ProviderRepairActionResult, ProviderOperationError> {
     run_provider_mutation(codex_home, operation_id, |canonical_home| {
         let backup_root = provider_backup_root()?;
-        let pinned_home = PinnedHome::open(canonical_home)?;
+        let roots = ProviderStorageRoots::open(canonical_home)?;
+        let pinned_home = &roots.codex_home;
         reconcile_pending_restore_before_backup(
             &backup_root,
-            &pinned_home,
+            pinned_home,
+            &roots.sqlite_home,
             crate::platform::codex_desktop_is_running,
         )?;
-        let report = scan_provider_repair_result_for_home(&pinned_home)?;
-        let backup = backups::create_provider_backup_files_at_with_pinned_hook(
+        let report = scan_provider_repair_result_for_roots(pinned_home, &roots.sqlite_home)?;
+        let session_relative_paths = report
+            .session_scan
+            .records
+            .iter()
+            .map(|record| {
+                record
+                    .file
+                    .strip_prefix(pinned_home.canonical_path())
+                    .map(Path::to_path_buf)
+                    .map_err(|_| format!("会话文件不在固定 Codex Home 内：{}", record.file.display()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let backup = create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook(
             &backup_root,
-            &pinned_home,
+            pinned_home,
+            &roots.sqlite_home,
             &report.target.provider,
+            &session_relative_paths,
             |_, _| Ok(()),
         )?;
         Ok(action_result(
-            snapshot_from_report(scan_provider_repair_result_for_home(&pinned_home)?),
+            snapshot_from_report(scan_provider_repair_result_for_roots(
+                pinned_home,
+                &roots.sqlite_home,
+            )?),
             format!("已创建备份：{}", backup.id),
             Some(backup),
         ))
@@ -444,11 +461,13 @@ pub fn create_provider_backup(
 fn reconcile_pending_restore_before_backup(
     backup_root: &Path,
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     probe: impl FnOnce() -> Result<bool, String>,
 ) -> Result<(), String> {
-    if !backups::has_unfinished_restore_transactions_for_home_with_pinned(
+    if !backups::has_unfinished_restore_transactions_for_roots(
         backup_root,
         pinned_home,
+        sqlite_home,
     )
     .map_err(|blocked| blocked.message)?
     {
@@ -462,7 +481,11 @@ fn reconcile_pending_restore_before_backup(
                 .into(),
         );
     }
-    backups::reconcile_unfinished_restore_transactions_with_pinned(backup_root, pinned_home)
+    backups::reconcile_unfinished_restore_transactions_with_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )
 }
 
 pub fn sync_provider_history(
@@ -596,15 +619,30 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
     hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
     mut probe: impl FnMut() -> Result<bool, String>,
 ) -> Result<ProviderSyncTransactionOutcome, String> {
-    let pinned_home = PinnedHome::open(codex_home)?;
-    backups::reconcile_unfinished_restore_transactions_with_pinned(backup_root, &pinned_home)?;
-    let report = scan_provider_repair_result_for_home(&pinned_home)?;
+    let roots = ProviderStorageRoots::open(codex_home)?;
+    let pinned_home = &roots.codex_home;
+    let sqlite_home = &roots.sqlite_home;
+    backups::reconcile_unfinished_restore_transactions_with_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )?;
+    let report = scan_provider_repair_result_for_roots(pinned_home, sqlite_home)?;
     let target_provider =
         provider_for_mutation(requested_provider.unwrap_or(&report.target.provider))?;
     if mode == ProviderSyncMode::Migrate && report.target.provider != target_provider {
         return Err(format!(
             "显式迁移目标 {target_provider} 与当前 config.toml 生效 Provider {} 不一致；请先切换配置再迁移。",
             report.target.provider
+        ));
+    }
+    if mode == ProviderSyncMode::Migrate
+        && report.target.source != "config.toml"
+        && target_provider != "openai"
+    {
+        return Err(format!(
+            "显式迁移到 {target_provider} 前，必须先在 config.toml 中明确设置 model_provider；当前目标仅由 {} 推断，已拒绝改写历史。",
+            report.target.source
         ));
     }
     let session_relative_paths = if mode == ProviderSyncMode::Migrate {
@@ -630,27 +668,34 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
         Vec::new()
     };
     let session_providers = report.session_scan.canonical_thread_providers();
-    let guard_paths = [
+    let codex_guard_paths = [
         "config.toml",
-        "state_5.sqlite",
         "session_index.jsonl",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    let sqlite_guard_paths = [
+        "state_5.sqlite",
         "state_5.sqlite-wal",
         "state_5.sqlite-shm",
     ]
     .into_iter()
     .map(PathBuf::from)
     .collect::<Vec<_>>();
-    let initial_guard = pinned_home.capture_mutation_guard(&guard_paths)?;
-    let backup = create_provider_backup_files_at_with_pinned_selection_stopped_hook(
+    let initial_guard = pinned_home.capture_mutation_guard(&codex_guard_paths)?;
+    let initial_sqlite_guard = sqlite_home.capture_storage_guard(&sqlite_guard_paths)?;
+    let backup = create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook(
         backup_root,
-        &pinned_home,
+        pinned_home,
+        sqlite_home,
         &target_provider,
         &session_relative_paths,
         hook,
     )?;
     let mut backup_member_paths = backups::verified_member_relative_paths(&backup)?;
     backup_member_paths.sort();
-    let mut expected_member_paths = guard_paths
+    let mut expected_member_paths = sqlite_guard_paths
         .iter()
         .cloned()
         .chain(session_relative_paths.iter().cloned())
@@ -661,16 +706,18 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
     }
     ensure_provider_codex_stopped(&mut probe, "同步首次写入前")?;
     pinned_home.verify_mutation_guard(&initial_guard)?;
+    sqlite_home.verify_storage_guard(&initial_sqlite_guard)?;
 
     let transaction = perform_provider_sync(
-        &pinned_home,
+        pinned_home,
+        sqlite_home,
         &target_provider,
         &backup,
         mode,
         &session_providers,
     )
     .and_then(|(rewritten_sessions, sqlite_rows)| {
-            let verified_report = verify(&pinned_home)?;
+            let verified_report = verify(pinned_home)?;
             validate_provider_sync_report(
                 &verified_report,
                 &backup,
@@ -678,10 +725,15 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
                 mode,
             )?;
             pinned_home.verify_mutation_scope(&initial_guard)?;
-            let committed_guard = pinned_home.capture_mutation_guard(&guard_paths)?;
+            sqlite_home.verify_storage_scope(&initial_sqlite_guard)?;
+            let committed_guard = pinned_home.capture_mutation_guard(&codex_guard_paths)?;
+            let committed_sqlite_guard =
+                sqlite_home.capture_storage_guard(&sqlite_guard_paths)?;
             ensure_provider_codex_stopped(&mut probe, "同步最终提交前")?;
             pinned_home.verify_mutation_scope(&initial_guard)?;
+            sqlite_home.verify_storage_scope(&initial_sqlite_guard)?;
             pinned_home.verify_mutation_guard(&committed_guard)?;
+            sqlite_home.verify_storage_guard(&committed_sqlite_guard)?;
             let mut current_backup_members = backups::verified_member_relative_paths(&backup)?;
             current_backup_members.sort();
             if current_backup_members != expected_member_paths {
@@ -707,8 +759,9 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
             snapshot,
             message,
         }),
-        Err(original_error) => match restore_provider_backup_files_with_pinned_verification(
-            &pinned_home,
+        Err(original_error) => match restore_provider_backup_files_with_pinned_roots_verification(
+            pinned_home,
+            sqlite_home,
             &backup,
             |_| Ok(()),
         ) {
@@ -738,6 +791,7 @@ fn ensure_provider_codex_stopped(
 
 fn perform_provider_sync(
     pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
     target_provider: &str,
     backup: &crate::models::ProviderRepairBackupInfo,
     mode: ProviderSyncMode,
@@ -760,14 +814,14 @@ fn perform_provider_sync(
     let sqlite_rows = if let Some(snapshot) = sqlite_snapshot {
         match mode {
             ProviderSyncMode::Repair => repair_sqlite_providers_from_snapshot_in(
-                pinned_home,
+                sqlite_home,
                 session_providers,
                 &snapshot.path,
                 snapshot.size,
                 &snapshot.checksum_sha256,
             )?,
             ProviderSyncMode::Migrate => sync_sqlite_provider_from_snapshot_in(
-                pinned_home,
+                sqlite_home,
                 target_provider,
                 &snapshot.path,
                 snapshot.size,
@@ -973,11 +1027,11 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
         }
     };
     let pinned_home = match PinnedHome::open(&lease.canonical_home) {
-        Ok(home) => home,
+        Ok(pinned_home) => pinned_home,
         Err(error) => {
             return provider_recovery_blocked_for_optional_scope(
                 preliminary_scope,
-                "homeUnavailable",
+                "codexHomeUnavailable",
                 None,
                 error,
             )
@@ -994,9 +1048,25 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
             )
         }
     };
-    let pending_path = match backups::first_unfinished_restore_transaction_for_home_with_pinned(
+    let sqlite_home = match backups::sqlite_home_for_unfinished_restore_transactions(
         backup_root,
         &pinned_home,
+    ) {
+        Ok(Some(sqlite_home)) => sqlite_home,
+        Ok(None) => return ProviderRecoveryStatus::ready(home_scope),
+        Err(blocked) => {
+            return ProviderRecoveryStatus::blocked_for_scope(
+                home_scope,
+                blocked.code,
+                blocked.recovery_path,
+                blocked.message,
+            )
+        }
+    };
+    let pending_path = match backups::first_unfinished_restore_transaction_for_roots(
+        backup_root,
+        &pinned_home,
+        &sqlite_home,
     ) {
         Ok(Some(path)) => path,
         Ok(None) => return ProviderRecoveryStatus::ready(home_scope),
@@ -1028,9 +1098,10 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
             "启动恢复已阻止：Codex Desktop 正在运行，journal 保持不变。",
         );
     }
-    match backups::reconcile_unfinished_restore_transactions_with_diagnostics(
+    match backups::reconcile_unfinished_restore_transactions_with_roots_diagnostics(
         backup_root,
         &pinned_home,
+        &sqlite_home,
     ) {
         Ok(()) => ProviderRecoveryStatus::ready(home_scope),
         Err(blocked) => ProviderRecoveryStatus::blocked_for_scope(
@@ -1183,55 +1254,33 @@ fn run_provider_mutation_with_running_probe<T>(
 }
 
 fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport, String> {
-    let session_files = find_session_files(codex_home, true)?;
-    let mut session_scan = scan_session_providers(&session_files);
-    session_scan.newest_provider = session_scan
-        .newest_provider
-        .as_deref()
-        .and_then(validated_provider_candidate);
-    let sqlite_scan = scan_sqlite(codex_home).unwrap_or_else(|error| SQLiteScan {
-        integrity: format!("读取失败：{error}"),
-        ..SQLiteScan::default()
-    });
-    let session_index = scan_session_index(codex_home);
-    let target = detect_target_provider(codex_home, &sqlite_scan, &session_scan);
-    let session_mismatches = session_scan.count_provider_mismatches(&target.provider);
-    let session_providers = session_scan.canonical_thread_providers();
-    let sqlite_metadata_mismatches =
-        sqlite_scan.rows_to_repair_from_sessions(&session_providers);
-    let ambiguous_threads = session_scan.ambiguous_thread_count();
-    let index_missing = latest_thread_index_missing(&sqlite_scan, &session_index);
-    let inconsistent_count = sqlite_metadata_mismatches;
-
-    Ok(ProviderRepairReport {
-        codex_home: codex_home.to_path_buf(),
-        target,
-        session_scan,
-        sqlite_scan,
-        session_index,
-        session_mismatches,
-        sqlite_metadata_mismatches,
-        ambiguous_threads,
-        index_missing,
-        inconsistent_count,
-    })
+    let roots = ProviderStorageRoots::open(codex_home)?;
+    scan_provider_repair_result_for_roots(&roots.codex_home, &roots.sqlite_home)
 }
 
 fn scan_provider_repair_result_for_home(
     pinned_home: &PinnedHome,
 ) -> Result<ProviderRepairReport, String> {
+    let sqlite_home = open_sqlite_home_for_pinned(pinned_home)?;
+    scan_provider_repair_result_for_roots(pinned_home, &sqlite_home)
+}
+
+fn scan_provider_repair_result_for_roots(
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<ProviderRepairReport, String> {
     pinned_home.ensure_canonical_path_identity()?;
+    sqlite_home.ensure_canonical_path_identity()?;
     let session_files = find_session_files(pinned_home.canonical_path(), true)?;
     let mut session_scan = scan_session_providers_for_home(pinned_home, &session_files);
     session_scan.newest_provider = session_scan
         .newest_provider
         .as_deref()
         .and_then(validated_provider_candidate);
-    let sqlite_scan = scan_sqlite_in(pinned_home).unwrap_or_else(|error| SQLiteScan {
+    let sqlite_scan = scan_sqlite_in(sqlite_home).unwrap_or_else(|error| SQLiteScan {
         integrity: format!("读取失败：{error}"),
         ..SQLiteScan::default()
     });
-    let session_index = scan_session_index_in(pinned_home);
     let config = pinned_home.read(Path::new("config.toml")).ok();
     let target =
         detect_target_provider_from_config(config.as_deref(), &sqlite_scan, &session_scan);
@@ -1240,19 +1289,18 @@ fn scan_provider_repair_result_for_home(
     let sqlite_metadata_mismatches =
         sqlite_scan.rows_to_repair_from_sessions(&session_providers);
     let ambiguous_threads = session_scan.ambiguous_thread_count();
-    let index_missing = latest_thread_index_missing(&sqlite_scan, &session_index);
     let inconsistent_count = sqlite_metadata_mismatches;
     pinned_home.ensure_canonical_path_identity()?;
+    sqlite_home.ensure_canonical_path_identity()?;
     Ok(ProviderRepairReport {
         codex_home: pinned_home.canonical_path().to_path_buf(),
+        sqlite_home: sqlite_home.canonical_path().to_path_buf(),
         target,
         session_scan,
         sqlite_scan,
-        session_index,
         session_mismatches,
         sqlite_metadata_mismatches,
         ambiguous_threads,
-        index_missing,
         inconsistent_count,
     })
 }

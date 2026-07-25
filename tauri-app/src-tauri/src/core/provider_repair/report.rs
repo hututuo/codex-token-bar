@@ -1,6 +1,5 @@
 use super::backups::list_provider_backups;
 use super::session_files::SessionScan;
-use super::session_index::SessionIndexScan;
 use super::sqlite_state::SQLiteScan;
 use super::target_provider::TargetProvider;
 use crate::models::{
@@ -12,14 +11,13 @@ use std::path::{Path, PathBuf};
 pub(super) struct ProviderRepairReport {
     #[allow(dead_code)]
     pub(super) codex_home: PathBuf,
+    pub(super) sqlite_home: PathBuf,
     pub(super) target: TargetProvider,
     pub(super) session_scan: SessionScan,
     pub(super) sqlite_scan: SQLiteScan,
-    pub(super) session_index: SessionIndexScan,
     pub(super) session_mismatches: u32,
     pub(super) sqlite_metadata_mismatches: u32,
     pub(super) ambiguous_threads: u32,
-    pub(super) index_missing: bool,
     pub(super) inconsistent_count: u32,
 }
 
@@ -47,6 +45,7 @@ pub(super) fn snapshot_from_report(report: ProviderRepairReport) -> ProviderRepa
     ProviderRepairSnapshot {
         detected_provider: report.target.provider.clone(),
         provider_source: report.target.source.clone(),
+        sqlite_home: report.sqlite_home.display().to_string(),
         session_files_found: report.session_scan.files_found,
         inconsistent_count: report.inconsistent_count,
         migration_candidate_count: report.session_mismatches,
@@ -94,6 +93,7 @@ pub(super) fn error_snapshot(codex_home: &Path, message: String) -> ProviderRepa
     ProviderRepairSnapshot {
         detected_provider: "openai".into(),
         provider_source: "读取失败".into(),
+        sqlite_home: codex_home.display().to_string(),
         session_files_found: 0,
         inconsistent_count: 1,
         migration_candidate_count: 0,
