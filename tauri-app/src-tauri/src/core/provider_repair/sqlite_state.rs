@@ -4,7 +4,7 @@ use crate::core::sqlite;
 use rusqlite::{Connection, Result as SqlResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::Path;
@@ -19,6 +19,7 @@ static SQLITE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 pub(super) struct SQLiteScan {
     pub(super) provider_counts: Vec<SQLiteProviderCount>,
+    pub(super) thread_providers: HashMap<String, String>,
     pub(super) latest_unarchived_provider: Option<String>,
     pub(super) latest_unarchived_thread_id: Option<String>,
     pub(super) integrity: String,
@@ -31,6 +32,22 @@ impl SQLiteScan {
             .filter(|row| row.provider != target_provider)
             .map(|row| row.count)
             .sum()
+    }
+
+    pub(super) fn rows_to_repair_from_sessions(
+        &self,
+        session_providers: &HashMap<String, String>,
+    ) -> u32 {
+        session_providers
+            .iter()
+            .filter(|(thread_id, provider)| {
+                self.thread_providers
+                    .get(*thread_id)
+                    .is_some_and(|current| current != *provider)
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX)
     }
 }
 
@@ -58,6 +75,7 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     }
 
     let provider_counts = sqlite_provider_counts(&connection, &columns)?;
+    let thread_providers = sqlite_thread_providers(&connection)?;
     let latest_unarchived = latest_sqlite_provider(&connection, &columns)?;
     let (latest_unarchived_provider, latest_unarchived_thread_id) = match latest_unarchived {
         Some(row) => (
@@ -68,6 +86,7 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     };
     Ok(SQLiteScan {
         provider_counts,
+        thread_providers,
         latest_unarchived_provider,
         latest_unarchived_thread_id,
         integrity: sqlite_integrity(&connection).unwrap_or_else(|_| "unknown".into()),
@@ -93,7 +112,11 @@ pub(super) fn sync_sqlite_provider_in(
     pinned_home: &PinnedHome,
     target_provider: &str,
 ) -> Result<u32, String> {
-    sync_sqlite_provider_from_source(pinned_home, target_provider, None)
+    sync_sqlite_provider_from_source(
+        pinned_home,
+        SQLiteProviderMutation::Migrate(target_provider.to_string()),
+        None,
+    )
 }
 
 pub(super) fn sync_sqlite_provider_from_snapshot_in(
@@ -105,17 +128,46 @@ pub(super) fn sync_sqlite_provider_from_snapshot_in(
 ) -> Result<u32, String> {
     sync_sqlite_provider_from_source(
         pinned_home,
-        target_provider,
+        SQLiteProviderMutation::Migrate(target_provider.to_string()),
         Some((snapshot, expected_size, expected_checksum)),
     )
 }
 
+pub(super) fn repair_sqlite_providers_from_snapshot_in(
+    pinned_home: &PinnedHome,
+    session_providers: &HashMap<String, String>,
+    snapshot: &Path,
+    expected_size: u64,
+    expected_checksum: &str,
+) -> Result<u32, String> {
+    sync_sqlite_provider_from_source(
+        pinned_home,
+        SQLiteProviderMutation::Repair(session_providers),
+        Some((snapshot, expected_size, expected_checksum)),
+    )
+}
+
+enum SQLiteProviderMutation<'a> {
+    Migrate(String),
+    Repair(&'a HashMap<String, String>),
+}
+
 fn sync_sqlite_provider_from_source(
     pinned_home: &PinnedHome,
-    target_provider: &str,
+    mutation: SQLiteProviderMutation<'_>,
     snapshot: Option<(&Path, u64, &str)>,
 ) -> Result<u32, String> {
-    let target_provider = provider_for_mutation(target_provider)?;
+    let mutation = match mutation {
+        SQLiteProviderMutation::Migrate(provider) => {
+            SQLiteProviderMutation::Migrate(provider_for_mutation(&provider)?)
+        }
+        SQLiteProviderMutation::Repair(providers) => {
+            for provider in providers.values() {
+                provider_for_mutation(provider)?;
+            }
+            SQLiteProviderMutation::Repair(providers)
+        }
+    };
     let relative = Path::new("state_5.sqlite");
     if pinned_home.open_file(relative)?.is_none() {
         return Ok(0);
@@ -150,12 +202,37 @@ fn sync_sqlite_provider_from_source(
         if !columns.contains("model_provider") {
             return Ok(0);
         }
-        let changed = connection
-            .execute(
-                "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1;",
-                [target_provider.as_str()],
-            )
-            .map_err(|error| error.to_string())?;
+        let changed = match mutation {
+            SQLiteProviderMutation::Migrate(target_provider) => connection
+                .execute(
+                    "UPDATE threads SET model_provider = ?1 WHERE COALESCE(model_provider, '') <> ?1;",
+                    [target_provider.as_str()],
+                )
+                .map_err(|error| error.to_string())?,
+            SQLiteProviderMutation::Repair(session_providers) => {
+                let transaction = connection
+                    .unchecked_transaction()
+                    .map_err(|error| error.to_string())?;
+                let mut changed = 0_usize;
+                {
+                    let mut statement = transaction
+                        .prepare(
+                            "UPDATE threads SET model_provider = ?1 \
+                             WHERE id = ?2 AND COALESCE(model_provider, '') <> ?1;",
+                        )
+                        .map_err(|error| error.to_string())?;
+                    for (thread_id, provider) in session_providers {
+                        changed = changed.saturating_add(
+                            statement
+                                .execute([provider.as_str(), thread_id.as_str()])
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                }
+                transaction.commit().map_err(|error| error.to_string())?;
+                changed
+            }
+        };
         sqlite::checkpoint_wal_full(&connection);
         connection
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
@@ -385,6 +462,18 @@ fn sqlite_provider_counts(
             archived: row.get::<_, i64>(1).unwrap_or(0),
             count: u32::try_from(row.get::<_, i64>(2).unwrap_or(0)).unwrap_or(0),
         })
+    })?;
+    rows.collect()
+}
+
+fn sqlite_thread_providers(connection: &Connection) -> SqlResult<HashMap<String, String>> {
+    let mut statement =
+        connection.prepare("SELECT id, COALESCE(model_provider, '') FROM threads;")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            provider_or_missing(row.get::<_, String>(1)?),
+        ))
     })?;
     rows.collect()
 }

@@ -16,6 +16,7 @@ mod target_provider;
 
 use backups::{
     backup_by_id, ensure_backup_matches_codex_home, provider_backup_root,
+    create_provider_backup_files_at_with_pinned_selection_stopped_hook,
     restore_provider_backup_files_with_pinned_verification,
     restore_provider_backup_files_with_verification,
 };
@@ -26,18 +27,15 @@ use safe_fs::PinnedHome;
 #[cfg(test)]
 use session_files::rewrite_session_provider;
 use session_files::{
-    find_session_files, rewrite_session_provider_relative_in, scan_session_providers, SessionScan,
+    find_session_files, parse_session_provider_record, rewrite_session_provider_relative_in,
+    scan_session_providers, SessionScan,
 };
-#[cfg(test)]
-use session_index::repair_session_index;
 use session_index::{
-    latest_thread_index_missing, repair_session_index_in, scan_session_index,
-    scan_session_index_in,
+    latest_thread_index_missing, scan_session_index, scan_session_index_in,
 };
-#[cfg(test)]
-use sqlite_state::sync_sqlite_provider;
 use sqlite_state::{
-    scan_sqlite, scan_sqlite_in, sync_sqlite_provider_from_snapshot_in, SQLiteScan,
+    repair_sqlite_providers_from_snapshot_in, scan_sqlite, scan_sqlite_in,
+    sync_sqlite_provider_from_snapshot_in, SQLiteScan,
 };
 use target_provider::{detect_target_provider, detect_target_provider_from_config};
 
@@ -475,9 +473,11 @@ pub fn sync_provider_history(
         crate::platform::codex_desktop_is_running,
         |canonical_home| {
             let backup_root = provider_backup_root()?;
-            let outcome = sync_provider_history_transaction_at_with_backup_hook_and_probe(
+            let outcome = sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
                 canonical_home,
                 &backup_root,
+                ProviderSyncMode::Repair,
+                None,
                 scan_provider_repair_result_for_home,
                 |_, _| Ok(()),
                 crate::platform::codex_desktop_is_running,
@@ -489,6 +489,44 @@ pub fn sync_provider_history(
             ))
         },
     )
+}
+
+pub fn migrate_provider_history(
+    codex_home: &Path,
+    target_provider: &str,
+    operation_id: &str,
+) -> Result<ProviderRepairActionResult, ProviderOperationError> {
+    let target_provider = provider_for_mutation(target_provider)
+        .map_err(|message| ProviderOperationError::Failed { message })?;
+    run_provider_mutation_with_running_probe(
+        codex_home,
+        operation_id,
+        "迁移",
+        crate::platform::codex_desktop_is_running,
+        |canonical_home| {
+            let backup_root = provider_backup_root()?;
+            let outcome = sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+                canonical_home,
+                &backup_root,
+                ProviderSyncMode::Migrate,
+                Some(&target_provider),
+                scan_provider_repair_result_for_home,
+                |_, _| Ok(()),
+                crate::platform::codex_desktop_is_running,
+            )?;
+            Ok(action_result(
+                outcome.snapshot,
+                outcome.message,
+                Some(outcome.backup),
+            ))
+        },
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderSyncMode {
+    Repair,
+    Migrate,
 }
 
 #[derive(Debug)]
@@ -533,58 +571,132 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe(
     backup_root: &Path,
     verify: impl FnOnce(&PinnedHome) -> Result<ProviderRepairReport, String>,
     hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
+    probe: impl FnMut() -> Result<bool, String>,
+) -> Result<ProviderSyncTransactionOutcome, String> {
+    sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+        codex_home,
+        backup_root,
+        ProviderSyncMode::Migrate,
+        None,
+        verify,
+        hook,
+        probe,
+    )
+}
+
+fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+    codex_home: &Path,
+    backup_root: &Path,
+    mode: ProviderSyncMode,
+    requested_provider: Option<&str>,
+    verify: impl FnOnce(&PinnedHome) -> Result<ProviderRepairReport, String>,
+    hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
     mut probe: impl FnMut() -> Result<bool, String>,
 ) -> Result<ProviderSyncTransactionOutcome, String> {
     let pinned_home = PinnedHome::open(codex_home)?;
     backups::reconcile_unfinished_restore_transactions_with_pinned(backup_root, &pinned_home)?;
     let report = scan_provider_repair_result_for_home(&pinned_home)?;
-    let target_provider = provider_for_mutation(&report.target.provider)?;
-    let member_paths = backups::current_member_relative_paths_with_pinned(&pinned_home)?;
-    let initial_guard = pinned_home.capture_mutation_guard(&member_paths)?;
-    let backup = backups::create_provider_backup_files_at_with_pinned_stopped_hook(
+    let target_provider =
+        provider_for_mutation(requested_provider.unwrap_or(&report.target.provider))?;
+    if mode == ProviderSyncMode::Migrate && report.target.provider != target_provider {
+        return Err(format!(
+            "显式迁移目标 {target_provider} 与当前 config.toml 生效 Provider {} 不一致；请先切换配置再迁移。",
+            report.target.provider
+        ));
+    }
+    let session_relative_paths = if mode == ProviderSyncMode::Migrate {
+        report
+            .session_scan
+            .records
+            .iter()
+            .filter(|record| record.provider != target_provider)
+            .map(|record| {
+                record
+                    .file
+                    .strip_prefix(pinned_home.canonical_path())
+                    .map(Path::to_path_buf)
+                    .map_err(|_| {
+                        format!(
+                            "会话文件不在固定 Codex Home 内：{}",
+                            record.file.display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        Vec::new()
+    };
+    let session_providers = report.session_scan.canonical_thread_providers();
+    let guard_paths = [
+        "config.toml",
+        "state_5.sqlite",
+        "session_index.jsonl",
+        "state_5.sqlite-wal",
+        "state_5.sqlite-shm",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect::<Vec<_>>();
+    let initial_guard = pinned_home.capture_mutation_guard(&guard_paths)?;
+    let backup = create_provider_backup_files_at_with_pinned_selection_stopped_hook(
         backup_root,
         &pinned_home,
         &target_provider,
+        &session_relative_paths,
         hook,
     )?;
     let mut backup_member_paths = backups::verified_member_relative_paths(&backup)?;
     backup_member_paths.sort();
-    if backup_member_paths != member_paths {
+    let mut expected_member_paths = guard_paths
+        .iter()
+        .cloned()
+        .chain(session_relative_paths.iter().cloned())
+        .collect::<Vec<_>>();
+    expected_member_paths.sort();
+    if backup_member_paths != expected_member_paths {
         return Err("Provider fresh backup 的成员 expected set 在首写前不一致。".into());
     }
     ensure_provider_codex_stopped(&mut probe, "同步首次写入前")?;
     pinned_home.verify_mutation_guard(&initial_guard)?;
 
-    let transaction = perform_provider_sync(&pinned_home, &target_provider, &backup).and_then(
-        |(rewritten_sessions, sqlite_rows, index_changed)| {
+    let transaction = perform_provider_sync(
+        &pinned_home,
+        &target_provider,
+        &backup,
+        mode,
+        &session_providers,
+    )
+    .and_then(|(rewritten_sessions, sqlite_rows)| {
             let verified_report = verify(&pinned_home)?;
-            validate_provider_sync_report(&verified_report, &backup, &target_provider)?;
+            validate_provider_sync_report(
+                &verified_report,
+                &backup,
+                &target_provider,
+                mode,
+            )?;
             pinned_home.verify_mutation_scope(&initial_guard)?;
-            let committed_guard = pinned_home.capture_mutation_guard(&member_paths)?;
+            let committed_guard = pinned_home.capture_mutation_guard(&guard_paths)?;
             ensure_provider_codex_stopped(&mut probe, "同步最终提交前")?;
             pinned_home.verify_mutation_scope(&initial_guard)?;
             pinned_home.verify_mutation_guard(&committed_guard)?;
             let mut current_backup_members = backups::verified_member_relative_paths(&backup)?;
             current_backup_members.sort();
-            if current_backup_members != member_paths {
+            if current_backup_members != expected_member_paths {
                 return Err("Provider fresh backup 的成员 expected set 在最终提交前变化。".into());
             }
             let snapshot = snapshot_from_report(verified_report);
-            let message = format!(
-                "已同步为 {}：JSONL {} 个，SQLite {} 行，session_index {}；恢复点 {}。",
-                target_provider,
-                rewritten_sessions,
-                sqlite_rows,
-                if index_changed {
-                    "已补齐"
-                } else {
-                    "无需修改"
-                },
-                backup.id
-            );
+            let message = match mode {
+                ProviderSyncMode::Repair => format!(
+                    "已安全修复 Provider 元数据：JSONL 未改写，SQLite {} 行按各会话 canonical metadata 对齐；恢复点 {}。",
+                    sqlite_rows, backup.id
+                ),
+                ProviderSyncMode::Migrate => format!(
+                    "已显式迁移到 {}：JSONL 首行 {} 个，SQLite {} 行；未改写模型、消息、时间戳或 session_index；恢复点 {}。",
+                    target_provider, rewritten_sessions, sqlite_rows, backup.id
+                ),
+            };
             Ok((snapshot, message))
-        },
-    );
+        });
 
     match transaction {
         Ok((snapshot, message)) => Ok(ProviderSyncTransactionOutcome {
@@ -625,35 +737,51 @@ fn perform_provider_sync(
     pinned_home: &PinnedHome,
     target_provider: &str,
     backup: &crate::models::ProviderRepairBackupInfo,
-) -> Result<(u32, u32, bool), String> {
+    mode: ProviderSyncMode,
+    session_providers: &HashMap<String, String>,
+) -> Result<(u32, u32), String> {
     let mut rewritten_sessions = 0_u32;
-    for relative in backups::verified_session_relative_paths(backup)? {
-        if rewrite_session_provider_relative_in(pinned_home, &relative, target_provider, |_, _| {
-            Ok(())
-        })? {
-            rewritten_sessions = rewritten_sessions.saturating_add(1);
+    if mode == ProviderSyncMode::Migrate {
+        for relative in backups::verified_session_relative_paths(backup)? {
+            if rewrite_session_provider_relative_in(
+                pinned_home,
+                &relative,
+                target_provider,
+                |_, _| Ok(()),
+            )? {
+                rewritten_sessions = rewritten_sessions.saturating_add(1);
+            }
         }
     }
     let sqlite_snapshot = backups::verified_sqlite_snapshot(backup)?;
     let sqlite_rows = if let Some(snapshot) = sqlite_snapshot {
-        sync_sqlite_provider_from_snapshot_in(
-            pinned_home,
-            target_provider,
-            &snapshot.path,
-            snapshot.size,
-            &snapshot.checksum_sha256,
-        )?
+        match mode {
+            ProviderSyncMode::Repair => repair_sqlite_providers_from_snapshot_in(
+                pinned_home,
+                session_providers,
+                &snapshot.path,
+                snapshot.size,
+                &snapshot.checksum_sha256,
+            )?,
+            ProviderSyncMode::Migrate => sync_sqlite_provider_from_snapshot_in(
+                pinned_home,
+                target_provider,
+                &snapshot.path,
+                snapshot.size,
+                &snapshot.checksum_sha256,
+            )?,
+        }
     } else {
         0
     };
-    let index_changed = repair_session_index_in(pinned_home)?;
-    Ok((rewritten_sessions, sqlite_rows, index_changed))
+    Ok((rewritten_sessions, sqlite_rows))
 }
 
 fn validate_provider_sync_report(
     report: &ProviderRepairReport,
     backup: &crate::models::ProviderRepairBackupInfo,
     expected_provider: &str,
+    mode: ProviderSyncMode,
 ) -> Result<(), String> {
     if report.target.provider != expected_provider {
         return Err(format!(
@@ -661,11 +789,24 @@ fn validate_provider_sync_report(
             report.target.provider
         ));
     }
-    if report.inconsistent_count != 0 || report.session_scan.invalid_files != 0 {
-        return Err(format!(
-            "Provider 验证仍有 {} 条不一致，其中异常会话文件 {} 个。",
-            report.inconsistent_count, report.session_scan.invalid_files
-        ));
+    match mode {
+        ProviderSyncMode::Repair if report.sqlite_metadata_mismatches != 0 => {
+            return Err(format!(
+                "Provider 安全修复验证仍有 {} 条 SQLite 元数据不一致。",
+                report.sqlite_metadata_mismatches
+            ));
+        }
+        ProviderSyncMode::Migrate
+            if report.session_mismatches != 0
+                || report.sqlite_scan.rows_to_repair(expected_provider) != 0 =>
+        {
+            return Err(format!(
+                "Provider 显式迁移验证仍有 JSONL {} 个、SQLite {} 行未对齐。",
+                report.session_mismatches,
+                report.sqlite_scan.rows_to_repair(expected_provider)
+            ));
+        }
+        _ => {}
     }
     if backup.session_files > 0 && report.session_scan.files_found == 0 {
         return Err("Provider 验证没有读取到预期会话文件。".into());
@@ -1052,11 +1193,12 @@ fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport
     let session_index = scan_session_index(codex_home);
     let target = detect_target_provider(codex_home, &sqlite_scan, &session_scan);
     let session_mismatches = session_scan.count_provider_mismatches(&target.provider);
+    let session_providers = session_scan.canonical_thread_providers();
+    let sqlite_metadata_mismatches =
+        sqlite_scan.rows_to_repair_from_sessions(&session_providers);
+    let ambiguous_threads = session_scan.ambiguous_thread_count();
     let index_missing = latest_thread_index_missing(&sqlite_scan, &session_index);
-    let inconsistent_count = session_mismatches
-        + sqlite_scan.rows_to_repair(&target.provider)
-        + session_scan.invalid_files
-        + u32::from(index_missing);
+    let inconsistent_count = sqlite_metadata_mismatches;
 
     Ok(ProviderRepairReport {
         codex_home: codex_home.to_path_buf(),
@@ -1065,6 +1207,8 @@ fn scan_provider_repair_result(codex_home: &Path) -> Result<ProviderRepairReport
         sqlite_scan,
         session_index,
         session_mismatches,
+        sqlite_metadata_mismatches,
+        ambiguous_threads,
         index_missing,
         inconsistent_count,
     })
@@ -1089,11 +1233,12 @@ fn scan_provider_repair_result_for_home(
     let target =
         detect_target_provider_from_config(config.as_deref(), &sqlite_scan, &session_scan);
     let session_mismatches = session_scan.count_provider_mismatches(&target.provider);
+    let session_providers = session_scan.canonical_thread_providers();
+    let sqlite_metadata_mismatches =
+        sqlite_scan.rows_to_repair_from_sessions(&session_providers);
+    let ambiguous_threads = session_scan.ambiguous_thread_count();
     let index_missing = latest_thread_index_missing(&sqlite_scan, &session_index);
-    let inconsistent_count = session_mismatches
-        + sqlite_scan.rows_to_repair(&target.provider)
-        + session_scan.invalid_files
-        + u32::from(index_missing);
+    let inconsistent_count = sqlite_metadata_mismatches;
     pinned_home.ensure_canonical_path_identity()?;
     Ok(ProviderRepairReport {
         codex_home: pinned_home.canonical_path().to_path_buf(),
@@ -1102,6 +1247,8 @@ fn scan_provider_repair_result_for_home(
         sqlite_scan,
         session_index,
         session_mismatches,
+        sqlite_metadata_mismatches,
+        ambiguous_threads,
         index_missing,
         inconsistent_count,
     })
@@ -1115,8 +1262,15 @@ fn scan_session_providers_for_home(
     let mut invalid_files = 0_u32;
     let mut newest_provider = None;
     let mut newest_modified = None;
+    let mut records = Vec::new();
     for file in files {
-        let result: Result<Option<(String, Option<std::time::SystemTime>)>, String> = (|| {
+        let result: Result<
+            Option<(
+                session_files::SessionProviderRecord,
+                Option<std::time::SystemTime>,
+            )>,
+            String,
+        > = (|| {
             let relative = file
                 .strip_prefix(pinned_home.canonical_path())
                 .map_err(|_| "会话文件不在固定 Codex Home 内".to_string())?;
@@ -1129,28 +1283,18 @@ fn scan_session_providers_for_home(
             if reader.read_line(&mut line).map_err(|error| error.to_string())? == 0 {
                 return Ok(None);
             }
-            let value: serde_json::Value =
-                serde_json::from_str(line.trim_end()).map_err(|error| error.to_string())?;
-            if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
-                return Ok(None);
-            }
-            let provider = value
-                .get("payload")
-                .and_then(|payload| payload.get("model_provider"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("(missing)")
-                .to_string();
-            Ok(Some((provider, modified)))
+            Ok(parse_session_provider_record(file, &line)?.map(|record| (record, modified)))
         })();
         match result {
-            Ok(Some((provider, modified))) => {
-                *provider_counts.entry(provider.clone()).or_insert(0) += 1;
+            Ok(Some((record, modified))) => {
+                *provider_counts.entry(record.provider.clone()).or_insert(0) += 1;
                 if newest_modified
                     .is_none_or(|current| modified.is_some_and(|next| next > current))
                 {
                     newest_modified = modified;
-                    newest_provider = Some(provider);
+                    newest_provider = Some(record.provider.clone());
                 }
+                records.push(record);
             }
             Ok(None) | Err(_) => invalid_files = invalid_files.saturating_add(1),
         }
@@ -1160,6 +1304,7 @@ fn scan_session_providers_for_home(
         provider_counts,
         invalid_files,
         newest_provider,
+        records,
     }
 }
 

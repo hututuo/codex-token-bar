@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -541,6 +541,134 @@ impl PinnedHome {
         }
     }
 
+    pub(super) fn transform_first_line_atomically(
+        &self,
+        relative: &Path,
+        mut transform: impl FnMut(&[u8]) -> Result<Option<Vec<u8>>, String>,
+        mut event: impl FnMut(AtomicInstallPhase, &Path) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        #[cfg(unix)]
+        {
+            let parent = self.open_parent(relative, false)?;
+            let mut source =
+                open_regular_file_required_at(&parent.fd, parent.file_name.as_os_str(), relative)?;
+            let source_identity = physical_file_identity(&source)?;
+            let source_size = source.metadata().map_err(|error| error.to_string())?.len();
+            let first_line = read_first_line_bytes(&mut source, relative)?;
+            let Some(replacement) = transform(&first_line)? else {
+                return Ok(false);
+            };
+            let first_line_len = u64::try_from(first_line.len())
+                .map_err(|_| format!("Provider 首行过大：{}", relative.display()))?;
+            self.install_atomically_in_parent(
+                relative,
+                &parent,
+                None,
+                None,
+                &mut |target| {
+                    target
+                        .write_all(&replacement)
+                        .map_err(|error| error.to_string())?;
+                    source
+                        .seek(SeekFrom::Start(first_line_len))
+                        .map_err(|error| error.to_string())?;
+                    std::io::copy(&mut source, target)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())?;
+                    if source.metadata().map_err(|error| error.to_string())?.len() != source_size {
+                        return Err(format!(
+                            "Provider 会话文件在流式改写期间发生变化：{}",
+                            relative.display()
+                        ));
+                    }
+                    Ok(())
+                },
+                &mut |phase, path| {
+                    if phase == AtomicInstallPhase::BeforeReplace {
+                        let current = open_regular_file_required_at(
+                            &parent.fd,
+                            parent.file_name.as_os_str(),
+                            relative,
+                        )?;
+                        if physical_file_identity(&current)? != source_identity {
+                            return Err(format!(
+                                "Provider 会话文件在原子替换前已被其他进程换代：{}",
+                                relative.display()
+                            ));
+                        }
+                    }
+                    event(phase, path)
+                },
+            )?;
+            return Ok(true);
+        }
+        #[cfg(windows)]
+        {
+            let parent = self.open_parent(relative, false)?;
+            let mut source = windows_open_regular_file_required_at(
+                &parent.file,
+                parent.file_name.as_os_str(),
+                relative,
+                windows_read_file_access(),
+            )?;
+            let source_identity = physical_file_identity(&source)?;
+            let source_size = source.metadata().map_err(|error| error.to_string())?.len();
+            let first_line = read_first_line_bytes(&mut source, relative)?;
+            let Some(replacement) = transform(&first_line)? else {
+                return Ok(false);
+            };
+            let first_line_len = u64::try_from(first_line.len())
+                .map_err(|_| format!("Provider 首行过大：{}", relative.display()))?;
+            self.install_atomically_in_parent(
+                relative,
+                &parent,
+                None,
+                None,
+                &mut |target| {
+                    target
+                        .write_all(&replacement)
+                        .map_err(|error| error.to_string())?;
+                    source
+                        .seek(SeekFrom::Start(first_line_len))
+                        .map_err(|error| error.to_string())?;
+                    std::io::copy(&mut source, target)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())?;
+                    if source.metadata().map_err(|error| error.to_string())?.len() != source_size {
+                        return Err(format!(
+                            "Provider 会话文件在流式改写期间发生变化：{}",
+                            relative.display()
+                        ));
+                    }
+                    Ok(())
+                },
+                &mut |phase, path| {
+                    if phase == AtomicInstallPhase::BeforeReplace {
+                        let current = windows_open_regular_file_required_at(
+                            &parent.file,
+                            parent.file_name.as_os_str(),
+                            relative,
+                            windows_read_file_access(),
+                        )?;
+                        if physical_file_identity(&current)? != source_identity {
+                            return Err(format!(
+                                "Provider 会话文件在原子替换前已被其他进程换代：{}",
+                                relative.display()
+                            ));
+                        }
+                    }
+                    event(phase, path)
+                },
+            )?;
+            return Ok(true);
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (relative, &mut transform, &mut event);
+            Err(unsupported_platform_error())
+        }
+    }
+
     pub(super) fn remove_file(
         &self,
         relative: &Path,
@@ -711,9 +839,13 @@ impl PinnedHome {
                     .metadata()
                     .map_err(|error| error.to_string())?
                     .len();
-                let actual_checksum = sha256_file(&mut verify_file)?;
+                let actual_checksum = expected_checksum
+                    .map(|_| sha256_file(&mut verify_file))
+                    .transpose()?;
                 if expected_size.is_some_and(|expected| actual_size != expected)
-                    || expected_checksum.is_some_and(|expected| actual_checksum != expected)
+                    || expected_checksum
+                        .zip(actual_checksum.as_deref())
+                        .is_some_and(|(expected, actual)| actual != expected)
                 {
                     return Err(format!(
                         "Provider 临时文件在替换前 SHA-256 或大小校验失败：{}",
@@ -925,9 +1057,13 @@ impl PinnedHome {
                     .metadata()
                     .map_err(|error| error.to_string())?
                     .len();
-                let actual_checksum = sha256_file(&mut verify_file)?;
+                let actual_checksum = expected_checksum
+                    .map(|_| sha256_file(&mut verify_file))
+                    .transpose()?;
                 if expected_size.is_some_and(|expected| actual_size != expected)
-                    || expected_checksum.is_some_and(|expected| actual_checksum != expected)
+                    || expected_checksum
+                        .zip(actual_checksum.as_deref())
+                        .is_some_and(|(expected, actual)| actual != expected)
                 {
                     return Err(format!(
                         "Provider 临时文件在替换前 SHA-256 或大小校验失败：{}",
@@ -1112,6 +1248,16 @@ pub(super) fn physical_file_identity(file: &File) -> Result<PhysicalFileIdentity
         volume_serial_number: identity.volume_serial_number,
         file_id: identity.file_id,
     })
+}
+
+fn read_first_line_bytes(file: &mut File, diagnostic: &Path) -> Result<Vec<u8>, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("定位 Provider 文件 {} 失败：{error}", diagnostic.display()))?;
+    let mut first_line = Vec::new();
+    BufReader::new(&mut *file)
+        .read_until(b'\n', &mut first_line)
+        .map_err(|error| format!("读取 Provider 文件首行 {} 失败：{error}", diagnostic.display()))?;
+    Ok(first_line)
 }
 
 #[cfg(unix)]

@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn scan_uses_config_provider_and_counts_jsonl_sqlite_index_mismatches() {
+fn scan_uses_config_provider_without_treating_history_or_name_index_as_corruption() {
     let root = temp_root("provider-config");
     fs::create_dir_all(root.join("sessions/2026/06")).unwrap();
     fs::write(root.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
@@ -43,11 +43,10 @@ fn scan_uses_config_provider_and_counts_jsonl_sqlite_index_mismatches() {
     assert_eq!(snapshot.detected_provider, "openai");
     assert_eq!(snapshot.provider_source, "config.toml");
     assert_eq!(snapshot.session_files_found, 2);
-    assert_eq!(snapshot.inconsistent_count, 3);
-    assert!(snapshot.status.contains("JSONL 1"));
-    assert!(snapshot.status.contains("SQLite 1"));
-    assert!(snapshot.status.contains("索引 1"));
-    assert!(!snapshot.steps[0].healthy);
+    assert_eq!(snapshot.inconsistent_count, 0);
+    assert!(snapshot.status.contains("显式迁移"));
+    assert!(snapshot.status.contains("1 个会话"));
+    assert!(snapshot.steps[0].healthy);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -78,7 +77,8 @@ fn scan_falls_back_to_latest_sqlite_provider_when_config_is_missing() {
     assert_eq!(snapshot.detected_provider, "openai");
     assert_eq!(snapshot.provider_source, "SQLite 最新会话");
     assert_eq!(snapshot.session_files_found, 1);
-    assert_eq!(snapshot.inconsistent_count, 2);
+    assert_eq!(snapshot.inconsistent_count, 0);
+    assert!(snapshot.status.contains("1 个会话"));
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -758,9 +758,11 @@ fn running_codex_guard_does_not_block_scan_verify_or_explicit_backup_paths() {
 }
 
 #[test]
-fn sync_core_logic_rewrites_sources_and_repairs_index() {
+fn safe_repair_aligns_sqlite_to_each_canonical_session_without_rewriting_history_or_index() {
     let root = temp_root("provider-sync-core");
+    let backup_root = root.join("backups");
     fs::create_dir_all(root.join("sessions/2026/06")).unwrap();
+    write_test_auth_subject(&root, "safe-repair-account");
     fs::write(root.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     let old_session = root.join("sessions/2026/06/old.jsonl");
     write_session(&old_session, "thread-old", "codex_local_access");
@@ -772,29 +774,33 @@ fn sync_core_logic_rewrites_sources_and_repairs_index() {
     create_state_database(
         &root,
         &[
-            ("thread-old", "codex_local_access", 0),
+            ("thread-old", "openai", 0),
             ("thread-openai", "openai", 0),
         ],
     );
+    let old_session_before = fs::read(&old_session).unwrap();
 
     let before = scan_provider_repair(&root);
-    assert_eq!(before.inconsistent_count, 3);
+    assert_eq!(before.inconsistent_count, 1);
 
-    let report = scan_provider_repair_result(&root).unwrap();
-    for file in find_session_files(&root, true).unwrap() {
-        rewrite_session_provider(&root, &file, &report.target.provider).unwrap();
-    }
-    let changed_rows = sync_sqlite_provider(&root, &report.target.provider).unwrap();
-    let index_changed = repair_session_index(&root).unwrap();
+    let outcome = sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
+        &root,
+        &backup_root,
+        ProviderSyncMode::Repair,
+        None,
+        scan_provider_repair_result_for_home,
+        |_, _| Ok(()),
+        || Ok(false),
+    )
+    .unwrap();
 
-    assert_eq!(changed_rows, 1);
-    assert!(index_changed);
-    assert!(fs::read_to_string(old_session)
-        .unwrap()
-        .contains(r#""model_provider":"openai""#));
-    assert!(fs::read_to_string(root.join("session_index.jsonl"))
-        .unwrap()
-        .contains("thread-openai"));
+    assert!(outcome.message.contains("SQLite 1 行"));
+    assert_eq!(fs::read(&old_session).unwrap(), old_session_before);
+    assert!(!root.join("session_index.jsonl").exists());
+    assert_eq!(
+        sqlite_provider_for_thread(&root, "thread-old"),
+        "codex_local_access"
+    );
     let after = scan_provider_repair(&root);
     assert_eq!(after.inconsistent_count, 0);
 
@@ -1656,6 +1662,77 @@ fn session_backup_rejects_same_inode_same_len_overwrite_with_restored_mtime() {
     fs::remove_dir_all(fixture).unwrap();
 }
 
+#[test]
+fn metadata_delta_backup_stays_small_and_restore_preserves_new_session_tail() {
+    let fixture = temp_root("provider-session-prefix-delta");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    let session = home.join("sessions/thread.jsonl");
+    fs::create_dir_all(session.parent().unwrap()).unwrap();
+    write_test_auth_subject(&home, "prefix-delta-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let mut session_file = fs::File::create(&session).unwrap();
+    writeln!(
+        session_file,
+        r#"{{"type":"session_meta","payload":{{"id":"thread","model_provider":"openai"}}}}"#
+    )
+    .unwrap();
+    let event_line = format!(
+        "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"{}\"}}}}\n",
+        "x".repeat(32 * 1024)
+    );
+    for _ in 0..256 {
+        session_file.write_all(event_line.as_bytes()).unwrap();
+    }
+    session_file.sync_all().unwrap();
+    drop(session_file);
+    create_state_database(&home, &[("thread", "openai", 0)]);
+    let source_size = fs::metadata(&session).unwrap().len();
+    assert!(source_size > 8 * 1024 * 1024);
+
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let prefix = PathBuf::from(&backup.path)
+        .join("session-prefix")
+        .join("sessions/thread.jsonl");
+    let prefix_size = fs::metadata(&prefix).unwrap().len();
+    assert!(prefix_size < 1024);
+    assert!(prefix_size.saturating_mul(1_000) < source_size);
+    assert!(!PathBuf::from(&backup.path).join("session-jsonl").exists());
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &fs::read(PathBuf::from(&backup.path).join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["schema_version"], 3);
+    assert!(manifest["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|member| member["kind"] == "sessionPrefix"));
+
+    rewrite_session_provider(&home, &session, "codex_local_access").unwrap();
+    let appended = b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"after-backup\"}}\n";
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&session)
+        .unwrap()
+        .write_all(appended)
+        .unwrap();
+    let before_restore = fs::read(&session).unwrap();
+    let before_tail_start = before_restore.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    let expected_tail = before_restore[before_tail_start..].to_vec();
+
+    backups::restore_provider_backup_files_at(&home, &backup).unwrap();
+
+    let restored = fs::read(&session).unwrap();
+    let restored_tail_start = restored.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    assert!(String::from_utf8_lossy(&restored[..restored_tail_start])
+        .contains(r#""model_provider":"openai""#));
+    assert_eq!(&restored[restored_tail_start..], expected_tail.as_slice());
+    assert!(restored.ends_with(appended));
+    fs::remove_dir_all(fixture).unwrap();
+}
+
 fn assert_failed_session_backup_cleanup(
     home: &Path,
     backup_root: &Path,
@@ -1764,8 +1841,8 @@ fn final_restore_verification_rehashes_every_installed_member_before_cleanup() {
                 fs::write(
                     &session,
                     concat!(
-                        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"model_provider\":\"openai\"}}\n",
-                        "{\"type\":\"event\",\"payload\":\"tampered-after-apply\"}\n"
+                        "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"model_provider\":\"tampered\"}}\n",
+                        "{\"type\":\"event\",\"payload\":\"live-body\"}\n"
                     ),
                 )
                 .unwrap();
@@ -2402,7 +2479,7 @@ fn restore_rejects_manifest_member_outside_canonical_home() {
         .as_array_mut()
         .unwrap()
         .iter_mut()
-        .find(|member| member["kind"] == "session")
+        .find(|member| member["kind"] == "sessionPrefix")
         .unwrap();
     session_member["relative_path"] = serde_json::Value::String("../outside.jsonl".into());
     fs::write(

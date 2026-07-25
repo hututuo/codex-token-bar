@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,8 +22,10 @@ use super::safe_fs::{
 };
 use super::session_files::{find_session_files, write_file_atomically};
 
-const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 2;
-const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 2;
+const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 3;
+const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 3;
+const PREVIOUS_BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 2;
+const PREVIOUS_RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 2;
 const LEGACY_UNSUPPORTED_REASON: &str = "旧版 v1 清单缺少可验证的成员摘要。";
 const UNIQUE_DIRECTORY_ATTEMPTS: usize = 64;
 const MAX_SYNC_DIRECTORIES: usize = 100_000;
@@ -215,6 +217,7 @@ fn create_provider_backup_files_at_with_hooks(
         &pinned_home,
         target_provider,
         false,
+        None,
         hook,
         &mut copy_hook,
     )
@@ -232,6 +235,7 @@ pub(super) fn create_provider_backup_files_at_with_pinned_hook(
         pinned_home,
         target_provider,
         false,
+        None,
         hook,
         &mut copy_hook,
     )
@@ -249,6 +253,26 @@ pub(super) fn create_provider_backup_files_at_with_pinned_stopped_hook(
         pinned_home,
         target_provider,
         true,
+        None,
+        hook,
+        &mut copy_hook,
+    )
+}
+
+pub(super) fn create_provider_backup_files_at_with_pinned_selection_stopped_hook(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    target_provider: &str,
+    session_relative_paths: &[PathBuf],
+    hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
+) -> Result<ProviderRepairBackupInfo, String> {
+    let mut copy_hook = no_session_copy_hook;
+    create_provider_backup_files_at_with_pinned_mode(
+        backup_root,
+        pinned_home,
+        target_provider,
+        true,
+        Some(session_relative_paths),
         hook,
         &mut copy_hook,
     )
@@ -259,6 +283,7 @@ fn create_provider_backup_files_at_with_pinned_mode(
     pinned_home: &PinnedHome,
     target_provider: &str,
     codex_stopped: bool,
+    session_relative_paths: Option<&[PathBuf]>,
     mut hook: impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
     session_copy_hook: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<ProviderRepairBackupInfo, String> {
@@ -272,6 +297,7 @@ fn create_provider_backup_files_at_with_pinned_mode(
         pinned_home,
         target_provider,
         codex_stopped,
+        session_relative_paths,
         &mut hook,
         session_copy_hook,
     );
@@ -289,6 +315,7 @@ fn build_complete_backup(
     pinned_home: &PinnedHome,
     target_provider: &str,
     codex_stopped: bool,
+    session_relative_paths: Option<&[PathBuf]>,
     hook: &mut impl FnMut(BackupPublicationPhase, &Path) -> Result<(), String>,
     session_copy_hook: &mut impl FnMut(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -320,29 +347,35 @@ fn build_complete_backup(
     members.push(absent_member("state_5.sqlite-wal", "sqliteSidecar"));
     members.push(absent_member("state_5.sqlite-shm", "sqliteSidecar"));
 
-    let session_backup_root = backup_path.join("session-jsonl");
+    let session_backup_root = backup_path.join("session-prefix");
     pinned_home.ensure_canonical_path_identity()?;
-    let session_files = find_session_files(pinned_home.canonical_path(), true)?;
+    let session_files = match session_relative_paths {
+        Some(relatives) => relatives
+            .iter()
+            .map(|relative| pinned_home.canonical_path().join(relative))
+            .collect(),
+        None => find_session_files(pinned_home.canonical_path(), true)?,
+    };
     pinned_home.ensure_canonical_path_identity()?;
     for source in session_files {
         let relative = source
             .strip_prefix(pinned_home.canonical_path())
             .map_err(|_| format!("会话文件不在规范 Codex Home 内：{}", source.display()))?;
         validate_relative_member_path(relative, "session")?;
-        let backup_relative = PathBuf::from("session-jsonl").join(relative);
+        let backup_relative = PathBuf::from("session-prefix").join(relative);
         let target = backup_path.join(&backup_relative);
         let source_file = pinned_home
             .open_file(relative)?
             .ok_or_else(|| format!("备份会话文件在打开前消失：{}", relative.display()))?;
-        let (size, checksum_sha256) = copy_open_session_file_with_hook(
+        let (size, checksum_sha256) = copy_open_first_line_with_hook(
             source_file,
             &target,
             || session_copy_hook(relative),
             || pinned_home.open_file(relative),
         )
-            .map_err(|error| format!("备份会话文件 {} 失败：{error}", relative.display()))?;
+        .map_err(|error| format!("备份会话首行 {} 失败：{error}", relative.display()))?;
         members.push(BackupMember {
-            kind: "session".into(),
+            kind: "sessionPrefix".into(),
             relative_path: path_to_manifest_string(relative)?,
             backup_path: Some(path_to_manifest_string(&backup_relative)?),
             present: true,
@@ -630,7 +663,7 @@ pub(super) fn verified_session_relative_paths(
     manifest
         .members
         .iter()
-        .filter(|member| member.kind == "session")
+        .filter(|member| member.kind == "session" || member.kind == "sessionPrefix")
         .map(|member| manifest_path(&member.relative_path))
         .collect()
 }
@@ -1058,6 +1091,8 @@ fn capture_and_publish_live_state(
                     .len(),
                 file_sha256(&target)?,
             )
+        } else if member.kind == "sessionPrefix" {
+            copy_open_first_line(source, &target)?
         } else {
             copy_open_file(source, &target)?
         };
@@ -1171,6 +1206,56 @@ fn install_logical_member(
     }
     let relative = manifest_path(&member.relative_path)?;
     validate_relative_member_path(&relative, &member.kind)?;
+    if member.kind == "sessionPrefix" {
+        if !member.present {
+            return Err(format!(
+                "会话首行差量成员不能是 tombstone：{}",
+                member.relative_path
+            ));
+        }
+        let backup_relative = member
+            .backup_path
+            .as_deref()
+            .ok_or_else(|| format!("备份成员缺少源文件：{}", member.relative_path))?;
+        let source = source_root.join(manifest_path(backup_relative)?);
+        reject_symlink_or_non_file(&source)
+            .map_err(|error| format!("验证备份成员源文件 {} 失败：{error}", source.display()))?;
+        let replacement = fs::read(&source).map_err(|error| error.to_string())?;
+        pinned_home
+            .transform_first_line_atomically(
+                &relative,
+                |current| {
+                    if current == replacement {
+                        Ok(None)
+                    } else {
+                        Ok(Some(replacement.clone()))
+                    }
+                },
+                |phase, path| match phase {
+                    AtomicInstallPhase::BeforeTempCreate => {
+                        hook(RestorePhase::BeforeTempCreate, index, &relative)
+                    }
+                    AtomicInstallPhase::ValidateTemp => {
+                        hook(RestorePhase::ValidateTemp, index, &relative).map_err(|error| {
+                            format!("恢复临时文件验证失败 {}：{error}", path.display())
+                        })
+                    }
+                    AtomicInstallPhase::BeforeReplace => {
+                        hook(RestorePhase::BeforeReplace, index, &relative)
+                    }
+                    AtomicInstallPhase::BeforeFileSync => {
+                        hook(RestorePhase::SyncDestinationFile, index, &relative)
+                    }
+                    AtomicInstallPhase::BeforeParentSync => {
+                        hook(RestorePhase::SyncDestinationParent, index, &relative)
+                    }
+                    AtomicInstallPhase::CleanupTemp => {
+                        hook(RestorePhase::CleanupTemp, index, &relative)
+                    }
+                },
+            )
+            .map(|_| ())
+    } else {
     if !member.present {
         pinned_home.remove_file(&relative, || {
             hook(RestorePhase::SyncDestinationParent, index, &relative)
@@ -1221,6 +1306,7 @@ fn install_logical_member(
             AtomicInstallPhase::CleanupTemp => hook(RestorePhase::CleanupTemp, index, &relative),
         },
     )
+    }
 }
 
 fn install_sqlite_unit(
@@ -1378,6 +1464,10 @@ fn verify_installed_members(
             }
             continue;
         }
+        if member.kind == "sessionPrefix" {
+            verify_first_line_member(pinned_home, member, &relative)?;
+            continue;
+        }
         if member.kind == "sqliteSidecar" || !member.present {
             if pinned_home.open_file(&relative)?.is_some() {
                 return Err(format!(
@@ -1388,6 +1478,28 @@ fn verify_installed_members(
             continue;
         }
         verify_exact_member(pinned_home, member, &relative)?;
+    }
+    Ok(())
+}
+
+fn verify_first_line_member(
+    pinned_home: &PinnedHome,
+    member: &BackupMember,
+    relative: &Path,
+) -> Result<(), String> {
+    let source = pinned_home
+        .open_file(relative)?
+        .ok_or_else(|| format!("恢复会话首行不存在：{}", member.relative_path))?;
+    let (size, checksum) = first_line_size_and_sha256(source)?;
+    let expected_checksum = member
+        .checksum_sha256
+        .as_deref()
+        .ok_or_else(|| format!("恢复成员缺少 SHA-256：{}", member.relative_path))?;
+    if size != member.size || checksum != expected_checksum {
+        return Err(format!(
+            "恢复会话首行 SHA-256 或大小验证失败：{}",
+            member.relative_path
+        ));
     }
     Ok(())
 }
@@ -1411,6 +1523,19 @@ fn verify_exact_member(
         ));
     }
     Ok(())
+}
+
+fn first_line_size_and_sha256(mut source: fs::File) -> Result<(u64, String), String> {
+    let mut first_line = Vec::new();
+    BufReader::new(&mut source)
+        .read_until(b'\n', &mut first_line)
+        .map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(&first_line);
+    Ok((
+        u64::try_from(first_line.len()).unwrap_or(u64::MAX),
+        format!("{:x}", hasher.finalize()),
+    ))
 }
 
 fn write_restore_journal(recovery_path: &Path, journal: &RestoreJournal) -> Result<(), String> {
@@ -1694,7 +1819,10 @@ fn read_restore_journal(recovery_path: &Path) -> Result<RestoreJournal, String> 
     let journal: RestoreJournal =
         serde_json::from_slice(&fs::read(&path).map_err(|error| error.to_string())?)
             .map_err(|error| format!("恢复事务 journal 无效：{error}"))?;
-    if journal.schema_version != RESTORE_JOURNAL_SCHEMA_VERSION {
+    if !matches!(
+        journal.schema_version,
+        PREVIOUS_RESTORE_JOURNAL_SCHEMA_VERSION | RESTORE_JOURNAL_SCHEMA_VERSION
+    ) {
         return Err("恢复事务 journal 版本不受支持".into());
     }
     Ok(journal)
@@ -1714,6 +1842,7 @@ fn validate_recovery_journal(recovery_path: &Path, journal: &RestoreJournal) -> 
         &journal.members,
         false,
         journal.phase != RestoreJournalPhase::Committed,
+        journal.schema_version,
     )
 }
 
@@ -1799,14 +1928,24 @@ fn validate_backup_manifest(backup_path: &Path) -> Result<BackupManifest, String
     let manifest: BackupManifest =
         serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| error.to_string())?)
             .map_err(|error| format!("备份 manifest 无效：{error}"))?;
-    if manifest.schema_version != BACKUP_MANIFEST_SCHEMA_VERSION || !manifest.complete {
+    if !matches!(
+        manifest.schema_version,
+        PREVIOUS_BACKUP_MANIFEST_SCHEMA_VERSION | BACKUP_MANIFEST_SCHEMA_VERSION
+    ) || !manifest.complete
+    {
         return Err("备份 manifest 未完整提交或版本不受支持。".into());
     }
     if backup_path.file_name().and_then(|name| name.to_str()) != Some(manifest.id.as_str()) {
         return Err("备份 manifest ID 与目录不一致。".into());
     }
 
-    validate_member_set(&canonical_backup, &manifest.members, true, true)?;
+    validate_member_set(
+        &canonical_backup,
+        &manifest.members,
+        true,
+        true,
+        manifest.schema_version,
+    )?;
     Ok(manifest)
 }
 
@@ -1815,6 +1954,7 @@ fn validate_member_set(
     members: &[BackupMember],
     standard_backup_mapping: bool,
     verify_source_files: bool,
+    schema_version: u32,
 ) -> Result<(), String> {
     let canonical_source_root = source_root
         .canonicalize()
@@ -1850,6 +1990,14 @@ fn validate_member_set(
                     ));
                 }
             }
+            ("sessionPrefix", _) if schema_version >= 3 => {
+                if !member.present {
+                    return Err(format!(
+                        "备份 manifest 会话元数据成员必须存在：{}",
+                        member.relative_path
+                    ));
+                }
+            }
             _ => {
                 return Err(format!(
                     "备份 manifest 包含额外成员：{}",
@@ -1859,7 +2007,7 @@ fn validate_member_set(
         }
 
         let expected_backup_path = if standard_backup_mapping {
-            expected_backup_path(member)?
+            expected_backup_path(member, schema_version)?
         } else if member.present {
             Some(path_to_manifest_string(
                 &PathBuf::from("live").join(&relative),
@@ -1928,7 +2076,10 @@ fn validate_member_set(
     Ok(())
 }
 
-fn expected_backup_path(member: &BackupMember) -> Result<Option<String>, String> {
+fn expected_backup_path(
+    member: &BackupMember,
+    schema_version: u32,
+) -> Result<Option<String>, String> {
     if !member.present {
         return Ok(None);
     }
@@ -1937,6 +2088,9 @@ fn expected_backup_path(member: &BackupMember) -> Result<Option<String>, String>
         ("sqlite", "state_5.sqlite") => PathBuf::from("state_5.sqlite.before"),
         ("fixed", "session_index.jsonl") => PathBuf::from("session_index.jsonl.before"),
         ("session", _) => PathBuf::from("session-jsonl").join(&member.relative_path),
+        ("sessionPrefix", _) if schema_version >= 3 => {
+            PathBuf::from("session-prefix").join(&member.relative_path)
+        }
         ("sqliteSidecar", _) => {
             return Err(format!(
                 "备份 manifest SQLite sidecar 必须是 tombstone：{}",
@@ -1966,6 +2120,16 @@ fn validate_relative_member_path(relative: &Path, kind: &str) -> Result<(), Stri
             Some("state_5.sqlite-wal" | "state_5.sqlite-shm")
         ),
         "session" => {
+            relative
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+                && matches!(
+                    relative.components().next(),
+                    Some(Component::Normal(root))
+                        if root == "sessions" || root == "archived_sessions"
+                )
+        }
+        "sessionPrefix" => {
             relative
                 .extension()
                 .is_some_and(|extension| extension == "jsonl")
@@ -2040,7 +2204,9 @@ fn read_backup_info(path: &Path) -> Result<ProviderRepairBackupInfo, String> {
     let session_files = manifest
         .members
         .iter()
-        .filter(|member| member.kind == "session" && member.present)
+        .filter(|member| {
+            (member.kind == "session" || member.kind == "sessionPrefix") && member.present
+        })
         .count();
     Ok(ProviderRepairBackupInfo {
         id: manifest.id,
@@ -2151,6 +2317,36 @@ fn no_session_copy_hook(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_open_first_line(mut source: fs::File, target: &Path) -> Result<(u64, String), String> {
+    let opened = source.metadata().map_err(|error| error.to_string())?;
+    let mut first_line = Vec::new();
+    BufReader::new(&mut source)
+        .read_until(b'\n', &mut first_line)
+        .map_err(|error| error.to_string())?;
+    let completed = source.metadata().map_err(|error| error.to_string())?;
+    if completed.len() != opened.len() || completed.modified().ok() != opened.modified().ok() {
+        return Err("源文件在首行差量捕获期间发生变化".into());
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut target_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|error| error.to_string())?;
+    target_file
+        .write_all(&first_line)
+        .and_then(|_| target_file.sync_all())
+        .map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(&first_line);
+    Ok((
+        u64::try_from(first_line.len()).unwrap_or(u64::MAX),
+        format!("{:x}", hasher.finalize()),
+    ))
+}
+
 fn copy_open_file(mut source: fs::File, target: &Path) -> Result<(u64, String), String> {
     let opened = source.metadata().map_err(|error| error.to_string())?;
     if let Some(parent) = target.parent() {
@@ -2175,7 +2371,7 @@ fn copy_open_file(mut source: fs::File, target: &Path) -> Result<(u64, String), 
     Ok((size, file_sha256(target)?))
 }
 
-fn copy_open_session_file_with_hook(
+fn copy_open_first_line_with_hook(
     mut source: fs::File,
     target: &Path,
     after_descriptor_open: impl FnOnce() -> Result<(), String>,
@@ -2184,11 +2380,39 @@ fn copy_open_session_file_with_hook(
     let opened = source.metadata().map_err(|error| error.to_string())?;
     let opened_modified = opened.modified().map_err(|error| error.to_string())?;
     let opened_identity = physical_file_identity(&source)?;
-    let opened_digest = file_sha256_from_open(&mut source)?;
+    let mut opened_first_line = Vec::new();
+    BufReader::new(&mut source)
+        .read_until(b'\n', &mut opened_first_line)
+        .map_err(|error| error.to_string())?;
     source
         .seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
     after_descriptor_open()?;
+    let mut captured_first_line = Vec::new();
+    BufReader::new(&mut source)
+        .read_until(b'\n', &mut captured_first_line)
+        .map_err(|error| error.to_string())?;
+    let completed = source.metadata().map_err(|error| error.to_string())?;
+    let completed_modified = completed.modified().map_err(|error| error.to_string())?;
+    let mut live = reopen_live_path()?
+        .ok_or_else(|| "源文件在描述符复制期间消失".to_string())?;
+    let live_metadata = live.metadata().map_err(|error| error.to_string())?;
+    let live_modified = live_metadata.modified().map_err(|error| error.to_string())?;
+    let live_identity = physical_file_identity(&live)?;
+    let mut live_first_line = Vec::new();
+    BufReader::new(&mut live)
+        .read_until(b'\n', &mut live_first_line)
+        .map_err(|error| error.to_string())?;
+    if completed.len() != opened.len()
+        || completed_modified != opened_modified
+        || live_metadata.len() != opened.len()
+        || live_modified != opened_modified
+        || live_identity != opened_identity
+        || captured_first_line != opened_first_line
+        || live_first_line != opened_first_line
+    {
+        return Err("源文件在描述符复制期间发生变化，拒绝发布不完整快照".into());
+    }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -2197,63 +2421,16 @@ fn copy_open_session_file_with_hook(
         .create_new(true)
         .open(target)
         .map_err(|error| error.to_string())?;
-    let copied = std::io::copy(&mut source, &mut target_file)
-        .map_err(|error| error.to_string())
-        .and_then(|size| {
-            target_file
-                .sync_all()
-                .map_err(|error| error.to_string())?;
-            Ok(size)
-        });
-    drop(target_file);
-    let size = match copied {
-        Ok(size) => size,
-        Err(error) => {
-            let _ = fs::remove_file(target);
-            return Err(error);
-        }
-    };
-    let verification = (|| {
-        let completed = source.metadata().map_err(|error| error.to_string())?;
-        let completed_modified = completed.modified().map_err(|error| error.to_string())?;
-        source
-            .seek(SeekFrom::Start(0))
-            .map_err(|error| error.to_string())?;
-        let completed_source_digest = file_sha256_from_open(&mut source)?;
-        let destination_digest = file_sha256(target)?;
-        let mut live = reopen_live_path()?
-            .ok_or_else(|| "源文件在描述符复制期间消失".to_string())?;
-        let live_identity = physical_file_identity(&live)?;
-        let live_digest = file_sha256_from_open(&mut live)?;
-        if size != opened.len()
-            || completed.len() != opened.len()
-            || completed_modified != opened_modified
-            || live_identity != opened_identity
-            || destination_digest != opened_digest
-            || completed_source_digest != opened_digest
-            || live_digest != opened_digest
-        {
-            return Err("源文件在描述符复制期间发生变化，拒绝发布不完整快照".into());
-        }
-        Ok((size, destination_digest))
-    })();
-    if verification.is_err() {
-        let _ = fs::remove_file(target);
-    }
-    verification
-}
-
-fn file_sha256_from_open(file: &mut fs::File) -> Result<String, String> {
+    target_file
+        .write_all(&opened_first_line)
+        .and_then(|_| target_file.sync_all())
+        .map_err(|error| error.to_string())?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
+    hasher.update(&opened_first_line);
+    Ok((
+        u64::try_from(opened_first_line.len()).unwrap_or(u64::MAX),
+        format!("{:x}", hasher.finalize()),
+    ))
 }
 
 fn reject_symlink_or_non_file(path: &Path) -> Result<(), String> {

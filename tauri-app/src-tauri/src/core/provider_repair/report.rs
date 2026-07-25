@@ -17,26 +17,30 @@ pub(super) struct ProviderRepairReport {
     pub(super) sqlite_scan: SQLiteScan,
     pub(super) session_index: SessionIndexScan,
     pub(super) session_mismatches: u32,
+    pub(super) sqlite_metadata_mismatches: u32,
+    pub(super) ambiguous_threads: u32,
     pub(super) index_missing: bool,
     pub(super) inconsistent_count: u32,
 }
 
 pub(super) fn snapshot_from_report(report: ProviderRepairReport) -> ProviderRepairSnapshot {
-    let sqlite_mismatches = report.sqlite_scan.rows_to_repair(&report.target.provider);
-    let index_issue = u32::from(report.index_missing);
     let status = if report.inconsistent_count == 0 {
         format!(
-            "扫描完成：未发现不一致。SQLite {}，session_index {} 行。",
-            report.sqlite_scan.integrity, report.session_index.rows
+            "扫描完成：安全修复未发现 SQLite 元数据不一致。另有 {} 个会话可在显式迁移时切换到 {}；异常文件 {}，歧义线程 {}；SQLite {}。",
+            report.session_mismatches,
+            report.target.provider,
+            report.session_scan.invalid_files,
+            report.ambiguous_threads,
+            report.sqlite_scan.integrity
         )
     } else {
         format!(
-            "扫描完成：发现 {} 条不一致（JSONL {}，SQLite {}，异常文件 {}，索引 {}）。",
+            "扫描完成：安全修复发现 {} 条不一致（SQLite 元数据 {}，异常文件 {}，歧义线程 {}）。另有 {} 个会话属于显式 Provider 迁移，不会自动改写。",
             report.inconsistent_count,
-            report.session_mismatches,
-            sqlite_mismatches,
+            report.sqlite_metadata_mismatches,
             report.session_scan.invalid_files,
-            index_issue
+            report.ambiguous_threads,
+            report.session_mismatches
         )
     };
 

@@ -9,8 +9,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::safe_fs::windows_extended_length_path;
 use super::safe_fs::{AtomicInstallPhase, PinnedHome};
 
-const MAX_SESSION_TRAVERSAL_DEPTH: usize = 64;
-const MAX_SESSION_TRAVERSAL_ENTRIES: usize = 200_000;
 const ATOMIC_TEMP_ATTEMPTS: usize = 64;
 static ATOMIC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -45,6 +43,14 @@ pub(super) struct SessionScan {
     pub(super) provider_counts: HashMap<String, u32>,
     pub(super) invalid_files: u32,
     pub(super) newest_provider: Option<String>,
+    pub(super) records: Vec<SessionProviderRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SessionProviderRecord {
+    pub(super) file: PathBuf,
+    pub(super) thread_id: String,
+    pub(super) provider: String,
 }
 
 impl SessionScan {
@@ -54,6 +60,42 @@ impl SessionScan {
             .filter(|(provider, _)| provider.as_str() != target_provider)
             .map(|(_, count)| *count)
             .sum()
+    }
+
+    pub(super) fn canonical_thread_providers(&self) -> HashMap<String, String> {
+        let mut providers = HashMap::<String, Option<String>>::new();
+        for record in &self.records {
+            if record.provider.trim().is_empty() || record.provider == "(missing)" {
+                continue;
+            }
+            providers
+                .entry(record.thread_id.clone())
+                .and_modify(|current| {
+                    if current.as_deref() != Some(record.provider.as_str()) {
+                        *current = None;
+                    }
+                })
+                .or_insert_with(|| Some(record.provider.clone()));
+        }
+        providers
+            .into_iter()
+            .filter_map(|(thread_id, provider)| provider.map(|provider| (thread_id, provider)))
+            .collect()
+    }
+
+    pub(super) fn ambiguous_thread_count(&self) -> u32 {
+        let mut providers = HashMap::<&str, &str>::new();
+        let mut ambiguous = HashSet::new();
+        for record in &self.records {
+            if let Some(previous) =
+                providers.insert(record.thread_id.as_str(), record.provider.as_str())
+            {
+                if previous != record.provider {
+                    ambiguous.insert(record.thread_id.as_str());
+                }
+            }
+        }
+        u32::try_from(ambiguous.len()).unwrap_or(u32::MAX)
     }
 }
 
@@ -70,16 +112,8 @@ pub(super) fn find_session_files(
     }
     let mut files = Vec::new();
     let mut visited = HashSet::new();
-    let mut entries_seen = 0_usize;
     for root in roots {
-        collect_jsonl_files(
-            &canonical_home,
-            &root,
-            &mut files,
-            &mut visited,
-            &mut entries_seen,
-            0,
-        )?;
+        collect_jsonl_files(&canonical_home, &root, &mut files, &mut visited)?;
     }
     files.sort();
     Ok(files)
@@ -90,58 +124,46 @@ pub(super) fn collect_jsonl_files(
     path: &Path,
     files: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
-    entries_seen: &mut usize,
-    depth: usize,
 ) -> Result<(), String> {
-    if depth > MAX_SESSION_TRAVERSAL_DEPTH {
-        return Err(format!("会话目录遍历超过最大深度：{}", path.display()));
-    }
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("读取会话路径失败 {}：{error}", path.display())),
-    };
-    if metadata.file_type().is_symlink() {
-        return Ok(());
-    }
-
-    let canonical_path = path
-        .canonicalize()
-        .map_err(|error| format!("无法确认会话路径 {}：{error}", path.display()))?;
-    if !canonical_path.starts_with(canonical_root) {
-        return Ok(());
-    }
-    if metadata.is_file() {
-        if canonical_path
-            .extension()
-            .is_some_and(|extension| extension == "jsonl")
-        {
-            files.push(canonical_path);
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        let metadata = match fs::symlink_metadata(&next) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("读取会话路径失败 {}：{error}", next.display()))
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
         }
-        return Ok(());
-    }
-    if !metadata.is_dir() || !visited.insert(canonical_path) {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(path)
-        .map_err(|error| format!("读取会话目录失败 {}：{error}", path.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("读取会话目录项失败：{error}"))?;
-        *entries_seen = entries_seen.saturating_add(1);
-        if *entries_seen > MAX_SESSION_TRAVERSAL_ENTRIES {
-            return Err(format!(
-                "会话目录遍历超过最大条目数 {MAX_SESSION_TRAVERSAL_ENTRIES}"
-            ));
+        let canonical_path = next
+            .canonicalize()
+            .map_err(|error| format!("无法确认会话路径 {}：{error}", next.display()))?;
+        if !canonical_path.starts_with(canonical_root) {
+            continue;
         }
-        collect_jsonl_files(
-            canonical_root,
-            &entry.path(),
-            files,
-            visited,
-            entries_seen,
-            depth + 1,
-        )?;
+        if metadata.is_file() {
+            if canonical_path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
+                files.push(canonical_path);
+            }
+            continue;
+        }
+        if !metadata.is_dir() || !visited.insert(canonical_path) {
+            continue;
+        }
+        let entries = fs::read_dir(&next)
+            .map_err(|error| format!("读取会话目录失败 {}：{error}", next.display()))?;
+        for entry in entries {
+            pending.push(
+                entry
+                    .map_err(|error| format!("读取会话目录项失败：{error}"))?
+                    .path(),
+            );
+        }
     }
     Ok(())
 }
@@ -151,19 +173,21 @@ pub(super) fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
     let mut invalid_files = 0;
     let mut newest_provider = None;
     let mut newest_modified = None;
+    let mut records = Vec::new();
 
     for file in files {
         match read_session_provider(file) {
-            Ok(Some(provider)) => {
-                *provider_counts.entry(provider.clone()).or_insert(0) += 1;
+            Ok(Some(record)) => {
+                *provider_counts.entry(record.provider.clone()).or_insert(0) += 1;
                 let modified = fs::metadata(file)
                     .and_then(|metadata| metadata.modified())
                     .ok();
                 if newest_modified.is_none_or(|current| modified.is_some_and(|next| next > current))
                 {
                     newest_modified = modified;
-                    newest_provider = Some(provider);
+                    newest_provider = Some(record.provider.clone());
                 }
+                records.push(record);
             }
             Ok(None) | Err(_) => invalid_files += 1,
         }
@@ -174,6 +198,7 @@ pub(super) fn scan_session_providers(files: &[PathBuf]) -> SessionScan {
         provider_counts,
         invalid_files,
         newest_provider,
+        records,
     }
 }
 
@@ -223,17 +248,14 @@ pub(super) fn rewrite_session_provider_relative_in(
     mut hook: impl FnMut(SessionRewritePhase, &Path) -> Result<(), String>,
 ) -> Result<bool, String> {
     let display_path = pinned_home.canonical_path().join(relative);
-    pinned_home.transform_file_atomically(
+    pinned_home.transform_first_line_atomically(
         relative,
-        |bytes| {
-            let text = String::from_utf8(bytes).map_err(|error| {
+        |first_line_bytes| {
+            let (json_bytes, separator) = split_first_line(first_line_bytes);
+            let text = std::str::from_utf8(json_bytes).map_err(|error| {
                 format!("会话文件不是有效 UTF-8 {}：{error}", display_path.display())
             })?;
-            let (first_line, rest) = match text.find('\n') {
-                Some(index) => (&text[..index], &text[index..]),
-                None => (text.as_str(), ""),
-            };
-            let mut value: Value = serde_json::from_str(first_line.trim_end())
+            let mut value: Value = serde_json::from_str(text)
                 .map_err(|error| format!("{}: {error}", display_path.display()))?;
             if value.get("type").and_then(Value::as_str) != Some("session_meta") {
                 return Ok(None);
@@ -242,6 +264,12 @@ pub(super) fn rewrite_session_provider_relative_in(
                 .get_mut("payload")
                 .and_then(Value::as_object_mut)
                 .ok_or_else(|| format!("{} 缺少 session_meta.payload", display_path.display()))?;
+            let thread_id = payload
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("{} 缺少 session_meta.payload.id", display_path.display()))?;
+            validate_rollout_thread_identity(relative, thread_id)?;
             if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
                 return Ok(None);
             }
@@ -249,8 +277,10 @@ pub(super) fn rewrite_session_provider_relative_in(
                 "model_provider".into(),
                 Value::String(target_provider.into()),
             );
-            let first_line = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-            Ok(Some(format!("{first_line}{rest}").into_bytes()))
+            let mut replacement =
+                serde_json::to_vec(&value).map_err(|error| error.to_string())?;
+            replacement.extend_from_slice(separator);
+            Ok(Some(replacement))
         },
         |phase, path| match phase {
             AtomicInstallPhase::BeforeTempCreate => {
@@ -262,9 +292,9 @@ pub(super) fn rewrite_session_provider_relative_in(
     )
 }
 
-fn read_session_provider(file: &Path) -> Result<Option<String>, String> {
-    let file = fs::File::open(file).map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(file);
+fn read_session_provider(file: &Path) -> Result<Option<SessionProviderRecord>, String> {
+    let source = fs::File::open(file).map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(source);
     let mut line = String::new();
     let read = reader
         .read_line(&mut line)
@@ -272,18 +302,78 @@ fn read_session_provider(file: &Path) -> Result<Option<String>, String> {
     if read == 0 {
         return Ok(None);
     }
+    parse_session_provider_record(file, &line)
+}
 
+pub(super) fn parse_session_provider_record(
+    file: &Path,
+    line: &str,
+) -> Result<Option<SessionProviderRecord>, String> {
     let value: Value = serde_json::from_str(line.trim_end()).map_err(|error| error.to_string())?;
     if value.get("type").and_then(Value::as_str) != Some("session_meta") {
         return Ok(None);
     }
-    let provider = value
+    let payload = value
         .get("payload")
-        .and_then(|payload| payload.get("model_provider"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{} 缺少 session_meta.payload", file.display()))?;
+    let thread_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{} 缺少 session_meta.payload.id", file.display()))?;
+    validate_rollout_thread_identity(file, thread_id)?;
+    let provider = payload
+        .get("model_provider")
         .and_then(Value::as_str)
         .unwrap_or("(missing)")
         .to_string();
-    Ok(Some(provider))
+    Ok(Some(SessionProviderRecord {
+        file: file.to_path_buf(),
+        thread_id: thread_id.to_string(),
+        provider,
+    }))
+}
+
+fn split_first_line(bytes: &[u8]) -> (&[u8], &[u8]) {
+    if bytes.ends_with(b"\r\n") {
+        (&bytes[..bytes.len() - 2], b"\r\n")
+    } else if bytes.ends_with(b"\n") {
+        (&bytes[..bytes.len() - 1], b"\n")
+    } else {
+        (bytes, b"")
+    }
+}
+
+fn validate_rollout_thread_identity(path: &Path, thread_id: &str) -> Result<(), String> {
+    let Some(file_thread_id) = rollout_thread_id_from_path(path) else {
+        return Ok(());
+    };
+    if file_thread_id == thread_id {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} 的文件名线程 ID {} 与 session_meta.payload.id {} 不一致",
+            path.display(),
+            file_thread_id,
+            thread_id
+        ))
+    }
+}
+
+fn rollout_thread_id_from_path(path: &Path) -> Option<&str> {
+    let stem = path.file_stem()?.to_str()?;
+    let candidate = stem.get(stem.len().checked_sub(36)?..)?;
+    let bytes = candidate.as_bytes();
+    let valid = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    valid.then_some(candidate)
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
