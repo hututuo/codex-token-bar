@@ -5,15 +5,17 @@ use crate::models::{
 };
 use crate::platform;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_plugin_notification::NotificationExt;
 use time::{OffsetDateTime, Time};
 
 const TICK_INTERVAL: Duration = Duration::from_secs(15);
 const QUOTA_CHECK_INTERVAL_SECONDS: i64 = 60;
+static AUTO_RESUME_STATE_WRITE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +133,16 @@ pub struct AutoResumeRegistry {
     quota_generation: Arc<RwLock<u64>>,
 }
 
+struct BackgroundStartedOwner {
+    started: Arc<AtomicBool>,
+}
+
+impl Drop for BackgroundStartedOwner {
+    fn drop(&mut self) {
+        self.started.store(false, Ordering::Release);
+    }
+}
+
 impl AutoResumeRegistry {
     pub fn initialize_and_start(&self, app: tauri::AppHandle) {
         if self.started.swap(true, Ordering::AcqRel) {
@@ -140,28 +152,44 @@ impl AutoResumeRegistry {
             .map(|value| value.auto_resume)
             .unwrap_or_default();
         let persisted = load_state().unwrap_or_default();
-        let (schedule_generation, quota_generation) = {
+        let (schedule_generation, quota_generation, persisted) = {
             let mut state = lock(&self.state);
             state.settings = settings;
             state.persisted = persisted;
+            let before = state.persisted.clone();
             normalize_day(&mut state.persisted);
+            recover_interrupted_run(&mut state.persisted);
             let settings = state.settings.clone();
             reconcile_schedule(&settings, &mut state.persisted, unix_now());
             refresh_idle_status(&settings, &mut state.persisted);
-            let _ = persist_state(&state.persisted);
+            if state.persisted != before {
+                bump(&mut state.persisted);
+            }
             (
                 state.persisted.schedule_generation,
                 state.persisted.quota_generation,
+                state.persisted.clone(),
             )
         };
+        let _ = persist_state(&persisted);
         set_generation(&self.schedule_generation, schedule_generation);
         set_generation(&self.quota_generation, quota_generation);
         let registry = self.clone();
+        let started = self.started.clone();
         tauri::async_runtime::spawn(async move {
+            let _started_owner = BackgroundStartedOwner { started };
             let mut interval = tokio::time::interval(TICK_INTERVAL);
             loop {
                 interval.tick().await;
-                registry.tick(app.clone()).await;
+                let tick_registry = registry.clone();
+                let tick_app = app.clone();
+                let mut tick = tokio::task::JoinSet::new();
+                tick.spawn(async move {
+                    tick_registry.tick(tick_app).await;
+                });
+                if let Some(Err(error)) = tick.join_next().await {
+                    eprintln!("Codex Token Bar: auto-resume tick recovered after panic: {error}");
+                }
             }
         });
     }
@@ -252,7 +280,9 @@ impl AutoResumeRegistry {
         let settings = state.settings.clone();
         refresh_idle_status(&settings, &mut state.persisted);
         bump(&mut state.persisted);
-        let _ = persist_state(&state.persisted);
+        let persisted = state.persisted.clone();
+        drop(state);
+        let _ = persist_state(&persisted);
     }
 
     pub fn status(&self) -> AutoResumeRuntimeStatus {
@@ -261,15 +291,23 @@ impl AutoResumeRegistry {
     }
 
     pub fn cancel(&self) -> AutoResumeRuntimeStatus {
-        let mut state = lock(&self.state);
-        if let Some(cancel) = &state.cancel {
-            cancel.store(true, Ordering::Release);
-            state.persisted.message = "正在停止本次自动续跑…".into();
-            state.persisted.state = "cancelling".into();
-            bump(&mut state.persisted);
-            let _ = persist_state(&state.persisted);
+        let (status, persisted) = {
+            let mut state = lock(&self.state);
+            let persisted = if let Some(cancel) = &state.cancel {
+                cancel.store(true, Ordering::Release);
+                state.persisted.message = "正在停止本次自动续跑…".into();
+                state.persisted.state = "cancelling".into();
+                bump(&mut state.persisted);
+                Some(state.persisted.clone())
+            } else {
+                None
+            };
+            (status_from(&state), persisted)
+        };
+        if let Some(persisted) = persisted {
+            let _ = persist_state(&persisted);
         }
-        status_from(&state)
+        status
     }
 
     pub fn observe_quota(&self, bundle: &AccountQuotaBundle) {
@@ -299,11 +337,17 @@ impl AutoResumeRegistry {
             .persisted
             .last_quota_persist_at
             .is_none_or(|last| now.saturating_sub(last) >= 5 * 60);
-        if important_change || persistence_due {
+        let persisted = if important_change || persistence_due {
             state.persisted.last_quota_persist_at = Some(now);
-            let _ = persist_state(&state.persisted);
-        }
+            bump(&mut state.persisted);
+            Some(state.persisted.clone())
+        } else {
+            None
+        };
         drop(state);
+        if let Some(persisted) = persisted {
+            let _ = persist_state(&persisted);
+        }
         if recovered {
             // The background tick consumes the pending/recovery trigger. Keeping the
             // observation side-effect synchronous avoids duplicate launches from UI refreshes.
@@ -312,30 +356,36 @@ impl AutoResumeRegistry {
 
     async fn tick(&self, app: tauri::AppHandle) {
         let now = unix_now();
-        let should_read_quota = {
+        let (should_read_quota, stop, persisted) = {
             let mut state = lock(&self.state);
             let before = state.persisted.clone();
             normalize_day(&mut state.persisted);
-            if !state.settings.enabled || state.running || state.settings.thread_id.is_empty() {
+            let stop =
+                !state.settings.enabled || state.running || state.settings.thread_id.is_empty();
+            let should_read_quota = if stop {
                 let settings = state.settings.clone();
                 refresh_idle_status(&settings, &mut state.persisted);
-                if state.persisted != before {
-                    let _ = persist_state(&state.persisted);
-                }
-                return;
-            }
-            let settings = state.settings.clone();
-            reconcile_schedule(&settings, &mut state.persisted, now);
-            let should_read_quota = state.settings.quota_resume_enabled
-                && state
-                    .persisted
-                    .last_quota_check_at
-                    .is_none_or(|last| now.saturating_sub(last) >= QUOTA_CHECK_INTERVAL_SECONDS);
-            if state.persisted != before {
-                let _ = persist_state(&state.persisted);
-            }
-            should_read_quota
+                false
+            } else {
+                let settings = state.settings.clone();
+                reconcile_schedule(&settings, &mut state.persisted, now);
+                state.settings.quota_resume_enabled
+                    && state.persisted.last_quota_check_at.is_none_or(|last| {
+                        now.saturating_sub(last) >= QUOTA_CHECK_INTERVAL_SECONDS
+                    })
+            };
+            let persisted = (state.persisted != before).then(|| {
+                bump(&mut state.persisted);
+                state.persisted.clone()
+            });
+            (should_read_quota, stop, persisted)
         };
+        if let Some(persisted) = persisted {
+            let _ = persist_state(&persisted);
+        }
+        if stop {
+            return;
+        }
 
         if should_read_quota {
             let home = auto_resume::default_codex_home();
@@ -346,7 +396,13 @@ impl AutoResumeRegistry {
             match quota {
                 Ok(Ok(bundle)) => self.observe_quota(&bundle),
                 _ => {
-                    lock(&self.state).persisted.last_quota_check_at = Some(unix_now());
+                    let persisted = {
+                        let mut state = lock(&self.state);
+                        state.persisted.last_quota_check_at = Some(unix_now());
+                        bump(&mut state.persisted);
+                        state.persisted.clone()
+                    };
+                    let _ = persist_state(&persisted);
                 }
             }
         }
@@ -368,7 +424,7 @@ impl AutoResumeRegistry {
         if let Some(trigger) = trigger {
             let registry = self.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = registry.execute(app, trigger, false).await;
+                let _ = registry.execute_owned(app, trigger, false).await;
             });
         }
     }
@@ -386,7 +442,7 @@ impl AutoResumeRegistry {
             (thread_id, consumes_pending)
         };
         let key = format!("manual:{}:{}:{}", thread_id, unix_now(), std::process::id());
-        self.execute(
+        self.execute_owned(
             app,
             Trigger {
                 key,
@@ -403,13 +459,34 @@ impl AutoResumeRegistry {
         .await
     }
 
+    async fn execute_owned(
+        &self,
+        app: tauri::AppHandle,
+        trigger: Trigger,
+        manual: bool,
+    ) -> Result<AutoResumeRuntimeStatus, String> {
+        let runner = self.clone();
+        let recovery = self.clone();
+        let receiver = spawn_supervised_task(
+            async move { runner.execute(app, trigger, manual).await },
+            move |error| {
+                let message = format!("自动续跑监督任务异常结束：{error}");
+                recovery.finish_without_run(&message, "failed");
+                Err(message)
+            },
+        );
+        receiver
+            .await
+            .map_err(|_| "自动续跑监督任务未返回结果".to_string())?
+    }
+
     async fn execute(
         &self,
         app: tauri::AppHandle,
         trigger: Trigger,
         manual: bool,
     ) -> Result<AutoResumeRuntimeStatus, String> {
-        let (settings, cancel, home) = {
+        let (settings, cancel, home, persisted) = {
             let mut state = lock(&self.state);
             if state.running {
                 return Err("已有自动续跑正在执行".into());
@@ -427,18 +504,29 @@ impl AutoResumeRegistry {
                 state.persisted.state = "skipped".into();
                 state.persisted.message = "目标任务已更改，旧续跑触发已作废".into();
                 bump(&mut state.persisted);
-                let _ = persist_state(&state.persisted);
-                return Ok(status_from(&state));
+                let status = status_from(&state);
+                let persisted = state.persisted.clone();
+                drop(state);
+                let _ = persist_state(&persisted);
+                return Ok(status);
             }
             if !manual {
                 if !state.settings.enabled {
                     return Err("自动续跑未开启".into());
                 }
                 if !automatic_trigger_is_current(&state, &trigger) {
-                    return Ok(settle_stale_automatic_trigger(&mut state, &trigger));
+                    let status = settle_stale_automatic_trigger(&mut state, &trigger);
+                    let persisted = state.persisted.clone();
+                    drop(state);
+                    let _ = persist_state(&persisted);
+                    return Ok(status);
                 }
                 if state.persisted.runs_today >= u32::from(state.settings.max_runs_per_day) {
-                    return Ok(settle_daily_limit(&mut state, &trigger, unix_now()));
+                    let status = settle_daily_limit(&mut state, &trigger, unix_now());
+                    let persisted = state.persisted.clone();
+                    drop(state);
+                    let _ = persist_state(&persisted);
+                    return Ok(status);
                 }
                 if let Some(last) = state.persisted.last_run_at {
                     let cooldown = i64::from(state.settings.cooldown_minutes) * 60;
@@ -446,8 +534,12 @@ impl AutoResumeRegistry {
                         state.persisted.deferred_until = Some(last.saturating_add(cooldown));
                         state.persisted.state = "waiting".into();
                         state.persisted.message = "触发已到，冷却结束后再续跑".into();
-                        let _ = persist_state(&state.persisted);
-                        return Ok(status_from(&state));
+                        bump(&mut state.persisted);
+                        let status = status_from(&state);
+                        let persisted = state.persisted.clone();
+                        drop(state);
+                        let _ = persist_state(&persisted);
+                        return Ok(status);
                     }
                 }
             }
@@ -459,13 +551,14 @@ impl AutoResumeRegistry {
             state.persisted.message = format!("正在执行{}", trigger.label);
             state.persisted.last_trigger = Some(trigger.label.clone());
             bump(&mut state.persisted);
-            let _ = persist_state(&state.persisted);
             (
                 state.settings.clone(),
                 cancel,
                 auto_resume::default_codex_home(),
+                state.persisted.clone(),
             )
         };
+        let _ = persist_state(&persisted);
 
         let shared_cooldown = if manual {
             Duration::ZERO
@@ -493,10 +586,15 @@ impl AutoResumeRegistry {
 
         let stale_status = {
             let mut state = lock(&self.state);
-            (!automatic_trigger_is_current(&state, &trigger))
-                .then(|| settle_stale_automatic_trigger(&mut state, &trigger))
+            if automatic_trigger_is_current(&state, &trigger) {
+                None
+            } else {
+                let status = settle_stale_automatic_trigger(&mut state, &trigger);
+                Some((status, state.persisted.clone()))
+            }
         };
-        if let Some(status) = stale_status {
+        if let Some((status, persisted)) = stale_status {
+            let _ = persist_state(&persisted);
             if let auto_resume::AutoResumeClaimResult::Claimed(claim) = &claim_result {
                 let outcome = auto_resume::AutoResumeRunOutcome {
                     status: "skipped".into(),
@@ -519,16 +617,24 @@ impl AutoResumeRegistry {
                 return Ok(self.finish_without_run("同一任务已有续跑进程，已跳过", "guarded"));
             }
             auto_resume::AutoResumeClaimResult::DailyLimit => {
-                let mut state = lock(&self.state);
-                return Ok(settle_daily_limit(&mut state, &trigger, unix_now()));
+                let (status, persisted) = {
+                    let mut state = lock(&self.state);
+                    let status = settle_daily_limit(&mut state, &trigger, unix_now());
+                    (status, state.persisted.clone())
+                };
+                let _ = persist_state(&persisted);
+                return Ok(status);
             }
         };
 
         if trigger.consumes_pending {
-            let mut state = lock(&self.state);
-            clear_pending_trigger(&mut state.persisted);
-            bump(&mut state.persisted);
-            let _ = persist_state(&state.persisted);
+            let persisted = {
+                let mut state = lock(&self.state);
+                clear_pending_trigger(&mut state.persisted);
+                bump(&mut state.persisted);
+                state.persisted.clone()
+            };
+            let _ = persist_state(&persisted);
         }
 
         let thread_id = trigger.thread_id.clone();
@@ -582,14 +688,18 @@ impl AutoResumeRegistry {
             },
         };
         if !manual && outcome.status != "skipped" {
-            let mut state = lock(&self.state);
-            normalize_day(&mut state.persisted);
-            state.persisted.runs_today = state.persisted.runs_today.saturating_add(1);
-            let _ = persist_state(&state.persisted);
+            let persisted = {
+                let mut state = lock(&self.state);
+                normalize_day(&mut state.persisted);
+                state.persisted.runs_today = state.persisted.runs_today.saturating_add(1);
+                bump(&mut state.persisted);
+                state.persisted.clone()
+            };
+            let _ = persist_state(&persisted);
         }
         let _ = claim.complete(&outcome);
 
-        let status = {
+        let (status, persisted) = {
             let mut state = lock(&self.state);
             state.running = false;
             state.cancel = None;
@@ -643,9 +753,9 @@ impl AutoResumeRegistry {
                 advance_schedule_after_trigger(&current_settings, &mut state.persisted, unix_now());
             }
             bump(&mut state.persisted);
-            let _ = persist_state(&state.persisted);
-            status_from(&state)
+            (status_from(&state), state.persisted.clone())
         };
+        let _ = persist_state(&persisted);
 
         if settings.notify_on_result {
             let title = if outcome.status == "succeeded" {
@@ -664,44 +774,54 @@ impl AutoResumeRegistry {
     }
 
     fn finish_without_run(&self, message: &str, status: &str) -> AutoResumeRuntimeStatus {
-        let mut state = lock(&self.state);
-        state.running = false;
-        state.cancel = None;
-        state.persisted.state = status.into();
-        state.persisted.message = message.into();
-        bump(&mut state.persisted);
-        let _ = persist_state(&state.persisted);
-        status_from(&state)
+        let (status, persisted) = {
+            let mut state = lock(&self.state);
+            state.running = false;
+            state.cancel = None;
+            state.persisted.state = status.into();
+            state.persisted.message = message.into();
+            bump(&mut state.persisted);
+            (status_from(&state), state.persisted.clone())
+        };
+        let _ = persist_state(&persisted);
+        status
     }
 
     fn defer_until(&self, until: i64) {
-        let mut state = lock(&self.state);
-        state.persisted.deferred_until = Some(
-            state
-                .persisted
-                .deferred_until
-                .map_or(until, |current| current.max(until)),
-        );
-        let _ = persist_state(&state.persisted);
+        let persisted = {
+            let mut state = lock(&self.state);
+            state.persisted.deferred_until = Some(
+                state
+                    .persisted
+                    .deferred_until
+                    .map_or(until, |current| current.max(until)),
+            );
+            bump(&mut state.persisted);
+            state.persisted.clone()
+        };
+        let _ = persist_state(&persisted);
     }
 
     fn settle_duplicate_trigger(&self, trigger: &Trigger) -> AutoResumeRuntimeStatus {
-        let mut state = lock(&self.state);
-        state.running = false;
-        state.cancel = None;
-        state.persisted.deferred_until = None;
-        if trigger.consumes_pending {
-            clear_pending_trigger(&mut state.persisted);
-        }
-        if trigger.kind.is_scheduled() && state.settings.thread_id == trigger.thread_id {
-            let settings = state.settings.clone();
-            advance_schedule_after_trigger(&settings, &mut state.persisted, unix_now());
-        }
-        state.persisted.state = "skipped".into();
-        state.persisted.message = "该触发已由另一端处理".into();
-        bump(&mut state.persisted);
-        let _ = persist_state(&state.persisted);
-        status_from(&state)
+        let (status, persisted) = {
+            let mut state = lock(&self.state);
+            state.running = false;
+            state.cancel = None;
+            state.persisted.deferred_until = None;
+            if trigger.consumes_pending {
+                clear_pending_trigger(&mut state.persisted);
+            }
+            if trigger.kind.is_scheduled() && state.settings.thread_id == trigger.thread_id {
+                let settings = state.settings.clone();
+                advance_schedule_after_trigger(&settings, &mut state.persisted, unix_now());
+            }
+            state.persisted.state = "skipped".into();
+            state.persisted.message = "该触发已由另一端处理".into();
+            bump(&mut state.persisted);
+            (status_from(&state), state.persisted.clone())
+        };
+        let _ = persist_state(&persisted);
+        status
     }
 }
 
@@ -790,7 +910,6 @@ fn settle_stale_automatic_trigger(
     state.persisted.state = "skipped".into();
     state.persisted.message = "自动续跑设置已更改，旧触发已作废".into();
     bump(&mut state.persisted);
-    let _ = persist_state(&state.persisted);
     status_from(state)
 }
 
@@ -813,7 +932,6 @@ fn settle_daily_limit(
     state.persisted.state = "guarded".into();
     state.persisted.message = "已达到今天的跨端自动续跑次数上限".into();
     bump(&mut state.persisted);
-    let _ = persist_state(&state.persisted);
     status_from(state)
 }
 
@@ -1236,6 +1354,15 @@ fn local_offset() -> time::UtcOffset {
         .unwrap_or(time::UtcOffset::UTC)
 }
 
+fn recover_interrupted_run(state: &mut PersistedAutoResumeState) -> bool {
+    if state.state != "running" {
+        return false;
+    }
+    state.state = "interrupted".into();
+    state.message = "上次自动续跑随应用中断，已释放运行状态，可重新续跑".into();
+    true
+}
+
 fn refresh_idle_status(
     settings: &AutoResumeSettingsSnapshot,
     state: &mut PersistedAutoResumeState,
@@ -1281,8 +1408,20 @@ fn load_state() -> Result<PersistedAutoResumeState, String> {
 }
 
 fn persist_state(state: &PersistedAutoResumeState) -> Result<(), String> {
+    let path = state_path()?;
     let bytes = serde_json::to_vec_pretty(state).map_err(|error| error.to_string())?;
-    atomic_file::write_atomically(&state_path()?, &bytes).map_err(|error| error.to_string())
+    let _writer = AUTO_RESUME_STATE_WRITE_GATE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Ok(current_bytes) = std::fs::read(&path) {
+        if let Ok(current) = serde_json::from_slice::<PersistedAutoResumeState>(&current_bytes) {
+            if current.revision > state.revision {
+                return Ok(());
+            }
+        }
+    }
+    atomic_file::write_atomically(&path, &bytes).map_err(|error| error.to_string())
 }
 
 fn state_path() -> Result<PathBuf, String> {
@@ -1322,6 +1461,26 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn spawn_supervised_task<F, T, R>(
+    future: F,
+    recover: R,
+) -> tokio::sync::oneshot::Receiver<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+    R: FnOnce(String) -> T + Send + 'static,
+{
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn(async move {
+        let result = match tauri::async_runtime::spawn(future).await {
+            Ok(result) => result,
+            Err(error) => recover(error.to_string()),
+        };
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
 fn set_generation(generation: &RwLock<u64>, value: u64) {
     *generation
         .write()
@@ -1332,6 +1491,93 @@ fn set_generation(generation: &RwLock<u64>, value: u64) {
 mod tests {
     use super::*;
     use crate::models::{AccountInfo, QuotaAvailability, QuotaSnapshot, ResetCreditSummary};
+
+    #[test]
+    fn supervised_task_outlives_its_waiter_and_recovers_panics() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let completed = Arc::new(AtomicBool::new(false));
+            let observed = completed.clone();
+            let receiver = spawn_supervised_task(
+                async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    observed.store(true, Ordering::Release);
+                    7usize
+                },
+                |_| 0,
+            );
+            drop(receiver);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(completed.load(Ordering::Acquire));
+
+            let recovered = Arc::new(AtomicBool::new(false));
+            let observed = recovered.clone();
+            let receiver = spawn_supervised_task(
+                async move {
+                    panic!("injected auto-resume task panic");
+                },
+                move |_| {
+                    observed.store(true, Ordering::Release);
+                    9usize
+                },
+            );
+            assert_eq!(receiver.await.unwrap(), 9);
+            assert!(recovered.load(Ordering::Acquire));
+        });
+    }
+
+    #[test]
+    fn startup_recovers_persisted_running_state_and_started_owner_releases_flag() {
+        let mut persisted = PersistedAutoResumeState::default();
+        persisted.state = "running".into();
+        let before_revision = persisted.revision;
+        assert!(recover_interrupted_run(&mut persisted));
+        assert_eq!(persisted.state, "interrupted");
+        assert!(persisted.message.contains("可重新续跑"));
+        assert_eq!(persisted.revision, before_revision);
+
+        let started = Arc::new(AtomicBool::new(true));
+        {
+            let _owner = BackgroundStartedOwner {
+                started: started.clone(),
+            };
+        }
+        assert!(!started.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn stale_auto_resume_snapshot_cannot_overwrite_a_newer_revision() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-auto-resume-state-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _environment =
+            crate::core::usage::cache_lifecycle::usage_cache_test_state_guard(&[(
+                "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+                root.clone(),
+            )]);
+        let mut newer = PersistedAutoResumeState::default();
+        newer.revision = 2;
+        newer.message = "newer".into();
+        persist_state(&newer).unwrap();
+
+        let mut stale = newer.clone();
+        stale.revision = 1;
+        stale.message = "stale".into();
+        persist_state(&stale).unwrap();
+
+        let loaded = load_state().unwrap();
+        assert_eq!(loaded.revision, 2);
+        assert_eq!(loaded.message, "newer");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     fn limit(label: &str, remaining: f64, reset: i64) -> QuotaLimit {
         QuotaLimit {

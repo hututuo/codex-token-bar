@@ -3,12 +3,13 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AutoResumeSharedCoordinatorTests: XCTestCase {
-    func testLeaseAndTurnTimeoutConstantsCoverSixHourRunsWithOneHourMargin() {
+    func testRenewableLeaseUsesShortCrashRecoveryWindow() {
         XCTAssertEqual(CodexAppServerClient.defaultTurnTimeout, 6 * 60 * 60)
-        XCTAssertEqual(AutoResumeSharedCoordinator.defaultLeaseDuration, 7 * 60 * 60)
+        XCTAssertEqual(AutoResumeSharedCoordinator.defaultLeaseDuration, 2 * 60)
+        XCTAssertEqual(AutoResumeSharedCoordinator.leaseHeartbeatInterval, 20)
         XCTAssertGreaterThan(
             AutoResumeSharedCoordinator.defaultLeaseDuration,
-            CodexAppServerClient.defaultTurnTimeout
+            AutoResumeSharedCoordinator.leaseHeartbeatInterval * 3
         )
     }
 
@@ -60,6 +61,34 @@ final class AutoResumeSharedCoordinatorTests: XCTestCase {
             now: acquiredAt.addingTimeInterval(62)
         ))
         recoveredLease.release()
+    }
+
+    func testHeartbeatRenewalKeepsLeaseExclusiveAndStillAllowsRecoveryAfterExpiry() throws {
+        let home = try temporaryCodexHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let first = AutoResumeSharedCoordinator(codexHome: home, ownerID: "swift")
+        let second = AutoResumeSharedCoordinator(codexHome: home, ownerID: "tauri")
+        let acquiredAt = Date(timeIntervalSince1970: 25_000)
+
+        let lease = try XCTUnwrap(first.acquireThreadLease(
+            threadID: "thread-renewed",
+            now: acquiredAt,
+            duration: 60
+        ))
+        XCTAssertTrue(lease.renewNow(now: acquiredAt.addingTimeInterval(50)))
+        XCTAssertNil(try second.acquireThreadLease(
+            threadID: "thread-renewed",
+            now: acquiredAt.addingTimeInterval(61),
+            duration: 60
+        ))
+        let recovered = try XCTUnwrap(second.acquireThreadLease(
+            threadID: "thread-renewed",
+            now: acquiredAt.addingTimeInterval(111),
+            duration: 60
+        ))
+
+        lease.release()
+        recovered.release()
     }
 
     func testTriggerKeyIsClaimedAtMostOnceAcrossOwners() throws {

@@ -16,7 +16,8 @@ const APP_SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const INTERRUPT_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
 const STDERR_TAIL_LIMIT: usize = 16 * 1024;
-const THREAD_LEASE_DURATION: Duration = Duration::from_secs(7 * 60 * 60);
+const THREAD_LEASE_DURATION: Duration = Duration::from_secs(2 * 60);
+const THREAD_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const LEDGER_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 const LEDGER_VERSION: u32 = 1;
 const LEDGER_MAX_CLAIMS: usize = 256;
@@ -923,6 +924,8 @@ impl Drop for DirectoryLease {
 struct ThreadLease {
     directory: PathBuf,
     owner_id: String,
+    heartbeat_stop: Option<mpsc::Sender<()>>,
+    heartbeat: Option<thread::JoinHandle<()>>,
 }
 
 impl ThreadLease {
@@ -950,9 +953,32 @@ impl ThreadLease {
                         let _ = fs::remove_dir_all(&directory);
                         return Err(error.to_string());
                     }
+                    if let Err(error) = renew_thread_lease(&directory, owner_id) {
+                        let _ = fs::remove_dir_all(&directory);
+                        return Err(error);
+                    }
+                    let (heartbeat_stop, heartbeat_stopped) = mpsc::channel();
+                    let heartbeat_directory = directory.clone();
+                    let heartbeat_owner = owner_id.to_string();
+                    let heartbeat = thread::spawn(move || loop {
+                        match heartbeat_stopped.recv_timeout(THREAD_LEASE_HEARTBEAT_INTERVAL) {
+                            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                match renew_thread_lease(
+                                    &heartbeat_directory,
+                                    &heartbeat_owner,
+                                ) {
+                                    Ok(true) | Err(_) => {}
+                                    Ok(false) => break,
+                                }
+                            }
+                        }
+                    });
                     return Ok(Some(Self {
                         directory,
                         owner_id: owner_id.into(),
+                        heartbeat_stop: Some(heartbeat_stop),
+                        heartbeat: Some(heartbeat),
                     }));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -974,6 +1000,12 @@ impl ThreadLease {
 
 impl Drop for ThreadLease {
     fn drop(&mut self) {
+        if let Some(stop) = self.heartbeat_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(heartbeat) = self.heartbeat.take() {
+            let _ = heartbeat.join();
+        }
         let record = fs::read(self.directory.join("lease.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok());
@@ -992,12 +1024,51 @@ impl Drop for ThreadLease {
     }
 }
 
+fn renew_thread_lease(directory: &Path, owner_id: &str) -> Result<bool, String> {
+    let bytes = match fs::read(directory.join("lease.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut record = serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes)
+        .map_err(|error| error.to_string())?;
+    if record.owner_id != owner_id {
+        return Ok(false);
+    }
+    record.expires_at_unix = unix_now_f64() + THREAD_LEASE_DURATION.as_secs_f64();
+    let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
+    crate::core::atomic_file::write_atomically(
+        &thread_lease_heartbeat_path(directory, owner_id),
+        &bytes,
+    )
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
 fn thread_lease_expired(directory: &Path) -> bool {
-    fs::read(directory.join("lease.json"))
+    let record = fs::read(directory.join("lease.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok());
+    let Some(record) = record else {
+        return directory_is_stale(directory, Duration::from_secs(60));
+    };
+    let heartbeat = fs::read(thread_lease_heartbeat_path(directory, &record.owner_id))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok())
-        .map(|record| record.expires_at_unix <= unix_now_f64())
-        .unwrap_or_else(|| directory_is_stale(directory, Duration::from_secs(60)))
+        .filter(|heartbeat| {
+            heartbeat.owner_id == record.owner_id
+                && heartbeat.thread_id == record.thread_id
+                && heartbeat.acquired_at_unix == record.acquired_at_unix
+        });
+    heartbeat
+        .map_or(record.expires_at_unix, |value| {
+            value.expires_at_unix.max(record.expires_at_unix)
+        })
+        <= unix_now_f64()
+}
+
+fn thread_lease_heartbeat_path(directory: &Path, owner_id: &str) -> PathBuf {
+    directory.join(format!("heartbeat-{}.json", stable_thread_key(owner_id)))
 }
 
 fn directory_is_stale(path: &Path, threshold: Duration) -> bool {
@@ -1351,6 +1422,50 @@ mod tests {
             .map(str::to_string)
             .collect()
         );
+    }
+
+    #[test]
+    fn thread_lease_heartbeat_renews_only_the_current_owner() {
+        let root = std::env::temp_dir().join(format!("ctb-auto-resume-heartbeat-{}", unique_id()));
+        let support = support_directory(&root).unwrap();
+        let lease = ThreadLease::acquire(&support, "thread-heartbeat", "owner-current")
+            .unwrap()
+            .expect("first owner should acquire the lease");
+        let directory = support
+            .join("leases")
+            .join(format!("thread-{}", stable_thread_key("thread-heartbeat")));
+        let read_record = || {
+            serde_json::from_slice::<AutoResumeThreadLeaseRecord>(
+                &fs::read(thread_lease_heartbeat_path(
+                    &directory,
+                    "owner-current",
+                ))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let before = read_record();
+        thread::sleep(Duration::from_millis(5));
+        assert!(renew_thread_lease(&directory, "owner-current").unwrap());
+        let after = read_record();
+        assert!(after.expires_at_unix > before.expires_at_unix);
+        let mut base: AutoResumeThreadLeaseRecord =
+            serde_json::from_slice(&fs::read(directory.join("lease.json")).unwrap()).unwrap();
+        base.expires_at_unix = unix_now_f64() - 1.0;
+        crate::core::atomic_file::write_atomically(
+            &directory.join("lease.json"),
+            &serde_json::to_vec_pretty(&base).unwrap(),
+        )
+        .unwrap();
+        assert!(!thread_lease_expired(&directory));
+        assert!(!renew_thread_lease(&directory, "owner-stale").unwrap());
+        let unchanged = read_record();
+        assert_eq!(unchanged.owner_id, after.owner_id);
+        assert_eq!(unchanged.expires_at_unix, after.expires_at_unix);
+
+        drop(lease);
+        assert!(!directory.exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

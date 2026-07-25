@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 struct AutoResumeThreadLeaseRecord: Codable, Equatable, Sendable {
     let schemaVersion: Int
@@ -26,6 +27,7 @@ enum AutoResumeCoordinationError: LocalizedError, Equatable, Sendable {
     case unableToCreateRoot(String)
     case ledgerLockTimedOut
     case invalidLedger
+    case invalidLease
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +37,8 @@ enum AutoResumeCoordinationError: LocalizedError, Equatable, Sendable {
             return "另一个自动续跑进程正在更新触发记录"
         case .invalidLedger:
             return "自动续跑触发记录格式无效"
+        case .invalidLease:
+            return "自动续跑任务租约格式无效"
         }
     }
 }
@@ -53,7 +57,8 @@ enum AutoResumeTriggerClaimResult: Equatable, Sendable {
 
 struct AutoResumeSharedCoordinator: Sendable {
     static let schemaVersion = 1
-    static let defaultLeaseDuration: TimeInterval = 7 * 60 * 60
+    static let defaultLeaseDuration: TimeInterval = 2 * 60
+    static let leaseHeartbeatInterval: TimeInterval = 20
 
     let codexHome: URL
     let ownerID: String
@@ -77,12 +82,13 @@ struct AutoResumeSharedCoordinator: Sendable {
         try prepareDirectories()
         let leaseDirectory = leaseDirectoryURL(threadID: threadID)
         let fileManager = FileManager.default
+        let leaseDuration = max(60, duration)
         let record = AutoResumeThreadLeaseRecord(
             schemaVersion: Self.schemaVersion,
             threadID: threadID,
             ownerID: ownerID,
             acquiredAtUnix: now.timeIntervalSince1970,
-            expiresAtUnix: now.addingTimeInterval(max(60, duration)).timeIntervalSince1970
+            expiresAtUnix: now.addingTimeInterval(leaseDuration).timeIntervalSince1970
         )
 
         for _ in 0..<3 {
@@ -94,10 +100,19 @@ struct AutoResumeSharedCoordinator: Sendable {
                 )
                 do {
                     try writeJSON(record, to: leaseRecordURL(leaseDirectory: leaseDirectory))
+                    guard try renew(
+                        leaseDirectory: leaseDirectory,
+                        record: record,
+                        duration: leaseDuration,
+                        now: now
+                    ) else {
+                        throw AutoResumeCoordinationError.invalidLease
+                    }
                     return AutoResumeThreadLease(
                         coordinator: self,
                         leaseDirectory: leaseDirectory,
-                        record: record
+                        record: record,
+                        renewalDuration: leaseDuration
                     )
                 } catch {
                     try? fileManager.removeItem(at: leaseDirectory)
@@ -233,6 +248,32 @@ struct AutoResumeSharedCoordinator: Sendable {
         }
     }
 
+    fileprivate func renew(
+        leaseDirectory: URL,
+        record: AutoResumeThreadLeaseRecord,
+        duration: TimeInterval,
+        now: Date = Date()
+    ) throws -> Bool {
+        guard let current = try? readJSON(
+            AutoResumeThreadLeaseRecord.self,
+            from: leaseRecordURL(leaseDirectory: leaseDirectory)
+        ), current.ownerID == record.ownerID else {
+            return false
+        }
+        let renewed = AutoResumeThreadLeaseRecord(
+            schemaVersion: current.schemaVersion,
+            threadID: current.threadID,
+            ownerID: current.ownerID,
+            acquiredAtUnix: current.acquiredAtUnix,
+            expiresAtUnix: now.addingTimeInterval(max(60, duration)).timeIntervalSince1970
+        )
+        try writeJSON(
+            renewed,
+            to: leaseHeartbeatURL(leaseDirectory: leaseDirectory, ownerID: current.ownerID)
+        )
+        return true
+    }
+
     private var leasesDirectory: URL {
         rootDirectory.appendingPathComponent("leases", isDirectory: true)
     }
@@ -268,6 +309,12 @@ struct AutoResumeSharedCoordinator: Sendable {
         leaseDirectory.appendingPathComponent("lease.json")
     }
 
+    private func leaseHeartbeatURL(leaseDirectory: URL, ownerID: String) -> URL {
+        leaseDirectory.appendingPathComponent(
+            "heartbeat-\(Self.stableThreadKey(ownerID)).json"
+        )
+    }
+
     private func leaseIsExpired(at leaseDirectory: URL, now: Date) -> Bool {
         guard let record = try? readJSON(
             AutoResumeThreadLeaseRecord.self,
@@ -275,7 +322,20 @@ struct AutoResumeSharedCoordinator: Sendable {
         ) else {
             return directoryIsStale(leaseDirectory, now: now, threshold: 60)
         }
-        return record.expiresAtUnix <= now.timeIntervalSince1970
+        let heartbeat = try? readJSON(
+            AutoResumeThreadLeaseRecord.self,
+            from: leaseHeartbeatURL(leaseDirectory: leaseDirectory, ownerID: record.ownerID)
+        )
+        let heartbeatExpiry = heartbeat.flatMap { value -> TimeInterval? in
+            guard value.ownerID == record.ownerID,
+                  value.threadID == record.threadID,
+                  value.acquiredAtUnix == record.acquiredAtUnix else {
+                return nil
+            }
+            return value.expiresAtUnix
+        }
+        return max(record.expiresAtUnix, heartbeatExpiry ?? record.expiresAtUnix)
+            <= now.timeIntervalSince1970
     }
 
     private func withLedgerLock<T>(_ body: () throws -> T) throws -> T {
@@ -358,24 +418,74 @@ final class AutoResumeThreadLease: @unchecked Sendable {
     private let coordinator: AutoResumeSharedCoordinator
     private let leaseDirectory: URL
     private let record: AutoResumeThreadLeaseRecord
+    private let renewalDuration: TimeInterval
+    private var heartbeat: DispatchSourceTimer?
     private var released = false
 
     fileprivate init(
         coordinator: AutoResumeSharedCoordinator,
         leaseDirectory: URL,
-        record: AutoResumeThreadLeaseRecord
+        record: AutoResumeThreadLeaseRecord,
+        renewalDuration: TimeInterval
     ) {
         self.coordinator = coordinator
         self.leaseDirectory = leaseDirectory
         self.record = record
+        self.renewalDuration = renewalDuration
+        startHeartbeat()
+    }
+
+    private func startHeartbeat() {
+        let timer = DispatchSource.makeTimerSource(
+            queue: DispatchQueue(label: "CodexTokenBar.AutoResumeLeaseHeartbeat")
+        )
+        timer.schedule(
+            deadline: .now() + AutoResumeSharedCoordinator.leaseHeartbeatInterval,
+            repeating: AutoResumeSharedCoordinator.leaseHeartbeatInterval,
+            leeway: .seconds(2)
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            do {
+                if try !self.performRenew() {
+                    self.release()
+                }
+            } catch {
+                // A transient filesystem failure must not voluntarily surrender the lease.
+                // The next heartbeat retries; expiry still bounds recovery after a crash.
+            }
+        }
+        lock.withLock {
+            heartbeat = timer
+        }
+        timer.resume()
+    }
+
+    @discardableResult
+    func renewNow(now: Date = Date()) -> Bool {
+        (try? performRenew(now: now)) ?? false
+    }
+
+    private func performRenew(now: Date = Date()) throws -> Bool {
+        let shouldRenew = lock.withLock { !released }
+        guard shouldRenew else { return false }
+        return try coordinator.renew(
+            leaseDirectory: leaseDirectory,
+            record: record,
+            duration: renewalDuration,
+            now: now
+        )
     }
 
     func release() {
-        let shouldRelease = lock.withLock {
-            guard !released else { return false }
+        let (shouldRelease, timer) = lock.withLock {
+            guard !released else { return (false, nil as DispatchSourceTimer?) }
             released = true
-            return true
+            let timer = heartbeat
+            heartbeat = nil
+            return (true, timer)
         }
+        timer?.cancel()
         if shouldRelease {
             coordinator.release(leaseDirectory: leaseDirectory, record: record)
         }
