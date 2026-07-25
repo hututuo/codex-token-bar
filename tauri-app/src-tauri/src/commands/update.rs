@@ -21,6 +21,7 @@ use tokio::sync::{Mutex, Notify};
 const UPDATE_STATE_EVENT: &str = "app-update-state-changed";
 const INSTALL_PROGRESS_EVENT: &str = "app-update-install-progress";
 const WAKE_INTERVAL: Duration = Duration::from_secs(60);
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
 const CHECK_INTERVAL_MS: i64 = 4 * 60 * 60 * 1_000;
 const PRESENTATION_MAX_FAILURES: u8 = 3;
 const PRESENTATION_BACKOFF_MS: i64 = 5 * 60 * 1_000;
@@ -188,11 +189,72 @@ struct CompletionSlot {
     ready: Notify,
 }
 
+impl CompletionSlot {
+    async fn complete(&self, result: Result<AppUpdateState, String>) {
+        let mut stored = self.result.lock().await;
+        if stored.is_some() {
+            return;
+        }
+        *stored = Some(result);
+        drop(stored);
+        self.ready.notify_waiters();
+    }
+}
+
 struct RegistryCore<A> {
     state: Arc<Mutex<RuntimeState<A>>>,
     persist_lock: Arc<Mutex<()>>,
     initialized: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
+}
+
+struct CheckGenerationOwner<A: Send + 'static> {
+    state: Arc<Mutex<RuntimeState<A>>>,
+    generation: u64,
+    slot: Arc<CompletionSlot>,
+    armed: bool,
+}
+
+impl<A: Send + 'static> CheckGenerationOwner<A> {
+    fn new(
+        state: Arc<Mutex<RuntimeState<A>>>,
+        generation: u64,
+        slot: Arc<CompletionSlot>,
+    ) -> Self {
+        Self {
+            state,
+            generation,
+            slot,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<A: Send + 'static> Drop for CheckGenerationOwner<A> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let state = self.state.clone();
+        let generation = self.generation;
+        let slot = self.slot.clone();
+        runtime.spawn(async move {
+            let mut state = state.lock().await;
+            if state.in_flight.as_ref().map(|value| value.0) == Some(generation) {
+                state.in_flight = None;
+            }
+            drop(state);
+            slot.complete(Err("更新检查已取消，可重新尝试".into()))
+                .await;
+        });
+    }
 }
 
 impl<A> Clone for RegistryCore<A> {
@@ -411,7 +473,18 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         manual: bool,
         now: i64,
     ) -> Result<AppUpdateState, String> {
-        let generation = {
+        self.check_with_timeout(ops, manual, now, UPDATE_CHECK_TIMEOUT)
+            .await
+    }
+
+    async fn check_with_timeout(
+        &self,
+        ops: &impl UpdateOps<A>,
+        manual: bool,
+        now: i64,
+        timeout: Duration,
+    ) -> Result<AppUpdateState, String> {
+        let (generation, slot) = {
             let mut state = self.state.lock().await;
             if let Some((_, slot)) = &state.in_flight {
                 let slot = slot.clone();
@@ -426,39 +499,57 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             }
             state.next_generation = state.next_generation.saturating_add(1);
             let generation = state.next_generation;
-            state.in_flight = Some((generation, Arc::new(CompletionSlot::default())));
-            generation
+            let slot = Arc::new(CompletionSlot::default());
+            state.in_flight = Some((generation, slot.clone()));
+            (generation, slot)
         };
+        let mut owner = CheckGenerationOwner::new(self.state.clone(), generation, slot);
 
         let attempt_result = {
             let _persist_owner = self.persist_lock.lock().await;
-            let mut state = self.state.lock().await;
-            let revision = state.revision;
-            if state.in_flight.as_ref().map(|value| value.0) != Some(generation) {
-                Err("更新检查世代已失效".into())
-            } else {
-                let mut desired = state.persisted.clone();
-                desired.last_attempt_at = Some(now);
-                match ops.persist(&desired) {
-                    Ok(()) => {
-                        if state.in_flight.as_ref().map(|value| value.0) == Some(generation)
-                            && state.revision == revision
-                        {
-                            state.persisted = desired;
-                            Ok(())
-                        } else {
-                            Err("更新检查世代已失效".into())
-                        }
+            let pending = {
+                let state = self.state.lock().await;
+                if state.in_flight.as_ref().map(|value| value.0) != Some(generation) {
+                    None
+                } else {
+                    let revision = state.revision;
+                    let mut desired = state.persisted.clone();
+                    desired.last_attempt_at = Some(now);
+                    Some((revision, desired))
+                }
+            };
+            if let Some((revision, desired)) = pending {
+                let persisted = ops.persist(&desired);
+                let mut state = self.state.lock().await;
+                match persisted {
+                    Ok(())
+                        if state.in_flight.as_ref().map(|value| value.0)
+                            == Some(generation)
+                            && state.revision == revision =>
+                    {
+                        state.persisted = desired;
+                        Ok(())
                     }
+                    Ok(()) => Err("更新检查世代已失效".into()),
                     Err(error) => Err(error),
                 }
+            } else {
+                Err("更新检查世代已失效".into())
             }
         };
         if let Err(error) = attempt_result {
-            return self.finish(generation, Err(error)).await;
+            let result = self.finish(generation, Err(error)).await;
+            owner.disarm();
+            return result;
         }
 
-        let checked = ops.check().await;
+        let checked = match tokio::time::timeout(timeout, ops.check()).await {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "更新检查在 {} 秒内没有完成，请重试",
+                timeout.as_secs()
+            )),
+        };
         let result = match checked {
             Ok(Some(update)) => self.apply_available(ops, update).await,
             Ok(None) => self.apply_none(ops).await,
@@ -484,7 +575,9 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
                 }
             }
         };
-        self.finish(generation, result).await
+        let result = self.finish(generation, result).await;
+        owner.disarm();
+        result
     }
 
     async fn apply_available(
@@ -493,12 +586,20 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         update: CheckedUpdate<A>,
     ) -> Result<AppUpdateState, String> {
         let _persist_owner = self.persist_lock.lock().await;
-        let mut state = self.state.lock().await;
-        let mut desired = state.persisted.clone();
-        desired.available_version = Some(update.version.clone());
-        desired.available_body = Some(update.body.clone());
-        desired.available_date = update.date.clone();
+        let (before, desired) = {
+            let state = self.state.lock().await;
+            let before = state.persisted.clone();
+            let mut desired = before.clone();
+            desired.available_version = Some(update.version.clone());
+            desired.available_body = Some(update.body.clone());
+            desired.available_date = update.date.clone();
+            (before, desired)
+        };
         ops.persist(&desired)?;
+        let mut state = self.state.lock().await;
+        if state.persisted != before {
+            return Err("更新状态在持久化期间发生变化".into());
+        }
         state.persisted = desired;
         state.checked = Some(update);
         state.revision = state.revision.saturating_add(1);
@@ -511,12 +612,20 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
 
     async fn apply_none(&self, ops: &impl UpdateOps<A>) -> Result<AppUpdateState, String> {
         let _persist_owner = self.persist_lock.lock().await;
-        let mut state = self.state.lock().await;
-        let mut desired = state.persisted.clone();
-        desired.available_version = None;
-        desired.available_body = None;
-        desired.available_date = None;
+        let (before, desired) = {
+            let state = self.state.lock().await;
+            let before = state.persisted.clone();
+            let mut desired = before.clone();
+            desired.available_version = None;
+            desired.available_body = None;
+            desired.available_date = None;
+            (before, desired)
+        };
         ops.persist(&desired)?;
+        let mut state = self.state.lock().await;
+        if state.persisted != before {
+            return Err("更新状态在持久化期间发生变化".into());
+        }
         state.persisted = desired;
         state.checked = None;
         state.revision = state.revision.saturating_add(1);
@@ -542,8 +651,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         };
         drop(state);
         if let Some(slot) = slot {
-            *slot.result.lock().await = Some(result.clone());
-            slot.ready.notify_waiters();
+            slot.complete(result.clone()).await;
         }
         result
     }
@@ -1078,6 +1186,69 @@ mod tests {
             let state = core.state.lock().await;
             assert!(state.in_flight.is_none());
             assert_eq!(state.next_generation, 1);
+        });
+    }
+
+    #[test]
+    fn aborted_check_releases_the_generation_and_wakes_waiters() {
+        runtime().block_on(async {
+            let core = Arc::new(RegistryCore::<String>::default());
+            let ops = Arc::new(MockOps::available("0.8.0"));
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (_release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *ops.check_started.lock().unwrap() = Some(started_tx);
+            *ops.check_release.lock().unwrap() = Some(release_rx);
+
+            let owner = tokio::spawn({
+                let core = core.clone();
+                let ops = ops.clone();
+                async move { core.check(ops.as_ref(), false, 1).await }
+            });
+            tokio::time::timeout(Duration::from_secs(1), started_rx)
+                .await
+                .expect("check did not start")
+                .expect("check start sender was dropped");
+            let waiter = tokio::spawn({
+                let core = core.clone();
+                let ops = ops.clone();
+                async move { core.check(ops.as_ref(), true, 2).await }
+            });
+            tokio::task::yield_now().await;
+
+            owner.abort();
+            assert!(owner.await.unwrap_err().is_cancelled());
+            let error = tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("waiter stayed attached to an abandoned generation")
+                .expect("waiter task failed")
+                .expect_err("an abandoned generation must report cancellation");
+            assert!(error.contains("已取消"));
+            assert!(core.state.lock().await.in_flight.is_none());
+
+            core.check(ops.as_ref(), true, 3).await.unwrap();
+            assert_eq!(ops.checks.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn timed_out_check_finishes_the_generation_and_can_retry() {
+        runtime().block_on(async {
+            let core = RegistryCore::<String>::default();
+            let ops = MockOps::available("0.8.0");
+            let (_release_tx, release_rx) = tokio::sync::oneshot::channel();
+            *ops.check_release.lock().unwrap() = Some(release_rx);
+
+            let error = core
+                .check_with_timeout(&ops, true, 1, Duration::from_millis(10))
+                .await
+                .expect_err("suspended check should reach its deadline");
+            assert!(error.contains("没有完成"));
+            assert!(core.state.lock().await.in_flight.is_none());
+
+            core.check_with_timeout(&ops, true, 2, Duration::from_secs(1))
+                .await
+                .unwrap();
+            assert_eq!(ops.checks.load(Ordering::SeqCst), 2);
         });
     }
 

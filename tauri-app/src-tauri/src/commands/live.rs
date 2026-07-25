@@ -15,7 +15,7 @@ use crate::platform;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter, State};
@@ -33,6 +33,7 @@ pub struct LiveRateMonitorRegistry {
     monitor: Arc<Mutex<Option<Arc<LiveRateMonitorService>>>>,
     stream: Arc<Mutex<LiveRateStreamState>>,
     unread_cache: Arc<Mutex<HashMap<String, CachedUnreadSummary>>>,
+    unread_refreshes: Arc<Mutex<HashMap<String, Arc<UnreadRefreshSlot>>>>,
 }
 
 #[derive(Clone)]
@@ -43,6 +44,29 @@ struct CachedUnreadSummary {
     retry_after: Option<Instant>,
     failed_attempts: u32,
     last_error: Option<String>,
+}
+
+#[derive(Default)]
+struct UnreadRefreshSlot {
+    refreshing: Mutex<bool>,
+    ready: Condvar,
+}
+
+struct UnreadRefreshOwner {
+    slot: Arc<UnreadRefreshSlot>,
+}
+
+impl Drop for UnreadRefreshOwner {
+    fn drop(&mut self) {
+        let mut refreshing = self
+            .slot
+            .refreshing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *refreshing = false;
+        drop(refreshing);
+        self.slot.ready.notify_all();
+    }
 }
 
 #[derive(Default)]
@@ -266,37 +290,63 @@ impl LiveRateMonitorRegistry {
             captured.source_token.physical_home_key
         );
         let requested_at = Instant::now();
-        let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
-        if force_refresh {
-            if let Some(cached) = cache.get(&source_scope_key) {
-                if cached.last_attempt >= requested_at {
-                    return match cached.last_error.as_ref() {
-                        Some(error) => Err(error.clone()),
-                        None => Ok(cached.summary.clone()),
-                    };
+        let slot = loop {
+            {
+                let cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+                if let Some(result) = cached_unread_result(
+                    &cache,
+                    &source_scope_key,
+                    force_refresh,
+                    requested_at,
+                ) {
+                    return result;
                 }
             }
-        }
-        if !force_refresh {
-            if let Some(cached) = cache.get(&source_scope_key) {
-                if cached.refreshed_at.elapsed() < UNREAD_OBSERVATION_CADENCE {
-                    return Ok(cached.summary.clone());
-                }
-                if cached
-                    .retry_after
-                    .is_some_and(|retry_after| Instant::now() < retry_after)
-                {
-                    return Ok(stale_unread_summary(
-                        &cached.summary,
-                        "refresh retry is backing off",
-                    ));
-                }
+
+            let slot = {
+                let mut refreshes = self
+                    .unread_refreshes
+                    .lock()
+                    .map_err(|error| error.to_string())?;
+                refreshes.retain(|key, slot| {
+                    key == &source_scope_key || Arc::strong_count(slot) > 1
+                });
+                refreshes
+                    .entry(source_scope_key.clone())
+                    .or_insert_with(|| Arc::new(UnreadRefreshSlot::default()))
+                    .clone()
+            };
+            let mut refreshing = slot
+                .refreshing
+                .lock()
+                .map_err(|error| error.to_string())?;
+            while *refreshing {
+                refreshing = slot
+                    .ready
+                    .wait(refreshing)
+                    .map_err(|error| error.to_string())?;
             }
-        }
+
+            let cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+            if let Some(result) = cached_unread_result(
+                &cache,
+                &source_scope_key,
+                force_refresh,
+                requested_at,
+            ) {
+                return result;
+            }
+            drop(cache);
+            *refreshing = true;
+            drop(refreshing);
+            break slot;
+        };
+        let _refresh_owner = UnreadRefreshOwner { slot };
         let attempted_at = Instant::now();
         let summary = match refresh() {
             Ok(summary) => summary,
             Err(error) if !force_refresh => {
+                let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
                 if let Some(cached) = cache.get_mut(&source_scope_key) {
                     cached.last_attempt = attempted_at;
                     cached.failed_attempts = cached.failed_attempts.saturating_add(1);
@@ -322,6 +372,7 @@ impl LiveRateMonitorRegistry {
                 return Ok(neutral);
             }
             Err(error) => {
+                let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
                 if let Some(cached) = cache.get_mut(&source_scope_key) {
                     cached.last_attempt = attempted_at;
                     cached.failed_attempts = cached.failed_attempts.saturating_add(1);
@@ -346,6 +397,7 @@ impl LiveRateMonitorRegistry {
                 return Err(error);
             }
         };
+        let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
         cache.retain(|key, _| key == &source_scope_key);
         cache.insert(
             source_scope_key,
@@ -982,6 +1034,34 @@ fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
     stale.detail = format!("{} · unread refresh failed; using cached value: {error}", stale.detail);
     stale.source = format!("{}_stale", stale.source.trim_end_matches("_stale"));
     stale
+}
+
+fn cached_unread_result(
+    cache: &HashMap<String, CachedUnreadSummary>,
+    source_scope_key: &str,
+    force_refresh: bool,
+    requested_at: Instant,
+) -> Option<Result<UnreadSummary, String>> {
+    let cached = cache.get(source_scope_key)?;
+    if force_refresh {
+        return (cached.last_attempt >= requested_at).then(|| match cached.last_error.as_ref() {
+            Some(error) => Err(error.clone()),
+            None => Ok(cached.summary.clone()),
+        });
+    }
+    if cached.refreshed_at.elapsed() < UNREAD_OBSERVATION_CADENCE {
+        return Some(Ok(cached.summary.clone()));
+    }
+    if cached
+        .retry_after
+        .is_some_and(|retry_after| Instant::now() < retry_after)
+    {
+        return Some(Ok(stale_unread_summary(
+            &cached.summary,
+            "refresh retry is backing off",
+        )));
+    }
+    None
 }
 
 fn neutral_unread_summary(error: &str) -> UnreadSummary {
@@ -2222,6 +2302,41 @@ mod tests {
             assert_eq!(handle.join().unwrap().count, 1);
         }
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unread_refresh_runs_without_holding_the_cache_mutex() {
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "reentrant-unread".into(),
+                physical_home_key: "physical-reentrant-unread".into(),
+                transition_generation: 1,
+            },
+            codex_home: PathBuf::from("reentrant-unread"),
+            source_path: PathBuf::from("reentrant-unread"),
+        };
+        let observed = registry.clone();
+
+        let summary = registry
+            .unread_summary_for_source_with_refresh(&captured, false, || {
+                let cache = observed
+                    .unread_cache
+                    .try_lock()
+                    .expect("refresh callback must run outside the unread cache mutex");
+                assert!(cache.is_empty());
+                drop(cache);
+                Ok(UnreadSummary {
+                    active: true,
+                    count: 2,
+                    label: "fresh".into(),
+                    detail: "fresh".into(),
+                    source: "test".into(),
+                })
+            })
+            .unwrap();
+
+        assert_eq!(summary.count, 2);
     }
 
     #[test]

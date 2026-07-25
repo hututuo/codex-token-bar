@@ -46,7 +46,7 @@ mod rate_limits;
 mod reset_credit;
 
 static QUOTA_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, QuotaCacheEntry>>> = OnceLock::new();
-static QUOTA_HISTORY_CACHE: OnceLock<Mutex<QuotaHistoryMemoryCache>> = OnceLock::new();
+static QUOTA_HISTORY_CACHE: OnceLock<QuotaHistoryCacheCoordinator> = OnceLock::new();
 static QUOTA_READ_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -106,32 +106,65 @@ struct QuotaHistoryMemoryCache {
     entries: HashMap<quota_history::QuotaHistoryIdentity, QuotaHistoryCacheEntry>,
 }
 
-impl QuotaHistoryMemoryCache {
+#[derive(Default)]
+struct QuotaHistoryCacheCoordinator {
+    cache: Mutex<QuotaHistoryMemoryCache>,
+    gates: Mutex<HashMap<quota_history::QuotaHistoryIdentity, Arc<Mutex<()>>>>,
+}
+
+impl QuotaHistoryCacheCoordinator {
     fn load_or_refresh<F>(
-        &mut self,
+        &self,
         identity: &quota_history::QuotaHistoryIdentity,
         force_refresh: bool,
-        mut loader: F,
+        loader: F,
     ) -> Result<quota_history::QuotaHistoryBundle, String>
     where
-        F: FnMut() -> Result<quota_history::QuotaHistoryBundle, String>,
+        F: FnOnce() -> Result<quota_history::QuotaHistoryBundle, String>,
     {
+        let requested_at = Instant::now();
         if !force_refresh {
-            if let Some(entry) = self.entries.get(identity) {
+            let cache = self.cache.lock().map_err(|error| error.to_string())?;
+            if let Some(entry) = cache.entries.get(identity) {
                 if entry.cached_at.elapsed() <= HISTORY_CACHE_TTL {
                     return Ok(entry.bundle.clone());
                 }
             }
         }
 
+        let gate = {
+            let mut gates = self.gates.lock().map_err(|error| error.to_string())?;
+            gates.retain(|key, gate| key == identity || Arc::strong_count(gate) > 1);
+            gates
+                .entry(identity.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _refresh_owner = gate.lock().map_err(|error| error.to_string())?;
+
+        {
+            let cache = self.cache.lock().map_err(|error| error.to_string())?;
+            if let Some(entry) = cache.entries.get(identity) {
+                let fresh = entry.cached_at.elapsed() <= HISTORY_CACHE_TTL;
+                let completed_for_request = entry.cached_at >= requested_at;
+                if (!force_refresh && fresh) || completed_for_request {
+                    return Ok(entry.bundle.clone());
+                }
+            }
+        }
+
         let bundle = loader()?;
-        self.entries.insert(
-            identity.clone(),
-            QuotaHistoryCacheEntry {
-                bundle: bundle.clone(),
-                cached_at: Instant::now(),
-            },
-        );
+        self.cache
+            .lock()
+            .map_err(|error| error.to_string())?
+            .entries
+            .insert(
+                identity.clone(),
+                QuotaHistoryCacheEntry {
+                    bundle: bundle.clone(),
+                    cached_at: Instant::now(),
+                },
+            );
         Ok(bundle)
     }
 }
@@ -583,16 +616,11 @@ fn refresh_quota_histories(
     identity: &quota_history::QuotaHistoryIdentity,
     force_refresh: bool,
 ) {
-    let cache = QUOTA_HISTORY_CACHE.get_or_init(|| Mutex::new(QuotaHistoryMemoryCache::default()));
+    let cache = QUOTA_HISTORY_CACHE.get_or_init(QuotaHistoryCacheCoordinator::default);
     let history_request = bundle.clone();
-    let history = cache
-        .lock()
-        .map_err(|error| error.to_string())
-        .and_then(|mut cache| {
-            cache.load_or_refresh(identity, force_refresh, || {
-                quota_history::history_bundle_for(identity, &history_request, 365)
-            })
-        });
+    let history = cache.load_or_refresh(identity, force_refresh, || {
+        quota_history::history_bundle_for(identity, &history_request, 365)
+    });
 
     match history {
         Ok(history) => {
@@ -1606,7 +1634,7 @@ mod tests {
     fn quota_history_cache_reuses_recent_bundle_until_forced() {
         use std::cell::Cell;
 
-        let mut cache = QuotaHistoryMemoryCache::default();
+        let cache = QuotaHistoryCacheCoordinator::default();
         let identity = quota_cache_scope(Path::new("history-home"), Some("sub:history".into()))
             .history_identity(&measured_quota_bundle("History User"), Some("codex"))
             .unwrap();
@@ -1652,8 +1680,75 @@ mod tests {
     }
 
     #[test]
+    fn quota_history_loader_runs_outside_the_memory_cache_mutex() {
+        let cache = Arc::new(QuotaHistoryCacheCoordinator::default());
+        let identity = quota_cache_scope(Path::new("history-unlocked"), Some("sub:unlocked".into()))
+            .history_identity(&measured_quota_bundle("Unlocked User"), Some("codex"))
+            .unwrap();
+        let observed = cache.clone();
+
+        let loaded = cache
+            .load_or_refresh(&identity, false, || {
+                let memory = observed
+                    .cache
+                    .try_lock()
+                    .expect("history loader must run outside the memory cache mutex");
+                assert!(memory.entries.is_empty());
+                drop(memory);
+                Ok(history_bundle_fixture("unlocked"))
+            })
+            .unwrap();
+
+        assert_eq!(loaded.recent_24h[0].label, "unlocked");
+    }
+
+    #[test]
+    fn concurrent_quota_history_loads_are_single_flight_per_identity() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Barrier;
+
+        let cache = Arc::new(QuotaHistoryCacheCoordinator::default());
+        let identity = quota_cache_scope(
+            Path::new("history-single-flight"),
+            Some("sub:single-flight".into()),
+        )
+        .history_identity(
+            &measured_quota_bundle("Single Flight User"),
+            Some("codex"),
+        )
+        .unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = [(), ()].map(|_| {
+            let cache = cache.clone();
+            let identity = identity.clone();
+            let attempts = attempts.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                cache
+                    .load_or_refresh(&identity, false, || {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(30));
+                        Ok(history_bundle_fixture("single-flight"))
+                    })
+                    .unwrap()
+            })
+        });
+        barrier.wait();
+
+        for handle in handles {
+            assert_eq!(
+                handle.join().unwrap().recent_24h[0].label,
+                "single-flight"
+            );
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn stable_account_token_rotation_keeps_history_identity_owned() {
-        let mut cache = QuotaHistoryMemoryCache::default();
+        let cache = QuotaHistoryCacheCoordinator::default();
         let codex_home = PathBuf::from("rotation-home");
         let bundle = measured_quota_bundle("Stable User");
         let before_rotation = QuotaCacheScope {
@@ -1694,7 +1789,7 @@ mod tests {
 
     #[test]
     fn different_stable_accounts_do_not_share_history_identity() {
-        let mut cache = QuotaHistoryMemoryCache::default();
+        let cache = QuotaHistoryCacheCoordinator::default();
         let codex_home = PathBuf::from("shared-home");
         let bundle = measured_quota_bundle("Shared User");
         let account_a = QuotaCacheScope {
