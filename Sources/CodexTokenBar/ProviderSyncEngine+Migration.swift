@@ -54,17 +54,48 @@ private struct ProviderSyncMigrationBackup {
     let bindings: [ProviderSyncMigrationBinding]
 }
 
+enum ProviderMigrationJournalCommitPhase: String {
+    case beforeRename
+    case afterRename
+    case afterRootSync
+}
+
+private enum ProviderMigrationJournalPhase: String {
+    case prepared
+    case committed
+}
+
+private enum ProviderMigrationJournalCommitOutcome {
+    /// 提交标记已落盘且 root fsync 成功。
+    case committed
+    /// 提交标记确定未生效（磁盘 journal 仍为 prepared），可安全回滚。
+    case notCommitted(String)
+    /// 提交标记可能已生效（rename 已发出后失败或持久化未确认），禁止回滚。
+    case uncertain(String)
+}
+
 private struct ProviderSyncMigrationJournal: Codable {
     let schemaVersion: Int
+    let phase: String?
     let codexHome: String
     let sqliteHome: String
     let backupPath: String
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
+        case phase
         case codexHome = "codex_home"
         case sqliteHome = "sqlite_home"
         case backupPath = "backup_path"
+    }
+
+    // v1 journal 无 phase 字段；未知取值也按 prepared（回滚方向）处理，安全。
+    var effectivePhase: ProviderMigrationJournalPhase {
+        guard let phase,
+              let parsed = ProviderMigrationJournalPhase(rawValue: phase) else {
+            return .prepared
+        }
+        return parsed
     }
 }
 
@@ -138,7 +169,10 @@ extension ProviderSyncEngine {
                     backupURL: backup.metadata.url
                 )
                 var replacements: [ProviderSyncRegularFileReplacement] = []
+                let verified: ProviderSyncReport
+                let sqliteRowsChanged: Int
 
+                // 准备阶段：journal 仍为 prepared，任何失败都可以安全回滚。
                 do {
                     for binding in backup.bindings {
                         let replacement = try homeDirectory
@@ -158,11 +192,11 @@ extension ProviderSyncEngine {
                         replacements.append(replacement)
                     }
 
-                    let sqliteRowsChanged = try updateSQLite(
+                    sqliteRowsChanged = try updateSQLite(
                         homeDirectory: sqliteDirectory,
                         targetProvider: target
                     )
-                    let verified = try makeReport(
+                    verified = try makeReport(
                         codexHome: canonicalHome,
                         homeDirectory: homeDirectory,
                         sqliteHome: sqliteHome,
@@ -189,17 +223,6 @@ extension ProviderSyncEngine {
                             replacement
                         )
                     }
-                    try removeProviderMigrationJournal(
-                        codexHome: canonicalHome
-                    )
-                    var next = snapshot(
-                        from: verified,
-                        status: "显式迁移完成：仅改写 \(replacements.count) 个会话首行和 SQLite Provider"
-                    )
-                    next.changedSessionFiles = replacements.count
-                    next.sqliteRowsChanged = sqliteRowsChanged
-                    next.lastBackupPath = backup.metadata.url.path
-                    return next
                 } catch {
                     do {
                         try restoreProviderMigrationBackup(
@@ -219,6 +242,54 @@ extension ProviderSyncEngine {
                         "显式迁移失败，已自动恢复：\(error.localizedDescription)"
                     )
                 }
+
+                // 提交阶段：数据已写入并通过验证；只有确定未生效才允许回滚。
+                let commitNote: String?
+                switch commitProviderMigrationJournal(
+                    codexHome: canonicalHome,
+                    sqliteHome: sqliteHome,
+                    backupURL: backup.metadata.url
+                ) {
+                case .committed:
+                    do {
+                        try removeProviderMigrationJournal(
+                            codexHome: canonicalHome
+                        )
+                        commitNote = nil
+                    } catch {
+                        commitNote = "journal 清理未完成（\(error.localizedDescription)），下次启动将自动清理并保留迁移结果"
+                    }
+                case .notCommitted(let detail):
+                    do {
+                        try restoreProviderMigrationBackup(
+                            backup,
+                            homeDirectory: homeDirectory,
+                            sqliteDirectory: sqliteDirectory
+                        )
+                        try removeProviderMigrationJournal(
+                            codexHome: canonicalHome
+                        )
+                    } catch let recoveryError {
+                        throw providerSyncDescriptorError(
+                            "显式迁移提交标记写入未生效且自动恢复未完成：\(detail)；恢复错误：\(recoveryError.localizedDescription)；journal 保留于 \(journalURL.path)"
+                        )
+                    }
+                    throw providerSyncDescriptorError(
+                        "显式迁移提交标记写入未生效，已自动恢复：\(detail)"
+                    )
+                case .uncertain(let detail):
+                    commitNote = "数据已写入并通过完整性验证，但提交标记持久化未完成（\(detail)）；journal 保留于 \(journalURL.path)，下次启动将按相位自动收敛"
+                }
+                let baseStatus =
+                    "显式迁移完成：仅改写 \(replacements.count) 个会话首行和 SQLite Provider"
+                var next = snapshot(
+                    from: verified,
+                    status: commitNote.map { "\(baseStatus)；\($0)" } ?? baseStatus
+                )
+                next.changedSessionFiles = replacements.count
+                next.sqliteRowsChanged = sqliteRowsChanged
+                next.lastBackupPath = backup.metadata.url.path
+                return next
             }
         }
     }
@@ -348,24 +419,30 @@ extension ProviderSyncEngine {
                 maximumBytes: 1024 * 1024
             )
         )
-        guard journal.schemaVersion == 1,
+        guard journal.schemaVersion == 1 || journal.schemaVersion == 2,
               journal.codexHome == codexHome.path,
               journal.sqliteHome == sqliteHome.path else {
             throw providerSyncDescriptorError(
                 "Provider 迁移 journal 与当前存储根不匹配：\(journalURL.path)"
             )
         }
-        let backup = try validatedProviderMigrationBackup(
-            at: URL(fileURLWithPath: journal.backupPath),
-            codexHome: codexHome,
-            sqliteHome: sqliteHome
-        )
-        try restoreProviderMigrationBackup(
-            backup,
-            homeDirectory: homeDirectory,
-            sqliteDirectory: sqliteDirectory
-        )
-        try removeProviderMigrationJournal(codexHome: codexHome)
+        switch journal.effectivePhase {
+        case .committed:
+            // 提交标记已落盘：迁移已完成并通过写后验证，保留新状态，只清理 journal。
+            try removeProviderMigrationJournal(codexHome: codexHome)
+        case .prepared:
+            let backup = try validatedProviderMigrationBackup(
+                at: URL(fileURLWithPath: journal.backupPath),
+                codexHome: codexHome,
+                sqliteHome: sqliteHome
+            )
+            try restoreProviderMigrationBackup(
+                backup,
+                homeDirectory: homeDirectory,
+                sqliteDirectory: sqliteDirectory
+            )
+            try removeProviderMigrationJournal(codexHome: codexHome)
+        }
     }
 
     private func createProviderMigrationBackup(
@@ -732,7 +809,8 @@ extension ProviderSyncEngine {
             )
         }
         let journal = ProviderSyncMigrationJournal(
-            schemaVersion: 1,
+            schemaVersion: 2,
+            phase: ProviderMigrationJournalPhase.prepared.rawValue,
             codexHome: codexHome.path,
             sqliteHome: sqliteHome.path,
             backupPath: backupURL.path
@@ -743,6 +821,99 @@ extension ProviderSyncEngine {
         )
         try backupRoot.directory.syncRootDirectory()
         return journalURL
+    }
+
+    private func commitProviderMigrationJournal(
+        codexHome: URL,
+        sqliteHome: URL,
+        backupURL: URL
+    ) -> ProviderMigrationJournalCommitOutcome {
+        let backupRoot: (url: URL, directory: ProviderSyncHomeDirectory)
+        do {
+            backupRoot = try openProviderBackupRoot()
+        } catch {
+            return .notCommitted(
+                "打开 Provider 备份根失败：\(error.localizedDescription)"
+            )
+        }
+        defer { try? backupRoot.directory.close() }
+        let journalURL = providerMigrationJournalURL(
+            codexHome: codexHome,
+            backupRoot: backupRoot.url
+        )
+        var renameIssued = false
+        var temporaryName: String?
+        var parentDescriptor: Int32?
+        do {
+            let journalFile = try backupRoot.directory.pinFile(
+                relativePath: journalURL.lastPathComponent,
+                createParents: false
+            )
+            parentDescriptor = journalFile.parent.rawValue
+            guard let metadata = try backupRoot.directory.entryMetadata(
+                journalFile
+            ), (metadata.st_mode & S_IFMT) == S_IFREG,
+               metadata.st_nlink == 1 else {
+                return .notCommitted(
+                    "Provider 迁移 journal 缺失或不是独立常规文件：\(journalURL.path)"
+                )
+            }
+            let journal = ProviderSyncMigrationJournal(
+                schemaVersion: 2,
+                phase: ProviderMigrationJournalPhase.committed.rawValue,
+                codexHome: codexHome.path,
+                sqliteHome: sqliteHome.path,
+                backupPath: backupURL.path
+            )
+            let data = try JSONEncoder().encode(journal)
+            let name = ".provider-migration-commit-\(UUID().uuidString).tmp"
+            try providerSyncCreateRegularFile(
+                directory: journalFile.parent.rawValue,
+                name: name,
+                data: data
+            )
+            temporaryName = name
+            try providerMigrationJournalWillCommit?(.beforeRename)
+            renameIssued = true
+            try providerSyncRename(
+                fromDirectory: journalFile.parent.rawValue,
+                fromName: name,
+                toDirectory: journalFile.parent.rawValue,
+                toName: journalFile.name
+            )
+            temporaryName = nil
+            try providerMigrationJournalWillCommit?(.afterRename)
+            try backupRoot.directory.syncRootDirectory()
+            try providerMigrationJournalWillCommit?(.afterRootSync)
+            return .committed
+        } catch {
+            if let temporaryName, let parentDescriptor {
+                try? providerSyncUnlinkIfExists(
+                    directory: parentDescriptor,
+                    name: temporaryName
+                )
+            }
+            let detail = error.localizedDescription
+            guard renameIssued else {
+                return .notCommitted(detail)
+            }
+            // rename 已发出：重读磁盘 journal 判定真实终态。
+            guard let data = try? providerSyncReadSmallRegularFile(
+                at: journalURL,
+                maximumBytes: 1024 * 1024
+            ), let journal = try? JSONDecoder().decode(
+                ProviderSyncMigrationJournal.self,
+                from: data
+            ) else {
+                return .uncertain("\(detail)；journal 无法读取")
+            }
+            switch journal.effectivePhase {
+            case .prepared:
+                return .notCommitted(detail)
+            case .committed:
+                return .uncertain("\(detail)；提交标记已写入但持久化未确认")
+            }
+        }
     }
 
     func hasInterruptedProviderMigration(codexHome: URL) throws -> Bool {

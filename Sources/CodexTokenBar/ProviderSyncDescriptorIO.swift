@@ -916,6 +916,9 @@ final class ProviderSyncHomeDirectory {
             directory: replacement.file.parent.rawValue,
             name: replacement.retainedOriginalName
         )
+        // 持久化 exchange 与 unlink 的目录项：否则成功返回后掉电可能回退到旧首行，
+        // 而 SQLite 已是新值且 journal 已清理，无任何收敛机制。
+        try syncParentDirectory(of: replacement.file)
     }
 
     func rollbackRegularFileReplacement(_ replacement: ProviderSyncRegularFileReplacement) throws {
@@ -962,6 +965,7 @@ final class ProviderSyncHomeDirectory {
             directory: replacement.file.parent.rawValue,
             name: replacement.retainedOriginalName
         )
+        try syncParentDirectory(of: replacement.file)
     }
 
     @discardableResult

@@ -115,6 +115,7 @@ final class ProviderSyncEngine {
     let sessionMutationsWillBegin: (() throws -> Void)?
     let sessionMutationsDidApply: (() throws -> Void)?
     let sessionReplacementWillExchange: ((URL) throws -> Void)?
+    let providerMigrationJournalWillCommit: ((ProviderMigrationJournalCommitPhase) throws -> Void)?
     let sqliteTimestampWillOpen: (() throws -> Void)?
     let sqliteProviderWillOpen: (() throws -> Void)?
     let sessionIndexWillReplace: ((URL) throws -> Void)?
@@ -145,6 +146,7 @@ final class ProviderSyncEngine {
         sessionMutationsWillBegin: (() throws -> Void)? = nil,
         sessionMutationsDidApply: (() throws -> Void)? = nil,
         sessionReplacementWillExchange: ((URL) throws -> Void)? = nil,
+        providerMigrationJournalWillCommit: ((ProviderMigrationJournalCommitPhase) throws -> Void)? = nil,
         sqliteTimestampWillOpen: (() throws -> Void)? = nil,
         sqliteProviderWillOpen: (() throws -> Void)? = nil,
         sessionIndexWillReplace: ((URL) throws -> Void)? = nil,
@@ -174,6 +176,7 @@ final class ProviderSyncEngine {
         self.sessionMutationsWillBegin = sessionMutationsWillBegin
         self.sessionMutationsDidApply = sessionMutationsDidApply
         self.sessionReplacementWillExchange = sessionReplacementWillExchange
+        self.providerMigrationJournalWillCommit = providerMigrationJournalWillCommit
         self.sqliteTimestampWillOpen = sqliteTimestampWillOpen
         self.sqliteProviderWillOpen = sqliteProviderWillOpen
         self.sessionIndexWillReplace = sessionIndexWillReplace

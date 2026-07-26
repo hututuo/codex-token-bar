@@ -407,6 +407,257 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
     }
 
+    func testMigrationCommitMarkerBeforeRenameFailureRollsBackAndSaysSo() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderCommitNotCommitted")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sessions,
+            withIntermediateDirectories: true
+        )
+        try """
+        model_provider = "migrated-provider"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let session = sessions.appendingPathComponent("thread-commit.jsonl")
+        try writeSession(
+            id: "thread-commit",
+            provider: "original-provider",
+            to: session
+        )
+        try seedMinimalProviderDatabase(
+            at: codexHome,
+            id: "thread-commit",
+            provider: "original-provider"
+        )
+        let engine = ProviderSyncEngine(
+            backupRoot: backupRoot,
+            applicationRunningProbe: { false },
+            providerMigrationJournalWillCommit: { phase in
+                if phase == .beforeRename {
+                    throw providerSyncDescriptorError("fixture commit rename failure")
+                }
+            }
+        )
+
+        XCTAssertThrowsError(
+            try engine.migrateProviderHistory(
+                codexHome: codexHome,
+                expectedHomeIdentity: CodexHomeIdentity.read(
+                    at: codexHome,
+                    fileManager: .default
+                ),
+                includeArchivedSessions: true,
+                targetProviderOverride: "migrated-provider"
+            )
+        ) { error in
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("提交标记写入未生效"), message)
+            XCTAssertTrue(message.contains("已自动恢复"), message)
+        }
+        XCTAssertEqual(
+            try readSessionProviderFromFirstLine(at: session),
+            "original-provider"
+        )
+        XCTAssertEqual(
+            try readSQLiteProviders(at: codexHome),
+            ["original-provider"]
+        )
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: backupRoot.path)
+                .contains { $0.hasPrefix(".provider-migration-active-") }
+        )
+    }
+
+    func testMigrationCommitMarkerFailureAfterRenameKeepsMigratedState() throws {
+        for phaseUnderTest in [
+            ProviderMigrationJournalCommitPhase.afterRename,
+            ProviderMigrationJournalCommitPhase.afterRootSync
+        ] {
+            let root = try makeTemporaryDirectory(
+                named: "ProviderCommitUncertain-\(phaseUnderTest.rawValue)"
+            )
+            let codexHome = root.appendingPathComponent("home", isDirectory: true)
+            let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
+            let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: sessions,
+                withIntermediateDirectories: true
+            )
+            try """
+            model_provider = "migrated-provider"
+            """.write(
+                to: codexHome.appendingPathComponent("config.toml"),
+                atomically: true,
+                encoding: .utf8
+            )
+            let session = sessions.appendingPathComponent("thread-uncertain.jsonl")
+            try writeSession(
+                id: "thread-uncertain",
+                provider: "original-provider",
+                to: session
+            )
+            try seedMinimalProviderDatabase(
+                at: codexHome,
+                id: "thread-uncertain",
+                provider: "original-provider"
+            )
+            let identity = CodexHomeIdentity.read(
+                at: codexHome,
+                fileManager: .default
+            )
+            let engine = ProviderSyncEngine(
+                backupRoot: backupRoot,
+                applicationRunningProbe: { false },
+                providerMigrationJournalWillCommit: { phase in
+                    if phase == phaseUnderTest {
+                        throw providerSyncDescriptorError("fixture commit durability failure")
+                    }
+                }
+            )
+
+            let migrated = try engine.migrateProviderHistory(
+                codexHome: codexHome,
+                expectedHomeIdentity: identity,
+                includeArchivedSessions: true,
+                targetProviderOverride: "migrated-provider"
+            )
+            XCTAssertTrue(
+                migrated.status.contains("显式迁移完成"),
+                "\(phaseUnderTest): \(migrated.status)"
+            )
+            XCTAssertTrue(
+                migrated.status.contains("提交标记持久化未完成"),
+                "\(phaseUnderTest): \(migrated.status)"
+            )
+            XCTAssertFalse(
+                migrated.status.contains("恢复") || migrated.status.contains("回滚"),
+                "\(phaseUnderTest): \(migrated.status)"
+            )
+            XCTAssertEqual(
+                try readSessionProviderFromFirstLine(at: session),
+                "migrated-provider"
+            )
+            XCTAssertEqual(
+                try readSQLiteProviders(at: codexHome),
+                ["migrated-provider"]
+            )
+            let journalNames = try FileManager.default
+                .contentsOfDirectory(atPath: backupRoot.path)
+                .filter { $0.hasPrefix(".provider-migration-active-") }
+            XCTAssertEqual(journalNames.count, 1, "\(phaseUnderTest)")
+            let journalData = try Data(
+                contentsOf: backupRoot.appendingPathComponent(journalNames[0])
+            )
+            let journalObject = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: journalData) as? [String: Any]
+            )
+            XCTAssertEqual(journalObject["phase"] as? String, "committed")
+
+            // 下次启动收敛：保留迁移结果，仅清理 journal。
+            let reconciled = try engine.createProviderMetadataBackup(
+                codexHome: codexHome,
+                expectedHomeIdentity: identity,
+                includeArchivedSessions: true
+            )
+            XCTAssertFalse(reconciled.pendingMigrationRecovery)
+            XCTAssertEqual(
+                try readSessionProviderFromFirstLine(at: session),
+                "migrated-provider"
+            )
+            XCTAssertFalse(
+                try FileManager.default.contentsOfDirectory(atPath: backupRoot.path)
+                    .contains { $0.hasPrefix(".provider-migration-active-") }
+            )
+        }
+    }
+
+    func testCommittedMigrationJournalReconcileKeepsNewStateAndRemovesJournal() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderCommittedJournalReconcile")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sessions,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: backupRoot,
+            withIntermediateDirectories: true
+        )
+        try """
+        model_provider = "migrated-provider"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let session = sessions.appendingPathComponent("thread-committed.jsonl")
+        try writeSession(
+            id: "thread-committed",
+            provider: "migrated-provider",
+            to: session
+        )
+        try seedMinimalProviderDatabase(
+            at: codexHome,
+            id: "thread-committed",
+            provider: "migrated-provider"
+        )
+        let identity = CodexHomeIdentity.read(
+            at: codexHome,
+            fileManager: .default
+        )
+        let canonicalHome = codexHome.resolvingSymlinksInPath()
+        let fingerprint = String(
+            providerSyncSHA256Hex(Data(canonicalHome.path.utf8)).prefix(16)
+        )
+        let journal = backupRoot.appendingPathComponent(
+            ".provider-migration-active-\(fingerprint).json"
+        )
+        // committed 相位不得触碰数据：即使 backup_path 已不可用也只允许清理 journal。
+        try JSONSerialization.data(
+            withJSONObject: [
+                "schema_version": 2,
+                "phase": "committed",
+                "codex_home": canonicalHome.path,
+                "sqlite_home": canonicalHome.path,
+                "backup_path": backupRoot.appendingPathComponent("missing-backup").path
+            ],
+            options: [.sortedKeys]
+        ).write(to: journal, options: [.atomic])
+
+        let engine = ProviderSyncEngine(
+            backupRoot: backupRoot,
+            applicationRunningProbe: { false }
+        )
+        let interrupted = try engine.scan(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true
+        )
+        XCTAssertTrue(interrupted.pendingMigrationRecovery)
+
+        let reconciled = try engine.createProviderMetadataBackup(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true
+        )
+        XCTAssertFalse(reconciled.pendingMigrationRecovery)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
+        XCTAssertEqual(
+            try readSessionProviderFromFirstLine(at: session),
+            "migrated-provider"
+        )
+        XCTAssertEqual(
+            try readSQLiteProviders(at: codexHome),
+            ["migrated-provider"]
+        )
+    }
+
     func testUUIDSessionMetadataRequiresCanonicalRolloutFilename() throws {
         let root = try makeTemporaryDirectory(named: "ProviderCanonicalRollout")
         let codexHome = root.appendingPathComponent("home", isDirectory: true)
