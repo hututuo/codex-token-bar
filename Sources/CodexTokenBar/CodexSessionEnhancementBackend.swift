@@ -7,9 +7,10 @@ import Foundation
 
 struct CodexMarkdownExportPayload: Equatable, Sendable {
     let filename: String
-    let markdown: String
     let message: String
 }
+
+typealias CodexMarkdownChunkEmitter = @Sendable (String) async throws -> Void
 
 struct CodexWorkspaceMovePayload: Equatable, Sendable {
     let message: String
@@ -35,7 +36,11 @@ private struct CodexWorkspaceMoveJournalHandle {
 }
 
 protocol CodexSessionEnhancementExecuting: Sendable {
-    func exportMarkdown(threadID: String, fallbackTitle: String) async throws -> CodexMarkdownExportPayload
+    func exportMarkdown(
+        threadID: String,
+        fallbackTitle: String,
+        emit: @escaping CodexMarkdownChunkEmitter
+    ) async throws -> CodexMarkdownExportPayload
     func moveThreadWorkspace(threadID: String, targetCwd: String) async throws -> CodexWorkspaceMovePayload
 }
 
@@ -53,24 +58,22 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
 
     func exportMarkdown(
         threadID: String,
-        fallbackTitle: String
+        fallbackTitle: String,
+        emit: @escaping CodexMarkdownChunkEmitter
     ) async throws -> CodexMarkdownExportPayload {
         try CodexThreadID.validate(threadID)
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async { [dataSourceResolver] in
-                continuation.resume(with: Result {
-                    guard let dataSource = dataSourceResolver() else {
-                        throw CodexSessionEnhancementBackendError.dataSourceUnavailable
-                    }
-                    return try Self.exportMarkdown(
-                        threadID: threadID,
-                        fallbackTitle: fallbackTitle,
-                        dataSource: dataSource,
-                        fileManager: .default
-                    )
-                })
+        return try await Task.detached(priority: .userInitiated) { [dataSourceResolver] in
+            guard let dataSource = dataSourceResolver() else {
+                throw CodexSessionEnhancementBackendError.dataSourceUnavailable
             }
-        }
+            return try await Self.exportMarkdown(
+                threadID: threadID,
+                fallbackTitle: fallbackTitle,
+                dataSource: dataSource,
+                fileManager: .default,
+                emit: emit
+            )
+        }.value
     }
 
     func moveThreadWorkspace(
@@ -99,8 +102,9 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         threadID: String,
         fallbackTitle: String,
         dataSource: CodexDataSource,
-        fileManager: FileManager
-    ) throws -> CodexMarkdownExportPayload {
+        fileManager: FileManager,
+        emit: @escaping CodexMarkdownChunkEmitter
+    ) async throws -> CodexMarkdownExportPayload {
         let record = try threadRecord(threadID: threadID, dataSource: dataSource)
         let title = displayTitle(record.title.isEmpty ? fallbackTitle : record.title)
         let rolloutURL = try trustedRolloutURL(
@@ -109,9 +113,9 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
             fileManager: fileManager
         )
         let filename = buildFilename(title: title, threadID: threadID)
+        try await streamMarkdown(from: rolloutURL, title: title, emit: emit)
         return CodexMarkdownExportPayload(
             filename: filename,
-            markdown: try renderMarkdown(from: rolloutURL, title: title),
             message: "已生成 Markdown：\(filename)"
         )
     }
@@ -730,34 +734,37 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         }
     }
 
-    private static func renderMarkdown(
+    private static func streamMarkdown(
         from url: URL,
-        title: String
-    ) throws -> String {
+        title: String,
+        emit: @escaping CodexMarkdownChunkEmitter
+    ) async throws {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var input = Data()
         var cursor = 0
-        var markdown = "# \(title)\n\n"
         var messageCount = 0
 
-        func appendLine(_ data: Data) throws {
+        func emitLine(_ data: Data) async throws {
             guard let message = try exportMessage(from: data) else { return }
-            messageCount += 1
-            markdown.append("### \(message.speaker)\n")
-            if let timestamp = message.timestamp {
-                markdown.append("_\(timestamp)_\n")
+            if messageCount > 0 {
+                try await emit("\n\n")
             }
-            markdown.append("\n")
-            markdown.append(message.body)
-            markdown.append("\n\n")
+            messageCount += 1
+            try await emit("### \(message.speaker)\n")
+            if let timestamp = message.timestamp {
+                try await emit("_\(timestamp)_\n")
+            }
+            try await emit("\n")
+            try await emit(message.body)
         }
 
+        try await emit("# \(title)\n\n")
         while let chunk = try handle.read(upToCount: 1024 * 1024),
               !chunk.isEmpty {
             input.append(chunk)
             while let newline = input[cursor...].firstIndex(of: 0x0A) {
-                try appendLine(Data(input[cursor..<newline]))
+                try await emitLine(Data(input[cursor..<newline]))
                 cursor = newline + 1
             }
             if cursor > 0, cursor >= 1024 * 1024 {
@@ -766,15 +773,12 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
             }
         }
         if cursor < input.count {
-            try appendLine(Data(input[cursor...]))
+            try await emitLine(Data(input[cursor...]))
         }
         guard messageCount > 0 else {
             throw CodexSessionEnhancementBackendError.noExportableMessages
         }
-        if markdown.hasSuffix("\n\n") {
-            markdown.removeLast()
-        }
-        return markdown
+        try await emit("\n")
     }
 
     private static func exportMessage(from data: Data) throws -> ExportMessage? {

@@ -786,11 +786,18 @@ private struct CodexThreadDeleteCDPEvaluateParameters: Encodable, Sendable {
     let expression: String
     let returnByValue: Bool
     let contextId: Int?
+    let awaitPromise: Bool?
 
-    init(expression: String, returnByValue: Bool = false, contextId: Int? = nil) {
+    init(
+        expression: String,
+        returnByValue: Bool = false,
+        contextId: Int? = nil,
+        awaitPromise: Bool? = nil
+    ) {
         self.expression = expression
         self.returnByValue = returnByValue
         self.contextId = contextId
+        self.awaitPromise = awaitPromise
     }
 }
 
@@ -1328,8 +1335,19 @@ actor CodexThreadDeleteBridgeService {
         }
         guard request.owner == Self.owner else { return }
 
+        let markdownTransfer = request.action == .exportMarkdown
+            ? CodexMarkdownCDPTransfer(
+                owner: request.owner,
+                requestID: request.id,
+                executionContextID: event.executionContextID,
+                transport: transport
+            )
+            : nil
         try await deliverBindingResult(
-            await bindingResult(for: request),
+            await bindingResult(
+                for: request,
+                markdownTransfer: markdownTransfer
+            ),
             owner: request.owner,
             requestID: request.id,
             executionContextID: event.executionContextID,
@@ -1344,37 +1362,10 @@ actor CodexThreadDeleteBridgeService {
         executionContextID: Int?,
         transport: CodexThreadDeleteCDPTransport
     ) async throws {
-        var delivered = result
-        if let markdown = result.markdown {
-            let chunks = CodexThreadDeleteInjectionScript.markdownChunks(markdown)
-            for (sequence, chunk) in chunks.enumerated() {
-                let expression = try CodexThreadDeleteInjectionScript
-                    .markdownChunkExpression(
-                        owner: owner,
-                        requestID: requestID,
-                        sequence: sequence,
-                        chunk: String(chunk)
-                    )
-                let response = try await transport.request(
-                    method: "Runtime.evaluate",
-                    params: CodexThreadDeleteCDPEvaluateParameters(
-                        expression: expression,
-                        returnByValue: true,
-                        contextId: executionContextID
-                    )
-                )
-                try response.acknowledgedBoolean(
-                    method: "Markdown 分块 \(sequence)"
-                )
-            }
-            delivered = result.markingMarkdownAsTransferred(
-                chunkCount: chunks.count
-            )
-        }
         let expression = try CodexThreadDeleteInjectionScript.resolveExpression(
             owner: owner,
             requestID: requestID,
-            result: delivered
+            result: result
         )
         let response = try await transport.request(
             method: "Runtime.evaluate",
@@ -1388,7 +1379,8 @@ actor CodexThreadDeleteBridgeService {
     }
 
     private func bindingResult(
-        for request: CodexThreadDeleteBindingRequest
+        for request: CodexThreadDeleteBindingRequest,
+        markdownTransfer: CodexMarkdownCDPTransfer?
     ) async -> CodexThreadDeleteBindingResult {
         do {
             try CodexThreadID.validate(request.threadID)
@@ -1397,15 +1389,24 @@ actor CodexThreadDeleteBridgeService {
                 let message = try await executor.delete(threadID: request.threadID)
                 return CodexThreadDeleteBindingResult(status: "deleted", message: message)
             case .exportMarkdown:
+                guard let markdownTransfer else {
+                    throw CodexThreadDeleteError.injectionVerificationFailed(
+                        "Markdown 流式传输未初始化"
+                    )
+                }
                 let export = try await enhancementExecutor.exportMarkdown(
                     threadID: request.threadID,
-                    fallbackTitle: request.title
+                    fallbackTitle: request.title,
+                    emit: { chunk in
+                        try await markdownTransfer.write(chunk)
+                    }
                 )
                 return CodexThreadDeleteBindingResult(
                     status: "exported",
                     message: export.message,
                     filename: export.filename,
-                    markdown: export.markdown
+                    markdownTransfer: true,
+                    markdownChunkCount: await markdownTransfer.count
                 )
             case .moveThreadWorkspace:
                 guard let targetCwd = request.targetCwd?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1507,7 +1508,6 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
     let status: String
     let message: String
     let filename: String?
-    let markdown: String?
     let markdownTransfer: Bool?
     let markdownChunkCount: Int?
     let previousCwd: String?
@@ -1517,7 +1517,6 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
         status: String,
         message: String,
         filename: String? = nil,
-        markdown: String? = nil,
         markdownTransfer: Bool? = nil,
         markdownChunkCount: Int? = nil,
         previousCwd: String? = nil,
@@ -1526,23 +1525,57 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
         self.status = status
         self.message = message
         self.filename = filename
-        self.markdown = markdown
         self.markdownTransfer = markdownTransfer
         self.markdownChunkCount = markdownChunkCount
         self.previousCwd = previousCwd
         self.targetCwd = targetCwd
     }
 
-    func markingMarkdownAsTransferred(chunkCount: Int) -> Self {
-        Self(
-            status: status,
-            message: message,
-            filename: filename,
-            markdownTransfer: true,
-            markdownChunkCount: chunkCount,
-            previousCwd: previousCwd,
-            targetCwd: targetCwd
-        )
+}
+
+private actor CodexMarkdownCDPTransfer {
+    private let owner: String
+    private let requestID: String
+    private let executionContextID: Int?
+    private let transport: CodexThreadDeleteCDPTransport
+    private(set) var count = 0
+
+    init(
+        owner: String,
+        requestID: String,
+        executionContextID: Int?,
+        transport: CodexThreadDeleteCDPTransport
+    ) {
+        self.owner = owner
+        self.requestID = requestID
+        self.executionContextID = executionContextID
+        self.transport = transport
+    }
+
+    func write(_ value: String) async throws {
+        for chunk in CodexThreadDeleteInjectionScript.markdownChunks(value) {
+            let sequence = count
+            let expression = try CodexThreadDeleteInjectionScript
+                .markdownChunkExpression(
+                    owner: owner,
+                    requestID: requestID,
+                    sequence: sequence,
+                    chunk: String(chunk)
+                )
+            let response = try await transport.request(
+                method: "Runtime.evaluate",
+                params: CodexThreadDeleteCDPEvaluateParameters(
+                    expression: expression,
+                    returnByValue: true,
+                    contextId: executionContextID,
+                    awaitPromise: true
+                )
+            )
+            try response.acknowledgedBoolean(
+                method: "Markdown 分块 \(sequence)"
+            )
+            count += 1
+        }
     }
 }
 

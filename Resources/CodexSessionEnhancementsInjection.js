@@ -9,7 +9,7 @@
 (() => {
   const settings = window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ || {};
   const stateKey = "__codexTokenBarSessionEnhancementsState";
-  const runtimeVersion = 4;
+  const runtimeVersion = 5;
   const styleId = "codex-token-bar-session-enhancements-style";
   const overlayId = "codex-token-bar-session-enhancements-overlay";
   const moreAttribute = "data-codex-token-bar-session-more";
@@ -222,68 +222,80 @@
     return Boolean(target?.closest?.(`.${menuClass}, [${moreAttribute}="true"]`));
   }
 
-  async function invoke(payload) {
+  async function invoke(payload, markdownSink = null) {
     if (typeof window.__codexTokenBarSessionEnhancementInvoke !== "function") {
       throw new Error("会话增强桥接暂不可用");
     }
-    return await window.__codexTokenBarSessionEnhancementInvoke(payload);
+    return await window.__codexTokenBarSessionEnhancementInvoke(payload, markdownSink);
   }
 
-  function markdownParts(value) {
-    if (typeof value === "string") return [value];
-    if (Array.isArray(value) && value.every((part) => typeof part === "string")) {
-      return value;
-    }
-    return null;
+  function suggestedMarkdownFilename(title, threadId) {
+    const cleaned = String(title || "")
+      .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^[ .]+|[ .]+$/g, "");
+    const safeTitle = Array.from(cleaned).slice(0, 80).join("")
+      .replace(/^[ .]+|[ .]+$/g, "") || "Untitled session";
+    return `${safeTitle}-${threadId}.md`;
   }
 
-  function downloadMarkdownFallback(filename, parts) {
-    const blob = new Blob(parts, { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  async function saveMarkdown(filename, parts) {
+  async function selectMarkdownWriter(filename) {
     if (typeof window.showSaveFilePicker !== "function") {
-      downloadMarkdownFallback(filename, parts);
-      return "saved";
+      throw new Error("当前 Codex 版本不支持安全流式 Markdown 导出");
     }
     try {
       const handle = await window.showSaveFilePicker({
         suggestedName: filename,
         types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown"] } }],
       });
-      const writable = await handle.createWritable();
-      for (const part of parts) {
-        await writable.write(part);
-      }
-      await writable.close();
-      return "saved";
+      return await handle.createWritable();
     } catch (error) {
-      if (error?.name === "AbortError") return "cancelled";
+      if (error?.name === "AbortError") return null;
       throw error;
     }
   }
 
   async function exportMarkdown(row, reference) {
     const threadId = canonicalThreadId(reference);
-    const result = await invoke({
-      action: "exportMarkdown",
-      threadId,
-      title: rowTitle(row),
-    });
-    const parts = markdownParts(result?.markdownChunks ?? result?.markdown);
-    if (result?.status !== "exported" || !parts || !result.filename) {
-      throw new Error(result?.message || "导出失败");
+    const title = rowTitle(row);
+    const writable = await selectMarkdownWriter(
+      suggestedMarkdownFilename(title, threadId),
+    );
+    if (!writable) {
+      showToast("导出已取消");
+      return;
     }
-    const saveStatus = await saveMarkdown(result.filename, parts);
-    showToast(saveStatus === "cancelled" ? "导出已取消" : (result.message || "导出成功"));
+    const sink = {
+      started: false,
+      async write(value) {
+        this.started = true;
+        await writable.write(value);
+      },
+      async abort() {
+        if (typeof writable.abort === "function") {
+          await writable.abort();
+        }
+      },
+    };
+    try {
+      const result = await invoke({
+        action: "exportMarkdown",
+        threadId,
+        title,
+      }, sink);
+      if (result?.status !== "exported" || !result.filename) {
+        throw new Error(result?.message || "导出失败");
+      }
+      await writable.close();
+      showToast(result.message || "导出成功");
+    } catch (error) {
+      try {
+        await sink.abort();
+      } catch {
+        // Preserve the original export failure.
+      }
+      throw error;
+    }
   }
 
   function projectTargets() {

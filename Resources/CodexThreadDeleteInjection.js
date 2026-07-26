@@ -6,7 +6,7 @@
   const overlayId = "codex-token-bar-thread-delete-overlay";
   const buttonAttribute = "data-codex-token-bar-thread-delete";
   const buttonThreadAttribute = "data-codex-token-bar-thread-delete-thread-id";
-  const runtimeVersion = 4;
+  const runtimeVersion = 5;
   const bridgeTimeoutMs = Number(window.__CODEX_TOKEN_BAR_DELETE_BRIDGE_TIMEOUT_MS__) || 25000;
   const requestedSettings = window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ || {};
 
@@ -53,6 +53,13 @@
     state.pointerLeaveListener = null;
     state.scrollListener = null;
       state.resizeListener = null;
+      for (const transfer of state.markdownTransfers?.values?.() || []) {
+        try {
+          void Promise.resolve(transfer.sink?.abort?.()).catch(() => {});
+        } catch {
+          // Best-effort cleanup while replacing an older injected runtime.
+        }
+      }
       state.markdownTransfers?.clear?.();
   }
   state.version = 2;
@@ -82,11 +89,16 @@
     bindingName,
     callbacks,
     rank: ++state.sequence,
-    invoke(payload) {
+    invoke(payload, markdownSink = null) {
       return new Promise((resolve, reject) => {
         const nativeBinding = window[bindingName];
         if (typeof nativeBinding !== "function") {
           reject(new Error("会话增强桥接暂不可用"));
+          return;
+        }
+        if (payload.action === "exportMarkdown"
+            && typeof markdownSink?.write !== "function") {
+          reject(new Error("Markdown 流式写入目标不可用"));
           return;
         }
         const requestId = `${owner}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -112,6 +124,12 @@
         };
         callback.refreshTimeout();
         callbacks.set(requestId, callback);
+        if (markdownSink) {
+          state.markdownTransfers.set(transferKey, {
+            nextSequence: 0,
+            sink: markdownSink,
+          });
+        }
         try {
           nativeBinding(JSON.stringify({
             id: requestId,
@@ -130,7 +148,7 @@
   };
   state.bridges.set(owner, bridge);
 
-  window.__codexTokenBarThreadDeleteMarkdownChunk = (
+  window.__codexTokenBarThreadDeleteMarkdownChunk = async (
     targetOwner,
     requestId,
     sequence,
@@ -144,14 +162,18 @@
       return false;
     }
     const key = markdownTransferKey(targetOwner, requestId);
-    const transfer = state.markdownTransfers.get(key) || { nextSequence: 0, chunks: [] };
+    const transfer = state.markdownTransfers.get(key);
+    if (!transfer || typeof transfer.sink?.write !== "function") {
+      return false;
+    }
     if (sequence !== transfer.nextSequence) {
       state.markdownTransfers.delete(key);
       throw new Error("Markdown 分块顺序不一致");
     }
-    transfer.chunks.push(chunk);
+    transfer.sink.started = true;
+    target.callbacks.get(requestId)?.refreshTimeout?.();
+    await transfer.sink.write(chunk);
     transfer.nextSequence += 1;
-    state.markdownTransfers.set(key, transfer);
     target.callbacks.get(requestId)?.refreshTimeout?.();
     return true;
   };
@@ -175,7 +197,6 @@
         });
         return true;
       }
-      result.markdownChunks = transfer?.chunks || [];
       delete result.markdownTransfer;
       delete result.markdownChunkCount;
     }
@@ -184,20 +205,23 @@
     return true;
   };
 
-  state.callDelete = async (payload) => {
+  state.callDelete = async (payload, markdownSink = null) => {
     const bridges = [...state.bridges.values()]
       .sort((left, right) => right.rank - left.rank);
     let lastError = new Error("没有可用的会话增强桥接");
     for (const candidate of bridges) {
       try {
-        return await candidate.invoke(payload);
+        return await candidate.invoke(payload, markdownSink);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        if (markdownSink?.started === true) throw lastError;
       }
     }
     throw lastError;
   };
-  window.__codexTokenBarSessionEnhancementInvoke = (payload) => state.callDelete(payload);
+  window.__codexTokenBarSessionEnhancementInvoke = (payload, markdownSink) => (
+    state.callDelete(payload, markdownSink)
+  );
 
   function ensureStyle() {
     const existing = document.getElementById(styleId);
