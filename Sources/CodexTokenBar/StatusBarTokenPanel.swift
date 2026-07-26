@@ -590,6 +590,28 @@ private struct StatusBarQuotaLine: View {
     let title: String
     let window: AccountQuotaWindow?
 
+    @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
+    @AppStorage(FloatingPanelAppearance.endHexKey) private var floatingPanelGradientEndHex = FloatingPanelAppearance.defaultEndHex
+    @AppStorage(FloatingPanelAppearance.directionKey) private var floatingPanelGradientDirection = FloatingPanelAppearance.defaultDirection
+    @AppStorage(FloatingPanelAppearance.styleKey) private var floatingPanelGradientStyle = FloatingPanelAppearance.defaultStyle
+    @AppStorage(FloatingQuotaColorStyle.modeKey) private var floatingQuotaColorMode = FloatingQuotaColorStyle.defaultMode
+    @AppStorage(FloatingQuotaColorStyle.fixedHexKey) private var floatingQuotaFixedHex = FloatingQuotaColorStyle.defaultFixedHex
+
+    // 紧凑状态面共用用户配色模式（随均速/固定色/面板渐变），与悬浮窗
+    // TokenQuotaMiniSegment 同一取值路径；绝对剩余量配色只保留在主界面。
+    private var quotaColorStyle: FloatingQuotaColorStyle {
+        FloatingQuotaColorStyle(
+            modeRaw: floatingQuotaColorMode,
+            fixedHex: floatingQuotaFixedHex,
+            gradientAppearance: FloatingPanelAppearance(
+                startHex: floatingPanelGradientStartHex,
+                endHex: floatingPanelGradientEndHex,
+                directionRaw: floatingPanelGradientDirection,
+                styleRaw: floatingPanelGradientStyle
+            )
+        )
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
@@ -605,7 +627,12 @@ private struct StatusBarQuotaLine: View {
                     Capsule()
                         .fill(Color.primary.opacity(0.06))
                     Capsule()
-                        .fill(AppTheme.quotaRemainingColor(percent: percent))
+                        .fill(
+                            quotaColorStyle.fillStyle(
+                                remainingPercent: percent,
+                                expectedRemainingPercent: window?.expectedRemainingPercentByEvenPace.map(Double.init)
+                            )
+                        )
                         .frame(width: width)
                 }
             }
