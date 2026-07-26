@@ -177,7 +177,7 @@ export function ProviderRepairCard({
 
   async function runMigration() {
     const confirmed = window.confirm(
-      `将 ${snapshot.migrationCandidateCount} 个历史会话的 Provider 元数据迁移为 ${snapshot.detectedProvider}。\n\n只改会话首行和 SQLite Provider 字段，不改模型、消息、时间戳或会话名称；操作前会创建差量恢复点。是否继续？`,
+      `将 ${snapshot.migrationCandidateCount} 个历史会话的 Provider 元数据迁移为 ${snapshot.detectedProvider}。\n\n只改会话首行和 SQLite Provider 字段，不改模型、消息、时间戳或会话名称；操作前会创建差量恢复点。\n\n重要：如果旧会话含 encrypted_content，跨 Provider 或跨账号后可能无法解密。恢复点可以撤销本次元数据迁移，但不能让另一账号解密原内容。请只在账号与 Provider 确认兼容时继续。`,
     );
     if (!confirmed) {
       return;

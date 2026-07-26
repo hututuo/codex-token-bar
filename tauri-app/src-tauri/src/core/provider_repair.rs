@@ -8,16 +8,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 mod backups;
 mod report;
-mod safe_fs;
+pub(crate) mod safe_fs;
 mod session_files;
 mod sqlite_state;
 mod storage_roots;
 mod target_provider;
 
+pub(crate) use storage_roots::resolve_sqlite_home_path;
+
 use backups::{
     backup_by_id, ensure_backup_matches_codex_home, provider_backup_root,
     create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook,
-    restore_provider_backup_files_with_pinned_roots_verification,
     restore_provider_backup_files_with_verification,
 };
 #[cfg(test)]
@@ -28,16 +29,16 @@ use safe_fs::PinnedHome;
 use session_files::rewrite_session_provider;
 use session_files::{
     find_session_files, parse_session_provider_record, rewrite_session_provider_relative_in,
-    scan_session_providers, SessionScan,
+    SessionScan,
 };
 #[cfg(test)]
 use sqlite_state::sync_sqlite_provider;
 use sqlite_state::{
-    repair_sqlite_providers_from_snapshot_in, scan_sqlite, scan_sqlite_in,
-    sync_sqlite_provider_from_snapshot_in, SQLiteScan,
+    repair_sqlite_providers_from_snapshot_in, scan_sqlite_in,
+    sync_sqlite_provider_from_snapshot_in,
 };
 use storage_roots::{open_sqlite_home_for_pinned, ProviderStorageRoots};
-use target_provider::{detect_target_provider, detect_target_provider_from_config};
+use target_provider::detect_target_provider_from_config;
 
 const MAX_FINISHED_PROVIDER_OPERATIONS: usize = 256;
 
@@ -707,6 +708,20 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
     ensure_provider_codex_stopped(&mut probe, "同步首次写入前")?;
     pinned_home.verify_mutation_guard(&initial_guard)?;
     sqlite_home.verify_storage_guard(&initial_sqlite_guard)?;
+    let mut mutation_journal = backups::begin_provider_mutation_journal(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+        &backup,
+        match mode {
+            ProviderSyncMode::Repair => "repair",
+            ProviderSyncMode::Migrate => "migrate",
+        },
+        &target_provider,
+    )?;
+    ensure_provider_codex_stopped(&mut probe, "同步 journal 持久化后首次写入前")?;
+    pinned_home.verify_mutation_guard(&initial_guard)?;
+    sqlite_home.verify_storage_guard(&initial_sqlite_guard)?;
 
     let transaction = perform_provider_sync(
         pinned_home,
@@ -739,6 +754,10 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
             if current_backup_members != expected_member_paths {
                 return Err("Provider fresh backup 的成员 expected set 在最终提交前变化。".into());
             }
+            backups::commit_provider_mutation_journal(
+                backup_root,
+                &mut mutation_journal,
+            )?;
             let snapshot = snapshot_from_report(verified_report);
             let message = match mode {
                 ProviderSyncMode::Repair => format!(
@@ -759,11 +778,10 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
             snapshot,
             message,
         }),
-        Err(original_error) => match restore_provider_backup_files_with_pinned_roots_verification(
+        Err(original_error) => match backups::reconcile_unfinished_restore_transactions_with_roots(
+            backup_root,
             pinned_home,
             sqlite_home,
-            &backup,
-            |_| Ok(()),
         ) {
             Ok(()) => Err(format!(
                 "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
@@ -1277,10 +1295,8 @@ fn scan_provider_repair_result_for_roots(
         .newest_provider
         .as_deref()
         .and_then(validated_provider_candidate);
-    let sqlite_scan = scan_sqlite_in(sqlite_home).unwrap_or_else(|error| SQLiteScan {
-        integrity: format!("读取失败：{error}"),
-        ..SQLiteScan::default()
-    });
+    let sqlite_scan = scan_sqlite_in(sqlite_home)
+        .map_err(|error| format!("读取 Provider SQLite 失败：{error}"))?;
     let config = pinned_home.read(Path::new("config.toml")).ok();
     let target =
         detect_target_provider_from_config(config.as_deref(), &sqlite_scan, &session_scan);
@@ -1289,7 +1305,12 @@ fn scan_provider_repair_result_for_roots(
     let sqlite_metadata_mismatches =
         sqlite_scan.rows_to_repair_from_sessions(&session_providers);
     let ambiguous_threads = session_scan.ambiguous_thread_count();
-    let inconsistent_count = sqlite_metadata_mismatches;
+    let integrity_issues =
+        u32::from(sqlite_scan.database_present && sqlite_scan.integrity != "ok");
+    let inconsistent_count = sqlite_metadata_mismatches
+        .saturating_add(session_scan.invalid_files)
+        .saturating_add(ambiguous_threads)
+        .saturating_add(integrity_issues);
     pinned_home.ensure_canonical_path_identity()?;
     sqlite_home.ensure_canonical_path_identity()?;
     Ok(ProviderRepairReport {

@@ -25,6 +25,7 @@ use super::storage_roots::ProviderStorageRoots;
 
 const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 3;
 const RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 3;
+const PROVIDER_MUTATION_JOURNAL_SCHEMA_VERSION: u32 = 1;
 const PREVIOUS_BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 2;
 const PREVIOUS_RESTORE_JOURNAL_SCHEMA_VERSION: u32 = 2;
 const LEGACY_UNSUPPORTED_REASON: &str = "旧版 v1 清单缺少可验证的成员摘要。";
@@ -88,6 +89,38 @@ struct RestoreJournal {
     source_backup_id: String,
     source_backup_path: String,
     members: Vec<BackupMember>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum ProviderMutationJournalPhase {
+    Prepared,
+    Committed,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderMutationJournal {
+    schema_version: u32,
+    transaction_id: String,
+    phase: ProviderMutationJournalPhase,
+    mode: String,
+    target_provider: String,
+    codex_home: String,
+    codex_home_fingerprint: String,
+    home_generation: HomeGenerationIdentity,
+    account_identity: String,
+    sqlite_home: String,
+    sqlite_home_fingerprint: String,
+    sqlite_home_generation: HomeGenerationIdentity,
+    source_backup_id: String,
+    source_backup_path: String,
+    source_manifest_sha256: String,
+}
+
+pub(super) struct ProviderMutationJournalHandle {
+    path: PathBuf,
+    journal: ProviderMutationJournal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,7 +695,7 @@ pub(super) fn backup_by_id(backup_id: &str) -> Result<ProviderRepairBackupInfo, 
     backup_by_id_at(&provider_backup_root()?, backup_id)
 }
 
-fn backup_by_id_at(
+pub(super) fn backup_by_id_at(
     backup_root: &Path,
     backup_id: &str,
 ) -> Result<ProviderRepairBackupInfo, String> {
@@ -675,6 +708,171 @@ fn backup_by_id_at(
         return Err("备份 ID 无效".into());
     }
     read_backup_info(&backup_root.join(trimmed))
+}
+
+pub(super) fn begin_provider_mutation_journal(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    backup: &ProviderRepairBackupInfo,
+    mode: &str,
+    target_provider: &str,
+) -> Result<ProviderMutationJournalHandle, String> {
+    ensure_backup_matches_pinned_roots(backup, pinned_home, sqlite_home)?;
+    if !unfinished_provider_mutations_for_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )
+    .map_err(|blocked| blocked.message)?
+    .is_empty()
+    {
+        return Err(
+            "检测到未完成 Provider mutation journal，必须先恢复再开始新写入。"
+                .into(),
+        );
+    }
+    let canonical_root = backup_root
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Provider 备份根目录：{error}"))?;
+    let source_backup = PathBuf::from(&backup.path)
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Provider 恢复点 {}：{error}", backup.path))?;
+    if source_backup.parent() != Some(&canonical_root) {
+        return Err(format!(
+            "Provider mutation journal 的恢复点不属于当前备份根目录：{}",
+            source_backup.display()
+        ));
+    }
+    let manifest = validate_backup_manifest(&source_backup)?;
+    if manifest.id != backup.id
+        || manifest.codex_home_fingerprint != backup.codex_home_fingerprint
+        || manifest
+            .sqlite_home_fingerprint
+            .as_deref()
+            .unwrap_or(&manifest.codex_home_fingerprint)
+            != backup.sqlite_home_fingerprint
+    {
+        return Err("Provider mutation journal 的恢复点身份不一致。".into());
+    }
+    let source_manifest_sha256 =
+        provider_manifest_sha256(&source_backup.join("manifest.json"))?;
+    let transaction_id = collision_resistant_id();
+    let path = canonical_root.join(format!(
+        ".provider-mutation-{transaction_id}.json"
+    ));
+    let journal = ProviderMutationJournal {
+        schema_version: PROVIDER_MUTATION_JOURNAL_SCHEMA_VERSION,
+        transaction_id,
+        phase: ProviderMutationJournalPhase::Prepared,
+        mode: mode.into(),
+        target_provider: target_provider.into(),
+        codex_home: pinned_home
+            .canonical_path()
+            .to_string_lossy()
+            .into_owned(),
+        codex_home_fingerprint: pinned_home_fingerprint(pinned_home),
+        home_generation: pinned_home.generation_identity()?,
+        account_identity: pinned_home
+            .account_identity_fingerprint()?
+            .ok_or_else(|| {
+                "Provider mutation journal 无法确认稳定账号身份，已拒绝首次写入。"
+                    .to_string()
+            })?,
+        sqlite_home: sqlite_home
+            .canonical_path()
+            .to_string_lossy()
+            .into_owned(),
+        sqlite_home_fingerprint: pinned_home_fingerprint(sqlite_home),
+        sqlite_home_generation: sqlite_home.generation_identity()?,
+        source_backup_id: backup.id.clone(),
+        source_backup_path: source_backup.to_string_lossy().into_owned(),
+        source_manifest_sha256,
+    };
+    write_new_provider_mutation_journal(&canonical_root, &path, &journal)?;
+    Ok(ProviderMutationJournalHandle { path, journal })
+}
+
+pub(super) fn commit_provider_mutation_journal(
+    backup_root: &Path,
+    handle: &mut ProviderMutationJournalHandle,
+) -> Result<(), String> {
+    if handle.journal.phase != ProviderMutationJournalPhase::Prepared {
+        return Err("Provider mutation journal 不在可提交阶段。".into());
+    }
+    handle.journal.phase = ProviderMutationJournalPhase::Committed;
+    write_provider_mutation_journal(&handle.path, &handle.journal)?;
+    sync_directory(backup_root)?;
+    if let Err(error) = cleanup_provider_mutation_journal(backup_root, &handle.path) {
+        eprintln!(
+            "Codex Token Bar: committed Provider mutation journal cleanup deferred path={} error={error}",
+            handle.path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn persist_provider_mutation_commit_without_cleanup(
+    backup_root: &Path,
+    handle: &mut ProviderMutationJournalHandle,
+) -> Result<PathBuf, String> {
+    handle.journal.phase = ProviderMutationJournalPhase::Committed;
+    write_provider_mutation_journal(&handle.path, &handle.journal)?;
+    sync_directory(backup_root)?;
+    Ok(handle.path.clone())
+}
+
+fn write_new_provider_mutation_journal(
+    backup_root: &Path,
+    path: &Path,
+    journal: &ProviderMutationJournal,
+) -> Result<(), String> {
+    if path.exists() {
+        return Err(format!(
+            "Provider mutation journal 已存在：{}",
+            path.display()
+        ));
+    }
+    write_provider_mutation_journal(path, journal)?;
+    sync_directory(backup_root)
+}
+
+fn write_provider_mutation_journal(
+    path: &Path,
+    journal: &ProviderMutationJournal,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(journal)
+        .map_err(|error| format!("编码 Provider mutation journal 失败：{error}"))?;
+    write_file_atomically(path, &bytes)
+}
+
+fn cleanup_provider_mutation_journal(
+    backup_root: &Path,
+    path: &Path,
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("读取 Provider mutation journal 失败：{error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "拒绝删除非普通 Provider mutation journal：{}",
+            path.display()
+        ));
+    }
+    fs::remove_file(path)
+        .map_err(|error| format!("删除 Provider mutation journal 失败：{error}"))?;
+    sync_directory(backup_root)
+}
+
+fn provider_manifest_sha256(path: &Path) -> Result<String, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("读取 Provider manifest 失败 {}：{error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("Provider manifest 不是普通文件：{}", path.display()));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("读取 Provider manifest 失败 {}：{error}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 pub(super) fn ensure_backup_matches_codex_home(
@@ -1873,10 +2071,240 @@ pub(super) fn first_unfinished_restore_transaction_for_roots(
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
 ) -> Result<Option<PathBuf>, RestoreRecoveryBlocked> {
-    Ok(unfinished_restore_transactions_for_home(backup_root, pinned_home, sqlite_home)?
+    let mut paths = unfinished_restore_transactions_for_home(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )?
+    .into_iter()
+    .map(|(path, _)| path)
+    .chain(
+        unfinished_provider_mutations_for_roots(
+            backup_root,
+            pinned_home,
+            sqlite_home,
+        )?
         .into_iter()
-        .map(|(path, _)| path)
-        .next())
+        .map(|(path, _, _)| path),
+    )
+    .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths.into_iter().next())
+}
+
+fn unfinished_provider_mutation_paths_at(
+    backup_root: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let entries = match fs::read_dir(backup_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(format!(
+                "读取 Provider mutation journal 目录失败 {}：{error}",
+                backup_root.display()
+            ))
+        }
+    };
+    let mut candidates = entries
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with(".provider-mutation-") && name.ends_with(".json")
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    Ok(candidates)
+}
+
+fn read_provider_mutation_journal(
+    path: &Path,
+) -> Result<ProviderMutationJournal, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("读取 Provider mutation journal 失败：{error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "Provider mutation journal 不是普通文件：{}",
+            path.display()
+        ));
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("读取 Provider mutation journal 失败：{error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("解析 Provider mutation journal 失败：{error}"))
+}
+
+fn validate_provider_mutation_journal(
+    backup_root: &Path,
+    path: &Path,
+    journal: &ProviderMutationJournal,
+) -> Result<ProviderRepairBackupInfo, String> {
+    if journal.schema_version != PROVIDER_MUTATION_JOURNAL_SCHEMA_VERSION {
+        return Err(format!(
+            "Provider mutation journal schema 不受支持：{}",
+            journal.schema_version
+        ));
+    }
+    if journal.transaction_id.trim().is_empty()
+        || journal.mode != "repair" && journal.mode != "migrate"
+        || journal.target_provider.trim().is_empty()
+    {
+        return Err("Provider mutation journal 的操作字段无效。".into());
+    }
+    let expected_name =
+        format!(".provider-mutation-{}.json", journal.transaction_id);
+    if path.file_name().and_then(|name| name.to_str()) != Some(&expected_name) {
+        return Err("Provider mutation journal 文件名与 transaction ID 不一致。".into());
+    }
+    let canonical_root = backup_root
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Provider 备份根目录：{error}"))?;
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|error| format!("无法确认 Provider mutation journal：{error}"))?;
+    if canonical_path.parent() != Some(&canonical_root) {
+        return Err("Provider mutation journal 不属于当前备份根目录。".into());
+    }
+    if journal.codex_home_fingerprint
+        != codex_home_fingerprint_for_identity(&journal.codex_home)
+        || journal.sqlite_home_fingerprint
+            != codex_home_fingerprint_for_identity(&journal.sqlite_home)
+    {
+        return Err("Provider mutation journal 的存储根路径与 fingerprint 不一致。".into());
+    }
+    let source_backup = PathBuf::from(&journal.source_backup_path);
+    let canonical_source = source_backup.canonicalize().map_err(|error| {
+        format!(
+            "Provider mutation journal 的恢复点不可用 {}：{error}",
+            source_backup.display()
+        )
+    })?;
+    if source_backup != canonical_source || canonical_source.parent() != Some(&canonical_root) {
+        return Err("Provider mutation journal 的恢复点不属于当前备份根目录。".into());
+    }
+    let backup = backup_by_id_at(&canonical_root, &journal.source_backup_id)?;
+    if Path::new(&backup.path) != canonical_source
+        || backup.codex_home_fingerprint != journal.codex_home_fingerprint
+        || backup.sqlite_home_fingerprint != journal.sqlite_home_fingerprint
+        || backup.target_provider != journal.target_provider
+    {
+        return Err("Provider mutation journal 与恢复点身份不一致。".into());
+    }
+    let manifest_checksum =
+        provider_manifest_sha256(&canonical_source.join("manifest.json"))?;
+    if manifest_checksum != journal.source_manifest_sha256 {
+        return Err("Provider mutation journal 的恢复点 manifest 已变化。".into());
+    }
+    validate_backup_manifest(&canonical_source)?;
+    Ok(backup)
+}
+
+fn unfinished_provider_mutations_for_roots(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+) -> Result<
+    Vec<(
+        PathBuf,
+        ProviderMutationJournal,
+        ProviderRepairBackupInfo,
+    )>,
+    RestoreRecoveryBlocked,
+> {
+    let candidates = unfinished_provider_mutation_paths_at(backup_root)
+        .map_err(|error| recovery_blocked("mutationJournalDiscoveryFailed", None, error))?;
+    let current_home_fingerprint = pinned_home_fingerprint(pinned_home);
+    let current_sqlite_fingerprint = pinned_home_fingerprint(sqlite_home);
+    let mut current_identity = None;
+    let mut current_sqlite_generation = None;
+    let mut transactions = Vec::new();
+    for path in candidates {
+        let journal = read_provider_mutation_journal(&path)
+            .map_err(|error| recovery_blocked("mutationJournalInvalid", Some(&path), error))?;
+        let backup = validate_provider_mutation_journal(
+            backup_root,
+            &path,
+            &journal,
+        )
+        .map_err(|error| {
+            recovery_blocked("mutationJournalInvalid", Some(&path), error)
+        })?;
+        if journal.codex_home_fingerprint != current_home_fingerprint {
+            continue;
+        }
+        if journal.sqlite_home_fingerprint != current_sqlite_fingerprint
+            || Path::new(&journal.sqlite_home) != sqlite_home.canonical_path()
+        {
+            return Err(recovery_blocked(
+                "sqliteHomeMismatch",
+                Some(&path),
+                "Provider mutation journal 的 SQLite Home 与当前固定根不一致",
+            ));
+        }
+        let (current_generation, current_account) = match &current_identity {
+            Some(identity) => identity,
+            None => {
+                let generation = pinned_home.generation_identity().map_err(|error| {
+                    recovery_blocked(
+                        "homeGenerationUnavailable",
+                        Some(&path),
+                        error,
+                    )
+                })?;
+                let account = pinned_home
+                    .account_identity_fingerprint()
+                    .map_err(|error| {
+                        recovery_blocked(
+                            "accountIdentityUnknown",
+                            Some(&path),
+                            error,
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        recovery_blocked(
+                            "accountIdentityUnknown",
+                            Some(&path),
+                            "当前 Home 缺少可验证的非 secret 稳定账号身份",
+                        )
+                    })?;
+                current_identity.insert((generation, account))
+            }
+        };
+        let sqlite_generation = match &current_sqlite_generation {
+            Some(generation) => generation,
+            None => current_sqlite_generation.insert(
+                sqlite_home.generation_identity().map_err(|error| {
+                    recovery_blocked(
+                        "sqliteHomeGenerationUnavailable",
+                        Some(&path),
+                        error,
+                    )
+                })?,
+            ),
+        };
+        if &journal.home_generation != current_generation
+            || &journal.sqlite_home_generation != sqlite_generation
+        {
+            return Err(recovery_blocked(
+                "homeGenerationMismatch",
+                Some(&path),
+                "Provider mutation journal 的存储根 generation 已变化",
+            ));
+        }
+        if &journal.account_identity != current_account {
+            return Err(recovery_blocked(
+                "accountIdentityMismatch",
+                Some(&path),
+                "Provider mutation journal 的账号身份与当前 Home 不一致",
+            ));
+        }
+        transactions.push((path, journal, backup));
+    }
+    Ok(transactions)
 }
 
 pub(super) fn sqlite_home_for_unfinished_restore_transactions(
@@ -1948,6 +2376,75 @@ pub(super) fn sqlite_home_for_unfinished_restore_transactions(
         } else {
             selected_sqlite_home =
                 Some((sqlite_home, sqlite_home_fingerprint, recovery_path.clone()));
+        }
+    }
+
+    let mutation_candidates =
+        unfinished_provider_mutation_paths_at(backup_root).map_err(|error| {
+            recovery_blocked("mutationJournalDiscoveryFailed", None, error)
+        })?;
+    for mutation_path in mutation_candidates {
+        let journal = read_provider_mutation_journal(&mutation_path).map_err(|error| {
+            recovery_blocked(
+                "mutationJournalInvalid",
+                Some(&mutation_path),
+                error,
+            )
+        })?;
+        validate_provider_mutation_journal(
+            backup_root,
+            &mutation_path,
+            &journal,
+        )
+        .map_err(|error| {
+            recovery_blocked(
+                "mutationJournalInvalid",
+                Some(&mutation_path),
+                error,
+            )
+        })?;
+        if journal.codex_home_fingerprint != current_home_fingerprint {
+            continue;
+        }
+        if Path::new(&journal.codex_home) != pinned_home.canonical_path() {
+            return Err(recovery_blocked(
+                "codexHomeMismatch",
+                Some(&mutation_path),
+                "Provider mutation journal 的 Codex Home 已重定向",
+            ));
+        }
+        if journal.phase == ProviderMutationJournalPhase::Committed {
+            cleanup_provider_mutation_journal(backup_root, &mutation_path)
+                .map_err(|error| {
+                    recovery_blocked(
+                        "mutationJournalCleanupFailed",
+                        Some(&mutation_path),
+                        error,
+                    )
+                })?;
+            continue;
+        }
+        let sqlite_home = PathBuf::from(&journal.sqlite_home);
+        let sqlite_home_fingerprint = journal.sqlite_home_fingerprint.clone();
+        if let Some((selected_path, selected_fingerprint, selected_recovery_path)) =
+            selected_sqlite_home.as_ref()
+        {
+            if selected_path != &sqlite_home
+                || selected_fingerprint != &sqlite_home_fingerprint
+            {
+                return Err(recovery_blocked(
+                    "sqliteHomeConflict",
+                    Some(&mutation_path),
+                    format!(
+                        "同一 Codex Home 存在互相冲突的 SQLite Home 事务：{} 与 {}",
+                        selected_recovery_path.display(),
+                        mutation_path.display()
+                    ),
+                ));
+            }
+        } else {
+            selected_sqlite_home =
+                Some((sqlite_home, sqlite_home_fingerprint, mutation_path));
         }
     }
 
@@ -2075,6 +2572,56 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
         cleanup_recovery_path(backup_root, &recovery_path, &mut hook).map_err(|error| {
             recovery_blocked("recoveryCleanupFailed", Some(&recovery_path), error)
         })?;
+    }
+
+    let mutations =
+        unfinished_provider_mutations_for_roots(backup_root, pinned_home, sqlite_home)?;
+    let prepared_count = mutations
+        .iter()
+        .filter(|(_, journal, _)| {
+            journal.phase == ProviderMutationJournalPhase::Prepared
+        })
+        .count();
+    if prepared_count > 1 {
+        return Err(recovery_blocked(
+            "mutationJournalConflict",
+            mutations.first().map(|(path, _, _)| path.as_path()),
+            "同一 Codex Home 存在多个未提交 Provider mutation journal，已拒绝猜测恢复顺序",
+        ));
+    }
+    for (mutation_path, journal, backup) in mutations {
+        if journal.phase == ProviderMutationJournalPhase::Prepared {
+            let mut hook = noop_restore_hook;
+            let mut probe = || Ok(false);
+            restore_provider_backup_files_with_home(
+                pinned_home,
+                sqlite_home,
+                &backup,
+                &mut hook,
+                &mut probe,
+                |_| Ok(()),
+                None,
+            )
+            .map_err(|error| {
+                recovery_blocked(
+                    "mutationRollbackFailed",
+                    Some(&mutation_path),
+                    format!(
+                        "未提交 Provider {} 事务自动回滚失败：{error}",
+                        journal.mode
+                    ),
+                )
+            })?;
+        }
+        cleanup_provider_mutation_journal(backup_root, &mutation_path).map_err(
+            |error| {
+                recovery_blocked(
+                    "mutationJournalCleanupFailed",
+                    Some(&mutation_path),
+                    error,
+                )
+            },
+        )?;
     }
     Ok(())
 }

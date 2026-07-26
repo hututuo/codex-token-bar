@@ -102,7 +102,9 @@ extension ProviderSyncEngine {
         }
         let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
         let provider = rawProvider.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty, !provider.isEmpty else {
+        guard !id.isEmpty,
+              !provider.isEmpty,
+              providerSyncSessionFileMatchesThreadID(file, threadID: id) else {
             return nil
         }
         let modifiedAt = Date(
@@ -297,5 +299,35 @@ extension ProviderSyncEngine {
             Data(data[separatorStart..<restStart]),
             Data(data[restStart..<data.endIndex])
         )
+    }
+}
+
+private func providerSyncSessionFileMatchesThreadID(
+    _ file: URL,
+    threadID: String
+) -> Bool {
+    guard providerSyncLooksLikeThreadUUID(threadID) else {
+        return true
+    }
+    let stem = file.deletingPathExtension().lastPathComponent
+    guard stem.hasPrefix("rollout-"), stem.count >= 36 else {
+        return false
+    }
+    let suffix = String(stem.suffix(36))
+    return providerSyncLooksLikeThreadUUID(suffix) && suffix == threadID
+}
+
+private func providerSyncLooksLikeThreadUUID(_ candidate: String) -> Bool {
+    let bytes = Array(candidate.utf8)
+    guard bytes.count == 36 else {
+        return false
+    }
+    return bytes.enumerated().allSatisfy { index, byte in
+        if [8, 13, 18, 23].contains(index) {
+            return byte == 45
+        }
+        return (48...57).contains(byte)
+            || (65...70).contains(byte)
+            || (97...102).contains(byte)
     }
 }

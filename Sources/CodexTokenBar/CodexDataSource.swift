@@ -49,7 +49,16 @@ struct CodexDataSource: Equatable, Sendable {
     }
 
     var stateDatabase: URL {
-        codexHome.appendingPathComponent("state_5.sqlite")
+        (try? CodexSQLiteHomeResolver.resolvedSQLiteHome(
+            codexHome: codexHome
+        ))?
+            .appendingPathComponent("state_5.sqlite")
+            ?? codexHome
+                .appendingPathComponent(
+                    ".codex-token-bar-invalid-sqlite-home",
+                    isDirectory: true
+                )
+                .appendingPathComponent("state_5.sqlite")
     }
 
     var stableIdentityKey: String {
@@ -94,6 +103,68 @@ struct CodexDataSource: Equatable, Sendable {
             return "~" + String(path.dropFirst(home.count))
         }
         return path
+    }
+}
+
+enum CodexSQLiteHomeResolver {
+    static func resolvedSQLiteHome(
+        codexHome: URL,
+        fileManager: FileManager = .default,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        currentDirectory: URL? = nil
+    ) throws -> URL {
+        let canonicalHome = codexHome.standardizedFileURL
+            .resolvingSymlinksInPath()
+        let configURL = canonicalHome.appendingPathComponent("config.toml")
+        if fileManager.fileExists(atPath: configURL.path) {
+            let data = try Data(contentsOf: configURL)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw providerSyncDescriptorError("config.toml 不是 UTF-8")
+            }
+            if let configured = try providerSyncTopLevelStringValues(text)[
+                "sqlite_home"
+            ] {
+                let expanded = NSString(string: configured)
+                    .expandingTildeInPath
+                guard expanded.hasPrefix("/") else {
+                    throw providerSyncDescriptorError(
+                        "config.toml 的 sqlite_home 必须是绝对路径：\(configured)"
+                    )
+                }
+                return URL(
+                    fileURLWithPath: expanded,
+                    isDirectory: true
+                )
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            }
+        }
+
+        if let raw = environment["CODEX_SQLITE_HOME"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            let expanded = NSString(string: raw).expandingTildeInPath
+            let resolved: URL
+            if expanded.hasPrefix("/") {
+                resolved = URL(
+                    fileURLWithPath: expanded,
+                    isDirectory: true
+                )
+            } else {
+                resolved = (
+                    currentDirectory
+                        ?? URL(
+                            fileURLWithPath:
+                                fileManager.currentDirectoryPath,
+                            isDirectory: true
+                        )
+                )
+                .appendingPathComponent(expanded, isDirectory: true)
+            }
+            return resolved.standardizedFileURL.resolvingSymlinksInPath()
+        }
+
+        return canonicalHome
     }
 }
 

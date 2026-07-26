@@ -55,6 +55,18 @@ pub(super) fn open_sqlite_home_for_pinned(
     })
 }
 
+pub(crate) fn resolve_sqlite_home_path(
+    codex_home: &Path,
+) -> Result<PathBuf, String> {
+    let codex_home = PinnedHome::open(codex_home)?;
+    resolve_sqlite_home_for_pinned(
+        &codex_home,
+        std::env::var_os("CODEX_SQLITE_HOME"),
+        &std::env::current_dir()
+            .map_err(|error| format!("无法解析 CODEX_SQLITE_HOME 的当前目录：{error}"))?,
+    )
+}
+
 fn resolve_sqlite_home_for_pinned(
     codex_home: &PinnedHome,
     sqlite_home_environment: Option<OsString>,

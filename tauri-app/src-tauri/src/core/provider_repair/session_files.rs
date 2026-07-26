@@ -346,8 +346,16 @@ fn split_first_line(bytes: &[u8]) -> (&[u8], &[u8]) {
 }
 
 fn validate_rollout_thread_identity(path: &Path, thread_id: &str) -> Result<(), String> {
-    let Some(file_thread_id) = rollout_thread_id_from_path(path) else {
+    if !looks_like_thread_uuid(thread_id) {
+        // Very old fixtures/imports can use non-UUID IDs. Modern Codex rollouts are UUID
+        // keyed and must satisfy the strict canonical filename check below.
         return Ok(());
+    }
+    let Some(file_thread_id) = rollout_thread_id_from_path(path) else {
+        return Err(format!(
+            "{} 不是 canonical rollout 文件名，拒绝把普通 JSONL 当作会话改写",
+            path.display()
+        ));
     };
     if file_thread_id == thread_id {
         Ok(())
@@ -363,17 +371,23 @@ fn validate_rollout_thread_identity(path: &Path, thread_id: &str) -> Result<(), 
 
 fn rollout_thread_id_from_path(path: &Path) -> Option<&str> {
     let stem = path.file_stem()?.to_str()?;
+    if !stem.starts_with("rollout-") {
+        return None;
+    }
     let candidate = stem.get(stem.len().checked_sub(36)?..)?;
+    looks_like_thread_uuid(candidate).then_some(candidate)
+}
+
+fn looks_like_thread_uuid(candidate: &str) -> bool {
     let bytes = candidate.as_bytes();
-    let valid = bytes.len() == 36
+    bytes.len() == 36
         && bytes.iter().enumerate().all(|(index, byte)| {
             if matches!(index, 8 | 13 | 18 | 23) {
                 *byte == b'-'
             } else {
                 byte.is_ascii_hexdigit()
             }
-        });
-    valid.then_some(candidate)
+        })
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {

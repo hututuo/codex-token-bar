@@ -152,7 +152,7 @@ extension ProviderSyncEngine {
     }
 }
 
-private func providerSyncTopLevelStringValues(_ text: String) throws -> [String: String] {
+func providerSyncTopLevelStringValues(_ text: String) throws -> [String: String] {
     var values: [String: String] = [:]
     var enteredTable = false
     var multilineDelimiter: String?

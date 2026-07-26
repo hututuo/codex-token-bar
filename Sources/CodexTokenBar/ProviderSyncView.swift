@@ -198,7 +198,7 @@ struct ProviderSyncView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text(
-                "这不是“安全修复”：它会流式改写每个候选 JSONL 的 canonical 首行并更新 SQLite Provider。程序会先创建小型恢复点，不修改消息正文、模型、时间戳、session_index 或工作区；目标必须与 config.toml 当前设置一致。"
+                "这不是“安全修复”：它会流式改写每个候选 JSONL 的 canonical 首行并更新 SQLite Provider。程序会先创建小型恢复点，不修改消息正文、模型、时间戳、session_index 或工作区；目标必须与 config.toml 当前设置一致。如果旧会话含 encrypted_content，跨 Provider 或跨账号后可能无法解密；恢复点只能撤销元数据迁移，不能让另一账号解密原内容。"
             )
         }
     }

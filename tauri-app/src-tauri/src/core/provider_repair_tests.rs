@@ -452,6 +452,78 @@ fn session_traversal_rejects_candidates_outside_canonical_home() {
     fs::remove_dir_all(outside).unwrap();
 }
 
+#[test]
+fn uuid_session_metadata_requires_a_canonical_rollout_filename() {
+    let root = temp_root("provider-canonical-rollout-name");
+    let sessions = root.join("sessions/2026/07/26");
+    fs::create_dir_all(&sessions).unwrap();
+    let thread_id = "019f801b-c665-7a22-94ae-9da1a64a7be5";
+    let ordinary = sessions.join("notes.jsonl");
+    let canonical = sessions.join(format!(
+        "rollout-2026-07-26T10-00-00-{thread_id}.jsonl"
+    ));
+    write_session(&ordinary, thread_id, "legacy-provider");
+    write_session(&canonical, thread_id, "legacy-provider");
+
+    let ordinary_line = fs::read_to_string(&ordinary).unwrap();
+    let error =
+        session_files::parse_session_provider_record(&ordinary, &ordinary_line)
+            .unwrap_err();
+    assert!(error.contains("canonical rollout"), "{error}");
+    let canonical_line = fs::read_to_string(&canonical).unwrap();
+    let record =
+        session_files::parse_session_provider_record(&canonical, &canonical_line)
+            .unwrap()
+            .unwrap();
+    assert_eq!(record.thread_id, thread_id);
+
+    let scan = session_files::scan_session_providers(
+        &find_session_files(&root, true).unwrap(),
+    );
+    assert_eq!(scan.records.len(), 1);
+    assert_eq!(scan.invalid_files, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scan_never_reports_healthy_when_sqlite_cannot_be_read() {
+    let root = temp_root("provider-unreadable-sqlite");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    fs::write(root.join("state_5.sqlite"), b"not a sqlite database").unwrap();
+
+    let snapshot = scan_provider_repair(&root);
+
+    assert!(snapshot.inconsistent_count > 0);
+    assert!(snapshot.status.contains("扫描失败"), "{}", snapshot.status);
+    assert!(snapshot
+        .steps
+        .first()
+        .is_some_and(|step| !step.healthy));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn invalid_canonical_rollout_is_counted_as_an_inconsistency() {
+    let root = temp_root("provider-invalid-canonical-rollout");
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(
+            "rollout-2026-07-26T10-00-00-019f801b-c665-7a22-94ae-9da1a64a7be5.jsonl",
+        ),
+        b"{not-json}\n",
+    )
+    .unwrap();
+    create_state_database(&root, &[]);
+
+    let snapshot = scan_provider_repair(&root);
+
+    assert_eq!(snapshot.invalid_session_files, 1);
+    assert!(snapshot.inconsistent_count >= 1);
+    assert!(snapshot.status.contains("异常文件 1"), "{}", snapshot.status);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn session_rewrite_rejects_a_symlinked_parent_outside_canonical_home() {
@@ -873,6 +945,7 @@ fn safe_repair_aligns_sqlite_to_each_canonical_session_without_rewriting_history
     );
     let after = scan_provider_repair(&root);
     assert_eq!(after.inconsistent_count, 0);
+    assert_no_provider_mutation_journal(&backup_root);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -947,6 +1020,7 @@ fn safe_repair_uses_separate_sqlite_home_and_leaves_codex_home_decoy_database_un
         .iter()
         .any(|member| member["relative_path"] == "config.toml"
             || member["relative_path"] == "session_index.jsonl"));
+    assert_no_provider_mutation_journal(&backup_root);
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -1134,6 +1208,333 @@ fn verification_error_automatically_restores_the_fresh_backup() {
 }
 
 #[test]
+fn prepared_provider_mutation_journal_recovers_partial_session_and_sqlite_writes() {
+    let fixture = temp_root("provider-mutation-journal-prepared");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "mutation-journal-prepared-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let _journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &pinned_home,
+        &pinned_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    rewrite_session_provider(&home, &session, "openai").unwrap();
+    Connection::open(home.join("state_5.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE threads SET model_provider = 'openai' WHERE id = 'thread'",
+            [],
+        )
+        .unwrap();
+    drop(pinned_home);
+
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+
+    assert!(!status.blocked, "{status:?}");
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("legacy-provider"));
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "thread"),
+        "legacy-provider"
+    );
+    assert_no_provider_mutation_journal(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn prepared_provider_mutation_journal_recovers_rows_lost_with_live_wal_sidecars() {
+    let fixture = temp_root("provider-mutation-journal-wal-loss");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    let baseline = fixture.join("baseline.sqlite");
+    fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "mutation-journal-wal-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    create_state_database(&home, &[("baseline", "legacy-provider", 0)]);
+    fs::copy(home.join("state_5.sqlite"), &baseline).unwrap();
+
+    let writer = Connection::open(home.join("state_5.sqlite")).unwrap();
+    writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    writer
+        .execute(
+            "
+            INSERT INTO threads (
+                id, model_provider, archived, updated_at, updated_at_ms
+            )
+            VALUES ('wal-sentinel', 'wal-committed-provider', 0, 1781760001, 1781760001000)
+            ",
+            [],
+        )
+        .unwrap();
+    assert!(home.join("state_5.sqlite-wal").exists());
+
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai")
+            .unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let _journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &pinned_home,
+        &pinned_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    drop(writer);
+    for sidecar in ["state_5.sqlite-wal", "state_5.sqlite-shm"] {
+        let _ = fs::remove_file(home.join(sidecar));
+    }
+    fs::copy(&baseline, home.join("state_5.sqlite")).unwrap();
+    assert_eq!(
+        Connection::open(home.join("state_5.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = 'wal-sentinel'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    drop(pinned_home);
+
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+
+    assert!(!status.blocked, "{status:?}");
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "wal-sentinel"),
+        "wal-committed-provider"
+    );
+    assert_eq!(sqlite_integrity(&home.join("state_5.sqlite")), "ok");
+    assert_no_provider_mutation_journal(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn prepared_provider_mutation_journal_recovers_the_recorded_separate_sqlite_home() {
+    let fixture = temp_root("provider-mutation-journal-separate-sqlite");
+    let home = fixture.join("home");
+    let sqlite_home = fixture.join("sqlite-home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::create_dir_all(&sqlite_home).unwrap();
+    write_test_auth_subject(&home, "mutation-journal-separate-account");
+    let mut config = toml::Table::new();
+    config.insert(
+        "model_provider".into(),
+        toml::Value::String("openai".into()),
+    );
+    config.insert(
+        "sqlite_home".into(),
+        toml::Value::String(sqlite_home.display().to_string()),
+    );
+    fs::write(home.join("config.toml"), toml::to_string(&config).unwrap()).unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    create_state_database(&sqlite_home, &[("thread", "legacy-provider", 0)]);
+    create_state_database(&home, &[("thread", "decoy-provider", 0)]);
+
+    let roots = ProviderStorageRoots::open(&home).unwrap();
+    let backup =
+        create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook(
+            &backup_root,
+            &roots.codex_home,
+            &roots.sqlite_home,
+            "openai",
+            &[PathBuf::from("sessions/thread.jsonl")],
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    let _journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &roots.codex_home,
+        &roots.sqlite_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    rewrite_session_provider(&home, &session, "openai").unwrap();
+    Connection::open(sqlite_home.join("state_5.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE threads SET model_provider = 'openai' WHERE id = 'thread'",
+            [],
+        )
+        .unwrap();
+    drop(roots);
+
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+
+    assert!(!status.blocked, "{status:?}");
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("legacy-provider"));
+    assert_eq!(
+        sqlite_provider_for_thread(&sqlite_home, "thread"),
+        "legacy-provider"
+    );
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "thread"),
+        "decoy-provider"
+    );
+    assert_no_provider_mutation_journal(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn committed_provider_mutation_journal_keeps_new_state_and_only_cleans_journal() {
+    let fixture = temp_root("provider-mutation-journal-committed");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "mutation-journal-committed-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let mut journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &pinned_home,
+        &pinned_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    rewrite_session_provider(&home, &session, "openai").unwrap();
+    Connection::open(home.join("state_5.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE threads SET model_provider = 'openai' WHERE id = 'thread'",
+            [],
+        )
+        .unwrap();
+    let journal_path =
+        backups::persist_provider_mutation_commit_without_cleanup(
+            &backup_root,
+            &mut journal,
+        )
+        .unwrap();
+    assert!(journal_path.exists());
+    drop(pinned_home);
+
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+
+    assert!(!status.blocked, "{status:?}");
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+    assert_no_provider_mutation_journal(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn provider_mutation_recovery_waits_while_codex_is_running() {
+    let fixture = temp_root("provider-mutation-journal-running");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "mutation-journal-running-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let _journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &pinned_home,
+        &pinned_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    rewrite_session_provider(&home, &session, "openai").unwrap();
+    drop(pinned_home);
+
+    let blocked =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(true));
+    assert!(blocked.blocked, "{blocked:?}");
+    assert_eq!(blocked.code.as_deref(), Some("codexRunning"));
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+
+    let recovered =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+    assert!(!recovered.blocked, "{recovered:?}");
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("legacy-provider"));
+    assert_no_provider_mutation_journal(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn provider_mutation_recovery_fails_closed_when_source_manifest_changes() {
+    let fixture = temp_root("provider-mutation-journal-tampered");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "mutation-journal-tampered-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let _journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &pinned_home,
+        &pinned_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    rewrite_session_provider(&home, &session, "openai").unwrap();
+    fs::write(
+        PathBuf::from(&backup.path).join("manifest.json"),
+        b"{\"tampered\":true}",
+    )
+    .unwrap();
+    drop(pinned_home);
+
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+
+    assert!(status.blocked, "{status:?}");
+    assert_eq!(status.code.as_deref(), Some("mutationJournalInvalid"));
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
 fn verification_mismatch_after_all_writes_automatically_restores() {
     let fixture = temp_root("provider-sync-verification-mismatch");
     let home = fixture.join("home");
@@ -1188,11 +1589,11 @@ fn sync_running_flip_before_final_commit_restores_the_fresh_backup() {
         || {
             let call = probes.get().saturating_add(1);
             probes.set(call);
-            Ok(call >= 2)
+            Ok(call >= 3)
         },
     )
     .unwrap_err();
-    assert_eq!(probes.get(), 2);
+    assert_eq!(probes.get(), 3);
     assert!(error.contains("Codex"), "{error}");
     assert!(error.contains("自动恢复"), "{error}");
     assert!(fs::read_to_string(&session)
@@ -4181,6 +4582,23 @@ fn assert_no_recovery_staging(backup_root: &Path) {
         let name = name.to_string_lossy();
         name.starts_with(".restore-recovery-") || name.starts_with(".restore-quarantine-")
     }));
+}
+
+fn provider_mutation_journal_count(backup_root: &Path) -> usize {
+    fs::read_dir(backup_root)
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(".provider-mutation-")
+                && name.ends_with(".json")
+        })
+        .count()
+}
+
+fn assert_no_provider_mutation_journal(backup_root: &Path) {
+    assert_eq!(provider_mutation_journal_count(backup_root), 0);
 }
 
 fn sqlite_text_value(database_path: &Path, query: &str) -> String {

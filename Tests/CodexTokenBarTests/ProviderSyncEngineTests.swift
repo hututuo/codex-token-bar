@@ -407,6 +407,43 @@ final class ProviderSyncEngineTests: XCTestCase {
         )
     }
 
+    func testUUIDSessionMetadataRequiresCanonicalRolloutFilename() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderCanonicalRollout")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sessions,
+            withIntermediateDirectories: true
+        )
+        let threadID = "019f5a7c-1234-7abc-8def-0123456789ab"
+        let firstLine = """
+        {"type":"session_meta","payload":{"id":"\(threadID)","model_provider":"openai"}}
+        """
+        let ordinary = sessions.appendingPathComponent("notes.jsonl")
+        let canonical = sessions.appendingPathComponent(
+            "rollout-2026-07-26T00-00-00-\(threadID).jsonl"
+        )
+        try firstLine.write(to: ordinary, atomically: true, encoding: .utf8)
+        try firstLine.write(to: canonical, atomically: true, encoding: .utf8)
+        let directory = try ProviderSyncHomeDirectory(canonicalURL: codexHome)
+        defer { try? directory.close() }
+        let engine = ProviderSyncEngine(applicationRunningProbe: { false })
+
+        XCTAssertNil(
+            try engine.readSessionRecord(
+                file: ordinary,
+                homeDirectory: directory
+            )
+        )
+        XCTAssertEqual(
+            try engine.readSessionRecord(
+                file: canonical,
+                homeDirectory: directory
+            )?.id,
+            threadID
+        )
+    }
+
     func testSyncCreatesDisposableBackupAndOnlyMutatesIntendedFiles() throws {
         let fixture = try makeFixture()
         let engine = ProviderSyncEngine(

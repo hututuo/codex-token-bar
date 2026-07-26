@@ -18,6 +18,7 @@ static SQLITE_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 pub(super) struct SQLiteScan {
+    pub(super) database_present: bool,
     pub(super) provider_counts: Vec<SQLiteProviderCount>,
     pub(super) thread_providers: HashMap<String, String>,
     pub(super) latest_unarchived_provider: Option<String>,
@@ -69,6 +70,7 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
     let columns = thread_columns(&connection)?;
     if !columns.contains("model_provider") {
         return Ok(SQLiteScan {
+            database_present: true,
             integrity: sqlite_integrity(&connection).unwrap_or_else(|_| "unknown".into()),
             ..SQLiteScan::default()
         });
@@ -85,6 +87,7 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
         None => (None, None),
     };
     Ok(SQLiteScan {
+        database_present: true,
         provider_counts,
         thread_providers,
         latest_unarchived_provider,
@@ -94,6 +97,12 @@ pub(super) fn scan_sqlite(codex_home: &Path) -> SqlResult<SQLiteScan> {
 }
 
 pub(super) fn scan_sqlite_in(pinned_home: &PinnedHome) -> Result<SQLiteScan, String> {
+    if pinned_home
+        .open_file(Path::new("state_5.sqlite"))?
+        .is_none()
+    {
+        return Ok(SQLiteScan::default());
+    }
     with_pinned_sqlite_snapshot(pinned_home, |snapshot_root| {
         scan_sqlite(snapshot_root).map_err(|error| error.to_string())
     })
