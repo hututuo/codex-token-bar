@@ -41,8 +41,8 @@ private struct CodexInstanceSyncTransaction: Codable {
     var conflicts: [CodexInstanceConflict]
 }
 
-private final class CodexInstanceFileLock {
-    private let descriptor: Int32
+final class CodexInstanceFileLock {
+    private var descriptor: Int32
 
     init(url: URL, label: String, fileManager: FileManager = .default) throws {
         try fileManager.createDirectory(
@@ -60,9 +60,17 @@ private final class CodexInstanceFileLock {
         }
     }
 
-    deinit {
+    // 使用点必须 defer { release() }：仅靠 `_ = lock` 时优化器有权在函数
+    // 中途就 deinit（LOCK_UN + close），Release 构建下跨进程互斥失效。
+    func release() {
+        guard descriptor >= 0 else { return }
         flock(descriptor, LOCK_UN)
         close(descriptor)
+        descriptor = -1
+    }
+
+    deinit {
+        release()
     }
 }
 
@@ -102,7 +110,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func listInstances() throws -> CodexInstanceRegistrySnapshot {
         let lock = try registryLock()
-        _ = lock
+        defer { lock.release() }
         let document = try loadRegistry()
         return CodexInstanceRegistrySnapshot(
             schemaVersion: document.schemaVersion,
@@ -115,8 +123,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func createInstance(_ request: CodexInstanceCreateRequest) throws -> CodexInstanceActionResult {
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try validate(name: request.name, arguments: request.arguments)
         let workingDirectory = try canonicalOptionalDirectory(request.workingDirectory, label: "工作目录")
         var document = try loadRegistry()
@@ -170,8 +179,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func importInstance(_ request: CodexInstanceImportRequest) throws -> CodexInstanceActionResult {
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try validate(name: request.name, arguments: request.arguments)
         let home = try canonicalDirectory(
             URL(fileURLWithPath: request.codexHome, isDirectory: true),
@@ -215,8 +225,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func updateInstance(_ request: CodexInstanceUpdateRequest) throws -> CodexInstanceActionResult {
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try ensureNoUnfinishedTransactions(instanceIDs: [request.id])
         try validate(name: request.name, arguments: request.arguments)
         let workingDirectory = try canonicalOptionalDirectory(request.workingDirectory, label: "工作目录")
@@ -238,8 +249,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
     func deleteInstance(id: String) throws -> CodexInstanceActionResult {
         guard id != "default" else { throw codexInstanceError("默认实例不能删除") }
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try ensureNoUnfinishedTransactions(instanceIDs: [id])
         var document = try loadRegistry()
         guard let index = document.instances.firstIndex(where: { $0.id == id }) else {
@@ -283,7 +295,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func runtimeStatus(id: String) throws -> CodexInstanceRuntimeStatus {
         let lock = try registryLock()
-        _ = lock
+        defer { lock.release() }
         let document = try loadRegistry()
         guard let instance = ([defaultInstance()] + document.instances).first(where: { $0.id == id }) else {
             throw codexInstanceError("没有找到 Codex 实例")
@@ -297,8 +309,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
             throw codexInstanceError("默认实例由系统入口启动，实例管理器不会重复启动它")
         }
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try ensureNoUnfinishedTransactions(instanceIDs: [id])
         var document = try loadRegistry()
         if document.instances.first(where: { $0.id == id })?.autoSyncEnabled == true {
@@ -395,7 +408,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
     @MainActor
     func focusInstance(id: String) throws -> CodexInstanceActionResult {
         let lock = try registryLock()
-        _ = lock
+        defer { lock.release() }
         let document = try loadRegistry()
         guard let instance = document.instances.first(where: { $0.id == id }),
               let process = try verifiedControlledProcess(instance),
@@ -415,8 +428,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
             throw codexInstanceError("实例管理器不会停止默认 Codex，避免中断当前任务")
         }
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         var document = try loadRegistry()
         guard let index = document.instances.firstIndex(where: { $0.id == id }),
               let process = try verifiedControlledProcess(document.instances[index]),
@@ -1022,8 +1036,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func previewSync(instanceIDs: [String]) throws -> CodexInstanceSyncPreview {
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try ensureNoUnfinishedTransactions(instanceIDs: instanceIDs)
         let document = try loadRegistry()
         let instances = try selectInstances(
@@ -1036,8 +1051,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
 
     func syncInstances(instanceIDs: [String]) throws -> CodexInstanceSyncResult {
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         try ensureNoUnfinishedTransactions(instanceIDs: instanceIDs)
         var document = try loadRegistry()
         let instances = try selectInstances(
@@ -1079,8 +1095,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
             throw codexInstanceError("实例同步事务编号无效")
         }
         let syncLock = try self.syncLock()
+        defer { syncLock.release() }
         let registryLock = try self.registryLock()
-        _ = (syncLock, registryLock)
+        defer { registryLock.release() }
         let root = transactionRoot(id: transactionID)
         var transaction = try readTransaction(root: root)
         guard ["committed", "prepared", "failedNeedsRecovery"].contains(transaction.state) else {

@@ -39,6 +39,27 @@ final class CodexInstanceEngineTests: XCTestCase {
         XCTAssertEqual(try fixture.engine.listSyncTransactions().first?.state, "rolledBack")
     }
 
+    func testInstanceFileLockHoldsUntilExplicitReleaseAndReleaseIsIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-instance-lock-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("locks/engine.lock")
+
+        let first = try CodexInstanceFileLock(url: url, label: "测试")
+        XCTAssertThrowsError(try CodexInstanceFileLock(url: url, label: "测试"))
+
+        first.release()
+        let second = try CodexInstanceFileLock(url: url, label: "测试")
+
+        // 重复 release 必须是空操作：不得误关系统已复用的文件描述符。
+        first.release()
+        XCTAssertThrowsError(try CodexInstanceFileLock(url: url, label: "测试"))
+
+        second.release()
+        let third = try CodexInstanceFileLock(url: url, label: "测试")
+        third.release()
+    }
+
     func testRollbackRetryAfterPartialRollbackIsIdempotent() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
