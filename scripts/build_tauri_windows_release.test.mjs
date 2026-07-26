@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const windowsScript = path.join(scriptsDir, "build_tauri_windows_release.ps1");
 const windowsSelfTest = path.join(scriptsDir, "build_tauri_windows_release.selftest.ps1");
+const macReleaseScript = path.join(scriptsDir, "build_release.sh");
 
 test("Windows build publishes a clean unsigned directory in one rename", async () => {
   const source = await readFile(windowsScript, "utf8");
@@ -57,6 +58,21 @@ test("Windows build manifest remains stable and secret-free", async () => {
     assert.match(source, new RegExp(`\\b${field}\\b`, "i"));
   }
   assert.match(source, /Sort-Object Platform/);
+});
+
+test("release builds run source tests and injection syntax gates before packaging", async () => {
+  const windows = await readFile(windowsScript, "utf8");
+  const mac = await readFile(macReleaseScript, "utf8");
+
+  assert.match(windows, /cargo test --locked/);
+  assert.match(windows, /node --check/);
+  assert.match(windows, /node --test/);
+  assert.match(windows, /CargoTestDir/);
+  assert.match(windows, /Remove-Item[^\n]+\$CargoTestDir/);
+  assert.match(mac, /swift test/);
+  assert.match(mac, /node --check/);
+  assert.match(mac, /node --test/);
+  assert.ok(mac.indexOf("swift test") < mac.indexOf("package_app.sh"));
 });
 
 test("PowerShell self-test captures config argv, stale output cleanup, and rerun immutability", async () => {

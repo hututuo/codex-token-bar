@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::sync::{
-    atomic::AtomicBool,
+    atomic::{AtomicBool, Ordering},
     OnceLock,
 };
+use std::time::Duration;
 
 use super::startup::{
     resolve_single_instance_launch, SingleInstanceLaunchOutcome, StartupLaunchMode,
@@ -117,33 +118,57 @@ pub fn start_instance_activation_listener(app: tauri::AppHandle) {
         return;
     };
     super::startup::start_activation_listener_once(&ACTIVATION_LISTENER_STARTED, || {
-        std::thread::spawn(move || {
-            super::startup::supervise_activation_signals(
-                || unsafe {
-                    match WaitForSingleObject(event as _, INFINITE) {
-                        WAIT_OBJECT_0 => Ok(true),
-                        WAIT_FAILED => Err(format!(
-                            "等待主实例激活事件失败（Windows error {}）",
-                            GetLastError()
-                        )),
-                        code => Err(format!("等待主实例激活事件返回异常状态 {code}")),
-                    }
-                },
-                || {
-                    let dispatch = app.clone();
-                    let activation = app.clone();
-                    dispatch
-                        .run_on_main_thread(move || {
-                            if let Err(error) = super::surfaces::show_dashboard_window(&activation) {
-                                report_activation_error(&format!("显示主界面失败：{error}"));
+        if let Err(error) = std::thread::Builder::new()
+            .name("codex-token-bar-activation".into())
+            .spawn(move || loop {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    super::startup::supervise_activation_signals(
+                        || unsafe {
+                            match WaitForSingleObject(event as _, INFINITE) {
+                                WAIT_OBJECT_0 => Ok(true),
+                                WAIT_FAILED => Err(format!(
+                                    "等待主实例激活事件失败（Windows error {}）",
+                                    GetLastError()
+                                )),
+                                code => {
+                                    Err(format!("等待主实例激活事件返回异常状态 {code}"))
+                                }
                             }
-                        })
-                        .map_err(|error| format!("调度主实例激活失败：{error}"))
-                },
-                report_activation_error,
-                std::thread::sleep,
-            );
-        });
+                        },
+                        || {
+                            let dispatch = app.clone();
+                            let activation = app.clone();
+                            dispatch
+                                .run_on_main_thread(move || {
+                                    if let Err(error) =
+                                        super::surfaces::show_dashboard_window(&activation)
+                                    {
+                                        report_activation_error(&format!(
+                                            "显示主界面失败：{error}"
+                                        ));
+                                    }
+                                })
+                                .map_err(|error| format!("调度主实例激活失败：{error}"))
+                        },
+                        report_activation_error,
+                        std::thread::sleep,
+                    );
+                }));
+                match outcome {
+                    Ok(()) => {
+                        ACTIVATION_LISTENER_STARTED.store(false, Ordering::Release);
+                        return;
+                    }
+                    Err(_) => {
+                        report_activation_error("主实例激活监听器异常，正在自动恢复");
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            })
+        {
+            ACTIVATION_LISTENER_STARTED.store(false, Ordering::Release);
+            report_activation_error(&format!("启动主实例激活监听器失败：{error}"));
+        }
     });
 }
 

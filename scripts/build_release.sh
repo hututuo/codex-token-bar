@@ -74,6 +74,14 @@ fi
 
 cd "$ROOT_DIR"
 
+echo "==> Running macOS release quality gates"
+GIT_LFS_SKIP_SMUDGE=1 swift test
+node --check "$ROOT_DIR/Resources/CodexThreadDeleteInjection.js"
+node --check "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js"
+node --test \
+  "$ROOT_DIR/scripts/tauri_windows_release.test.mjs" \
+  "$ROOT_DIR/scripts/build_tauri_windows_release.test.mjs"
+
 if [[ "$RELEASE_SECURITY_STRICT" == "1" ]]; then
   if [[ "$ENABLE_HARDENED_RUNTIME_WAS_SET" == "0" ]]; then
     ENABLE_HARDENED_RUNTIME="1"

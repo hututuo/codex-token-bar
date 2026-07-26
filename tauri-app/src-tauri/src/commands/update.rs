@@ -208,6 +208,16 @@ struct RegistryCore<A> {
     started: Arc<AtomicBool>,
 }
 
+struct UpdateMonitorStartedOwner {
+    started: Arc<AtomicBool>,
+}
+
+impl Drop for UpdateMonitorStartedOwner {
+    fn drop(&mut self) {
+        self.started.store(false, Ordering::Release);
+    }
+}
+
 struct CheckGenerationOwner<A: Send + 'static> {
     state: Arc<Mutex<RuntimeState<A>>>,
     generation: u64,
@@ -795,25 +805,31 @@ impl UpdateMonitorRegistry {
         if self.core.started.swap(true, Ordering::AcqRel) {
             return;
         }
+        let started_owner = UpdateMonitorStartedOwner {
+            started: self.core.started.clone(),
+        };
         let ops = TauriUpdateOps { app: app.clone() };
         if !self.core.initialized.swap(true, Ordering::AcqRel) {
             match ops.load() {
                 Ok(Some(persisted)) => {
-                    let mut state = self
-                        .core
-                        .state
-                        .try_lock()
-                        .expect("update state is unowned during setup");
-                    state.shown_notification_version = persisted.last_notified_version.clone();
-                    state.persisted = persisted;
+                    if let Ok(mut state) = self.core.state.try_lock() {
+                        state.shown_notification_version =
+                            persisted.last_notified_version.clone();
+                        state.persisted = persisted;
+                    } else {
+                        self.core.initialized.store(false, Ordering::Release);
+                        startup_trace::mark(
+                            "update monitor state setup was busy; using runtime defaults",
+                        );
+                    }
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    self.core
-                        .state
-                        .try_lock()
-                        .expect("update state is unowned during setup")
-                        .persisted = PersistedUpdateState::default();
+                    if let Ok(mut state) = self.core.state.try_lock() {
+                        state.persisted = PersistedUpdateState::default();
+                    } else {
+                        self.core.initialized.store(false, Ordering::Release);
+                    }
                     startup_trace::mark(&format!("update monitor state recovered: {error}"));
                     eprintln!("Codex Token Bar: update monitor state recovered: {error}");
                 }
@@ -826,11 +842,29 @@ impl UpdateMonitorRegistry {
             started: self.core.started.clone(),
         };
         tauri::async_runtime::spawn(async move {
-            core.reconcile_presentation(&ops, now_ms(), false).await;
+            let _started_owner = started_owner;
             loop {
-                let _ = core.check(&ops, false, now_ms()).await;
-                core.reconcile_presentation(&ops, now_ms(), false).await;
-                tokio::time::sleep(WAKE_INTERVAL).await;
+                let cycle_core = core.clone();
+                let cycle_ops = ops.clone();
+                let cycle = tauri::async_runtime::spawn(async move {
+                    cycle_core
+                        .reconcile_presentation(&cycle_ops, now_ms(), false)
+                        .await;
+                    let _ = cycle_core.check(&cycle_ops, false, now_ms()).await;
+                    cycle_core
+                        .reconcile_presentation(&cycle_ops, now_ms(), false)
+                        .await;
+                })
+                .await;
+                let delay = if let Err(error) = cycle {
+                    eprintln!(
+                        "Codex Token Bar: update monitor recovered after panic: {error}"
+                    );
+                    Duration::from_secs(5)
+                } else {
+                    WAKE_INTERVAL
+                };
+                tokio::time::sleep(delay).await;
             }
         });
     }

@@ -25,6 +25,7 @@ $BuildDir = Join-Path $VersionDir "windows-build"
 $RunId = [Guid]::NewGuid().ToString("N")
 $StagingDir = Join-Path $VersionDir (".windows-build.staging.{0}" -f $RunId)
 $ConfigPath = Join-Path $VersionDir (".windows-build.config.{0}.json" -f $RunId)
+$CargoTestDir = Join-Path $VersionDir (".windows-build.cargo-test.{0}" -f $RunId)
 $UserCargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 if (Test-Path $UserCargoBin) {
     $env:PATH = "$UserCargoBin;$env:PATH"
@@ -175,6 +176,34 @@ try {
         Pop-Location
     }
 
+    Invoke-Checked "thread-delete injection syntax" {
+        node --check (Join-Path $RootDir "Resources\CodexThreadDeleteInjection.js")
+    }
+    Invoke-Checked "session-enhancement injection syntax" {
+        node --check (Join-Path $RootDir "Resources\CodexSessionEnhancementsInjection.js")
+    }
+    Invoke-Checked "release script tests" {
+        node --test `
+            (Join-Path $PSScriptRoot "tauri_windows_release.test.mjs") `
+            (Join-Path $PSScriptRoot "build_tauri_windows_release.test.mjs")
+    }
+
+    $HadCargoTargetDir = Test-Path Env:CARGO_TARGET_DIR
+    $PreviousCargoTargetDir = $env:CARGO_TARGET_DIR
+    try {
+        $env:CARGO_TARGET_DIR = $CargoTestDir
+        Invoke-Checked "cargo test" {
+            cargo test --locked --manifest-path (Join-Path $TauriDir "src-tauri\Cargo.toml")
+        }
+    } finally {
+        if ($HadCargoTargetDir) {
+            $env:CARGO_TARGET_DIR = $PreviousCargoTargetDir
+        } else {
+            Remove-Item Env:\CARGO_TARGET_DIR -ErrorAction SilentlyContinue
+        }
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
+    }
+
     Build-Target -Label "x64" -RustTarget "x86_64-pc-windows-msvc" -UpdaterPlatform "windows-x86_64"
     Build-Target -Label "arm64" -RustTarget "aarch64-pc-windows-msvc" -UpdaterPlatform "windows-aarch64"
 
@@ -214,6 +243,7 @@ try {
     $Published = $true
 } finally {
     Remove-Item -Force -ErrorAction SilentlyContinue $ConfigPath
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
     if (-not $Published) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $StagingDir
     }
