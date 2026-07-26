@@ -379,6 +379,7 @@ struct DashboardView: View {
                 showRadar: $floatingPanelShowRadar,
                 showCrowdRadar: $floatingPanelShowCrowdRadar,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
+                defaultCodexHome: store.currentDataSource?.codexHome,
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
                 onChooseDirectory: {

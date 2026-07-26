@@ -4,6 +4,7 @@ import SwiftUI
 enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case general
     case sessionEnhancements
+    case codexInstances
     case autoResume
     case surfaces
     case monitoring
@@ -18,6 +19,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "常规"
         case .sessionEnhancements: return "会话增强"
+        case .codexInstances: return "Codex 实例"
         case .autoResume: return "自动续跑"
         case .surfaces: return "显示面"
         case .monitoring: return "监控与额度"
@@ -32,6 +34,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "启动与基础行为"
         case .sessionEnhancements: return "删除、导出、移动、输入与阅读体验"
+        case .codexInstances: return "多开、隔离、同步与回滚"
         case .autoResume: return "容量中断、定时或额度恢复后继续任务"
         case .surfaces: return "主界面与辅助显示面"
         case .monitoring: return "实时速率、统计与刷新"
@@ -46,6 +49,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .sessionEnhancements: return "sparkles.rectangle.stack"
+        case .codexInstances: return "square.stack.3d.up"
         case .autoResume: return "play.circle"
         case .surfaces: return "rectangle.3.group"
         case .monitoring: return "speedometer"
@@ -88,6 +92,7 @@ struct AppSettingsView: View {
     @Binding var showRadar: Bool
     @Binding var showCrowdRadar: Bool
     @Binding var contentOrderRaw: String
+    let defaultCodexHome: URL?
     let dataSourceLabel: String
     let dataSourceOrigin: String
     let onChooseDirectory: () -> Void
@@ -241,6 +246,8 @@ struct AppSettingsView: View {
                 generalSettings
             case .sessionEnhancements:
                 sessionEnhancementSettings
+            case .codexInstances:
+                CodexInstanceSettingsView(defaultCodexHome: defaultCodexHome)
             case .autoResume:
                 AutoResumeSettingsView(controller: autoResumeController)
             case .surfaces:

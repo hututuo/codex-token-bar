@@ -3933,6 +3933,313 @@ button.quota-side-card:hover {
   color: color-mix(in srgb, #d84a4a 76%, var(--text));
 }
 
+.codex-instances-settings {
+  display: grid;
+  gap: 0;
+}
+
+.codex-instances-loading,
+.codex-instances-banner {
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  color: var(--text);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin-bottom: 12px;
+  padding: 9px 11px;
+}
+
+.codex-instances-banner.is-error {
+  border-color: color-mix(in srgb, #d84a4a 42%, var(--line));
+  background: color-mix(in srgb, #d84a4a 8%, var(--panel));
+  color: color-mix(in srgb, #d84a4a 76%, var(--text));
+}
+
+.codex-instance-list,
+.codex-instance-transactions {
+  display: grid;
+}
+
+.codex-instance-card + .codex-instance-card,
+.codex-instance-transactions > div + div {
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.codex-instance-card-main {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(190px, auto);
+  gap: 10px;
+  align-items: center;
+  min-height: 46px;
+  padding: 8px 11px 5px;
+}
+
+.codex-instance-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.codex-instance-select input,
+.codex-instance-checkbox input {
+  accent-color: var(--accent);
+}
+
+.codex-instance-select > span,
+.codex-instance-transactions > div > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.codex-instance-select strong,
+.codex-instance-transactions strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 710;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-instance-select em,
+.codex-instance-transactions em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 560;
+}
+
+.codex-instance-status {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.codex-instance-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.codex-instance-status.is-running {
+  color: color-mix(in srgb, #2f9e62 74%, var(--text));
+}
+
+.codex-instance-status.is-running i {
+  background: #2f9e62;
+}
+
+.codex-instance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.codex-instance-actions .app-settings-action {
+  min-height: 26px;
+  padding-inline: 8px;
+}
+
+.codex-instance-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px 12px;
+  min-width: 0;
+  padding: 0 11px 9px 37px;
+}
+
+.codex-instance-details span,
+.codex-instance-details b {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8.7px;
+  font-weight: 540;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-instance-details b {
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.codex-instance-edit {
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  background: color-mix(in srgb, var(--accent) 4%, var(--panel));
+}
+
+.codex-instance-mode {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  padding: 10px 11px;
+}
+
+.codex-instance-mode button {
+  min-height: 29px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.codex-instance-mode button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+  color: var(--accent-strong);
+}
+
+.codex-instance-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: 10px 11px;
+}
+
+.codex-instance-fields > label:not(.codex-instance-checkbox) {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 620;
+}
+
+.codex-instance-fields input[type="text"],
+.codex-instance-fields input:not([type]),
+.codex-instance-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  outline: none;
+  padding: 7px 8px;
+  resize: vertical;
+}
+
+.codex-instance-fields input:focus,
+.codex-instance-fields textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--line));
+}
+
+.codex-instance-checkbox {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 31px;
+  color: var(--text);
+  font-size: 9.5px;
+  font-weight: 590;
+}
+
+.codex-instance-sync-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 11px;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 570;
+}
+
+.codex-instance-sync-summary > div {
+  display: flex;
+  gap: 5px;
+}
+
+.codex-instance-preview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.codex-instance-preview span {
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  padding: 9px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.codex-instance-preview strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 740;
+}
+
+.codex-instance-conflicts {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: 8px 11px;
+}
+
+.codex-instance-conflicts > strong {
+  margin-bottom: 3px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.codex-instance-conflicts > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  padding-block: 3px;
+}
+
+.codex-instance-conflicts span {
+  color: var(--text);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.codex-instance-conflicts em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.codex-instance-transactions > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  padding: 7px 11px;
+}
+
+.codex-instances-registry-path {
+  overflow: hidden;
+  margin: -4px 2px 0;
+  color: var(--muted);
+  font-size: 8.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-row {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr) auto;
@@ -6544,6 +6851,25 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
   .app-settings-color-grid {
     grid-template-columns: 1fr;
+  }
+
+  .codex-instance-card-main,
+  .codex-instance-sync-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .codex-instance-actions,
+  .codex-instance-sync-summary > div {
+    justify-content: flex-start;
+  }
+
+  .codex-instance-details,
+  .codex-instance-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .codex-instance-details {
+    padding-left: 36px;
   }
 
   .auto-resume-thread-tools,

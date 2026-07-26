@@ -143,7 +143,19 @@ fn diagnostic(stage: AtomicWriteStage, path: &Path, error: impl std::fmt::Displa
     format!("atomic-cache stage={stage:?} path={} error={error}", path.display())
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn create_temp(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn create_temp(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().read(true).write(true).create_new(true).open(path)
 }
@@ -323,6 +335,19 @@ mod tests {
         write_atomically(&path, b"two").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"two");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_creates_private_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = root("private-mode");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("cache.json");
+        write_atomically(&path, b"private").unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         fs::remove_dir_all(root).unwrap();
     }
 

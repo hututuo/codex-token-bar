@@ -35,3 +35,23 @@ project movement.
 The combined work on this branch is distributed under GNU AGPL version 3.
 The complete corresponding source is the source tree containing this notice.
 The root `LICENSE` contains the full AGPL-3.0 text.
+
+## Cockpit product-behavior reference
+
+The Codex instance-management and conversation-visibility work was informed by
+publicly documented product behavior in:
+
+- Project: Cockpit Tools
+- Upstream: https://github.com/jlcodes99/cockpit-tools
+- Source revision reviewed: `9946e985e9491c8c2c6c0d1b4ac7d0f987802bdd`
+- Upstream license declaration: CC BY-NC-SA 4.0
+- Relevant public releases: v0.24.10 and v0.26.0
+
+No Cockpit source code, tests, comments, or UI copy is included in Codex Token
+Bar. Cockpit's non-commercial ShareAlike license is not treated as compatible
+with this AGPL-3.0-only software distribution. The implementation here was
+written independently from observed behavior and uses a different registry,
+process-identity gate, stopped-instance gate, transaction journal, conflict
+policy, and official Codex app-server visibility rebuild. This attribution is
+provided as product-design provenance and does not relicense any part of Codex
+Token Bar under CC BY-NC-SA 4.0.

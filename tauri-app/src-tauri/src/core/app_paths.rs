@@ -112,6 +112,39 @@ pub fn provider_repair_backup_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "无法定位系统应用支持目录，不能创建会话修复备份".into())
 }
 
+pub fn codex_instances_registry_path() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_INSTANCE_REGISTRY_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+
+    app_support_dir()
+        .map(|path| path.join("codex-instances.json"))
+        .ok_or_else(|| "无法定位系统应用支持目录，不能读取 Codex 实例注册表".into())
+}
+
+pub fn codex_instances_managed_root() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_INSTANCE_MANAGED_ROOT") {
+        return Ok(PathBuf::from(path));
+    }
+
+    app_support_dir()
+        .map(|path| path.join("instances").join("codex"))
+        .ok_or_else(|| "无法定位系统应用支持目录，不能创建 Codex 实例".into())
+}
+
+pub fn codex_instance_sync_root() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_INSTANCE_SYNC_ROOT") {
+        return Ok(PathBuf::from(path));
+    }
+
+    app_support_dir()
+        .map(|path| path.join("instance-sync"))
+        .ok_or_else(|| "无法定位系统应用支持目录，不能创建实例同步事务".into())
+}
+
 fn app_support_dir() -> Option<PathBuf> {
     app_support_base_dir().map(|path| path.join(APP_DIRECTORY_NAME))
 }

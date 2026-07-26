@@ -1,4 +1,5 @@
 mod common;
+mod codex_instances;
 mod auto_resume;
 mod dashboard;
 mod live;
@@ -8,6 +9,13 @@ mod quota;
 mod settings;
 
 pub use common::{AccountInfo, LocalDataWarning, QuotaDiagnostic};
+pub use codex_instances::{
+    CodexControlledProcess, CodexInstance, CodexInstanceActionResult,
+    CodexInstanceConflict, CodexInstanceCreateMode, CodexInstanceCreateRequest,
+    CodexInstanceImportRequest, CodexInstanceRegistrySnapshot, CodexInstanceRuntimeStatus,
+    CodexInstanceSyncOperation, CodexInstanceSyncPreview, CodexInstanceSyncResult,
+    CodexInstanceSyncTransactionSummary, CodexInstanceUpdateRequest,
+};
 pub use auto_resume::{AutoResumeRuntimeStatus, AutoResumeThreadOption};
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, RecentUsagePoint,

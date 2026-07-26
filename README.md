@@ -41,6 +41,7 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 - 全会话实时 token 速率，支持主界面、悬浮窗和状态栏/托盘读数。
 - 安全自动续跑：先选项目和精确会话，再按间隔、每日时间、额度恢复或服务器容量中断发送一次“继续”；默认关闭，不代替用户批准权限或回答人工输入。
 - 会话增强：支持侧栏删除、Markdown 导出、移动到项目、会话 ID、粘贴修复、阅读宽度和滚动位置恢复，并保留 Codex++ 的 AGPL-3.0 归属。
+- Codex 实例：在 Swift 与跨平台设置中创建或登记隔离实例，独立使用 Codex Home 和桌面数据目录，支持精确启停、严格前缀会话同步、分歧保留、自动同步和校验回滚。
 - 双雷达：官方 Radar 显示建议动作、24h / 48h 概率和模型 IQ；众测雷达显示公开众测前三名、覆盖情况和完整排行，并对字段包装、别名和局部坏数据做兼容。
 - 速蹬窗口：把雷达建议、模型 IQ、当前可用额度窗口和本地实时速度放进一个可配置的小窗口。
 - 年度 token 热力图、最近 24 小时 5 分钟粒度曲线、缓存命中率曲线和缓存排行。
@@ -235,6 +236,7 @@ There are now two official implementation lines:
 - Live all-session token speed across the dashboard, floating panel, and status/tray surfaces.
 - Safe automatic resume: choose a project and exact conversation, then continue on an interval, local daily time, quota recovery, or a confirmed server-capacity interruption. It is off by default and never approves permissions or answers interactive prompts for you.
 - Session enhancements: sidebar deletion, Markdown export, project moves, session IDs, paste repair, reading width, and scroll restoration, with Codex++ AGPL-3.0 attribution preserved.
+- Codex instances: create or register isolated instances in both native and cross-platform settings, with separate Codex Home and desktop data, identity-checked lifecycle control, strict-prefix session sync, conflict preservation, automatic sync, and verified rollback.
 - Dual Radar: official Radar shows suggested action, 24h / 48h probabilities, and model IQ; Crowd Radar shows the public top three, coverage, and full ranking with wrapper, alias, and lossy-row compatibility.
 - Floating pace panel: combines Radar action, model IQ, the currently available quota windows, and local live speed in a configurable compact window.
 - Yearly token heatmap, 5-minute recent activity chart, cache hit-rate curve, and cache hit ranking.

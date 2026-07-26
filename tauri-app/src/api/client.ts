@@ -56,4 +56,21 @@ export {
   verifyProviderRepair,
 } from "./providerRepairClient";
 
+export {
+  createCodexInstance,
+  deleteCodexInstance,
+  focusCodexInstance,
+  importCodexInstance,
+  launchCodexInstance,
+  listCodexInstanceRuntimeStatuses,
+  listCodexInstances,
+  listCodexInstanceSyncTransactions,
+  previewCodexInstanceSync,
+  readCodexInstanceRuntimeStatus,
+  rollbackCodexInstanceSync,
+  stopCodexInstance,
+  syncCodexInstances,
+  updateCodexInstance,
+} from "./codexInstancesClient";
+
 export { recordPerformanceEvent, recordStartupEvent } from "./startupClient";

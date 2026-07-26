@@ -47,10 +47,12 @@ import type {
 } from "../../types/dashboard";
 import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
+import { CodexInstancesSettings } from "./CodexInstancesSettings";
 
 export type AppSettingsCategory =
   | "general"
   | "session"
+  | "instances"
   | "surfaces"
   | "monitoring"
   | "automation"
@@ -68,6 +70,7 @@ interface SettingsCategoryDefinition {
 const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "general", label: "常规", description: "启动与基础偏好" },
   { id: "session", label: "会话增强", description: "删除、导出、移动、输入与阅读体验" },
+  { id: "instances", label: "Codex 实例", description: "多开、隔离、同步与回滚" },
   { id: "automation", label: "自动续跑", description: "定时与额度恢复后继续" },
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
@@ -355,6 +358,7 @@ export function AppSettingsDialog({
                   threadDeleteBridgeStatus={threadDeleteBridgeStatus}
                 />
               ) : null}
+              {selectedCategory === "instances" ? <CodexInstancesSettings /> : null}
               {selectedCategory === "surfaces" ? (
                 <SurfaceSettings
                   displaySurfaces={displaySurfaces}
