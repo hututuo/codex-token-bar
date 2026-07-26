@@ -28,7 +28,6 @@ const WORKSPACE_MOVE_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct MarkdownExportResult {
     pub filename: String,
-    pub markdown: String,
     pub message: String,
 }
 
@@ -68,22 +67,23 @@ pub fn export_markdown(
     codex_home: &Path,
     thread_id: &str,
     fallback_title: &str,
+    emit: &mut dyn FnMut(&str) -> Result<(), String>,
 ) -> Result<MarkdownExportResult, String> {
     validate_thread_id(thread_id)?;
     let connection = open_state_database(codex_home, true)?;
     let record = thread_record(&connection, thread_id)?;
+    drop(connection);
     let title = display_title(if record.title.trim().is_empty() {
         fallback_title
     } else {
         &record.title
     });
     let rollout = trusted_rollout_path(codex_home, &record.rollout_path)?;
-    let markdown = render_markdown_from_rollout(&rollout, &title)?;
+    render_markdown_from_rollout(&rollout, &title, emit)?;
     let filename = build_filename(&title, thread_id);
     Ok(MarkdownExportResult {
         message: format!("已生成 Markdown：{filename}"),
         filename,
-        markdown,
     })
 }
 
@@ -346,10 +346,14 @@ fn expand_tilde(raw: &str) -> PathBuf {
     }
 }
 
-fn render_markdown_from_rollout(path: &Path, title: &str) -> Result<String, String> {
+fn render_markdown_from_rollout(
+    path: &Path,
+    title: &str,
+    emit: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
     let file = File::open(path)
         .map_err(|error| format!("打开 rollout 文件失败：{}（{error}）", path.display()))?;
-    let mut markdown = format!("# {title}\n\n");
+    emit(&format!("# {title}\n\n"))?;
     let mut message_count = 0usize;
     for line in BufReader::new(file).lines() {
         let line = line.map_err(|error| format!("读取 rollout 文件失败：{error}"))?;
@@ -381,29 +385,30 @@ fn render_markdown_from_rollout(path: &Path, title: &str) -> Result<String, Stri
         if body.is_empty() {
             continue;
         }
+        if message_count > 0 {
+            emit("\n\n")?;
+        }
         message_count += 1;
-        markdown.push_str(if role == "user" {
+        emit(if role == "user" {
             "### User\n"
         } else {
             "### Assistant\n"
-        });
+        })?;
         if let Some(timestamp) = event
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(format_timestamp)
         {
-            markdown.push('_');
-            markdown.push_str(&timestamp);
-            markdown.push_str("_\n");
+            emit(&format!("_{timestamp}_\n"))?;
         }
-        markdown.push('\n');
-        markdown.push_str(body);
-        markdown.push_str("\n\n");
+        emit("\n")?;
+        emit(body)?;
     }
     if message_count == 0 {
         return Err("未找到可导出的用户或助手消息".into());
     }
-    Ok(markdown)
+    emit("\n")?;
+    Ok(())
 }
 
 fn serialize_content_block(block: &Value) -> Option<String> {
@@ -1020,17 +1025,53 @@ mod tests {
     #[test]
     fn markdown_export_streams_real_user_and_assistant_messages() {
         let fixture = fixture();
-        let result = export_markdown(&fixture.home, &fixture.thread_id, "备用标题").unwrap();
+        let mut markdown = String::new();
+        let result = export_markdown(
+            &fixture.home,
+            &fixture.thread_id,
+            "备用标题",
+            &mut |fragment| {
+                markdown.push_str(fragment);
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(
             result.filename,
             format!("真实会话-{}.md", fixture.thread_id)
         );
-        assert!(result.markdown.starts_with("# 真实会话\n"));
-        assert!(result.markdown.contains("### User"));
-        assert!(result.markdown.contains("你好，Codex"));
-        assert!(result.markdown.contains("### Assistant"));
-        assert!(result.markdown.contains("已经完成"));
-        assert!(result.markdown.contains("2026-07-20 12:01:00"));
+        assert!(markdown.starts_with("# 真实会话\n\n"));
+        assert!(markdown.contains("### User"));
+        assert!(markdown.contains("你好，Codex"));
+        assert!(markdown.contains("### Assistant"));
+        assert!(markdown.contains("已经完成"));
+        assert!(markdown.contains("2026-07-20 12:01:00"));
+        // 与 Swift streamMarkdown 对齐：消息之间以空行分隔，文末保留单个换行。
+        assert!(markdown.contains("\n\n### Assistant"));
+        assert!(markdown.ends_with('\n'));
+        assert!(!markdown.ends_with("\n\n"));
+    }
+
+    #[test]
+    fn markdown_export_stops_at_first_emit_failure() {
+        let fixture = fixture();
+        let mut calls = 0usize;
+        let error = export_markdown(
+            &fixture.home,
+            &fixture.thread_id,
+            "备用标题",
+            &mut |_fragment| {
+                calls += 1;
+                if calls >= 2 {
+                    Err("写入失败".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("写入失败"));
+        assert_eq!(calls, 2);
     }
 
     #[test]
@@ -1146,9 +1187,13 @@ mod tests {
         let target = fixture.home.join("Separate SQLite Target");
         std::fs::create_dir_all(&target).unwrap();
 
-        let exported =
-            export_markdown(&fixture.home, &fixture.thread_id, "备用标题").unwrap();
-        assert!(exported.markdown.contains("你好，Codex"));
+        let mut exported_markdown = String::new();
+        export_markdown(&fixture.home, &fixture.thread_id, "备用标题", &mut |fragment| {
+            exported_markdown.push_str(fragment);
+            Ok(())
+        })
+        .unwrap();
+        assert!(exported_markdown.contains("你好，Codex"));
         move_thread_workspace(
             &fixture.home,
             &fixture.thread_id,

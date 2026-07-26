@@ -23,6 +23,9 @@ const DELETE_TIMEOUT: Duration = Duration::from_secs(20);
 const PIPE_TAIL_LIMIT_BYTES: usize = 64 * 1024;
 const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const MARKDOWN_TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
+// 分块 ACK 等待页面把数据真实写入用户选择的文件（awaitPromise 背压），慢盘可能
+// 远超普通 CDP 回执，因此使用独立的宽超时；页面侧每收到一块会刷新自身超时。
+const MARKDOWN_CHUNK_ACK_TIMEOUT: Duration = Duration::from_secs(60);
 const INJECTION_TEMPLATE: &str =
     include_str!("../../../../Resources/CodexThreadDeleteInjection.js");
 const SESSION_ENHANCEMENTS_TEMPLATE: &str =
@@ -83,8 +86,6 @@ struct SessionEnhancementBindingResult {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     filename: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    markdown: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     markdown_transfer: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -448,8 +449,24 @@ fn send_command_and_wait(
     params: Value,
     pending_bindings: &mut VecDeque<String>,
 ) -> Result<Value, String> {
+    send_command_and_wait_with_timeout(
+        socket,
+        method,
+        params,
+        pending_bindings,
+        COMMAND_TIMEOUT,
+    )
+}
+
+fn send_command_and_wait_with_timeout(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    method: &str,
+    params: Value,
+    pending_bindings: &mut VecDeque<String>,
+    timeout: Duration,
+) -> Result<Value, String> {
     let id = send_command(socket, method, params)?;
-    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         if Instant::now() >= deadline {
             return Err(format!("等待 CDP 命令回执超时：{method}"));
@@ -642,7 +659,12 @@ fn handle_cdp_message(
     };
     let request: SessionEnhancementBindingRequest = match serde_json::from_str(payload) {
         Ok(request) => request,
-        Err(error) => return Err(format!("会话增强请求格式错误：{error}")),
+        Err(error) => {
+            // 单个畸形请求不应拆毁整条 CDP 会话（会殃及页面上所有挂起回调），
+            // 记录后忽略即可；页面侧对应回调由其自身超时收敛。
+            eprintln!("Codex Token Bar: 会话增强请求格式错误，已忽略：{error}");
+            return Ok(());
+        }
     };
     if request.owner != OWNER {
         return Ok(());
@@ -650,67 +672,212 @@ fn handle_cdp_message(
     let context_id = message
         .pointer("/params/executionContextId")
         .and_then(Value::as_u64);
+    let result = match request.action {
+        SessionEnhancementBindingAction::ExportMarkdown => {
+            run_markdown_export(socket, &request, context_id, pending_bindings)
+        }
+        _ => session_enhancement_result(&request),
+    };
     deliver_binding_result(
         socket,
         &request.owner,
         &request.id,
-        session_enhancement_result(&request),
+        result,
         context_id,
         pending_bindings,
     )
+}
+
+fn run_markdown_export(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    request: &SessionEnhancementBindingRequest,
+    context_id: Option<u64>,
+    pending_bindings: &mut VecDeque<String>,
+) -> SessionEnhancementBindingResult {
+    let settings = match crate::platform::read_app_settings() {
+        Ok(settings) => settings.session_enhancements,
+        Err(message) => return failed_binding_result(message),
+    };
+    if !settings.markdown_export {
+        return failed_binding_result("Markdown 导出未启用".into());
+    }
+    let codex_home = crate::platform::default_codex_home();
+    let mut evaluator = SocketCdpEvaluator {
+        socket,
+        pending_bindings,
+    };
+    let mut transfer =
+        MarkdownCdpTransfer::new(&mut evaluator, OWNER, &request.id, context_id);
+    let export = crate::core::session_enhancements::export_markdown(
+        &codex_home,
+        &request.thread_id,
+        &request.title,
+        &mut |fragment| transfer.write(fragment),
+    );
+    match export {
+        Ok(result) => match transfer.finish() {
+            Ok(chunk_count) => SessionEnhancementBindingResult {
+                status: "exported",
+                message: result.message,
+                filename: Some(result.filename),
+                markdown_transfer: Some(true),
+                markdown_chunk_count: Some(chunk_count),
+                previous_cwd: None,
+                target_cwd: None,
+            },
+            Err(message) => failed_binding_result(message),
+        },
+        Err(message) => failed_binding_result(message),
+    }
+}
+
+fn failed_binding_result(message: String) -> SessionEnhancementBindingResult {
+    SessionEnhancementBindingResult {
+        status: "failed",
+        message,
+        filename: None,
+        markdown_transfer: None,
+        markdown_chunk_count: None,
+        previous_cwd: None,
+        target_cwd: None,
+    }
 }
 
 fn deliver_binding_result(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     owner: &str,
     request_id: &str,
-    mut result: SessionEnhancementBindingResult,
+    result: SessionEnhancementBindingResult,
     context_id: Option<u64>,
     pending_bindings: &mut VecDeque<String>,
 ) -> Result<(), String> {
-    if let Some(markdown) = result.markdown.take() {
-        let mut chunk_count = 0;
-        for (sequence, chunk) in markdown_chunks(&markdown).enumerate() {
-            let expression = markdown_chunk_expression(
-                owner,
-                request_id,
-                sequence,
-                chunk,
-            )?;
-            let response = send_command_and_wait(
-                socket,
-                "Runtime.evaluate",
-                runtime_evaluate_params(expression, context_id),
-                pending_bindings,
-            )?;
-            require_page_ack(
-                &response,
-                &format!("Markdown 分块 {sequence}"),
-            )?;
-            chunk_count = sequence + 1;
-        }
-        result.markdown_transfer = Some(true);
-        result.markdown_chunk_count = Some(chunk_count);
-    }
     let expression = resolve_expression(owner, request_id, &result)?;
     let response = send_command_and_wait(
         socket,
         "Runtime.evaluate",
-        runtime_evaluate_params(expression, context_id),
+        runtime_evaluate_params(expression, context_id, false),
         pending_bindings,
     )?;
-    require_page_ack(&response, "会话增强结果")
+    if response.pointer("/result/value").and_then(Value::as_bool) != Some(true) {
+        // 页面明确返回 false 表示对应回调已不存在（页面刷新、请求已超时或
+        // 已被乱序分块判失败）。这是陈旧回执，不是传输故障；拆毁会话重连
+        // 会殃及同页面其他挂起请求，因此只记录不上抛。
+        eprintln!(
+            "Codex Token Bar: 会话增强结果未被页面接收（回执可能已过期）：{request_id}"
+        );
+    }
+    Ok(())
 }
 
-fn runtime_evaluate_params(expression: String, context_id: Option<u64>) -> Value {
+fn runtime_evaluate_params(
+    expression: String,
+    context_id: Option<u64>,
+    await_promise: bool,
+) -> Value {
     let mut params = json!({
         "expression": expression,
         "returnByValue": true,
     });
+    if await_promise {
+        params["awaitPromise"] = json!(true);
+    }
     if let Some(context_id) = context_id {
         params["contextId"] = json!(context_id);
     }
     params
+}
+
+trait CdpEvaluator {
+    fn evaluate(&mut self, params: Value) -> Result<Value, String>;
+}
+
+struct SocketCdpEvaluator<'a> {
+    socket: &'a mut WebSocket<MaybeTlsStream<TcpStream>>,
+    pending_bindings: &'a mut VecDeque<String>,
+}
+
+impl CdpEvaluator for SocketCdpEvaluator<'_> {
+    fn evaluate(&mut self, params: Value) -> Result<Value, String> {
+        send_command_and_wait_with_timeout(
+            self.socket,
+            "Runtime.evaluate",
+            params,
+            self.pending_bindings,
+            MARKDOWN_CHUNK_ACK_TIMEOUT,
+        )
+    }
+}
+
+/// 把渲染层 emit 的 Markdown 片段聚合成有界分块，经 CDP `Runtime.evaluate`
+/// （`awaitPromise:true`）逐块推给页面，并等待页面写入文件后的显式 `true` ACK
+/// 才继续下一块——形成端到端背压。任一块失败即返回错误，调用方以 failed
+/// resolve 通知页面 abort writer。整个过程中工作集只有一个未满的缓冲块。
+struct MarkdownCdpTransfer<'a, E: CdpEvaluator> {
+    evaluator: &'a mut E,
+    owner: &'a str,
+    request_id: &'a str,
+    context_id: Option<u64>,
+    buffer: String,
+    chunk_count: usize,
+}
+
+impl<'a, E: CdpEvaluator> MarkdownCdpTransfer<'a, E> {
+    fn new(
+        evaluator: &'a mut E,
+        owner: &'a str,
+        request_id: &'a str,
+        context_id: Option<u64>,
+    ) -> Self {
+        Self {
+            evaluator,
+            owner,
+            request_id,
+            context_id,
+            buffer: String::new(),
+            chunk_count: 0,
+        }
+    }
+
+    fn write(&mut self, fragment: &str) -> Result<(), String> {
+        self.buffer.push_str(fragment);
+        while self.buffer.len() >= MARKDOWN_TRANSFER_CHUNK_BYTES {
+            self.flush_chunk()?;
+        }
+        Ok(())
+    }
+
+    fn flush_chunk(&mut self) -> Result<(), String> {
+        let mut end = MARKDOWN_TRANSFER_CHUNK_BYTES.min(self.buffer.len());
+        while end > 0 && !self.buffer.is_char_boundary(end) {
+            end -= 1;
+        }
+        debug_assert!(end > 0);
+        let expression = markdown_chunk_expression(
+            self.owner,
+            self.request_id,
+            self.chunk_count,
+            &self.buffer[..end],
+        )?;
+        let response = self.evaluator.evaluate(runtime_evaluate_params(
+            expression,
+            self.context_id,
+            true,
+        ))?;
+        require_page_ack(
+            &response,
+            &format!("Markdown 分块 {}", self.chunk_count),
+        )?;
+        self.chunk_count += 1;
+        self.buffer.drain(..end);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<usize, String> {
+        while !self.buffer.is_empty() {
+            self.flush_chunk()?;
+        }
+        Ok(self.chunk_count)
+    }
 }
 
 fn require_page_ack(result: &Value, operation: &str) -> Result<(), String> {
@@ -734,23 +901,6 @@ fn markdown_chunk_expression(
         sequence,
         serde_json::to_string(chunk).map_err(|error| error.to_string())?,
     ))
-}
-
-fn markdown_chunks(markdown: &str) -> impl Iterator<Item = &str> {
-    let mut start = 0;
-    std::iter::from_fn(move || {
-        if start >= markdown.len() {
-            return None;
-        }
-        let mut end = (start + MARKDOWN_TRANSFER_CHUNK_BYTES).min(markdown.len());
-        while end > start && !markdown.is_char_boundary(end) {
-            end -= 1;
-        }
-        debug_assert!(end > start);
-        let chunk = &markdown[start..end];
-        start = end;
-        Some(chunk)
-    })
 }
 
 fn resolve_expression(
@@ -781,7 +931,6 @@ fn session_enhancement_result(
                     status: "deleted",
                     message,
                     filename: None,
-                    markdown: None,
                     markdown_transfer: None,
                     markdown_chunk_count: None,
                     previous_cwd: None,
@@ -789,24 +938,8 @@ fn session_enhancement_result(
                 })
             }
             SessionEnhancementBindingAction::ExportMarkdown => {
-                if !settings.markdown_export {
-                    return Err("Markdown 导出未启用".into());
-                }
-                crate::core::session_enhancements::export_markdown(
-                    &codex_home,
-                    &request.thread_id,
-                    &request.title,
-                )
-                .map(|result| SessionEnhancementBindingResult {
-                    status: "exported",
-                    message: result.message,
-                    filename: Some(result.filename),
-                    markdown: Some(result.markdown),
-                    markdown_transfer: None,
-                    markdown_chunk_count: None,
-                    previous_cwd: None,
-                    target_cwd: None,
-                })
+                // 导出走 run_markdown_export 的流式路径；此分支只作为防御。
+                Err("内部错误：Markdown 导出未走流式路径".into())
             }
             SessionEnhancementBindingAction::MoveThreadWorkspace => {
                 if !settings.project_move {
@@ -827,7 +960,6 @@ fn session_enhancement_result(
                     status: "moved",
                     message: result.message,
                     filename: None,
-                    markdown: None,
                     markdown_transfer: None,
                     markdown_chunk_count: None,
                     previous_cwd: Some(result.previous_cwd),
@@ -836,16 +968,7 @@ fn session_enhancement_result(
             }
         }
     })();
-    result.unwrap_or_else(|message| SessionEnhancementBindingResult {
-        status: "failed",
-        message,
-        filename: None,
-        markdown: None,
-        markdown_transfer: None,
-        markdown_chunk_count: None,
-        previous_cwd: None,
-        target_cwd: None,
-    })
+    result.unwrap_or_else(failed_binding_result)
 }
 
 fn delete_thread(thread_id: &str) -> Result<String, String> {
@@ -1140,24 +1263,137 @@ mod tests {
         );
     }
 
+    struct MockEvaluator {
+        responses: Vec<Result<Value, String>>,
+        calls: Vec<Value>,
+    }
+
+    impl MockEvaluator {
+        fn acking_all() -> Self {
+            Self {
+                responses: Vec::new(),
+                calls: Vec::new(),
+            }
+        }
+
+        fn with_responses(responses: Vec<Result<Value, String>>) -> Self {
+            Self {
+                responses,
+                calls: Vec::new(),
+            }
+        }
+
+        fn chunks(&self) -> Vec<String> {
+            self.calls
+                .iter()
+                .map(|params| {
+                    let expression = params
+                        .get("expression")
+                        .and_then(Value::as_str)
+                        .expect("chunk expression");
+                    let arguments = expression
+                        .strip_prefix("window.__codexTokenBarThreadDeleteMarkdownChunk(")
+                        .and_then(|rest| rest.strip_suffix(')'))
+                        .expect("chunk call shape");
+                    let parsed: Value =
+                        serde_json::from_str(&format!("[{arguments}]")).expect("chunk args");
+                    parsed[3].as_str().expect("chunk text").to_string()
+                })
+                .collect()
+        }
+    }
+
+    impl CdpEvaluator for MockEvaluator {
+        fn evaluate(&mut self, params: Value) -> Result<Value, String> {
+            let index = self.calls.len();
+            self.calls.push(params);
+            if index < self.responses.len() {
+                self.responses[index].clone()
+            } else {
+                Ok(json!({"result": {"value": true}}))
+            }
+        }
+    }
+
     #[test]
-    fn markdown_transfer_chunks_preserve_unicode_without_giant_expression() {
+    fn markdown_transfer_streams_bounded_unicode_chunks_with_await_promise() {
         let markdown = format!(
             "{}中文🙂{}",
             "a".repeat(MARKDOWN_TRANSFER_CHUNK_BYTES - 2),
             "b".repeat(MARKDOWN_TRANSFER_CHUNK_BYTES + 9)
         );
-        let chunks = markdown_chunks(&markdown).collect::<Vec<_>>();
-        assert!(chunks.len() >= 3);
+        let mut evaluator = MockEvaluator::acking_all();
+        let mut transfer =
+            MarkdownCdpTransfer::new(&mut evaluator, "tauri", "request", Some(7));
+        // 以小片段跨块边界写入，模拟渲染层逐段 emit。
+        for fragment in [
+            &markdown[..MARKDOWN_TRANSFER_CHUNK_BYTES - 2],
+            &markdown[MARKDOWN_TRANSFER_CHUNK_BYTES - 2..],
+        ] {
+            transfer.write(fragment).unwrap();
+        }
+        let chunk_count = transfer.finish().unwrap();
+
+        assert!(chunk_count >= 3);
+        assert_eq!(evaluator.calls.len(), chunk_count);
+        for params in &evaluator.calls {
+            assert_eq!(params.get("awaitPromise"), Some(&json!(true)));
+            assert_eq!(params.get("contextId"), Some(&json!(7)));
+            let expression = params
+                .get("expression")
+                .and_then(Value::as_str)
+                .unwrap();
+            assert!(expression
+                .starts_with("window.__codexTokenBarThreadDeleteMarkdownChunk(\"tauri\""));
+            assert!(expression.len() < MARKDOWN_TRANSFER_CHUNK_BYTES + 256);
+        }
+        let chunks = evaluator.chunks();
         assert_eq!(chunks.concat(), markdown);
         assert!(chunks
             .iter()
             .all(|chunk| chunk.len() <= MARKDOWN_TRANSFER_CHUNK_BYTES));
-        let expression = markdown_chunk_expression("tauri", "request", 0, chunks[0]).unwrap();
-        assert!(expression.starts_with(
-            "window.__codexTokenBarThreadDeleteMarkdownChunk("
-        ));
-        assert!(expression.len() < MARKDOWN_TRANSFER_CHUNK_BYTES + 256);
+    }
+
+    #[test]
+    fn markdown_transfer_keeps_buffer_bounded_while_streaming() {
+        let mut evaluator = MockEvaluator::acking_all();
+        let mut transfer =
+            MarkdownCdpTransfer::new(&mut evaluator, "tauri", "request", None);
+        for _ in 0..64 {
+            transfer.write(&"x".repeat(MARKDOWN_TRANSFER_CHUNK_BYTES / 4)).unwrap();
+            assert!(transfer.buffer.len() < MARKDOWN_TRANSFER_CHUNK_BYTES);
+        }
+        let chunk_count = transfer.finish().unwrap();
+        assert_eq!(chunk_count, 16);
+    }
+
+    #[test]
+    fn markdown_transfer_stops_sending_after_a_rejected_chunk() {
+        let mut evaluator = MockEvaluator::with_responses(vec![
+            Ok(json!({"result": {"value": true}})),
+            Ok(json!({"result": {"value": false}})),
+        ]);
+        let mut transfer =
+            MarkdownCdpTransfer::new(&mut evaluator, "tauri", "request", None);
+        let error = transfer
+            .write(&"y".repeat(MARKDOWN_TRANSFER_CHUNK_BYTES * 3))
+            .unwrap_err();
+        drop(transfer);
+        assert!(error.contains("Markdown 分块 1"));
+        assert_eq!(evaluator.calls.len(), 2);
+    }
+
+    #[test]
+    fn markdown_transfer_finish_flushes_the_final_partial_chunk() {
+        let mut evaluator = MockEvaluator::acking_all();
+        let mut transfer =
+            MarkdownCdpTransfer::new(&mut evaluator, "tauri", "request", None);
+        transfer.write("# 标题\n\n正文🙂").unwrap();
+        // 未满一块时 write 不发送，finish 冲刷余量。
+        assert_eq!(transfer.chunk_count, 0);
+        let count = transfer.finish().unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(evaluator.chunks(), vec!["# 标题\n\n正文🙂".to_string()]);
     }
 
     #[test]
