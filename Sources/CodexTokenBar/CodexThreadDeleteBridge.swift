@@ -815,6 +815,7 @@ actor CodexThreadDeleteCDPTransport {
         let method: String
         let continuation: CheckedContinuation<CodexThreadDeleteCDPCommandResponse, Error>
         let timeoutTask: Task<Void, Never>
+        let timeoutClosesTransport: Bool
     }
 
     private let socket: any CodexThreadDeleteWebSocket
@@ -847,7 +848,8 @@ actor CodexThreadDeleteCDPTransport {
     func request<Parameters: Encodable & Sendable>(
         method: String,
         params: Parameters,
-        timeout: Duration = .seconds(5)
+        timeout: Duration = .seconds(5),
+        timeoutClosesTransport: Bool = true
     ) async throws -> CodexThreadDeleteCDPCommandResponse {
         guard !closed else { throw CodexThreadDeleteError.cdpConnectionClosed }
         nextMessageID &+= 1
@@ -871,7 +873,8 @@ actor CodexThreadDeleteCDPTransport {
                 pendingRequests[requestID] = PendingRequest(
                     method: method,
                     continuation: continuation,
-                    timeoutTask: timeoutTask
+                    timeoutTask: timeoutTask,
+                    timeoutClosesTransport: timeoutClosesTransport
                 )
                 Task { [weak self] in
                     await self?.sendRegisteredRequest(id: requestID, payload: payload)
@@ -946,6 +949,9 @@ actor CodexThreadDeleteCDPTransport {
         pending.continuation.resume(
             throwing: CodexThreadDeleteError.cdpResponseTimeout(pending.method)
         )
+        // awaitPromise 型长请求（Markdown 分块等页面写盘）超时只应判该请求
+        // 失败：慢盘不是连接故障，拆整条 transport 会殃及同页面全部功能。
+        guard pending.timeoutClosesTransport else { return }
         finish(with: CodexThreadDeleteError.cdpResponseTimeout(pending.method))
     }
 
@@ -1198,13 +1204,22 @@ actor CodexThreadDeleteBridgeService {
         generation: Int
     ) async throws {
         let events = await transport.bindingEvents()
-        for try await event in events {
-            guard !Task.isCancelled, generation == lifecycleGeneration else {
-                throw CancellationError()
+        // 每个 binding 请求独立子任务处理：GiB 级 Markdown 导出需要数万次
+        // 分块往返，串行 await 会让期间的删除/第二个导出排队到页面超时。
+        // transfer 状态按 owner+requestId 隔离，transport 请求按 id 关联，
+        // 并发天然安全；单个请求的失败也不再拆毁整条会话。
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            defer { group.cancelAll() }
+            for try await event in events {
+                guard !Task.isCancelled, generation == lifecycleGeneration else {
+                    throw CancellationError()
+                }
+                group.addTask { [self] in
+                    await handleBindingEvent(event, transport: transport)
+                }
             }
-            try await handleBindingEvent(event, transport: transport)
+            throw CodexThreadDeleteError.cdpConnectionClosed
         }
-        throw CodexThreadDeleteError.cdpConnectionClosed
     }
 
     private func monitorHealth(
@@ -1286,6 +1301,14 @@ actor CodexThreadDeleteBridgeService {
                 returnByValue: true
             )
         )
+        _ = try await transport.request(
+            method: "Runtime.evaluate",
+            params: CodexThreadDeleteCDPEvaluateParameters(
+                expression: try CodexThreadDeleteInjectionScript
+                    .abortOrphanTransfersExpression(owner: Self.owner),
+                returnByValue: true
+            )
+        )
 
         var verification = try await evaluateHealth(on: transport)
         for _ in 0..<6 {
@@ -1319,19 +1342,22 @@ actor CodexThreadDeleteBridgeService {
     private func handleBindingEvent(
         _ event: CodexThreadDeleteBindingEvent,
         transport: CodexThreadDeleteCDPTransport
-    ) async throws {
+    ) async {
         guard event.name == Self.bindingName else { return }
-        guard let payloadData = event.payload.data(using: .utf8) else {
-            throw CodexThreadDeleteError.invalidBindingPayload
-        }
         let request: CodexThreadDeleteBindingRequest
         do {
+            guard let payloadData = event.payload.data(using: .utf8) else {
+                throw CodexThreadDeleteError.invalidBindingPayload
+            }
             request = try JSONDecoder().decode(
                 CodexThreadDeleteBindingRequest.self,
                 from: payloadData
             )
         } catch {
-            throw CodexThreadDeleteError.invalidBindingPayload
+            // 单个畸形请求不值得拆毁整条 CDP 会话（会殃及页面上所有挂起
+            // 回调），记录后忽略；对应页面回调由其自身超时收敛。
+            NSLog("CodexTokenBar: 会话增强请求格式错误，已忽略：%@", "\(error)")
+            return
         }
         guard request.owner == Self.owner else { return }
 
@@ -1343,16 +1369,26 @@ actor CodexThreadDeleteBridgeService {
                 transport: transport
             )
             : nil
-        try await deliverBindingResult(
-            await bindingResult(
-                for: request,
-                markdownTransfer: markdownTransfer
-            ),
-            owner: request.owner,
-            requestID: request.id,
-            executionContextID: event.executionContextID,
-            transport: transport
-        )
+        do {
+            try await deliverBindingResult(
+                await bindingResult(
+                    for: request,
+                    markdownTransfer: markdownTransfer
+                ),
+                owner: request.owner,
+                requestID: request.id,
+                executionContextID: event.executionContextID,
+                transport: transport
+            )
+        } catch {
+            // 结果投递失败只影响该请求：socket 层故障会让 reader 循环自行
+            // 结束并重连，这里不再主动拆会话。
+            NSLog(
+                "CodexTokenBar: 会话增强结果投递失败（%@）：%@",
+                request.id,
+                "\(error)"
+            )
+        }
     }
 
     private func deliverBindingResult(
@@ -1375,7 +1411,17 @@ actor CodexThreadDeleteBridgeService {
                 contextId: executionContextID
             )
         )
-        try response.acknowledgedBoolean(method: "会话增强结果")
+        // 页面明确返回 false 表示对应回调已不存在（页面刷新、请求已超时或
+        // 已被乱序分块判失败）。这是陈旧回执，不是传输故障，拆桥重连反而
+        // 殃及同页面其他挂起请求，因此只记录。
+        do {
+            try response.acknowledgedBoolean(method: "会话增强结果")
+        } catch {
+            NSLog(
+                "CodexTokenBar: 会话增强结果未被页面接收（回执可能已过期）：%@",
+                requestID
+            )
+        }
     }
 
     private func bindingResult(
@@ -1386,9 +1432,17 @@ actor CodexThreadDeleteBridgeService {
             try CodexThreadID.validate(request.threadID)
             switch request.action {
             case .delete:
+                // 与 Tauri 端一致：原生侧复查设置，被注入页面无法调用已关闭
+                // 的动作（页面按钮门禁只是 UX，不是安全边界）。
+                guard enhancementSettings.sessionDelete else {
+                    throw CodexThreadDeleteError.commandFailed("会话删除未启用")
+                }
                 let message = try await executor.delete(threadID: request.threadID)
                 return CodexThreadDeleteBindingResult(status: "deleted", message: message)
             case .exportMarkdown:
+                guard enhancementSettings.markdownExport else {
+                    throw CodexThreadDeleteError.commandFailed("Markdown 导出未启用")
+                }
                 guard let markdownTransfer else {
                     throw CodexThreadDeleteError.injectionVerificationFailed(
                         "Markdown 流式传输未初始化"
@@ -1406,9 +1460,12 @@ actor CodexThreadDeleteBridgeService {
                     message: export.message,
                     filename: export.filename,
                     markdownTransfer: true,
-                    markdownChunkCount: await markdownTransfer.count
+                    markdownChunkCount: try await markdownTransfer.finishTransfer()
                 )
             case .moveThreadWorkspace:
+                guard enhancementSettings.projectMove else {
+                    throw CodexThreadDeleteError.commandFailed("会话项目移动未启用")
+                }
                 guard let targetCwd = request.targetCwd?.trimmingCharacters(in: .whitespacesAndNewlines),
                       !targetCwd.isEmpty else {
                     throw CodexSessionEnhancementBackendError.invalidTargetDirectory("")
@@ -1534,10 +1591,17 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
 }
 
 private actor CodexMarkdownCDPTransfer {
+    /// 页面把分块写入用户选择的文件后才 ACK（awaitPromise 背压），慢盘可能
+    /// 远超普通 CDP 回执，因此分块请求使用独立宽超时，且超时只判本次导出
+    /// 失败、不拆整条 transport；页面侧每收到一块会刷新自身超时。
+    static let chunkAcknowledgementTimeout: Duration = .seconds(60)
+
     private let owner: String
     private let requestID: String
     private let executionContextID: Int?
     private let transport: CodexThreadDeleteCDPTransport
+    private var buffer = ""
+    private var bufferedCharacters = 0
     private(set) var count = 0
 
     init(
@@ -1553,29 +1617,52 @@ private actor CodexMarkdownCDPTransfer {
     }
 
     func write(_ value: String) async throws {
-        for chunk in CodexThreadDeleteInjectionScript.markdownChunks(value) {
-            let sequence = count
-            let expression = try CodexThreadDeleteInjectionScript
-                .markdownChunkExpression(
-                    owner: owner,
-                    requestID: requestID,
-                    sequence: sequence,
-                    chunk: String(chunk)
-                )
-            let response = try await transport.request(
-                method: "Runtime.evaluate",
-                params: CodexThreadDeleteCDPEvaluateParameters(
-                    expression: expression,
-                    returnByValue: true,
-                    contextId: executionContextID,
-                    awaitPromise: true
-                )
-            )
-            try response.acknowledgedBoolean(
-                method: "Markdown 分块 \(sequence)"
-            )
-            count += 1
+        buffer.append(value)
+        bufferedCharacters += value.count
+        while bufferedCharacters
+            >= CodexThreadDeleteInjectionScript.markdownTransferChunkCharacters {
+            try await sendBufferedChunk()
         }
+    }
+
+    /// 冲刷缓冲余量并返回最终分块数；必须在构造 resolve 结果前调用，保证
+    /// `markdownChunkCount` 与页面实际收到的块数一致。
+    func finishTransfer() async throws -> Int {
+        while bufferedCharacters > 0 {
+            try await sendBufferedChunk()
+        }
+        return count
+    }
+
+    private func sendBufferedChunk() async throws {
+        let chunk = String(buffer.prefix(
+            CodexThreadDeleteInjectionScript.markdownTransferChunkCharacters
+        ))
+        buffer.removeFirst(chunk.count)
+        bufferedCharacters -= chunk.count
+        let sequence = count
+        let expression = try CodexThreadDeleteInjectionScript
+            .markdownChunkExpression(
+                owner: owner,
+                requestID: requestID,
+                sequence: sequence,
+                chunk: chunk
+            )
+        let response = try await transport.request(
+            method: "Runtime.evaluate",
+            params: CodexThreadDeleteCDPEvaluateParameters(
+                expression: expression,
+                returnByValue: true,
+                contextId: executionContextID,
+                awaitPromise: true
+            ),
+            timeout: Self.chunkAcknowledgementTimeout,
+            timeoutClosesTransport: false
+        )
+        try response.acknowledgedBoolean(
+            method: "Markdown 分块 \(sequence)"
+        )
+        count += 1
     }
 }
 
@@ -1646,6 +1733,30 @@ enum CodexThreadDeleteInjectionScript {
 
     static func healthExpression(owner: String, bindingName: String) throws -> String {
         "window.__codexTokenBarThreadDeleteHealth(\(try jsonString(owner)), \(try jsonString(bindingName)))"
+    }
+
+    /// 桥重连后中止本 owner 遗留的 Markdown transfer：旧 native 已经消失，
+    /// 页面侧的 writer 与回调若不主动收敛，会各自悬挂到超时。
+    static func abortOrphanTransfersExpression(owner: String) throws -> String {
+        let ownerJSON = try jsonString(owner)
+        return """
+        (() => {
+          const state = window.__codexTokenBarThreadDeleteState;
+          if (!state?.markdownTransfers) return true;
+          const bridge = state.bridges?.get?.(\(ownerJSON));
+          const prefix = \(ownerJSON) + "\\u0000";
+          for (const [key, transfer] of [...state.markdownTransfers.entries()]) {
+            if (!key.startsWith(prefix)) continue;
+            state.markdownTransfers.delete(key);
+            try {
+              void Promise.resolve(transfer.sink?.abort?.()).catch(() => {});
+            } catch {}
+            bridge?.callbacks?.get?.(key.slice(prefix.length))
+              ?.resolve?.({ status: "failed", message: "会话增强桥已重连，导出中止" });
+          }
+          return true;
+        })()
+        """
     }
 
     static func isLoopback(_ url: URL) -> Bool {

@@ -248,7 +248,10 @@
         suggestedName: filename,
         types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown"] } }],
       });
-      return await handle.createWritable();
+      return {
+        writable: await handle.createWritable(),
+        filename: String(handle.name || filename),
+      };
     } catch (error) {
       if (error?.name === "AbortError") return null;
       throw error;
@@ -258,13 +261,14 @@
   async function exportMarkdown(row, reference) {
     const threadId = canonicalThreadId(reference);
     const title = rowTitle(row);
-    const writable = await selectMarkdownWriter(
+    const selection = await selectMarkdownWriter(
       suggestedMarkdownFilename(title, threadId),
     );
-    if (!writable) {
+    if (!selection) {
       showToast("导出已取消");
       return;
     }
+    const { writable, filename: savedFilename } = selection;
     const sink = {
       started: false,
       async write(value) {
@@ -287,7 +291,11 @@
         throw new Error(result?.message || "导出失败");
       }
       await writable.close();
-      showToast(result.message || "导出成功");
+      // 用户可能在保存对话框里改名：提示语优先用真实保存的文件名，
+      // 而不是原生端按会话标题推导的文件名。
+      showToast(savedFilename
+        ? `已生成 Markdown：${savedFilename}`
+        : (result.message || "导出成功"));
     } catch (error) {
       try {
         await sink.abort();

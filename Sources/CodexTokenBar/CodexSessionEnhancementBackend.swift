@@ -734,6 +734,11 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         }
     }
 
+    /// 单条 rollout 行的上限。合法 Codex 事件远小于该值；没有上限时，一个
+    /// 无换行或单行数 GiB 的损坏文件会把整个文件累进内存，这正是流式导出
+    /// 要消灭的工作集。超限视为文件损坏并明确失败，不做静默截断。
+    static let maximumRolloutLineBytes = 64 * 1024 * 1024
+
     private static func streamMarkdown(
         from url: URL,
         title: String,
@@ -746,7 +751,7 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         var messageCount = 0
 
         func emitLine(_ data: Data) async throws {
-            guard let message = try exportMessage(from: data) else { return }
+            guard let message = exportMessage(from: data) else { return }
             if messageCount > 0 {
                 try await emit("\n\n")
             }
@@ -767,6 +772,10 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                 try await emitLine(Data(input[cursor..<newline]))
                 cursor = newline + 1
             }
+            guard input.count - cursor <= maximumRolloutLineBytes else {
+                throw CodexSessionEnhancementBackendError
+                    .oversizedRolloutLine(maximumRolloutLineBytes)
+            }
             if cursor > 0, cursor >= 1024 * 1024 {
                 input.removeSubrange(0..<cursor)
                 cursor = 0
@@ -781,9 +790,11 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         try await emit("\n")
     }
 
-    private static func exportMessage(from data: Data) throws -> ExportMessage? {
+    private static func exportMessage(from data: Data) -> ExportMessage? {
+        // 无法解析为 JSON 的行（例如 Codex 正在写入的半行）与 Rust 端一致
+        // 地跳过，不让单行噪声中断整场导出。
         guard !data.isEmpty,
-              let event = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               event["type"] as? String == "response_item",
               let payload = event["payload"] as? [String: Any],
               payload["type"] as? String == "message",
@@ -910,6 +921,7 @@ enum CodexSessionEnhancementBackendError: LocalizedError {
     case databaseUnavailable
     case invalidTargetDirectory(String)
     case noExportableMessages
+    case oversizedRolloutLine(Int)
     case rolloutPathMissing
     case rolloutMetadataMismatch(String)
     case threadNotFound(String)
@@ -927,6 +939,8 @@ enum CodexSessionEnhancementBackendError: LocalizedError {
             return "目标项目目录不可用：\(path)"
         case .noExportableMessages:
             return "未找到可导出的用户或助手消息"
+        case let .oversizedRolloutLine(limit):
+            return "rollout 单行超过 \(limit / (1024 * 1024)) MiB 上限，文件可能已损坏"
         case .rolloutPathMissing:
             return "会话缺少 rollout 文件路径"
         case let .rolloutMetadataMismatch(threadID):

@@ -401,3 +401,251 @@ test("an early-document injection installs its observer when the root appears", 
   assert.equal(health.styleInstalled, true);
   assert.equal(health.readiness, "ready");
 });
+
+function recordingSink() {
+  return {
+    started: false,
+    written: "",
+    aborted: false,
+    async write(value) { this.written += value; },
+    async abort() { this.aborted = true; },
+  };
+}
+
+const exportPayload = (threadId) => ({
+  action: "exportMarkdown",
+  threadId,
+  title: "流式导出",
+});
+
+test("a streaming export fails closed when native resolves old-protocol inline markdown", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-5234-7abc-8def-0123456789ab";
+  sidebarRow(window.document, id, "旧协议导出");
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+      status: "exported",
+      message: "已生成 Markdown",
+      filename: "旧协议.md",
+      markdown: "# 全文内联\n",
+    });
+  };
+  window.eval(renderedScript());
+  const sink = recordingSink();
+  const result = await window.__codexTokenBarSessionEnhancementInvoke(
+    exportPayload(id),
+    sink,
+  );
+  assert.equal(result.status, "failed");
+  assert.match(result.message, /未按 Markdown 流式协议/);
+  assert.equal(sink.written, "");
+});
+
+test("an out-of-order chunk rejects native and resolves the page request as failed", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-5334-7abc-8def-0123456789ab";
+  sidebarRow(window.document, id, "乱序导出");
+  let chunkError = null;
+  const acks = [];
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    void (async () => {
+      acks.push(await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner, payload.id, 0, "第一块",
+      ));
+      try {
+        await window.__codexTokenBarThreadDeleteMarkdownChunk(
+          payload.owner, payload.id, 2, "跳号块",
+        );
+        acks.push("no-throw");
+      } catch (error) {
+        chunkError = error;
+      }
+    })();
+  };
+  window.eval(renderedScript());
+  const sink = recordingSink();
+  const result = await window.__codexTokenBarSessionEnhancementInvoke(
+    exportPayload(id),
+    sink,
+  );
+  await flush(window);
+  assert.equal(result.status, "failed");
+  assert.match(result.message, /分块顺序不一致/);
+  assert.deepEqual(acks, [true]);
+  assert.match(String(chunkError), /分块顺序不一致/);
+  assert.equal(sink.written, "第一块");
+});
+
+test("a duplicated chunk sequence is rejected the same way as a gap", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-5434-7abc-8def-0123456789ab";
+  sidebarRow(window.document, id, "重复分块");
+  let chunkError = null;
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    void (async () => {
+      await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner, payload.id, 0, "第一块",
+      );
+      try {
+        await window.__codexTokenBarThreadDeleteMarkdownChunk(
+          payload.owner, payload.id, 0, "重复块",
+        );
+      } catch (error) {
+        chunkError = error;
+      }
+    })();
+  };
+  window.eval(renderedScript());
+  const sink = recordingSink();
+  const result = await window.__codexTokenBarSessionEnhancementInvoke(
+    exportPayload(id),
+    sink,
+  );
+  await flush(window);
+  assert.equal(result.status, "failed");
+  assert.match(result.message, /分块顺序不一致/);
+  assert.match(String(chunkError), /分块顺序不一致/);
+  assert.equal(sink.written, "第一块");
+});
+
+test("a mismatched, negative or non-numeric chunk count fails the transfer", async () => {
+  for (const badCount of [2, -1, "1"]) {
+    const window = new Window({ url: "app://codex/" });
+    const id = "019f5a7c-5534-7abc-8def-0123456789ab";
+    sidebarRow(window.document, id, "坏分块数");
+    window.codexTokenBarDeleteTauri = (payloadText) => {
+      const payload = JSON.parse(payloadText);
+      void (async () => {
+        await window.__codexTokenBarThreadDeleteMarkdownChunk(
+          payload.owner, payload.id, 0, "唯一一块",
+        );
+        window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+          status: "exported",
+          message: "ok",
+          filename: "坏分块数.md",
+          markdownTransfer: true,
+          markdownChunkCount: badCount,
+        });
+      })();
+    };
+    window.eval(renderedScript());
+    const sink = recordingSink();
+    const result = await window.__codexTokenBarSessionEnhancementInvoke(
+      exportPayload(id),
+      sink,
+    );
+    assert.equal(result.status, "failed", `count=${badCount}`);
+    assert.match(result.message, /分块传输不完整/);
+  }
+});
+
+test("unowned, malformed or late chunks return false without touching the sink", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-5634-7abc-8def-0123456789ab";
+  sidebarRow(window.document, id, "无主分块");
+  let captured = null;
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    captured = JSON.parse(payloadText);
+  };
+  window.eval(renderedScript());
+  const sink = recordingSink();
+  const pending = window.__codexTokenBarSessionEnhancementInvoke(
+    exportPayload(id),
+    sink,
+  );
+  await flush(window);
+  assert.ok(captured);
+  const chunk = window.__codexTokenBarThreadDeleteMarkdownChunk;
+  assert.equal(await chunk(captured.owner, "not-the-request", 0, "x"), false);
+  assert.equal(await chunk("nobody", captured.id, 0, "x"), false);
+  assert.equal(await chunk(captured.owner, captured.id, 0, 42), false);
+  assert.equal(await chunk(captured.owner, captured.id, 1.5, "x"), false);
+  assert.equal(await chunk(captured.owner, captured.id, -1, "x"), false);
+  assert.equal(await chunk(captured.owner, captured.id, 0, "真实块"), true);
+  window.__codexTokenBarThreadDeleteResolve(captured.owner, captured.id, {
+    status: "exported",
+    message: "ok",
+    filename: "无主分块.md",
+    markdownTransfer: true,
+    markdownChunkCount: 1,
+  });
+  const result = await pending;
+  assert.equal(result.status, "exported");
+  assert.equal(await chunk(captured.owner, captured.id, 1, "迟到块"), false);
+  assert.equal(sink.written, "真实块");
+});
+
+test("a crashed newer bridge never falls back once the sink started writing", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-5734-7abc-8def-0123456789ab";
+  sidebarRow(window.document, id, "双桥导出");
+  let swiftCalls = 0;
+  window.codexTokenBarDeleteSwift = () => {
+    swiftCalls += 1;
+  };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    // 同步发出首块（置 started）后崩溃：绝不允许回退到另一条桥重写同一文件。
+    void window.__codexTokenBarThreadDeleteMarkdownChunk(
+      payload.owner, payload.id, 0, "部分内容",
+    );
+    throw new Error("tauri 桥崩溃");
+  };
+  window.eval(renderedScript("swift", "codexTokenBarDeleteSwift"));
+  window.eval(renderedScript("tauri", "codexTokenBarDeleteTauri"));
+  const sink = recordingSink();
+  await assert.rejects(
+    window.__codexTokenBarSessionEnhancementInvoke(exportPayload(id), sink),
+    /tauri 桥崩溃/,
+  );
+  assert.equal(swiftCalls, 0);
+  assert.equal(sink.started, true);
+});
+
+test("a runtime upgrade during an active transfer aborts the sink and fails the request", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const id = "019f5a7c-5834-7abc-8def-0123456789ab";
+  sidebarRow(window.document, id, "升级中断");
+  let captured = null;
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    captured = JSON.parse(payloadText);
+  };
+  window.eval(renderedScript());
+  const sink = recordingSink();
+  const pending = window.__codexTokenBarSessionEnhancementInvoke(
+    exportPayload(id),
+    sink,
+  );
+  await flush(window);
+  assert.ok(captured);
+  assert.equal(
+    await window.__codexTokenBarThreadDeleteMarkdownChunk(
+      captured.owner, captured.id, 0, "升级前的块",
+    ),
+    true,
+  );
+
+  const currentRuntimeVersion = Number(
+    template.match(/const runtimeVersion = (\d+);/)[1],
+  );
+  const upgraded = renderedScript().replaceAll(
+    `const runtimeVersion = ${currentRuntimeVersion};`,
+    `const runtimeVersion = ${currentRuntimeVersion + 1};`,
+  );
+  assert.notEqual(upgraded, renderedScript());
+  window.eval(upgraded);
+
+  const result = await pending;
+  assert.equal(result.status, "failed");
+  assert.match(result.message, /注入已升级/);
+  assert.equal(sink.aborted, true);
+  assert.equal(
+    await window.__codexTokenBarThreadDeleteMarkdownChunk(
+      captured.owner, captured.id, 1, "升级后的块",
+    ),
+    false,
+  );
+});

@@ -53,11 +53,20 @@
     state.pointerLeaveListener = null;
     state.scrollListener = null;
       state.resizeListener = null;
-      for (const transfer of state.markdownTransfers?.values?.() || []) {
+      for (const [transferKey, transfer] of state.markdownTransfers?.entries?.() || []) {
         try {
           void Promise.resolve(transfer.sink?.abort?.()).catch(() => {});
         } catch {
           // Best-effort cleanup while replacing an older injected runtime.
+        }
+        // 同步 resolve 关联回调：只 abort sink 会让页面侧 pending promise
+        // 悬挂到超时（导出最长 10 分钟）才收敛。
+        const separator = transferKey.indexOf("\u0000");
+        if (separator > 0) {
+          const transferOwner = transferKey.slice(0, separator);
+          const transferRequestId = transferKey.slice(separator + 1);
+          state.bridges?.get?.(transferOwner)?.callbacks?.get?.(transferRequestId)
+            ?.resolve?.({ status: "failed", message: "会话增强注入已升级，导出中止" });
         }
       }
       state.markdownTransfers?.clear?.();
@@ -103,8 +112,12 @@
         }
         const requestId = `${owner}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const transferKey = markdownTransferKey(owner, requestId);
-        const requestTimeoutMs = payload.action === "exportMarkdown"
-          ? Math.max(bridgeTimeoutMs, 10 * 60 * 1000)
+        const exportStreamingTimeoutMs = Math.max(bridgeTimeoutMs, 10 * 60 * 1000);
+        // 导出在首块到达前用普通桥超时：写文件尚未开始（sink 未 started），
+        // 死桥应快速失败并回退到另一条桥，而不是让用户等满 10 分钟；
+        // 首块到达后切换到长超时覆盖慢盘写入。
+        let requestTimeoutMs = payload.action === "exportMarkdown"
+          ? Math.max(bridgeTimeoutMs, 30 * 1000)
           : bridgeTimeoutMs;
         let timer = null;
         const callback = {
@@ -115,6 +128,12 @@
               state.markdownTransfers.delete(transferKey);
               reject(new Error("会话增强请求超时"));
             }, requestTimeoutMs);
+          },
+          promoteToStreamingTimeout() {
+            if (requestTimeoutMs !== exportStreamingTimeoutMs) {
+              requestTimeoutMs = exportStreamingTimeoutMs;
+            }
+            this.refreshTimeout();
           },
           resolve(result) {
             if (timer !== null) window.clearTimeout(timer);
@@ -175,7 +194,7 @@
       throw new Error("Markdown 分块顺序不一致");
     }
     transfer.sink.started = true;
-    target.callbacks.get(requestId)?.refreshTimeout?.();
+    target.callbacks.get(requestId)?.promoteToStreamingTimeout?.();
     await transfer.sink.write(chunk);
     transfer.nextSequence += 1;
     target.callbacks.get(requestId)?.refreshTimeout?.();

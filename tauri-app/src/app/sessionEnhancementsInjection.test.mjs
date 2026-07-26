@@ -317,3 +317,211 @@ test("turning every feature off leaves the bridge healthy and removes page contr
   assert.equal(enhancementHealth.pasteFixInstalled, false);
   await cleanupWindow(window);
 });
+
+async function clickExport(window) {
+  const more = window.document.querySelector('[data-codex-token-bar-session-more="true"]');
+  assert.ok(more);
+  more.click();
+  const exportItem = [...window.document.querySelectorAll(".codex-token-bar-session-menu button")]
+    .find((button) => button.textContent.includes("导出"));
+  assert.ok(exportItem);
+  exportItem.click();
+  await flush(window, 40);
+}
+
+test("a failing writer aborts the export and never closes the file", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const threadId = "019f5a7c-6234-7abc-8def-0123456789ab";
+  sidebarRow(window.document, `local:${threadId}`, "写入失败");
+  let writes = 0;
+  let aborted = false;
+  let closed = false;
+  window.showSaveFilePicker = async () => ({
+    createWritable: async () => ({
+      write: async () => {
+        writes += 1;
+        if (writes >= 2) throw new Error("磁盘写入失败");
+      },
+      abort: async () => { aborted = true; },
+      close: async () => { closed = true; },
+    }),
+  });
+  const chunkAcks = [];
+  window.codexTokenBarDeleteSwift = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    void (async () => {
+      chunkAcks.push(await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner, payload.id, 0, "第一块",
+      ));
+      try {
+        await window.__codexTokenBarThreadDeleteMarkdownChunk(
+          payload.owner, payload.id, 1, "第二块",
+        );
+        chunkAcks.push("no-throw");
+      } catch {
+        chunkAcks.push("write-rejected");
+      }
+      window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+        status: "exported",
+        message: "ok",
+        filename: "写入失败.md",
+        markdownTransfer: true,
+        markdownChunkCount: 2,
+      });
+    })();
+  };
+
+  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  await clickExport(window);
+
+  assert.deepEqual(chunkAcks, [true, "write-rejected"]);
+  assert.equal(aborted, true);
+  assert.equal(closed, false);
+  assert.match(window.document.body.textContent, /导出失败/);
+  await cleanupWindow(window);
+});
+
+test("cancelling the save dialog never invokes the native bridge", async () => {
+  const window = new Window({ url: "app://codex/" });
+  sidebarRow(window.document, "019f5a7c-6334-7abc-8def-0123456789ab", "取消导出");
+  let nativeCalls = 0;
+  window.showSaveFilePicker = async () => {
+    throw Object.assign(new Error("user cancelled"), { name: "AbortError" });
+  };
+  window.codexTokenBarDeleteSwift = () => { nativeCalls += 1; };
+
+  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  await clickExport(window);
+
+  assert.equal(nativeCalls, 0);
+  assert.match(window.document.body.textContent, /导出已取消/);
+  await cleanupWindow(window);
+});
+
+test("a page without the file system access api fails closed before touching native", async () => {
+  const window = new Window({ url: "app://codex/" });
+  sidebarRow(window.document, "019f5a7c-6434-7abc-8def-0123456789ab", "无选择器");
+  let nativeCalls = 0;
+  window.showSaveFilePicker = undefined;
+  window.codexTokenBarDeleteSwift = () => { nativeCalls += 1; };
+
+  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  await clickExport(window);
+
+  assert.equal(nativeCalls, 0);
+  assert.match(
+    window.document.body.textContent,
+    /不支持安全流式 Markdown 导出/,
+  );
+  await cleanupWindow(window);
+});
+
+test("chunks split inside a surrogate pair reassemble into the original text", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const threadId = "019f5a7c-6534-7abc-8def-0123456789ab";
+  sidebarRow(window.document, `local:${threadId}`, "代理对分块");
+  let written = "";
+  let closed = false;
+  window.showSaveFilePicker = async () => ({
+    createWritable: async () => ({
+      write: async (value) => { written += value; },
+      close: async () => { closed = true; },
+    }),
+  });
+  const emoji = "🎉";
+  const parts = [emoji.slice(0, 1), `${emoji.slice(1)}中`, "文\n"];
+  window.codexTokenBarDeleteSwift = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    void (async () => {
+      for (const [index, part] of parts.entries()) {
+        await window.__codexTokenBarThreadDeleteMarkdownChunk(
+          payload.owner, payload.id, index, part,
+        );
+      }
+      window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+        status: "exported",
+        message: "ok",
+        filename: "代理对.md",
+        markdownTransfer: true,
+        markdownChunkCount: parts.length,
+      });
+    })();
+  };
+
+  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  await clickExport(window);
+
+  assert.equal(written, "🎉中文\n");
+  assert.equal(closed, true);
+  await cleanupWindow(window);
+});
+
+test("a failing close aborts the writer and reports the export as failed", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const threadId = "019f5a7c-6634-7abc-8def-0123456789ab";
+  sidebarRow(window.document, `local:${threadId}`, "收尾失败");
+  let aborted = false;
+  window.showSaveFilePicker = async () => ({
+    createWritable: async () => ({
+      write: async () => {},
+      abort: async () => { aborted = true; },
+      close: async () => { throw new Error("close 失败"); },
+    }),
+  });
+  window.codexTokenBarDeleteSwift = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    void (async () => {
+      await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner, payload.id, 0, "内容",
+      );
+      window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+        status: "exported",
+        message: "ok",
+        filename: "收尾失败.md",
+        markdownTransfer: true,
+        markdownChunkCount: 1,
+      });
+    })();
+  };
+
+  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  await clickExport(window);
+
+  assert.equal(aborted, true);
+  assert.match(window.document.body.textContent, /导出失败/);
+  await cleanupWindow(window);
+});
+
+test("the success toast prefers the file name the user actually saved", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const threadId = "019f5a7c-6734-7abc-8def-0123456789ab";
+  sidebarRow(window.document, `local:${threadId}`, "改名保存");
+  window.showSaveFilePicker = async () => ({
+    name: "用户改名后的文件.md",
+    createWritable: async () => ({
+      write: async () => {},
+      close: async () => {},
+    }),
+  });
+  window.codexTokenBarDeleteSwift = (payloadText) => {
+    const payload = JSON.parse(payloadText);
+    void (async () => {
+      await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner, payload.id, 0, "内容",
+      );
+      window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+        status: "exported",
+        message: "已生成 Markdown：原生推导名.md",
+        filename: "原生推导名.md",
+        markdownTransfer: true,
+        markdownChunkCount: 1,
+      });
+    })();
+  };
+
+  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  await clickExport(window);
+
+  assert.match(window.document.body.textContent, /用户改名后的文件\.md/);
+  await cleanupWindow(window);
+});
