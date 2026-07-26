@@ -43,6 +43,19 @@ extension CodexDataSourceResolver: CodexDataSourceResolving {}
 protocol DashboardSnapshotLoading: Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
+    // 紧凑 surface 的轻量刷新（只跑三条 SUM SQL）；返回 nil 表示该数据源
+    // 不支持轻量路径，调用方回退全量 loadSnapshot。
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary?
+}
+
+extension DashboardSnapshotLoading {
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        nil
+    }
 }
 
 struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
@@ -55,6 +68,14 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).load()
+        }.value
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        try await Task.detached(priority: .utility) {
+            try CodexUsageAnalyzer(dataSource: dataSource).loadCompactSummary()
         }.value
     }
 }

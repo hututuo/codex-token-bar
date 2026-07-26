@@ -340,6 +340,38 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         )
     }
 
+    struct CompactTotals: Equatable {
+        let totalTokens: Int
+        let todayTokens: Int
+        let todayCalls: Int
+    }
+
+    // 决策口径：紧凑 surface 刷新只跑三条 SUM SQL（累计 token、今日 token、
+    // 今日调用数），不得顺带构建时间序列/排行/摘录。
+    func compactTotals(todayStart: Date) throws -> CompactTotals {
+        try withExclusiveAccess {
+            try driver.withConnection { connection in
+                let total = try connection.readRows(
+                    "SELECT COALESCE(SUM(tokens), 0) FROM events;"
+                ) { row in row.int(0) ?? 0 }.first ?? 0
+                let start = todayStart.timeIntervalSince1970
+                let todayTokens = try connection.readRows(
+                    "SELECT COALESCE(SUM(tokens), 0) FROM events WHERE timestamp >= ?;",
+                    bindings: [.double(start)]
+                ) { row in row.int(0) ?? 0 }.first ?? 0
+                let todayCalls = try connection.readRows(
+                    "SELECT COUNT(*) FROM events WHERE timestamp >= ?;",
+                    bindings: [.double(start)]
+                ) { row in row.int(0) ?? 0 }.first ?? 0
+                return CompactTotals(
+                    totalTokens: total,
+                    todayTokens: todayTokens,
+                    todayCalls: todayCalls
+                )
+            }
+        }
+    }
+
     func forEachStoredEvent(_ body: (StoredEvent) throws -> Void) throws {
         try withExclusiveAccess {
             try forEachStoredEventExclusively(body)
@@ -596,7 +628,50 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    // 决策口径：PRAGMA quick_check 是全库扫描，且在 single-flight 门内执行，
+    // 每进程每路径只跑一次；通过后记入进程级注册表，后续同路径建索引跳过。
+    private final class IntegrityValidationRegistry: @unchecked Sendable {
+        private let lock = NSLock()
+        private var validatedPaths: Set<String> = []
+        private var runCount = 0
+
+        func isValidated(path: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return validatedPaths.contains(path)
+        }
+
+        func recordRun() {
+            lock.lock()
+            runCount += 1
+            lock.unlock()
+        }
+
+        func markValidated(path: String) {
+            lock.lock()
+            validatedPaths.insert(path)
+            lock.unlock()
+        }
+
+        var runCountForTesting: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return runCount
+        }
+    }
+
+    private static let integrityValidationRegistry = IntegrityValidationRegistry()
+
+    static var integrityCheckRunCountForTesting: Int {
+        integrityValidationRegistry.runCountForTesting
+    }
+
     private func validateIntegrity() throws {
+        let path = driver.url.path
+        if Self.integrityValidationRegistry.isValidated(path: path) {
+            return
+        }
+        Self.integrityValidationRegistry.recordRun()
         let results = try driver.readRows("PRAGMA quick_check;") { row in
             row.text(0) ?? ""
         }
@@ -608,6 +683,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 path: driver.url.path
             )
         }
+        Self.integrityValidationRegistry.markValidated(path: path)
     }
 
     private func configure(_ connection: SQLiteDatabaseConnection) throws {

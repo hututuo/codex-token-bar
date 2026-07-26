@@ -2779,6 +2779,50 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertLessThan(lightStart, firstHeavyEnd)
     }
 
+    func testCompactSummaryReturnsSumTotalsWithoutBuildingDerivedSeries() throws {
+        let codexHome = try makeCodexHome()
+        let sessionsDirectory = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let now = Date()
+
+        let entries: [(suffix: String, offset: TimeInterval, total: Int)] = [
+            ("yesterday1", -26 * 60 * 60, 100),
+            ("yesterday2", -25 * 60 * 60, 60),
+            ("today00000", -1, 40),
+        ]
+        var files: [URL] = []
+        for entry in entries {
+            let sessionID = "019eaaaa-bbbb-cccc-dddd-\(entry.suffix)"
+            let file = sessionsDirectory.appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(entry.offset),
+                total: Usage(input: entry.total, cachedInput: 0, output: 0, reasoning: 0, total: entry.total),
+                last: Usage(input: entry.total, cachedInput: 0, output: 0, reasoning: 0, total: entry.total)
+            ).appending("\n").write(to: file, atomically: true, encoding: .utf8)
+            files.append(file)
+        }
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let summary = try XCTUnwrap(analyzer.loadCompactSummary())
+
+        XCTAssertEqual(summary.totalTokens, 200)
+        XCTAssertEqual(summary.todayTokens, 40)
+        XCTAssertEqual(summary.todayCalls, 1)
+    }
+
+    func testIntegrityQuickCheckRunsOncePerProcessPerPath() throws {
+        let codexHome = try makeCodexHome()
+        let baseline = CodexUsageHistoryIndex.integrityCheckRunCountForTesting
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertEqual(CodexUsageHistoryIndex.integrityCheckRunCountForTesting, baseline + 1)
+        // 同进程同路径再次建索引：不得再跑 PRAGMA quick_check 全库扫描。
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertEqual(CodexUsageHistoryIndex.integrityCheckRunCountForTesting, baseline + 1)
+        // 新路径首次建索引仍要校验。
+        let otherHome = try makeCodexHome()
+        _ = try CodexUsageHistoryIndex(codexHome: otherHome)
+        XCTAssertEqual(CodexUsageHistoryIndex.integrityCheckRunCountForTesting, baseline + 2)
+    }
+
     private func makeCodexHome() throws -> URL {
         let directory = try makeTemporaryDirectory(named: "CodexUsageAnalyzerTests")
         try FileManager.default.createDirectory(

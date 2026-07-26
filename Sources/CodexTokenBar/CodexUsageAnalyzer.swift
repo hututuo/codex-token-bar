@@ -73,6 +73,59 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         }
     }
 
+    struct CompactUsageSummary: Equatable {
+        let totalTokens: Int
+        let todayTokens: Int
+        let todayCalls: Int
+        let generatedAt: Date
+    }
+
+    // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑三条 SUM SQL，
+    // 不重放历史事件、不构建时间序列/排行/摘录，也不写 snapshot 缓存。
+    // 无 token JSONL 文件时返回 nil，调用方回退全量路径。
+    func loadCompactSummary() throws -> CompactUsageSummary? {
+        let trace = RefreshPerformanceProbe.begin("usageAnalyzer.compactSummary", metadata: [
+            "source": dataSource.displayPath
+        ])
+        do {
+            let summary = try CodexUsageHistoryIndex.withExclusiveAccess(
+                codexHome: dataSource.codexHome
+            ) { () -> CompactUsageSummary? in
+                let sessionFiles = try usageJSONLFiles()
+                guard !sessionFiles.isEmpty else { return nil }
+                let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+                _ = try historyIndex.synchronize(
+                    files: sessionFiles,
+                    sessionID: sessionID(from:)
+                ) { [self] file, sessionID, request, insertFingerprint, emit in
+                    try parseSessionIntoHistoryIndex(
+                        file: file,
+                        sessionID: sessionID,
+                        request: request,
+                        insertFingerprint: insertFingerprint,
+                        emit: emit
+                    )
+                }
+                let totals = try historyIndex.compactTotals(
+                    todayStart: calendar.startOfDay(for: Date())
+                )
+                return CompactUsageSummary(
+                    totalTokens: totals.totalTokens,
+                    todayTokens: totals.todayTokens,
+                    todayCalls: totals.todayCalls,
+                    generatedAt: Date()
+                )
+            }
+            trace?.end(summary == nil ? "no-token-jsonl-files" : "ok", metadata: [
+                "tokens": summary.map { String($0.totalTokens) } ?? "-"
+            ])
+            return summary
+        } catch {
+            trace?.end("failed", metadata: ["error": error.localizedDescription])
+            throw error
+        }
+    }
+
     private func cachedPreciseSnapshot() throws -> DashboardSnapshot? {
         let sessionFiles = try usageJSONLFiles()
         guard !sessionFiles.isEmpty else {

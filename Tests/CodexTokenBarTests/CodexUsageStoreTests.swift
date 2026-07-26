@@ -664,6 +664,97 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
     }
 
+    func testCompactOnlySurfaceRefreshUsesLightSummaryInsteadOfFullRebuild() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-summary/.codex"),
+            origin: .defaultHome
+        )
+        let loader = CompactSummaryProbeLoader(
+            preciseResults: [
+                makeSnapshot(totalTokens: 1_000, dayTokens: 100),
+                makeSnapshot(totalTokens: 2_000, dayTokens: 150),
+            ],
+            summary: CodexUsageAnalyzer.CompactUsageSummary(
+                totalTokens: 1_500,
+                todayTokens: 300,
+                todayCalls: 7,
+                generatedAt: Date()
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        // 首轮全量建立精确快照。
+        store.refresh()
+        await waitUntil("initial precise load") {
+            store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
+        }
+
+        // 仅紧凑 surface 可见：周期刷新走轻量 summary，不再全量重建。
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refresh()
+        await waitUntil("compact summary refresh") {
+            store.snapshot.stats.totalTokens == 1_500 && !store.isRefreshing
+        }
+        var summaryCount = await loader.compactSummaryCount
+        var preciseCount = await loader.preciseLoadCount
+        XCTAssertEqual(summaryCount, 1)
+        XCTAssertEqual(preciseCount, 1)
+        let calendar = Calendar.current
+        let today = store.snapshot.dailyUsage.first {
+            calendar.isDate($0.date, inSameDayAs: Date())
+        }
+        XCTAssertEqual(today?.tokens, 300)
+        XCTAssertEqual(today?.calls, 7)
+        // 重字段（时间序列）保留上次全量构建结果：旧日条目仍在、bins 未动。
+        XCTAssertEqual(store.snapshot.dailyUsage.count, 2)
+        XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)
+
+        // 仪表盘展开：立即触发一次全量刷新补齐重字段。
+        store.setOnlyCompactSurfaceVisible(false)
+        await waitUntil("full refresh after expanding dashboard") {
+            store.snapshot.stats.totalTokens == 2_000 && !store.isRefreshing
+        }
+        summaryCount = await loader.compactSummaryCount
+        preciseCount = await loader.preciseLoadCount
+        XCTAssertEqual(summaryCount, 1)
+        XCTAssertEqual(preciseCount, 2)
+    }
+
+    func testFirstLoadTakesTheFullPathEvenWhenOnlyCompactSurfaceIsVisible() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-first-load/.codex"),
+            origin: .defaultHome
+        )
+        let loader = CompactSummaryProbeLoader(
+            preciseResults: [makeSnapshot(totalTokens: 1_000, dayTokens: 100)],
+            summary: CodexUsageAnalyzer.CompactUsageSummary(
+                totalTokens: 9_999,
+                todayTokens: 9,
+                todayCalls: 9,
+                generatedAt: Date()
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refresh()
+        await waitUntil("first full load") {
+            store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
+        }
+        let summaryCount = await loader.compactSummaryCount
+        let preciseCount = await loader.preciseLoadCount
+        XCTAssertEqual(summaryCount, 0)
+        XCTAssertEqual(preciseCount, 1)
+    }
+
     private func makeSnapshot(
         totalTokens: Int,
         dayTokens: Int,
@@ -736,6 +827,38 @@ private final class StaticCodexDataSourceResolver: CodexDataSourceResolving {
 
     func saveSelectedDirectory(_ directory: URL) -> CodexDataSource? {
         source
+    }
+}
+
+private actor CompactSummaryProbeLoader: DashboardSnapshotLoading {
+    private var preciseResults: [DashboardSnapshot]
+    private let summary: CodexUsageAnalyzer.CompactUsageSummary
+    private(set) var preciseLoadCount = 0
+    private(set) var compactSummaryCount = 0
+
+    init(
+        preciseResults: [DashboardSnapshot],
+        summary: CodexUsageAnalyzer.CompactUsageSummary
+    ) {
+        self.preciseResults = preciseResults
+        self.summary = summary
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        preciseLoadCount += 1
+        guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
+        return preciseResults.count == 1 ? preciseResults[0] : preciseResults.removeFirst()
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        compactSummaryCount += 1
+        return summary
     }
 }
 

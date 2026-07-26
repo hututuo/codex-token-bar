@@ -527,10 +527,12 @@ final class DashboardRuntime: ObservableObject {
     private func updateUsageRefreshCadence() {
         guard let configuration else { return }
         let compactVisible = configuration.floatingPanelEnabled || configuration.statusBarPanelEnabled
+        let onlyCompactSurfaceVisible = compactVisible && !hasVisibleDashboardWindow()
         let decision = UsageRefreshCadencePolicy.decision(
             snapshot: liveMonitor.totalSnapshot,
-            onlyCompactSurfaceVisible: compactVisible && !hasVisibleDashboardWindow()
+            onlyCompactSurfaceVisible: onlyCompactSurfaceVisible
         )
+        usageStore.setOnlyCompactSurfaceVisible(onlyCompactSurfaceVisible)
         usageStore.setRefreshInterval(decision.interval)
         UsageRefreshCadenceRecoveryScheduler.schedule(
             replacing: &cadenceRecoveryTask,

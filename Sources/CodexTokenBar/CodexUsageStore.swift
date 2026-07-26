@@ -30,6 +30,7 @@ final class CodexUsageStore: ObservableObject {
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
     private var backgroundActivityEnabled = true
+    private var onlyCompactSurfaceVisible = false
 
     var currentDataSource: CodexDataSource? {
         dataSource
@@ -55,6 +56,17 @@ final class CodexUsageStore: ObservableObject {
 
     func refresh() {
         refresh(includePreciseScan: true)
+    }
+
+    // 决策口径：仅紧凑 surface（状态栏/悬浮窗）可见时，周期刷新走轻量
+    // summary（索引增量同步 + 三条 SUM SQL），不重建时间序列/排行/摘录。
+    func setOnlyCompactSurfaceVisible(_ visible: Bool) {
+        guard onlyCompactSurfaceVisible != visible else { return }
+        onlyCompactSurfaceVisible = visible
+        // 仪表盘展开时立即全量刷新一次，补齐轻量期间未更新的时间序列/排行。
+        if !visible, didRunPreciseScan, backgroundActivityEnabled {
+            refresh()
+        }
     }
 
     @discardableResult
@@ -219,36 +231,71 @@ final class CodexUsageStore: ObservableObject {
                 }
 
                 if includePreciseScan {
-                    trace?.mark("preciseSnapshot.begin")
-                    let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
-                    guard self.isCurrentRefresh(
-                        generation: generation,
-                        bindingGeneration: bindingGeneration,
-                        sourceID: sourceID
-                    ) else {
-                        trace?.end("stale-after-preciseSnapshot")
-                        return
-                    }
-                    if loaded.hasPreciseTokenUsage {
-                        self.publish(loaded, sourceID: sourceID)
-                        self.didRunPreciseScan = true
-                        UsageCacheLifecycle.markCurrentCachePrepared()
-                        self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
-                        trace?.mark("preciseSnapshot.end", metadata: [
-                            "tokens": String(loaded.stats.totalTokens),
-                            "calls": String(loaded.stats.totalCalls),
-                            "threads": String(loaded.stats.totalThreads)
-                        ])
-                    } else {
-                        if !self.snapshot.hasPreciseTokenUsage {
-                            self.publish(loaded, sourceID: sourceID)
-                            self.status = self.metadataOnlyStatus(origin: source.originLabel)
-                        } else {
-                            self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
+                    var compactSummaryApplied = false
+                    if !isFirstLoad,
+                       self.onlyCompactSurfaceVisible,
+                       self.snapshot.hasPreciseTokenUsage,
+                       self.snapshotSourceID == sourceID {
+                        trace?.mark("compactSummary.begin")
+                        // 轻量路径失败只回退全量，不让它变成整轮刷新失败。
+                        let summary = try? await self.snapshotLoader.loadCompactSummary(
+                            dataSource: source
+                        )
+                        guard self.isCurrentRefresh(
+                            generation: generation,
+                            bindingGeneration: bindingGeneration,
+                            sourceID: sourceID
+                        ) else {
+                            trace?.end("stale-after-compactSummary")
+                            return
                         }
-                        trace?.mark("preciseSnapshot.metadataOnly", metadata: [
-                            "threads": String(loaded.stats.totalThreads)
-                        ])
+                        if let summary {
+                            self.publish(
+                                Self.applyingCompactSummary(summary, to: self.snapshot),
+                                sourceID: sourceID
+                            )
+                            self.didRunPreciseScan = true
+                            self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: summary.generatedAt))"
+                            trace?.mark("compactSummary.end", metadata: [
+                                "tokens": String(summary.totalTokens)
+                            ])
+                            compactSummaryApplied = true
+                        } else {
+                            trace?.mark("compactSummary.unavailable")
+                        }
+                    }
+                    if !compactSummaryApplied {
+                        trace?.mark("preciseSnapshot.begin")
+                        let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
+                        guard self.isCurrentRefresh(
+                            generation: generation,
+                            bindingGeneration: bindingGeneration,
+                            sourceID: sourceID
+                        ) else {
+                            trace?.end("stale-after-preciseSnapshot")
+                            return
+                        }
+                        if loaded.hasPreciseTokenUsage {
+                            self.publish(loaded, sourceID: sourceID)
+                            self.didRunPreciseScan = true
+                            UsageCacheLifecycle.markCurrentCachePrepared()
+                            self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                            trace?.mark("preciseSnapshot.end", metadata: [
+                                "tokens": String(loaded.stats.totalTokens),
+                                "calls": String(loaded.stats.totalCalls),
+                                "threads": String(loaded.stats.totalThreads)
+                            ])
+                        } else {
+                            if !self.snapshot.hasPreciseTokenUsage {
+                                self.publish(loaded, sourceID: sourceID)
+                                self.status = self.metadataOnlyStatus(origin: source.originLabel)
+                            } else {
+                                self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
+                            }
+                            trace?.mark("preciseSnapshot.metadataOnly", metadata: [
+                                "threads": String(loaded.stats.totalThreads)
+                            ])
+                        }
                     }
                 }
                 trace?.end("ok")
@@ -304,6 +351,55 @@ final class CodexUsageStore: ObservableObject {
     private func publish(_ snapshot: DashboardSnapshot, sourceID: String) {
         self.snapshot = snapshot
         snapshotSourceID = sourceID
+    }
+
+    // 轻量 summary 只覆盖紧凑 surface 消费的字段（累计 token、今日 token/
+    // 调用数）；时间序列/排行/摘录保留上次全量构建结果，展开仪表盘时由
+    // setOnlyCompactSurfaceVisible 触发的全量刷新补齐。
+    static func applyingCompactSummary(
+        _ summary: CodexUsageAnalyzer.CompactUsageSummary,
+        to previous: DashboardSnapshot
+    ) -> DashboardSnapshot {
+        let calendar = Calendar.current
+        var dailyUsage = previous.dailyUsage
+        let todayEntry = DayUsage(
+            date: calendar.startOfDay(for: summary.generatedAt),
+            tokens: summary.todayTokens,
+            calls: summary.todayCalls
+        )
+        if let index = dailyUsage.firstIndex(where: {
+            calendar.isDate($0.date, inSameDayAs: summary.generatedAt)
+        }) {
+            dailyUsage[index] = todayEntry
+        } else {
+            dailyUsage.append(todayEntry)
+        }
+        let stats = DashboardStats(
+            totalTokens: summary.totalTokens,
+            peakDayTokens: max(previous.stats.peakDayTokens, summary.todayTokens),
+            peakThreadTokens: previous.stats.peakThreadTokens,
+            currentStreakDays: previous.stats.currentStreakDays,
+            longestStreakDays: previous.stats.longestStreakDays,
+            totalCalls: previous.stats.totalCalls,
+            totalThreads: previous.stats.totalThreads,
+            mostUsedReasoning: previous.stats.mostUsedReasoning,
+            skillsExplored: previous.stats.skillsExplored,
+            totalSkillsUsed: previous.stats.totalSkillsUsed,
+            totalInputTokens: previous.stats.totalInputTokens,
+            totalCachedInputTokens: previous.stats.totalCachedInputTokens,
+            totalOutputTokens: previous.stats.totalOutputTokens,
+            firstUsageAt: previous.stats.firstUsageAt
+        )
+        return DashboardSnapshot(
+            stats: stats,
+            dailyUsage: dailyUsage,
+            recentBins: previous.recentBins,
+            hourlyUsage: previous.hourlyUsage,
+            pluginUsage: previous.pluginUsage,
+            cacheUsage: previous.cacheUsage,
+            usagePrecision: previous.usagePrecision,
+            generatedAt: summary.generatedAt
+        )
     }
 
     private func hasDisplayableSnapshot(_ snapshot: DashboardSnapshot) -> Bool {
