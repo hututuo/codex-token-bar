@@ -211,7 +211,7 @@ pub fn claim_trigger(
         None => return Ok(AutoResumeClaimResult::Busy),
     };
 
-    let Some(_ledger_lease) = DirectoryLease::acquire(
+    let Some(ledger_lease) = DirectoryLease::acquire(
         directory.join("trigger-ledger.lock"),
         LEDGER_LOCK_STALE_AFTER,
     )?
@@ -257,6 +257,11 @@ pub fn claim_trigger(
         },
     );
     trim_ledger(&mut ledger);
+    if !ledger_lease.still_held() {
+        // 锁在临界区内被 stale-break 抢占（如合盖睡眠 >30s 后唤醒）：放弃写回，
+        // 避免用旧快照覆盖抢占者已写入的 claimed 条目造成重复发送。
+        return Ok(AutoResumeClaimResult::Busy);
+    }
     write_ledger(&ledger_path, &ledger)?;
     Ok(AutoResumeClaimResult::Claimed(AutoResumeClaim {
         codex_home: codex_home.to_path_buf(),
@@ -1026,6 +1031,7 @@ impl Drop for StderrTail {
 
 struct DirectoryLease {
     path: PathBuf,
+    owner_token: String,
 }
 
 impl DirectoryLease {
@@ -1035,7 +1041,17 @@ impl DirectoryLease {
         }
         for _ in 0..3 {
             match fs::create_dir(&path) {
-                Ok(()) => return Ok(Some(Self { path })),
+                Ok(()) => {
+                    // 跨端锁协议：锁目录内写 owner 标记（Swift 端同名文件同语义）。
+                    // 写回台账前与释放锁前都要复验自己仍是持有者，防止 stale-break
+                    // 抢占后旧快照覆盖写回、或误删他人的锁目录。
+                    let owner_token = unique_id();
+                    if let Err(error) = fs::write(path.join("owner"), owner_token.as_bytes()) {
+                        let _ = fs::remove_dir_all(&path);
+                        return Err(error.to_string());
+                    }
+                    return Ok(Some(Self { path, owner_token }));
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if directory_is_stale(&path, stale_after) {
                         let tombstone = path.with_file_name(format!(".stale-{}", unique_id()));
@@ -1051,11 +1067,20 @@ impl DirectoryLease {
         }
         Ok(None)
     }
+
+    fn still_held(&self) -> bool {
+        fs::read(self.path.join("owner"))
+            .map(|contents| contents == self.owner_token.as_bytes())
+            .unwrap_or(false)
+    }
 }
 
 impl Drop for DirectoryLease {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        // 只删除仍属于自己的锁目录：stale-break 抢占后这里可能已是他人的锁。
+        if self.still_held() {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }
 
@@ -1255,7 +1280,7 @@ fn update_ledger_claim(
     message: &str,
 ) -> Result<(), String> {
     let directory = support_directory(codex_home)?;
-    let Some(_lease) = DirectoryLease::acquire(
+    let Some(lease) = DirectoryLease::acquire(
         directory.join("trigger-ledger.lock"),
         LEDGER_LOCK_STALE_AFTER,
     )?
@@ -1272,6 +1297,9 @@ fn update_ledger_claim(
         }
     }
     trim_ledger(&mut ledger);
+    if !lease.still_held() {
+        return Err("自动续跑 ledger 锁已被其他进程接管，本次写回中止".into());
+    }
     write_ledger(&path, &ledger)
 }
 
@@ -1602,6 +1630,56 @@ mod tests {
             claim_trigger(&root, "thread-1", "quota:5h:123", Duration::ZERO, None,).unwrap(),
             AutoResumeClaimResult::Duplicate
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn directory_lease_releases_its_own_lock_for_the_next_acquirer() {
+        let root = std::env::temp_dir().join(format!("ctb-ledger-lock-own-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let lock_path = root.join("trigger-ledger.lock");
+        let lease = DirectoryLease::acquire(lock_path.clone(), LEDGER_LOCK_STALE_AFTER)
+            .unwrap()
+            .expect("first acquire");
+        assert!(lease.still_held());
+        assert!(
+            DirectoryLease::acquire(lock_path.clone(), LEDGER_LOCK_STALE_AFTER)
+                .unwrap()
+                .is_none(),
+            "未过期的持有锁必须挡住并发获取"
+        );
+        drop(lease);
+        assert!(!lock_path.exists(), "正常释放要删掉自己的锁目录");
+        assert!(DirectoryLease::acquire(lock_path.clone(), LEDGER_LOCK_STALE_AFTER)
+            .unwrap()
+            .is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_broken_ledger_lock_is_detected_and_never_deletes_the_thiefs_lock() {
+        let root = std::env::temp_dir().join(format!("ctb-ledger-lock-stolen-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let lock_path = root.join("trigger-ledger.lock");
+        let lease = DirectoryLease::acquire(lock_path.clone(), LEDGER_LOCK_STALE_AFTER)
+            .unwrap()
+            .expect("first acquire");
+        assert!(lease.still_held());
+
+        // 模拟另一进程 stale-break：把持有中的锁目录搬走清理，再以自己的
+        // owner 标记重建（与 acquire 的抢占路径同一动作序列）。
+        let tombstone = root.join(".stale-test");
+        fs::rename(&lock_path, &tombstone).unwrap();
+        let _ = fs::remove_dir_all(&tombstone);
+        fs::create_dir(&lock_path).unwrap();
+        fs::write(lock_path.join("owner"), b"thief").unwrap();
+
+        // 旧持有者复验必须发现锁已易主（写回台账前据此中止）。
+        assert!(!lease.still_held());
+        drop(lease);
+        // 释放路径不得误删他人的锁目录。
+        assert!(lock_path.exists());
+        assert_eq!(fs::read(lock_path.join("owner")).unwrap(), b"thief");
         let _ = fs::remove_dir_all(root);
     }
 

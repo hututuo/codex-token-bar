@@ -26,6 +26,7 @@ struct AutoResumeTriggerLedgerFile: Codable, Equatable, Sendable {
 enum AutoResumeCoordinationError: LocalizedError, Equatable, Sendable {
     case unableToCreateRoot(String)
     case ledgerLockTimedOut
+    case ledgerLockLost
     case invalidLedger
     case invalidLease
 
@@ -35,6 +36,8 @@ enum AutoResumeCoordinationError: LocalizedError, Equatable, Sendable {
             return "无法创建自动续跑协调目录：\(message)"
         case .ledgerLockTimedOut:
             return "另一个自动续跑进程正在更新触发记录"
+        case .ledgerLockLost:
+            return "自动续跑触发记录锁已被其他进程接管，本次写回中止"
         case .invalidLedger:
             return "自动续跑触发记录格式无效"
         case .invalidLease:
@@ -161,7 +164,7 @@ struct AutoResumeSharedCoordinator: Sendable {
         dailyLimit: AutoResumeSharedDailyLimit?,
         now: Date = Date()
     ) throws -> AutoResumeTriggerClaimResult {
-        try withLedgerLock {
+        try withLedgerLock { lock in
             var ledger = try readLedger()
             let cutoff = now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970
             ledger.entries = ledger.entries.filter { $0.value.claimedAtUnix >= cutoff }
@@ -194,6 +197,11 @@ struct AutoResumeSharedCoordinator: Sendable {
                 outcome: "claimed",
                 message: nil
             )
+            // 锁在临界区内被 stale-break 抢占：放弃写回（外层会重新拿锁、
+            // 基于新台账重跑），避免旧快照覆盖抢占者写入的 claimed 条目。
+            guard lock.stillHeld() else {
+                throw AutoResumeCoordinationError.ledgerLockLost
+            }
             try writeJSON(ledger, to: ledgerURL)
             return .claimed
         }
@@ -205,13 +213,16 @@ struct AutoResumeSharedCoordinator: Sendable {
         message: String?,
         now: Date = Date()
     ) throws {
-        try withLedgerLock {
+        try withLedgerLock { lock in
             var ledger = try readLedger()
             guard var entry = ledger.entries[key], entry.ownerID == ownerID else { return }
             entry.completedAtUnix = now.timeIntervalSince1970
             entry.outcome = outcome
             entry.message = message
             ledger.entries[key] = entry
+            guard lock.stillHeld() else {
+                throw AutoResumeCoordinationError.ledgerLockLost
+            }
             try writeJSON(ledger, to: ledgerURL)
         }
     }
@@ -338,7 +349,21 @@ struct AutoResumeSharedCoordinator: Sendable {
             <= now.timeIntervalSince1970
     }
 
-    private func withLedgerLock<T>(_ body: () throws -> T) throws -> T {
+    struct LedgerLockToken {
+        let ownerFileURL: URL
+        let ownerToken: String
+
+        // 跨端锁协议：锁目录内的 owner 标记（Rust 端同名文件同语义）。
+        // 台账写回前复验持有者；stale-break 抢占后旧持有者据此放弃写回。
+        func stillHeld() -> Bool {
+            guard let contents = try? String(contentsOf: ownerFileURL, encoding: .utf8) else {
+                return false
+            }
+            return contents == ownerToken
+        }
+    }
+
+    func withLedgerLock<T>(_ body: (LedgerLockToken) throws -> T) throws -> T {
         try prepareDirectories()
         let fileManager = FileManager.default
         let deadline = Date().addingTimeInterval(2)
@@ -349,8 +374,23 @@ struct AutoResumeSharedCoordinator: Sendable {
                     withIntermediateDirectories: false,
                     attributes: [.posixPermissions: 0o700]
                 )
-                defer { try? fileManager.removeItem(at: ledgerLockURL) }
-                return try body()
+                let token = LedgerLockToken(
+                    ownerFileURL: ledgerLockURL.appendingPathComponent("owner"),
+                    ownerToken: UUID().uuidString
+                )
+                do {
+                    try Data(token.ownerToken.utf8).write(to: token.ownerFileURL)
+                } catch {
+                    try? fileManager.removeItem(at: ledgerLockURL)
+                    throw error
+                }
+                defer {
+                    // 只删除仍属于自己的锁目录：抢占后这里可能已是他人的锁。
+                    if token.stillHeld() {
+                        try? fileManager.removeItem(at: ledgerLockURL)
+                    }
+                }
+                return try body(token)
             } catch {
                 if directoryIsStale(ledgerLockURL, now: Date(), threshold: 30) {
                     let stale = rootDirectory.appendingPathComponent(
