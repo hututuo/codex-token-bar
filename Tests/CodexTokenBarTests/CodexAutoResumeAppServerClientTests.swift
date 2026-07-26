@@ -766,6 +766,53 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(params?["turnId"] as? String, "turn-cancelled")
     }
 
+    func testTurnTimeoutSendsInterruptAndConsumesTheInterruptedConfirmation() async {
+        // turn/start 正常返回，但完成事件一直不来 → 触发 turn 超时
+        // （turnTimeout 构造下限为 5 秒）。
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["thread": ["id": "thread-1"]]),
+            rpcResult(id: 3, result: [
+                "thread": [
+                    "id": "thread-1",
+                    "turns": [["id": "old-turn", "status": "completed"]],
+                ],
+            ]),
+            rpcResult(id: 4, result: ["turn": ["id": "turn-1", "status": "inProgress"]]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 2, turnTimeout: 1)
+        let task = Task {
+            try await client.resumeThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                target: thread(id: "thread-1"),
+                prompt: "继续",
+                clientMessageID: "timeout-test"
+            )
+        }
+
+        // 超时分支必须先发 turn/interrupt，而不是只 throw 弃管。
+        await waitForAutoResumeCondition("turn/interrupt request", timeout: 10) {
+            transport.writes.contains { rpcMethod($0) == "turn/interrupt" }
+        }
+        let interrupt = transport.writes.first { rpcMethod($0) == "turn/interrupt" }
+        let params = interrupt?["params"] as? [String: Any]
+        XCTAssertEqual(params?["threadId"] as? String, "thread-1")
+        XCTAssertEqual(params?["turnId"] as? String, "turn-1")
+
+        // 宽限期内送达中断确认：按 interrupted 完成路径返回，而非 timeout。
+        transport.enqueue(notification("turn/completed", params: [
+            "threadId": "thread-1",
+            "turn": ["id": "turn-1", "status": "interrupted"],
+        ]))
+        do {
+            _ = try await task.value
+            XCTFail("Expected interrupted outcome")
+        } catch {
+            XCTAssertEqual(error as? CodexAutoResumeAppServerError, .interrupted)
+        }
+    }
+
     private func assertRequiresHuman(
         transport: AutoResumeScriptedTransport,
         expectedMethod: String,

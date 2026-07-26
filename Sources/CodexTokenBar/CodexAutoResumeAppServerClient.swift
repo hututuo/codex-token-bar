@@ -609,6 +609,9 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
 }
 
 struct CodexAutoResumeRPCChannel {
+    // 与 Rust INTERRUPT_GRACE_TIMEOUT 同值：超时发出 turn/interrupt 后
+    // 等待 Codex 确认中断的宽限时长。
+    static let interruptGraceTimeout: TimeInterval = 5
     private struct CompletedTurnEnvelope {
         let threadID: String
         let turn: [String: Any]
@@ -717,6 +720,34 @@ struct CodexAutoResumeRPCChannel {
         if Task.isCancelled {
             try? interruptBoundTurn()
             throw CancellationError()
+        }
+        // 决策口径（与 Rust 超时分支同语义）：超时不能只 throw 弃管——那样
+        // turn 会继续在后台跑满配额。先发 turn/interrupt，再宽限等待确认；
+        // 宽限期内拿到完成事件（含 interrupted）按正常完成路径返回。
+        try? interruptBoundTurn()
+        let graceDeadline = Date().addingTimeInterval(Self.interruptGraceTimeout)
+        while Date() < graceDeadline {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            let remaining = max(0, graceDeadline.timeIntervalSinceNow)
+            switch try session.nextStdoutEvent(timeout: min(0.1, remaining)) {
+            case .idle:
+                continue
+            case .endOfFile:
+                throw CodexAutoResumeAppServerError.processExited(" turn/completed")
+            case .line(let line):
+                guard let message = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+                    continue
+                }
+                if try handleServerRequest(message) { continue }
+                observeNotification(message)
+                if let index = completedTurns.firstIndex(where: {
+                    $0.threadID == threadID && Self.turnID(in: $0.turn) == turnID
+                }) {
+                    return completedTurns.remove(at: index).turn
+                }
+            }
         }
         throw CodexAutoResumeAppServerError.timeout("turn/completed")
     }
