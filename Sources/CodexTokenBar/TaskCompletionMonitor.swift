@@ -215,26 +215,6 @@ final class TaskCompletionMonitor: ObservableObject {
         configureTimer()
     }
 
-    func refreshUnreadThreadStatus() {
-        guard dataSource != nil else { return }
-        let officialReadBoundary = now()
-        if let codexHome = dataSource?.codexHome {
-            applyCodexUnreadRead(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome))
-        }
-
-        if hasCodexUnreadState {
-            if suppressedOfficialThreadIDs.isEmpty {
-                prepareFallbackForOfficialAvailability(boundary: officialReadBoundary)
-            }
-        } else {
-            completedTaskThreadIDs.removeAll()
-        }
-        applyReadBaselineToFallbackEvents()
-        refreshActiveOfficialUnreadState()
-        recomputeUnreadThreadCount()
-        updateStatusText(fileCount: fileStates.count)
-    }
-
     func markAllRead() {
         readBaseline.markAllRead(
             unreadThreadIDs: unreadThreadState.threadIDs,

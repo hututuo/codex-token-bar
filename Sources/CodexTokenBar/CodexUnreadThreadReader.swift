@@ -259,38 +259,52 @@ enum CodexUnreadThreadReader {
         private let negativeRetryInterval: TimeInterval = 10
         private let lock = NSLock()
         private var homes: [String: HomeEntry] = [:]
+        private var resetGenerations: [String: UInt64] = [:]
 
         func read(threadIDs: Set<String>, codexHome: URL) -> SessionVisibility {
-            lock.withLock {
-                let homePath = codexHome.standardizedFileURL.path
-                var entry = homes[homePath] ?? HomeEntry()
-                let invalidatedRelevantFile = invalidateChangedFiles(
-                    requestedThreadIDs: threadIDs,
-                    entry: &entry
-                )
-                var visibility = makeVisibility(threadIDs: threadIDs, entry: entry)
-                let unresolvedIDs = threadIDs.subtracting(visibility.foundIDs)
-                let now = Date()
-                let negativeCacheExpired = entry.lastFullScanAt.map {
-                    now.timeIntervalSince($0) >= negativeRetryInterval
-                } ?? true
-                let hasNewUnresolvedID = !unresolvedIDs.isSubset(of: entry.negativeThreadIDs)
-
-                if invalidatedRelevantFile || hasNewUnresolvedID || (!unresolvedIDs.isEmpty && negativeCacheExpired) {
-                    scanAllSessions(codexHome: codexHome, entry: &entry)
-                    visibility = makeVisibility(threadIDs: threadIDs, entry: entry)
-                    entry.negativeThreadIDs = threadIDs.subtracting(visibility.foundIDs)
-                    entry.lastFullScanAt = now
-                }
-
-                homes[homePath] = entry
-                return visibility
+            let homePath = codexHome.standardizedFileURL.path
+            // 锁只保护 homes 字典的取放；stat 失效检查与递归全量扫描（磁盘
+            // IO 大头）都在锁外的值拷贝上进行，慢盘/大目录时并发未读刷新
+            // 不再于此排队。并发读可能重复扫描并以后写为准——缓存语义，
+            // 指纹校验与负缓存过期会在下一轮自愈。
+            let (snapshot, generation) = lock.withLock {
+                (homes[homePath] ?? HomeEntry(), resetGenerations[homePath, default: 0])
             }
+            var entry = snapshot
+            let invalidatedRelevantFile = invalidateChangedFiles(
+                requestedThreadIDs: threadIDs,
+                entry: &entry
+            )
+            var visibility = makeVisibility(threadIDs: threadIDs, entry: entry)
+            let unresolvedIDs = threadIDs.subtracting(visibility.foundIDs)
+            let now = Date()
+            let negativeCacheExpired = entry.lastFullScanAt.map {
+                now.timeIntervalSince($0) >= negativeRetryInterval
+            } ?? true
+            let hasNewUnresolvedID = !unresolvedIDs.isSubset(of: entry.negativeThreadIDs)
+
+            if invalidatedRelevantFile || hasNewUnresolvedID || (!unresolvedIDs.isEmpty && negativeCacheExpired) {
+                scanAllSessions(codexHome: codexHome, entry: &entry)
+                visibility = makeVisibility(threadIDs: threadIDs, entry: entry)
+                entry.negativeThreadIDs = threadIDs.subtracting(visibility.foundIDs)
+                entry.lastFullScanAt = now
+            }
+
+            lock.withLock {
+                // reset() 与本次扫描并发时丢弃迟到写回，避免把已清空的
+                // 缓存复活成旧数据（与全项目"迟到代际复核"模式一致）。
+                if resetGenerations[homePath, default: 0] == generation {
+                    homes[homePath] = entry
+                }
+            }
+            return visibility
         }
 
         func reset(codexHome: URL) {
-            _ = lock.withLock {
-                homes.removeValue(forKey: codexHome.standardizedFileURL.path)
+            let homePath = codexHome.standardizedFileURL.path
+            lock.withLock {
+                homes.removeValue(forKey: homePath)
+                resetGenerations[homePath, default: 0] += 1
             }
         }
 
