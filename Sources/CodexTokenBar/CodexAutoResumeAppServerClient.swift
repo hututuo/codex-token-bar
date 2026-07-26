@@ -105,21 +105,33 @@ enum CodexAutoResumeAppServerError: LocalizedError, Equatable, Sendable {
 
 struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
     static let defaultTurnTimeout: TimeInterval = 6 * 60 * 60
+    // 可见性重建的失控保护：seen-cursor 只能挡"重复"游标，服务端若返回
+    // 无限多的唯一游标，分页永不终止。页数上限 + 总时限保证后台自行退出，
+    // 不再依赖前端超时（那只是客户端放弃，后台会继续占用进程与锁）。
+    static let defaultVisibilityRebuildMaxPages = 100_000
+    static let defaultVisibilityRebuildTimeBudget: TimeInterval = 30 * 60
 
     private let transport: any AccountQuotaProcessTransport
     private let requestTimeout: TimeInterval
     private let turnTimeout: TimeInterval
+    private let visibilityRebuildMaxPages: Int
+    private let visibilityRebuildTimeBudget: TimeInterval
 
     init(
         transport: (any AccountQuotaProcessTransport)? = nil,
         requestTimeout: TimeInterval = 15,
-        turnTimeout: TimeInterval = Self.defaultTurnTimeout
+        turnTimeout: TimeInterval = Self.defaultTurnTimeout,
+        visibilityRebuildMaxPages: Int = Self.defaultVisibilityRebuildMaxPages,
+        visibilityRebuildTimeBudget: TimeInterval =
+            Self.defaultVisibilityRebuildTimeBudget
     ) {
         self.transport = transport ?? FoundationAccountQuotaProcessTransport(
             launchLeasePool: AccountQuotaProcessLaunchLeasePool()
         )
         self.requestTimeout = max(1, requestTimeout)
         self.turnTimeout = max(5, turnTimeout)
+        self.visibilityRebuildMaxPages = max(1, visibilityRebuildMaxPages)
+        self.visibilityRebuildTimeBudget = visibilityRebuildTimeBudget
     }
 
     func listThreads(
@@ -180,6 +192,17 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                 var seenCursors = Set<String>()
                 repeat {
                     try Task.checkCancellation()
+                    guard pagesScanned < visibilityRebuildMaxPages else {
+                        throw CodexAutoResumeAppServerError.invalidResponse(
+                            "thread/list 分页超过 \(visibilityRebuildMaxPages) 页上限仍未终止，已停止官方会话索引重建"
+                        )
+                    }
+                    guard Date().timeIntervalSince(startedAt)
+                        < visibilityRebuildTimeBudget else {
+                        throw CodexAutoResumeAppServerError.invalidResponse(
+                            "官方会话索引重建超过 \(Int(visibilityRebuildTimeBudget)) 秒总时限，已停止"
+                        )
+                    }
                     try beforePage()
                     var params: [String: Any] = [
                         "archived": archived,

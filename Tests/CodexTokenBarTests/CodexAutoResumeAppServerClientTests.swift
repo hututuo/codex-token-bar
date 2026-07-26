@@ -115,7 +115,7 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(secondParams["cursor"] as? String, "page-2")
     }
 
-    func testVisibilityRebuildScansActiveAndArchivedWithoutPageCap() throws {
+    func testVisibilityRebuildScansActiveAndArchivedWithinPageCap() throws {
         var events = [rpcResult(id: 1, result: [:])]
         for page in 0..<23 {
             events.append(rpcResult(id: page + 2, result: [
@@ -171,6 +171,57 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         ) { error in
             XCTAssertTrue(error.localizedDescription.contains("重复游标"))
         }
+    }
+
+    func testVisibilityRebuildStopsAtPageCapOnEndlessUniqueCursors() throws {
+        var events = [rpcResult(id: 1, result: [:])]
+        for page in 0..<3 {
+            events.append(rpcResult(id: page + 2, result: [
+                "data": [],
+                "nextCursor": "unique-\(page)",
+            ]))
+        }
+        let transport = AutoResumeScriptedTransport(events: events)
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1,
+            visibilityRebuildMaxPages: 3
+        )
+
+        XCTAssertThrowsError(
+            try client.rebuildConversationVisibilityMetadata(
+                codexPath: "/fake/codex",
+                dataSource: nil
+            )
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("页上限"))
+        }
+        let lists = transport.writes.filter { rpcMethod($0) == "thread/list" }
+        XCTAssertEqual(lists.count, 3, "达到页上限后不得再发起分页请求")
+    }
+
+    func testVisibilityRebuildStopsWhenTimeBudgetIsExhausted() throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1,
+            visibilityRebuildTimeBudget: 0
+        )
+
+        XCTAssertThrowsError(
+            try client.rebuildConversationVisibilityMetadata(
+                codexPath: "/fake/codex",
+                dataSource: nil
+            )
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("总时限"))
+        }
+        let lists = transport.writes.filter { rpcMethod($0) == "thread/list" }
+        XCTAssertEqual(lists.count, 0, "超时后不得再发起分页请求")
     }
 
     func testResumeUsesStableSequenceAndDeterministicClientMessageID() async throws {

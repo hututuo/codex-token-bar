@@ -326,8 +326,9 @@ pub fn rebuild_conversation_visibility_metadata(
     let mut session = AppServerSession::launch(codex_home)?;
     session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
     let started_at = Instant::now();
+    let deadline = started_at + VISIBILITY_REBUILD_TIME_BUDGET;
     let mut next_request_id = 2_i64;
-    let active = collect_visibility_pages(false, |archived, cursor| {
+    let active = collect_visibility_pages(false, deadline, |archived, cursor| {
         request_visibility_page(
             &mut session,
             &mut next_request_id,
@@ -335,7 +336,7 @@ pub fn rebuild_conversation_visibility_metadata(
             cursor,
         )
     })?;
-    let archived = collect_visibility_pages(true, |archived, cursor| {
+    let archived = collect_visibility_pages(true, deadline, |archived, cursor| {
         request_visibility_page(
             &mut session,
             &mut next_request_id,
@@ -364,14 +365,33 @@ struct VisibilityPageStats {
     pages: u64,
 }
 
+// 可见性重建的失控保护：seen-cursor 只能挡"重复"游标，服务端若返回无限多
+// 的唯一游标，分页永不终止——前端超时只是客户端放弃，后台 spawn_blocking
+// 线程会继续持有全局 Provider 操作租约直到重启。页数上限 + 总时限保证
+// 后台自行退出。
+const VISIBILITY_REBUILD_MAX_PAGES: u64 = 100_000;
+const VISIBILITY_REBUILD_TIME_BUDGET: Duration = Duration::from_secs(30 * 60);
+
 fn collect_visibility_pages(
     archived: bool,
+    deadline: Instant,
     mut request: impl FnMut(bool, Option<&str>) -> Result<Value, String>,
 ) -> Result<VisibilityPageStats, String> {
     let mut stats = VisibilityPageStats::default();
     let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
     loop {
+        if stats.pages >= VISIBILITY_REBUILD_MAX_PAGES {
+            return Err(format!(
+                "Codex thread/list 分页超过 {VISIBILITY_REBUILD_MAX_PAGES} 页上限仍未终止，已停止官方会话索引重建"
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "官方会话索引重建超过 {} 秒总时限，已停止",
+                VISIBILITY_REBUILD_TIME_BUDGET.as_secs()
+            ));
+        }
         let result = request(archived, cursor.as_deref())?;
         let rows = result
             .get("data")
@@ -1402,9 +1422,10 @@ mod tests {
     }
 
     #[test]
-    fn visibility_rebuild_pages_without_a_history_cap() {
+    fn visibility_rebuild_pages_freely_within_the_page_cap() {
         let mut requested = 0_u64;
-        let stats = collect_visibility_pages(false, |archived, cursor| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let stats = collect_visibility_pages(false, deadline, |archived, cursor| {
             assert!(!archived);
             let expected = if requested == 0 {
                 None
@@ -1436,7 +1457,8 @@ mod tests {
     #[test]
     fn visibility_rebuild_rejects_cursor_cycles() {
         let mut requested = 0;
-        let error = collect_visibility_pages(true, |archived, _| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let error = collect_visibility_pages(true, deadline, |archived, _| {
             assert!(archived);
             requested += 1;
             Ok(json!({
@@ -1447,6 +1469,34 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("重复游标"));
         assert_eq!(requested, 2);
+    }
+
+    #[test]
+    fn visibility_rebuild_stops_at_the_page_cap_on_endless_unique_cursors() {
+        let mut requested = 0_u64;
+        let deadline = Instant::now() + Duration::from_secs(600);
+        let error = collect_visibility_pages(false, deadline, |_, _| {
+            requested += 1;
+            Ok(json!({
+                "data": [],
+                "nextCursor": format!("unique-{requested}")
+            }))
+        })
+        .unwrap_err();
+        assert!(error.contains("页上限"), "{error}");
+        assert_eq!(requested, VISIBILITY_REBUILD_MAX_PAGES);
+    }
+
+    #[test]
+    fn visibility_rebuild_stops_when_the_time_budget_is_exhausted() {
+        let mut requested = 0_u64;
+        let error = collect_visibility_pages(false, Instant::now(), |_, _| {
+            requested += 1;
+            Ok(json!({"data": [], "nextCursor": "x"}))
+        })
+        .unwrap_err();
+        assert!(error.contains("总时限"), "{error}");
+        assert_eq!(requested, 0, "超时后不得再发起分页请求");
     }
 
     #[test]
