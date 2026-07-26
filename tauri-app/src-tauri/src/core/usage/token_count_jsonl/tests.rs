@@ -943,6 +943,69 @@ fn exact_index_cold_scan_resumes_committed_files_without_publishing_partial_tota
 }
 
 #[test]
+fn exact_index_resumed_building_generation_appends_without_full_rescan() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eresume-append-0000-0000-0000-exact.jsonl");
+    // 超过一个 4 MiB 块的大文件，让"整文件重扫 vs 尾块追加"在扫描字节数上可区分。
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    handle.write_all(br#"{"padding":""#).unwrap();
+    let padding = vec![b'x'; 1024 * 1024];
+    for _ in 0..12 {
+        handle.write_all(&padding).unwrap();
+    }
+    handle.write_all(b"\"}\n").unwrap();
+    handle
+        .write_all(
+            br#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        )
+        .unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+
+    // 第一轮：该文件提交后注入中断，building 代次带着本代次内的追加检查点留在原地。
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(|_| {
+        Err("injected interruption after durable file commit".into())
+    });
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let error = index.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("injected interruption"), "{error}");
+
+    // 追加少量数据后复用同一 building 代次续扫：检查点代次 == 当前代次。
+    let appended = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    handle.write_all(appended).unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        150
+    );
+    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(
+        full_bytes, 0,
+        "恢复代次内的纯追加不得退化为整文件重扫"
+    );
+    assert!(
+        append_bytes > 0 && append_bytes <= EXACT_INDEX_CHUNK_SIZE + appended.len() as u64 + 1,
+        "append parser read {append_bytes} bytes instead of one tail chunk plus the suffix"
+    );
+    drop(index);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

@@ -2823,135 +2823,15 @@ fn append_session_file(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始单文件追加索引事务：{error}"))?;
     ensure_active_build_generation(&transaction, generation)?;
-    transaction
-        .execute(
-            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
-            params![generation, path],
-        )
-        .map_err(|error| format!("无法清理本轮追加会话的旧文件版本：{error}"))?;
-    let copied = transaction
-        .execute(
-            r#"
-            INSERT INTO files(
-                generation,
-                path,
-                deleted,
-                session_id,
-                size,
-                modified_ns,
-                device_id,
-                file_id,
-                changed_ns,
-                prefix_sha256,
-                append_ready,
-                resume_offset,
-                previous_total_tokens,
-                fork_replay_started_ns,
-                fork_replay_active,
-                last_skipped_fork_replay_token_ns,
-                current_user_prompt_start,
-                current_user_prompt_end,
-                assistant_response_start,
-                assistant_response_end,
-                audit_chunk_index
-            )
-            SELECT
-                ?1,
-                path,
-                0,
-                session_id,
-                size,
-                modified_ns,
-                device_id,
-                file_id,
-                changed_ns,
-                prefix_sha256,
-                append_ready,
-                resume_offset,
-                previous_total_tokens,
-                fork_replay_started_ns,
-                fork_replay_active,
-                last_skipped_fork_replay_token_ns,
-                current_user_prompt_start,
-                current_user_prompt_end,
-                assistant_response_start,
-                assistant_response_end,
-                audit_chunk_index
-            FROM files
-            WHERE generation = ?2 AND path = ?3
-            "#,
-            params![generation, checkpoint.generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件追加检查点：{error}"))?;
-    if copied != 1 {
+    // 中断恢复会复用同一 building 代次（begin_or_resume_generation）：此时追加检查点
+    // 行就在本代次内，先删本代次行再从同代次 INSERT SELECT 会把源行连同级联的
+    // events/指纹/分块一起删掉（copied == 0），追加被迫退化为整文件重扫。同代次
+    // 直接基于既有行续扫，收尾由 save_file_checkpoint 覆盖检查点。
+    if checkpoint.generation != generation
+        && !copy_append_checkpoint_rows(&transaction, generation, checkpoint.generation, path)?
+    {
         return Ok(false);
     }
-    transaction
-        .execute(
-            r#"
-            INSERT INTO events(
-                file_generation,
-                file_path,
-                ordinal,
-                timestamp,
-                session_id,
-                tokens,
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end
-            )
-            SELECT
-                ?1,
-                file_path,
-                ordinal,
-                timestamp,
-                session_id,
-                tokens,
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                user_prompt_start,
-                user_prompt_end,
-                assistant_response_start,
-                assistant_response_end
-            FROM events
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint.generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
-            SELECT ?1, file_path, fingerprint
-            FROM file_fingerprints
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint.generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件去重状态：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO file_chunks(
-                file_generation,
-                file_path,
-                chunk_index,
-                byte_count,
-                sha256
-            )
-            SELECT ?1, file_path, chunk_index, byte_count, sha256
-            FROM file_chunks
-            WHERE file_generation = ?2 AND file_path = ?3
-            "#,
-            params![generation, checkpoint.generation, path],
-        )
-        .map_err(|error| format!("无法复制会话文件分块校验状态：{error}"))?;
     transaction
         .execute("DELETE FROM exact_fingerprints", [])
         .map_err(|error| format!("无法重置会话 token 去重表：{error}"))?;
@@ -3055,6 +2935,146 @@ fn append_session_file(
         .commit()
         .map_err(|error| format!("无法提交单文件追加 token 索引：{error}"))?;
     run_after_file_commit_hook_for_testing(file)?;
+    Ok(true)
+}
+
+/// 把旧代次的追加检查点行（files 及级联的 events/指纹/分块）复制进当前代次。
+/// 返回 false 表示检查点源行不存在（复制不到恰好一行），调用方应回退全量重建。
+fn copy_append_checkpoint_rows(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    checkpoint_generation: i64,
+    path: &str,
+) -> Result<bool, String> {
+    transaction
+        .execute(
+            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理本轮追加会话的旧文件版本：{error}"))?;
+    let copied = transaction
+        .execute(
+            r#"
+            INSERT INTO files(
+                generation,
+                path,
+                deleted,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256,
+                append_ready,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                audit_chunk_index
+            )
+            SELECT
+                ?1,
+                path,
+                0,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256,
+                append_ready,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_ns,
+                fork_replay_active,
+                last_skipped_fork_replay_token_ns,
+                current_user_prompt_start,
+                current_user_prompt_end,
+                assistant_response_start,
+                assistant_response_end,
+                audit_chunk_index
+            FROM files
+            WHERE generation = ?2 AND path = ?3
+            "#,
+            params![generation, checkpoint_generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件追加检查点：{error}"))?;
+    if copied != 1 {
+        return Ok(false);
+    }
+    transaction
+        .execute(
+            r#"
+            INSERT INTO events(
+                file_generation,
+                file_path,
+                ordinal,
+                timestamp,
+                session_id,
+                tokens,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                user_prompt_start,
+                user_prompt_end,
+                assistant_response_start,
+                assistant_response_end
+            )
+            SELECT
+                ?1,
+                file_path,
+                ordinal,
+                timestamp,
+                session_id,
+                tokens,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                user_prompt_start,
+                user_prompt_end,
+                assistant_response_start,
+                assistant_response_end
+            FROM events
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint_generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
+            SELECT ?1, file_path, fingerprint
+            FROM file_fingerprints
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint_generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件去重状态：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO file_chunks(
+                file_generation,
+                file_path,
+                chunk_index,
+                byte_count,
+                sha256
+            )
+            SELECT ?1, file_path, chunk_index, byte_count, sha256
+            FROM file_chunks
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint_generation, path],
+        )
+        .map_err(|error| format!("无法复制会话文件分块校验状态：{error}"))?;
     Ok(true)
 }
 
