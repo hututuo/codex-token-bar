@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { readAppSettings, recordStartupEvent } from "../api/client";
+import { readAppSettings, recordStartupEvent, subscribeCommandDiagnostics } from "../api/client";
 import { recordPerformanceEvent } from "../api/startupClient";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
@@ -107,6 +107,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const sourceReconcileRequestRef = useRef(0);
   const sourceReconcileInFlightRef = useRef<Promise<CodexHomeSourceEnvelope | null> | null>(null);
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
+
+  // 本地命令失败诊断接入 state.diagnostics（订阅即回放当前快照），
+  // 否则 recordCommandFailure 记下的失败没有任何消费者、恒不可见。
+  useEffect(() => subscribeCommandDiagnostics((diagnostics) => {
+    setState((current) => ({ ...current, diagnostics }));
+  }), []);
 
   const captureSourceToken = useCallback(
     () => sourceTransitionRef.current.sourceToken,
@@ -428,6 +434,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       if (!cancelled && settings !== null) {
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       }
+    }).catch(() => {
+      // 保持默认刷新间隔；失败已由命令诊断链路记录并在横幅中展示。
     });
 
     void desktopPlatform.onAppSettingsChanged((settings) => {

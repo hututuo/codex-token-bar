@@ -27,6 +27,8 @@ export function useFloatingWindowPlacement() {
         positionPersistence.setPersisted(settings.floatingPosition);
         void desktopPlatform.setFloatingWindowPosition(settings.floatingPosition);
       }
+    }).catch(() => {
+      // 保持当前窗口位置；失败已由命令诊断链路记录。
     });
 
     void desktopPlatform.onFloatingWindowMoved((position) => {

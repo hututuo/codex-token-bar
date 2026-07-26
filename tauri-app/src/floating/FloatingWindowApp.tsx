@@ -155,6 +155,8 @@ export function FloatingWindowApp() {
         });
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
       }
+    }).catch(() => {
+      // 保持默认悬浮窗设置；失败已由命令诊断链路记录。
     });
 
     return () => {

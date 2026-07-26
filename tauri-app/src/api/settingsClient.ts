@@ -10,10 +10,16 @@ import type {
   SessionEnhancementSettings,
 } from "../types/dashboard";
 import { fallbackAutostartStatus } from "./fallback";
-import { callCommand, callCommandOptional, callCommandStrict } from "./command";
+import { callCommand, callCommandStrict } from "./command";
+import { isTauriRuntimeAvailable } from "../platform/runtime";
 
 export function readAppSettings(): Promise<AppSettingsSnapshot | null> {
-  return callCommandOptional("read_app_settings");
+  // null 只表示 Missing（非 Tauri 桌面运行环境，如浏览器预览），调用方走默认值；
+  // 桌面环境里的读取失败必须显式抛错交给错误横幅，不再折成 null 静默吞掉。
+  if (!isTauriRuntimeAvailable()) {
+    return Promise.resolve(null);
+  }
+  return callCommandStrict<AppSettingsSnapshot>("read_app_settings");
 }
 
 export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<AppSettingsSnapshot> {

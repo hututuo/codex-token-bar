@@ -67,6 +67,7 @@ export interface DashboardShellSettingsState {
   floatingVisible: boolean;
   customAccountDisplayName: string;
   quotaRefreshIntervalMs: number;
+  settingsError: string | null;
   showSetupGuide: boolean;
   completeSetupGuide: () => Promise<void>;
   cancelAutoResume: () => Promise<void>;
@@ -105,6 +106,7 @@ export function useDashboardShellSettings({
   const [autoResumeError, setAutoResumeError] = useState<string | null>(null);
   const [customAccountDisplayName, setCustomAccountDisplayName] = useState("");
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
   const { autostartStatus, toggleAutostart } = useAutostartSettings({ dashboardHydrated });
@@ -122,6 +124,7 @@ export function useDashboardShellSettings({
 
     void readAppSettings().then((settings) => {
       if (cancelled || settings === null) {
+        // null = Missing（非 Tauri 桌面运行环境）：保持默认值即可，不算错误。
         return;
       }
       floatingSettingsLoaded.current = true;
@@ -132,6 +135,13 @@ export function useDashboardShellSettings({
       setSessionEnhancements(sanitizeSessionEnhancements(settings.sessionEnhancements));
       applyDisplaySurfaces(settings.displaySurfaces);
       setShowSetupGuide(!settings.setupGuideCompleted);
+    }).catch((error) => {
+      if (cancelled) return;
+      // 读取失败时不把默认值当作已加载：悬浮窗修改只发布不落盘，避免用默认值
+      // 覆盖磁盘上可能完好的设置；横幅明确告知后果。
+      setSettingsError(
+        `读取本地设置失败：${commandErrorMessage(error)}；本次会话使用默认设置，界面上的设置修改可能不会保存。`,
+      );
     });
 
     return () => {
@@ -143,7 +153,11 @@ export function useDashboardShellSettings({
     const sanitized = sanitizeFloatingSettings(floatingSettings);
     void desktopPlatform.publishFloatingSettings(sanitized);
     if (floatingSettingsLoaded.current) {
-      void saveFloatingSettings(sanitized).catch(() => {});
+      void saveFloatingSettings(sanitized).then(() => {
+        setSettingsError((current) => current?.startsWith("保存悬浮窗设置失败") ? null : current);
+      }).catch((error) => {
+        setSettingsError(`保存悬浮窗设置失败：${commandErrorMessage(error)}；当前修改仅本次会话生效。`);
+      });
     }
   }, [floatingSettings]);
 
@@ -351,6 +365,7 @@ export function useDashboardShellSettings({
     floatingVisible,
     customAccountDisplayName,
     quotaRefreshIntervalMs,
+    settingsError,
     showSetupGuide,
     completeSetupGuide,
     cancelAutoResume,

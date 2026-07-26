@@ -100,6 +100,8 @@ export function StatusPanelApp() {
         setLiveRateEnabled(snapshot.displaySurfaces.liveRateEnabled);
       }
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(snapshot?.quotaRefreshIntervalMs));
+    }).catch(() => {
+      // 保持默认展示设置；失败已由命令诊断链路记录。
     });
 
     return () => {

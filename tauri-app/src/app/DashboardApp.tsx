@@ -81,6 +81,8 @@ export function DashboardApp() {
         sessionEnhancements={shellSettings.sessionEnhancements}
         codexHome={readyState.codexHome}
         dashboard={readyState.dashboard}
+        diagnostics={state.diagnostics}
+        settingsError={shellSettings.settingsError}
         displaySurfaces={shellSettings.displaySurfaces}
         floatingSettings={shellSettings.floatingSettings}
         customAccountDisplayName={shellSettings.customAccountDisplayName}

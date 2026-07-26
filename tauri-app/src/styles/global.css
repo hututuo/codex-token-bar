@@ -190,6 +190,43 @@ button {
   font-weight: 560;
 }
 
+.local-command-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0 10px;
+  padding: 9px 13px;
+  border: 1px solid rgba(214, 69, 69, 0.26);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 86%, rgba(214, 69, 69, 0.14));
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.local-command-notice-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #d64545;
+  box-shadow: 0 0 0 4px rgba(214, 69, 69, 0.12);
+}
+
+.local-command-notice-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.local-command-notice-lines span {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .floating-title-spacer {
   height: 0;
 }

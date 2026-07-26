@@ -25,6 +25,8 @@ import { ProviderRepairPanel } from "./dashboard/ProviderRepairPanel";
 import { useDashboardPageLifecycle } from "./dashboard/useDashboardPageLifecycle";
 import { downloadDashboardCsv, downloadDashboardPng } from "../utils/dashboardExport";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
+import type { CommandFailureDiagnostic } from "../api/client";
+import { buildLocalCommandNoticeLines } from "../state/localCommandNotice";
 import { desktopPlatform } from "../platform/desktop";
 
 interface AppUpdateViewState {
@@ -45,6 +47,8 @@ interface DashboardPageProps {
   sessionEnhancements: SessionEnhancementSettings;
   codexHome: CodexHomeStatus;
   dashboard: DashboardSnapshot;
+  diagnostics: CommandFailureDiagnostic[];
+  settingsError: string | null;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   customAccountDisplayName: string;
@@ -108,6 +112,8 @@ export function DashboardPage({
   sessionEnhancements,
   codexHome,
   dashboard,
+  diagnostics,
+  settingsError,
   displaySurfaces,
   floatingSettings,
   customAccountDisplayName,
@@ -212,6 +218,8 @@ export function DashboardPage({
         />
 
         {usageCacheInitializing ? <UsageCacheInitializationNotice /> : null}
+
+        <LocalCommandFailureNotice settingsError={settingsError} diagnostics={diagnostics} />
 
         {summaryReady ? (
           <>
@@ -323,6 +331,29 @@ function UsageCacheInitializationNotice() {
       <div>
         <strong>正在初始化本地统计缓存</strong>
         <span>首次打开或更新后可能需要一点时间，只读取本机 Codex 记录，不上传数据。</span>
+      </div>
+    </section>
+  );
+}
+
+function LocalCommandFailureNotice({
+  settingsError,
+  diagnostics,
+}: {
+  settingsError: string | null;
+  diagnostics: CommandFailureDiagnostic[];
+}) {
+  const lines = buildLocalCommandNoticeLines(settingsError, diagnostics);
+  if (lines.length === 0) {
+    return null;
+  }
+  return (
+    <section className="local-command-notice" role="alert" aria-label="本地操作失败提示">
+      <span className="local-command-notice-dot" aria-hidden="true" />
+      <div className="local-command-notice-lines">
+        {lines.map((line) => (
+          <span key={line.key}>{line.text}</span>
+        ))}
       </div>
     </section>
   );
