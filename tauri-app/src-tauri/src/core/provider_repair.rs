@@ -487,6 +487,7 @@ fn reconcile_pending_restore_before_backup(
         pinned_home,
         sqlite_home,
     )
+    .map(|_| ())
 }
 
 pub fn sync_provider_history(
@@ -593,6 +594,25 @@ fn sync_provider_history_transaction_at_with_backup_hook(
     )
 }
 
+#[cfg(test)]
+fn sync_provider_history_transaction_at_with_commit_hook(
+    codex_home: &Path,
+    backup_root: &Path,
+    verify: impl FnOnce(&Path) -> Result<ProviderRepairReport, String>,
+    commit_hook: &mut dyn FnMut(backups::MutationCommitPhase) -> Result<(), String>,
+) -> Result<ProviderSyncTransactionOutcome, String> {
+    sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_hook(
+        codex_home,
+        backup_root,
+        ProviderSyncMode::Migrate,
+        None,
+        |pinned_home| verify(pinned_home.canonical_path()),
+        |_, _| Ok(()),
+        || Ok(false),
+        commit_hook,
+    )
+}
+
 fn sync_provider_history_transaction_at_with_backup_hook_and_probe(
     codex_home: &Path,
     backup_root: &Path,
@@ -618,7 +638,29 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
     requested_provider: Option<&str>,
     verify: impl FnOnce(&PinnedHome) -> Result<ProviderRepairReport, String>,
     hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
+    probe: impl FnMut() -> Result<bool, String>,
+) -> Result<ProviderSyncTransactionOutcome, String> {
+    sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_hook(
+        codex_home,
+        backup_root,
+        mode,
+        requested_provider,
+        verify,
+        hook,
+        probe,
+        &mut |_| Ok(()),
+    )
+}
+
+fn sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_hook(
+    codex_home: &Path,
+    backup_root: &Path,
+    mode: ProviderSyncMode,
+    requested_provider: Option<&str>,
+    verify: impl FnOnce(&PinnedHome) -> Result<ProviderRepairReport, String>,
+    hook: impl FnMut(backups::BackupPublicationPhase, &Path) -> Result<(), String>,
     mut probe: impl FnMut() -> Result<bool, String>,
+    commit_hook: &mut dyn FnMut(backups::MutationCommitPhase) -> Result<(), String>,
 ) -> Result<ProviderSyncTransactionOutcome, String> {
     let roots = ProviderStorageRoots::open(codex_home)?;
     let pinned_home = &roots.codex_home;
@@ -754,45 +796,136 @@ fn sync_provider_history_transaction_at_with_backup_hook_and_probe_mode(
             if current_backup_members != expected_member_paths {
                 return Err("Provider fresh backup 的成员 expected set 在最终提交前变化。".into());
             }
-            backups::commit_provider_mutation_journal(
-                backup_root,
-                &mut mutation_journal,
-            )?;
-            let snapshot = snapshot_from_report(verified_report);
-            let message = match mode {
-                ProviderSyncMode::Repair => format!(
-                    "已安全修复 Provider 元数据：JSONL 未改写，SQLite {} 行按各会话 canonical metadata 对齐；恢复点 {}。",
-                    sqlite_rows, backup.id
-                ),
-                ProviderSyncMode::Migrate => format!(
-                    "已显式迁移到 {}：JSONL 首行 {} 个，SQLite {} 行；未改写模型、消息、时间戳或 session_index；恢复点 {}。",
-                    target_provider, rewritten_sessions, sqlite_rows, backup.id
-                ),
-            };
-            Ok((snapshot, message))
+            Ok((verified_report, rewritten_sessions, sqlite_rows))
         });
 
-    match transaction {
-        Ok((snapshot, message)) => Ok(ProviderSyncTransactionOutcome {
+    // 提交前的任何失败：journal 仍为 Prepared，回滚是安全且期望的动作。
+    let (verified_report, rewritten_sessions, sqlite_rows) = match transaction {
+        Ok(values) => values,
+        Err(original_error) => {
+            return Err(provider_sync_failure_with_reconcile(
+                backup_root,
+                pinned_home,
+                sqlite_home,
+                &backup,
+                &original_error,
+            ));
+        }
+    };
+
+    let success_summary = match mode {
+        ProviderSyncMode::Repair => format!(
+            "已安全修复 Provider 元数据：JSONL 未改写，SQLite {} 行按各会话 canonical metadata 对齐；恢复点 {}。",
+            sqlite_rows, backup.id
+        ),
+        ProviderSyncMode::Migrate => format!(
+            "已显式迁移到 {}：JSONL 首行 {} 个，SQLite {} 行；未改写模型、消息、时间戳或 session_index；恢复点 {}。",
+            target_provider, rewritten_sessions, sqlite_rows, backup.id
+        ),
+    };
+    let snapshot = snapshot_from_report(verified_report);
+
+    match backups::commit_provider_mutation_journal_with_hook(
+        backup_root,
+        &mut mutation_journal,
+        commit_hook,
+    ) {
+        Ok(()) => Ok(ProviderSyncTransactionOutcome {
             backup,
             snapshot,
-            message,
+            message: success_summary,
         }),
-        Err(original_error) => match backups::reconcile_unfinished_restore_transactions_with_roots(
-            backup_root,
-            pinned_home,
-            sqlite_home,
-        ) {
-            Ok(()) => Err(format!(
-                "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
-                backup.id
-            )),
-            Err(restore_error) => Err(format!(
-                "Provider 同步或验证失败：{original_error}；自动恢复恢复点 {} 失败：{restore_error}；恢复点保留于 {}。",
-                backup.id,
-                backup.path
-            )),
-        },
+        Err(backups::MutationCommitError::NotCommitted { detail }) => {
+            // 提交标记确定未生效：与提交前失败同路径，回滚叙事是真实的。
+            Err(provider_sync_failure_with_reconcile(
+                backup_root,
+                pinned_home,
+                sqlite_home,
+                &backup,
+                &format!("提交标记写入未生效：{detail}"),
+            ))
+        }
+        Err(backups::MutationCommitError::Uncertain { detail }) => {
+            // 提交标记可能已生效：禁止回滚叙事，重读磁盘 journal 收敛。
+            match backups::converge_provider_mutation_commit(backup_root, &mutation_journal) {
+                backups::MutationCommitConvergence::Committed => {
+                    Ok(ProviderSyncTransactionOutcome {
+                        backup,
+                        snapshot,
+                        message: format!(
+                            "{success_summary}提交标记首次持久化失败（{detail}），已重试同步并确认。"
+                        ),
+                    })
+                }
+                backups::MutationCommitConvergence::MarkerNotDurable { detail: sync_detail } => {
+                    Ok(ProviderSyncTransactionOutcome {
+                        backup,
+                        snapshot,
+                        message: format!(
+                            "{success_summary}数据已写入并通过完整性验证，但提交标记持久化未完成（{sync_detail}）；journal 保留于 {}，下次启动将自动收敛。",
+                            mutation_journal.path().display()
+                        ),
+                    })
+                }
+                backups::MutationCommitConvergence::StillPrepared => {
+                    // 重读确认提交未生效，可安全按未提交回滚。
+                    Err(provider_sync_failure_with_reconcile(
+                        backup_root,
+                        pinned_home,
+                        sqlite_home,
+                        &backup,
+                        &format!("提交标记写入未生效：{detail}"),
+                    ))
+                }
+                backups::MutationCommitConvergence::Unknown { detail: read_detail } => {
+                    Ok(ProviderSyncTransactionOutcome {
+                        backup,
+                        snapshot,
+                        message: format!(
+                            "{success_summary}数据已写入并通过完整性验证，但提交标记状态未知（{detail}；{read_detail}）；journal 保留于 {}，下次启动将自动处理。",
+                            mutation_journal.path().display()
+                        ),
+                    })
+                }
+            }
+        }
+    }
+}
+
+fn provider_sync_failure_with_reconcile(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    backup: &crate::models::ProviderRepairBackupInfo,
+    original_error: &str,
+) -> String {
+    match backups::reconcile_unfinished_restore_transactions_with_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    ) {
+        Ok(actions) => {
+            if actions.contains(&backups::MutationReconcileAction::KeptCommittedState) {
+                format!(
+                    "Provider 同步或验证失败：{original_error}；检测到事务已提交，已保留新状态并清理 journal；恢复点 {} 仍可用。",
+                    backup.id
+                )
+            } else if actions.contains(&backups::MutationReconcileAction::RolledBackToBackup) {
+                format!(
+                    "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
+                    backup.id
+                )
+            } else {
+                format!(
+                    "Provider 同步或验证失败：{original_error}；未发现需要回滚的事务，磁盘保持原状；恢复点 {} 保留于 {}。",
+                    backup.id, backup.path
+                )
+            }
+        }
+        Err(restore_error) => format!(
+            "Provider 同步或验证失败：{original_error}；自动恢复恢复点 {} 失败：{restore_error}；恢复点保留于 {}。",
+            backup.id, backup.path
+        ),
     }
 }
 
@@ -1121,7 +1254,7 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
         &pinned_home,
         &sqlite_home,
     ) {
-        Ok(()) => ProviderRecoveryStatus::ready(home_scope),
+        Ok(_) => ProviderRecoveryStatus::ready(home_scope),
         Err(blocked) => ProviderRecoveryStatus::blocked_for_scope(
             home_scope,
             blocked.code,

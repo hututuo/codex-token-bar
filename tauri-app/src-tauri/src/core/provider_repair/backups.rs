@@ -20,7 +20,9 @@ use super::safe_fs::windows_extended_length_path;
 use super::safe_fs::{
     physical_file_identity, AtomicInstallPhase, HomeGenerationIdentity, PinnedHome,
 };
-use super::session_files::{find_session_files, write_file_atomically};
+use super::session_files::{
+    find_session_files, write_file_atomically, write_file_atomically_with_hook, AtomicWritePhase,
+};
 use super::storage_roots::ProviderStorageRoots;
 
 const BACKUP_MANIFEST_SCHEMA_VERSION: u32 = 3;
@@ -121,6 +123,45 @@ struct ProviderMutationJournal {
 pub(super) struct ProviderMutationJournalHandle {
     path: PathBuf,
     journal: ProviderMutationJournal,
+}
+
+impl ProviderMutationJournalHandle {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MutationCommitPhase {
+    BeforeJournalRename,
+    AfterJournalRename,
+    AfterRootSync,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MutationCommitError {
+    /// 提交标记确定未生效：磁盘上 journal 仍为 Prepared，按未提交回滚是安全的。
+    NotCommitted { detail: String },
+    /// rename 已发出后失败或持久化失败：提交标记可能已生效，禁止进入回滚叙事。
+    Uncertain { detail: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MutationCommitConvergence {
+    /// 磁盘 journal 为 Committed，root 重新 fsync 成功并已清理 journal。
+    Committed,
+    /// 磁盘 journal 为 Committed，但 root fsync 重试仍失败；journal 留待启动收敛。
+    MarkerNotDurable { detail: String },
+    /// 磁盘 journal 仍为 Prepared：提交确定未生效。
+    StillPrepared,
+    /// journal 无法读取，无法判定提交终态；journal 留在原地。
+    Unknown { detail: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MutationReconcileAction {
+    RolledBackToBackup,
+    KeptCommittedState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -793,16 +834,60 @@ pub(super) fn begin_provider_mutation_journal(
     Ok(ProviderMutationJournalHandle { path, journal })
 }
 
-pub(super) fn commit_provider_mutation_journal(
+pub(super) fn commit_provider_mutation_journal_with_hook(
     backup_root: &Path,
     handle: &mut ProviderMutationJournalHandle,
-) -> Result<(), String> {
+    hook: &mut dyn FnMut(MutationCommitPhase) -> Result<(), String>,
+) -> Result<(), MutationCommitError> {
     if handle.journal.phase != ProviderMutationJournalPhase::Prepared {
-        return Err("Provider mutation journal 不在可提交阶段。".into());
+        return Err(MutationCommitError::NotCommitted {
+            detail: "Provider mutation journal 不在可提交阶段。".into(),
+        });
+    }
+    let mut committed = handle.journal.clone();
+    committed.phase = ProviderMutationJournalPhase::Committed;
+    let bytes = serde_json::to_vec_pretty(&committed).map_err(|error| {
+        MutationCommitError::NotCommitted {
+            detail: format!("编码 Provider mutation journal 失败：{error}"),
+        }
+    })?;
+    let mut rename_issued = false;
+    let write_result = write_file_atomically_with_hook(&handle.path, &bytes, |phase, _| {
+        if phase == AtomicWritePhase::BeforeReplace {
+            hook(MutationCommitPhase::BeforeJournalRename)?;
+            rename_issued = true;
+        }
+        Ok(())
+    });
+    if let Err(detail) = write_result {
+        if !rename_issued {
+            return Err(MutationCommitError::NotCommitted { detail });
+        }
+        // rename 已发出：重读磁盘 journal 判定真实终态，避免把已生效的提交当作失败回滚。
+        return Err(match read_provider_mutation_journal(&handle.path) {
+            Ok(journal) => match journal.phase {
+                ProviderMutationJournalPhase::Prepared => {
+                    MutationCommitError::NotCommitted { detail }
+                }
+                ProviderMutationJournalPhase::Committed => {
+                    handle.journal.phase = ProviderMutationJournalPhase::Committed;
+                    MutationCommitError::Uncertain {
+                        detail: format!("{detail}；提交标记已写入但持久化未确认"),
+                    }
+                }
+            },
+            Err(read_error) => MutationCommitError::Uncertain {
+                detail: format!("{detail}；重读 journal 失败：{read_error}"),
+            },
+        });
     }
     handle.journal.phase = ProviderMutationJournalPhase::Committed;
-    write_provider_mutation_journal(&handle.path, &handle.journal)?;
-    sync_directory(backup_root)?;
+    if let Err(detail) = hook(MutationCommitPhase::AfterJournalRename)
+        .and_then(|_| sync_directory(backup_root))
+        .and_then(|_| hook(MutationCommitPhase::AfterRootSync))
+    {
+        return Err(MutationCommitError::Uncertain { detail });
+    }
     if let Err(error) = cleanup_provider_mutation_journal(backup_root, &handle.path) {
         eprintln!(
             "Codex Token Bar: committed Provider mutation journal cleanup deferred path={} error={error}",
@@ -810,6 +895,32 @@ pub(super) fn commit_provider_mutation_journal(
         );
     }
     Ok(())
+}
+
+pub(super) fn converge_provider_mutation_commit(
+    backup_root: &Path,
+    handle: &ProviderMutationJournalHandle,
+) -> MutationCommitConvergence {
+    match read_provider_mutation_journal(&handle.path) {
+        Ok(journal) => match journal.phase {
+            ProviderMutationJournalPhase::Committed => match sync_directory(backup_root) {
+                Ok(()) => {
+                    if let Err(error) =
+                        cleanup_provider_mutation_journal(backup_root, &handle.path)
+                    {
+                        eprintln!(
+                            "Codex Token Bar: committed Provider mutation journal cleanup deferred path={} error={error}",
+                            handle.path.display()
+                        );
+                    }
+                    MutationCommitConvergence::Committed
+                }
+                Err(detail) => MutationCommitConvergence::MarkerNotDurable { detail },
+            },
+            ProviderMutationJournalPhase::Prepared => MutationCommitConvergence::StillPrepared,
+        },
+        Err(detail) => MutationCommitConvergence::Unknown { detail },
+    }
 }
 
 #[cfg(test)]
@@ -1379,6 +1490,27 @@ fn restore_provider_backup_files_with_home(
                 &recovery_path,
                 hook,
             ));
+        }
+        // Committed 转换之后的失败禁止进入补偿：此时恢复内容已全部写入并通过验证，
+        // 补偿只会制造半回滚混合态。以磁盘 journal 的真实相位为准。
+        if journal.phase == RestoreJournalPhase::Committed {
+            match read_restore_journal(&recovery_path) {
+                Ok(disk_journal)
+                    if disk_journal.phase == RestoreJournalPhase::Committed =>
+                {
+                    return Err(format!(
+                        "恢复数据已全部写入并通过验证，但提交后收尾失败：{error}；journal 保留于 {}，下次启动将自动完成清理。",
+                        recovery_path.display()
+                    ));
+                }
+                Ok(_) => {}
+                Err(read_error) => {
+                    return Err(format!(
+                        "恢复失败：{error}；提交标记状态未知（{read_error}），已保留现场未补偿；恢复材料保留于 {}，原恢复点仍保留。",
+                        recovery_path.display()
+                    ));
+                }
+            }
         }
         let compensation_errors =
             compensate_restore(
@@ -2413,17 +2545,8 @@ pub(super) fn sqlite_home_for_unfinished_restore_transactions(
                 "Provider mutation journal 的 Codex Home 已重定向",
             ));
         }
-        if journal.phase == ProviderMutationJournalPhase::Committed {
-            cleanup_provider_mutation_journal(backup_root, &mutation_path)
-                .map_err(|error| {
-                    recovery_blocked(
-                        "mutationJournalCleanupFailed",
-                        Some(&mutation_path),
-                        error,
-                    )
-                })?;
-            continue;
-        }
+        // 已提交 journal 的清理是磁盘副作用，不在启动探测（running probe）之前执行；
+        // 让它参与 SQLite Home 选择，由探测之后的 reconcile 统一清理并保留新状态。
         let sqlite_home = PathBuf::from(&journal.sqlite_home);
         let sqlite_home_fingerprint = journal.sqlite_home_fingerprint.clone();
         if let Some((selected_path, selected_fingerprint, selected_recovery_path)) =
@@ -2508,13 +2631,14 @@ fn reconcile_unfinished_restore_transactions_with_home(
     pinned_home: &PinnedHome,
 ) -> Result<(), String> {
     reconcile_unfinished_restore_transactions_with_roots(backup_root, pinned_home, pinned_home)
+        .map(|_| ())
 }
 
 pub(super) fn reconcile_unfinished_restore_transactions_with_roots(
     backup_root: &Path,
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
-) -> Result<(), String> {
+) -> Result<Vec<MutationReconcileAction>, String> {
     reconcile_unfinished_restore_transactions_with_roots_diagnostics(
         backup_root,
         pinned_home,
@@ -2526,7 +2650,7 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots(
 pub(super) fn reconcile_unfinished_restore_transactions_with_diagnostics(
     backup_root: &Path,
     pinned_home: &PinnedHome,
-) -> Result<(), RestoreRecoveryBlocked> {
+) -> Result<Vec<MutationReconcileAction>, RestoreRecoveryBlocked> {
     reconcile_unfinished_restore_transactions_with_roots_diagnostics(
         backup_root,
         pinned_home,
@@ -2538,7 +2662,7 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
     backup_root: &Path,
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
-) -> Result<(), RestoreRecoveryBlocked> {
+) -> Result<Vec<MutationReconcileAction>, RestoreRecoveryBlocked> {
     let transactions =
         unfinished_restore_transactions_for_home(backup_root, pinned_home, sqlite_home)?;
 
@@ -2589,6 +2713,7 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
             "同一 Codex Home 存在多个未提交 Provider mutation journal，已拒绝猜测恢复顺序",
         ));
     }
+    let mut actions = Vec::new();
     for (mutation_path, journal, backup) in mutations {
         if journal.phase == ProviderMutationJournalPhase::Prepared {
             let mut hook = noop_restore_hook;
@@ -2612,6 +2737,9 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
                     ),
                 )
             })?;
+            actions.push(MutationReconcileAction::RolledBackToBackup);
+        } else {
+            actions.push(MutationReconcileAction::KeptCommittedState);
         }
         cleanup_provider_mutation_journal(backup_root, &mutation_path).map_err(
             |error| {
@@ -2623,7 +2751,7 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
             },
         )?;
     }
-    Ok(())
+    Ok(actions)
 }
 
 fn unfinished_restore_transactions_for_home(

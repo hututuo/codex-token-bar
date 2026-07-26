@@ -718,7 +718,6 @@ fn windows_delete_open_atomic_temp(file: &File) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
 pub(super) fn write_file_atomically_with_hook(
     path: &Path,
     bytes: &[u8],

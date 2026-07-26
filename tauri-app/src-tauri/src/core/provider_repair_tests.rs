@@ -1570,6 +1570,143 @@ fn verification_mismatch_after_all_writes_automatically_restores() {
 }
 
 #[test]
+fn commit_failure_before_journal_rename_rolls_back_and_reports_recovery() {
+    let fixture = temp_root("provider-commit-not-committed");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "commit-not-committed-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "codex_local_access");
+    create_state_database(&home, &[("thread", "codex_local_access", 0)]);
+
+    let error = sync_provider_history_transaction_at_with_commit_hook(
+        &home,
+        &backup_root,
+        scan_provider_repair_result,
+        &mut |phase| {
+            if phase == backups::MutationCommitPhase::BeforeJournalRename {
+                return Err("fixture commit rename failure".into());
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("提交标记写入未生效"), "{error}");
+    assert!(error.contains("fixture commit rename failure"), "{error}");
+    assert!(error.contains("已自动恢复恢复点"), "{error}");
+    assert!(!error.contains("持久化未完成"), "{error}");
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("codex_local_access"));
+    assert_eq!(
+        sqlite_provider_for_thread(&home, "thread"),
+        "codex_local_access"
+    );
+    assert_no_provider_mutation_journal(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn commit_failure_after_journal_rename_keeps_new_state_without_rollback_narrative() {
+    for phase_under_test in [
+        backups::MutationCommitPhase::AfterJournalRename,
+        backups::MutationCommitPhase::AfterRootSync,
+    ] {
+        let fixture = temp_root(&format!(
+            "provider-commit-uncertain-{phase_under_test:?}"
+        ));
+        let home = fixture.join("home");
+        let backup_root = fixture.join("backups");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        write_test_auth_subject(&home, "commit-uncertain-account");
+        fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+        let session = home.join("sessions/thread.jsonl");
+        write_session(&session, "thread", "codex_local_access");
+        create_state_database(&home, &[("thread", "codex_local_access", 0)]);
+
+        let outcome = sync_provider_history_transaction_at_with_commit_hook(
+            &home,
+            &backup_root,
+            scan_provider_repair_result,
+            &mut |phase| {
+                if phase == phase_under_test {
+                    return Err("fixture commit durability failure".into());
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(
+            outcome.message.contains("已显式迁移到"),
+            "{phase_under_test:?}: {}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("已重试同步并确认"),
+            "{phase_under_test:?}: {}",
+            outcome.message
+        );
+        assert!(
+            !outcome.message.contains("恢复恢复点") && !outcome.message.contains("回滚"),
+            "{phase_under_test:?}: {}",
+            outcome.message
+        );
+        assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+        assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+        assert_no_provider_mutation_journal(&backup_root);
+        fs::remove_dir_all(fixture).unwrap();
+    }
+}
+
+#[test]
+fn restore_commit_marker_failure_keeps_restored_state_without_compensation() {
+    let fixture = temp_root("provider-restore-commit-marker");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(&home).unwrap();
+    write_test_auth_subject(&home, "restore-commit-marker-account");
+    fs::write(home.join("config.toml"), "backup-config").unwrap();
+    let backup = backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    fs::write(home.join("config.toml"), "live-config").unwrap();
+
+    let error = backups::restore_provider_backup_files_at_with_probe_and_hook(
+        &home,
+        &backup,
+        || Ok(false),
+        |phase, _, _| {
+            if phase == backups::RestorePhase::JournalCommitted {
+                return Err("fixture post-commit failure".into());
+            }
+            Ok(())
+        },
+        |_| Ok(()),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("提交后收尾失败"), "{error}");
+    assert!(error.contains("下次启动将自动完成清理"), "{error}");
+    assert!(!error.contains("已补偿"), "{error}");
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).unwrap(),
+        "backup-config"
+    );
+
+    let status =
+        reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+    assert!(!status.blocked, "{status:?}");
+    assert_eq!(
+        fs::read_to_string(home.join("config.toml")).unwrap(),
+        "backup-config"
+    );
+    assert_no_recovery_staging(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
 fn sync_running_flip_before_final_commit_restores_the_fresh_backup() {
     let fixture = temp_root("provider-sync-running-flip");
     let home = fixture.join("home");
