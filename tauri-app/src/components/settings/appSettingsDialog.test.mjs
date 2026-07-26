@@ -8,6 +8,7 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 const SETTINGS_CATEGORIES = [
   "常规",
   "会话增强",
+  "Codex 实例",
   "自动续跑",
   "显示面",
   "监控与额度",
@@ -17,7 +18,7 @@ const SETTINGS_CATEGORIES = [
   "数据与维护",
 ];
 
-test("global settings exposes nine categorized tabs and defaults to general", async () => {
+test("global settings exposes ten categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");

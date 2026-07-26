@@ -16,12 +16,12 @@ test("ProviderRepairPanel renders safe advanced repair flow when open", async ()
 
     assert.match(html, /role="dialog"/);
     assert.match(html, /aria-label="会话消失修复"/);
-    assert.match(html, /先扫描并创建完整备份；同步修复只在你确认后执行。/);
+    assert.match(html, /先扫描并创建差量恢复点；安全修复与历史迁移严格分开。/);
     assert.match(html, /Codex Desktop 运行时仍可扫描、验证和创建备份；同步与回滚会被后端拒绝。/);
-    assert.match(html, /所有同步都会先创建完整备份，可从备份列表回滚。/);
+    assert.match(html, /写操作会先保存 SQLite 一致性快照和必要的会话首行，不再复制整份历史文件。/);
     assert.match(html, /会话修复尚未扫描。需要时点击扫描/);
     assert.match(findButton(html, "关闭").attrs, /title="关闭会话消失修复"/);
-    assert.match(findButton(html, "3 同步修复").attrs, /disabled=""/);
+    assert.match(findButton(html, "3 安全修复").attrs, /disabled=""/);
     assert.doesNotMatch(html, /repair-rollback-button/);
   });
 });
@@ -127,6 +127,7 @@ function snapshotFixture(overrides = {}) {
   return {
     detectedProvider: "未扫描",
     providerSource: "手动扫描",
+    sqliteHome: "待读取",
     sessionFilesFound: 0,
     inconsistentCount: 0,
     status: "会话修复尚未扫描。需要时点击扫描，应用不会在启动时自动读取修复范围。",
