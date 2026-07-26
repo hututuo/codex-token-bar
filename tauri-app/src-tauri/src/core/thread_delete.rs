@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
+#[cfg(not(unix))]
+use std::io::Read;
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1049,13 +1051,119 @@ fn run_delete_command(
     Err(format!("Codex 删除失败：{}", detail.trim()))
 }
 
+/// 子进程 stdout/stderr 尾部收集器。
+///
+/// Unix 实现用 `poll(2)` 同时监听数据管道与一条 self-pipe 取消管道：
+/// `finish()` drop 取消写端即产生 POLLHUP，确定性唤醒阻塞中的 reader，
+/// 因此 `join()` 恒有界——即使永不退出的后代进程仍继承着 stdout/stderr
+/// 写端，也不会再留下永久阻塞的泄漏线程（旧实现 500ms 超时后直接丢弃
+/// JoinHandle）。取消时先以非阻塞读榨干已有数据，尽量保全尾部输出。
 struct PipeTailCollector {
     reader: Option<JoinHandle<()>>,
     receiver: Option<mpsc::Receiver<()>>,
+    #[cfg(unix)]
+    cancel: Option<std::os::fd::OwnedFd>,
     tail: Arc<Mutex<Vec<u8>>>,
 }
 
 impl PipeTailCollector {
+    #[cfg(unix)]
+    fn spawn<R>(pipe: Option<R>) -> Self
+    where
+        R: Into<std::os::fd::OwnedFd>,
+    {
+        let tail = Arc::new(Mutex::new(Vec::with_capacity(
+            PIPE_TAIL_LIMIT_BYTES,
+        )));
+        let Some(pipe) = pipe else {
+            return Self {
+                reader: None,
+                receiver: None,
+                cancel: None,
+                tail,
+            };
+        };
+        let pipe_fd: std::os::fd::OwnedFd = pipe.into();
+        let Ok((cancel_read, cancel_write)) = rustix::pipe::pipe() else {
+            // fd 耗尽等极端情况建不出取消管道：退化为无 reader 模式并保留
+            // 管道读端不动（直接关闭会让子进程收到 SIGPIPE）。这里选择不
+            // 读取输出，诊断尾部为空，但绝不制造永久阻塞线程。
+            std::mem::forget(pipe_fd);
+            return Self {
+                reader: None,
+                receiver: None,
+                cancel: None,
+                tail,
+            };
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let reader_tail = tail.clone();
+        let reader = std::thread::spawn(move || {
+            use rustix::event::{PollFd, PollFlags};
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                let mut fds = [
+                    PollFd::new(&pipe_fd, PollFlags::IN),
+                    PollFd::new(&cancel_read, PollFlags::IN),
+                ];
+                match rustix::event::poll(&mut fds, None) {
+                    Ok(_) => {}
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(_) => break,
+                }
+                let pipe_ready = !fds[0].revents().is_empty();
+                let cancel_ready = !fds[1].revents().is_empty();
+                if pipe_ready {
+                    // 数据优先于取消：先吃可读数据，取消在下一轮处理，
+                    // 保证快速路径（子进程正常退出）读到完整输出。
+                    match rustix::io::read(&pipe_fd, &mut buffer) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            let mut tail = reader_tail
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            append_pipe_tail(&mut tail, &buffer[..count]);
+                            continue;
+                        }
+                        Err(rustix::io::Errno::INTR) => continue,
+                        Err(_) => break,
+                    }
+                }
+                if cancel_ready {
+                    // 取消：非阻塞榨干残余数据后退出。
+                    let _ = rustix::fs::fcntl_setfl(
+                        &pipe_fd,
+                        rustix::fs::OFlags::NONBLOCK,
+                    );
+                    loop {
+                        match rustix::io::read(&pipe_fd, &mut buffer) {
+                            Ok(0) | Err(_) => break,
+                            Ok(count) => {
+                                let mut tail = reader_tail
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                append_pipe_tail(&mut tail, &buffer[..count]);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            let _ = sender.send(());
+        });
+        Self {
+            reader: Some(reader),
+            receiver: Some(receiver),
+            cancel: Some(cancel_write),
+            tail,
+        }
+    }
+
+    // Windows：保留阻塞 Read 实现。已知限制——永不退出的后代继承管道时
+    // reader 线程仍可能长期阻塞（500ms 后 detach）。std 的子进程管道句柄
+    // 在 Windows 上没有等价的 poll+self-pipe 组合；后续如需根治可改用
+    // 命名管道 OVERLAPPED I/O。
+    #[cfg(not(unix))]
     fn spawn<R>(pipe: Option<R>) -> Self
     where
         R: Read + Send + 'static,
@@ -1093,6 +1201,27 @@ impl PipeTailCollector {
         }
     }
 
+    #[cfg(unix)]
+    fn finish(mut self) -> String {
+        // 快速路径语义不变：绝大多数情况下子进程退出即关闭写端，reader
+        // 在宽限期内自然完成。
+        if let Some(receiver) = self.receiver.take() {
+            let _ = receiver.recv_timeout(PIPE_DRAIN_GRACE);
+        }
+        // 慢速路径：drop 取消写端 → POLLHUP 唤醒 reader → join 恒有界。
+        drop(self.cancel.take());
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        let bytes = self
+            .tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[cfg(not(unix))]
     fn finish(mut self) -> String {
         let completed = match self.receiver.take() {
             Some(receiver) => receiver.recv_timeout(PIPE_DRAIN_GRACE).is_ok(),
@@ -1477,10 +1606,28 @@ mod tests {
                 .as_nanos()
         )));
         std::fs::create_dir(&directory.0).unwrap();
+        // 后代永不退出（sleep 1000）并继承 stdout/stderr 写端：旧实现的
+        // reader 会永久阻塞并被 detach 泄漏；新实现 finish 必须仍然快速
+        // 返回，且返回本身就证明 reader 线程已被 join 回收（join 无条件）。
+        struct DescendantGuard(std::path::PathBuf);
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                if let Ok(pid) = std::fs::read_to_string(&self.0) {
+                    let _ = Command::new("kill")
+                        .args(["-9", pid.trim()])
+                        .status();
+                }
+            }
+        }
+        let pid_file = directory.0.join("descendant.pid");
+        let _descendant_guard = DescendantGuard(pid_file.clone());
         let script = directory.0.join("fake-codex");
         std::fs::write(
             &script,
-            "#!/bin/sh\nsleep 2 &\nprintf 'PARENT_DONE\\n'\n",
+            format!(
+                "#!/bin/sh\nsleep 1000 &\necho $! > '{}'\nprintf 'PARENT_DONE\\n'\n",
+                pid_file.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1496,6 +1643,23 @@ mod tests {
 
         assert!(output.ends_with("PARENT_DONE"));
         assert!(started_at.elapsed() < Duration::from_millis(1_500));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipe_collector_reaps_its_reader_even_while_a_writer_stays_alive() {
+        let (read_end, write_end) = rustix::pipe::pipe().unwrap();
+        rustix::io::write(&write_end, b"descendant tail").unwrap();
+        let collector = PipeTailCollector::spawn(Some(read_end));
+        // 给 reader 一次读取机会后调用 finish；写端始终保持打开，
+        // 等价于永生后代仍持有 stdout——旧实现在此处永久阻塞并 detach。
+        std::thread::sleep(Duration::from_millis(50));
+        let started_at = Instant::now();
+        let tail = collector.finish();
+        // finish 返回即证明 reader 已被 join（join 无条件），且尾部数据保全。
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        assert_eq!(tail, "descendant tail");
+        drop(write_end);
     }
 
     #[test]
