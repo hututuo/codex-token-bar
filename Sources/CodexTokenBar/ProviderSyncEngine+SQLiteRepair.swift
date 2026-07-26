@@ -113,6 +113,81 @@ extension ProviderSyncEngine {
         } ?? 0
     }
 
+    func countSQLiteRowsToRepair(
+        homeDirectory: ProviderSyncHomeDirectory,
+        sessionProviders: [String: String]
+    ) throws -> Int {
+        guard !sessionProviders.isEmpty else { return 0 }
+        return try withBoundDatabase(
+            homeDirectory: homeDirectory,
+            readOnly: true
+        ) { database, _ in
+            guard let columns = try readThreadsTableColumns(database: database),
+                  columns.modelProvider else {
+                return 0
+            }
+            let rows = try queryRows(
+                database: database,
+                sql: "SELECT id, model_provider FROM threads;"
+            ) { statement in
+                (
+                    id: sqliteText(statement, 0) ?? "",
+                    provider: sqliteText(statement, 1) ?? ""
+                )
+            }
+            return rows.reduce(into: 0) { count, row in
+                if let expected = sessionProviders[row.id],
+                   row.provider != expected {
+                    count += 1
+                }
+            }
+        } ?? 0
+    }
+
+    func repairSQLiteProvidersFromSessions(
+        homeDirectory: ProviderSyncHomeDirectory,
+        sessionProviders: [String: String]
+    ) throws -> Int {
+        guard !sessionProviders.isEmpty else { return 0 }
+        return try withBoundDatabase(
+            homeDirectory: homeDirectory,
+            readOnly: false,
+            willOpen: sqliteProviderWillOpen
+        ) { database, bound in
+            try execute(database: database, sql: "PRAGMA busy_timeout = 3000;")
+            guard let columns = try readThreadsTableColumns(database: database),
+                  columns.modelProvider else {
+                return 0
+            }
+            try execute(database: database, sql: "BEGIN IMMEDIATE TRANSACTION;")
+            var changed = 0
+            do {
+                try homeDirectory.verifyBoundFile(bound)
+                for (id, provider) in sessionProviders.sorted(by: { $0.key < $1.key }) {
+                    changed += try executeBoundUpdate(
+                        database: database,
+                        sql: """
+                        UPDATE threads
+                        SET model_provider = ?2
+                        WHERE id = ?1
+                          AND COALESCE(model_provider, '') <> ?2;
+                        """,
+                        values: [id, provider]
+                    )
+                }
+                try homeDirectory.verifyBoundFile(bound)
+                try execute(database: database, sql: "COMMIT;")
+            } catch {
+                try? execute(database: database, sql: "ROLLBACK;")
+                throw error
+            }
+            try homeDirectory.verifyBoundFile(bound)
+            try execute(database: database, sql: "PRAGMA wal_checkpoint(FULL);")
+            try homeDirectory.verifyBoundFile(bound)
+            return changed
+        } ?? 0
+    }
+
     func repairSQLiteThreadTimestamps(
         sessionMutations: [ProviderSyncPreparedSessionMutation],
         homeDirectory: ProviderSyncHomeDirectory

@@ -54,12 +54,16 @@ struct ProviderSyncBackupRecord: Identifiable, Equatable {
 
 struct ProviderSyncSnapshot: Equatable {
     var codexHome: String = "~/.codex"
+    var sqliteHome: String = "~/.codex"
     var detectedProvider: String = "openai"
     var providerSource: String = "等待扫描"
     var sessionFilesFound: Int = 0
     var sessionProviders: [ProviderSyncProviderCount] = []
     var sqliteProviders: [ProviderSyncSQLiteCount] = []
     var invalidSessionFiles: Int = 0
+    var ambiguousThreadCount: Int = 0
+    var migrationCandidateCount: Int = 0
+    var pendingMigrationRecovery = false
     var changedSessionFiles: Int = 0
     var sqliteRowsChanged: Int = 0
     var sqliteRowsToRepair: Int = 0

@@ -367,6 +367,43 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         return SQLitePreparedStatement(database: database, path: path, statement: statement)
     }
 
+    func restoreDatabase(from sourceURL: URL) throws {
+        var source: OpaquePointer?
+        let openStatus = sqlite3_open_v2(
+            sourceURL.path,
+            &source,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard openStatus == SQLITE_OK, let source else {
+            if let source {
+                sqlite3_close(source)
+            }
+            throw SQLiteDatabaseError(
+                operation: "Open SQLite restore source",
+                code: openStatus,
+                message: SQLiteDatabaseDriver.message(from: source),
+                path: sourceURL.path
+            )
+        }
+        defer { sqlite3_close(source) }
+
+        guard let backup = sqlite3_backup_init(database, "main", source, "main") else {
+            throw error(
+                operation: "Initialize SQLite restore",
+                code: sqlite3_errcode(database)
+            )
+        }
+        let stepStatus = sqlite3_backup_step(backup, -1)
+        let finishStatus = sqlite3_backup_finish(backup)
+        guard stepStatus == SQLITE_DONE, finishStatus == SQLITE_OK else {
+            throw error(
+                operation: "Restore SQLite database",
+                code: stepStatus == SQLITE_DONE ? finishStatus : stepStatus
+            )
+        }
+    }
+
     fileprivate func bind(_ bindings: [SQLiteBinding], to statement: OpaquePointer?) throws {
         for (offset, binding) in bindings.enumerated() {
             let index = Int32(offset + 1)

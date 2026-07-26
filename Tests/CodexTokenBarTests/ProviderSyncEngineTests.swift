@@ -47,6 +47,366 @@ final class ProviderSyncEngineTests: XCTestCase {
         ))
     }
 
+    func testProviderConfigParserSkipsUnrelatedMultilineValuesAndRejectsRelativeSQLiteHome() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderConfigParsing")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let sqliteHome = root.appendingPathComponent("sqlite", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: codexHome,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: sqliteHome,
+            withIntermediateDirectories: true
+        )
+        try """
+        model_instructions = \"\"\"
+        This text may contain model_provider = "not-a-real-setting".
+        \"\"\"
+        model_provider = "actual-provider" # inline comment
+        sqlite_home = "\(sqliteHome.path)"
+
+        [features]
+        model_provider = "nested-provider"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let directory = try ProviderSyncHomeDirectory(
+            canonicalURL: codexHome
+        )
+        defer { try? directory.close() }
+        let engine = ProviderSyncEngine(applicationRunningProbe: { false })
+        XCTAssertEqual(
+            try engine.configProvider(homeDirectory: directory),
+            "actual-provider"
+        )
+        XCTAssertEqual(
+            try engine.resolvedSQLiteHome(
+                codexHome: codexHome,
+                homeDirectory: directory
+            ),
+            sqliteHome.standardizedFileURL.resolvingSymlinksInPath()
+        )
+
+        try """
+        sqlite_home = "relative/sqlite"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertThrowsError(
+            try engine.resolvedSQLiteHome(
+                codexHome: codexHome,
+                homeDirectory: directory
+            )
+        )
+    }
+
+    func testSafeRepairUsesSeparateSQLiteHomeAndKeepsLargeSessionTailUntouched() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderSafeRepair")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let sqliteHome = root.appendingPathComponent("sqlite", isDirectory: true)
+        let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sqliteHome, withIntermediateDirectories: true)
+        try """
+        model_provider = "openai"
+        sqlite_home = "\(sqliteHome.path)"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let session = sessions.appendingPathComponent("thread-large.jsonl")
+        FileManager.default.createFile(atPath: session.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: session)
+        let firstLine = """
+        {"type":"session_meta","payload":{"id":"thread-large","model_provider":"custom-provider"}}
+        """
+        try handle.write(contentsOf: Data((firstLine + "\n").utf8))
+        try handle.truncate(atOffset: 512 * 1024 * 1024)
+        try handle.close()
+        let originalSize = try XCTUnwrap(
+            session.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        )
+
+        try seedMinimalProviderDatabase(
+            at: sqliteHome,
+            id: "thread-large",
+            provider: "openai"
+        )
+        try seedMinimalProviderDatabase(
+            at: codexHome,
+            id: "thread-large",
+            provider: "decoy-provider"
+        )
+        let identity = try XCTUnwrap(
+            CodexHomeIdentity.read(at: codexHome, fileManager: .default)
+        )
+        let engine = ProviderSyncEngine(
+            backupRoot: backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        let scanned = try engine.scan(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true
+        )
+        XCTAssertEqual(scanned.sqliteHome, sqliteHome.path)
+        XCTAssertEqual(scanned.sqliteRowsToRepair, 1)
+
+        let repaired = try engine.repairProviderMetadata(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true
+        )
+        XCTAssertEqual(repaired.changedSessionFiles, 0)
+        XCTAssertEqual(repaired.sqliteRowsChanged, 1)
+        XCTAssertEqual(try readSQLiteProviders(at: sqliteHome), ["custom-provider"])
+        XCTAssertEqual(try readSQLiteProviders(at: codexHome), ["decoy-provider"])
+        XCTAssertEqual(
+            try session.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+            originalSize
+        )
+
+        let backupPath = try XCTUnwrap(repaired.lastBackupPath)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: URL(fileURLWithPath: backupPath)
+                    .appendingPathComponent("session-jsonl.before.tar")
+                    .path
+            )
+        )
+        _ = try engine.rollback(codexHome: codexHome, backupPath: backupPath)
+        XCTAssertEqual(try readSQLiteProviders(at: sqliteHome), ["openai"])
+        XCTAssertEqual(try readSQLiteProviders(at: codexHome), ["decoy-provider"])
+    }
+
+    func testExplicitMigrationUsesPrefixRecoveryAndPreservesPostBackupTail() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderPrefixMigration")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let sqliteHome = root.appendingPathComponent("sqlite", isDirectory: true)
+        let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sessions,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: sqliteHome,
+            withIntermediateDirectories: true
+        )
+        try """
+        model_provider = "migrated-provider"
+        sqlite_home = "\(sqliteHome.path)"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let session = sessions.appendingPathComponent("thread-large.jsonl")
+        FileManager.default.createFile(atPath: session.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: session)
+        let firstLine = """
+        {"type":"session_meta","payload":{"id":"thread-large","model_provider":"custom-provider"}}
+        """
+        try handle.write(contentsOf: Data((firstLine + "\n").utf8))
+        try handle.truncate(atOffset: 64 * 1024 * 1024)
+        try handle.close()
+        let originalSize = try XCTUnwrap(
+            session.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        )
+
+        try seedMinimalProviderDatabase(
+            at: sqliteHome,
+            id: "thread-large",
+            provider: "openai"
+        )
+        try seedMinimalProviderDatabase(
+            at: codexHome,
+            id: "thread-large",
+            provider: "decoy-provider"
+        )
+        let identity = try XCTUnwrap(
+            CodexHomeIdentity.read(at: codexHome, fileManager: .default)
+        )
+        let engine = ProviderSyncEngine(
+            backupRoot: backupRoot,
+            applicationRunningProbe: { false }
+        )
+
+        let migrated = try engine.migrateProviderHistory(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true,
+            targetProviderOverride: "migrated-provider"
+        )
+        XCTAssertEqual(migrated.changedSessionFiles, 1)
+        XCTAssertEqual(
+            try readSessionProviderFromFirstLine(at: session),
+            "migrated-provider"
+        )
+        XCTAssertEqual(
+            try session.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+            originalSize
+        )
+        XCTAssertEqual(
+            try readSQLiteProviders(at: sqliteHome),
+            ["migrated-provider"]
+        )
+        XCTAssertEqual(
+            try readSQLiteProviders(at: codexHome),
+            ["decoy-provider"]
+        )
+
+        let migrationBackup = URL(
+            fileURLWithPath: try XCTUnwrap(migrated.lastBackupPath)
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: migrationBackup
+                    .appendingPathComponent("session-jsonl.before.tar")
+                    .path
+            )
+        )
+        let prefixFiles = try FileManager.default.contentsOfDirectory(
+            at: migrationBackup.appendingPathComponent("session-prefixes"),
+            includingPropertiesForKeys: [.fileSizeKey]
+        )
+        XCTAssertEqual(prefixFiles.count, 1)
+        XCTAssertLessThan(
+            try XCTUnwrap(
+                prefixFiles[0]
+                    .resourceValues(forKeys: [.fileSizeKey])
+                    .fileSize
+            ),
+            8 * 1024 * 1024 + 2
+        )
+
+        let appendedTail = Data("post-migration-turn\n".utf8)
+        let appendHandle = try FileHandle(forWritingTo: session)
+        try appendHandle.seekToEnd()
+        try appendHandle.write(contentsOf: appendedTail)
+        try appendHandle.close()
+
+        let fingerprint = String(
+            providerSyncSHA256Hex(Data(codexHome.path.utf8)).prefix(16)
+        )
+        let journal = backupRoot.appendingPathComponent(
+            ".provider-migration-active-\(fingerprint).json"
+        )
+        try JSONSerialization.data(
+            withJSONObject: [
+                "schema_version": 1,
+                "codex_home": codexHome.path,
+                "sqlite_home": sqliteHome.path,
+                "backup_path": migrationBackup.path
+            ],
+            options: [.sortedKeys]
+        ).write(to: journal, options: [.atomic])
+
+        let interrupted = try engine.scan(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true
+        )
+        XCTAssertTrue(interrupted.pendingMigrationRecovery)
+
+        let recovered = try engine.createProviderMetadataBackup(
+            codexHome: codexHome,
+            expectedHomeIdentity: identity,
+            includeArchivedSessions: true
+        )
+        XCTAssertFalse(recovered.pendingMigrationRecovery)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journal.path))
+        XCTAssertEqual(
+            try readSessionProviderFromFirstLine(at: session),
+            "custom-provider"
+        )
+        XCTAssertEqual(try readSQLiteProviders(at: sqliteHome), ["openai"])
+        XCTAssertEqual(try readSQLiteProviders(at: codexHome), ["decoy-provider"])
+        XCTAssertEqual(try readTail(session, byteCount: appendedTail.count), appendedTail)
+    }
+
+    func testExplicitMigrationRejectsInPlaceAppendBeforeExchangeWithoutLosingTail() throws {
+        let root = try makeTemporaryDirectory(named: "ProviderMigrationAppendRace")
+        let codexHome = root.appendingPathComponent("home", isDirectory: true)
+        let backupRoot = root.appendingPathComponent("backups", isDirectory: true)
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sessions,
+            withIntermediateDirectories: true
+        )
+        try """
+        model_provider = "migrated-provider"
+        """.write(
+            to: codexHome.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let session = sessions.appendingPathComponent("thread-race.jsonl")
+        try writeSession(
+            id: "thread-race",
+            provider: "original-provider",
+            to: session
+        )
+        try seedMinimalProviderDatabase(
+            at: codexHome,
+            id: "thread-race",
+            provider: "original-provider"
+        )
+        let appendedTail = Data("racing-turn\n".utf8)
+        var injected = false
+        let engine = ProviderSyncEngine(
+            backupRoot: backupRoot,
+            applicationRunningProbe: { false },
+            sessionReplacementWillExchange: { destination in
+                guard !injected else { return }
+                injected = true
+                let handle = try FileHandle(forWritingTo: destination)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: appendedTail)
+                try handle.close()
+            }
+        )
+
+        XCTAssertThrowsError(
+            try engine.migrateProviderHistory(
+                codexHome: codexHome,
+                expectedHomeIdentity: CodexHomeIdentity.read(
+                    at: codexHome,
+                    fileManager: .default
+                ),
+                includeArchivedSessions: true,
+                targetProviderOverride: "migrated-provider"
+            )
+        )
+        XCTAssertTrue(injected)
+        XCTAssertEqual(
+            try readSessionProviderFromFirstLine(at: session),
+            "original-provider"
+        )
+        XCTAssertEqual(
+            try readSQLiteProviders(at: codexHome),
+            ["original-provider"]
+        )
+        XCTAssertEqual(
+            try readTail(session, byteCount: appendedTail.count),
+            appendedTail
+        )
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: backupRoot.path)
+                .contains { $0.hasPrefix(".provider-migration-active-") }
+        )
+    }
+
     func testSyncCreatesDisposableBackupAndOnlyMutatesIntendedFiles() throws {
         let fixture = try makeFixture()
         let engine = ProviderSyncEngine(
@@ -54,7 +414,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             applicationRunningProbe: { false }
         )
 
-        let snapshot = try engine.sync(
+        let snapshot = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -106,7 +466,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             applicationRunningProbe: { true }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -130,7 +490,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             applicationRunningProbe: { false }
         )
 
-        let synced = try engine.sync(
+        let synced = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -174,7 +534,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try setupEngine.sync(
+        let synced = try setupEngine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -222,7 +582,7 @@ final class ProviderSyncEngineTests: XCTestCase {
                 }
             )
             firstResult.set(Result {
-                try engine.sync(
+                try engine.legacySyncForRegressionTesting(
                     codexHome: fixture.codexHome,
                     includeArchivedSessions: false,
                     targetProviderOverride: "openai",
@@ -263,7 +623,7 @@ final class ProviderSyncEngineTests: XCTestCase {
 
         XCTAssertThrowsError(try engine.rollback(codexHome: fixture.codexHome, backupPath: missingBackup.path))
 
-        let retry = try engine.sync(
+        let retry = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -291,7 +651,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        _ = try engine.sync(
+        _ = try engine.legacySyncForRegressionTesting(
             codexHome: alias,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -328,7 +688,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: sourceAtFirstHome.codexHome,
             expectedHomeIdentity: sourceAtFirstHome.homeIdentity,
             includeArchivedSessions: false,
@@ -364,7 +724,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        let result = try engine.sync(
+        let result = try engine.legacySyncForRegressionTesting(
             codexHome: alias,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -396,9 +756,10 @@ final class ProviderSyncEngineTests: XCTestCase {
             includeArchivedSessions: false,
             targetProviderOverride: "openai"
         )
-        XCTAssertTrue(initial.status.contains("仍有历史或前端工作区状态未同步"))
+        XCTAssertTrue(initial.status.contains("验证通过"))
+        XCTAssertGreaterThan(initial.migrationCandidateCount, 0)
 
-        let synced = try engine.sync(
+        let synced = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -435,7 +796,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -463,7 +824,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -490,7 +851,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -509,7 +870,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try engine.sync(
+        let synced = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -539,7 +900,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try engine.sync(
+        let synced = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: true,
             targetProviderOverride: "openai",
@@ -567,7 +928,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try engine.sync(
+        let synced = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: true,
             targetProviderOverride: "openai",
@@ -798,7 +1159,7 @@ final class ProviderSyncEngineTests: XCTestCase {
                 backupRoot: fixture.backupRoot,
                 applicationRunningProbe: { false }
             )
-            let synced = try setupEngine.sync(
+            let synced = try setupEngine.legacySyncForRegressionTesting(
                 codexHome: fixture.codexHome,
                 includeArchivedSessions: true,
                 targetProviderOverride: "openai",
@@ -893,7 +1254,7 @@ final class ProviderSyncEngineTests: XCTestCase {
                 }
             )
 
-            XCTAssertThrowsError(try engine.sync(
+            XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
                 codexHome: fixture.codexHome,
                 includeArchivedSessions: false,
                 targetProviderOverride: "openai",
@@ -918,7 +1279,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -967,7 +1328,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try setupEngine.sync(
+        let synced = try setupEngine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1052,7 +1413,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1079,7 +1440,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1129,7 +1490,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1169,7 +1530,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             applicationRunningProbe: { false }
         )
 
-        _ = try engine.sync(
+        _ = try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1310,7 +1671,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try setupEngine.sync(
+        let synced = try setupEngine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: true,
             targetProviderOverride: "openai",
@@ -1478,7 +1839,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1516,7 +1877,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1543,7 +1904,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1571,7 +1932,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1614,7 +1975,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1641,7 +2002,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -1820,7 +2181,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             }
         )
 
-        XCTAssertThrowsError(try engine.sync(
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: false,
             targetProviderOverride: "openai",
@@ -2098,7 +2459,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try setupEngine.sync(
+        let synced = try setupEngine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: true,
             targetProviderOverride: "openai",
@@ -2244,7 +2605,7 @@ final class ProviderSyncEngineTests: XCTestCase {
             backupRoot: fixture.backupRoot,
             applicationRunningProbe: { false }
         )
-        let synced = try setupEngine.sync(
+        let synced = try setupEngine.legacySyncForRegressionTesting(
             codexHome: fixture.codexHome,
             includeArchivedSessions: true,
             targetProviderOverride: "openai",
@@ -2379,6 +2740,30 @@ final class ProviderSyncEngineTests: XCTestCase {
         try sessionData(id: id, provider: provider).write(to: file, options: .atomic)
     }
 
+    private func seedMinimalProviderDatabase(
+        at root: URL,
+        id: String,
+        provider: String
+    ) throws {
+        let database = SQLiteDatabaseDriver(
+            url: root.appendingPathComponent("state_5.sqlite")
+        )
+        try database.execute(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT,
+                archived INTEGER DEFAULT 0,
+                updated_at INTEGER DEFAULT 0
+            );
+            """
+        )
+        try database.execute(
+            "INSERT INTO threads (id, model_provider) VALUES (?, ?);",
+            bindings: [.text(id), .text(provider)]
+        )
+    }
+
     private func seedStateDatabase(at codexHome: URL) throws {
         let driver = SQLiteDatabaseDriver(url: codexHome.appendingPathComponent("state_5.sqlite"))
         try driver.execute("""
@@ -2457,6 +2842,40 @@ final class ProviderSyncEngineTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let payload = try XCTUnwrap(object["payload"] as? [String: Any])
         return payload["model_provider"] as? String
+    }
+
+    private func readSessionProviderFromFirstLine(
+        at file: URL
+    ) throws -> String? {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var line = Data()
+        while let chunk = try handle.read(upToCount: 64 * 1024),
+              !chunk.isEmpty {
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                line.append(chunk[..<newline])
+                break
+            }
+            line.append(chunk)
+            guard line.count <= 8 * 1024 * 1024 else {
+                XCTFail("session first line exceeded semantic metadata bound")
+                return nil
+            }
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: line) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(object["payload"] as? [String: Any])
+        return payload["model_provider"] as? String
+    }
+
+    private func readTail(_ file: URL, byteCount: Int) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let end = try handle.seekToEnd()
+        XCTAssertGreaterThanOrEqual(end, UInt64(byteCount))
+        try handle.seek(toOffset: end - UInt64(byteCount))
+        return try handle.readToEnd() ?? Data()
     }
 
     private func readSQLiteProviders(at codexHome: URL) throws -> [String] {

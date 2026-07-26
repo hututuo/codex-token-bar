@@ -3,11 +3,17 @@ import Foundation
 
 struct ProviderSyncReport {
     var codexHome: URL
+    var sqliteHome: URL
     var targetProvider: String
     var providerSource: String
     var sessionFiles: [URL]
+    var sessionRecords: [ProviderSyncSessionRecord]
+    var canonicalSessionProviders: [String: String]
     var sessionProviders: [String: Int]
     var invalidSessionFiles: Int
+    var ambiguousThreadCount: Int
+    var migrationCandidateCount: Int
+    var pendingMigrationRecovery: Bool
     var sqliteProviders: [ProviderSyncSQLiteProvider]
     var sqliteRowsToRepair: Int
     var sqliteIntegrity: String
@@ -196,13 +202,23 @@ final class ProviderSyncEngine {
             codexHome: codexHome,
             expectedHomeIdentity: expectedHomeIdentity
         ) { canonicalHome, homeDirectory in
-            let report = try makeReport(
+            try withProviderSQLiteHome(
                 codexHome: canonicalHome,
-                homeDirectory: homeDirectory,
-                includeArchivedSessions: includeArchivedSessions,
-                targetProviderOverride: nil
-            )
-            return snapshot(from: report, status: "扫描完成")
+                homeDirectory: homeDirectory
+            ) { sqliteHome, sqliteDirectory in
+                let report = try makeReport(
+                    codexHome: canonicalHome,
+                    homeDirectory: homeDirectory,
+                    sqliteHome: sqliteHome,
+                    sqliteDirectory: sqliteDirectory,
+                    includeArchivedSessions: includeArchivedSessions,
+                    targetProviderOverride: nil
+                )
+                let status = report.pendingMigrationRecovery
+                    ? "扫描完成：检测到未完成的显式迁移；退出 Codex 后执行修复或回滚将先自动恢复"
+                    : "扫描完成"
+                return snapshot(from: report, status: status)
+            }
         }
     }
 
@@ -225,16 +241,23 @@ final class ProviderSyncEngine {
             codexHome: codexHome,
             expectedHomeIdentity: expectedHomeIdentity
         ) { canonicalHome, homeDirectory in
-            let report = try makeReport(
+            try withProviderSQLiteHome(
                 codexHome: canonicalHome,
-                homeDirectory: homeDirectory,
-                includeArchivedSessions: includeArchivedSessions,
-                targetProviderOverride: targetProviderOverride
-            )
-            let status = verificationIssues(in: report).isEmpty
-                ? "验证通过"
-                : "验证完成：仍有历史或前端工作区状态未同步"
-            return snapshot(from: report, status: status)
+                homeDirectory: homeDirectory
+            ) { sqliteHome, sqliteDirectory in
+                let report = try makeReport(
+                    codexHome: canonicalHome,
+                    homeDirectory: homeDirectory,
+                    sqliteHome: sqliteHome,
+                    sqliteDirectory: sqliteDirectory,
+                    includeArchivedSessions: includeArchivedSessions,
+                    targetProviderOverride: targetProviderOverride
+                )
+                let status = verificationIssues(in: report).isEmpty
+                    ? "验证通过"
+                    : "验证完成：仍有 Provider 元数据不一致"
+                return snapshot(from: report, status: status)
+            }
         }
     }
 
@@ -254,6 +277,53 @@ final class ProviderSyncEngine {
     }
 
     func sync(
+        codexHome: URL,
+        expectedHomeIdentity: CodexHomeIdentity?,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?,
+        dryRunOnly: Bool
+    ) throws -> ProviderSyncSnapshot {
+        if dryRunOnly {
+            return try createProviderMetadataBackup(
+                codexHome: codexHome,
+                expectedHomeIdentity: expectedHomeIdentity,
+                includeArchivedSessions: includeArchivedSessions
+            )
+        }
+        let explicitTarget = targetProviderOverride?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if explicitTarget?.isEmpty == false {
+            return try migrateProviderHistory(
+                codexHome: codexHome,
+                expectedHomeIdentity: expectedHomeIdentity,
+                includeArchivedSessions: includeArchivedSessions,
+                targetProviderOverride: explicitTarget
+            )
+        }
+        return try repairProviderMetadata(
+            codexHome: codexHome,
+            expectedHomeIdentity: expectedHomeIdentity,
+            includeArchivedSessions: includeArchivedSessions
+        )
+    }
+
+#if DEBUG
+    func legacySyncForRegressionTesting(
+        codexHome: URL,
+        includeArchivedSessions: Bool,
+        targetProviderOverride: String?,
+        dryRunOnly: Bool
+    ) throws -> ProviderSyncSnapshot {
+        try legacySyncForRegressionTesting(
+            codexHome: codexHome,
+            expectedHomeIdentity: try expectedHomeIdentityAtEntry(codexHome),
+            includeArchivedSessions: includeArchivedSessions,
+            targetProviderOverride: targetProviderOverride,
+            dryRunOnly: dryRunOnly
+        )
+    }
+
+    func legacySyncForRegressionTesting(
         codexHome: URL,
         expectedHomeIdentity: CodexHomeIdentity?,
         includeArchivedSessions: Bool,
@@ -415,6 +485,7 @@ final class ProviderSyncEngine {
             }
         }
     }
+#endif
 
     func rollbackLatest(codexHome: URL) throws -> ProviderSyncSnapshot {
         try rollbackLatest(
@@ -475,7 +546,23 @@ final class ProviderSyncEngine {
         backup: URL,
         status: String
     ) throws -> ProviderSyncSnapshot {
-        try restoreBackup(backup, codexHome: codexHome, homeDirectory: homeDirectory) {
+        if let restored = try rollbackProviderMigrationBackup(
+            codexHome: codexHome,
+            homeDirectory: homeDirectory,
+            backupURL: backup,
+            status: status
+        ) {
+            return restored
+        }
+        if let restored = try rollbackProviderMetadataBackup(
+            codexHome: codexHome,
+            homeDirectory: homeDirectory,
+            backupURL: backup,
+            status: status
+        ) {
+            return restored
+        }
+        return try restoreBackup(backup, codexHome: codexHome, homeDirectory: homeDirectory) {
             let report = try makeReport(
                 codexHome: codexHome,
                 homeDirectory: homeDirectory,
@@ -488,60 +575,114 @@ final class ProviderSyncEngine {
         }
     }
 
-    private func makeReport(
+    func makeReport(
         codexHome: URL,
         homeDirectory: ProviderSyncHomeDirectory,
+        sqliteHome: URL? = nil,
+        sqliteDirectory: ProviderSyncHomeDirectory? = nil,
         includeArchivedSessions: Bool,
         targetProviderOverride: String?
     ) throws -> ProviderSyncReport {
         try reportWillBuild?()
         try homeDirectory.verifyRootPathIdentity()
+        let effectiveSQLiteHome = sqliteHome ?? codexHome
+        let effectiveSQLiteDirectory = sqliteDirectory ?? homeDirectory
+        try effectiveSQLiteDirectory.verifyRootPathIdentity()
         let sessionFiles = findSessionFiles(codexHome: codexHome, includeArchivedSessions: includeArchivedSessions)
         try homeDirectory.verifyRootPathIdentity()
         var sessionProviders: [String: Int] = [:]
+        var sessionRecords: [ProviderSyncSessionRecord] = []
         var invalidSessionFiles = 0
         for file in sessionFiles {
-            guard let provider = try readSessionProvider(
+            guard let record = try readSessionRecord(
                 file: file,
                 homeDirectory: homeDirectory
             ) else {
                 invalidSessionFiles += 1
                 continue
             }
-            sessionProviders[provider, default: 0] += 1
+            sessionRecords.append(record)
+            sessionProviders[record.provider, default: 0] += 1
         }
 
-        let sqliteProviders = try readSQLiteProviders(homeDirectory: homeDirectory)
-        let latestSQLite = try latestSQLiteProvider(homeDirectory: homeDirectory)
+        let groupedRecords = Dictionary(grouping: sessionRecords, by: \.id)
+        var canonicalSessionProviders: [String: String] = [:]
+        var ambiguousThreadCount = 0
+        for (id, records) in groupedRecords {
+            let providers = Set(records.map(\.provider))
+            if providers.count == 1, let provider = providers.first {
+                canonicalSessionProviders[id] = provider
+            } else {
+                ambiguousThreadCount += 1
+            }
+        }
+
+        let pendingMigrationRecovery = try hasInterruptedProviderMigration(
+            codexHome: codexHome
+        )
+        let sqliteProviders = try readSQLiteProviders(homeDirectory: effectiveSQLiteDirectory)
+        let latestSQLite = try latestSQLiteProvider(homeDirectory: effectiveSQLiteDirectory)
         let configProvider = try configProvider(homeDirectory: homeDirectory)
-        let targetProvider = targetProviderOverride
+        let newestSessionProvider = sessionRecords
+            .max { $0.modifiedAt < $1.modifiedAt }?
+            .provider
+        let overrideProvider = targetProviderOverride?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let latestSQLiteProvider = latestSQLite.provider?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetProvider = (overrideProvider?.isEmpty == false
+            ? overrideProvider
+            : nil)
             ?? configProvider
+            ?? (latestSQLiteProvider?.isEmpty == false
+                ? latestSQLiteProvider
+                : nil)
+            ?? newestSessionProvider
             ?? "openai"
         let providerSource: String
-        if targetProviderOverride != nil {
+        if overrideProvider?.isEmpty == false {
             providerSource = "手动指定"
         } else if configProvider != nil {
             providerSource = "config.toml"
+        } else if latestSQLiteProvider?.isEmpty == false {
+            providerSource = "SQLite 最新会话"
+        } else if newestSessionProvider != nil {
+            providerSource = "最新 JSONL"
         } else {
-            providerSource = "默认 openai，config.toml 未设置"
+            providerSource = "默认 openai"
         }
 
         let indexIDs = try readSessionIndexIDs(homeDirectory: homeDirectory)
         let sqliteRowsToRepair = try countSQLiteRowsToRepair(
-            homeDirectory: homeDirectory,
-            targetProvider: targetProvider
+            homeDirectory: effectiveSQLiteDirectory,
+            sessionProviders: canonicalSessionProviders
         )
-        let workspaceIssues = try readWorkspaceOrderIssues(homeDirectory: homeDirectory)
-        let visibilitySummary = try readVisibilitySummary(homeDirectory: homeDirectory)
-        let integrity = try sqliteIntegrity(homeDirectory: homeDirectory)
+        let workspaceIssues = try readWorkspaceOrderIssues(
+            homeDirectory: homeDirectory,
+            sqliteDirectory: effectiveSQLiteDirectory
+        )
+        let visibilitySummary = try readVisibilitySummary(
+            homeDirectory: homeDirectory,
+            sqliteDirectory: effectiveSQLiteDirectory
+        )
+        let integrity = try sqliteIntegrity(homeDirectory: effectiveSQLiteDirectory)
         try homeDirectory.verifyRootPathIdentity()
+        try effectiveSQLiteDirectory.verifyRootPathIdentity()
         return ProviderSyncReport(
             codexHome: codexHome,
+            sqliteHome: effectiveSQLiteHome,
             targetProvider: targetProvider,
             providerSource: providerSource,
             sessionFiles: sessionFiles,
+            sessionRecords: sessionRecords,
+            canonicalSessionProviders: canonicalSessionProviders,
             sessionProviders: sessionProviders,
             invalidSessionFiles: invalidSessionFiles,
+            ambiguousThreadCount: ambiguousThreadCount,
+            migrationCandidateCount: sessionRecords.filter {
+                $0.provider != targetProvider
+            }.count,
+            pendingMigrationRecovery: pendingMigrationRecovery,
             sqliteProviders: sqliteProviders,
             sqliteRowsToRepair: sqliteRowsToRepair,
             sqliteIntegrity: integrity,
@@ -554,9 +695,10 @@ final class ProviderSyncEngine {
         )
     }
 
-    private func snapshot(from report: ProviderSyncReport, status: String) -> ProviderSyncSnapshot {
+    func snapshot(from report: ProviderSyncReport, status: String) -> ProviderSyncSnapshot {
         ProviderSyncSnapshot(
             codexHome: CodexDataSource(codexHome: report.codexHome, origin: .defaultHome).displayPath,
+            sqliteHome: report.sqliteHome.path,
             detectedProvider: report.targetProvider,
             providerSource: report.providerSource,
             sessionFilesFound: report.sessionFiles.count,
@@ -571,6 +713,9 @@ final class ProviderSyncEngine {
                     return lhs.provider < rhs.provider
                 },
             invalidSessionFiles: report.invalidSessionFiles,
+            ambiguousThreadCount: report.ambiguousThreadCount,
+            migrationCandidateCount: report.migrationCandidateCount,
+            pendingMigrationRecovery: report.pendingMigrationRecovery,
             sqliteRowsToRepair: report.sqliteRowsToRepair,
             sqliteIntegrity: report.sqliteIntegrity,
             sessionIndexCurrentThreadPresent: report.latestThreadID.map { report.sessionIndexIDs.contains($0) } ?? false,
@@ -585,7 +730,7 @@ final class ProviderSyncEngine {
         )
     }
 
-    private func verificationIssues(
+    func verificationIssues(
         in report: ProviderSyncReport,
         expectedSessionFileCount: Int? = nil,
         expectedSQLiteRowCount: Int? = nil
@@ -608,8 +753,11 @@ final class ProviderSyncEngine {
                 issues.append("会话文件数量从 \(expectedSessionFileCount) 变为 \(report.sessionFiles.count)")
             }
         }
-        if !report.sessionProviders.keys.allSatisfy({ $0 == report.targetProvider }) {
-            issues.append("会话 Provider 未全部同步为 \(report.targetProvider)")
+        if report.ambiguousThreadCount > 0 {
+            issues.append("发现 \(report.ambiguousThreadCount) 个 Provider 歧义线程")
+        }
+        if report.pendingMigrationRecovery {
+            issues.append("存在未完成的 Provider 显式迁移，需先自动恢复")
         }
         if let expectedSQLiteRowCount {
             if expectedSQLiteRowCount > 0, checkedSQLiteRowCount == 0 {
@@ -619,17 +767,11 @@ final class ProviderSyncEngine {
                 issues.append("SQLite 行数从 \(expectedSQLiteRowCount) 变为 \(checkedSQLiteRowCount)")
             }
         }
-        if !report.sqliteProviders.allSatisfy({ $0.provider == report.targetProvider }) {
-            issues.append("SQLite Provider 未全部同步为 \(report.targetProvider)")
-        }
         if report.sqliteRowsToRepair != 0 {
             issues.append("仍有 \(report.sqliteRowsToRepair) 行 SQLite 数据待修复")
         }
         if report.sqliteIntegrity != "ok" {
             issues.append("SQLite 完整性检查失败：\(report.sqliteIntegrity)")
-        }
-        if !report.workspaceIssues.isEmpty {
-            issues.append("仍有 \(report.workspaceIssues.count) 个工作区问题")
         }
         return issues
     }
@@ -651,7 +793,7 @@ final class ProviderSyncEngine {
         }
     }
 
-    private func rejectMutationIfCodexIsRunning(operation: String) throws {
+    func rejectMutationIfCodexIsRunning(operation: String) throws {
         guard !isCodexRunning() else {
             throw ProviderSyncMutationError.codexRunning(operation: operation)
         }
@@ -674,7 +816,7 @@ final class ProviderSyncEngine {
         return try body(canonicalHome, homeDirectory)
     }
 
-    private func withMutationLease<T>(
+    func withMutationLease<T>(
         codexHome: URL,
         expectedHomeIdentity: CodexHomeIdentity?,
         body: (URL, ProviderSyncHomeDirectory) throws -> T

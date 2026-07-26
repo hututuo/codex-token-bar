@@ -62,6 +62,7 @@ struct ProviderSyncPage: View {
 struct ProviderSyncView: View {
     @ObservedObject var store: ProviderSyncStore
     let dataSource: CodexDataSource?
+    @State private var showMigrationConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -88,7 +89,7 @@ struct ProviderSyncView: View {
                 ProviderSyncMetric(value: "\(store.snapshot.visibilitySummary.currentWorkspaceDesktopThreads)", label: "当前项目")
                 ProviderSyncMetric(value: store.snapshot.sqliteIntegrity, label: "数据库检查")
                 ProviderSyncMetric(value: "\(store.snapshot.sqliteRowsToRepair)", label: "Provider 行")
-                ProviderSyncMetric(value: "\(store.snapshot.sessionIndexRows)", label: "索引行")
+                ProviderSyncMetric(value: "\(store.snapshot.migrationCandidateCount)", label: "迁移候选")
             }
 
             HStack(alignment: .top, spacing: 10) {
@@ -108,7 +109,7 @@ struct ProviderSyncView: View {
                 ProviderSyncStepCard(
                     number: 2,
                     title: "创建备份",
-                    subtitle: "先备份 config、SQLite、索引和会话 JSONL，后面不满意可以回滚。",
+                    subtitle: "创建 SQLite 一致性恢复点，不复制数十 GiB 的会话正文。",
                     status: backupStepStatus,
                     accent: AppTheme.accentBlue,
                     buttonTitle: "只创建备份",
@@ -120,11 +121,11 @@ struct ProviderSyncView: View {
 
                 ProviderSyncStepCard(
                     number: 3,
-                    title: "一键修复",
-                    subtitle: "同步 provider，处理异常时间戳，并补齐索引和前端工作区状态。",
+                    title: "安全修复",
+                    subtitle: "只按每个会话的 canonical 首行修正 SQLite Provider；不改 JSONL、模型、时间戳、索引或工作区。",
                     status: repairStepStatus,
                     accent: AppTheme.accentOrange,
-                    buttonTitle: store.dryRunOnly ? "演练修复" : "修复历史",
+                    buttonTitle: store.dryRunOnly ? "仅建恢复点" : "安全修复",
                     systemImage: "arrow.triangle.2.circlepath",
                     isProminent: true,
                     disabled: !store.canSync || dataSource == nil
@@ -136,7 +137,7 @@ struct ProviderSyncView: View {
                 ProviderSyncStepCard(
                     number: 4,
                     title: "验证结果",
-                    subtitle: "修复后检查 provider、数据库、索引和工作区状态是否都正常。",
+                    subtitle: "检查会话首行与 SQLite Provider 是否逐线程一致，并验证数据库完整性。",
                     status: verifyStepStatus,
                     accent: AppTheme.accentCyan,
                     buttonTitle: "验证结果",
@@ -155,7 +156,16 @@ struct ProviderSyncView: View {
                 }
             )
 
-            ProviderSyncAdvancedPanel(store: store, backupPath: store.snapshot.lastBackupPath)
+            ProviderSyncAdvancedPanel(
+                store: store,
+                backupPath: store.snapshot.lastBackupPath,
+                migrationTarget: explicitMigrationTarget,
+                migrationCandidateCount: store.snapshot.migrationCandidateCount,
+                migrationDisabled: !store.canMigrate || dataSource == nil,
+                onRequestMigration: {
+                    showMigrationConfirmation = true
+                }
+            )
 
             ProviderSyncResultPanel(snapshot: store.snapshot)
         }
@@ -173,6 +183,23 @@ struct ProviderSyncView: View {
             if store.snapshot.providerSource == "等待扫描" {
                 store.scan(dataSource: dataSource)
             }
+        }
+        .confirmationDialog(
+            "确认显式迁移历史 Provider？",
+            isPresented: $showMigrationConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                "迁移 \(store.snapshot.migrationCandidateCount) 个会话到 \(explicitMigrationTarget)",
+                role: .destructive
+            ) {
+                store.migrate(dataSource: dataSource)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(
+                "这不是“安全修复”：它会流式改写每个候选 JSONL 的 canonical 首行并更新 SQLite Provider。程序会先创建小型恢复点，不修改消息正文、模型、时间戳、session_index 或工作区；目标必须与 config.toml 当前设置一致。"
+            )
         }
     }
 
@@ -220,36 +247,39 @@ struct ProviderSyncView: View {
 
         let total = scanIssueCount
         guard total > 0 else {
-            return "扫描完成：未发现需修复项。\(visibilitySummaryText)"
+            let migration = store.snapshot.migrationCandidateCount > 0
+                ? "另有 \(store.snapshot.migrationCandidateCount) 个会话可显式迁移。"
+                : ""
+            return "扫描完成：未发现安全修复项。\(migration)\(visibilitySummaryText)"
         }
 
         var parts: [String] = []
-        if jsonlMismatchCount > 0 {
-            parts.append("JSONL \(jsonlMismatchCount) 条")
-        }
         if store.snapshot.sqliteRowsToRepair > 0 {
             parts.append("SQLite provider \(store.snapshot.sqliteRowsToRepair) 行")
         }
         if store.snapshot.invalidSessionFiles > 0 {
             parts.append("异常首行 \(store.snapshot.invalidSessionFiles) 条")
         }
-        if store.snapshot.workspaceOrderMissing > 0 {
-            parts.append("工作区缺序 \(store.snapshot.workspaceOrderMissing) 个")
+        if store.snapshot.ambiguousThreadCount > 0 {
+            parts.append("歧义线程 \(store.snapshot.ambiguousThreadCount) 个")
+        }
+        if store.snapshot.pendingMigrationRecovery {
+            parts.append("未完成迁移恢复 1 项")
         }
         return "扫描完成：发现 \(total) 处需要处理，" + parts.joined(separator: "，") + "。\(visibilitySummaryText)"
     }
 
     private var scanIssueCount: Int {
-        jsonlMismatchCount
-            + store.snapshot.sqliteRowsToRepair
+        store.snapshot.sqliteRowsToRepair
             + store.snapshot.invalidSessionFiles
-            + store.snapshot.workspaceOrderMissing
+            + store.snapshot.ambiguousThreadCount
+            + (store.snapshot.pendingMigrationRecovery ? 1 : 0)
     }
 
-    private var jsonlMismatchCount: Int {
-        store.snapshot.sessionProviders
-            .filter { $0.provider != store.snapshot.detectedProvider }
-            .reduce(0) { $0 + $1.count }
+    private var explicitMigrationTarget: String {
+        let manual = store.manualProvider
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return manual.isEmpty ? "未填写" : manual
     }
 
     private var visibilitySummaryText: String {

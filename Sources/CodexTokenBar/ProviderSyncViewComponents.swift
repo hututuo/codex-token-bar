@@ -299,47 +299,76 @@ struct ProviderSyncBackupRow: View {
 struct ProviderSyncAdvancedPanel: View {
     @ObservedObject var store: ProviderSyncStore
     let backupPath: String?
+    let migrationTarget: String
+    let migrationCandidateCount: Int
+    let migrationDisabled: Bool
+    let onRequestMigration: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("高级选项")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("一般保持默认。需要测试时打开演练模式；切换过自定义 provider 时再手动填写。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("高级选项")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("一般保持默认；手动 Provider 只用于下方显式迁移。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(width: 270, alignment: .leading)
+
+                Toggle("包含归档会话", isOn: $store.includeArchivedSessions)
+                    .toggleStyle(.checkbox)
+                Toggle("演练模式", isOn: $store.dryRunOnly)
+                    .toggleStyle(.checkbox)
+
+                TextField("显式迁移目标 Provider", text: $store.manualProvider)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(AppTheme.panelBackgroundAlt)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(AppTheme.border, lineWidth: 1)
+                    )
+                    .frame(maxWidth: .infinity)
+
+                if let backupPath {
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: backupPath)])
+                    } label: {
+                        Label("打开备份", systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .font(.system(size: 12, weight: .medium))
+                }
             }
-            .frame(width: 270, alignment: .leading)
 
-            Toggle("包含归档会话", isOn: $store.includeArchivedSessions)
-                .toggleStyle(.checkbox)
-            Toggle("演练模式", isOn: $store.dryRunOnly)
-                .toggleStyle(.checkbox)
+            Divider()
 
-            TextField("手动 provider，可留空", text: $store.manualProvider)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(AppTheme.panelBackgroundAlt)
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(AppTheme.accentOrange)
+                Text(
+                    "显式迁移：\(migrationCandidateCount) 个候选 → \(migrationTarget)。仅在确实要统一旧历史 Provider 时使用。"
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(AppTheme.border, lineWidth: 1)
-                )
-                .frame(maxWidth: .infinity)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
-            if let backupPath {
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: backupPath)])
+                Spacer(minLength: 10)
+
+                Button(role: .destructive) {
+                    onRequestMigration()
                 } label: {
-                    Label("打开备份", systemImage: "folder")
+                    Label("显式迁移历史", systemImage: "arrow.triangle.swap")
                 }
                 .buttonStyle(.bordered)
-                .font(.system(size: 12, weight: .medium))
+                .disabled(migrationDisabled)
             }
         }
         .font(.system(size: 12, weight: .medium))
@@ -430,4 +459,3 @@ struct ProviderSyncResultPanel: View {
         }
     }
 }
-

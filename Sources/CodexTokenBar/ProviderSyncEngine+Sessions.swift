@@ -1,5 +1,12 @@
 import Foundation
 
+struct ProviderSyncSessionRecord {
+    let id: String
+    let provider: String
+    let file: URL
+    let modifiedAt: Date
+}
+
 final class ProviderSyncPreparedSessionMutation {
     let binding: ProviderSyncSessionMutationBinding
     let file: ProviderSyncPinnedFile
@@ -29,22 +36,10 @@ final class ProviderSyncPreparedSessionMutation {
 
 extension ProviderSyncEngine {
     func configProvider(homeDirectory: ProviderSyncHomeDirectory) throws -> String? {
-        guard let data = try homeDirectory.readOptionalRegularFile(
-            relativePath: "config.toml",
-            requireSingleLink: true
-        )?.data else { return nil }
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw providerSyncDescriptorError("config.toml 不是 UTF-8")
-        }
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-            guard let range = line.range(of: #"^\s*model_provider\s*=\s*"([^"]+)""#, options: .regularExpression) else { continue }
-            let match = String(line[range])
-            if let valueRange = match.range(of: #""([^"]+)""#, options: .regularExpression) {
-                return String(match[valueRange]).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-            }
-        }
-        return nil
+        try providerConfigStringValue(
+            "model_provider",
+            homeDirectory: homeDirectory
+        )
     }
 
     func findSessionFiles(codexHome: URL, includeArchivedSessions: Bool) -> [URL] {
@@ -71,6 +66,13 @@ extension ProviderSyncEngine {
         file: URL,
         homeDirectory: ProviderSyncHomeDirectory
     ) throws -> String? {
+        try readSessionRecord(file: file, homeDirectory: homeDirectory)?.provider
+    }
+
+    func readSessionRecord(
+        file: URL,
+        homeDirectory: ProviderSyncHomeDirectory
+    ) throws -> ProviderSyncSessionRecord? {
         let canonicalHome = homeDirectory.canonicalURL.standardizedFileURL
         let standardizedFile = file.standardizedFileURL
         guard standardizedFile.path.hasPrefix(canonicalHome.path + "/") else {
@@ -83,16 +85,37 @@ extension ProviderSyncEngine {
               relativePath.hasSuffix(".jsonl") else {
             throw providerSyncDescriptorError("session 文件路径不在允许范围内：\(relativePath)")
         }
-        let snapshot = try homeDirectory.readOptionalRegularFile(
+        let pinned = try homeDirectory.pinFile(
             relativePath: relativePath,
+            createParents: false
+        )
+        let snapshot = try homeDirectory.readRegularFileFirstLine(
+            pinned,
             requireSingleLink: true
         )
-        guard let object = try snapshot.flatMap({ try readFirstLineJSON(data: $0.data) }),
+        guard let object = try readFirstLineJSON(data: snapshot.data),
               object["type"] as? String == "session_meta",
-              let payload = object["payload"] as? [String: Any] else {
+              let payload = object["payload"] as? [String: Any],
+              let rawID = payload["id"] as? String,
+              let rawProvider = payload["model_provider"] as? String else {
             return nil
         }
-        return (payload["model_provider"] as? String) ?? "(missing)"
+        let id = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let provider = rawProvider.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !provider.isEmpty else {
+            return nil
+        }
+        let modifiedAt = Date(
+            timeIntervalSince1970:
+                TimeInterval(snapshot.metadata.st_mtimespec.tv_sec)
+                + TimeInterval(snapshot.metadata.st_mtimespec.tv_nsec) / 1_000_000_000
+        )
+        return ProviderSyncSessionRecord(
+            id: id,
+            provider: provider,
+            file: file,
+            modifiedAt: modifiedAt
+        )
     }
 
     func readFirstLineJSON(data: Data) throws -> [String: Any]? {
@@ -212,10 +235,27 @@ extension ProviderSyncEngine {
 
     private func rewrittenSessionData(_ data: Data, targetProvider: String) throws -> Data? {
         guard let parts = firstLineParts(in: data), !parts.line.isEmpty else { return nil }
+        guard let updatedLine = try rewrittenSessionFirstLine(
+            parts.line,
+            targetProvider: targetProvider
+        ) else { return nil }
+        var output = Data()
+        output.append(updatedLine)
+        output.append(parts.separator)
+        output.append(parts.rest)
+        return output
+    }
 
-        guard var object = try JSONSerialization.jsonObject(with: parts.line, options: []) as? [String: Any],
-              object["type"] as? String == "session_meta",
-              var payload = object["payload"] as? [String: Any] else {
+    func rewrittenSessionFirstLine(
+        _ line: Data,
+        targetProvider: String
+    ) throws -> Data? {
+        guard var object = try JSONSerialization.jsonObject(
+            with: line,
+            options: []
+        ) as? [String: Any],
+        object["type"] as? String == "session_meta",
+        var payload = object["payload"] as? [String: Any] else {
             return nil
         }
         let currentProvider = payload["model_provider"] as? String
@@ -223,12 +263,10 @@ extension ProviderSyncEngine {
 
         payload["model_provider"] = targetProvider
         object["payload"] = payload
-        let updatedLine = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        var output = Data()
-        output.append(updatedLine)
-        output.append(parts.separator)
-        output.append(parts.rest)
-        return output
+        return try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        )
     }
 
     func firstLineParts(in data: Data) -> (line: Data, separator: Data, rest: Data)? {

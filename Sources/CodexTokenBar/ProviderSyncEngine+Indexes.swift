@@ -168,7 +168,8 @@ extension ProviderSyncEngine {
     }
 
     func readWorkspaceOrderIssues(
-        homeDirectory: ProviderSyncHomeDirectory
+        homeDirectory: ProviderSyncHomeDirectory,
+        sqliteDirectory: ProviderSyncHomeDirectory
     ) throws -> [ProviderSyncWorkspaceIssue] {
         guard let snapshot = try homeDirectory.readOptionalRegularFile(
             relativePath: ".codex-global-state.json",
@@ -179,7 +180,7 @@ extension ProviderSyncEngine {
             return []
         }
 
-        let threadCounts = try readActiveThreadCountsByCwd(homeDirectory: homeDirectory)
+        let threadCounts = try readActiveThreadCountsByCwd(homeDirectory: sqliteDirectory)
         let labels = object["electron-workspace-root-labels"] as? [String: String] ?? [:]
         let candidates = workspaceRootCandidates(from: object)
         let ordered = Set(projectOrder)
@@ -195,7 +196,8 @@ extension ProviderSyncEngine {
     }
 
     func readVisibilitySummary(
-        homeDirectory: ProviderSyncHomeDirectory
+        homeDirectory: ProviderSyncHomeDirectory,
+        sqliteDirectory: ProviderSyncHomeDirectory
     ) throws -> ProviderSyncVisibilitySummary {
         let globalSnapshot = try homeDirectory.readOptionalRegularFile(
             relativePath: ".codex-global-state.json",
@@ -205,7 +207,7 @@ extension ProviderSyncEngine {
         let activeWorkspacePath = (globalObject["active-workspace-roots"] as? [String])?.first
         let labels = globalObject["electron-workspace-root-labels"] as? [String: String] ?? [:]
 
-        return try withBoundDatabase(homeDirectory: homeDirectory, readOnly: true) { database, _ in
+        return try withBoundDatabase(homeDirectory: sqliteDirectory, readOnly: true) { database, _ in
             guard let columns = try readThreadsTableColumns(database: database) else {
                 return ProviderSyncVisibilitySummary(activeWorkspacePath: activeWorkspacePath)
             }

@@ -15,6 +15,40 @@ protocol ProviderSyncRunning: Sendable {
     ) async throws -> ProviderSyncSnapshot
     func rollbackLatest(dataSource: CodexDataSource) async throws -> ProviderSyncSnapshot
     func rollback(dataSource: CodexDataSource, backupPath: String) async throws -> ProviderSyncSnapshot
+    func repair(
+        dataSource: CodexDataSource,
+        includeArchivedSessions: Bool
+    ) async throws -> ProviderSyncSnapshot
+    func backup(
+        dataSource: CodexDataSource,
+        includeArchivedSessions: Bool
+    ) async throws -> ProviderSyncSnapshot
+}
+
+extension ProviderSyncRunning {
+    func repair(
+        dataSource: CodexDataSource,
+        includeArchivedSessions: Bool
+    ) async throws -> ProviderSyncSnapshot {
+        try await sync(
+            dataSource: dataSource,
+            includeArchivedSessions: includeArchivedSessions,
+            targetProviderOverride: nil,
+            dryRunOnly: false
+        )
+    }
+
+    func backup(
+        dataSource: CodexDataSource,
+        includeArchivedSessions: Bool
+    ) async throws -> ProviderSyncSnapshot {
+        try await sync(
+            dataSource: dataSource,
+            includeArchivedSessions: includeArchivedSessions,
+            targetProviderOverride: nil,
+            dryRunOnly: true
+        )
+    }
 }
 
 struct LiveProviderSyncRunner: ProviderSyncRunning {
@@ -35,12 +69,18 @@ struct LiveProviderSyncRunner: ProviderSyncRunning {
         dryRunOnly: Bool
     ) async throws -> ProviderSyncSnapshot {
         try await Task.detached(priority: .utility) {
-            try ProviderSyncEngine().sync(
+            if dryRunOnly {
+                return try ProviderSyncEngine().createProviderMetadataBackup(
+                    codexHome: dataSource.codexHome,
+                    expectedHomeIdentity: dataSource.homeIdentity,
+                    includeArchivedSessions: includeArchivedSessions
+                )
+            }
+            return try ProviderSyncEngine().migrateProviderHistory(
                 codexHome: dataSource.codexHome,
                 expectedHomeIdentity: dataSource.homeIdentity,
                 includeArchivedSessions: includeArchivedSessions,
-                targetProviderOverride: targetProviderOverride,
-                dryRunOnly: dryRunOnly
+                targetProviderOverride: targetProviderOverride
             )
         }.value
     }
@@ -78,6 +118,32 @@ struct LiveProviderSyncRunner: ProviderSyncRunning {
             )
         }.value
     }
+
+    func repair(
+        dataSource: CodexDataSource,
+        includeArchivedSessions: Bool
+    ) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().repairProviderMetadata(
+                codexHome: dataSource.codexHome,
+                expectedHomeIdentity: dataSource.homeIdentity,
+                includeArchivedSessions: includeArchivedSessions
+            )
+        }.value
+    }
+
+    func backup(
+        dataSource: CodexDataSource,
+        includeArchivedSessions: Bool
+    ) async throws -> ProviderSyncSnapshot {
+        try await Task.detached(priority: .utility) {
+            try ProviderSyncEngine().createProviderMetadataBackup(
+                codexHome: dataSource.codexHome,
+                expectedHomeIdentity: dataSource.homeIdentity,
+                includeArchivedSessions: includeArchivedSessions
+            )
+        }.value
+    }
 }
 
 @MainActor
@@ -112,6 +178,14 @@ final class ProviderSyncStore: ObservableObject {
 
     var canSync: Bool {
         !snapshot.isWorking && (dryRunOnly || !snapshot.codexRunning)
+    }
+
+    var canMigrate: Bool {
+        !snapshot.isWorking
+            && !snapshot.codexRunning
+            && snapshot.migrationCandidateCount > 0
+            && effectiveTargetProvider() != nil
+            && includeArchivedSessions
     }
 
     var canRollback: Bool {
@@ -168,26 +242,39 @@ final class ProviderSyncStore: ObservableObject {
     func sync(dataSource: CodexDataSource?) {
         let includeArchivedSessions = includeArchivedSessions
         let dryRunOnly = dryRunOnly
-        let targetProvider = effectiveTargetProvider()
         run(dataSource: dataSource, operationKind: dryRunOnly ? .backup : .sync) { runner, source in
-            try await runner.sync(
+            if dryRunOnly {
+                return try await runner.backup(
+                    dataSource: source,
+                    includeArchivedSessions: includeArchivedSessions
+                )
+            }
+            return try await runner.repair(
                 dataSource: source,
-                includeArchivedSessions: includeArchivedSessions,
-                targetProviderOverride: targetProvider,
-                dryRunOnly: dryRunOnly
+                includeArchivedSessions: includeArchivedSessions
             )
         }
     }
 
     func backup(dataSource: CodexDataSource?) {
         let includeArchivedSessions = includeArchivedSessions
-        let targetProvider = effectiveTargetProvider()
         run(dataSource: dataSource, operationKind: .backup) { runner, source in
+            try await runner.backup(
+                dataSource: source,
+                includeArchivedSessions: includeArchivedSessions
+            )
+        }
+    }
+
+    func migrate(dataSource: CodexDataSource?) {
+        let includeArchivedSessions = includeArchivedSessions
+        let targetProvider = effectiveTargetProvider()
+        run(dataSource: dataSource, operationKind: .migrate) { runner, source in
             try await runner.sync(
                 dataSource: source,
                 includeArchivedSessions: includeArchivedSessions,
                 targetProviderOverride: targetProvider,
-                dryRunOnly: true
+                dryRunOnly: false
             )
         }
     }
@@ -225,6 +312,7 @@ final class ProviderSyncStore: ObservableObject {
         case scan
         case backup
         case sync
+        case migrate
         case verify
         case rollback
 
@@ -232,7 +320,7 @@ final class ProviderSyncStore: ObservableObject {
             switch self {
             case .scan, .verify:
                 false
-            case .backup, .sync, .rollback:
+            case .backup, .sync, .migrate, .rollback:
                 true
             }
         }
@@ -317,7 +405,7 @@ final class ProviderSyncStore: ObservableObject {
         case .backup:
             hasScanned = true
             hasBackedUp = true
-        case .sync:
+        case .sync, .migrate:
             hasScanned = true
             hasBackedUp = true
             hasRepaired = true

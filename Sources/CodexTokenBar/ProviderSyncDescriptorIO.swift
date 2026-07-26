@@ -18,6 +18,20 @@ struct ProviderSyncRegularFileSnapshot {
     let metadata: stat
 }
 
+struct ProviderSyncRegularFileFirstLineSnapshot {
+    let data: Data
+    let separator: Data
+    let consumedByteCount: Int64
+    let identity: ProviderSyncFileIdentity
+    let metadata: stat
+}
+
+private struct ProviderSyncFirstLineRead: Equatable {
+    let data: Data
+    let separator: Data
+    let consumedByteCount: Int64
+}
+
 struct ProviderSyncIdentityConflictError: LocalizedError {
     let message: String
     let recoveryPaths: [String]
@@ -287,6 +301,453 @@ final class ProviderSyncHomeDirectory {
             identity: openedIdentity,
             metadata: metadata
         )
+    }
+
+    func readRegularFileFirstLine(
+        _ file: ProviderSyncPinnedFile,
+        expectedIdentity: ProviderSyncFileIdentity? = nil,
+        requireSingleLink: Bool = false
+    ) throws -> ProviderSyncRegularFileFirstLineSnapshot {
+        try verifyParent(file)
+        let descriptor = Darwin.openat(
+            file.parent.rawValue,
+            file.name,
+            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        )
+        guard descriptor >= 0 else {
+            throw providerSyncPOSIXError("无法无跟随打开相对文件：\(file.displayURL.path)")
+        }
+        let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+        defer { try? owned.close() }
+
+        let metadata = try providerSyncMetadata(descriptor: descriptor)
+        guard (metadata.st_mode & S_IFMT) == S_IFREG else {
+            throw providerSyncDescriptorError("相对文件不是常规文件：\(file.displayURL.path)")
+        }
+        if requireSingleLink, metadata.st_nlink != 1 {
+            throw providerSyncDescriptorError("相对文件存在 hardlink：\(file.displayURL.path)")
+        }
+        let openedIdentity = ProviderSyncFileIdentity(metadata)
+        if let expectedIdentity, openedIdentity != expectedIdentity {
+            throw providerSyncDescriptorError("相对文件身份发生变化：\(file.displayURL.path)")
+        }
+
+        let firstRead = try providerSyncReadFirstLine(
+            descriptor: descriptor,
+            displayPath: file.displayURL.path
+        )
+        guard lseek(descriptor, 0, SEEK_SET) == 0 else {
+            throw providerSyncPOSIXError("无法复核 session 首行：\(file.displayURL.path)")
+        }
+        let secondRead = try providerSyncReadFirstLine(
+            descriptor: descriptor,
+            displayPath: file.displayURL.path
+        )
+        guard firstRead == secondRead else {
+            throw providerSyncDescriptorError(
+                "session 首行在读取期间发生原位变化：\(file.displayURL.path)"
+            )
+        }
+        guard let currentMetadata = try entryMetadata(file),
+              ProviderSyncFileIdentity(currentMetadata) == openedIdentity else {
+            throw providerSyncDescriptorError("相对文件在读取期间被替换：\(file.displayURL.path)")
+        }
+        try verifyParent(file)
+        return ProviderSyncRegularFileFirstLineSnapshot(
+            data: firstRead.data,
+            separator: firstRead.separator,
+            consumedByteCount: firstRead.consumedByteCount,
+            identity: openedIdentity,
+            metadata: metadata
+        )
+    }
+
+    func replaceRegularFileFirstLine(
+        _ file: ProviderSyncPinnedFile,
+        expectedIdentity: ProviderSyncFileIdentity,
+        expectedLine: Data,
+        replacementLine: Data,
+        preserving metadata: stat,
+        retainedOriginalName: String? = nil,
+        beforeExchange: (() throws -> Void)? = nil
+    ) throws -> ProviderSyncRegularFileReplacement {
+        try verifyParent(file)
+        guard let currentMetadata = try entryMetadata(file),
+              (currentMetadata.st_mode & S_IFMT) == S_IFREG,
+              currentMetadata.st_nlink == 1,
+              ProviderSyncFileIdentity(currentMetadata) == expectedIdentity else {
+            throw providerSyncDescriptorError(
+                "首行写入前相对文件身份发生变化：\(file.displayURL.path)"
+            )
+        }
+
+        let sourceDescriptor = Darwin.openat(
+            file.parent.rawValue,
+            file.name,
+            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        )
+        guard sourceDescriptor >= 0 else {
+            throw providerSyncPOSIXError(
+                "无法打开首行改写源文件：\(file.displayURL.path)"
+            )
+        }
+        let source = ProviderSyncOwnedFileDescriptor(sourceDescriptor)
+        defer { try? source.close() }
+        let openedMetadata = try providerSyncMetadata(descriptor: sourceDescriptor)
+        guard ProviderSyncFileIdentity(openedMetadata) == expectedIdentity,
+              openedMetadata.st_nlink == 1 else {
+            throw providerSyncDescriptorError(
+                "首行改写源文件身份发生变化：\(file.displayURL.path)"
+            )
+        }
+        let currentFirstLine = try providerSyncReadFirstLine(
+            descriptor: sourceDescriptor,
+            displayPath: file.displayURL.path
+        )
+        guard currentFirstLine.data == expectedLine else {
+            throw providerSyncDescriptorError(
+                "session 首行与扫描结果不一致：\(file.displayURL.path)"
+            )
+        }
+
+        let temporaryName = retainedOriginalName
+            ?? ".provider-session-prefix-\(UUID().uuidString)"
+        guard temporaryName.hasPrefix(".provider-session-prefix-"),
+              !temporaryName.contains("/"),
+              temporaryName != file.name else {
+            throw providerSyncDescriptorError(
+                "首行 replacement 临时名称无效：\(temporaryName)"
+            )
+        }
+        let temporaryDescriptor = Darwin.openat(
+            file.parent.rawValue,
+            temporaryName,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard temporaryDescriptor >= 0 else {
+            throw providerSyncPOSIXError(
+                "无法创建首行 replacement：\(file.displayURL.path)"
+            )
+        }
+        let temporary = ProviderSyncOwnedFileDescriptor(temporaryDescriptor)
+        var temporaryExists = true
+        defer {
+            try? temporary.close()
+            if temporaryExists {
+                _ = Darwin.unlinkat(file.parent.rawValue, temporaryName, 0)
+            }
+        }
+
+        try providerSyncWriteAll(replacementLine, descriptor: temporaryDescriptor)
+        try providerSyncWriteAll(
+            currentFirstLine.separator,
+            descriptor: temporaryDescriptor
+        )
+        let copiedTail = try providerSyncCopyAndHashRemainder(
+            sourceDescriptor: sourceDescriptor,
+            sourceOffset: currentFirstLine.consumedByteCount,
+            destinationDescriptor: temporaryDescriptor,
+            displayPath: file.displayURL.path
+        )
+        let verifiedSourceTail = try providerSyncHashRemainder(
+            descriptor: sourceDescriptor,
+            offset: currentFirstLine.consumedByteCount,
+            displayPath: file.displayURL.path
+        )
+        guard copiedTail == verifiedSourceTail else {
+            throw providerSyncDescriptorError(
+                "session 正文在首行 staging 期间发生变化：\(file.displayURL.path)"
+            )
+        }
+        let sourceMetadataAfterCopy = try providerSyncMetadata(
+            descriptor: sourceDescriptor
+        )
+        guard ProviderSyncFileIdentity(sourceMetadataAfterCopy) == expectedIdentity,
+              sourceMetadataAfterCopy.st_size == openedMetadata.st_size,
+              sourceMetadataAfterCopy.st_mtimespec.tv_sec
+                == openedMetadata.st_mtimespec.tv_sec,
+              sourceMetadataAfterCopy.st_mtimespec.tv_nsec
+                == openedMetadata.st_mtimespec.tv_nsec else {
+            throw providerSyncDescriptorError(
+                "session 在首行 staging 期间发生变化：\(file.displayURL.path)"
+            )
+        }
+
+        guard fchmod(temporaryDescriptor, metadata.st_mode & 0o777) == 0 else {
+            throw providerSyncPOSIXError(
+                "设置首行 replacement 权限失败：\(file.displayURL.path)"
+            )
+        }
+        var times = [metadata.st_atimespec, metadata.st_mtimespec]
+        guard futimens(temporaryDescriptor, &times) == 0 else {
+            throw providerSyncPOSIXError(
+                "保留首行 replacement 修改时间失败：\(file.displayURL.path)"
+            )
+        }
+        guard fsync(temporaryDescriptor) == 0 else {
+            throw providerSyncPOSIXError(
+                "同步首行 replacement 失败：\(file.displayURL.path)"
+            )
+        }
+        let replacementIdentity = ProviderSyncFileIdentity(
+            try providerSyncMetadata(descriptor: temporaryDescriptor)
+        )
+        try temporary.close()
+        try source.close()
+
+        try verifyParent(file)
+        guard let identityBeforeRename = try entryMetadata(file),
+              identityBeforeRename.st_nlink == 1,
+              ProviderSyncFileIdentity(identityBeforeRename) == expectedIdentity else {
+            throw providerSyncDescriptorError(
+                "首行原子替换前 session 身份发生变化：\(file.displayURL.path)"
+            )
+        }
+        try beforeExchange?()
+        try verifyOriginalBeforeFirstLineExchange(
+            file,
+            expectedIdentity: expectedIdentity,
+            expectedMetadata: openedMetadata,
+            expectedLine: expectedLine,
+            expectedSeparator: currentFirstLine.separator,
+            expectedTailDigest: copiedTail
+        )
+        try providerSyncExchange(
+            firstDirectory: file.parent.rawValue,
+            firstName: temporaryName,
+            secondDirectory: file.parent.rawValue,
+            secondName: file.name
+        )
+
+        do {
+            try verifyFirstLineExchange(
+                file,
+                temporaryName: temporaryName,
+                expectedOriginalIdentity: expectedIdentity,
+                replacementIdentity: replacementIdentity,
+                replacementLine: replacementLine,
+                expectedTailDigest: copiedTail
+            )
+        } catch let verificationError {
+            do {
+                try revertFirstLineExchange(
+                    file,
+                    temporaryName: temporaryName,
+                    expectedOriginalIdentity: expectedIdentity,
+                    replacementIdentity: replacementIdentity
+                )
+            } catch let revertError {
+                temporaryExists = false
+                throw ProviderSyncIdentityConflictError(
+                    message: "首行 replacement 写后验证失败且原子恢复失败：\(verificationError.localizedDescription)；\(revertError.localizedDescription)",
+                    recoveryPaths: [
+                        file.displayURL.path,
+                        file.displayURL.deletingLastPathComponent()
+                            .appendingPathComponent(temporaryName).path
+                    ]
+                )
+            }
+            throw ProviderSyncIdentityConflictError(
+                message: "首行 replacement 写后验证失败，已原子恢复原文件：\(verificationError.localizedDescription)",
+                recoveryPaths: [file.displayURL.path]
+            )
+        }
+
+        temporaryExists = false
+        return ProviderSyncRegularFileReplacement(
+            file: file,
+            retainedOriginalName: temporaryName,
+            originalIdentity: expectedIdentity,
+            replacementIdentity: replacementIdentity
+        )
+    }
+
+    private func verifyOriginalBeforeFirstLineExchange(
+        _ file: ProviderSyncPinnedFile,
+        expectedIdentity: ProviderSyncFileIdentity,
+        expectedMetadata: stat,
+        expectedLine: Data,
+        expectedSeparator: Data,
+        expectedTailDigest: SHA256.Digest
+    ) throws {
+        try verifyParent(file)
+        let descriptor = Darwin.openat(
+            file.parent.rawValue,
+            file.name,
+            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        )
+        guard descriptor >= 0 else {
+            throw providerSyncPOSIXError(
+                "首行 exchange 前无法复核原 session：\(file.displayURL.path)"
+            )
+        }
+        let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+        defer { try? owned.close() }
+        let metadata = try providerSyncMetadata(descriptor: descriptor)
+        guard ProviderSyncFileIdentity(metadata) == expectedIdentity,
+              metadata.st_nlink == 1,
+              metadata.st_size == expectedMetadata.st_size,
+              metadata.st_mtimespec.tv_sec
+                == expectedMetadata.st_mtimespec.tv_sec,
+              metadata.st_mtimespec.tv_nsec
+                == expectedMetadata.st_mtimespec.tv_nsec else {
+            throw providerSyncDescriptorError(
+                "首行 exchange 前原 session 已变化：\(file.displayURL.path)"
+            )
+        }
+        let firstLine = try providerSyncReadFirstLine(
+            descriptor: descriptor,
+            displayPath: file.displayURL.path
+        )
+        guard firstLine.data == expectedLine,
+              firstLine.separator == expectedSeparator else {
+            throw providerSyncDescriptorError(
+                "首行 exchange 前原 session metadata 已变化：\(file.displayURL.path)"
+            )
+        }
+        let tailDigest = try providerSyncHashRemainder(
+            descriptor: descriptor,
+            offset: firstLine.consumedByteCount,
+            displayPath: file.displayURL.path
+        )
+        let metadataAfterRead = try providerSyncMetadata(descriptor: descriptor)
+        guard tailDigest == expectedTailDigest,
+              ProviderSyncFileIdentity(metadataAfterRead) == expectedIdentity,
+              metadataAfterRead.st_size == expectedMetadata.st_size,
+              metadataAfterRead.st_mtimespec.tv_sec
+                == expectedMetadata.st_mtimespec.tv_sec,
+              metadataAfterRead.st_mtimespec.tv_nsec
+                == expectedMetadata.st_mtimespec.tv_nsec,
+              let entry = try entryMetadata(file),
+              ProviderSyncFileIdentity(entry) == expectedIdentity,
+              entry.st_size == expectedMetadata.st_size,
+              entry.st_mtimespec.tv_sec
+                == expectedMetadata.st_mtimespec.tv_sec,
+              entry.st_mtimespec.tv_nsec
+                == expectedMetadata.st_mtimespec.tv_nsec else {
+            throw providerSyncDescriptorError(
+                "首行 exchange 前原 session 正文已变化：\(file.displayURL.path)"
+            )
+        }
+        try verifyParent(file)
+    }
+
+    private func verifyFirstLineExchange(
+        _ file: ProviderSyncPinnedFile,
+        temporaryName: String,
+        expectedOriginalIdentity: ProviderSyncFileIdentity,
+        replacementIdentity: ProviderSyncFileIdentity,
+        replacementLine: Data,
+        expectedTailDigest: SHA256.Digest
+    ) throws {
+        let retainedMetadata = try providerSyncEntryMetadata(
+            directory: file.parent.rawValue,
+            name: temporaryName
+        )
+        let replacementMetadata = try entryMetadata(file)
+        guard let retainedMetadata,
+              let replacementMetadata,
+              ProviderSyncFileIdentity(retainedMetadata)
+                == expectedOriginalIdentity,
+              ProviderSyncFileIdentity(replacementMetadata)
+                == replacementIdentity else {
+            throw providerSyncDescriptorError(
+                "首行 atomic exchange 后身份异常"
+            )
+        }
+
+        let replacementSnapshot = try readRegularFileFirstLine(
+            file,
+            expectedIdentity: replacementIdentity,
+            requireSingleLink: true
+        )
+        guard replacementSnapshot.data == replacementLine else {
+            throw providerSyncDescriptorError(
+                "session replacement 首行写后不一致"
+            )
+        }
+        let replacementDescriptor = Darwin.openat(
+            file.parent.rawValue,
+            file.name,
+            O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        )
+        guard replacementDescriptor >= 0 else {
+            throw providerSyncPOSIXError(
+                "无法复核 session replacement 正文：\(file.displayURL.path)"
+            )
+        }
+        let replacementFile = ProviderSyncOwnedFileDescriptor(replacementDescriptor)
+        defer { try? replacementFile.close() }
+        let replacementTail = try providerSyncHashRemainder(
+            descriptor: replacementDescriptor,
+            offset: replacementSnapshot.consumedByteCount,
+            displayPath: file.displayURL.path
+        )
+        guard replacementTail == expectedTailDigest else {
+            throw providerSyncDescriptorError(
+                "session replacement 正文摘要不一致"
+            )
+        }
+        try verifyParent(file)
+    }
+
+    private func revertFirstLineExchange(
+        _ file: ProviderSyncPinnedFile,
+        temporaryName: String,
+        expectedOriginalIdentity: ProviderSyncFileIdentity,
+        replacementIdentity: ProviderSyncFileIdentity
+    ) throws {
+        try providerSyncExchange(
+            firstDirectory: file.parent.rawValue,
+            firstName: temporaryName,
+            secondDirectory: file.parent.rawValue,
+            secondName: file.name
+        )
+        guard let restored = try entryMetadata(file),
+              let retainedReplacement = try providerSyncEntryMetadata(
+                directory: file.parent.rawValue,
+                name: temporaryName
+              ),
+              ProviderSyncFileIdentity(restored) == expectedOriginalIdentity,
+              ProviderSyncFileIdentity(retainedReplacement)
+                == replacementIdentity else {
+            throw providerSyncDescriptorError(
+                "首行 atomic revert 后身份无法确认"
+            )
+        }
+        try verifyParent(file)
+    }
+
+    func removeRetainedMigrationOriginalIfPresent(
+        _ file: ProviderSyncPinnedFile,
+        retainedName: String
+    ) throws {
+        guard retainedName.hasPrefix(".provider-session-prefix-"),
+              !retainedName.contains("/"),
+              retainedName != file.name else {
+            throw providerSyncDescriptorError(
+                "拒绝清理无效的 migration retained 名称：\(retainedName)"
+            )
+        }
+        try verifyParent(file)
+        guard let metadata = try providerSyncEntryMetadata(
+            directory: file.parent.rawValue,
+            name: retainedName
+        ) else {
+            return
+        }
+        guard (metadata.st_mode & S_IFMT) == S_IFREG,
+              metadata.st_nlink == 1 else {
+            throw providerSyncDescriptorError(
+                "migration retained entry 不是独立常规文件：\(retainedName)"
+            )
+        }
+        try providerSyncUnlinkIfExists(
+            directory: file.parent.rawValue,
+            name: retainedName
+        )
+        try verifyParent(file)
     }
 
     func replaceRegularFile(
@@ -636,6 +1097,16 @@ final class ProviderSyncHomeDirectory {
         }
     }
 
+    func syncRootDirectory() throws {
+        try verifyRootPathIdentity()
+        guard fsync(root.rawValue) == 0 else {
+            throw providerSyncPOSIXError(
+                "同步 pinned 根目录失败：\(canonicalURL.path)"
+            )
+        }
+        try verifyRootPathIdentity()
+    }
+
     private func openDirectory(
         components: [String],
         createMissing: Bool
@@ -692,6 +1163,173 @@ final class ProviderSyncHomeDirectory {
 
 func providerSyncSHA256Hex(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
+func providerSyncSHA256Hex(
+    fileAt url: URL,
+    requireSingleLink: Bool = true
+) throws -> String {
+    let descriptor = Darwin.open(
+        url.path,
+        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+    )
+    guard descriptor >= 0 else {
+        throw providerSyncPOSIXError(
+            "无法无跟随打开摘要文件：\(url.path)"
+        )
+    }
+    let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+    defer { try? owned.close() }
+
+    let metadata = try providerSyncMetadata(descriptor: descriptor)
+    guard (metadata.st_mode & S_IFMT) == S_IFREG else {
+        throw providerSyncDescriptorError(
+            "摘要目标不是常规文件：\(url.path)"
+        )
+    }
+    if requireSingleLink, metadata.st_nlink != 1 {
+        throw providerSyncDescriptorError(
+            "摘要目标存在 hardlink：\(url.path)"
+        )
+    }
+    let identity = ProviderSyncFileIdentity(metadata)
+    var hasher = SHA256()
+    var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+    while true {
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+        }
+        if count == 0 {
+            break
+        }
+        if count < 0, errno == EINTR {
+            continue
+        }
+        guard count > 0 else {
+            throw providerSyncPOSIXError(
+                "读取摘要文件失败：\(url.path)"
+            )
+        }
+        hasher.update(data: Data(buffer.prefix(count)))
+    }
+
+    let metadataAfterRead = try providerSyncMetadata(descriptor: descriptor)
+    var pathMetadata = stat()
+    guard lstat(url.path, &pathMetadata) == 0,
+          ProviderSyncFileIdentity(metadataAfterRead) == identity,
+          ProviderSyncFileIdentity(pathMetadata) == identity,
+          metadataAfterRead.st_nlink == metadata.st_nlink,
+          metadataAfterRead.st_size == metadata.st_size,
+          metadataAfterRead.st_mtimespec.tv_sec
+            == metadata.st_mtimespec.tv_sec,
+          metadataAfterRead.st_mtimespec.tv_nsec
+            == metadata.st_mtimespec.tv_nsec else {
+        throw providerSyncDescriptorError(
+            "摘要文件在读取期间发生变化：\(url.path)"
+        )
+    }
+    return hasher.finalize()
+        .map { String(format: "%02x", $0) }
+        .joined()
+}
+
+func providerSyncReadSmallRegularFile(
+    at url: URL,
+    maximumBytes: Int
+) throws -> Data {
+    guard maximumBytes >= 0 else {
+        throw providerSyncDescriptorError(
+            "小文件读取上限无效：\(maximumBytes)"
+        )
+    }
+    let descriptor = Darwin.open(
+        url.path,
+        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+    )
+    guard descriptor >= 0 else {
+        throw providerSyncPOSIXError(
+            "无法无跟随打开小文件：\(url.path)"
+        )
+    }
+    let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+    defer { try? owned.close() }
+
+    let metadata = try providerSyncMetadata(descriptor: descriptor)
+    guard (metadata.st_mode & S_IFMT) == S_IFREG,
+          metadata.st_nlink == 1,
+          metadata.st_size >= 0,
+          metadata.st_size <= maximumBytes else {
+        throw providerSyncDescriptorError(
+            "小文件不是独立常规文件或超过 \(maximumBytes) 字节：\(url.path)"
+        )
+    }
+    let identity = ProviderSyncFileIdentity(metadata)
+    let data = try providerSyncReadAll(descriptor: descriptor)
+    guard data.count <= maximumBytes else {
+        throw providerSyncDescriptorError(
+            "小文件读取结果超过 \(maximumBytes) 字节：\(url.path)"
+        )
+    }
+    let metadataAfterRead = try providerSyncMetadata(descriptor: descriptor)
+    var pathMetadata = stat()
+    guard lstat(url.path, &pathMetadata) == 0,
+          ProviderSyncFileIdentity(metadataAfterRead) == identity,
+          ProviderSyncFileIdentity(pathMetadata) == identity,
+          metadataAfterRead.st_size == metadata.st_size,
+          metadataAfterRead.st_mtimespec.tv_sec
+            == metadata.st_mtimespec.tv_sec,
+          metadataAfterRead.st_mtimespec.tv_nsec
+            == metadata.st_mtimespec.tv_nsec else {
+        throw providerSyncDescriptorError(
+            "小文件在读取期间发生变化：\(url.path)"
+        )
+    }
+    return data
+}
+
+func providerSyncFsyncRegularFile(at url: URL) throws {
+    let descriptor = Darwin.open(
+        url.path,
+        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+    )
+    guard descriptor >= 0 else {
+        throw providerSyncPOSIXError(
+            "无法打开待同步文件：\(url.path)"
+        )
+    }
+    let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+    defer { try? owned.close() }
+    let metadata = try providerSyncMetadata(descriptor: descriptor)
+    guard (metadata.st_mode & S_IFMT) == S_IFREG,
+          metadata.st_nlink == 1 else {
+        throw providerSyncDescriptorError(
+            "待同步路径不是独立常规文件：\(url.path)"
+        )
+    }
+    guard fsync(descriptor) == 0 else {
+        throw providerSyncPOSIXError(
+            "同步文件失败：\(url.path)"
+        )
+    }
+}
+
+func providerSyncFsyncDirectory(at url: URL) throws {
+    let descriptor = Darwin.open(
+        url.path,
+        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+    )
+    guard descriptor >= 0 else {
+        throw providerSyncPOSIXError(
+            "无法打开待同步目录：\(url.path)"
+        )
+    }
+    let owned = ProviderSyncOwnedFileDescriptor(descriptor)
+    defer { try? owned.close() }
+    guard fsync(descriptor) == 0 else {
+        throw providerSyncPOSIXError(
+            "同步目录失败：\(url.path)"
+        )
+    }
 }
 
 func providerSyncMetadata(descriptor: Int32) throws -> stat {
@@ -898,6 +1536,128 @@ func providerSyncReadAll(descriptor: Int32) throws -> Data {
             throw providerSyncPOSIXError("读取 descriptor 内容失败")
         }
         output.append(buffer, count: count)
+    }
+}
+
+private func providerSyncReadFirstLine(
+    descriptor: Int32,
+    displayPath: String
+) throws -> ProviderSyncFirstLineRead {
+    // A rollout's first line is structured session metadata, not conversation
+    // content. Rejecting a multi-megabyte metadata record prevents a corrupt
+    // newline-free file from turning a scan into an unbounded allocation.
+    let maximumMetadataBytes = 8 * 1024 * 1024
+    var output = Data()
+    var separator = Data()
+    var consumedByteCount: Int64 = 0
+    var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+
+    while true {
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+        }
+        if count == 0 {
+            break
+        }
+        guard count > 0 else {
+            if errno == EINTR {
+                continue
+            }
+            throw providerSyncPOSIXError("读取 session 首行失败：\(displayPath)")
+        }
+
+        let chunk = buffer.prefix(count)
+        if let newline = chunk.firstIndex(of: 0x0A) {
+            output.append(contentsOf: chunk[..<newline])
+            consumedByteCount += Int64(
+                chunk.distance(from: chunk.startIndex, to: newline) + 1
+            )
+            if output.last == 0x0D {
+                output.removeLast()
+                separator = Data([0x0D, 0x0A])
+            } else {
+                separator = Data([0x0A])
+            }
+            break
+        }
+        output.append(contentsOf: chunk)
+        consumedByteCount += Int64(count)
+        guard output.count <= maximumMetadataBytes else {
+            throw providerSyncDescriptorError(
+                "session_meta 首行超过 8 MiB，已按损坏元数据拒绝读取：\(displayPath)"
+            )
+        }
+    }
+    return ProviderSyncFirstLineRead(
+        data: output,
+        separator: separator,
+        consumedByteCount: consumedByteCount
+    )
+}
+
+private func providerSyncCopyAndHashRemainder(
+    sourceDescriptor: Int32,
+    sourceOffset: Int64,
+    destinationDescriptor: Int32,
+    displayPath: String
+) throws -> SHA256.Digest {
+    guard lseek(sourceDescriptor, off_t(sourceOffset), SEEK_SET)
+            == off_t(sourceOffset) else {
+        throw providerSyncPOSIXError(
+            "无法定位 session 正文：\(displayPath)"
+        )
+    }
+    var hasher = SHA256()
+    var buffer = [UInt8](repeating: 0, count: 256 * 1024)
+    while true {
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(sourceDescriptor, bytes.baseAddress, bytes.count)
+        }
+        if count == 0 {
+            return hasher.finalize()
+        }
+        guard count > 0 else {
+            if errno == EINTR {
+                continue
+            }
+            throw providerSyncPOSIXError(
+                "读取 session 正文失败：\(displayPath)"
+            )
+        }
+        let chunk = Data(buffer.prefix(count))
+        hasher.update(data: chunk)
+        try providerSyncWriteAll(chunk, descriptor: destinationDescriptor)
+    }
+}
+
+private func providerSyncHashRemainder(
+    descriptor: Int32,
+    offset: Int64,
+    displayPath: String
+) throws -> SHA256.Digest {
+    guard lseek(descriptor, off_t(offset), SEEK_SET) == off_t(offset) else {
+        throw providerSyncPOSIXError(
+            "无法定位 session 正文复核位置：\(displayPath)"
+        )
+    }
+    var hasher = SHA256()
+    var buffer = [UInt8](repeating: 0, count: 256 * 1024)
+    while true {
+        let count = buffer.withUnsafeMutableBytes { bytes in
+            Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+        }
+        if count == 0 {
+            return hasher.finalize()
+        }
+        guard count > 0 else {
+            if errno == EINTR {
+                continue
+            }
+            throw providerSyncPOSIXError(
+                "复核 session 正文失败：\(displayPath)"
+            )
+        }
+        hasher.update(data: Data(buffer.prefix(count)))
     }
 }
 
