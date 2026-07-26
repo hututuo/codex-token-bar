@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class FloatingTokenPanelLifecycleTests: XCTestCase {
+    func testQuartzConversionBaselineUsesPrimaryScreenNotTallestScreen() {
+        let primary = NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        let secondaryAbove = NSRect(x: 0, y: 800, width: 1_000, height: 600)
+
+        // 副屏在主屏上方：基准必须仍是主屏 maxY(800)，而不是全局最高 1400，
+        // 否则窗口定位/AX 命中/跟随整体偏移一个副屏高度。
+        XCTAssertEqual(
+            FloatingPanelScreenGeometry.conversionBaseline(
+                orderedScreenFrames: [primary, secondaryAbove],
+                mainScreenFrame: secondaryAbove
+            ),
+            800
+        )
+        XCTAssertEqual(
+            FloatingPanelScreenGeometry.conversionBaseline(
+                orderedScreenFrames: [],
+                mainScreenFrame: primary
+            ),
+            800,
+            "无屏列表时回退 main 屏"
+        )
+    }
+
     func testFloatingPanelCannotBecomeKeyOrMain() {
         let panel = makePanel()
         defer { panel.close() }

@@ -91,7 +91,20 @@ struct FloatingPanelLockedTargetDrag {
 }
 
 enum FloatingPanelScreenGeometry {
+    // Cocoa↔Quartz 翻转基准必须是主屏（screens.first，Cocoa 原点所在屏）的
+    // maxY：Quartz 全局坐标以主屏左上角为原点。取所有屏的最大 maxY 会在副屏
+    // 位于主屏上方时把窗口定位/AX 命中/跟随整体偏移一个副屏高度。
     static var displayMaxY: CGFloat {
-        NSScreen.screens.map(\.frame.maxY).max() ?? NSScreen.main?.frame.maxY ?? 0
+        conversionBaseline(
+            orderedScreenFrames: NSScreen.screens.map(\.frame),
+            mainScreenFrame: NSScreen.main?.frame
+        )
+    }
+
+    static func conversionBaseline(
+        orderedScreenFrames: [NSRect],
+        mainScreenFrame: NSRect?
+    ) -> CGFloat {
+        orderedScreenFrames.first?.maxY ?? mainScreenFrame?.maxY ?? 0
     }
 }
