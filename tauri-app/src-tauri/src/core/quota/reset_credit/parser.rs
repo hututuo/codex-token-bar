@@ -2,7 +2,7 @@ use crate::models::{ResetCreditDetail, ResetCreditSummary};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 pub(super) fn parse_reset_credit_summary(value: &Value) -> ResetCreditSummary {
     let credits = value
@@ -237,7 +237,7 @@ fn parse_time(value: &Value) -> Option<OffsetDateTime> {
 }
 
 fn format_reset_credit_time(date: OffsetDateTime) -> String {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     date.to_offset(local_offset)
         .format(format_description!("[year]-[month]-[day] [hour]:[minute]"))
         .unwrap_or_else(|_| "未提供".into())

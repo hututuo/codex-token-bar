@@ -4,6 +4,7 @@ pub(crate) mod atomic_file;
 pub mod codex_instances;
 pub mod dashboard;
 pub mod live_rate;
+pub mod localtime;
 pub mod provider_repair;
 pub mod quota;
 pub mod quota_history;

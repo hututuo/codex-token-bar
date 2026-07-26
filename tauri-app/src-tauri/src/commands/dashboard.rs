@@ -448,7 +448,7 @@ fn observe_recent_pinned_sessions(
     };
     validate_canonical_sessions_root(&sessions)?;
     let now_utc = time::OffsetDateTime::now_utc();
-    let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let cutoff = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64 - PINNED_SESSION_LOOKBACK_SECONDS)
@@ -2704,7 +2704,7 @@ mod tests {
         home.join("sessions").join(
             recent_session_date_paths(
                 time::OffsetDateTime::now_utc(),
-                time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
+                crate::core::localtime::local_offset(),
             )
             .into_iter()
             .next()

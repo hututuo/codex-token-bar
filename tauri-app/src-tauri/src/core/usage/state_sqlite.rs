@@ -10,7 +10,7 @@ use rusqlite::{Connection, Result};
 use std::path::Path;
 use std::time::Duration as StdDuration;
 use time::macros::format_description;
-use time::{Date, Duration, OffsetDateTime, UtcOffset};
+use time::{Date, Duration, OffsetDateTime};
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     let db_path = codex_home.join("state_5.sqlite");
@@ -22,7 +22,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         |row| row.get(0),
     )?;
     let stats = read_stats(&connection)?;
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let local_now = OffsetDateTime::now_utc().to_offset(local_offset);
     let activity_days = empty_activity_days(local_now.date());
     let warnings = vec![usage_precision_warning()];

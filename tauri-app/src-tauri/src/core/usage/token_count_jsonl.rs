@@ -84,7 +84,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let data = index.dashboard_data(codex_home, now_utc, local_offset, &mut warnings)?;
     let generated_at = now_utc
         .format(&Rfc3339)
@@ -159,7 +159,7 @@ fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
         return Err(no_token_events_error(&warnings));
     }
 
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let summary = index.summary(OffsetDateTime::now_utc(), local_offset)?;
     store_usage_summary(signature, summary.clone());
 
@@ -184,7 +184,7 @@ pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, St
         return Ok(cached.summary);
     }
 
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let last_trusted = if index.is_empty()? {
         None
     } else {
@@ -230,7 +230,7 @@ fn mark_usage_summary_sources_synced(codex_home: &Path) {
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     cached_dashboard_usage_summary_at(codex_home, OffsetDateTime::now_utc(), local_offset).or_else(
         || {
             let index = ExactUsageIndex::open(codex_home).ok()?;
@@ -374,7 +374,7 @@ struct DashboardScanSignature {
 }
 
 fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let now_utc = OffsetDateTime::now_utc();
     DashboardScanSignature {
         codex_home: codex_home.to_path_buf(),

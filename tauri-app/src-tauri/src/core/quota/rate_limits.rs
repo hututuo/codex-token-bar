@@ -1,7 +1,7 @@
 use crate::models::{QuotaAvailability, QuotaLimit, QuotaSnapshot, ResetCreditSummary};
 use serde_json::Value;
 use time::macros::format_description;
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 pub(super) fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
@@ -280,7 +280,7 @@ fn normalized_unix_timestamp_seconds(value: &Value) -> Option<i64> {
 }
 
 fn compact_reset_text(date: OffsetDateTime, label: &str) -> String {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let local = date.to_offset(local_offset);
     if label == "5h" {
         return format_time(local);

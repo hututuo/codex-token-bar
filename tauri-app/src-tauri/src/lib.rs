@@ -7,6 +7,9 @@ use tauri::Manager as _;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 必须最先执行：此刻进程还是单线程，time crate 才允许读取本地时区
+    // 偏移；一旦任何线程被创建，读取必然失败并回退 UTC。
+    core::localtime::cache_local_offset_at_startup();
     let launch_mode = platform::StartupLaunchMode::from_args(std::env::args_os());
     match platform::prepare_single_instance(launch_mode) {
         platform::SingleInstanceLaunchOutcome::ContinueAsPrimary => {}

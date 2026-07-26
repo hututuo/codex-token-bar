@@ -3,7 +3,7 @@ use crate::core::time_series_timeline::{aligned_bin_starts, LONG_RECENT_INTERVAL
 use crate::models::QuotaHistoryPoint;
 use std::collections::HashMap;
 use time::macros::format_description;
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 const MAX_CARRY_GAP_SECONDS: f64 = 90.0 * 60.0;
 const LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS: f64 = 6.0 * 60.0 * 60.0;
@@ -107,7 +107,7 @@ pub(super) fn make_daily_history(
     rows: Vec<QuotaHistoryRow>,
 ) -> HashMap<String, DailyQuotaHistory> {
     let sorted = sanitized_rows(rows);
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let mut grouped: HashMap<String, DailyQuotaAccumulator> = HashMap::new();
 
     for row in sorted {
@@ -350,7 +350,7 @@ fn average(total: f64, count: u32) -> Option<f64> {
 }
 
 fn format_unix_time(value: f64) -> String {
-    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let offset = crate::core::localtime::local_offset();
     let seconds = value.round() as i64;
     OffsetDateTime::from_unix_timestamp(seconds)
         .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH)

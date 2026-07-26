@@ -1349,9 +1349,7 @@ fn local_day_start_timestamp(now_unix: i64) -> i64 {
 }
 
 fn local_offset() -> time::UtcOffset {
-    OffsetDateTime::now_local()
-        .map(|value| value.offset())
-        .unwrap_or(time::UtcOffset::UTC)
+    crate::core::localtime::local_offset()
 }
 
 fn recover_interrupted_run(state: &mut PersistedAutoResumeState) -> bool {
@@ -1441,8 +1439,8 @@ fn normalize_day(state: &mut PersistedAutoResumeState) {
 }
 
 fn local_day_key() -> String {
-    OffsetDateTime::now_local()
-        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+    OffsetDateTime::now_utc()
+        .to_offset(local_offset())
         .date()
         .to_string()
 }

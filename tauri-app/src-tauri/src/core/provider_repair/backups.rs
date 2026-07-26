@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 #[cfg(windows)]
 use super::safe_fs::windows_extended_length_path;
@@ -3867,7 +3867,7 @@ fn collision_resistant_id() -> String {
 }
 
 fn timestamp_id() -> String {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     OffsetDateTime::now_utc()
         .to_offset(local_offset)
         .format(format_description!(
@@ -3877,7 +3877,7 @@ fn timestamp_id() -> String {
 }
 
 fn format_now_rfc3339() -> String {
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     OffsetDateTime::now_utc()
         .to_offset(local_offset)
         .format(&Rfc3339)

@@ -1288,7 +1288,7 @@ fn daily_history_groups_quota_samples_by_local_day() {
         .record(&bundle("tester", 0.30, reset as i64, 0.50, (reset + 500_000.0) as i64))
         .unwrap();
 
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = crate::core::localtime::local_offset();
     let today = format_date(OffsetDateTime::now_utc().to_offset(local_offset).date());
     let history = database.daily_history(1).unwrap();
     let quota = history.get(&today).unwrap();
