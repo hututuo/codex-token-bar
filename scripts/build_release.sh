@@ -495,47 +495,9 @@ fi
   -o "$GENERATED_APPCAST" \
   "$APPCAST_SOURCE_DIR" >/dev/null
 
-python3 - "$VERSION" "$GENERATED_APPCAST" "$EXISTING_APPCAST" "$ROOT_DIR/appcast.xml" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-version, generated_path, existing_path, output_path = sys.argv[1:5]
-generated = Path(generated_path).read_text(encoding="utf-8")
-existing = Path(existing_path).read_text(encoding="utf-8") if Path(existing_path).exists() else ""
-
-item_pattern = re.compile(r"\n        <item>.*?\n        </item>", re.S)
-version_pattern = re.compile(r"<sparkle:shortVersionString>(.*?)</sparkle:shortVersionString>")
-
-def item_version(item):
-    match = version_pattern.search(item)
-    return match.group(1) if match else None
-
-generated_items = item_pattern.findall(generated)
-current_items = [item for item in generated_items if item_version(item) == version]
-if not current_items:
-    raise SystemExit(f"generated appcast missing current version {version}")
-
-existing_items = [
-    item
-    for item in item_pattern.findall(existing)
-    if item_version(item) != version
-]
-merged_items = (current_items + existing_items)[:5]
-
-first_match = item_pattern.search(generated)
-if not first_match:
-    raise SystemExit("generated appcast has no item block")
-
-last_match = None
-for match in item_pattern.finditer(generated):
-    last_match = match
-if last_match is None:
-    raise SystemExit("generated appcast has no item block")
-
-merged = generated[:first_match.start()] + "".join(merged_items) + generated[last_match.end():]
-Path(output_path).write_text(merged, encoding="utf-8")
-PY
+# 已发布的 appcast 条目是不可变历史：同版本重发默认报错，
+# 仅 ALLOW_APPCAST_REPUBLISH=1 时放行（详见 merge_appcast.py）。
+python3 "$ROOT_DIR/scripts/merge_appcast.py" "$VERSION" "$GENERATED_APPCAST" "$EXISTING_APPCAST" "$ROOT_DIR/appcast.xml"
 
 cp "$ROOT_DIR/appcast.xml" "$RELEASE_DIR/appcast.xml"
 
