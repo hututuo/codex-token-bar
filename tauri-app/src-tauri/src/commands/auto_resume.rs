@@ -719,10 +719,11 @@ impl AutoResumeRegistry {
                     && source_still_enabled
                 {
                     arm_selected_windows(&current_settings, &mut state.persisted);
-                    state.persisted.pending_trigger_key = Some(format!(
-                        "quota-recovery:{}:{}",
-                        trigger.thread_id, trigger.key
-                    ));
+                    // 原触发 key 已随本次运行写入共享 ledger；恢复后必须换统一的
+                    // quota:{线程}:{窗口}:{reset} key 重新去重（pending key 留空，
+                    // recovered_trigger 按契约构造），沿用旧 key 会拿到 Duplicate
+                    // 而永远不再续跑。
+                    state.persisted.pending_trigger_key = None;
                     state.persisted.pending_trigger_label = Some("额度恢复续跑".into());
                     state.persisted.pending_thread_id = Some(trigger.thread_id.clone());
                     state.persisted.pending_armed_at = Some(unix_now());
@@ -974,6 +975,31 @@ pub fn cancel_auto_resume_run(
     Ok(registry.cancel())
 }
 
+// 跨端触发 key 契约（必须与 Swift AutoResumePolicy 逐字节一致，两端各有
+// 同名 contract 测试互为镜像；共享 ledger 按 key 精确匹配去重，格式不一致
+// 会使同一触发两端各发一次"继续"）：
+// - daily:    daily:{线程}:{本地日期 YYYY-MM-DD}:{HHMM}
+// - interval: interval:{线程}:{间隔分钟}:{floor(触发时刻纪元秒 / 间隔秒)}
+// - quota:    quota:{线程}:{5h|7d}:{重置纪元秒}（双窗口同时恢复取 5h）
+// - capacity: capacity:{线程}:{turnId}（目前仅 Swift 端产生）
+// - manual:   manual: 前缀 + 各端自用唯一后缀（不参与跨端去重，只共享
+//             每日上限豁免）
+fn daily_trigger_key(thread_id: &str, day: &str, hour: u8, minute: u8) -> String {
+    format!("daily:{thread_id}:{day}:{hour:02}{minute:02}")
+}
+
+fn interval_trigger_key(thread_id: &str, interval_minutes: u32, now: i64) -> String {
+    let seconds = i64::from(interval_minutes.max(1)) * 60;
+    format!(
+        "interval:{thread_id}:{interval_minutes}:{}",
+        now.div_euclid(seconds)
+    )
+}
+
+fn quota_trigger_key(thread_id: &str, recovery_key: &str) -> String {
+    format!("quota:{thread_id}:{recovery_key}")
+}
+
 fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
     if state.persisted.waiting_for_quota
         || state.persisted.pending_trigger_key.is_some()
@@ -991,12 +1017,17 @@ fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
         _ => return None,
     };
     let key = match state.settings.schedule_mode.as_str() {
-        "daily" => format!(
-            "schedule:daily:{}:{}",
-            state.settings.thread_id,
-            local_day_key()
+        "daily" => daily_trigger_key(
+            &state.settings.thread_id,
+            &local_day_key(),
+            state.settings.daily_hour,
+            state.settings.daily_minute,
         ),
-        _ => format!("schedule:interval:{}:{due}", state.settings.thread_id),
+        _ => interval_trigger_key(
+            &state.settings.thread_id,
+            state.settings.interval_minutes,
+            now,
+        ),
     };
     if selected_quota_is_low(&state.settings, &state.persisted) {
         state.persisted.waiting_for_quota = true;
@@ -1040,12 +1071,16 @@ fn recovered_trigger(state: &mut RegistryState) -> Option<Trigger> {
         clear_pending_trigger(&mut state.persisted);
         return None;
     }
+    // 跨端契约：被低额度挂起的排程触发直接用其槽位 key 去重——对端若已跑过
+    // 同一槽位会得到 Duplicate 并推进日程，而不是冷却一过再发一次；纯额度
+    // 恢复用统一的 quota:{线程}:{窗口}:{reset} key，与 Swift 端同一恢复事件
+    // 相互去重。旧的 "{pending}:{recovery}" 拼接 key 与任何对端 key 都不可能
+    // 相等，正是双发的根源之一。
     let key = state
         .persisted
         .pending_trigger_key
-        .as_deref()
-        .map(|pending| format!("{pending}:{recovery_key}"))
-        .unwrap_or_else(|| format!("quota:{}:{recovery_key}", state.settings.thread_id));
+        .clone()
+        .unwrap_or_else(|| quota_trigger_key(&state.settings.thread_id, &recovery_key));
     let label = state
         .persisted
         .pending_trigger_label
@@ -1096,7 +1131,10 @@ fn observe_quota_bundle(
     };
     if selected {
         state.waiting_for_quota = true;
-        if state.pending_trigger_key.is_none() {
+        // 以 pending_thread_id 判断"是否已有挂起触发上下文"：运行中撞限的
+        // 排程触发会保留 thread/kind 但把 key 留空（恢复时按契约重建），
+        // 此处不得用 key 判空覆盖其排程语义。
+        if state.pending_thread_id.is_none() {
             state.pending_trigger_label = Some("额度恢复续跑".into());
             state.pending_thread_id = Some(settings.thread_id.clone());
             state.pending_trigger_kind = Some(TriggerKind::QuotaRecovery.as_str().into());
@@ -1242,10 +1280,9 @@ fn quota_recovery_key(
     match settings.quota_window.as_str() {
         "fiveHour" => five,
         "sevenDay" => seven,
-        _ => {
-            let keys = [five, seven].into_iter().flatten().collect::<Vec<_>>();
-            (!keys.is_empty()).then(|| keys.join("+"))
-        }
+        // 跨端契约：双窗口同时恢复时取 5h。拼接 "5h:{r}+7d:{r}" 与 Swift 的
+        // 单窗口 key 永不相等，会导致同一恢复事件两端各发一次。
+        _ => five.or(seven),
     }
 }
 
@@ -1735,7 +1772,8 @@ mod tests {
         assert!(selected_quota_recovered(&settings, &state));
         assert_eq!(
             quota_recovery_key(&settings, &state).as_deref(),
-            Some("5h:500+7d:1500")
+            Some("5h:500"),
+            "双窗口同时恢复按跨端契约取 5h 单窗口，而不是拼接"
         );
     }
 
@@ -1937,7 +1975,7 @@ mod tests {
             ..RegistryState::default()
         };
         state.persisted.waiting_for_quota = true;
-        state.persisted.pending_trigger_key = Some("schedule:interval:thread:100".into());
+        state.persisted.pending_trigger_key = Some("interval:thread:30:974222".into());
         state.persisted.pending_trigger_label = Some("定时续跑".into());
         state.persisted.pending_thread_id = Some("thread".into());
         state.persisted.pending_trigger_kind = Some("interval".into());
@@ -1956,8 +1994,12 @@ mod tests {
         assert_eq!(trigger.schedule_generation, Some(4));
         assert_eq!(trigger.quota_generation, None);
         assert_eq!(
+            trigger.key, "interval:thread:30:974222",
+            "挂起的排程触发必须用槽位 key 原样去重，不得再拼接恢复后缀"
+        );
+        assert_eq!(
             state.persisted.pending_trigger_key.as_deref(),
-            Some("schedule:interval:thread:100")
+            Some("interval:thread:30:974222")
         );
         assert!(state.persisted.waiting_for_quota);
     }
@@ -1984,7 +2026,32 @@ mod tests {
         let trigger = recovered_trigger(&mut state).unwrap();
         assert_eq!(trigger.schedule_generation, None);
         assert_eq!(trigger.quota_generation, Some(9));
+        assert_eq!(
+            trigger.key, "quota:thread:5h:500",
+            "纯额度恢复必须用跨端统一的 quota:{{线程}}:{{窗口}}:{{reset}} key"
+        );
         assert!(automatic_trigger_is_current(&state, &trigger));
+    }
+
+    #[test]
+    fn cross_runtime_trigger_keys_match_the_swift_contract() {
+        // 与 Swift 端 AutoResumePolicyTests.testTriggerKeysMatchTheCrossRuntimeContract
+        // 互为镜像：同一触发两端必须产出逐字节相同的 key，共享 ledger 的精确
+        // 匹配去重才能生效。任何一端改动 key 格式都必须同步另一端与两份测试。
+        assert_eq!(
+            daily_trigger_key("thread-1", "2026-07-27", 9, 5),
+            "daily:thread-1:2026-07-27:0905"
+        );
+        assert_eq!(
+            interval_trigger_key("thread-1", 30, 1_753_600_000),
+            "interval:thread-1:30:974222"
+        );
+        assert_eq!(
+            quota_trigger_key("thread-1", "5h:1753602000"),
+            "quota:thread-1:5h:1753602000"
+        );
+        // capacity 触发目前仅 Swift 端产生（capacity:{线程}:{turnId}）；
+        // manual 触发不参与跨端去重，仅约定 manual: 前缀共享每日上限豁免。
     }
 
     #[test]

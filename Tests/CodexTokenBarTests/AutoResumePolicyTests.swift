@@ -744,6 +744,97 @@ final class AutoResumePolicyTests: XCTestCase {
         ))
     }
 
+    func testTriggerKeysMatchTheCrossRuntimeContract() throws {
+        // 与 Tauri 端 cross_runtime_trigger_keys_match_the_swift_contract 互为
+        // 镜像：同一触发两端必须产出逐字节相同的 key，共享 ledger 的精确匹配
+        // 去重才能生效。任何一端改动 key 格式都必须同步另一端与两份测试。
+        let contractTarget = AutoResumeThreadDescriptor(
+            id: "thread-1",
+            title: "contract",
+            cwd: "/tmp/contract",
+            updatedAt: nil
+        )
+
+        var dailyConfiguration = AutoResumeConfiguration.default
+        dailyConfiguration.enabled = true
+        dailyConfiguration.target = contractTarget
+        dailyConfiguration.scheduleMode = .daily
+        dailyConfiguration.dailyHour = 9
+        dailyConfiguration.dailyMinute = 5
+        let daily = try XCTUnwrap(AutoResumePolicy.scheduledTrigger(
+            configuration: dailyConfiguration,
+            state: .default,
+            now: date(2026, 7, 27, 9, 5),
+            calendar: utcCalendar
+        ))
+        XCTAssertEqual(daily.key, "daily:thread-1:2026-07-27:0905")
+
+        var intervalConfiguration = AutoResumeConfiguration.default
+        intervalConfiguration.enabled = true
+        intervalConfiguration.target = contractTarget
+        intervalConfiguration.scheduleMode = .interval
+        intervalConfiguration.intervalMinutes = 30
+        var intervalState = AutoResumeRuntimeState.default
+        intervalState.lastIntervalFireAt = Date(timeIntervalSince1970: 1_753_600_000 - 1_800)
+        let interval = try XCTUnwrap(AutoResumePolicy.scheduledTrigger(
+            configuration: intervalConfiguration,
+            state: intervalState,
+            now: Date(timeIntervalSince1970: 1_753_600_000),
+            calendar: utcCalendar
+        ))
+        XCTAssertEqual(interval.key, "interval:thread-1:30:974222")
+
+        var quotaConfiguration = AutoResumeConfiguration.default
+        quotaConfiguration.enabled = true
+        quotaConfiguration.target = contractTarget
+        quotaConfiguration.quotaWindow = .fiveHour
+        quotaConfiguration.quotaArmAtOrBelowPercent = 5
+        quotaConfiguration.quotaResumeAtOrAbovePercent = 20
+        var quotaState = AutoResumeRuntimeState.default
+        let reset = Date(timeIntervalSince1970: 1_753_602_000)
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: quotaConfiguration,
+            state: &quotaState,
+            snapshot: quotaSnapshot(fiveHourUsed: 96, fiveHourReset: reset),
+            now: date(2026, 7, 27, 10, 0)
+        ))
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: quotaConfiguration,
+            state: &quotaState,
+            snapshot: quotaSnapshot(fiveHourUsed: 97, fiveHourReset: reset),
+            now: date(2026, 7, 27, 10, 1)
+        ))
+        let quota = try XCTUnwrap(AutoResumePolicy.observeQuota(
+            configuration: quotaConfiguration,
+            state: &quotaState,
+            snapshot: quotaSnapshot(fiveHourUsed: 80, fiveHourReset: reset),
+            now: date(2026, 7, 27, 10, 5)
+        ))
+        XCTAssertEqual(quota.key, "quota:thread-1:5h:1753602000")
+
+        var capacityConfiguration = AutoResumeConfiguration.default
+        capacityConfiguration.enabled = true
+        capacityConfiguration.target = contractTarget
+        capacityConfiguration.capacityRecoveryEnabled = true
+        let capacityNow = date(2026, 7, 27, 10, 0)
+        var capacityState = AutoResumeRuntimeState.default
+        capacityState.capacityMonitorArmedAt = capacityNow.addingTimeInterval(-60)
+        let capacity = try XCTUnwrap(AutoResumePolicy.capacityRecoveryTrigger(
+            configuration: capacityConfiguration,
+            state: capacityState,
+            observation: AutoResumeLatestTurnObservation(
+                turnID: "turn-9",
+                status: "failed",
+                completedAt: capacityNow.addingTimeInterval(-10),
+                errorMessage: "Selected model is at capacity. Please try a different model.",
+                codexErrorCode: "serverOverloaded",
+                clientUserMessageID: "desktop-user-message"
+            ),
+            now: capacityNow
+        ))
+        XCTAssertEqual(capacity.key, "capacity:thread-1:turn-9")
+    }
+
     private func enabledConfiguration() -> AutoResumeConfiguration {
         var configuration = AutoResumeConfiguration.default
         configuration.enabled = true
