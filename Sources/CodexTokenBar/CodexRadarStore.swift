@@ -313,6 +313,8 @@ final class CodexRadarStore: ObservableObject {
         let feedReader = feedReader
         let crowdReader = crowdReader
         refreshTask = Task.detached(priority: .utility) {
+            // 众测雷达独立于官方雷达并发获取：官方失败时众测仍需刷新或标旧（与 Tauri 端语义一致）。
+            async let crowdFetch = Self.readCrowdRadarIndependently(crowdReader)
             do {
                 trace?.mark("currentJSON.begin")
                 let snapshot = try await reader.readRadar()
@@ -323,29 +325,21 @@ final class CodexRadarStore: ObservableObject {
                 let feedURL = URL(string: snapshot.links.rss)
                 trace?.mark("rss.begin", metadata: ["hasURL": feedURL == nil ? "0" : "1"])
                 let feedResult = await Self.readFeedIfAvailable(feedURL, feedReader: feedReader)
-                let crowdSnapshot: CodexCrowdRadarSnapshot?
-                let crowdRefreshFailed: Bool
-                do {
-                    crowdSnapshot = try await crowdReader.readCrowdRadar()
-                    crowdRefreshFailed = false
-                } catch {
-                    crowdSnapshot = nil
-                    crowdRefreshFailed = true
-                }
                 trace?.mark("rss.end", metadata: [
                     "items": String(feedResult.items?.count ?? 0),
                     "failed": feedResult.diagnostic == nil ? "0" : "1"
                 ])
+                let crowdResult = await crowdFetch
                 let didPublish = await MainActor.run {
                     guard self.refreshGeneration == generation else {
                         return false
                     }
                     let now = Date()
                     self.snapshot = snapshot
-                    if let crowdSnapshot {
+                    if let crowdSnapshot = crowdResult.snapshot {
                         self.crowdSnapshot = crowdSnapshot
                         self.crowdStaleDataDisplayed = false
-                    } else if crowdRefreshFailed {
+                    } else if crowdResult.failed {
                         self.crowdStaleDataDisplayed = self.crowdSnapshot != nil
                     }
                     self.lastSuccessfulRefreshAt = now
@@ -373,11 +367,18 @@ final class CodexRadarStore: ObservableObject {
                 }
                 trace?.end(didPublish ? "ok" : "discarded-stale-generation")
             } catch {
+                let crowdResult = await crowdFetch
                 let didPublish = await MainActor.run {
                     guard self.refreshGeneration == generation else {
                         return false
                     }
                     let now = Date()
+                    if let crowdSnapshot = crowdResult.snapshot {
+                        self.crowdSnapshot = crowdSnapshot
+                        self.crowdStaleDataDisplayed = false
+                    } else if crowdResult.failed {
+                        self.crowdStaleDataDisplayed = self.crowdSnapshot != nil
+                    }
                     let diagnostic = CodexRadarDiagnostic.classify(source: .current, error: error, occurredAt: now)
                     self.lastFailureAt = now
                     self.staleDataDisplayed = self.snapshot != nil
@@ -484,6 +485,16 @@ final class CodexRadarStore: ObservableObject {
                 self.refreshScheduledDetailIfNeeded()
                 self.scheduleNextDetailRefreshTimer()
             }
+        }
+    }
+
+    private nonisolated static func readCrowdRadarIndependently(
+        _ crowdReader: any CodexCrowdRadarReading
+    ) async -> (snapshot: CodexCrowdRadarSnapshot?, failed: Bool) {
+        do {
+            return (try await crowdReader.readCrowdRadar(), false)
+        } catch {
+            return (nil, true)
         }
     }
 

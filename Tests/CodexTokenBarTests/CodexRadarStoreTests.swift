@@ -182,6 +182,71 @@ final class CodexRadarStoreTests: XCTestCase {
         XCTAssertEqual(store.crowdSnapshot, crowdSnapshot)
     }
 
+    func testOfficialRadarFailureStillAppliesAFreshCrowdRanking() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let initialCrowd = Self.makeCrowdSnapshot()
+        let refreshedCrowd = Self.makeCrowdSnapshot(taskCount: 205)
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: [
+                .success(snapshot),
+                .failure(CodexRadarReaderError.httpStatus(500))
+            ]),
+            feedReader: FeedReaderStub(actions: [
+                .success([Self.makeFeedItem(guid: "rss-1")])
+            ]),
+            crowdReader: CrowdReaderStub(actions: [
+                .success(initialCrowd),
+                .success(refreshedCrowd)
+            ])
+        )
+
+        store.refresh()
+        await waitUntil("initial full success") {
+            store.crowdSnapshot == initialCrowd && !store.isRefreshing
+        }
+
+        store.refresh()
+        await waitUntil("official failure with fresh crowd ranking") {
+            store.crowdSnapshot == refreshedCrowd && !store.isRefreshing
+        }
+
+        XCTAssertFalse(store.crowdStaleDataDisplayed)
+        XCTAssertTrue(store.staleDataDisplayed)
+        XCTAssertEqual(store.snapshot, snapshot)
+        XCTAssertEqual(store.diagnostics.map(\.category), [.httpServer, .staleCachedData])
+    }
+
+    func testOfficialAndCrowdFailuresTogetherMarkThePreviousCrowdRankingStale() async throws {
+        let snapshot = try Self.makeSnapshot()
+        let initialCrowd = Self.makeCrowdSnapshot()
+        let store = CodexRadarStore(
+            reader: RadarReaderStub(actions: [
+                .success(snapshot),
+                .failure(URLError(.timedOut))
+            ]),
+            feedReader: FeedReaderStub(actions: [
+                .success([Self.makeFeedItem(guid: "rss-1")])
+            ]),
+            crowdReader: CrowdReaderStub(actions: [
+                .success(initialCrowd),
+                .failure(URLError(.timedOut))
+            ])
+        )
+
+        store.refresh()
+        await waitUntil("initial full success") {
+            store.crowdSnapshot == initialCrowd && !store.isRefreshing
+        }
+
+        store.refresh()
+        await waitUntil("both sources fail") {
+            store.crowdStaleDataDisplayed && !store.isRefreshing
+        }
+
+        XCTAssertEqual(store.crowdSnapshot, initialCrowd)
+        XCTAssertTrue(store.staleDataDisplayed)
+    }
+
     func testRadarDiagnosticClassifiesTimeoutHTTPParseAndEmptyPayload() {
         XCTAssertEqual(
             CodexRadarDiagnostic.classify(source: .current, error: URLError(.timedOut)).category,
@@ -489,10 +554,10 @@ final class CodexRadarStoreTests: XCTestCase {
         )
     }
 
-    private static func makeCrowdSnapshot() -> CodexCrowdRadarSnapshot {
+    private static func makeCrowdSnapshot(taskCount: Int = 112) -> CodexCrowdRadarSnapshot {
         CodexCrowdRadarSnapshot(
             generatedAt: "2026-07-18T00:00:00Z",
-            taskCount: 112,
+            taskCount: taskCount,
             cellCount: 1_904,
             contributorCount: 130,
             pendingGrades: 1,
