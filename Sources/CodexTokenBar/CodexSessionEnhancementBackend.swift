@@ -102,6 +102,7 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         return try await withCheckedThrowingContinuation { continuation in
             queue.async { [dataSourceResolver] in
                 continuation.resume(with: Result {
+                    try CodexMultiInstanceMutationGate.ensureNoActiveNonDefaultInstance()
                     guard let dataSource = dataSourceResolver() else {
                         throw CodexSessionEnhancementBackendError.dataSourceUnavailable
                     }

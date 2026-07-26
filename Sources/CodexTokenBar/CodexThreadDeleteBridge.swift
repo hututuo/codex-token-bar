@@ -1981,6 +1981,7 @@ final class FoundationCodexThreadDeleteExecutor: CodexThreadDeleteExecuting, @un
     }
 
     private static func run(threadID: String, timeout: TimeInterval) throws -> String {
+        try CodexMultiInstanceMutationGate.ensureNoActiveNonDefaultInstance()
         var environment = ProcessInfo.processInfo.environment
         if let dataSource = CodexDataSourceResolver().resolve() {
             environment["CODEX_HOME"] = dataSource.codexHome.path

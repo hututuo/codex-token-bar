@@ -929,6 +929,9 @@ fn session_enhancement_result(
                 if !settings.session_delete {
                     return Err("会话删除未启用".into());
                 }
+                if let Some(block) = multi_instance_mutation_guard() {
+                    return Err(block);
+                }
                 delete_thread(&request.thread_id).map(|message| SessionEnhancementBindingResult {
                     status: "deleted",
                     message,
@@ -946,6 +949,9 @@ fn session_enhancement_result(
             SessionEnhancementBindingAction::MoveThreadWorkspace => {
                 if !settings.project_move {
                     return Err("会话项目移动未启用".into());
+                }
+                if let Some(block) = multi_instance_mutation_guard() {
+                    return Err(block);
                 }
                 let target = request
                     .target_cwd
@@ -971,6 +977,105 @@ fn session_enhancement_result(
         }
     })();
     result.unwrap_or_else(failed_binding_result)
+}
+
+/// 多实例强校验：CDP 注入按钮发起的删除/移动作用于 Token Bar 选定的
+/// CODEX_HOME，而点击按钮的窗口可能属于 Swift 实例管理器启动的另一个
+/// Codex Home——克隆/同步后线程 UUID 相同，存在删错库/移错库风险。只要
+/// 注册表存在无法排除活动嫌疑的实例即拒绝执行；注册表缺失视为未启用多
+/// 实例。完整方案（核对 CDP 目标进程真实 CODEX_HOME）挂账。语义与 Swift
+/// 端 CodexMultiInstanceMutationGate / CodexInstanceEngine.runtimeStatus
+/// 对齐：受控/外部进程按 Electron user-data 标记归属，无法归属的外部实
+/// 例只要有任何 Codex 桌面进程即按活动处理。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn multi_instance_mutation_block(
+    registry_path: &std::path::Path,
+    process_listing: &dyn Fn() -> Result<String, String>,
+) -> Option<String> {
+    if !registry_path.exists() {
+        return None;
+    }
+    let raw = match std::fs::read_to_string(registry_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return Some(format!(
+                "无法读取多实例注册表，删除/移动已暂停以避免作用到错误的 Codex 目录：{error}"
+            ))
+        }
+    };
+    let document: Value = match serde_json::from_str(&raw) {
+        Ok(document) => document,
+        Err(error) => {
+            return Some(format!("多实例注册表格式损坏，删除/移动已暂停：{error}"))
+        }
+    };
+    if document.get("schemaVersion").and_then(Value::as_i64) != Some(1) {
+        return Some("多实例注册表版本不受支持，删除/移动已暂停".into());
+    }
+    let Some(instances) = document.get("instances").and_then(Value::as_array) else {
+        return Some("多实例注册表缺少实例列表，删除/移动已暂停".into());
+    };
+    if instances.is_empty() {
+        return None;
+    }
+    let listing = match process_listing() {
+        Ok(listing) => listing,
+        Err(error) => {
+            return Some(format!(
+                "无法枚举进程以确认多实例状态，删除/移动已暂停：{error}"
+            ))
+        }
+    };
+    for instance in instances {
+        let name = instance
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("未命名实例");
+        let electron_dir = instance
+            .get("electronDataDirectory")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !electron_dir.is_empty() && listing.contains(&format!("--user-data-dir={electron_dir}"))
+        {
+            return Some(format!(
+                "Codex 实例「{name}」正在运行，删除/移动已暂停：多实例下同一线程 ID 可能属于不同 Codex 目录，请先停止该实例后重试"
+            ));
+        }
+    }
+    let has_external_instance = instances
+        .iter()
+        .any(|instance| instance.get("managed").and_then(Value::as_bool) == Some(false));
+    if has_external_instance && listing.contains("Codex.app/Contents/MacOS") {
+        return Some(
+            "已登记外部 Codex 实例且存在无法归属的 Codex 进程，删除/移动已暂停：无法排除按钮所在窗口属于其他 Codex 目录，请先停止或取消登记外部实例后重试"
+                .into(),
+        );
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn multi_instance_mutation_guard() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let registry = std::path::PathBuf::from(home)
+        .join("Library/Application Support/CodexTokenBar/codex-instances.json");
+    multi_instance_mutation_block(&registry, &|| {
+        let output = Command::new("/bin/ps")
+            .args(["-axo", "command="])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(format!("ps 退出码 {:?}", output.status.code()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn multi_instance_mutation_guard() -> Option<String> {
+    // 多实例管理器目前只在 macOS（Swift 端）存在；其他平台没有克隆 Home。
+    None
 }
 
 fn delete_thread(thread_id: &str) -> Result<String, String> {
@@ -1389,6 +1494,98 @@ mod tests {
         assert_eq!(
             delete_command_args("019f5a7c-1234-7abc-8def-0123456789ab"),
             ["delete", "--force", "019f5a7c-1234-7abc-8def-0123456789ab"]
+        );
+    }
+
+    struct RegistryFixture(std::path::PathBuf);
+
+    impl RegistryFixture {
+        fn new(contents: Option<&str>) -> Self {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let root = std::env::temp_dir().join(format!(
+                "codex-token-bar-instance-guard-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let registry = root.join("codex-instances.json");
+            if let Some(contents) = contents {
+                std::fs::write(&registry, contents).unwrap();
+            }
+            Self(registry)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for RegistryFixture {
+        fn drop(&mut self) {
+            if let Some(parent) = self.0.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+    }
+
+    fn registry_with_instance(managed: bool) -> String {
+        format!(
+            r#"{{"schemaVersion":1,"updatedAt":0,"instances":[{{"id":"a","name":"克隆 A","codexHome":"/tmp/clone-a/home","electronDataDirectory":"/tmp/clone-a/electron-data","arguments":[],"managed":{managed},"isDefault":false,"autoSyncEnabled":false,"createdAt":0,"updatedAt":0}}],"conflicts":[]}}"#
+        )
+    }
+
+    #[test]
+    fn missing_instance_registry_allows_session_mutations() {
+        let fixture = RegistryFixture::new(None);
+        let block = multi_instance_mutation_block(fixture.path(), &|| {
+            panic!("注册表缺失时不应枚举进程")
+        });
+        assert_eq!(block, None);
+    }
+
+    #[test]
+    fn running_instance_marker_blocks_session_mutations() {
+        let fixture = RegistryFixture::new(Some(&registry_with_instance(true)));
+        let block = multi_instance_mutation_block(fixture.path(), &|| {
+            Ok("/Applications/Codex.app/Contents/MacOS/Codex --user-data-dir=/tmp/clone-a/electron-data\n".into())
+        });
+        let message = block.expect("实例标记命中时必须拒绝删除/移动");
+        assert!(message.contains("克隆 A"), "拒绝信息应点名实例：{message}");
+        assert!(message.contains("暂停"), "拒绝信息应说明已暂停：{message}");
+    }
+
+    #[test]
+    fn stopped_instances_allow_session_mutations_even_while_default_codex_runs() {
+        let fixture = RegistryFixture::new(Some(&registry_with_instance(true)));
+        let block = multi_instance_mutation_block(fixture.path(), &|| {
+            Ok("/Applications/Codex.app/Contents/MacOS/Codex\n/bin/zsh\n".into())
+        });
+        assert_eq!(block, None);
+    }
+
+    #[test]
+    fn external_instance_with_unattributed_codex_process_blocks_session_mutations() {
+        let fixture = RegistryFixture::new(Some(&registry_with_instance(false)));
+        let block = multi_instance_mutation_block(fixture.path(), &|| {
+            Ok("/Applications/Codex.app/Contents/MacOS/Codex\n".into())
+        });
+        let message = block.expect("外部实例无法归属进程时必须拒绝删除/移动");
+        assert!(message.contains("外部"), "拒绝信息应说明外部实例：{message}");
+    }
+
+    #[test]
+    fn corrupt_or_unsupported_instance_registry_blocks_session_mutations() {
+        let corrupt = RegistryFixture::new(Some("not-json"));
+        assert!(multi_instance_mutation_block(corrupt.path(), &|| Ok(String::new())).is_some());
+
+        let unsupported = RegistryFixture::new(Some(
+            r#"{"schemaVersion":2,"updatedAt":0,"instances":[],"conflicts":[]}"#,
+        ));
+        assert!(
+            multi_instance_mutation_block(unsupported.path(), &|| Ok(String::new())).is_some()
         );
     }
 
