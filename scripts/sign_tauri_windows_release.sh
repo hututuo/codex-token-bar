@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 --version VERSION --repo OWNER/REPO --build-dir DIR --release-dir DIR --key-path FILE [--signer FILE]" >&2
+  echo "Usage: $0 --version VERSION --repo OWNER/REPO --build-dir DIR --release-dir DIR --key-path FILE [--signer FILE] [--verify-conf FILE]" >&2
 }
 
 VERSION=""
@@ -11,6 +11,7 @@ BUILD_DIR=""
 RELEASE_DIR=""
 KEY_PATH=""
 SIGNER=""
+VERIFY_CONF=""
 
 while (($#)); do
   case "$1" in
@@ -20,6 +21,7 @@ while (($#)); do
     --release-dir) RELEASE_DIR=${2-}; shift 2 ;;
     --key-path) KEY_PATH=${2-}; shift 2 ;;
     --signer) SIGNER=${2-}; shift 2 ;;
+    --verify-conf) VERIFY_CONF=${2-}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
   esac
@@ -44,6 +46,9 @@ command -v cc >/dev/null || { echo "Missing required command: cc (install Xcode 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 HELPER="$SCRIPT_DIR/tauri_windows_release_helper.mjs"
+# 验签公钥默认取产品配置里的 updater pubkey；--verify-conf 仅供测试注入。
+VERIFY_CONF="${VERIFY_CONF:-$ROOT_DIR/tauri-app/src-tauri/tauri.conf.json}"
+[[ -f "$VERIFY_CONF" ]] || { echo "Updater configuration for signature verification not found: $VERIFY_CONF" >&2; exit 1; }
 RENAME_HELPER_SOURCE="$SCRIPT_DIR/rename_no_replace_darwin.c"
 [[ -f "$RENAME_HELPER_SOURCE" ]] || { echo "Darwin RENAME_EXCL helper source not found" >&2; exit 1; }
 BUILD_DIR=$(cd "$BUILD_DIR" && pwd)
@@ -99,7 +104,7 @@ while IFS=$'\t' read -r platform arch filename sha256; do
   [[ -s "$STAGING/$filename.sig" ]] || { echo "Signer failed to create a signature for $filename" >&2; exit 1; }
 done < <(node "$HELPER" print-assets "$ASSET_LIST")
 
-node "$HELPER" validate-signatures "$ASSET_LIST" "$STAGING"
+node "$HELPER" verify-signatures "$ASSET_LIST" "$STAGING" "$VERIFY_CONF"
 PUB_DATE=${SOURCE_DATE_EPOCH:+$(date -u -r "$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)}
 PUB_DATE=${PUB_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
 if ! node "$HELPER" write-metadata "$ASSET_LIST" "$STAGING" "$VERSION" "$REPO" "$PUB_DATE"; then

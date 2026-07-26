@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +20,25 @@ const installerNames = [
 
 function sha256(data) {
   return createHash("sha256").update(data).digest("hex");
+}
+
+// 真实 minisign 形态的测试密钥：pubkey 信封进夹具 tauri.conf.json，
+// 私钥 PEM 注入 stub 签名器，让门禁跑真实 Blake2b-512 + ed25519 验证。
+function minisignTestKey() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const keyID = createHash("sha256").update(raw).digest().subarray(0, 8);
+  const blob = Buffer.concat([Buffer.from("Ed", "ascii"), keyID, raw]);
+  const comment = Buffer.from(keyID).reverse().toString("hex").toUpperCase();
+  const envelope = Buffer.from(
+    `untrusted comment: minisign public key: ${comment}\n${blob.toString("base64")}\n`,
+    "utf8",
+  ).toString("base64");
+  return {
+    privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    keyIDHex: keyID.toString("hex"),
+    envelope,
+  };
 }
 
 async function snapshotDirectory(directory) {
@@ -73,10 +92,18 @@ async function makeFixture(options = {}) {
 
   const key = path.join(root, "test.key");
   await writeFile(key, "TEST_PRIVATE_KEY_DO_NOT_LEAK");
+  const updaterKey = minisignTestKey();
+  const rogueKey = minisignTestKey();
+  const verifyConf = path.join(root, "tauri.conf.json");
+  await writeFile(
+    verifyConf,
+    `${JSON.stringify({ plugins: { updater: options.confMissingPubkey ? {} : { pubkey: updaterKey.envelope } } }, null, 2)}\n`,
+  );
+  const signingKey = options.wrongKeySignature ? rogueKey : updaterKey;
   const signerProgram = path.join(root, "stub-signer.mjs");
   await writeFile(signerProgram, `
-import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { createHash, createPrivateKey, sign } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const file = process.argv.at(-1);
 if (${Boolean(options.finalConflict)} && file.includes("arm64")) {
@@ -85,16 +112,28 @@ if (${Boolean(options.finalConflict)} && file.includes("arm64")) {
 }
 if (${Boolean(options.failSign)} && file.includes("arm64")) process.exit(42);
 const name = path.basename(file);
-const seed = createHash("sha256").update(name).digest();
-const fileSignature = Buffer.alloc(${options.badSignatureLength ? 73 : 74});
-fileSignature.write(${JSON.stringify(options.badSignatureMagic ? "Ed" : options.unknownSignatureMagic ? "XX" : "ED")}, 0, "ascii");
-for (let i = 2; i < fileSignature.length; i += 1) fileSignature[i] = seed[i % seed.length];
-const trustedSignature = Buffer.alloc(64);
-for (let i = 0; i < trustedSignature.length; i += 1) trustedSignature[i] = seed[(i + 7) % seed.length];
+const privateKey = createPrivateKey(${JSON.stringify(signingKey.privateKeyPem)});
+const keyID = Buffer.from(${JSON.stringify(options.wrongSignatureKeyID ? "00112233445566ff" : updaterKey.keyIDHex)}, "hex");
+const digest = createHash("blake2b512").update(readFileSync(file)).digest();
+const fileSignature = Buffer.concat([
+  Buffer.from(${JSON.stringify(options.badSignatureMagic ? "Ed" : options.unknownSignatureMagic ? "XX" : "ED")}, "ascii"),
+  keyID,
+  sign(null, digest, privateKey),
+]);
+const trustedComment = "timestamp:1700000000\\tfile:" + name;
+const trustedSignature = sign(
+  null,
+  Buffer.concat([fileSignature.subarray(10), Buffer.from(trustedComment, "utf8")]),
+  privateKey,
+);
+const publishedComment = ${Boolean(options.tamperTrustedComment)}
+  ? "timestamp:1700000001\\tfile:" + name
+  : trustedComment;
+const signatureBody = ${Boolean(options.badSignatureLength)} ? fileSignature.subarray(0, 73) : fileSignature;
 const minisign = [
   "untrusted comment: signature from tauri secret key",
-  fileSignature.toString("base64"),
-  "trusted comment: timestamp:1700000000\\tfile:" + name,
+  signatureBody.toString("base64"),
+  "trusted comment: " + publishedComment,
   trustedSignature.toString("base64"),
 ].join("\\n") + "\\n";
 let envelope = Buffer.from(minisign, "utf8").toString("base64");
@@ -176,7 +215,7 @@ process.exit(result.status ?? 1);
       await writeFile(path.join(releaseDir, name), `OLD_BYTES:${name}`);
     }
   }
-  return { root, buildDir, releaseDir, key, signer, binDir };
+  return { root, buildDir, releaseDir, key, signer, binDir, verifyConf };
 }
 
 async function runSignerFixture(options = {}) {
@@ -202,6 +241,7 @@ async function runSignerFixture(options = {}) {
       "--build-dir", fixture.buildDir,
       "--release-dir", fixture.releaseDir,
       "--key-path", fixture.key,
+      "--verify-conf", fixture.verifyConf,
       ...signerArguments,
     ], { env });
     let stdout = "";
@@ -234,6 +274,7 @@ async function runSignerFixture(options = {}) {
       "--build-dir", fixture.buildDir,
       "--release-dir", fixture.releaseDir,
       "--key-path", fixture.key,
+      "--verify-conf", fixture.verifyConf,
       ...signerArguments,
     ], { env });
     return { ...fixture, ...result, ok: true, buildSnapshot, outputSnapshot };
@@ -342,6 +383,10 @@ for (const [name, options, expectedError] of [
   ["unknown signature magic", { unknownSignatureMagic: true }, /Invalid Tauri signature envelope/],
   ["invalid file signature length", { badSignatureLength: true }, /Invalid Tauri signature envelope/],
   ["single-byte signature corruption", { corruptSignature: true }, /Invalid Tauri signature envelope/],
+  ["signature from an unexpected key", { wrongKeySignature: true }, /Ed25519 verification failed/],
+  ["signature key ID mismatch", { wrongSignatureKeyID: true }, /key ID mismatch/i],
+  ["tampered trusted comment", { tamperTrustedComment: true }, /Trusted comment verification failed/],
+  ["verify configuration without pubkey", { confMissingPubkey: true }, /missing plugins\.updater\.pubkey/],
   ["metadata generation failure", { failMetadata: true }, /Metadata generation failed/],
   ["checksum generation failure", { failChecksum: true }, /Checksum generation failed/],
   ["source replacement after validation", { swapAfterValidate: true }, /staged.*mismatch|mismatch.*staged/i],
