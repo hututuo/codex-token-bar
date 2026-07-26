@@ -139,8 +139,9 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             status: "exported",
             message: "ok",
             filename: "session.md",
-            markdown: markdown
-        ).markingMarkdownAsTransferred(chunkCount: chunks.count)
+            markdownTransfer: true,
+            markdownChunkCount: chunks.count
+        )
         let encoded = try XCTUnwrap(
             try JSONSerialization.jsonObject(
                 with: JSONEncoder().encode(transferred)
@@ -148,7 +149,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         )
         XCTAssertEqual(encoded["markdownTransfer"] as? Bool, true)
         XCTAssertEqual(encoded["markdownChunkCount"] as? Int, chunks.count)
-        XCTAssertFalse(encoded["markdown"] is String)
+        XCTAssertNil(encoded["markdown"])
     }
 
     func testSubprocessDrainsLargeStdoutAndStderrWhileChildRuns() throws {

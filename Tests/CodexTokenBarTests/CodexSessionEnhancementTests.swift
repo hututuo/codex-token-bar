@@ -49,19 +49,23 @@ final class CodexSessionEnhancementTests: XCTestCase {
         let executor = FoundationCodexSessionEnhancementExecutor(
             dataSourceResolver: { fixture.dataSource }
         )
+        let collector = MarkdownChunkCollector()
 
         let result = try await executor.exportMarkdown(
             threadID: fixture.threadID,
-            fallbackTitle: "备用标题"
+            fallbackTitle: "备用标题",
+            emit: { chunk in await collector.append(chunk) }
         )
 
+        let markdown = await collector.joined()
         XCTAssertEqual(result.filename, "真实会话-\(fixture.threadID).md")
-        XCTAssertTrue(result.markdown.hasPrefix("# 真实会话\n"))
-        XCTAssertTrue(result.markdown.contains("### User"))
-        XCTAssertTrue(result.markdown.contains("你好，Codex"))
-        XCTAssertTrue(result.markdown.contains("### Assistant"))
-        XCTAssertTrue(result.markdown.contains("已经完成"))
-        XCTAssertTrue(result.markdown.contains("2026"))
+        XCTAssertTrue(result.message.contains(result.filename))
+        XCTAssertTrue(markdown.hasPrefix("# 真实会话\n"))
+        XCTAssertTrue(markdown.contains("### User"))
+        XCTAssertTrue(markdown.contains("你好，Codex"))
+        XCTAssertTrue(markdown.contains("### Assistant"))
+        XCTAssertTrue(markdown.contains("已经完成"))
+        XCTAssertTrue(markdown.contains("2026"))
     }
 
     func testProjectMoveUpdatesDatabaseAndRolloutSessionMetaTogether() async throws {
@@ -322,5 +326,17 @@ final class CodexSessionEnhancementTests: XCTestCase {
 
         return fixture.rolloutURL.deletingLastPathComponent()
             .appendingPathComponent(retainedName)
+    }
+}
+
+private actor MarkdownChunkCollector {
+    private var chunks: [String] = []
+
+    func append(_ chunk: String) {
+        chunks.append(chunk)
+    }
+
+    func joined() -> String {
+        chunks.joined()
     }
 }

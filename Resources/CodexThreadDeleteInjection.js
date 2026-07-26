@@ -168,6 +168,10 @@
     }
     if (sequence !== transfer.nextSequence) {
       state.markdownTransfers.delete(key);
+      target.callbacks.get(requestId)?.resolve?.({
+        status: "failed",
+        message: "Markdown 分块顺序不一致",
+      });
       throw new Error("Markdown 分块顺序不一致");
     }
     transfer.sink.started = true;
@@ -183,8 +187,19 @@
     const callback = target?.callbacks.get(requestId);
     if (!callback) return false;
     const key = markdownTransferKey(targetOwner, requestId);
+    const registeredTransfer = state.markdownTransfers.get(key);
+    if (registeredTransfer
+        && result?.status === "exported"
+        && result?.markdownTransfer !== true) {
+      state.markdownTransfers.delete(key);
+      callback.resolve({
+        status: "failed",
+        message: "原生端未按 Markdown 流式协议返回，已取消导出",
+      });
+      return true;
+    }
     if (result?.markdownTransfer === true) {
-      const transfer = state.markdownTransfers.get(key);
+      const transfer = registeredTransfer;
       const expectedChunks = result.markdownChunkCount;
       const receivedChunks = transfer?.nextSequence ?? 0;
       if (!Number.isSafeInteger(expectedChunks)

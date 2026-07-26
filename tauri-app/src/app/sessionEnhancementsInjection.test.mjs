@@ -75,22 +75,39 @@ test("session more menu exports real Markdown through the native bridge", async 
   const threadId = "019f5a7c-1234-7abc-8def-0123456789ab";
   sidebarRow(window.document, `local:${threadId}`, "导出会话");
   const calls = [];
+  const chunkAcks = [];
   let written = "";
+  let closed = false;
   window.showSaveFilePicker = async () => ({
     createWritable: async () => ({
-      write: async (value) => { written = value; },
-      close: async () => {},
+      write: async (value) => { written += value; },
+      close: async () => { closed = true; },
     }),
   });
   window.codexTokenBarDeleteSwift = (payloadText) => {
     const payload = JSON.parse(payloadText);
     calls.push(payload);
-    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
-      status: "exported",
-      message: "已生成 Markdown",
-      filename: "导出会话.md",
-      markdown: "# 导出会话\n",
-    });
+    void (async () => {
+      chunkAcks.push(await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner,
+        payload.id,
+        0,
+        "# 导出",
+      ));
+      chunkAcks.push(await window.__codexTokenBarThreadDeleteMarkdownChunk(
+        payload.owner,
+        payload.id,
+        1,
+        "会话\n",
+      ));
+      window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
+        status: "exported",
+        message: "已生成 Markdown",
+        filename: "导出会话.md",
+        markdownTransfer: true,
+        markdownChunkCount: 2,
+      });
+    })();
   };
 
   window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
@@ -111,7 +128,9 @@ test("session more menu exports real Markdown through the native bridge", async 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].action, "exportMarkdown");
   assert.equal(calls[0].threadId, threadId);
+  assert.deepEqual(chunkAcks, [true, true]);
   assert.equal(written, "# 导出会话\n");
+  assert.equal(closed, true);
   await cleanupWindow(window);
 });
 
@@ -162,19 +181,29 @@ test("a runtime upgrade replaces more buttons that still hold old injected handl
   sidebarRow(window.document, "019f5a7c-1434-7abc-8def-0123456789ab", "热升级会话");
   window.codexTokenBarDeleteSwift = () => {};
 
-  const legacyScript = renderedScript({ sessionDelete: false, projectMove: false })
-    .replaceAll("const runtimeVersion = 3;", "const runtimeVersion = 2;");
+  const currentRuntimeVersion = Number(
+    enhancementTemplate.match(/const runtimeVersion = (\d+);/)[1],
+  );
+  const freshScript = renderedScript({ sessionDelete: false, projectMove: false });
+  const legacyScript = freshScript.replaceAll(
+    `const runtimeVersion = ${currentRuntimeVersion};`,
+    `const runtimeVersion = ${currentRuntimeVersion - 1};`,
+  );
+  assert.notEqual(legacyScript, freshScript);
   window.eval(legacyScript);
   const legacyMore = window.document.querySelector('[data-codex-token-bar-session-more="true"]');
   assert.ok(legacyMore);
 
-  window.eval(renderedScript({ sessionDelete: false, projectMove: false }));
+  window.eval(freshScript);
   const upgradedMore = window.document.querySelector('[data-codex-token-bar-session-more="true"]');
   assert.ok(upgradedMore);
   assert.notEqual(upgradedMore, legacyMore);
   assert.equal(legacyMore.isConnected, false);
   assert.equal(upgradedMore.getAttribute("aria-haspopup"), "menu");
-  assert.equal(window.__codexTokenBarSessionEnhancementsState.runtimeVersion, 3);
+  assert.equal(
+    window.__codexTokenBarSessionEnhancementsState.runtimeVersion,
+    currentRuntimeVersion,
+  );
   await cleanupWindow(window);
 });
 
