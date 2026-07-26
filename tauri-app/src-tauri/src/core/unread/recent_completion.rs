@@ -15,12 +15,35 @@ const RECENT_COMPLETION_LOOKBACK_SECONDS: f64 = 30.0;
 const RECENT_COMPLETION_FILE_LIMIT: usize = 64;
 const RECENT_COMPLETION_TAIL_BYTE_LIMIT: u64 = 4 * 1024 * 1024;
 
-pub(super) fn recent_completion_summary_at(
+// 收集（递归扫 sessions 的磁盘 IO 大头）与过滤（对已确认标记的纯集合运算）
+// 拆成两步：调用方必须在全局未读事务锁外收集，锁内只做过滤，慢盘/大目录
+// 才不会把所有未读刷新挂在锁上排队。
+pub(super) fn collect_recent_completion_markers_at(
     codex_home: &Path,
-    acknowledged_markers: &HashSet<String>,
     now: f64,
+) -> Vec<(String, String)> {
+    recent_session_files(&codex_home.join("sessions"), now)
+        .into_iter()
+        .flat_map(|file| recent_completed_user_task_markers(&file, now))
+        .collect()
+}
+
+pub(super) fn thread_ids_from_collected_markers(
+    collected: &[(String, String)],
+    acknowledged_markers: &HashSet<String>,
+) -> HashSet<String> {
+    collected
+        .iter()
+        .filter(|(_, marker)| !acknowledged_markers.contains(marker))
+        .map(|(thread_id, _)| thread_id.clone())
+        .collect()
+}
+
+pub(super) fn summary_from_collected_markers(
+    collected: &[(String, String)],
+    acknowledged_markers: &HashSet<String>,
 ) -> UnreadSummary {
-    let count = recent_completion_thread_ids_at(codex_home, acknowledged_markers, now).len();
+    let count = thread_ids_from_collected_markers(collected, acknowledged_markers).len();
     let active = count > 0;
     UnreadSummary {
         active,
@@ -48,24 +71,9 @@ pub(super) fn recent_completion_summary_at(
 
 pub(super) fn recent_completion_markers(codex_home: &Path) -> HashSet<String> {
     let now = current_time_seconds();
-    recent_session_files(&codex_home.join("sessions"), now)
+    collect_recent_completion_markers_at(codex_home, now)
         .into_iter()
-        .flat_map(|file| recent_completed_user_task_markers(&file, now))
         .map(|(_, marker)| marker)
-        .collect()
-}
-
-pub(super) fn recent_completion_thread_ids_at(
-    codex_home: &Path,
-    acknowledged_markers: &HashSet<String>,
-    now: f64,
-) -> HashSet<String> {
-    recent_session_files(&codex_home.join("sessions"), now)
-        .into_iter()
-        .flat_map(|file| recent_completed_user_task_markers(&file, now))
-        .filter_map(|(thread_id, marker)| {
-            (!acknowledged_markers.contains(&marker)).then_some(thread_id)
-        })
         .collect()
 }
 

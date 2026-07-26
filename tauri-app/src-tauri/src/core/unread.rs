@@ -1,13 +1,12 @@
 use crate::core::app_paths;
+use crate::core::atomic_file;
 use crate::models::UnreadSummary;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 mod recent_completion;
 #[cfg(test)]
@@ -19,7 +18,6 @@ use state::read_unread_thread_ids;
 
 static ACKNOWLEDGEMENT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TRUSTED_SUMMARIES: OnceLock<Mutex<HashMap<String, UnreadSummary>>> = OnceLock::new();
-static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const PINNED_RECENT_COMPLETION_MARKER_LIMIT: usize = 4_096;
 
 #[derive(Clone, Debug)]
@@ -246,6 +244,11 @@ where
     V: FnOnce() -> Result<(), String>,
 {
     let native_thread_ids = read_unread_thread_ids(codex_home);
+    // 递归扫描 sessions 收集完成标记（磁盘 IO 大头）必须在全局未读事务锁外
+    // 完成；锁内只对已确认标记做纯集合过滤，避免慢盘/大目录时悬浮窗与仪表
+    // 盘的并发刷新全部挂在锁上。
+    let collected_completion_markers =
+        recent_completion::collect_recent_completion_markers_at(codex_home, now);
     acknowledgement_transaction(writer, validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
@@ -257,10 +260,9 @@ where
                 home_acknowledgement
                     .unread_thread_ids
                     .retain(|thread_id| thread_ids.contains(thread_id));
-                let completion_thread_ids = recent_completion::recent_completion_thread_ids_at(
-                    codex_home,
+                let completion_thread_ids = recent_completion::thread_ids_from_collected_markers(
+                    &collected_completion_markers,
                     &home_acknowledgement.completion_markers,
-                    now,
                 );
                 let reactivated_thread_ids: HashSet<String> = completion_thread_ids
                     .intersection(thread_ids)
@@ -276,10 +278,9 @@ where
                 active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
                 unread_state_summary(active_ids.len())
             }
-            None => recent_completion::recent_completion_summary_at(
-                codex_home,
+            None => recent_completion::summary_from_collected_markers(
+                &collected_completion_markers,
                 &home_acknowledgement.completion_markers,
-                now,
             ),
         };
         Ok((summary, *home_acknowledgement != previous))
@@ -489,7 +490,7 @@ fn write_acknowledgement_at(
     path: &Path,
     acknowledgement: &UnreadAcknowledgement,
 ) -> Result<AcknowledgementWriteOutcome, String> {
-    write_acknowledgement_at_with_sync(path, acknowledgement, sync_parent_directory)
+    write_acknowledgement_at_with_sync(path, acknowledgement, |_| Ok(()))
 }
 
 fn write_acknowledgement_at_with_sync<S>(
@@ -498,85 +499,29 @@ fn write_acknowledgement_at_with_sync<S>(
     sync_parent: S,
 ) -> Result<AcknowledgementWriteOutcome, String>
 where
-    S: FnOnce(&Path) -> Result<(), String>,
+    S: Fn(&Path) -> Result<(), String>,
 {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建未读基线目录失败：{error}"))?;
-    }
     let data = serde_json::to_vec_pretty(acknowledgement).map_err(|error| error.to_string())?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "未读基线路径缺少父目录".to_string())?;
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("unread-acknowledgement.json");
-    let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let temp_path = parent.join(format!(
-        ".{file_name}.tmp-{}-{sequence}-{timestamp}",
-        std::process::id(),
-    ));
-
-    let write_result = (|| {
-        let mut temp_file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(|error| format!("创建未读基线临时文件失败：{error}"))?;
-        temp_file
-            .write_all(&data)
-            .map_err(|error| format!("写入未读基线临时文件失败：{error}"))?;
-        temp_file
-            .sync_all()
-            .map_err(|error| format!("同步未读基线临时文件失败：{error}"))?;
-        replace_file_atomically(&temp_path, path)
-            .map_err(|error| format!("替换未读基线失败：{error}"))?;
-        Ok(match sync_parent(parent) {
-            Ok(()) => AcknowledgementWriteOutcome::Durable,
-            Err(error) => AcknowledgementWriteOutcome::CommittedDurabilityUncertain(error),
-        })
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    write_result
-}
-
-fn sync_parent_directory(parent: &Path) -> Result<(), String> {
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("同步未读基线目录失败：{error}"))
-}
-
-fn replace_file_atomically(source: &Path, destination: &Path) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
-
-        if destination.exists() {
-            let destination = crate::core::windows_path::extended_length_path(destination)?;
-            let source = crate::core::windows_path::extended_length_path(source)?;
-            let replaced = unsafe {
-                ReplaceFileW(
-                    destination.as_ptr(),
-                    source.as_ptr(),
-                    std::ptr::null(),
-                    REPLACEFILE_WRITE_THROUGH,
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            };
-            if replaced == 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            return Ok(());
+    // temp+fsync+原子替换+父目录 fsync 统一走 atomic_file，未读侧不再自带一份
+    // 等价实现。注入的 sync_parent 挂在 ParentSync 钩子上：钩子先执行、真实目录
+    // fsync 紧随其后，测试注入“已提交但目录持久性未确认”故障时不会绕开真实同步。
+    match atomic_file::write_atomically_with_hook(path, &data, |stage, stage_path| {
+        if stage == atomic_file::AtomicWriteStage::ParentSync {
+            sync_parent(stage_path)
+        } else {
+            Ok(())
+        }
+    }) {
+        Ok(()) => Ok(AcknowledgementWriteOutcome::Durable),
+        Err(atomic_file::AtomicWriteError::CommittedNotDurable(error)) => {
+            Ok(AcknowledgementWriteOutcome::CommittedDurabilityUncertain(
+                format!("同步未读基线目录失败：{error}"),
+            ))
+        }
+        Err(atomic_file::AtomicWriteError::NotCommitted(error)) => {
+            Err(format!("写入未读基线失败：{error}"))
         }
     }
-    fs::rename(source, destination).map_err(|error| error.to_string())
 }
 
 fn remember_trusted_summary(source_scope_key: &str, summary: &UnreadSummary) {
