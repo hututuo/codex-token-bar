@@ -240,9 +240,10 @@ fn window_label<'a>(window: &Value, fallback: &'a str, reset_at_unix: Option<i64
         if reset_span_seconds > 6 * 60 * 60 {
             return "7d";
         }
-        if reset_span_seconds >= 0 {
-            return "5h";
-        }
+        // ≤6h 的重置跨度是歧义区：5h 窗口的任意时刻与 7d 窗口的最后 ≤6h 都落在
+        // 这里，猜 "5h" 会把 7d 尾端数据当 5h 写进 history（双窗口卡还会因两个
+        // 窗口同标签而整个丢弃 secondary）。保留调用方按 JSON 字段位置给出的
+        // fallback。与 Swift quotaWindowLabel 同语义。
     }
 
     fallback
@@ -433,6 +434,29 @@ mod tests {
         let quota = parse_rate_limits(&percent_with_duration).unwrap();
         assert!((quota.five_hour.used_percent.unwrap() - 0.0025).abs() < 1e-9);
         assert!((quota.seven_day.used_percent.unwrap() - 0.974).abs() < 1e-9);
+    }
+
+    #[test]
+    fn seven_day_window_in_its_final_six_hours_keeps_the_positional_label() {
+        // 与 Swift testSevenDayWindowInItsFinalSixHoursKeepsThePositionalLabel
+        // 互为镜像：windowDurationMins 缺失时，≤6h 的重置跨度是歧义区（5h 窗口
+        // 任意时刻与 7d 窗口最后 ≤6h 重叠），不得猜成 "5h"——否则 secondary 与
+        // primary 同标签，7d 读数被整个丢弃。
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let quota = parse_rate_limits(&json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": { "usedPercent": 25, "resetsAt": now + 60 * 60 },
+                "secondary": { "usedPercent": 80, "resetsAt": now + 3 * 60 * 60 }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(quota.five_hour.label, "5h");
+        assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 1e-9);
+        assert_eq!(quota.seven_day.availability, QuotaAvailability::Measured);
+        assert_eq!(quota.seven_day.label, "7d");
+        assert!((quota.seven_day.used_percent.unwrap() - 0.8).abs() < 1e-9);
     }
 
     #[test]

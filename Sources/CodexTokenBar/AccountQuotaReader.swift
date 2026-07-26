@@ -1540,7 +1540,9 @@ enum AccountQuotaReader {
         if let resetsAt {
             let resetSpan = resetsAt.timeIntervalSince(Date())
             if resetSpan > 6 * 60 * 60 { return "7d" }
-            if resetSpan >= 0 { return "5h" }
+            // ≤6h 的重置跨度是歧义区：5h 窗口的任意时刻与 7d 窗口的最后 ≤6h 都
+            // 落在这里，猜 "5h" 会把 7d 尾端数据当 5h 写进 history。保留调用方
+            // 按 JSON 字段位置给出的 fallback。与 Rust window_label 同语义。
         }
         return fallback
     }

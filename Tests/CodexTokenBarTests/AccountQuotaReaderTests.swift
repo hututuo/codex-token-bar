@@ -240,6 +240,25 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertNotNil(snapshot.sevenDayPaceStatus)
     }
 
+    func testSevenDayWindowInItsFinalSixHoursKeepsThePositionalLabel() {
+        // 与 Rust seven_day_window_in_its_final_six_hours_keeps_the_positional_
+        // label 互为镜像：windowDurationMins 缺失时，≤6h 的重置跨度是歧义区，
+        // 不得猜成 "5h"——否则 secondary 与 primary 同标签，7d 读数被整个丢弃。
+        let now = Date().timeIntervalSince1970
+        let snapshot = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "codex",
+                "primary": ["usedPercent": 25, "resetsAt": now + 60 * 60],
+                "secondary": ["usedPercent": 80, "resetsAt": now + 3 * 60 * 60]
+            ]
+        ], accountName: "Boundary")
+
+        XCTAssertEqual(snapshot.fiveHour?.label, "5h")
+        XCTAssertEqual(snapshot.fiveHour?.usedPercent, 25)
+        XCTAssertEqual(snapshot.sevenDay?.label, "7d")
+        XCTAssertEqual(snapshot.sevenDay?.usedPercent, 80)
+    }
+
     func testUsedPercentScaleMatchesTheRustCrossRuntimeSemantics() {
         // 与 Tauri 端 rate_limits.rs 的 used_percent_scale_matches_the_swift_
         // cross_runtime_semantics 互为镜像：带 windowDurationMins 或原始值 > 1
