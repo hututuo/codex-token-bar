@@ -223,6 +223,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         stagingTestState.armFailure()
     }
 
+    // 冷建 heavy 文件阈值（与 Rust PARALLEL_HEAVY_FILE_BYTES 同值）。
+    // 测试可注入小阈值，用小文件驱动 heavy/light 双通道调度行为。
+    var coldBuildHeavyFileThreshold: UInt64 = 512 * 1_024 * 1_024
+
     func synchronize(
         files: [URL],
         sessionID: (URL) -> String,
@@ -1132,27 +1136,30 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             return $0.observedSignature.size > $1.observedSignature.size
         }
-        let queue = OperationQueue()
-        queue.name = "CodexUsageHistoryIndex.cold-build"
-        queue.qualityOfService = .userInitiated
-        queue.maxConcurrentOperationCount = coldBuildWorkerCount(jobCount: jobs.count)
-        let heavyFileGate = NSLock()
+        // 决策口径（对齐 Rust stage_full_rebuilds 的独立通道）：heavy 文件走
+        // maxConcurrent=1 的专用队列串行处理，light 走并行队列占其余额度。
+        // 旧实现单队列 + 互斥锁会让 ≥2 个 heavy 时全部并发槽阻塞在锁上，
+        // 冷建退化成串行、轻文件被饿死。
+        let heavyThreshold = coldBuildHeavyFileThreshold
+        let hasHeavyJobs = jobs.contains { $0.observedSignature.size >= heavyThreshold }
+        let workerCount = coldBuildWorkerCount(jobCount: jobs.count)
+        let heavyQueue = OperationQueue()
+        heavyQueue.name = "CodexUsageHistoryIndex.cold-build-heavy"
+        heavyQueue.qualityOfService = .userInitiated
+        heavyQueue.maxConcurrentOperationCount = 1
+        let lightQueue = OperationQueue()
+        lightQueue.name = "CodexUsageHistoryIndex.cold-build"
+        lightQueue.qualityOfService = .userInitiated
+        lightQueue.maxConcurrentOperationCount = hasHeavyJobs
+            ? max(1, workerCount - 1)
+            : workerCount
         let collector = StageCollector()
         let parserBox = SessionParserBox(parser)
-        let heavyThreshold: UInt64 = 512 * 1_024 * 1_024
 
         for job in jobs {
+            let queue = job.observedSignature.size >= heavyThreshold ? heavyQueue : lightQueue
             queue.addOperation { [self] in
                 autoreleasepool {
-                    let isHeavy = job.observedSignature.size >= heavyThreshold
-                    if isHeavy {
-                        heavyFileGate.lock()
-                    }
-                    defer {
-                        if isHeavy {
-                            heavyFileGate.unlock()
-                        }
-                    }
                     do {
                         collector.append(
                             try stageFullRebuild(job, parser: parserBox.parser)
@@ -1163,7 +1170,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
             }
         }
-        queue.waitUntilAllOperationsAreFinished()
+        heavyQueue.waitUntilAllOperationsAreFinished()
+        lightQueue.waitUntilAllOperationsAreFinished()
         return try collector.result().sorted {
             if $0.job.observedSignature.size == $1.job.observedSignature.size {
                 return $0.job.file.path < $1.job.file.path

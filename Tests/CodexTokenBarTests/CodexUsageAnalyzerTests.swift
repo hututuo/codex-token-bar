@@ -2668,6 +2668,117 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let total: Int
     }
 
+    private final class ColdBuildScheduleRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var starts: [String: Date] = [:]
+        private var spans: [(path: String, start: Date, end: Date)] = []
+
+        func recordStart(path: String) {
+            lock.lock()
+            starts[path] = Date()
+            lock.unlock()
+        }
+
+        func recordEnd(path: String) {
+            lock.lock()
+            if let start = starts[path] {
+                spans.append((path, start, Date()))
+            }
+            lock.unlock()
+        }
+
+        func snapshot() -> [(path: String, start: Date, end: Date)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return spans
+        }
+    }
+
+    func testColdBuildHeavyFilesRunOnADedicatedSerialLaneWithoutStarvingLightFiles() throws {
+        let codexHome = try makeCodexHome()
+        let sessionsDirectory = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let now = Date()
+
+        // 4 个 heavy（≥ 注入阈值）盖过冷建并发上限（≤4）+ 1 个 light：
+        // 旧的单队列 + 互斥锁实现里 heavy 会占满全部并发槽阻塞在锁上，
+        // light 直到首个 heavy 完成腾出槽位后才能开跑。
+        var files: [URL] = []
+        var heavyPaths: Set<String> = []
+        for heavyIndex in 0..<4 {
+            let sessionID = "019eaaaa-bbbb-cccc-dddd-heavy00000\(heavyIndex)"
+            let file = sessionsDirectory.appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+            var lines: [String] = []
+            for line in 0..<25 {
+                let tokens = 120 + heavyIndex * 100 + line
+                lines.append(try tokenCountLine(
+                    timestamp: now.addingTimeInterval(TimeInterval(-3_600 + heavyIndex * 100 + line)),
+                    total: Usage(input: tokens - 20, cachedInput: 0, output: 20, reasoning: 0, total: tokens),
+                    last: Usage(input: tokens - 20, cachedInput: 0, output: 20, reasoning: 0, total: tokens)
+                ))
+            }
+            try lines.joined(separator: "\n").appending("\n")
+                .write(to: file, atomically: true, encoding: .utf8)
+            files.append(file)
+            heavyPaths.insert(file.resolvingSymlinksInPath().path)
+        }
+        let lightSessionID = "019eaaaa-bbbb-cccc-dddd-light000000"
+        let lightFile = sessionsDirectory.appendingPathComponent("2026-06-17-\(lightSessionID).jsonl")
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 10, cachedInput: 0, output: 2, reasoning: 0, total: 12),
+            last: Usage(input: 10, cachedInput: 0, output: 2, reasoning: 0, total: 12)
+        ).appending("\n").write(to: lightFile, atomically: true, encoding: .utf8)
+        files.append(lightFile)
+
+        let lightSize = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: lightFile.path)[.size] as? UInt64
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        index.coldBuildHeavyFileThreshold = lightSize + 1
+
+        let recorder = ColdBuildScheduleRecorder()
+        _ = try index.synchronize(
+            files: files,
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            let path = file.resolvingSymlinksInPath().path
+            recorder.recordStart(path: path)
+            if heavyPaths.contains(path) {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            defer { recorder.recordEnd(path: path) }
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+
+        let spans = recorder.snapshot()
+        let heavySpans = spans.filter { heavyPaths.contains($0.path) }
+        let lightSpans = spans.filter { !heavyPaths.contains($0.path) }
+        XCTAssertEqual(heavySpans.count, 4)
+        XCTAssertEqual(lightSpans.count, 1)
+
+        // heavy 专用通道必须串行：任意两个 heavy 解析时间段不得重叠。
+        for left in heavySpans {
+            for right in heavySpans where left.path < right.path {
+                XCTAssertFalse(
+                    left.start < right.end && right.start < left.end,
+                    "heavy 文件 \(left.path) 与 \(right.path) 并发解析"
+                )
+            }
+        }
+        // light 通道不得被 heavy 饿死：light 必须在首个 heavy 完成前开跑。
+        let firstHeavyEnd = try XCTUnwrap(heavySpans.map(\.end).min())
+        let lightStart = try XCTUnwrap(lightSpans.first).start
+        XCTAssertLessThan(lightStart, firstHeavyEnd)
+    }
+
     private func makeCodexHome() throws -> URL {
         let directory = try makeTemporaryDirectory(named: "CodexUsageAnalyzerTests")
         try FileManager.default.createDirectory(
