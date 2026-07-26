@@ -648,6 +648,16 @@ impl PinnedHome {
                                 relative.display()
                             ));
                         }
+                        // 同 inode 的并发追加不改变 identity：必须复查 size，
+                        // 否则替换会静默丢弃复制之后追加的事件。
+                        if current.metadata().map_err(|error| error.to_string())?.len()
+                            != source_size
+                        {
+                            return Err(format!(
+                                "Provider 会话文件在原子替换前发生追加或截断：{}",
+                                relative.display()
+                            ));
+                        }
                     }
                     event(phase, path)
                 },
@@ -705,6 +715,16 @@ impl PinnedHome {
                         if physical_file_identity(&current)? != source_identity {
                             return Err(format!(
                                 "Provider 会话文件在原子替换前已被其他进程换代：{}",
+                                relative.display()
+                            ));
+                        }
+                        // 同 inode 的并发追加不改变 identity：必须复查 size，
+                        // 否则替换会静默丢弃复制之后追加的事件。
+                        if current.metadata().map_err(|error| error.to_string())?.len()
+                            != source_size
+                        {
+                            return Err(format!(
+                                "Provider 会话文件在原子替换前发生追加或截断：{}",
                                 relative.display()
                             ));
                         }

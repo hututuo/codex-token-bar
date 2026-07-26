@@ -4558,6 +4558,87 @@ fn windows_pinned_home_rejects_parent_and_absolute_targets() {
     fs::remove_dir_all(fixture).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn first_line_rewrite_rejects_same_inode_append_before_replace() {
+    use std::io::Write as _;
+    let fixture = temp_root("provider-first-line-append-race");
+    let home = fixture.join("home");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    fs::write(&session, b"first-line\ntail-line\n").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let mut appender = fs::OpenOptions::new().append(true).open(&session).unwrap();
+    let mut injected = false;
+
+    let error = pinned_home
+        .transform_first_line_atomically(
+            Path::new("sessions/thread.jsonl"),
+            |line| {
+                let mut replacement = b"rewritten-".to_vec();
+                replacement.extend_from_slice(line);
+                Ok(Some(replacement))
+            },
+            |phase, _| {
+                // 复制已完成、替换复查尚未执行的窗口：同 inode 追加一条事件。
+                if phase == safe_fs::AtomicInstallPhase::ValidateTemp && !injected {
+                    injected = true;
+                    appender.write_all(b"appended-during-replace\n").unwrap();
+                    appender.sync_all().unwrap();
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(injected);
+    assert!(error.contains("追加或截断"), "{error}");
+    let content = fs::read_to_string(&session).unwrap();
+    assert!(content.starts_with("first-line\n"), "{content}");
+    assert!(content.contains("appended-during-replace"), "{content}");
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+// 剩余风险的坐实实验（窗口②）：替换成功后 inode 必然分叉，仍持有旧 FD 的
+// 进程（如运行中的 Codex CLI）后续追加会写进孤儿 inode 并静默丢失。应用侧
+// 无法根治，产品层必须保证移动/改写期间 Codex 不在写。
+#[cfg(unix)]
+#[test]
+fn first_line_rewrite_forks_inode_and_orphans_later_writes_via_old_fd() {
+    use std::io::Write as _;
+    use std::os::unix::fs::MetadataExt as _;
+    let fixture = temp_root("provider-first-line-inode-fork");
+    let home = fixture.join("home");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    fs::write(&session, b"first-line\ntail-line\n").unwrap();
+    let pinned_home = PinnedHome::open(&home).unwrap();
+    let mut old_writer = fs::OpenOptions::new().append(true).open(&session).unwrap();
+    let old_inode = old_writer.metadata().unwrap().ino();
+
+    let changed = pinned_home
+        .transform_first_line_atomically(
+            Path::new("sessions/thread.jsonl"),
+            |line| {
+                let mut replacement = b"rewritten-".to_vec();
+                replacement.extend_from_slice(line);
+                Ok(Some(replacement))
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+    assert!(changed);
+
+    old_writer.write_all(b"orphaned-event\n").unwrap();
+    old_writer.sync_all().unwrap();
+
+    let content = fs::read_to_string(&session).unwrap();
+    assert!(content.starts_with("rewritten-first-line\n"), "{content}");
+    assert!(!content.contains("orphaned-event"), "{content}");
+    assert_ne!(fs::metadata(&session).unwrap().ino(), old_inode);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
 fn temp_root(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "codex-token-bar-tauri-{label}-{}-{}",
