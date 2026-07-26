@@ -2514,8 +2514,20 @@ fn process_session_file(
     }
     prune_obsolete_file_versions(connection, &path)?;
 
-    let mut handle = fs::File::open(file)
-        .map_err(|error| format!("读取会话文件失败：{}（{}）", file.display(), error))?;
+    // 单个文件不可读（权限/锁定/iCloud 占位）属持久性错误：整轮报错会让 building
+    // 滞留、后台无限重试且 dashboard 永不刷新。降级为警告并跳过；该路径已写入
+    // exact_seen_files，finalize 不会给已发布版本打删除墓碑，旧统计保留待自愈。
+    let mut handle = match fs::File::open(file) {
+        Ok(handle) => handle,
+        Err(error) => {
+            warnings.push(scan_warning(format!(
+                "读取会话文件失败，本轮跳过该文件：{}（{}）",
+                file.display(),
+                error
+            )));
+            return Ok(None);
+        }
+    };
     let signature = file_signature_from_handle(&handle, file)?;
     let unchanged = connection
         .query_row(
@@ -3428,25 +3440,47 @@ fn visit_session_files(
                 )
                 .map_err(|error| format!("无法推进会话目录外存队列：{error}"))?;
             let directory = PathBuf::from(directory);
-            let entries = fs::read_dir(&directory).map_err(|error| {
-                let message = format!("读取会话目录失败：{}（{}）", directory.display(), error);
-                warnings.push(scan_warning(message.clone()));
-                message
-            })?;
+            // 单个目录/条目不可读属持久性错误，整轮报错会让 building 滞留且每轮
+            // 复现。降级为警告并跳过；跳过前把未真正扫描到的已索引路径补进
+            // exact_seen_files，抑制 finalize 的删除墓碑（宁可沿用旧统计，不可误删）。
+            let entries = match fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    warnings.push(scan_warning(format!(
+                        "读取会话目录失败，本轮跳过该目录：{}（{}）",
+                        directory.display(),
+                        error
+                    )));
+                    suppress_missing_tombstones_under(connection, &directory)?;
+                    continue;
+                }
+            };
             for entry in entries {
-                let entry = entry.map_err(|error| {
-                    let message =
-                        format!("读取会话目录项失败：{}（{}）", directory.display(), error);
-                    warnings.push(scan_warning(message.clone()));
-                    message
-                })?;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        warnings.push(scan_warning(format!(
+                            "读取会话目录项失败，本轮跳过该目录剩余条目：{}（{}）",
+                            directory.display(),
+                            error
+                        )));
+                        suppress_missing_tombstones_under(connection, &directory)?;
+                        break;
+                    }
+                };
                 let path = entry.path();
-                let metadata = fs::symlink_metadata(&path).map_err(|error| {
-                    let message =
-                        format!("读取会话目录项元数据失败：{}（{}）", path.display(), error);
-                    warnings.push(scan_warning(message.clone()));
-                    message
-                })?;
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        warnings.push(scan_warning(format!(
+                            "读取会话目录项元数据失败，本轮跳过该条目：{}（{}）",
+                            path.display(),
+                            error
+                        )));
+                        suppress_missing_tombstones_under(connection, &path)?;
+                        continue;
+                    }
+                };
                 if metadata.file_type().is_dir() {
                     enqueue_directory(connection, &canonical_home, &path, warnings)?;
                 } else if path
@@ -3471,6 +3505,28 @@ fn visit_session_files(
     visit_active_rollouts(connection, codex_home, &canonical_home, warnings, visit)
 }
 
+/// 把 root（文件或目录）下所有已索引路径补进 exact_seen_files：不可读条目本轮
+/// 未真正扫描，finalize_generation 不得把它们当作已删除的会话打墓碑。
+fn suppress_missing_tombstones_under(
+    connection: &Connection,
+    root: &Path,
+) -> Result<(), String> {
+    let exact = root.to_string_lossy().into_owned();
+    // 前缀比较用 substr 而非 LIKE：路径里的 % 与 _ 不能被当作通配符。
+    let prefix = format!("{exact}/");
+    connection
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO exact_seen_files(path)
+            SELECT DISTINCT path FROM files
+            WHERE path = ?1 OR substr(path, 1, length(?2)) = ?2
+            "#,
+            params![exact, prefix],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("无法抑制不可读会话条目的删除墓碑：{error}"))
+}
+
 fn enqueue_directory(
     connection: &Connection,
     canonical_home: &Path,
@@ -3493,6 +3549,9 @@ fn enqueue_directory(
                 directory.display(),
                 error
             )));
+            // 解析失败多为权限类持久错误：真正被删除的目录下一轮不会再被父目录
+            // 列出，墓碑只是顺延一轮。先抑制，避免把已发布统计误判为已删除。
+            suppress_missing_tombstones_under(connection, directory)?;
             return Ok(());
         }
     };

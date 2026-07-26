@@ -1339,6 +1339,126 @@ fn exact_index_rejects_a_session_symlink_that_escapes_selected_codex_home() {
     fs::remove_dir_all(outside_root).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn exact_index_skips_an_unreadable_session_file_and_keeps_published_stats() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eunreadable-a-0000-0000-0000-keep.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    let locked = session_dir.join("rollout-019eunreadable-b-0000-0000-0000-lock.jsonl");
+    write_lines(
+        &locked,
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
+    );
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let total = |index: &ExactUsageIndex| {
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens
+    };
+    assert_eq!(total(&index), 150);
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut warnings = Vec::new();
+    index.sync(&root, &mut warnings).unwrap();
+    assert_eq!(
+        total(&index),
+        150,
+        "跳过不可读文件必须保留其已发布统计，不得打删除墓碑"
+    );
+    assert!(warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan"
+            && warning.message.contains("读取会话文件失败，本轮跳过该文件")
+    }));
+
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+    let mut handle = fs::OpenOptions::new().append(true).open(&locked).unwrap();
+    writeln!(
+        handle,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":10,"total_tokens":50}}}}"#
+    )
+    .unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(
+        total(&index),
+        200,
+        "文件恢复可读后必须自动续上，不需要人工干预"
+    );
+    drop(index);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_index_skips_an_unreadable_directory_without_tombstoning_published_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let locked_dir = session_dir.join("2026");
+    fs::create_dir_all(&locked_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019elockdir-a-0000-0000-0000-keep.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    write_lines(
+        &locked_dir.join("rollout-019elockdir-b-0000-0000-0000-deep.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
+    );
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let total = |index: &ExactUsageIndex| {
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens
+    };
+    assert_eq!(total(&index), 150);
+
+    fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut warnings = Vec::new();
+    index.sync(&root, &mut warnings).unwrap();
+    assert_eq!(
+        total(&index),
+        150,
+        "不可读目录下的已发布会话不得被当作已删除打墓碑"
+    );
+    assert!(warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan"
+            && (warning.message.contains("本轮跳过该目录")
+                || warning.message.contains("无法确认会话目录边界"))
+    }));
+
+    fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(total(&index), 150);
+    drop(index);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn exact_index_rejects_an_absolute_state_rollout_outside_selected_codex_home() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
