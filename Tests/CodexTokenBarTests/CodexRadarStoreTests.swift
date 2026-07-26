@@ -12,6 +12,21 @@ final class CodexRadarStoreTests: XCTestCase {
         XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
     }
 
+    func testRadarAndResetCreditSessionsBoundTotalResourceTime() {
+        // 请求上的 timeoutInterval 只是空闲超时；不锁资源总时限（默认 7 天）
+        // 时，一个滴灌响应即可占住 isRefreshing 重入保护把刷新长期锁死。
+        XCTAssertEqual(
+            CodexRadarNetworkSession.shared.configuration.timeoutIntervalForResource,
+            20
+        )
+        let resetCreditSession = AccountQuotaReader.makeResetCreditSession()
+        defer { resetCreditSession.finishTasksAndInvalidate() }
+        XCTAssertEqual(
+            resetCreditSession.configuration.timeoutIntervalForResource,
+            20
+        )
+    }
+
     func testInitialRadarFailureExposesDiagnosticWithoutStaleSnapshot() async throws {
         let reader = RadarReaderStub(actions: [
             .failure(URLError(.notConnectedToInternet))

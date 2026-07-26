@@ -7,6 +7,10 @@ enum CodexRadarNetworkSession {
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
+        // 各请求自设的 timeoutInterval 只是"空闲超时"，收得到滴灌字节就永不
+        // 触发；资源总时限默认 7 天，一个滴灌响应即可占住 isRefreshing 重入
+        // 保护，把官方 reader 与众测雷达的刷新整体锁死。
+        configuration.timeoutIntervalForResource = 20
         return URLSession(configuration: configuration)
     }()
 }

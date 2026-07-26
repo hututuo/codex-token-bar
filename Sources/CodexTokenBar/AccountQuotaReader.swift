@@ -1244,6 +1244,17 @@ enum AccountQuotaReader {
         let credits: [AccountQuotaResetCredit]
     }
 
+    static func makeResetCreditSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        // 同 CodexRadarNetworkSession：请求上的 14 秒 timeoutInterval 只挡空闲；
+        // 不设资源总时限时默认 7 天，滴灌响应会把重置卡刷新长期挂死。
+        configuration.timeoutIntervalForResource = 20
+        return URLSession(configuration: configuration)
+    }
+
     private static func readResetCredits(dataSource: CodexDataSource?) async -> Result<ResetCreditsSnapshot, AccountQuotaDiagnostic> {
         let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
         trace?.mark("readAccessToken.begin")
@@ -1282,11 +1293,7 @@ enum AccountQuotaReader {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = nil
-        configuration.httpCookieStorage = nil
-        let session = URLSession(configuration: configuration)
+        let session = Self.makeResetCreditSession()
         defer { session.finishTasksAndInvalidate() }
 
         do {

@@ -1,6 +1,7 @@
 use super::window_auth::require_window_label;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde_json::{json, Value};
+use std::io::Read;
 use std::time::Duration;
 use tauri::async_runtime;
 
@@ -111,8 +112,13 @@ fn fetch_public_json(
     {
         return Err(format!("Crowd Radar {label} payload is too large"));
     }
-    let body = response
-        .bytes()
+    // chunked 响应没有 content-length，上面的预检拦不住；必须边读边限长，
+    // 否则恶意/故障服务端可在超时窗口内灌进无上限的内存。多取 1 字节用于
+    // 区分"恰好达上限"与"超限"。
+    let mut body = Vec::new();
+    response
+        .take(CODEX_CROWD_RADAR_MAX_BYTES + 1)
+        .read_to_end(&mut body)
         .map_err(|error| format!("Crowd Radar {label} body failed: {error}"))?;
     if body.is_empty() {
         return Err(format!("Crowd Radar {label} returned empty data"));
@@ -222,6 +228,46 @@ mod tests {
             headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn crowd_radar_oversized_chunked_body_is_rejected_while_streaming() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n",
+            );
+            // 每块 64 KiB、共 9 MiB，越过 8 MiB 上限；客户端应中途放弃，
+            // 写端出现断管属预期，忽略错误退出即可。
+            let chunk = vec![b'a'; 64 * 1024];
+            let header = format!("{:x}\r\n", chunk.len());
+            for _ in 0..144 {
+                if stream.write_all(header.as_bytes()).is_err()
+                    || stream.write_all(&chunk).is_err()
+                    || stream.write_all(b"\r\n").is_err()
+                {
+                    return;
+                }
+            }
+            let _ = stream.write_all(b"0\r\n\r\n");
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .no_gzip()
+            .build()
+            .expect("client");
+        let error = fetch_public_json(&client, &format!("http://{address}/table"), "table")
+            .expect_err("chunked 无 content-length 的超限响应必须在流式阶段被拒绝");
+        assert!(error.contains("payload is too large"), "{error}");
+        let _ = server.join();
     }
 
     #[test]
