@@ -407,6 +407,35 @@ mod tests {
     }
 
     #[test]
+    fn used_percent_scale_matches_the_swift_cross_runtime_semantics() {
+        // 与 Swift 端 AccountQuotaReaderTests.testUsedPercentScaleMatchesThe-
+        // RustCrossRuntimeSemantics 互为镜像：带 windowDurationMins 或原始值 > 1
+        // 按 0-100 百分比解析，否则按 0-1 比例解析；两端对同一 JSON 必须得出
+        // 同一读数，否则各自 history 会被相反的值污染。
+        let fraction = json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": { "usedPercent": 0.25 },
+                "secondary": { "usedPercent": 1.0 }
+            }
+        });
+        let quota = parse_rate_limits(&fraction).unwrap();
+        assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 1e-9);
+        assert!((quota.seven_day.used_percent.unwrap() - 1.0).abs() < 1e-9);
+
+        let percent_with_duration = json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": { "usedPercent": 0.25, "windowDurationMins": 300 },
+                "secondary": { "usedPercent": 97.4, "windowDurationMins": 10080 }
+            }
+        });
+        let quota = parse_rate_limits(&percent_with_duration).unwrap();
+        assert!((quota.five_hour.used_percent.unwrap() - 0.0025).abs() < 1e-9);
+        assert!((quota.seven_day.used_percent.unwrap() - 0.974).abs() < 1e-9);
+    }
+
+    #[test]
     fn primary_seven_day_window_is_not_mislabeled_as_five_hour() {
         let result = json!({
             "rateLimits": {

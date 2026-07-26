@@ -1508,9 +1508,17 @@ enum AccountQuotaReader {
         guard let raw, let usedPercent = raw["usedPercent"] as? NSNumber else { return nil }
         let resetsAtSeconds = raw["resetsAt"] as? NSNumber
         let resetsAt = resetsAtSeconds.map { Date(timeIntervalSince1970: $0.doubleValue) }
+        // 与 Tauri 端 rate_limits.rs 的 uses_percent_scale/normalized_percent 同
+        // 语义：带 windowDurationMins 字段或原始值 > 1 视为 0-100 百分比，否则
+        // 视为 0-1 比例。此前恒按百分比取 intValue 会把比例制 0.25 读成 0%、
+        // 1.0 读成 1%，与 Rust 端对同一 JSON 的结论相反并污染各自 history。
+        let rawUsed = usedPercent.doubleValue
+        let percentScale = raw["windowDurationMins"] != nil || rawUsed > 1.0
+        let usedFraction = percentScale ? rawUsed / 100.0 : rawUsed
+        let roundedPercent = min(100.0, max(0.0, (usedFraction * 100.0).rounded()))
         return AccountQuotaWindow(
             label: quotaWindowLabel(raw, fallback: fallbackLabel, resetsAt: resetsAt),
-            usedPercent: usedPercent.intValue,
+            usedPercent: Int(roundedPercent),
             resetsAt: resetsAt
         )
     }

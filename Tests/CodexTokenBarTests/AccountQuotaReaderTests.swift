@@ -240,6 +240,32 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertNotNil(snapshot.sevenDayPaceStatus)
     }
 
+    func testUsedPercentScaleMatchesTheRustCrossRuntimeSemantics() {
+        // 与 Tauri 端 rate_limits.rs 的 used_percent_scale_matches_the_swift_
+        // cross_runtime_semantics 互为镜像：带 windowDurationMins 或原始值 > 1
+        // 按 0-100 百分比解析，否则按 0-1 比例解析；两端对同一 JSON 必须得出
+        // 同一读数，否则各自 history 会被相反的值污染。
+        let fraction = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "codex",
+                "primary": ["usedPercent": 0.25],
+                "secondary": ["usedPercent": 1.0]
+            ]
+        ], accountName: "Scale")
+        XCTAssertEqual(fraction.fiveHour?.usedPercent, 25)
+        XCTAssertEqual(fraction.sevenDay?.usedPercent, 100)
+
+        let percentWithDuration = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "codex",
+                "primary": ["usedPercent": 0.25, "windowDurationMins": 300],
+                "secondary": ["usedPercent": 97.4, "windowDurationMins": 10_080]
+            ]
+        ], accountName: "Scale")
+        XCTAssertEqual(percentWithDuration.fiveHour?.usedPercent, 0)
+        XCTAssertEqual(percentWithDuration.sevenDay?.usedPercent, 97)
+    }
+
     func testRateLimitsByLimitIDFallbackPreservesTrimmedMapKeyForHistoryIdentity() {
         let snapshot = AccountQuotaReader.parse([
             "rateLimitsByLimitId": [
