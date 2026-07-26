@@ -59,6 +59,121 @@ pub(crate) fn terminate_managed_process(pid: u32) -> Result<(), String> {
     platform_terminate_managed_process(pid)
 }
 
+/// 检查候选文件是否被其他进程打开（覆盖 codex CLI 等桌面 App 检测抓不到的进程）。
+/// 返回每个被占用文件的人类可读描述；无法检查时返回 Err（调用方按 fail closed 处理）。
+pub(crate) fn files_open_in_other_processes(
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut held = Vec::new();
+        for path in paths {
+            let holders = macos_file_open_holders(path)?;
+            if !holders.is_empty() {
+                let pids = holders
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join("、");
+                held.push(format!("{}（进程 {pids}）", path.display()));
+            }
+        }
+        Ok(held)
+    }
+    #[cfg(windows)]
+    {
+        let mut held = Vec::new();
+        for path in paths {
+            if windows_file_has_open_write_handle(path)? {
+                held.push(format!("{}（存在打开的写句柄）", path.display()));
+            }
+        }
+        Ok(held)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = paths;
+        Err("当前平台无法检查候选文件是否被其他进程占用".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_file_open_holders(path: &std::path::Path) -> Result<Vec<u32>, String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    extern "C" {
+        fn proc_listpidspath(
+            r#type: u32,
+            typeinfo: u32,
+            path: *const std::os::raw::c_char,
+            pathflags: u32,
+            buffer: *mut std::os::raw::c_void,
+            buffersize: std::os::raw::c_int,
+        ) -> std::os::raw::c_int;
+    }
+    const PROC_ALL_PIDS: u32 = 1;
+    // 排除 O_EVTONLY 打开（FSEvents/kqueue 监视器），只留真正的读写句柄。
+    const PROC_LISTPIDSPATH_EXCLUDE_EVTONLY: u32 = 2;
+    const ENOENT: i32 = 2;
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("候选文件路径包含 NUL 字符：{}", path.display()))?;
+    let mut capacity = 1024usize;
+    loop {
+        let mut buffer = vec![0i32; capacity];
+        let bytes = unsafe {
+            proc_listpidspath(
+                PROC_ALL_PIDS,
+                0,
+                c_path.as_ptr(),
+                PROC_LISTPIDSPATH_EXCLUDE_EVTONLY,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * std::mem::size_of::<i32>()) as std::os::raw::c_int,
+            )
+        };
+        if bytes < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(ENOENT) {
+                return Ok(Vec::new());
+            }
+            return Err(format!(
+                "检查文件打开句柄失败：{}：{error}",
+                path.display()
+            ));
+        }
+        let count = bytes as usize / std::mem::size_of::<i32>();
+        if count == capacity {
+            capacity *= 2;
+            continue;
+        }
+        let own = std::process::id();
+        return Ok(buffer[..count]
+            .iter()
+            .filter_map(|pid| u32::try_from(*pid).ok())
+            .filter(|pid| *pid != 0 && *pid != own)
+            .collect());
+    }
+}
+
+#[cfg(windows)]
+fn windows_file_has_open_write_handle(path: &std::path::Path) -> Result<bool, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // 不让出写共享：任何已持有写访问的进程都会触发 ERROR_SHARING_VIOLATION。
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_DELETE: u32 = 0x4;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(path)
+    {
+        Ok(_) => Ok(false),
+        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("检查文件写句柄失败：{}：{error}", path.display())),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ManagedCodexLaunch {
     pub pid: u32,

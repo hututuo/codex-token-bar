@@ -39,6 +39,84 @@ final class CodexInstanceEngineTests: XCTestCase {
         XCTAssertEqual(try fixture.engine.listSyncTransactions().first?.state, "rolledBack")
     }
 
+    private static func spawnFileHolder(path: String) throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "exec 3>>\"$0\"; echo ready; exec sleep 300", path]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let ready = pipe.fileHandleForReading.readData(ofLength: 6)
+        guard String(data: ready, encoding: .utf8) == "ready\n" else {
+            process.terminate()
+            throw NSError(
+                domain: "CodexInstanceEngineTests",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "文件持有进程未就绪"]
+            )
+        }
+        return process
+    }
+
+    func testProcessesHoldingFileOpenDetectsOtherProcessAndIgnoresSelf() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-open-probe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("held.jsonl")
+        try "line\n".write(to: file, atomically: true, encoding: .utf8)
+
+        let holder = try Self.spawnFileHolder(path: file.path)
+        defer { holder.terminate() }
+        let pids = try CodexInstanceEngine.processesHoldingFileOpen(atPath: file.path)
+        XCTAssertTrue(pids.contains(holder.processIdentifier), "\(pids)")
+        holder.terminate()
+        holder.waitUntilExit()
+
+        let ownHandle = try FileHandle(forReadingFrom: file)
+        defer { try? ownHandle.close() }
+        let after = try CodexInstanceEngine.processesHoldingFileOpen(atPath: file.path)
+        XCTAssertTrue(after.isEmpty, "自身句柄或已退出进程被误报：\(after)")
+
+        let missing = root.appendingPathComponent("missing.jsonl")
+        XCTAssertEqual(try CodexInstanceEngine.processesHoldingFileOpen(atPath: missing.path), [])
+    }
+
+    func testSyncRefusesWhileCandidateFileIsOpenInAnotherProcess() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let first = try fixture.importInstance(name: "一", home: fixture.firstHome)
+        let second = try fixture.importInstance(name: "二", home: fixture.secondHome)
+        _ = try fixture.writeRollout(
+            home: fixture.firstHome,
+            threadID: "held",
+            events: ["{\"type\":\"event_msg\",\"payload\":{\"n\":1}}"]
+        )
+        let source = try fixture.writeRollout(
+            home: fixture.secondHome,
+            threadID: "held",
+            events: [
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}",
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":2}}"
+            ]
+        )
+
+        let holder = try Self.spawnFileHolder(path: source.path)
+        defer { holder.terminate() }
+        XCTAssertThrowsError(
+            try fixture.engine.syncInstances(instanceIDs: [first.id, second.id])
+        ) { error in
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("候选会话文件"), message)
+            XCTAssertTrue(message.contains("\(holder.processIdentifier)"), message)
+        }
+        holder.terminate()
+        holder.waitUntilExit()
+
+        let result = try fixture.engine.syncInstances(instanceIDs: [first.id, second.id])
+        XCTAssertEqual(result.operationsApplied, 1)
+    }
+
     func testInstanceFileLockHoldsUntilExplicitReleaseAndReleaseIsIdempotent() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-instance-lock-\(UUID().uuidString)", isDirectory: true)

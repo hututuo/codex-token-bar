@@ -496,6 +496,7 @@ fn sync_instances_locked_with_visibility(
             message: "所选实例的会话历史已经一致。".into(),
         });
     }
+    ensure_candidate_files_not_open_elsewhere(&preview.operations)?;
     let transaction_id = Uuid::new_v4().to_string();
     let transaction_root = transaction_root(paths, &transaction_id);
     fs::create_dir_all(&transaction_root)
@@ -1264,6 +1265,37 @@ fn ensure_all_stopped(instances: &[CodexInstance]) -> Result<(), String> {
         ensure_instance_stopped(instance)?;
     }
     Ok(())
+}
+
+// 运行检测（受控进程 / marker / 桌面 App）覆盖不到 codex CLI 这类无 marker 的
+// 进程；若同步 rename 时 CLI 仍持旧 inode 追加，事件会静默丢失。改写前对全部
+// 候选文件检查打开句柄，检测到或无法检测都 fail closed。
+fn ensure_candidate_files_not_open_elsewhere(
+    operations: &[CodexInstanceSyncOperation],
+) -> Result<(), String> {
+    let mut candidates = Vec::new();
+    for operation in operations {
+        candidates.push(PathBuf::from(&operation.source_path));
+        if operation.destination_hash.is_some() {
+            candidates.push(PathBuf::from(&operation.destination_path));
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    let held = crate::platform::files_open_in_other_processes(&candidates)?;
+    if held.is_empty() {
+        return Ok(());
+    }
+    let shown = held.iter().take(3).cloned().collect::<Vec<_>>().join("；");
+    let suffix = if held.len() > 3 {
+        format!("；等共 {} 个文件", held.len())
+    } else {
+        String::new()
+    };
+    Err(format!(
+        "实例同步已取消：检测到其他进程正打开候选会话文件（codex CLI 等非桌面进程\
+         不在运行检测范围内，请先退出后重试）：{shown}{suffix}"
+    ))
 }
 
 fn select_instances(all: Vec<CodexInstance>, ids: &[String]) -> Result<Vec<CodexInstance>, String> {
@@ -2136,6 +2168,107 @@ mod tests {
         .unwrap();
         assert_eq!(result.operations_applied, 1);
         assert_eq!(fs::read(destination).unwrap(), fs::read(source).unwrap());
+        let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_file_holder(path: &Path) -> std::process::Child {
+        use std::io::Read;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "exec 3>>\"$0\"; echo ready; exec sleep 300",
+                &path.display().to_string(),
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = [0u8; 6];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut ready)
+            .unwrap();
+        assert_eq!(&ready, b"ready\n");
+        child
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_file_probe_reports_other_process_but_not_self_or_exited() {
+        let paths = temp_paths("open-probe");
+        let file = write_rollout(
+            &paths.managed_root.join("a"),
+            "held",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n",
+        );
+        let mut child = spawn_file_holder(&file);
+        let held = crate::platform::files_open_in_other_processes(std::slice::from_ref(&file))
+            .unwrap();
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert!(held[0].contains(&child.id().to_string()), "{held:?}");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let own_handle = fs::File::open(&file).unwrap();
+        let held = crate::platform::files_open_in_other_processes(std::slice::from_ref(&file))
+            .unwrap();
+        assert!(held.is_empty(), "自身句柄或已退出进程被误报：{held:?}");
+        drop(own_handle);
+        let missing = paths.managed_root.join("a").join("no-such-file.jsonl");
+        let held = crate::platform::files_open_in_other_processes(&[missing]).unwrap();
+        assert!(held.is_empty());
+        let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sync_refuses_while_candidate_file_is_open_in_another_process() {
+        let paths = temp_paths("open-gate");
+        let first_home = paths.managed_root.join("a");
+        let second_home = paths.managed_root.join("b");
+        let mut first = fixture_instance("a", &first_home);
+        let mut second = fixture_instance("b", &second_home);
+        first.managed = true;
+        second.managed = true;
+        write_rollout(
+            &first_home,
+            "same",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n",
+        );
+        let source = write_rollout(
+            &second_home,
+            "same",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n{\"type\":\"event_msg\",\"payload\":{\"n\":2}}\n",
+        );
+        let mut registry = CodexInstanceRegistry {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            updated_at: 1,
+            instances: vec![first.clone(), second.clone()],
+            conflicts: Vec::new(),
+        };
+
+        let mut child = spawn_file_holder(&source);
+        let error = sync_instances_locked_with_visibility(
+            &paths,
+            &mut registry,
+            vec![first.clone(), second.clone()],
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("候选会话文件"), "{error}");
+        assert!(error.contains(&child.id().to_string()), "{error}");
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let result = sync_instances_locked_with_visibility(
+            &paths,
+            &mut registry,
+            vec![first, second],
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(result.operations_applied, 1);
         let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());
     }
 

@@ -82,6 +82,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
     private let decoder: JSONDecoder
     private let visibilityRebuilder: (@Sendable (URL) throws -> Void)?
     private let globalCodexRunningProbe: @Sendable () throws -> Bool
+    private let openFileHoldersProbe: @Sendable ([URL]) throws -> [String]
     private let schemaVersion = 1
 
     init(
@@ -89,6 +90,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
         defaultCodexHome: URL? = nil,
         visibilityRebuilder: (@Sendable (URL) throws -> Void)? = nil,
         globalCodexRunningProbe: (@Sendable () throws -> Bool)? = nil,
+        openFileHoldersProbe: (@Sendable ([URL]) throws -> [String])? = nil,
         fileManager: FileManager = .default
     ) throws {
         self.fileManager = fileManager
@@ -102,6 +104,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
             NSWorkspace.shared.runningApplications.contains {
                 $0.bundleIdentifier == CodexApplicationLocator.bundleIdentifier && !$0.isTerminated
             }
+        }
+        self.openFileHoldersProbe = openFileHoldersProbe ?? { candidates in
+            try CodexInstanceEngine.defaultOpenFileHolders(candidates)
         }
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -1163,6 +1168,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
                 message: "所选实例的会话历史已经一致。"
             )
         }
+        try ensureCandidateFilesNotOpenElsewhere(preview.operations)
         let transactionID = UUID().uuidString.lowercased()
         let root = transactionRoot(id: transactionID)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1274,6 +1280,79 @@ final class CodexInstanceEngine: @unchecked Sendable {
                 throw codexInstanceError("没有找到 Codex 实例 \(id)")
             }
             return instance
+        }
+    }
+
+    // 运行检测（受控进程 / marker / 桌面 App）覆盖不到 codex CLI 这类无 marker 的
+    // 进程；若同步 rename 时 CLI 仍持旧 inode 追加，事件会静默丢失。改写前对全部
+    // 候选文件检查打开句柄，检测到或无法检测都 fail closed。
+    private func ensureCandidateFilesNotOpenElsewhere(
+        _ operations: [CodexInstanceSyncOperation]
+    ) throws {
+        var seen = Set<String>()
+        var candidates: [URL] = []
+        for operation in operations {
+            var paths = [operation.sourcePath]
+            if operation.destinationHash != nil {
+                paths.append(operation.destinationPath)
+            }
+            for path in paths where seen.insert(path).inserted {
+                candidates.append(URL(fileURLWithPath: path))
+            }
+        }
+        let held = try openFileHoldersProbe(candidates)
+        guard !held.isEmpty else { return }
+        let shown = held.prefix(3).joined(separator: "；")
+        let suffix = held.count > 3 ? "；等共 \(held.count) 个文件" : ""
+        throw codexInstanceError(
+            "实例同步已取消：检测到其他进程正打开候选会话文件（codex CLI 等非桌面进程不在运行检测范围内，请先退出后重试）：\(shown)\(suffix)"
+        )
+    }
+
+    private static func defaultOpenFileHolders(_ candidates: [URL]) throws -> [String] {
+        var held: [String] = []
+        for url in candidates {
+            let pids = try processesHoldingFileOpen(atPath: url.path)
+            if !pids.isEmpty {
+                let list = pids.map(String.init).joined(separator: "、")
+                held.append("\(url.path)（进程 \(list)）")
+            }
+        }
+        return held
+    }
+
+    static func processesHoldingFileOpen(atPath path: String) throws -> [Int32] {
+        let allPids: UInt32 = 1 // PROC_ALL_PIDS
+        // 排除 O_EVTONLY 打开（FSEvents/kqueue 监视器），只留真正的读写句柄。
+        let excludeEventOnly: UInt32 = 2 // PROC_LISTPIDSPATH_EXCLUDE_EVTONLY
+        var capacity = 1024
+        while true {
+            var buffer = [Int32](repeating: 0, count: capacity)
+            let bytes = buffer.withUnsafeMutableBytes { raw in
+                path.withCString { cPath in
+                    proc_listpidspath(
+                        allPids,
+                        0,
+                        cPath,
+                        excludeEventOnly,
+                        raw.baseAddress,
+                        Int32(raw.count)
+                    )
+                }
+            }
+            if bytes < 0 {
+                if errno == ENOENT { return [] }
+                throw codexInstanceError(
+                    "检查文件打开句柄失败：\(path)：\(String(cString: strerror(errno)))"
+                )
+            }
+            let count = Int(bytes) / MemoryLayout<Int32>.size
+            if count == capacity {
+                capacity *= 2
+                continue
+            }
+            let own = getpid()
+            return buffer.prefix(count).filter { $0 > 0 && $0 != own }
         }
     }
 

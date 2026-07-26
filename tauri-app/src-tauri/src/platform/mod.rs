@@ -36,9 +36,9 @@ pub use startup::{SingleInstanceLaunchOutcome, StartupLaunchMode};
 pub use capabilities::platform_capabilities;
 pub(crate) use provider_app::{codex_desktop_is_running, relaunch_codex_with_debug_port};
 pub(crate) use provider_app::{
-    focus_managed_process, launch_managed_codex_instance, managed_process_command,
-    managed_process_executable_path, managed_process_identity, terminate_managed_process,
-    process_command_contains_argument, ManagedCodexLaunch,
+    files_open_in_other_processes, focus_managed_process, launch_managed_codex_instance,
+    managed_process_command, managed_process_executable_path, managed_process_identity,
+    terminate_managed_process, process_command_contains_argument, ManagedCodexLaunch,
 };
 pub use settings::{
     read_app_settings, save_display_surfaces, save_floating_position, save_floating_settings,
