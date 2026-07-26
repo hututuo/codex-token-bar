@@ -13,6 +13,9 @@ use std::time::{Duration, Instant, SystemTime};
 const FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_REFRESH_HOLD: Duration = Duration::from_secs(10);
+// 等待刷新持有者的上限：慢盘上持有者可能长时间不返回，并发 IPC 超时后退化为
+// 绕过 single-flight 的直接读取（与丢失 claim 后的既有退化路径同语义）。
+const REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct LiveRateMonitorService {
     codex_home: PathBuf,
@@ -159,11 +162,20 @@ impl LiveRateMonitorService {
                     snapshot.unread_summary = unread_summary.clone();
                     return snapshot;
                 }
-                drop(
-                    self.refresh_ready
-                        .wait(state)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                );
+                let (state, wait_result) = self
+                    .refresh_ready
+                    .wait_timeout(state, REFRESH_WAIT_TIMEOUT)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if wait_result.timed_out() && state.refresh_in_flight.is_some() {
+                    drop(state);
+                    return read_snapshot_with_unread_scoped(
+                        &self.codex_home,
+                        &self.source_scope,
+                        selected_thread_id,
+                        unread_summary,
+                    );
+                }
+                drop(state);
                 continue;
             }
             state.next_refresh_nonce = state.next_refresh_nonce.saturating_add(1);

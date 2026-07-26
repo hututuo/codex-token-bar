@@ -26,6 +26,9 @@ const WEBVIEW_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
 const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(15);
+// 等待其他线程完成未读刷新的上限：慢盘上的刷新持有者可能长时间不返回，
+// 并发 IPC 超时后用过期缓存（或中性摘要）兜底，绝不无上限阻塞。
+const UNREAD_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const UNREAD_REFRESH_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
@@ -321,10 +324,23 @@ impl LiveRateMonitorRegistry {
                 .lock()
                 .map_err(|error| error.to_string())?;
             while *refreshing {
-                refreshing = slot
+                let (guard, wait_result) = slot
                     .ready
-                    .wait(refreshing)
+                    .wait_timeout(refreshing, UNREAD_REFRESH_WAIT_TIMEOUT)
                     .map_err(|error| error.to_string())?;
+                refreshing = guard;
+                if wait_result.timed_out() && *refreshing {
+                    // 刷新持有者超时未归（慢盘/大目录）：返回过期缓存兜底，没有
+                    // 任何缓存时返回中性摘要，不让并发 IPC 无上限陪等。
+                    let cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+                    return Ok(match cache.get(&source_scope_key) {
+                        Some(cached) => stale_unread_summary(
+                            &cached.summary,
+                            "unread refresh timed out; serving the stale summary",
+                        ),
+                        None => neutral_unread_summary("unread refresh wait timed out"),
+                    });
+                }
             }
 
             let cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
@@ -2302,6 +2318,80 @@ mod tests {
             assert_eq!(handle.join().unwrap().count, 1);
         }
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unread_refresh_wait_times_out_and_serves_the_stale_summary() {
+        use std::sync::{Arc, Barrier};
+
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "wait-timeout".into(),
+                physical_home_key: "physical-wait-timeout".into(),
+                transition_generation: 1,
+            },
+            codex_home: PathBuf::from("wait-timeout"),
+            source_path: PathBuf::from("wait-timeout"),
+        };
+        let key = format!(
+            "{}|{}",
+            captured.source_token.canonical_home_key,
+            captured.source_token.physical_home_key
+        );
+        registry.unread_cache.lock().unwrap().insert(
+            key,
+            CachedUnreadSummary {
+                summary: UnreadSummary {
+                    active: true,
+                    count: 5,
+                    label: "trusted".into(),
+                    detail: "trusted detail".into(),
+                    source: "trusted_source".into(),
+                },
+                refreshed_at: Instant::now() - UNREAD_OBSERVATION_CADENCE,
+                last_attempt: Instant::now() - UNREAD_OBSERVATION_CADENCE,
+                retry_after: None,
+                failed_attempts: 0,
+                last_error: None,
+            },
+        );
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let holder = {
+            let registry = registry.clone();
+            let captured = captured.clone();
+            let started = started.clone();
+            let release = release.clone();
+            std::thread::spawn(move || {
+                registry
+                    .unread_summary_for_source_with_refresh(&captured, false, || {
+                        started.wait();
+                        release.wait();
+                        Ok(UnreadSummary {
+                            active: true,
+                            count: 9,
+                            label: "fresh".into(),
+                            detail: "fresh".into(),
+                            source: "test".into(),
+                        })
+                    })
+                    .unwrap()
+            })
+        };
+
+        started.wait();
+        let waited_from = Instant::now();
+        let summary = registry
+            .unread_summary_for_source_with_refresh(&captured, false, || {
+                panic!("waiter must not start its own refresh while one is in flight")
+            })
+            .unwrap();
+        assert!(waited_from.elapsed() >= UNREAD_REFRESH_WAIT_TIMEOUT);
+        assert_eq!(summary.count, 5);
+        assert!(summary.source.ends_with("_stale"));
+        release.wait();
+        assert_eq!(holder.join().unwrap().count, 9);
     }
 
     #[test]
