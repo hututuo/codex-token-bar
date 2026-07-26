@@ -19,10 +19,26 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "list_provider_backups",
     "create_provider_backup",
     "sync_provider_history",
+    "migrate_provider_history",
     "verify_provider_repair",
     "rollback_provider_backup",
+    "rebuild_conversation_visibility",
     "read_provider_operation_status",
     "discover_provider_operation_ownership",
+    "list_codex_instances",
+    "create_codex_instance",
+    "import_codex_instance",
+    "update_codex_instance",
+    "delete_codex_instance",
+    "read_codex_instance_runtime_status",
+    "list_codex_instance_runtime_statuses",
+    "launch_codex_instance",
+    "focus_codex_instance",
+    "stop_codex_instance",
+    "preview_codex_instance_sync",
+    "sync_codex_instances",
+    "list_codex_instance_sync_transactions",
+    "rollback_codex_instance_sync",
     "read_codex_radar_full_snapshot",
     "read_thread_delete_bridge_status",
     "reconnect_thread_delete_bridge",
@@ -153,6 +169,121 @@ mod tests {
             assert!(allows_window_label("get_codex_home", label), "{label}");
         }
         for command in ["set_codex_home", "reset_codex_home"] {
+            assert!(allows_window_label(command, "main"), "{command}");
+            assert!(!allows_window_label(command, "floating"), "{command}");
+            assert!(!allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    fn source_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    fn registered_commands() -> Vec<String> {
+        let lib = std::fs::read_to_string(source_root().join("lib.rs")).unwrap();
+        let start = lib
+            .find("generate_handler![")
+            .expect("lib.rs 缺少 generate_handler 注册块");
+        let block = &lib[start..];
+        let end = block.find("])").expect("generate_handler 注册块未闭合");
+        block[..end]
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim().trim_end_matches(',');
+                line.rsplit("::").next().filter(|name| {
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|character| character.is_ascii_lowercase() || character == '_')
+                })
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn window_checked_commands() -> Vec<String> {
+        let commands_dir = source_root().join("commands");
+        let mut checked = Vec::new();
+        for entry in std::fs::read_dir(commands_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let mut rest = source.as_str();
+            while let Some(position) = rest.find("require_window_label(&window, \"") {
+                rest = &rest[position + "require_window_label(&window, \"".len()..];
+                let name_end = rest.find('"').expect("命令名字符串未闭合");
+                checked.push(rest[..name_end].to_owned());
+                rest = &rest[name_end..];
+            }
+        }
+        checked.sort();
+        checked.dedup();
+        checked
+    }
+
+    // 对账：任何调用 require_window_label 的命令必须在某个白名单里；
+    // 否则该命令从所有窗口调用都被拒（P0-3 的故障类型）。
+    #[test]
+    fn every_window_checked_command_is_reachable_from_at_least_one_surface() {
+        let checked = window_checked_commands();
+        assert!(
+            checked.len() >= 40,
+            "解析到的受检命令数异常偏少：{}",
+            checked.len()
+        );
+        for command in &checked {
+            assert!(
+                ["main", "floating", "status"]
+                    .iter()
+                    .any(|label| allows_window_label(command, label)),
+                "{command} 调用了 require_window_label 但不在任何窗口白名单中，任何窗口都无法调用"
+            );
+        }
+    }
+
+    // 对账：白名单条目必须是 generate_handler 中真实注册的命令，防止拼写或改名后的陈旧条目。
+    #[test]
+    fn every_allowlisted_command_is_registered_in_the_invoke_handler() {
+        let registered = registered_commands();
+        assert!(
+            registered.len() >= 70,
+            "解析到的注册命令数异常偏少：{}",
+            registered.len()
+        );
+        for command in MAIN_WINDOW_ONLY_COMMANDS
+            .iter()
+            .chain(SURFACE_SAFE_COMMANDS.iter())
+            .chain(std::iter::once(&"save_floating_position"))
+        {
+            assert!(
+                registered.iter().any(|name| name == command),
+                "白名单条目 {command} 不是已注册命令"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_migration_and_instance_commands_are_main_window_only() {
+        for command in [
+            "migrate_provider_history",
+            "rebuild_conversation_visibility",
+            "list_codex_instances",
+            "create_codex_instance",
+            "import_codex_instance",
+            "update_codex_instance",
+            "delete_codex_instance",
+            "read_codex_instance_runtime_status",
+            "list_codex_instance_runtime_statuses",
+            "launch_codex_instance",
+            "focus_codex_instance",
+            "stop_codex_instance",
+            "preview_codex_instance_sync",
+            "sync_codex_instances",
+            "list_codex_instance_sync_transactions",
+            "rollback_codex_instance_sync",
+        ] {
             assert!(allows_window_label(command, "main"), "{command}");
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");
