@@ -4,6 +4,7 @@ use crate::models::{
     DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
 };
+use super::run_blocking_command;
 use super::window_auth::require_window_label;
 use crate::platform;
 
@@ -38,50 +39,50 @@ pub fn set_autostart_enabled(
 }
 
 #[tauri::command]
-pub fn save_floating_settings(
+pub async fn save_floating_settings(
     window: tauri::WebviewWindow,
     settings: FloatingWindowSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_floating_settings")?;
-    platform::save_floating_settings(settings)
+    run_blocking_command(move || platform::save_floating_settings(settings)).await
 }
 
 #[tauri::command]
-pub fn save_floating_position(
+pub async fn save_floating_position(
     window: tauri::WebviewWindow,
     position: FloatingWindowPositionSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_floating_position")?;
-    platform::save_floating_position(position)
+    run_blocking_command(move || platform::save_floating_position(position)).await
 }
 
 #[tauri::command]
-pub fn save_display_surfaces(
+pub async fn save_display_surfaces(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     live_rate: tauri::State<'_, crate::commands::live::LiveRateMonitorRegistry>,
     display: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_display_surfaces")?;
-    save_display_surfaces_with_sync(
-        display,
-        platform::save_display_surfaces,
+    // 保存（磁盘写+fsync）在阻塞池；托盘同步沿用既有原生调用路径（live 流
+    // 循环本就从异步任务调用同一原生入口），失败只记录不回滚已保存设置。
+    let saved = run_blocking_command(move || platform::save_display_surfaces(display)).await?;
+    Ok(sync_saved_display_surfaces(
+        saved,
         |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),
         |error| eprintln!("Codex Token Bar: saved display settings but native tray sync failed: {error}"),
-    )
+    ))
 }
 
-fn save_display_surfaces_with_sync(
-    display: DisplaySurfaceSettingsSnapshot,
-    save: impl FnOnce(DisplaySurfaceSettingsSnapshot) -> Result<AppSettingsSnapshot, String>,
+fn sync_saved_display_surfaces(
+    saved: AppSettingsSnapshot,
     sync: impl FnOnce(&AppSettingsSnapshot) -> Result<(), String>,
     on_sync_error: impl FnOnce(&str),
-) -> Result<AppSettingsSnapshot, String> {
-    let saved = save(display)?;
+) -> AppSettingsSnapshot {
     if let Err(error) = sync(&saved) {
         on_sync_error(&error);
     }
-    Ok(saved)
+    saved
 }
 
 #[cfg(test)]
@@ -91,21 +92,18 @@ mod tests {
     #[test]
     fn successful_display_save_synchronously_updates_native_runtime() {
         let display = DisplaySurfaceSettingsSnapshot::default();
+        let mut settings = AppSettingsSnapshot::default();
+        settings.display_surfaces = display.clone();
         let mut sync_calls = 0;
-        let saved = save_display_surfaces_with_sync(
-            display.clone(),
-            |display| {
-                let mut settings = AppSettingsSnapshot::default();
-                settings.display_surfaces = display;
-                Ok(settings)
-            },
+        let saved = sync_saved_display_surfaces(
+            settings,
             |settings| {
                 sync_calls += 1;
                 assert_eq!(settings.display_surfaces.status_tray_live_text_enabled, display.status_tray_live_text_enabled);
                 Ok(())
             },
             |_| {},
-        ).unwrap();
+        );
         assert_eq!(sync_calls, 1);
         assert_eq!(saved.display_surfaces.live_rate_enabled, display.live_rate_enabled);
     }
@@ -114,68 +112,75 @@ mod tests {
     #[test]
     fn persisted_display_save_returns_snapshot_when_native_sync_fails() {
         let display = DisplaySurfaceSettingsSnapshot::default();
+        let mut settings = AppSettingsSnapshot::default();
+        settings.display_surfaces = display.clone();
         let mut errors = Vec::new();
-        let saved = save_display_surfaces_with_sync(
-            display.clone(),
-            |display| {
-                let mut settings = AppSettingsSnapshot::default();
-                settings.display_surfaces = display;
-                Ok(settings)
-            },
+        let saved = sync_saved_display_surfaces(
+            settings,
             |_| Err("tray missing".into()),
             |error| errors.push(error.to_string()),
-        ).unwrap();
+        );
         assert_eq!(saved.display_surfaces.live_rate_enabled, display.live_rate_enabled);
         assert_eq!(errors, vec!["tray missing"]);
     }
 }
 
 #[tauri::command]
-pub fn save_custom_account_display_name(
+pub async fn save_custom_account_display_name(
     window: tauri::WebviewWindow,
     custom_account_display_name: String,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_custom_account_display_name")?;
-    platform::save_custom_account_display_name(custom_account_display_name)
+    run_blocking_command(move || {
+        platform::save_custom_account_display_name(custom_account_display_name)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_quota_refresh_interval_ms(
+pub async fn save_quota_refresh_interval_ms(
     window: tauri::WebviewWindow,
     interval_ms: u64,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_quota_refresh_interval_ms")?;
-    platform::save_quota_refresh_interval_ms(interval_ms)
+    run_blocking_command(move || platform::save_quota_refresh_interval_ms(interval_ms)).await
 }
 
 #[tauri::command]
-pub fn save_auto_resume_settings(
+pub async fn save_auto_resume_settings(
     window: tauri::WebviewWindow,
     registry: tauri::State<'_, crate::commands::auto_resume::AutoResumeRegistry>,
     settings: AutoResumeSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_auto_resume_settings")?;
-    let saved = platform::save_auto_resume_settings(settings)?;
-    registry.update_settings(saved.auto_resume.clone());
-    Ok(saved)
+    // 设置保存与注册表推进各含一次 fsync（后者内部还会持久化续跑状态），
+    // 同批留在阻塞池，一次点击不再在主线程落盘两次。
+    let registry = registry.inner().clone();
+    run_blocking_command(move || {
+        let saved = platform::save_auto_resume_settings(settings)?;
+        registry.update_settings(saved.auto_resume.clone());
+        Ok(saved)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_session_enhancement_settings(
+pub async fn save_session_enhancement_settings(
     window: tauri::WebviewWindow,
     settings: SessionEnhancementSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_session_enhancement_settings")?;
-    let saved = platform::save_session_enhancement_settings(settings)?;
+    let saved =
+        run_blocking_command(move || platform::save_session_enhancement_settings(settings)).await?;
     crate::core::thread_delete::request_reconnect();
     Ok(saved)
 }
 
 #[tauri::command]
-pub fn save_setup_guide_completed(
+pub async fn save_setup_guide_completed(
     window: tauri::WebviewWindow,
     completed: bool,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_setup_guide_completed")?;
-    platform::save_setup_guide_completed(completed)
+    run_blocking_command(move || platform::save_setup_guide_completed(completed)).await
 }

@@ -1,3 +1,4 @@
+use super::run_blocking_command;
 use super::window_auth::require_window_label;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
@@ -8,13 +9,12 @@ use crate::models::{AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, Plat
 use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-use tauri::{async_runtime, AppHandle, Emitter};
+use tauri::{AppHandle, Emitter};
 
 pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-changed";
 
@@ -127,63 +127,63 @@ impl CodexHomeSourceEnvelope {
     }
 }
 
-async fn run_blocking_command<T, F>(work: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|error| error.to_string())?
-}
-
 #[tauri::command]
-pub fn get_codex_home(window: tauri::WebviewWindow) -> Result<CodexHomeSourceEnvelope, String> {
+pub async fn get_codex_home(
+    window: tauri::WebviewWindow,
+) -> Result<CodexHomeSourceEnvelope, String> {
     require_window_label(&window, "get_codex_home")?;
-    startup_trace::mark("command get_codex_home start");
-    let result = with_codex_home_transition_state(|transition| {
-        resolve_codex_home_source(
-            transition,
-            platform::default_codex_home_status(),
-        )
-    });
-    startup_trace::mark("command get_codex_home end");
-    result
+    // 状态解析含设置读取与物理身份探测（磁盘 IO），startup_trace 埋点也写盘，
+    // 一并移交阻塞线程池。
+    run_blocking_command(|| {
+        startup_trace::mark("command get_codex_home start");
+        let result = with_codex_home_transition_state(|transition| {
+            resolve_codex_home_source(transition, platform::default_codex_home_status())
+        });
+        startup_trace::mark("command get_codex_home end");
+        result
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_codex_home(
+pub async fn set_codex_home(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     path: String,
 ) -> Result<CodexHomeSourceEnvelope, String> {
     require_window_label(&window, "set_codex_home")?;
-    persist_codex_home_transition(app, || platform::save_codex_home(&path))
+    persist_codex_home_transition(app, move || platform::save_codex_home(&path)).await
 }
 
 #[tauri::command]
-pub fn reset_codex_home(
+pub async fn reset_codex_home(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<CodexHomeSourceEnvelope, String> {
     require_window_label(&window, "reset_codex_home")?;
-    persist_codex_home_transition(app, platform::reset_codex_home)
+    persist_codex_home_transition(app, platform::reset_codex_home).await
 }
 
-fn persist_codex_home_transition(
+async fn persist_codex_home_transition(
     app: tauri::AppHandle,
-    save: impl FnOnce() -> Result<CodexHomeStatus, String>,
+    save: impl FnOnce() -> Result<CodexHomeStatus, String> + Send + 'static,
 ) -> Result<CodexHomeSourceEnvelope, String> {
-    with_codex_home_transition_state(|transition| {
-        commit_codex_home_transition(transition, save, |envelope| {
-            app
-                .emit_str(
-                    CODEX_HOME_SOURCE_CHANGED_EVENT,
-                    serde_json::to_string(envelope).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())
+    // 保存（磁盘写+fsync）与状态推进在阻塞池的锁内完成；事件发布走 claim
+    // 模式在锁外执行。发布失败只记录，pending 代次保留，由任一后续
+    // emit_detected_source_transition 调用点自愈补发。
+    let envelope = run_blocking_command(move || {
+        with_codex_home_transition_state(|transition| {
+            commit_codex_home_transition(transition, save)
         })
     })
+    .await?;
+    if let Err(error) = emit_detected_source_transition(&app) {
+        startup_trace::mark_performance(format!(
+            "codex home source event publish failed generation={} error={error}",
+            envelope.transition_generation
+        ));
+    }
+    Ok(envelope)
 }
 
 fn with_codex_home_transition_state<T>(
@@ -1079,22 +1079,16 @@ fn validate_codex_home_source_in_mutex(
     })
 }
 
-fn commit_codex_home_transition<E>(
+fn commit_codex_home_transition(
     transition: &mut CodexHomeTransitionState,
     save: impl FnOnce() -> Result<CodexHomeStatus, String>,
-    publish: impl FnOnce(&CodexHomeSourceEnvelope) -> Result<(), E>,
-) -> Result<CodexHomeSourceEnvelope, String>
-where
-    E: Display,
-{
+) -> Result<CodexHomeSourceEnvelope, String> {
     let codex_home = save()?;
     let envelope = resolve_codex_home_source(transition, codex_home)?;
-    if let Err(error) = publish(&envelope) {
-        startup_trace::mark_performance(format!(
-            "codex home source event publish failed generation={} error={error}",
-            envelope.transition_generation
-        ));
-    }
+    // 锁内只登记待发布代次，不做 emit；同路径重设也照常登记，保持
+    // "每次成功保存都对外发布一次" 的既有可见行为。
+    transition.pending_publication_generation = Some(envelope.transition_generation);
+    transition.in_flight_publication = None;
     Ok(envelope)
 }
 
@@ -1608,9 +1602,10 @@ mod tests {
     use crate::models::{
         AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
     };
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tauri::async_runtime;
 
     static SOURCE_TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1620,25 +1615,33 @@ mod tests {
         let order = RefCell::new(Vec::new());
         let mut transition = CodexHomeTransitionState::default();
 
-        let envelope = commit_codex_home_transition(
-            &mut transition,
-            || {
-                order.borrow_mut().push("save");
-                Ok(codex_home_status_for_test(home.join("."), "manual"))
-            },
-            |published| {
-                order.borrow_mut().push("publish");
-                assert_eq!(
-                    published.codex_home.path,
-                    home.join(".").display().to_string()
-                );
-                assert_eq!(published.canonical_home_key, canonical_home_key(&home));
-                assert_eq!(published.transition_generation, 1);
-                Ok::<(), String>(())
-            },
-        )
+        // claim 模式：提交只在锁内登记待发布代次，发布必须经 claim 在锁外进行。
+        let envelope = commit_codex_home_transition(&mut transition, || {
+            order.borrow_mut().push("save");
+            Ok(codex_home_status_for_test(home.join("."), "manual"))
+        })
         .expect("durable save should return its exact envelope");
+        assert_eq!(
+            transition.pending_publication_generation,
+            Some(envelope.transition_generation),
+            "提交后待发布代次必须已登记"
+        );
 
+        let claim = claim_codex_home_source_transition_in_state(&mut transition)
+            .expect("claim should succeed")
+            .expect("committed transition must be claimable");
+        order.borrow_mut().push("publish");
+        // 事件载荷统一为词法归一化后的 source path（与 detected-transition
+        // 发布路径同形态）；canonical 身份与代次不变。
+        assert_eq!(claim.envelope.codex_home.path, home.display().to_string());
+        assert_eq!(claim.envelope.canonical_home_key, canonical_home_key(&home));
+        assert_eq!(claim.envelope.transition_generation, 1);
+
+        finish_codex_home_source_transition_claim_in_state(&mut transition, &claim, true);
+        assert_eq!(
+            transition.pending_publication_generation, None,
+            "发布成功后待发布代次必须清空"
+        );
         assert_eq!(order.into_inner(), vec!["save", "publish"]);
         assert_eq!(envelope.canonical_home_key, canonical_home_key(&home));
         remove_source_test_directory(home);
@@ -1646,22 +1649,20 @@ mod tests {
 
     #[test]
     fn codex_home_transition_does_not_publish_when_durable_save_fails() {
-        let published = Cell::new(false);
         let mut transition = CodexHomeTransitionState::default();
 
-        let result = commit_codex_home_transition(
-            &mut transition,
-            || Err("injected durable save failure".into()),
-            |_| {
-                published.set(true);
-                Ok::<(), String>(())
-            },
-        );
+        let result = commit_codex_home_transition(&mut transition, || {
+            Err("injected durable save failure".into())
+        });
 
         assert_eq!(result.unwrap_err(), "injected durable save failure");
-        assert!(!published.get());
         assert_eq!(transition.transition_generation, 0);
         assert_eq!(transition.canonical_home_key, None);
+        assert_eq!(transition.pending_publication_generation, None);
+        // 未提交的迁移不可 claim，发布路径根本走不到。
+        assert!(claim_codex_home_source_transition_in_state(&mut transition)
+            .expect("claim probe should not error")
+            .is_none());
     }
 
     #[test]
