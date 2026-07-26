@@ -1,8 +1,8 @@
 use crate::core::quota::codex_binary::find_codex_binary_with_report;
-use crate::models::AutoResumeThreadOption;
+use crate::models::{AutoResumeThreadOption, ConversationVisibilityRebuildResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -318,6 +318,124 @@ pub fn list_threads(codex_home: &Path) -> Result<Vec<AutoResumeThreadOption>, St
     }
     threads.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(threads)
+}
+
+pub fn rebuild_conversation_visibility_metadata(
+    codex_home: &Path,
+) -> Result<ConversationVisibilityRebuildResult, String> {
+    let mut session = AppServerSession::launch(codex_home)?;
+    session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
+    let started_at = Instant::now();
+    let mut next_request_id = 2_i64;
+    let active = collect_visibility_pages(false, |archived, cursor| {
+        request_visibility_page(
+            &mut session,
+            &mut next_request_id,
+            archived,
+            cursor,
+        )
+    })?;
+    let archived = collect_visibility_pages(true, |archived, cursor| {
+        request_visibility_page(
+            &mut session,
+            &mut next_request_id,
+            archived,
+            cursor,
+        )
+    })?;
+    let pages_scanned = active.pages.saturating_add(archived.pages);
+    Ok(ConversationVisibilityRebuildResult {
+        active_threads: active.threads,
+        archived_threads: archived.threads,
+        pages_scanned,
+        status: format!(
+            "官方会话索引重建完成：活动 {}，归档 {}，共 {} 页，耗时 {:.1} 秒。Token Bar 未改写 JSONL 或 session_index。",
+            active.threads,
+            archived.threads,
+            pages_scanned,
+            started_at.elapsed().as_secs_f64()
+        ),
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct VisibilityPageStats {
+    threads: u64,
+    pages: u64,
+}
+
+fn collect_visibility_pages(
+    archived: bool,
+    mut request: impl FnMut(bool, Option<&str>) -> Result<Value, String>,
+) -> Result<VisibilityPageStats, String> {
+    let mut stats = VisibilityPageStats::default();
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+    loop {
+        let result = request(archived, cursor.as_deref())?;
+        let rows = result
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Codex thread/list 响应缺少 data".to_string())?;
+        stats.threads = stats
+            .threads
+            .checked_add(u64::try_from(rows.len()).map_err(|_| "会话数量溢出".to_string())?)
+            .ok_or_else(|| "会话数量溢出".to_string())?;
+        stats.pages = stats
+            .pages
+            .checked_add(1)
+            .ok_or_else(|| "分页数量溢出".to_string())?;
+
+        let next_cursor = result
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let Some(next_cursor) = next_cursor else {
+            return Ok(stats);
+        };
+        if cursor.as_deref() == Some(next_cursor.as_str())
+            || !seen_cursors.insert(next_cursor.clone())
+        {
+            return Err(format!(
+                "Codex thread/list 返回重复游标，已停止官方会话索引重建：{next_cursor}"
+            ));
+        }
+        cursor = Some(next_cursor);
+    }
+}
+
+fn request_visibility_page(
+    session: &mut AppServerSession,
+    next_request_id: &mut i64,
+    archived: bool,
+    cursor: Option<&str>,
+) -> Result<Value, String> {
+    let request_id = *next_request_id;
+    *next_request_id = next_request_id
+        .checked_add(1)
+        .ok_or_else(|| "Codex app-server 请求编号溢出".to_string())?;
+    let mut params = json!({
+        "limit": 100,
+        "archived": archived,
+        "useStateDbOnly": false,
+        "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "unknown"],
+        "sortKey": "updated_at",
+        "sortDirection": "desc"
+    });
+    if let Some(cursor) = cursor {
+        params["cursor"] = Value::String(cursor.to_string());
+    }
+    session.send(json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "thread/list",
+        "params": params
+    }))?;
+    let response =
+        session.wait_for_response(request_id, APP_SERVER_STARTUP_TIMEOUT, None)?;
+    response_result(&response).cloned()
 }
 
 pub fn run_turn(
@@ -1281,6 +1399,54 @@ mod tests {
             })
             .unwrap());
         assert!(!sent);
+    }
+
+    #[test]
+    fn visibility_rebuild_pages_without_a_history_cap() {
+        let mut requested = 0_u64;
+        let stats = collect_visibility_pages(false, |archived, cursor| {
+            assert!(!archived);
+            let expected = if requested == 0 {
+                None
+            } else {
+                Some(format!("cursor-{requested}"))
+            };
+            assert_eq!(cursor, expected.as_deref());
+            requested += 1;
+            Ok(json!({
+                "data": [{"id": format!("thread-{requested}")}],
+                "nextCursor": if requested < 23 {
+                    Value::String(format!("cursor-{requested}"))
+                } else {
+                    Value::Null
+                }
+            }))
+        })
+        .unwrap();
+        assert_eq!(requested, 23);
+        assert_eq!(
+            stats,
+            VisibilityPageStats {
+                threads: 23,
+                pages: 23
+            }
+        );
+    }
+
+    #[test]
+    fn visibility_rebuild_rejects_cursor_cycles() {
+        let mut requested = 0;
+        let error = collect_visibility_pages(true, |archived, _| {
+            assert!(archived);
+            requested += 1;
+            Ok(json!({
+                "data": [],
+                "nextCursor": if requested == 1 { "a" } else { "a" }
+            }))
+        })
+        .unwrap_err();
+        assert!(error.contains("重复游标"));
+        assert_eq!(requested, 2);
     }
 
     #[test]

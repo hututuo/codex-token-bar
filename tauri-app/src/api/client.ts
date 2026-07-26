@@ -49,6 +49,7 @@ export {
   listProviderBackups,
   migrateProviderHistory,
   readProviderOperationStatus,
+  rebuildConversationVisibility,
   rollbackProviderBackup,
   scanProviderRepair,
   syncProviderHistory,

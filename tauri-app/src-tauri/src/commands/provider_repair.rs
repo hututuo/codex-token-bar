@@ -1,7 +1,12 @@
 use super::window_auth::require_window_label;
 use crate::commands::local_source;
-use crate::core::{dashboard::DashboardDataSource, provider_repair as provider_repair_core};
-use crate::models::{ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairSnapshot};
+use crate::core::{
+    auto_resume, dashboard::DashboardDataSource, provider_repair as provider_repair_core,
+};
+use crate::models::{
+    ConversationVisibilityRebuildResult, ProviderRepairActionResult, ProviderRepairBackupInfo,
+    ProviderRepairSnapshot,
+};
 use provider_repair_core::{
     ProviderOperationError, ProviderOperationOwnershipDiscovery, ProviderOperationStatus,
     ProviderRecoveryState,
@@ -146,6 +151,35 @@ pub async fn rollback_provider_backup(
             &operation_id,
             |home, operation_id| {
                 provider_repair_core::rollback_provider_backup(home, &backup_id, operation_id)
+            },
+        )
+    })
+    .await
+    .map_err(provider_background_task_error)?
+}
+
+#[tauri::command]
+pub async fn rebuild_conversation_visibility(
+    window: tauri::WebviewWindow,
+    recovery_state: tauri::State<'_, ProviderRecoveryState>,
+    operation_id: String,
+) -> Result<ConversationVisibilityRebuildResult, ProviderOperationError> {
+    require_window_label(&window, "rebuild_conversation_visibility")?;
+    let codex_home = local_source().codex_home().to_path_buf();
+    let recovery_state = recovery_state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_provider_mutation_command(
+            "rebuild_conversation_visibility",
+            &codex_home,
+            &recovery_state,
+            &operation_id,
+            |home, operation_id| {
+                provider_repair_core::run_provider_stopped_operation(
+                    home,
+                    operation_id,
+                    "官方会话索引重建",
+                    auto_resume::rebuild_conversation_visibility_metadata,
+                )
             },
         )
     })

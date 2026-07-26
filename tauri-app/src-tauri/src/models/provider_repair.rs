@@ -1,5 +1,14 @@
 use serde::Serialize;
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationVisibilityRebuildResult {
+    pub active_threads: u64,
+    pub archived_threads: u64,
+    pub pages_scanned: u64,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRepairSnapshot {

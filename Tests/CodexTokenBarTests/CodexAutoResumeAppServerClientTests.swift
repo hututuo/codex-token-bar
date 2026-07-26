@@ -115,6 +115,64 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(secondParams["cursor"] as? String, "page-2")
     }
 
+    func testVisibilityRebuildScansActiveAndArchivedWithoutPageCap() throws {
+        var events = [rpcResult(id: 1, result: [:])]
+        for page in 0..<23 {
+            events.append(rpcResult(id: page + 2, result: [
+                "data": [["id": "active-\(page)"]],
+                "nextCursor": page < 22 ? "active-\(page + 1)" : NSNull(),
+            ]))
+        }
+        events.append(rpcResult(id: 25, result: [
+            "data": [["id": "archived-1"], ["id": "archived-2"]],
+            "nextCursor": NSNull(),
+        ]))
+        let transport = AutoResumeScriptedTransport(events: events)
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+        var pageChecks = 0
+
+        let result = try client.rebuildConversationVisibilityMetadata(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            beforePage: { pageChecks += 1 }
+        )
+
+        XCTAssertEqual(result.activeThreads, 23)
+        XCTAssertEqual(result.archivedThreads, 2)
+        XCTAssertEqual(result.pagesScanned, 24)
+        XCTAssertEqual(pageChecks, 24)
+        let lists = transport.writes.filter { rpcMethod($0) == "thread/list" }
+        XCTAssertEqual(lists.count, 24)
+        let firstParams = try XCTUnwrap(lists.first?["params"] as? [String: Any])
+        XCTAssertEqual(firstParams["archived"] as? Bool, false)
+        XCTAssertEqual(firstParams["useStateDbOnly"] as? Bool, false)
+        XCTAssertEqual(
+            firstParams["sourceKinds"] as? [String],
+            ["cli", "vscode", "exec", "appServer", "subAgent", "unknown"]
+        )
+        let archivedParams = try XCTUnwrap(lists.last?["params"] as? [String: Any])
+        XCTAssertEqual(archivedParams["archived"] as? Bool, true)
+        XCTAssertNil(archivedParams["cursor"])
+    }
+
+    func testVisibilityRebuildRejectsRepeatedCursor() throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["data": [], "nextCursor": "repeat"]),
+            rpcResult(id: 3, result: ["data": [], "nextCursor": "repeat"]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        XCTAssertThrowsError(
+            try client.rebuildConversationVisibilityMetadata(
+                codexPath: "/fake/codex",
+                dataSource: nil
+            )
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("重复游标"))
+        }
+    }
+
     func testResumeUsesStableSequenceAndDeterministicClientMessageID() async throws {
         let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
             beforeMatchingCompletion: [

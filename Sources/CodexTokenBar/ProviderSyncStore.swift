@@ -23,6 +23,9 @@ protocol ProviderSyncRunning: Sendable {
         dataSource: CodexDataSource,
         includeArchivedSessions: Bool
     ) async throws -> ProviderSyncSnapshot
+    func rebuildVisibility(
+        dataSource: CodexDataSource
+    ) async throws -> ConversationVisibilityRebuildResult
 }
 
 extension ProviderSyncRunning {
@@ -47,6 +50,16 @@ extension ProviderSyncRunning {
             includeArchivedSessions: includeArchivedSessions,
             targetProviderOverride: nil,
             dryRunOnly: true
+        )
+    }
+
+    func rebuildVisibility(
+        dataSource: CodexDataSource
+    ) async throws -> ConversationVisibilityRebuildResult {
+        throw NSError(
+            domain: "CodexTokenBar",
+            code: 501,
+            userInfo: [NSLocalizedDescriptionKey: "当前 Provider runner 不支持官方会话索引重建"]
         )
     }
 }
@@ -144,6 +157,35 @@ struct LiveProviderSyncRunner: ProviderSyncRunning {
             )
         }.value
     }
+
+    func rebuildVisibility(
+        dataSource: CodexDataSource
+    ) async throws -> ConversationVisibilityRebuildResult {
+        try await Task.detached(priority: .utility) {
+            let engine = ProviderSyncEngine()
+            return try engine.withMutationLease(
+                codexHome: dataSource.codexHome,
+                expectedHomeIdentity: dataSource.homeIdentity
+            ) { _, _ in
+                try engine.rejectMutationIfCodexIsRunning(operation: "官方会话索引重建")
+                let codexPath = try CodexBinaryLocator.findExecutable()
+                let result = try CodexAppServerClient()
+                    .rebuildConversationVisibilityMetadata(
+                        codexPath: codexPath,
+                        dataSource: dataSource,
+                        beforePage: {
+                            try engine.rejectMutationIfCodexIsRunning(
+                                operation: "官方会话索引重建"
+                            )
+                        }
+                    )
+                try engine.rejectMutationIfCodexIsRunning(
+                    operation: "官方会话索引重建完成校验"
+                )
+                return result
+            }
+        }.value
+    }
 }
 
 @MainActor
@@ -157,6 +199,8 @@ final class ProviderSyncStore: ObservableObject {
     @Published private(set) var hasBackedUp = false
     @Published private(set) var hasRepaired = false
     @Published private(set) var hasVerified = false
+    @Published private(set) var visibilityRebuildResult: ConversationVisibilityRebuildResult?
+    @Published private(set) var hasRebuiltVisibility = false
 
     private let runner: any ProviderSyncRunning
     private var task: Task<Void, Never>?
@@ -189,6 +233,10 @@ final class ProviderSyncStore: ObservableObject {
     }
 
     var canRollback: Bool {
+        !snapshot.isWorking && !snapshot.codexRunning
+    }
+
+    var canRebuildVisibility: Bool {
         !snapshot.isWorking && !snapshot.codexRunning
     }
 
@@ -229,6 +277,8 @@ final class ProviderSyncStore: ObservableObject {
         hasBackedUp = false
         hasRepaired = false
         hasVerified = false
+        visibilityRebuildResult = nil
+        hasRebuiltVisibility = false
         return true
     }
 
@@ -303,6 +353,66 @@ final class ProviderSyncStore: ObservableObject {
         }
     }
 
+    func rebuildVisibility(dataSource: CodexDataSource?) {
+        let dataSource = hasBoundDataSource ? currentDataSource : dataSource
+        if let activeOperationKind,
+           activeOperationKind.isDestructive {
+            var blocked = snapshot
+            blocked.isWorking = true
+            blocked.status = "已有修复操作进行中，请等待完成"
+            snapshot = blocked
+            return
+        }
+
+        task?.cancel()
+        guard let dataSource else {
+            operationGeneration += 1
+            activeOperationKind = nil
+            snapshot.status = "没有可用的 Codex Home"
+            return
+        }
+
+        var working = snapshot
+        working.codexHome = dataSource.displayPath
+        working.isWorking = true
+        working.status = "正在调用 Codex 官方索引重建..."
+        snapshot = working
+        operationGeneration += 1
+        let generation = operationGeneration
+        activeOperationKind = .visibility
+        let runner = runner
+        task = Task {
+            let result: Result<ConversationVisibilityRebuildResult, Error>
+            do {
+                result = .success(try await runner.rebuildVisibility(dataSource: dataSource))
+            } catch {
+                result = .failure(error)
+            }
+
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard isCurrentOperation(generation: generation) else { return }
+                var next = snapshot
+                next.isWorking = false
+                switch result {
+                case .success(let rebuild):
+                    visibilityRebuildResult = rebuild
+                    hasRebuiltVisibility = true
+                    next.status = rebuild.status
+                    snapshot = next
+                case .failure(let error):
+                    if let mutationError = error as? ProviderSyncMutationError,
+                       case .codexRunning = mutationError {
+                        next.codexRunning = true
+                    }
+                    next.status = error.localizedDescription
+                    snapshot = next
+                }
+                activeOperationKind = nil
+            }
+        }
+    }
+
     private func effectiveTargetProvider() -> String? {
         let trimmed = manualProvider.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -315,12 +425,13 @@ final class ProviderSyncStore: ObservableObject {
         case migrate
         case verify
         case rollback
+        case visibility
 
         var isDestructive: Bool {
             switch self {
             case .scan, .verify:
                 false
-            case .backup, .sync, .migrate, .rollback:
+            case .backup, .sync, .migrate, .rollback, .visibility:
                 true
             }
         }
@@ -414,6 +525,8 @@ final class ProviderSyncStore: ObservableObject {
             hasVerified = true
         case .rollback:
             hasScanned = true
+        case .visibility:
+            hasRebuiltVisibility = true
         }
     }
 }

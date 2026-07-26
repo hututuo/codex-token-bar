@@ -5441,6 +5441,52 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 620;
 }
 
+.repair-visibility {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.repair-visibility > div {
+  min-width: 0;
+}
+
+.repair-visibility strong {
+  font-size: 13px;
+}
+
+.repair-visibility p,
+.repair-visibility span {
+  display: block;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.repair-visibility button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.repair-visibility button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
 .repair-backups {
   display: grid;
   gap: 8px;

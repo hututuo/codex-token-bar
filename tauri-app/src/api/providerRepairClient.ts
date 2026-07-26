@@ -1,4 +1,5 @@
 import type {
+  ConversationVisibilityRebuildResult,
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
@@ -79,6 +80,21 @@ export function rollbackProviderBackup(
   onUncertain?: (operationId: string) => void,
 ): Promise<ProviderRepairActionResult> {
   return callProviderMutation("rollback_provider_backup", { backupId }, onUncertain);
+}
+
+export function rebuildConversationVisibility(
+  onUncertain?: (operationId: string) => void,
+): Promise<ConversationVisibilityRebuildResult> {
+  const operationId = createProviderOperationId();
+  return executeProviderRepairMutation({
+    operationId,
+    onUncertain,
+    mutation: () => callCommandStrict<ConversationVisibilityRebuildResult>(
+      "rebuild_conversation_visibility",
+      { operationId },
+      30 * 60_000,
+    ),
+  });
 }
 
 export function readProviderOperationStatus(operationId: string): Promise<ProviderOperationStatus> {

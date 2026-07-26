@@ -5,12 +5,14 @@ import {
   listProviderBackups,
   migrateProviderHistory,
   readProviderOperationStatus,
+  rebuildConversationVisibility,
   rollbackProviderBackup,
   scanProviderRepair,
   syncProviderHistory,
   verifyProviderRepair,
 } from "../api/client";
 import type {
+  ConversationVisibilityRebuildResult,
   ProviderRepairActionResult,
   ProviderRepairBackupInfo,
   ProviderRepairSnapshot,
@@ -48,6 +50,8 @@ export function ProviderRepairCard({
   const [backups, setBackups] = useState<ProviderRepairBackupInfo[]>([]);
   const [activeBackupId, setActiveBackupId] = useState<string | null>(null);
   const [message, setMessage] = useState(snapshot.status);
+  const [visibilityResult, setVisibilityResult] =
+    useState<ConversationVisibilityRebuildResult | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [safetySnapshot, setSafetySnapshot] = useState(
     providerRepairSafetyLatch.getSnapshot,
@@ -193,6 +197,17 @@ export function ProviderRepairCard({
     await run("verify", verifyProviderRepair, applyResult);
   }
 
+  async function runVisibilityRebuild() {
+    await run(
+      "sync",
+      () => rebuildConversationVisibility(markOperationUncertain),
+      (result) => {
+        setVisibilityResult(result);
+        setMessage(result.status);
+      },
+    );
+  }
+
   async function runRollback(backupId: string) {
     await run("rollback", () => rollbackProviderBackup(backupId, markOperationUncertain), applyResult);
   }
@@ -266,6 +281,28 @@ export function ProviderRepairCard({
       <p className="repair-action-note">
         安全修复只校准 SQLite 元数据，不改历史文件；“迁移历史”才会显式改写候选会话的首行 Provider。
       </p>
+
+      <div className="repair-visibility">
+        <div>
+          <strong>官方会话索引重建</strong>
+          <p>
+            完整扫描活动与归档会话，由 Codex app-server 重建官方列表元数据；Token Bar 不改写 JSONL、session_index 或私有索引。
+          </p>
+          {visibilityResult ? (
+            <span>
+              活动 {visibilityResult.activeThreads} · 归档 {visibilityResult.archivedThreads} · {visibilityResult.pagesScanned} 页
+            </span>
+          ) : null}
+        </div>
+        <button
+          disabled={busy}
+          onClick={runVisibilityRebuild}
+          title={busy ? "正在执行修复操作，请等待当前步骤完成。" : "Codex Desktop 必须先退出；后端会在执行前再次确认。"}
+          type="button"
+        >
+          官方重建
+        </button>
+      </div>
 
       <ProviderRepairActions
         busy={busy}

@@ -1250,6 +1250,21 @@ pub(crate) fn run_provider_mutation<T>(
     mutation(&lease.canonical_home).map_err(|message| ProviderOperationError::Failed { message })
 }
 
+pub(crate) fn run_provider_stopped_operation<T>(
+    codex_home: &Path,
+    operation_id: &str,
+    operation: &str,
+    mutation: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, ProviderOperationError> {
+    run_provider_mutation_with_running_probe(
+        codex_home,
+        operation_id,
+        operation,
+        crate::platform::codex_desktop_is_running,
+        mutation,
+    )
+}
+
 fn run_provider_mutation_with_running_probe<T>(
     codex_home: &Path,
     operation_id: &str,

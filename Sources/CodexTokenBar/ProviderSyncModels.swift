@@ -1,5 +1,12 @@
 import Foundation
 
+struct ConversationVisibilityRebuildResult: Equatable, Sendable {
+    let activeThreads: Int
+    let archivedThreads: Int
+    let pagesScanned: Int
+    let status: String
+}
+
 struct ProviderSyncProviderCount: Identifiable, Equatable {
     var id: String { provider }
     let provider: String

@@ -5,6 +5,13 @@ export interface ProviderRepairStep {
   healthy: boolean;
 }
 
+export interface ConversationVisibilityRebuildResult {
+  activeThreads: number;
+  archivedThreads: number;
+  pagesScanned: number;
+  status: string;
+}
+
 export interface ProviderRepairSnapshot {
   detectedProvider: string;
   providerSource: string;

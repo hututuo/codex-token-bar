@@ -148,6 +148,49 @@ struct ProviderSyncView: View {
                 }
             }
 
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("官方会话索引重建")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("完整扫描活动与归档会话，由 Codex app-server 重建官方列表元数据；Token Bar 不改写 JSONL、session_index 或私有索引。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let result = store.visibilityRebuildResult {
+                        Text("活动 \(result.activeThreads) · 归档 \(result.archivedThreads) · \(result.pagesScanned) 页")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(AppTheme.accentCyan)
+                    }
+                }
+
+                Spacer(minLength: 12)
+
+                Button {
+                    store.rebuildVisibility(dataSource: dataSource)
+                } label: {
+                    Label(
+                        store.snapshot.isWorking ? "处理中..." : "官方重建",
+                        systemImage: "rectangle.stack.badge.plus"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .disabled(!store.canRebuildVisibility || dataSource == nil)
+                .help(
+                    store.snapshot.codexRunning
+                        ? "请先退出 Codex Desktop；执行时会再次确认运行状态。"
+                        : "使用官方 app-server 扫描并重建会话列表元数据。"
+                )
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(AppTheme.raisedBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.border, lineWidth: 1)
+            )
+
             ProviderSyncBackupList(
                 backups: store.snapshot.backupRecords,
                 disabled: !store.canRollback || dataSource == nil,

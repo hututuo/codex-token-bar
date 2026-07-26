@@ -161,6 +161,106 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         }
     }
 
+    func rebuildConversationVisibilityMetadata(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        beforePage: () throws -> Void = {}
+    ) throws -> ConversationVisibilityRebuildResult {
+        let session = try transport.start(codexPath: codexPath, dataSource: dataSource)
+        let startedAt = Date()
+        let outcome: Result<ConversationVisibilityRebuildResult, Error>
+        do {
+            var channel = CodexAutoResumeRPCChannel(session: session)
+            try channel.initialize(timeout: requestTimeout)
+            var activeThreads = 0
+            var archivedThreads = 0
+            var pagesScanned = 0
+            for archived in [false, true] {
+                var cursor: String?
+                var seenCursors = Set<String>()
+                repeat {
+                    try Task.checkCancellation()
+                    try beforePage()
+                    var params: [String: Any] = [
+                        "archived": archived,
+                        "limit": 100,
+                        "useStateDbOnly": false,
+                        "sortKey": "updated_at",
+                        "sortDirection": "desc",
+                        "sourceKinds": [
+                            "cli",
+                            "vscode",
+                            "exec",
+                            "appServer",
+                            "subAgent",
+                            "unknown",
+                        ],
+                    ]
+                    if let cursor {
+                        params["cursor"] = cursor
+                    }
+                    let result = try channel.request(
+                        method: "thread/list",
+                        params: params,
+                        timeout: requestTimeout
+                    )
+                    guard let rows = result["data"] as? [[String: Any]] else {
+                        throw CodexAutoResumeAppServerError.invalidResponse(
+                            "thread/list 缺少 data"
+                        )
+                    }
+                    if archived {
+                        archivedThreads = try Self.checkedVisibilityCount(
+                            archivedThreads,
+                            adding: rows.count
+                        )
+                    } else {
+                        activeThreads = try Self.checkedVisibilityCount(
+                            activeThreads,
+                            adding: rows.count
+                        )
+                    }
+                    pagesScanned = try Self.checkedVisibilityCount(
+                        pagesScanned,
+                        adding: 1
+                    )
+                    let nextCursor = Self.nonemptyString(result["nextCursor"])
+                    if let nextCursor {
+                        guard nextCursor != cursor,
+                              seenCursors.insert(nextCursor).inserted else {
+                            throw CodexAutoResumeAppServerError.invalidResponse(
+                                "thread/list 返回重复游标：\(nextCursor)"
+                            )
+                        }
+                    }
+                    cursor = nextCursor
+                } while cursor != nil
+            }
+            let elapsed = Date().timeIntervalSince(startedAt)
+            outcome = .success(ConversationVisibilityRebuildResult(
+                activeThreads: activeThreads,
+                archivedThreads: archivedThreads,
+                pagesScanned: pagesScanned,
+                status: String(
+                    format: "官方会话索引重建完成：活动 %d，归档 %d，共 %d 页，耗时 %.1f 秒。Token Bar 未改写 JSONL 或 session_index。",
+                    activeThreads,
+                    archivedThreads,
+                    pagesScanned,
+                    elapsed
+                )
+            ))
+        } catch {
+            outcome = .failure(error)
+        }
+
+        do {
+            _ = try session.shutdown()
+        } catch {
+            throw AccountQuotaProcessOwnershipError(underlyingError: error)
+        }
+        return try outcome.get()
+    }
+
     func readThreadFreshness(
         codexPath: String,
         dataSource: CodexDataSource?,
@@ -471,6 +571,17 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             "额度已用完",
             "使用额度已达上限",
         ].contains { normalized.contains($0) }
+    }
+
+    private static func checkedVisibilityCount(
+        _ current: Int,
+        adding increment: Int
+    ) throws -> Int {
+        let (value, overflow) = current.addingReportingOverflow(increment)
+        guard !overflow else {
+            throw CodexAutoResumeAppServerError.invalidResponse("会话数量溢出")
+        }
+        return value
     }
 }
 

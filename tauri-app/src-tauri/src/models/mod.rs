@@ -18,8 +18,8 @@ pub use platform::{
     AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,
 };
 pub use provider_repair::{
-    ProviderRepairActionResult, ProviderRepairBackupInfo, ProviderRepairBackupRestoreStatus,
-    ProviderRepairSnapshot, ProviderRepairStep,
+    ConversationVisibilityRebuildResult, ProviderRepairActionResult, ProviderRepairBackupInfo,
+    ProviderRepairBackupRestoreStatus, ProviderRepairSnapshot, ProviderRepairStep,
 };
 pub use quota::{
     AccountQuotaBundle, QuotaAvailability, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit,
