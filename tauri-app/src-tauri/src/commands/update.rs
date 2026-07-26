@@ -22,6 +22,10 @@ const UPDATE_STATE_EVENT: &str = "app-update-state-changed";
 const INSTALL_PROGRESS_EVENT: &str = "app-update-install-progress";
 const WAKE_INTERVAL: Duration = Duration::from_secs(60);
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(45);
+// 加入在飞检查的等待方允许的总等待 = 自身网络预算 + 此余量（覆盖持有者的
+// 落盘与呈现阶段）。持有者异常消亡且 Drop 兜底因拿不到 runtime 而失效时，
+// 这道闸保证等待方有界退出而不是永久挂起。
+const IN_FLIGHT_JOIN_GRACE: Duration = Duration::from_secs(60);
 const CHECK_INTERVAL_MS: i64 = 4 * 60 * 60 * 1_000;
 const PRESENTATION_MAX_FAILURES: u8 = 3;
 const PRESENTATION_BACKOFF_MS: i64 = 5 * 60 * 1_000;
@@ -135,8 +139,10 @@ fn tray_target_matches(target: &TrayTarget, available: Option<&str>) -> bool {
 }
 
 trait UpdateOps<A: Clone + Send + 'static>: Send + Sync {
-    fn load(&self) -> Result<Option<PersistedUpdateState>, String>;
-    fn persist(&self, state: &PersistedUpdateState) -> Result<(), String>;
+    // load/persist 是带 fsync 的磁盘 IO，签名定为 future：生产实现必须把
+    // 阻塞体移交 spawn_blocking，不允许在 async 执行器线程上直接读写盘。
+    fn load(&self) -> BoxFuture<'_, Result<Option<PersistedUpdateState>, String>>;
+    fn persist<'a>(&'a self, state: &'a PersistedUpdateState) -> BoxFuture<'a, Result<(), String>>;
     fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<A>>, String>>;
     fn notify(&self, version: &str) -> Result<(), String>;
     fn present_tray(&self, version: &str) -> Result<bool, String>;
@@ -294,7 +300,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         if self.initialized.swap(true, Ordering::AcqRel) {
             return None;
         }
-        match ops.load() {
+        match ops.load().await {
             Ok(Some(persisted)) => {
                 let mut state = self.state.lock().await;
                 state.shown_notification_version = persisted.last_notified_version.clone();
@@ -461,7 +467,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
                 snapshot.last_notified_version = Some(claim.version.clone());
                 snapshot
             };
-            let result = ops.persist(&snapshot);
+            let result = ops.persist(&snapshot).await;
             let mut state = self.state.lock().await;
             if state.dedupe_persist_claim.as_ref() == Some(&claim) {
                 state.dedupe_persist_claim = None;
@@ -499,7 +505,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             if let Some((_, slot)) = &state.in_flight {
                 let slot = slot.clone();
                 drop(state);
-                return wait_for_slot(slot).await;
+                return wait_for_slot(slot, timeout.saturating_add(IN_FLIGHT_JOIN_GRACE)).await;
             }
             if !manual && !automatic_due(state.persisted.last_attempt_at, now) {
                 return Ok(AppUpdateState::from_persisted(
@@ -529,7 +535,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
                 }
             };
             if let Some((revision, desired)) = pending {
-                let persisted = ops.persist(&desired);
+                let persisted = ops.persist(&desired).await;
                 let mut state = self.state.lock().await;
                 match persisted {
                     Ok(())
@@ -605,7 +611,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             desired.available_date = update.date.clone();
             (before, desired)
         };
-        ops.persist(&desired)?;
+        ops.persist(&desired).await?;
         let mut state = self.state.lock().await;
         if state.persisted != before {
             return Err("更新状态在持久化期间发生变化".into());
@@ -631,7 +637,7 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
             desired.available_date = None;
             (before, desired)
         };
-        ops.persist(&desired)?;
+        ops.persist(&desired).await?;
         let mut state = self.state.lock().await;
         if state.persisted != before {
             return Err("更新状态在持久化期间发生变化".into());
@@ -698,14 +704,28 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
     }
 }
 
-async fn wait_for_slot(slot: Arc<CompletionSlot>) -> Result<AppUpdateState, String> {
-    loop {
-        let mut notified = Box::pin(slot.ready.notified());
-        notified.as_mut().enable();
-        if let Some(result) = slot.result.lock().await.clone() {
-            return result;
+async fn wait_for_slot(
+    slot: Arc<CompletionSlot>,
+    limit: Duration,
+) -> Result<AppUpdateState, String> {
+    let join = async {
+        loop {
+            let mut notified = Box::pin(slot.ready.notified());
+            notified.as_mut().enable();
+            if let Some(result) = slot.result.lock().await.clone() {
+                return result;
+            }
+            notified.await;
         }
-        notified.await;
+    };
+    match tokio::time::timeout(limit, join).await {
+        Ok(result) => result,
+        // 持有者在完成槽位前异常消亡（Drop 兜底依赖 try_current，可能失效）
+        // 时，等待方在此有界退出，而不是等一个永远不会到来的通知。
+        Err(_) => Err(format!(
+            "等待进行中的更新检查超过 {} 秒仍未完成，请稍后重试",
+            limit.as_secs()
+        )),
     }
 }
 
@@ -720,14 +740,23 @@ struct TauriUpdateOps {
 }
 
 impl UpdateOps<Update> for TauriUpdateOps {
-    fn load(&self) -> Result<Option<PersistedUpdateState>, String> {
-        load_state_soft(&state_path(&self.app)?)
+    fn load(&self) -> BoxFuture<'_, Result<Option<PersistedUpdateState>, String>> {
+        let path = state_path(&self.app);
+        Box::pin(async move { run_update_disk_io(move || load_state_soft(&path?)).await })
     }
 
-    fn persist(&self, state: &PersistedUpdateState) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(state).map_err(|error| error.to_string())?;
-        atomic_file::write_atomically(&state_path(&self.app)?, &bytes)
-            .map_err(|error| error.to_string())
+    fn persist<'a>(
+        &'a self,
+        state: &'a PersistedUpdateState,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        let path = state_path(&self.app);
+        let bytes = serde_json::to_vec_pretty(state).map_err(|error| error.to_string());
+        Box::pin(async move {
+            run_update_disk_io(move || {
+                atomic_file::write_atomically(&path?, &bytes?).map_err(|error| error.to_string())
+            })
+            .await
+        })
     }
 
     fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<Update>>, String>> {
@@ -808,33 +837,7 @@ impl UpdateMonitorRegistry {
         let started_owner = UpdateMonitorStartedOwner {
             started: self.core.started.clone(),
         };
-        let ops = TauriUpdateOps { app: app.clone() };
-        if !self.core.initialized.swap(true, Ordering::AcqRel) {
-            match ops.load() {
-                Ok(Some(persisted)) => {
-                    if let Ok(mut state) = self.core.state.try_lock() {
-                        state.shown_notification_version =
-                            persisted.last_notified_version.clone();
-                        state.persisted = persisted;
-                    } else {
-                        self.core.initialized.store(false, Ordering::Release);
-                        startup_trace::mark(
-                            "update monitor state setup was busy; using runtime defaults",
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    if let Ok(mut state) = self.core.state.try_lock() {
-                        state.persisted = PersistedUpdateState::default();
-                    } else {
-                        self.core.initialized.store(false, Ordering::Release);
-                    }
-                    startup_trace::mark(&format!("update monitor state recovered: {error}"));
-                    eprintln!("Codex Token Bar: update monitor state recovered: {error}");
-                }
-            }
-        }
+        let ops = TauriUpdateOps { app };
         let core = RegistryCore {
             state: self.core.state.clone(),
             persist_lock: self.core.persist_lock.clone(),
@@ -843,6 +846,12 @@ impl UpdateMonitorRegistry {
         };
         tauri::async_runtime::spawn(async move {
             let _started_owner = started_owner;
+            // 状态装载移进异步任务（内部经 spawn_blocking 读盘），不再在 setup
+            // 主线程同步读盘；命令入口各自 ensure-initialize，谁先到谁装载。
+            if let Some(error) = core.initialize(&ops).await {
+                startup_trace::mark(&format!("update monitor state recovered: {error}"));
+                eprintln!("Codex Token Bar: update monitor state recovered: {error}");
+            }
             loop {
                 let cycle_core = core.clone();
                 let cycle_ops = ops.clone();
@@ -875,6 +884,22 @@ fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map(|path| path.join("update-monitor-state.json"))
         .map_err(|error| error.to_string())
+}
+
+// 状态文件读写带 fsync，不得在 async 执行器线程上直接执行：慢盘会卡住整个
+// tokio worker，殃及全部并发命令。统一经 spawn_blocking 移交阻塞线程池。
+async fn run_update_disk_io<T: Send + 'static>(
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("更新状态磁盘任务异常结束：{error}"))?
+}
+
+async fn ensure_initialized_logged(core: &RegistryCore<Update>, ops: &TauriUpdateOps) {
+    if let Some(error) = core.initialize(ops).await {
+        eprintln!("Codex Token Bar: update monitor state recovered: {error}");
+    }
 }
 
 fn load_state_soft(path: &Path) -> Result<Option<PersistedUpdateState>, String> {
@@ -915,8 +940,10 @@ fn now_ms() -> i64 {
 
 #[tauri::command]
 pub async fn read_app_update_state(
+    app: tauri::AppHandle,
     registry: tauri::State<'_, UpdateMonitorRegistry>,
 ) -> Result<AppUpdateState, String> {
+    ensure_initialized_logged(&registry.core, &TauriUpdateOps { app }).await;
     let state = registry.core.state.lock().await;
     Ok(AppUpdateState::from_persisted(
         &state.persisted,
@@ -930,6 +957,7 @@ pub async fn check_app_update(
     registry: tauri::State<'_, UpdateMonitorRegistry>,
 ) -> Result<AppUpdateState, String> {
     let ops = TauriUpdateOps { app };
+    ensure_initialized_logged(&registry.core, &ops).await;
     let result = registry.core.check(&ops, true, now_ms()).await;
     registry
         .core
@@ -944,10 +972,9 @@ pub async fn install_app_update(
     registry: tauri::State<'_, UpdateMonitorRegistry>,
     version: String,
 ) -> Result<(), String> {
-    registry
-        .core
-        .install(&TauriUpdateOps { app }, &version, now_ms())
-        .await
+    let ops = TauriUpdateOps { app };
+    ensure_initialized_logged(&registry.core, &ops).await;
+    registry.core.install(&ops, &version, now_ms()).await
 }
 
 #[cfg(test)]
@@ -1000,34 +1027,39 @@ mod tests {
     }
 
     impl UpdateOps<String> for MockOps {
-        fn load(&self) -> Result<Option<PersistedUpdateState>, String> {
-            self.loaded.lock().unwrap().clone()
+        fn load(&self) -> BoxFuture<'_, Result<Option<PersistedUpdateState>, String>> {
+            Box::pin(async move { self.loaded.lock().unwrap().clone() })
         }
-        fn persist(&self, state: &PersistedUpdateState) -> Result<(), String> {
-            if state.last_attempt_at == Some(42) && state.last_notified_version.is_none() {
-                if let Some(started) = self.attempt_persist_started.lock().unwrap().take() {
-                    started.send(()).unwrap();
+        fn persist<'a>(
+            &'a self,
+            state: &'a PersistedUpdateState,
+        ) -> BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                if state.last_attempt_at == Some(42) && state.last_notified_version.is_none() {
+                    if let Some(started) = self.attempt_persist_started.lock().unwrap().take() {
+                        started.send(()).unwrap();
+                    }
+                    if let Some(release) = self.attempt_persist_release.lock().unwrap().take() {
+                        release.recv().unwrap();
+                    }
                 }
-                if let Some(release) = self.attempt_persist_release.lock().unwrap().take() {
-                    release.recv().unwrap();
+                if state.last_notified_version.is_some() {
+                    if let Some(started) = self.dedupe_persist_started.lock().unwrap().take() {
+                        started.send(()).unwrap();
+                    }
+                    if let Some(release) = self.dedupe_persist_release.lock().unwrap().take() {
+                        release.recv().unwrap();
+                    }
                 }
-            }
-            if state.last_notified_version.is_some() {
-                if let Some(started) = self.dedupe_persist_started.lock().unwrap().take() {
-                    started.send(()).unwrap();
+                if self.fail_persist.load(Ordering::SeqCst)
+                    || (self.fail_dedupe_persist.load(Ordering::SeqCst)
+                        && state.last_notified_version.is_some())
+                {
+                    return Err("persist failed".into());
                 }
-                if let Some(release) = self.dedupe_persist_release.lock().unwrap().take() {
-                    release.recv().unwrap();
-                }
-            }
-            if self.fail_persist.load(Ordering::SeqCst)
-                || (self.fail_dedupe_persist.load(Ordering::SeqCst)
-                    && state.last_notified_version.is_some())
-            {
-                return Err("persist failed".into());
-            }
-            self.persisted.lock().unwrap().push(state.clone());
-            Ok(())
+                self.persisted.lock().unwrap().push(state.clone());
+                Ok(())
+            })
         }
         fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<String>>, String>> {
             self.checks.fetch_add(1, Ordering::SeqCst);
@@ -1653,6 +1685,25 @@ mod tests {
             assert!(second.is_err());
             first.await.unwrap().unwrap();
             assert_eq!(ops.installs.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn joining_an_abandoned_in_flight_check_times_out_instead_of_hanging_forever() {
+        runtime().block_on(async {
+            // 持有者消亡且 Drop 兜底失效时槽位永不完成——等待方必须有界退出。
+            let slot = Arc::new(CompletionSlot::default());
+            let error = wait_for_slot(slot.clone(), Duration::from_millis(50))
+                .await
+                .unwrap_err();
+            assert!(error.contains("仍未完成"), "{error}");
+
+            // 已完成的槽位不受时限影响，立即拿到既有结果。
+            slot.complete(Ok(AppUpdateState::none("done", 7))).await;
+            let joined = wait_for_slot(slot, Duration::from_millis(50))
+                .await
+                .unwrap();
+            assert_eq!(joined.revision, 7);
         });
     }
 
