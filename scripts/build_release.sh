@@ -164,7 +164,12 @@ APPCAST_SOURCE_DIR="$RELEASE_DIR/appcast-source"
 VERSIONED_ZIP="CodexTokenBar-v$VERSION-macos-$ARCH_LABEL.app.zip"
 LEGACY_ZIP="CodexTokenBar.app.zip"
 DMG_NAME="CodexTokenBar-v$VERSION-macos-$ARCH_LABEL.dmg"
-CHECKSUM_FILE="SHA256SUMS-v$VERSION.txt"
+# mac 侧 checksum 只是中间产物；统一 SHA256SUMS-v$VERSION.txt（九项资产的
+# 前八项，decisions.md 2026-07-21）必须在 Windows 资产就位后由
+# merge_release_checksums.mjs 合并生成，mac 清单不得占用统一清单文件名。
+CHECKSUM_FILE="SHA256SUMS-v$VERSION-macos.txt"
+WINDOWS_CHECKSUM_FILE="SHA256SUMS-v$VERSION-windows.txt"
+UNIFIED_CHECKSUM_FILE="SHA256SUMS-v$VERSION.txt"
 
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR" "$APPCAST_SOURCE_DIR"
@@ -520,7 +525,9 @@ PY
 
 (
   cd "$RELEASE_DIR"
-  shasum -a 256 "$DMG_NAME" "$VERSIONED_ZIP" "$LEGACY_ZIP" appcast.xml > "$CHECKSUM_FILE"
+  # 只列 mac 三项 Release 资产。appcast.xml 不是 Release 资产，不进 checksum
+  # 清单；其完整性由 merge_appcast.py 防重写与 Sparkle EdDSA 签名保证。
+  shasum -a 256 "$DMG_NAME" "$VERSIONED_ZIP" "$LEGACY_ZIP" > "$CHECKSUM_FILE"
 )
 
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
@@ -534,6 +541,10 @@ App: $APP_DIR
 DMG: $RELEASE_DIR/$DMG_NAME
 Zip: $RELEASE_DIR/$VERSIONED_ZIP
 Compat zip: $RELEASE_DIR/$LEGACY_ZIP
-Checksums: $RELEASE_DIR/$CHECKSUM_FILE
+macOS checksums (intermediate): $RELEASE_DIR/$CHECKSUM_FILE
+Unified checksums ($UNIFIED_CHECKSUM_FILE): pending Windows assets.
+  Stage the Windows installers, .sig files, latest-windows.json and
+  $WINDOWS_CHECKSUM_FILE into $RELEASE_DIR, then run:
+  node "$ROOT_DIR/scripts/merge_release_checksums.mjs" --version "$VERSION" --release-dir "$RELEASE_DIR"
 Appcast: $ROOT_DIR/appcast.xml
 REPORT
