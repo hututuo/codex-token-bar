@@ -110,6 +110,20 @@ test("ProviderRepairCard SSR starts from safe non-destructive actions", async ()
   });
 });
 
+test("rollback confirmation names the backup timestamp and warns about undone repairs", async () => {
+  await withSsrModules(async (load) => {
+    const { rollbackConfirmationMessage } = await load("/src/components/ProviderRepairCard.tsx");
+
+    const message = rollbackConfirmationMessage(backupFixture());
+    assert.match(message, /回滚到 2026-07-06T02:50:00Z 创建的差量恢复点吗？/);
+    assert.match(message, /此后的修复改动会被撤销/);
+
+    const fallback = rollbackConfirmationMessage(undefined);
+    assert.match(fallback, /回滚到所选备份的差量恢复点吗？/);
+    assert.match(fallback, /此后的修复改动会被撤销/);
+  });
+});
+
 function findButton(html, text) {
   const escapedText = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`<button(?<attrs>[^>]*)>${escapedText}</button>`);

@@ -209,6 +209,10 @@ export function ProviderRepairCard({
   }
 
   async function runRollback(backupId: string) {
+    const backup = backups.find((entry) => entry.id === backupId);
+    if (!window.confirm(rollbackConfirmationMessage(backup))) {
+      return;
+    }
     await run("rollback", () => rollbackProviderBackup(backupId, markOperationUncertain), applyResult);
   }
 
@@ -328,4 +332,12 @@ export function ProviderRepairCard({
 function compactStoragePath(path: string) {
   const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts.length <= 2 ? path : `.../${parts.slice(-2).join("/")}`;
+}
+
+export function rollbackConfirmationMessage(backup: ProviderRepairBackupInfo | undefined): string {
+  const createdAt = backup?.createdAt.trim() ?? "";
+  const question = createdAt === ""
+    ? "回滚到所选备份的差量恢复点吗？"
+    : `回滚到 ${createdAt} 创建的差量恢复点吗？`;
+  return `${question}\n\n只会恢复恢复点覆盖的会话首行与 SQLite 一致性快照，此后的修复改动会被撤销。`;
 }
