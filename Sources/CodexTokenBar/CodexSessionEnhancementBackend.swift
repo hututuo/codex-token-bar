@@ -18,16 +18,34 @@ struct CodexWorkspaceMovePayload: Equatable, Sendable {
     let targetCwd: String
 }
 
+/// v2 起与 Tauri 端共用同一 JSON 形状（serde camelCase：threadId、
+/// retainedOriginalRelativePath 全相对路径）与恢复语义：retained 文件契约为
+/// "首行 = 原始 rollout 首行"（本端保留整文件、Tauri 端只保留首行，均满足），
+/// 恢复判定与还原一律只使用 retained 首行。v1 时期两端格式互不兼容，读到即
+/// 显式拒绝。
 struct CodexWorkspaceMoveJournal: Codable, Equatable, Sendable {
     let schemaVersion: Int
     let codexHome: String
     let stateDatabase: String
     let threadID: String
     let rolloutRelativePath: String
-    let retainedOriginalName: String
+    let retainedOriginalRelativePath: String
     let originalCwd: String
     let targetCwd: String
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case codexHome
+        case stateDatabase
+        case threadID = "threadId"
+        case rolloutRelativePath
+        case retainedOriginalRelativePath
+        case originalCwd
+        case targetCwd
+    }
 }
+
+let codexWorkspaceMoveJournalSchemaVersion = 2
 
 private struct CodexWorkspaceMoveJournalHandle {
     let journal: CodexWorkspaceMoveJournal
@@ -160,6 +178,16 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                 fileManager: fileManager
             )
         }
+        if record.cwd == target.path {
+            return try finishNoopMoveWithDriftHeal(
+                record: record,
+                rolloutURL: rolloutURL,
+                canonicalHome: canonicalHome,
+                homeDirectory: homeDirectory,
+                threadID: threadID,
+                targetCwd: target.path
+            )
+        }
         let replacement: ProviderSyncRegularFileReplacement?
         let journalHandle: CodexWorkspaceMoveJournalHandle?
         if let rolloutURL {
@@ -167,16 +195,40 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                 for: rolloutURL,
                 under: canonicalHome
             )
+            // 漂移 fail closed（对齐 Tauri 端准备阶段检查）：rollout 首行与数据
+            // 库指向不同目录时拒绝写 journal——否则崩溃后的恢复三方判定必然
+            // 失配，该线程的移动会永久锁死。
+            let rolloutFile = try homeDirectory.pinFile(
+                relativePath: rolloutRelativePath,
+                createParents: false
+            )
+            let firstLine = try homeDirectory.readRegularFileFirstLine(
+                rolloutFile,
+                requireSingleLink: true
+            )
+            let rolloutCwd = try workspaceMetadataCwd(
+                firstLine.data,
+                threadID: threadID
+            )
+            guard rolloutCwd == record.cwd else {
+                throw CodexSessionEnhancementBackendError.workspaceMetadataDrift(
+                    databaseCwd: record.cwd,
+                    rolloutCwd: rolloutCwd
+                )
+            }
             let retainedOriginalName =
                 ".provider-session-prefix-workspace-\(threadID)"
             let handle = try beginWorkspaceMoveJournal(
                 CodexWorkspaceMoveJournal(
-                    schemaVersion: 1,
+                    schemaVersion: codexWorkspaceMoveJournalSchemaVersion,
                     codexHome: canonicalHome.path,
                     stateDatabase: dataSource.stateDatabase.standardizedFileURL.path,
                     threadID: threadID,
                     rolloutRelativePath: rolloutRelativePath,
-                    retainedOriginalName: retainedOriginalName,
+                    retainedOriginalRelativePath: retainedRelativePath(
+                        rolloutRelativePath: rolloutRelativePath,
+                        retainedOriginalName: retainedOriginalName
+                    ),
                     originalCwd: record.cwd,
                     targetCwd: target.path
                 ),
@@ -189,7 +241,8 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                     homeDirectory: homeDirectory,
                     threadID: threadID,
                     targetCwd: target.path,
-                    retainedOriginalName: retainedOriginalName
+                    retainedOriginalName: retainedOriginalName,
+                    firstLine: firstLine
                 )
                 if replacement == nil {
                     try removeWorkspaceMoveJournal(
@@ -535,17 +588,30 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
             expectedIdentity: ProviderSyncFileIdentity(metadata),
             requireSingleLink: true
         )
+        let probe = try JSONSerialization.jsonObject(
+            with: snapshot.data
+        ) as? [String: Any]
+        let probedVersion = probe?["schemaVersion"] as? Int
+        guard probedVersion == codexWorkspaceMoveJournalSchemaVersion else {
+            throw ProviderSyncIdentityConflictError(
+                message: "项目移动事务版本不受支持（schemaVersion=\(probedVersion.map(String.init) ?? "缺失")）：v1 时期 Swift 与 Tauri 两端格式互不兼容，无法安全自动恢复；请用创建它的应用端完成恢复，或人工核对后删除",
+                recoveryPaths: [journalFile.displayURL.path]
+            )
+        }
         let journal = try JSONDecoder().decode(
             CodexWorkspaceMoveJournal.self,
             from: snapshot.data
         )
-        guard journal.schemaVersion == 1,
-              journal.threadID == threadID,
+        guard journal.threadID == threadID,
               journal.codexHome == codexHome.path,
               journal.stateDatabase
                 == dataSource.stateDatabase.standardizedFileURL.path,
-              journal.retainedOriginalName
-                == ".provider-session-prefix-workspace-\(threadID)" else {
+              journal.retainedOriginalRelativePath
+                == retainedRelativePath(
+                    rolloutRelativePath: journal.rolloutRelativePath,
+                    retainedOriginalName:
+                        ".provider-session-prefix-workspace-\(threadID)"
+                ) else {
             throw ProviderSyncIdentityConflictError(
                 message: "项目移动事务与当前数据源不匹配",
                 recoveryPaths: [journalFile.displayURL.path]
@@ -568,16 +634,24 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
             threadID: threadID,
             dataSource: dataSource
         )
-        let parentPath = (journal.rolloutRelativePath as NSString)
-            .deletingLastPathComponent
-        let retainedRelativePath = parentPath.isEmpty
-            ? journal.retainedOriginalName
-            : "\(parentPath)/\(journal.retainedOriginalName)"
         let retainedFile = try homeDirectory.pinFile(
-            relativePath: retainedRelativePath,
+            relativePath: journal.retainedOriginalRelativePath,
             createParents: false
         )
         let retainedMetadata = try homeDirectory.entryMetadata(retainedFile)
+        // 清掉上次恢复中断遗留的 .recovery 临时件，否则本次首行还原会因
+        // O_EXCL 永久失败。
+        let recoveryRemnant = try homeDirectory.pinFile(
+            relativePath: "\(journal.retainedOriginalRelativePath).recovery",
+            createParents: false
+        )
+        if try homeDirectory.entryMetadata(recoveryRemnant) != nil {
+            try providerSyncUnlinkIfExists(
+                directory: recoveryRemnant.parent.rawValue,
+                name: recoveryRemnant.name
+            )
+            try homeDirectory.syncParentDirectory(of: recoveryRemnant)
+        }
 
         if let retainedMetadata {
             guard (retainedMetadata.st_mode & S_IFMT) == S_IFREG,
@@ -587,6 +661,9 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                     recoveryPaths: [retainedFile.displayURL.path]
                 )
             }
+            // v2 契约：retained 首行 = 原始 rollout 首行（本端整文件、Tauri 端
+            // 仅首行都满足），判定与还原一律只取首行，回滚不再整文件 SWAP——
+            // 既兼容两端 retained 形态，也保留 rollout 尾部与追加事件。
             let retained = try homeDirectory.readRegularFileFirstLine(
                 retainedFile,
                 expectedIdentity: ProviderSyncFileIdentity(retainedMetadata),
@@ -596,35 +673,42 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                 retained.data,
                 threadID: threadID
             )
-            if currentCwd == journal.targetCwd,
+            if record.cwd == journal.originalCwd,
+               currentCwd == journal.originalCwd,
                retainedCwd == journal.originalCwd {
-                let replacement = ProviderSyncRegularFileReplacement(
+                // 双方都未提交：丢弃 prepared 残留（下方统一删除）。
+            } else if record.cwd == journal.originalCwd,
+                      currentCwd == journal.targetCwd,
+                      retainedCwd == journal.originalCwd {
+                try restoreRolloutFirstLineDuringRecovery(
                     file: currentFile,
-                    retainedOriginalName: journal.retainedOriginalName,
-                    originalIdentity: retained.identity,
-                    replacementIdentity: current.identity
+                    current: current,
+                    replacementLine: retained.data,
+                    homeDirectory: homeDirectory,
+                    threadID: threadID
                 )
-                if record.cwd == journal.targetCwd {
-                    try homeDirectory.commitRegularFileReplacement(
-                        replacement
-                    )
-                } else if record.cwd == journal.originalCwd {
-                    try homeDirectory.rollbackRegularFileReplacement(
-                        replacement
-                    )
-                } else {
-                    throw CodexSessionEnhancementBackendError
-                        .workspaceChangedConcurrently(threadID)
-                }
-                try homeDirectory.syncParentDirectory(of: currentFile)
-            } else if currentCwd == journal.originalCwd,
-                      retainedCwd == journal.targetCwd,
-                      record.cwd == journal.originalCwd {
-                try providerSyncUnlinkIfExists(
-                    directory: retainedFile.parent.rawValue,
-                    name: retainedFile.name
+            } else if record.cwd == journal.targetCwd,
+                      currentCwd == journal.originalCwd,
+                      retainedCwd == journal.originalCwd {
+                try restoreRolloutFirstLineDuringRecovery(
+                    file: currentFile,
+                    current: current,
+                    replacementLine: rewriteWorkspaceMetadataLine(
+                        current.data,
+                        threadID: threadID,
+                        targetCwd: journal.targetCwd
+                    ),
+                    homeDirectory: homeDirectory,
+                    threadID: threadID
                 )
-                try homeDirectory.syncParentDirectory(of: retainedFile)
+            } else if record.cwd == journal.targetCwd,
+                      currentCwd == journal.targetCwd,
+                      retainedCwd == journal.originalCwd {
+                // 双方都已到目标：只需清理 retained。
+            } else if record.cwd == journal.originalCwd,
+                      currentCwd == journal.originalCwd,
+                      retainedCwd == journal.targetCwd {
+                // 本端 SWAP 中断残留：replacement 落在 retained 位置，直接丢弃。
             } else {
                 throw ProviderSyncIdentityConflictError(
                     message: "项目移动事务中的 rollout 状态无法安全判定",
@@ -634,6 +718,11 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                     ]
                 )
             }
+            try providerSyncUnlinkIfExists(
+                directory: retainedFile.parent.rawValue,
+                name: retainedFile.name
+            )
+            try homeDirectory.syncParentDirectory(of: retainedFile)
         } else {
             if record.cwd == journal.originalCwd,
                currentCwd == journal.targetCwd {
@@ -653,7 +742,7 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                         threadID: threadID,
                         targetCwd: journal.targetCwd,
                         retainedOriginalName:
-                            journal.retainedOriginalName
+                            ".provider-session-prefix-workspace-\(threadID)"
                     ) else {
                     throw ProviderSyncIdentityConflictError(
                         message: "项目移动恢复未产生预期 rollout replacement",
@@ -702,6 +791,121 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                 .rolloutMetadataMismatch(threadID)
         }
         return payload["cwd"] as? String ?? ""
+    }
+
+    private static func retainedRelativePath(
+        rolloutRelativePath: String,
+        retainedOriginalName: String
+    ) -> String {
+        let parentPath = (rolloutRelativePath as NSString).deletingLastPathComponent
+        return parentPath.isEmpty
+            ? retainedOriginalName
+            : "\(parentPath)/\(retainedOriginalName)"
+    }
+
+    // 数据库已在目标目录时不能直接早退：rollout 首行可能仍指旧目录（历史漂移），
+    // 一旦放过，漂移会被永久化，此后任何移动都会被漂移检查锁死且没有产品内
+    // 出口。这里读首行核对，不一致就原位治愈。
+    private static func finishNoopMoveWithDriftHeal(
+        record: ThreadRecord,
+        rolloutURL: URL?,
+        canonicalHome: URL,
+        homeDirectory: ProviderSyncHomeDirectory,
+        threadID: String,
+        targetCwd: String
+    ) throws -> CodexWorkspaceMovePayload {
+        if let rolloutURL {
+            let relativePath = try trustedRelativePath(
+                for: rolloutURL,
+                under: canonicalHome
+            )
+            let file = try homeDirectory.pinFile(
+                relativePath: relativePath,
+                createParents: false
+            )
+            let firstLine = try homeDirectory.readRegularFileFirstLine(
+                file,
+                requireSingleLink: true
+            )
+            let rolloutCwd = try workspaceMetadataCwd(
+                firstLine.data,
+                threadID: threadID
+            )
+            if rolloutCwd != targetCwd {
+                let replacementLine = try rewriteWorkspaceMetadataLine(
+                    firstLine.data,
+                    threadID: threadID,
+                    targetCwd: targetCwd
+                )
+                let replacement = try homeDirectory.replaceRegularFileFirstLine(
+                    file,
+                    expectedIdentity: firstLine.identity,
+                    expectedLine: firstLine.data,
+                    replacementLine: replacementLine,
+                    preserving: firstLine.metadata,
+                    retainedOriginalName:
+                        ".provider-session-prefix-workspace-\(threadID)"
+                )
+                try homeDirectory.commitRegularFileReplacement(replacement)
+                try homeDirectory.syncParentDirectory(of: file)
+                return CodexWorkspaceMovePayload(
+                    message: "会话已在目标项目目录；已修复 rollout 项目目录漂移",
+                    previousCwd: record.cwd,
+                    targetCwd: targetCwd
+                )
+            }
+        }
+        return CodexWorkspaceMovePayload(
+            message: "会话已在目标项目目录",
+            previousCwd: record.cwd,
+            targetCwd: targetCwd
+        )
+    }
+
+    private static func rewriteWorkspaceMetadataLine(
+        _ line: Data,
+        threadID: String,
+        targetCwd: String
+    ) throws -> Data {
+        guard var event = try JSONSerialization.jsonObject(
+            with: line
+        ) as? [String: Any],
+              event["type"] as? String == "session_meta",
+              var payload = event["payload"] as? [String: Any],
+              payload["id"] as? String == threadID else {
+            throw CodexSessionEnhancementBackendError.rolloutMetadataMismatch(
+                threadID
+            )
+        }
+        payload["cwd"] = targetCwd
+        event["payload"] = payload
+        return try JSONSerialization.data(
+            withJSONObject: event,
+            options: [.sortedKeys]
+        )
+    }
+
+    // 恢复期首行还原：retained 主文件仍在时不能复用其名字做替换临时件，
+    // 改用 .recovery 后缀临时名；commit 会清理该临时件，主 retained 由调用方
+    // 在还原成功后另行删除。中断只会退回可再次收敛的既有状态。
+    private static func restoreRolloutFirstLineDuringRecovery(
+        file: ProviderSyncPinnedFile,
+        current: ProviderSyncRegularFileFirstLineSnapshot,
+        replacementLine: Data,
+        homeDirectory: ProviderSyncHomeDirectory,
+        threadID: String
+    ) throws {
+        let replacement = try homeDirectory.replaceRegularFileFirstLine(
+            file,
+            expectedIdentity: current.identity,
+            expectedLine: current.data,
+            replacementLine: replacementLine,
+            preserving: current.metadata,
+            retainedOriginalName:
+                ".provider-session-prefix-workspace-\(threadID).recovery"
+        )
+        try homeDirectory.commitRegularFileReplacement(replacement)
+        try homeDirectory.syncParentDirectory(of: file)
     }
 
     private static func compareAndSetThreadCwd(
@@ -869,7 +1073,8 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         homeDirectory: ProviderSyncHomeDirectory,
         threadID: String,
         targetCwd: String,
-        retainedOriginalName: String
+        retainedOriginalName: String,
+        firstLine presetFirstLine: ProviderSyncRegularFileFirstLineSnapshot? = nil
     ) throws -> ProviderSyncRegularFileReplacement? {
         let prefix = codexHome.path.hasSuffix("/")
             ? codexHome.path
@@ -884,7 +1089,9 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
             relativePath: relativePath,
             createParents: false
         )
-        let firstLine = try homeDirectory.readRegularFileFirstLine(
+        // 调用方已做漂移检查时必须传入同一份首行快照：替换用它做 expectedLine，
+        // 检查与替换之间的任何首行变化都会被拒绝，与 Tauri 端语义一致。
+        let firstLine = try presetFirstLine ?? homeDirectory.readRegularFileFirstLine(
             file,
             requireSingleLink: true
         )
@@ -928,6 +1135,7 @@ enum CodexSessionEnhancementBackendError: LocalizedError {
     case unsupportedSchema
     case untrustedRolloutPath(String)
     case workspaceChangedConcurrently(String)
+    case workspaceMetadataDrift(databaseCwd: String, rolloutCwd: String)
 
     var errorDescription: String? {
         switch self {
@@ -953,6 +1161,8 @@ enum CodexSessionEnhancementBackendError: LocalizedError {
             return "rollout 文件不存在或不在当前 Codex Home 内：\(path)"
         case let .workspaceChangedConcurrently(threadID):
             return "会话项目目录在操作期间已被其他进程修改：\(threadID)"
+        case let .workspaceMetadataDrift(databaseCwd, rolloutCwd):
+            return "rollout 与数据库的项目目录不一致，已拒绝覆盖：数据库=\(databaseCwd)，rollout=\(rolloutCwd)；可先移动到数据库所记目录以自动修复漂移"
         }
     }
 }

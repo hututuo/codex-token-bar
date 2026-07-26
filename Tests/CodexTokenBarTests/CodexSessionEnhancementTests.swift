@@ -200,6 +200,229 @@ final class CodexSessionEnhancementTests: XCTestCase {
         XCTAssertEqual(payload["cwd"] as? String, target.path)
     }
 
+    func testProjectMoveFailsClosedOnRolloutDatabaseCwdDrift() async throws {
+        let fixture = try makeFixture()
+        let target = fixture.home.appendingPathComponent("Drift Blocked Target")
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        try rewriteRolloutFirstLineCwd(fixture: fixture, cwd: "/tmp/other-project")
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        do {
+            _ = try await executor.moveThreadWorkspace(
+                threadID: fixture.threadID,
+                targetCwd: target.path
+            )
+            XCTFail("漂移状态必须拒绝移动")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("已拒绝覆盖"),
+                error.localizedDescription
+            )
+        }
+        // 拒绝必须发生在写 journal 之前，否则 journal 残留会锁死后续恢复。
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.home.appendingPathComponent(
+                "backups_state/codex-token-bar/workspace-move/\(fixture.threadID).json"
+            ).path
+        ))
+    }
+
+    func testNoopMoveHealsRolloutCwdDrift() async throws {
+        let fixture = try makeFixture()
+        let target = fixture.home.appendingPathComponent("Heal Target")
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        // 模拟历史漂移：数据库已在目标目录，rollout 首行仍指原目录。
+        let database = SQLiteDatabaseDriver(url: fixture.dataSource.stateDatabase)
+        try database.execute(
+            "UPDATE threads SET cwd = ?1 WHERE id = ?2",
+            bindings: [.text(target.path), .text(fixture.threadID)]
+        )
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        let healed = try await executor.moveThreadWorkspace(
+            threadID: fixture.threadID,
+            targetCwd: target.path
+        )
+        XCTAssertTrue(
+            healed.message.contains("已修复 rollout 项目目录漂移"),
+            healed.message
+        )
+        let rollout = try String(contentsOf: fixture.rolloutURL, encoding: .utf8)
+        let firstLine = try XCTUnwrap(rollout.split(whereSeparator: \.isNewline).first)
+        let event = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(firstLine.utf8)) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        XCTAssertEqual(payload["cwd"] as? String, target.path)
+
+        let secondPass = try await executor.moveThreadWorkspace(
+            threadID: fixture.threadID,
+            targetCwd: target.path
+        )
+        XCTAssertEqual(secondPass.message, "会话已在目标项目目录")
+    }
+
+    func testRecoveryRejectsV1JournalWithExplicitDiagnostic() async throws {
+        let fixture = try makeFixture()
+        let target = fixture.home.appendingPathComponent("V1 Target")
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        let journalDirectory = fixture.home.appendingPathComponent(
+            "backups_state/codex-token-bar/workspace-move"
+        )
+        try FileManager.default.createDirectory(
+            at: journalDirectory,
+            withIntermediateDirectories: true
+        )
+        let journalURL = journalDirectory
+            .appendingPathComponent("\(fixture.threadID).json")
+        let legacy = """
+        {"schemaVersion":1,"codexHome":"\(fixture.home.path)",\
+        "stateDatabase":"\(fixture.dataSource.stateDatabase.standardizedFileURL.path)",\
+        "threadID":"\(fixture.threadID)",\
+        "rolloutRelativePath":"sessions/2026/07/20/rollout-\(fixture.threadID).jsonl",\
+        "retainedOriginalName":".provider-session-prefix-workspace-\(fixture.threadID)",\
+        "originalCwd":"\(fixture.originalCwd)","targetCwd":"\(target.path)"}
+        """
+        try Data(legacy.utf8).write(to: journalURL)
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        do {
+            _ = try await executor.moveThreadWorkspace(
+                threadID: fixture.threadID,
+                targetCwd: target.path
+            )
+            XCTFail("v1 journal 必须显式拒绝")
+        } catch {
+            XCTAssertTrue(
+                error.localizedDescription.contains("schemaVersion=1"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: journalURL.path),
+            "拒绝时必须保留 journal 供人工处理"
+        )
+    }
+
+    func testRecoveryRestoresFirstLineFromSingleLineRetainedAndKeepsTail() async throws {
+        // Tauri 端 prepared 状态：retained 只有首行副本，rollout 首行已改目标，
+        // 数据库未提交。恢复必须按首行还原并保留 rollout 尾部与追加事件。
+        let fixture = try makeFixture()
+        let target = fixture.home.appendingPathComponent("Tauri Prepared Target")
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        let original = try String(contentsOf: fixture.rolloutURL, encoding: .utf8)
+        let originalFirstLine = try XCTUnwrap(
+            original.split(whereSeparator: \.isNewline).first
+        )
+        let retainedURL = fixture.rolloutURL.deletingLastPathComponent()
+            .appendingPathComponent(
+                ".provider-session-prefix-workspace-\(fixture.threadID)"
+            )
+        try Data((originalFirstLine + "\n").utf8).write(to: retainedURL)
+        try rewriteRolloutFirstLineCwd(
+            fixture: fixture,
+            cwd: target.path,
+            appendLine: #"{"type":"event_msg","payload":{"appended":true}}"#
+        )
+        let journalDirectory = fixture.home.appendingPathComponent(
+            "backups_state/codex-token-bar/workspace-move"
+        )
+        try FileManager.default.createDirectory(
+            at: journalDirectory,
+            withIntermediateDirectories: true
+        )
+        let journalURL = journalDirectory
+            .appendingPathComponent("\(fixture.threadID).json")
+        let journal = CodexWorkspaceMoveJournal(
+            schemaVersion: 2,
+            codexHome: fixture.home.path,
+            stateDatabase: fixture.dataSource.stateDatabase.standardizedFileURL.path,
+            threadID: fixture.threadID,
+            rolloutRelativePath:
+                "sessions/2026/07/20/rollout-\(fixture.threadID).jsonl",
+            retainedOriginalRelativePath:
+                "sessions/2026/07/20/.provider-session-prefix-workspace-\(fixture.threadID)",
+            originalCwd: fixture.originalCwd,
+            targetCwd: target.path
+        )
+        try JSONEncoder().encode(journal).write(to: journalURL)
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        _ = try await executor.moveThreadWorkspace(
+            threadID: fixture.threadID,
+            targetCwd: target.path
+        )
+
+        let rollout = try String(contentsOf: fixture.rolloutURL, encoding: .utf8)
+        let firstLine = try XCTUnwrap(rollout.split(whereSeparator: \.isNewline).first)
+        let event = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(firstLine.utf8)) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        XCTAssertEqual(payload["cwd"] as? String, target.path)
+        XCTAssertTrue(rollout.contains(#""appended":true"#), "追加事件必须保留")
+        XCTAssertTrue(rollout.contains("你好，Codex"), "既有事件必须保留")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retainedURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: journalURL.path))
+        let database = SQLiteDatabaseDriver(
+            url: fixture.dataSource.stateDatabase,
+            readOnly: true
+        )
+        let cwd = try database.readRows(
+            "SELECT cwd FROM threads WHERE id = ?1",
+            bindings: [.text(fixture.threadID)]
+        ) { $0.text(0) ?? "" }.first
+        XCTAssertEqual(cwd, target.path)
+    }
+
+    private func rewriteRolloutFirstLineCwd(
+        fixture: Fixture,
+        cwd: String,
+        appendLine: String? = nil
+    ) throws {
+        let contents = try String(contentsOf: fixture.rolloutURL, encoding: .utf8)
+        var lines = contents
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        if lines.last == "" { lines.removeLast() }
+        var event = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+        )
+        var payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        payload["cwd"] = cwd
+        event["payload"] = payload
+        lines[0] = try XCTUnwrap(String(
+            data: JSONSerialization.data(
+                withJSONObject: event,
+                options: [.sortedKeys]
+            ),
+            encoding: .utf8
+        ))
+        if let appendLine { lines.append(appendLine) }
+        try Data((lines.joined(separator: "\n") + "\n").utf8)
+            .write(to: fixture.rolloutURL)
+    }
+
     private struct Fixture: Sendable {
         let home: URL
         let dataSource: CodexDataSource
@@ -270,12 +493,12 @@ final class CodexSessionEnhancementTests: XCTestCase {
             createParents: true
         )
         let journal = CodexWorkspaceMoveJournal(
-            schemaVersion: 1,
+            schemaVersion: 2,
             codexHome: fixture.home.path,
             stateDatabase: fixture.dataSource.stateDatabase.standardizedFileURL.path,
             threadID: fixture.threadID,
             rolloutRelativePath: rolloutRelativePath,
-            retainedOriginalName: retainedName,
+            retainedOriginalRelativePath: "sessions/2026/07/20/\(retainedName)",
             originalCwd: fixture.originalCwd,
             targetCwd: targetCwd
         )
