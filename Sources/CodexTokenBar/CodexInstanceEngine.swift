@@ -1093,7 +1093,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
             ids: transaction.instanceIds
         )
         try ensureAllStopped(instances)
-        try rollbackFiles(transaction: transaction, instances: instances)
+        try rollbackFiles(transaction: &transaction, instances: instances)
         transaction.state = "rolledBack"
         try writeTransaction(transaction, root: root)
         let visibilityWarnings = rebuildVisibilityForStoppedInstances(instances)
@@ -1170,18 +1170,24 @@ final class CodexInstanceEngine: @unchecked Sendable {
         do {
             try applyTransaction(&transaction, root: root, instances: instances)
         } catch let applyError {
+            var rollbackError: Error?
             do {
-                try rollbackFiles(transaction: transaction, instances: instances)
-            } catch let rollbackError {
-                transaction.state = "failedNeedsRecovery"
-                try? writeTransaction(transaction, root: root)
-                throw codexInstanceError(
-                    "\(applyError.localizedDescription)；自动回滚也失败：\(rollbackError.localizedDescription)"
-                )
+                try rollbackFiles(transaction: &transaction, instances: instances)
+            } catch {
+                rollbackError = error
             }
-            transaction.state = "rolledBackAfterFailure"
-            try? writeTransaction(transaction, root: root)
-            throw codexInstanceError("\(applyError.localizedDescription)；已自动回滚本次实例同步")
+            transaction.state = rollbackError == nil
+                ? "rolledBackAfterFailure"
+                : "failedNeedsRecovery"
+            var message = rollbackError.map {
+                "\(applyError.localizedDescription)；自动回滚也失败：\($0.localizedDescription)"
+            } ?? "\(applyError.localizedDescription)；已自动回滚本次实例同步"
+            do {
+                try writeTransaction(transaction, root: root)
+            } catch {
+                message += "；事务状态未能持久化（回滚已幂等，可重试收敛）：\(error.localizedDescription)"
+            }
+            throw codexInstanceError(message)
         }
         transaction.state = "committed"
         try writeTransaction(transaction, root: root)
@@ -1547,49 +1553,67 @@ final class CodexInstanceEngine: @unchecked Sendable {
     }
 
     private func rollbackFiles(
-        transaction: CodexInstanceSyncTransaction,
+        transaction: inout CodexInstanceSyncTransaction,
         instances: [CodexInstance]
     ) throws {
         let root = transactionRoot(id: transaction.transactionId)
         var failures: [String] = []
-        for operation in transaction.operations.reversed() {
+        for index in transaction.operations.indices.reversed() {
+            let operation = transaction.operations[index]
+            func restoreBackup(_ backupPath: String, destination: URL) throws {
+                guard let originalHash = operation.destinationHash else {
+                    throw codexInstanceError("回滚事务缺少原始校验值")
+                }
+                let backup = URL(fileURLWithPath: backupPath)
+                try ensureInside(backup, root: root)
+                guard try hashFile(backup) == originalHash else {
+                    throw codexInstanceError("回滚备份校验失败：\(backup.path)")
+                }
+                try copyAtomicallyVerified(
+                    from: backup,
+                    to: destination,
+                    expectedHash: originalHash
+                )
+            }
             do {
                 try validateOperation(operation, instances: instances)
                 let destination = URL(fileURLWithPath: operation.destinationPath)
-                guard fileManager.fileExists(atPath: destination.path) else {
+                if !fileManager.fileExists(atPath: destination.path) {
                     if operation.installedHash != nil {
-                        throw codexInstanceError(
-                            "\(destination.path) 已在同步后被删除，拒绝猜测性恢复"
-                        )
+                        if let backupPath = operation.backupPath {
+                            // 同步前目标存在：从已校验的备份恢复原内容即为回滚目标。
+                            try restoreBackup(backupPath, destination: destination)
+                        }
+                        // 新增文件的回滚就是删除：目标已不存在即为目标状态（幂等重试）。
                     }
-                    continue
-                }
-                let currentHash = try hashFile(destination)
-                if let installedHash = operation.installedHash {
-                    guard installedHash == operation.sourceHash else {
-                        throw codexInstanceError("同步事务记录的安装校验值与源校验值不一致")
-                    }
-                } else if operation.destinationHash == currentHash {
-                    continue
-                }
-                guard currentHash == operation.sourceHash else {
-                    throw codexInstanceError("\(destination.path) 已在同步后被修改，拒绝覆盖")
-                }
-                if let backupPath = operation.backupPath,
-                   let originalHash = operation.destinationHash {
-                    let backup = URL(fileURLWithPath: backupPath)
-                    try ensureInside(backup, root: root)
-                    guard try hashFile(backup) == originalHash else {
-                        throw codexInstanceError("回滚备份校验失败：\(backup.path)")
-                    }
-                    try copyAtomicallyVerified(
-                        from: backup,
-                        to: destination,
-                        expectedHash: originalHash
-                    )
                 } else {
-                    try fileManager.removeItem(at: destination)
-                    try syncDirectory(destination.deletingLastPathComponent())
+                    let currentHash = try hashFile(destination)
+                    // 目标已是同步前内容：已回滚（或从未生效），幂等跳过。
+                    if operation.destinationHash != currentHash {
+                        if let installedHash = operation.installedHash {
+                            guard installedHash == operation.sourceHash else {
+                                throw codexInstanceError("同步事务记录的安装校验值与源校验值不一致")
+                            }
+                        }
+                        guard currentHash == operation.sourceHash else {
+                            throw codexInstanceError("\(destination.path) 已在同步后被修改，拒绝覆盖")
+                        }
+                        if let backupPath = operation.backupPath {
+                            try restoreBackup(backupPath, destination: destination)
+                        } else {
+                            try fileManager.removeItem(at: destination)
+                            try syncDirectory(destination.deletingLastPathComponent())
+                        }
+                    }
+                }
+                // 每回滚一条即清 installedHash 并持久化，崩溃后重试可精确跳过。
+                if transaction.operations[index].installedHash != nil {
+                    transaction.operations[index].installedHash = nil
+                    do {
+                        try writeTransaction(transaction, root: root)
+                    } catch {
+                        failures.append("回滚进度未能持久化：\(error.localizedDescription)")
+                    }
                 }
             } catch {
                 failures.append(error.localizedDescription)

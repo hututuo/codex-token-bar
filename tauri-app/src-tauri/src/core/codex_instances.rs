@@ -531,17 +531,23 @@ fn sync_instances_locked_with_visibility(
     }
     let apply_result = apply_transaction(paths, &instances, &mut transaction);
     if let Err(error) = apply_result {
-        let rollback_error = rollback_transaction_files(paths, &instances, &transaction).err();
+        let rollback_error = rollback_transaction_files(paths, &instances, &mut transaction).err();
         transaction.state = if rollback_error.is_some() {
             "failedNeedsRecovery".into()
         } else {
             "rolledBackAfterFailure".into()
         };
-        let _ = write_transaction(&transaction_root, &transaction);
-        return Err(match rollback_error {
+        let state_write_error = write_transaction(&transaction_root, &transaction).err();
+        let mut message = match rollback_error {
             Some(rollback) => format!("{error}；自动回滚也失败：{rollback}"),
             None => format!("{error}；已自动回滚本次实例同步"),
-        });
+        };
+        if let Some(write_error) = state_write_error {
+            message.push_str(&format!(
+                "；事务状态未能持久化（回滚已幂等，可重试收敛）：{write_error}"
+            ));
+        }
+        return Err(message);
     }
     transaction.state = "committed".into();
     write_transaction(&transaction_root, &transaction)?;
@@ -708,7 +714,7 @@ pub fn rollback_sync_transaction(transaction_id: &str) -> Result<CodexInstanceSy
         &transaction.instance_ids,
     )?;
     ensure_all_stopped(&instances)?;
-    rollback_transaction_files(&paths, &instances, &transaction)?;
+    rollback_transaction_files(&paths, &instances, &mut transaction)?;
     transaction.state = "rolledBack".into();
     write_transaction(&root, &transaction)?;
     let warnings = rebuild_visibility_for_instances(&instances, &mut |home| {
@@ -1689,38 +1695,16 @@ fn apply_transaction(
 fn rollback_transaction_files(
     paths: &InstancePaths,
     instances: &[CodexInstance],
-    transaction: &SyncTransaction,
+    transaction: &mut SyncTransaction,
 ) -> Result<(), String> {
     let transaction_root = transaction_root(paths, &transaction.transaction_id);
     let mut failures = Vec::new();
-    for operation in transaction.operations.iter().rev() {
-        if let Err(error) = (|| {
+    for index in (0..transaction.operations.len()).rev() {
+        let operation = &transaction.operations[index];
+        let outcome = (|| -> Result<(), String> {
             validate_operation_paths(instances, operation)?;
             let destination = Path::new(&operation.destination_path);
-            if !destination.exists() {
-                if operation.installed_hash.is_some() {
-                    return Err(format!(
-                        "{} 已在同步后被删除，拒绝猜测性恢复",
-                        destination.display()
-                    ));
-                }
-                return Ok(());
-            }
-            let current_hash = hash_file(destination)?;
-            if let Some(installed_hash) = operation.installed_hash.as_deref() {
-                if installed_hash != operation.source_hash {
-                    return Err("同步事务记录的安装校验值与源校验值不一致".into());
-                }
-            } else if operation.destination_hash.as_deref() == Some(current_hash.as_str()) {
-                return Ok(());
-            }
-            if current_hash != operation.source_hash {
-                return Err(format!(
-                    "{} 已在同步后被修改，拒绝覆盖",
-                    destination.display()
-                ));
-            }
-            if let Some(backup_path) = operation.backup_path.as_deref() {
+            let restore_backup = |backup_path: &str| -> Result<(), String> {
                 let backup = Path::new(backup_path);
                 ensure_path_inside(backup, &transaction_root)?;
                 let expected = operation
@@ -1730,7 +1714,37 @@ fn rollback_transaction_files(
                 if hash_file(backup)? != expected {
                     return Err(format!("回滚备份校验失败：{}", backup.display()));
                 }
-                copy_atomically_verified(backup, destination, expected)?;
+                copy_atomically_verified(backup, destination, expected)
+            };
+            if !destination.exists() {
+                if operation.installed_hash.is_none() {
+                    return Ok(());
+                }
+                return match operation.backup_path.as_deref() {
+                    // 新增文件的回滚就是删除：目标已不存在即为目标状态（幂等重试）。
+                    None => Ok(()),
+                    // 同步前目标存在：从已校验的备份恢复原内容即为回滚目标。
+                    Some(backup_path) => restore_backup(backup_path),
+                };
+            }
+            let current_hash = hash_file(destination)?;
+            // 目标已是同步前内容：已回滚（或从未生效），幂等跳过。
+            if operation.destination_hash.as_deref() == Some(current_hash.as_str()) {
+                return Ok(());
+            }
+            if let Some(installed_hash) = operation.installed_hash.as_deref() {
+                if installed_hash != operation.source_hash {
+                    return Err("同步事务记录的安装校验值与源校验值不一致".into());
+                }
+            }
+            if current_hash != operation.source_hash {
+                return Err(format!(
+                    "{} 已在同步后被修改，拒绝覆盖",
+                    destination.display()
+                ));
+            }
+            if let Some(backup_path) = operation.backup_path.as_deref() {
+                restore_backup(backup_path)
             } else {
                 fs::remove_file(destination).map_err(|error| {
                     format!("删除同步新增文件失败 {}：{error}", destination.display())
@@ -1739,11 +1753,20 @@ fn rollback_transaction_files(
                     destination
                         .parent()
                         .ok_or_else(|| "目标路径缺少父目录".to_string())?,
-                )?;
+                )
             }
-            Ok(())
-        })() {
-            failures.push(error);
+        })();
+        match outcome {
+            Ok(()) => {
+                // 每回滚一条即清 installed_hash 并持久化，崩溃后重试可精确跳过。
+                if transaction.operations[index].installed_hash.is_some() {
+                    transaction.operations[index].installed_hash = None;
+                    if let Err(error) = write_transaction(&transaction_root, transaction) {
+                        failures.push(format!("回滚进度未能持久化：{error}"));
+                    }
+                }
+            }
+            Err(error) => failures.push(error),
         }
     }
     if failures.is_empty() {
@@ -2238,7 +2261,68 @@ mod tests {
 
         transaction.state = "prepared".into();
         transaction.operations[0].installed_hash = None;
-        rollback_transaction_files(&paths, &[first, second], &transaction).unwrap();
+        rollback_transaction_files(&paths, &[first, second], &mut transaction).unwrap();
+        assert_eq!(fs::read(&first_path).unwrap(), original);
+        let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn rollback_retry_after_partial_rollback_is_idempotent() {
+        let paths = temp_paths("rollback-idempotent");
+        let first_id = Uuid::new_v4().to_string();
+        let second_id = Uuid::new_v4().to_string();
+        let first_home = paths.managed_root.join(&first_id).join("home");
+        let second_home = paths.managed_root.join(&second_id).join("home");
+        let mut first = fixture_instance(&first_id, &first_home);
+        let mut second = fixture_instance(&second_id, &second_home);
+        first.managed = true;
+        second.managed = true;
+        fs::create_dir_all(&first.electron_data_directory).unwrap();
+        fs::create_dir_all(&second.electron_data_directory).unwrap();
+        let first_path = write_rollout(
+            &first_home,
+            "idempotent",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n",
+        );
+        let original = fs::read(&first_path).unwrap();
+        write_rollout(
+            &second_home,
+            "idempotent",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n{\"type\":\"event_msg\",\"payload\":{\"n\":2}}\n",
+        );
+        let mut registry = CodexInstanceRegistry {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            updated_at: 1,
+            instances: vec![first.clone(), second.clone()],
+            conflicts: Vec::new(),
+        };
+        sync_instances_locked_with_visibility(
+            &paths,
+            &mut registry,
+            vec![first.clone(), second.clone()],
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        let transaction_id_root = {
+            let result_root = paths.sync_root.join("transactions");
+            fs::read_dir(result_root).unwrap().next().unwrap().unwrap().path()
+        };
+        let mut transaction = read_transaction(&transaction_id_root).unwrap();
+
+        // 模拟"回滚已把文件恢复但进度/状态未持久化"后的重试：
+        // 文件已是同步前内容，manifest 仍记录 installed_hash。
+        fs::write(&first_path, &original).unwrap();
+        assert!(transaction.operations[0].installed_hash.is_some());
+        rollback_transaction_files(&paths, &[first.clone(), second.clone()], &mut transaction)
+            .unwrap();
+        assert_eq!(fs::read(&first_path).unwrap(), original);
+        assert!(transaction.operations[0].installed_hash.is_none());
+        // 进度已持久化：磁盘上的 manifest 同步清除了 installed_hash。
+        let persisted = read_transaction(&transaction_id_root).unwrap();
+        assert!(persisted.operations[0].installed_hash.is_none());
+
+        // 再次重试仍然成功（完全幂等）。
+        rollback_transaction_files(&paths, &[first, second], &mut transaction).unwrap();
         assert_eq!(fs::read(&first_path).unwrap(), original);
         let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());
     }

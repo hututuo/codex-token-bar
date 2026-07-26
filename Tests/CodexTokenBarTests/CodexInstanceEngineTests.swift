@@ -39,6 +39,54 @@ final class CodexInstanceEngineTests: XCTestCase {
         XCTAssertEqual(try fixture.engine.listSyncTransactions().first?.state, "rolledBack")
     }
 
+    func testRollbackRetryAfterPartialRollbackIsIdempotent() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let first = try fixture.importInstance(name: "一", home: fixture.firstHome)
+        let second = try fixture.importInstance(name: "二", home: fixture.secondHome)
+        let firstURL = try fixture.writeRollout(
+            home: fixture.firstHome,
+            threadID: "thread-existing",
+            events: ["{\"type\":\"event_msg\",\"payload\":{\"n\":1}}"]
+        )
+        let original = try Data(contentsOf: firstURL)
+        _ = try fixture.writeRollout(
+            home: fixture.secondHome,
+            threadID: "thread-existing",
+            events: [
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}",
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":2}}"
+            ]
+        )
+        _ = try fixture.writeRollout(
+            home: fixture.secondHome,
+            threadID: "thread-new",
+            events: ["{\"type\":\"event_msg\",\"payload\":{\"n\":3}}"]
+        )
+
+        let result = try fixture.engine.syncInstances(instanceIDs: [first.id, second.id])
+        XCTAssertEqual(result.operationsApplied, 2)
+        let transactionID = try XCTUnwrap(result.transactionId)
+
+        // 模拟"回滚已把文件恢复但进度/状态未持久化"后的重试现场：
+        // 既有文件已回到同步前内容，新增文件已被删除，manifest 仍记录 installedHash。
+        try original.write(to: firstURL)
+        let newFile = try XCTUnwrap(
+            FileManager.default
+                .enumerator(at: fixture.firstHome, includingPropertiesForKeys: nil)?
+                .compactMap { $0 as? URL }
+                .first { $0.lastPathComponent.contains("thread-new") }
+        )
+        try FileManager.default.removeItem(at: newFile)
+
+        // 旧实现在此报"已在同步后被修改，拒绝覆盖 / 已被删除，拒绝猜测性恢复"，
+        // 事务永久卡死；幂等回滚应把两条操作都判定为已回滚并正常收尾。
+        _ = try fixture.engine.rollbackSync(transactionID: transactionID)
+        XCTAssertEqual(try Data(contentsOf: firstURL), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: newFile.path))
+        XCTAssertEqual(try fixture.engine.listSyncTransactions().first?.state, "rolledBack")
+    }
+
     func testDivergentRolloutsStaySeparateAndAreRecordedAsConflict() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
