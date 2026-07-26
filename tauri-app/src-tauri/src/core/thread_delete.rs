@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read};
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
@@ -18,6 +20,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(1);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const REINJECT_INTERVAL: Duration = Duration::from_secs(5);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(20);
+const PIPE_TAIL_LIMIT_BYTES: usize = 64 * 1024;
+const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(500);
+const MARKDOWN_TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
 const INJECTION_TEMPLATE: &str =
     include_str!("../../../../Resources/CodexThreadDeleteInjection.js");
 const SESSION_ENHANCEMENTS_TEMPLATE: &str =
@@ -81,17 +86,49 @@ struct SessionEnhancementBindingResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     markdown: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    markdown_transfer: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    markdown_chunk_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_cwd: Option<String>,
 }
 
 pub fn start_supervisor() {
-    if STARTED.swap(true, Ordering::AcqRel) {
+    if STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return;
     }
     set_status(false, None, "等待 Codex 调试连接（需以调试模式启动 Codex）");
-    std::thread::spawn(supervisor_loop);
+    if let Err(error) = std::thread::Builder::new()
+        .name("codex-token-bar-thread-delete".into())
+        .spawn(|| {
+            let _owner = SupervisorStartedOwner;
+            let mut bootstrap_registrations = HashMap::new();
+            loop {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    supervisor_loop(&mut bootstrap_registrations)
+                }));
+                if outcome.is_err() {
+                    set_status(false, None, "Codex 会话增强监督器异常，正在自动恢复");
+                    eprintln!(
+                        "Codex Token Bar: thread-delete supervisor recovered after panic"
+                    );
+                }
+                wait_for_reconnect_or_timeout(PROBE_INTERVAL);
+            }
+        })
+    {
+        STARTED.store(false, Ordering::Release);
+        set_status(
+            false,
+            None,
+            format!("启动 Codex 会话增强监督器失败：{error}"),
+        );
+    }
 }
 
 pub fn bridge_status() -> ThreadDeleteBridgeStatus {
@@ -102,6 +139,7 @@ pub fn bridge_status() -> ThreadDeleteBridgeStatus {
 }
 
 pub fn request_reconnect() -> ThreadDeleteBridgeStatus {
+    start_supervisor();
     RECONNECT_REQUESTED.store(true, Ordering::Release);
     let current = bridge_status();
     set_status(false, current.debug_port, "正在重新连接 Codex 会话增强");
@@ -114,12 +152,23 @@ pub fn enable_with_codex_restart() -> Result<ThreadDeleteBridgeStatus, String> {
         set_status(false, None, format!("启用 Codex 会话增强失败：{error}"));
         return Err(error);
     }
+    start_supervisor();
     RECONNECT_REQUESTED.store(true, Ordering::Release);
     set_status(false, Some(9229), "正在等待 Codex 调试连接");
     Ok(bridge_status())
 }
 
-fn supervisor_loop() {
+struct SupervisorStartedOwner;
+
+impl Drop for SupervisorStartedOwner {
+    fn drop(&mut self) {
+        STARTED.store(false, Ordering::Release);
+    }
+}
+
+fn supervisor_loop(
+    bootstrap_registrations: &mut HashMap<String, BootstrapScriptRegistration>,
+) {
     let client = match reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_millis(400))
         .timeout(Duration::from_secs(1))
@@ -139,7 +188,11 @@ fn supervisor_loop() {
             wait_for_reconnect_or_timeout(PROBE_INTERVAL);
             continue;
         };
-        let reconnecting = match run_cdp_session(port, &websocket_url) {
+        let reconnecting = match run_cdp_session(
+            port,
+            &websocket_url,
+            bootstrap_registrations,
+        ) {
             Ok(SessionExit::Closed) => {
                 set_status(false, None, "Codex 调试连接已关闭");
                 false
@@ -214,7 +267,16 @@ enum SessionExit {
     Reconnect,
 }
 
-fn run_cdp_session(port: u16, websocket_url: &str) -> Result<SessionExit, String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BootstrapScriptRegistration {
+    identifier: String,
+}
+
+fn run_cdp_session(
+    port: u16,
+    websocket_url: &str,
+    bootstrap_registrations: &mut HashMap<String, BootstrapScriptRegistration>,
+) -> Result<SessionExit, String> {
     if !is_loopback_websocket(websocket_url) {
         return Err("拒绝连接非本机 Codex 调试地址".into());
     }
@@ -223,7 +285,13 @@ fn run_cdp_session(port: u16, websocket_url: &str) -> Result<SessionExit, String
         .map_err(|error| error.to_string())?;
     let (mut socket, _) = connect(request).map_err(|error| error.to_string())?;
     set_read_timeout(&mut socket, READ_TIMEOUT)?;
-    let health = install_bridge(&mut socket)?;
+    let mut pending_bindings = VecDeque::new();
+    let health = install_bridge(
+        &mut socket,
+        websocket_url,
+        bootstrap_registrations,
+        &mut pending_bindings,
+    )?;
     publish_health_status(port, &health);
     let mut last_injection = Instant::now();
 
@@ -240,13 +308,29 @@ fn run_cdp_session(port: u16, websocket_url: &str) -> Result<SessionExit, String
                     "expression": rendered_injection_script()?,
                     "returnByValue": true,
                 }),
+                &mut pending_bindings,
             )?;
-            let health = verify_injection_health(&mut socket)?;
+            let health = verify_injection_health(
+                &mut socket,
+                &mut pending_bindings,
+            )?;
             publish_health_status(port, &health);
             last_injection = Instant::now();
         }
+        if let Some(text) = pending_bindings.pop_front() {
+            handle_cdp_message(
+                &mut socket,
+                &text,
+                &mut pending_bindings,
+            )?;
+            continue;
+        }
         match socket.read() {
-            Ok(Message::Text(text)) => handle_cdp_message(&mut socket, text.as_str())?,
+            Ok(Message::Text(text)) => handle_cdp_message(
+                &mut socket,
+                text.as_str(),
+                &mut pending_bindings,
+            )?,
             Ok(Message::Close(_)) => return Ok(SessionExit::Closed),
             Ok(Message::Ping(payload)) => socket
                 .send(Message::Pong(payload))
@@ -273,30 +357,64 @@ fn set_read_timeout(
 
 fn install_bridge(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    websocket_url: &str,
+    bootstrap_registrations: &mut HashMap<String, BootstrapScriptRegistration>,
+    pending_bindings: &mut VecDeque<String>,
 ) -> Result<InjectionHealth, String> {
-    send_command_and_wait(socket, "Runtime.enable", json!({}))?;
+    send_command_and_wait(
+        socket,
+        "Runtime.enable",
+        json!({}),
+        pending_bindings,
+    )?;
     send_command_and_wait(
         socket,
         "Runtime.removeBinding",
         json!({ "name": BINDING_NAME }),
+        pending_bindings,
     )?;
     send_command_and_wait(
         socket,
         "Runtime.addBinding",
         json!({ "name": BINDING_NAME }),
+        pending_bindings,
     )?;
     let script = rendered_injection_script()?;
-    send_command_and_wait(
+    if let Some(previous) = bootstrap_registrations.get(websocket_url) {
+        send_command_and_wait(
+            socket,
+            "Page.removeScriptToEvaluateOnNewDocument",
+            json!({ "identifier": previous.identifier }),
+            pending_bindings,
+        )?;
+        bootstrap_registrations.remove(websocket_url);
+    }
+    let registration = send_command_and_wait(
         socket,
         "Page.addScriptToEvaluateOnNewDocument",
         json!({ "source": script }),
+        pending_bindings,
     )?;
+    let identifier = registration
+        .get("identifier")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "Page.addScriptToEvaluateOnNewDocument 未返回脚本标识".to_string()
+        })?;
+    bootstrap_registrations.insert(
+        websocket_url.to_string(),
+        BootstrapScriptRegistration {
+            identifier: identifier.to_string(),
+        },
+    );
     send_command_and_wait(
         socket,
         "Runtime.evaluate",
         json!({ "expression": script, "returnByValue": true }),
+        pending_bindings,
     )?;
-    verify_injection_health(socket)
+    verify_injection_health(socket, pending_bindings)
 }
 
 fn rendered_injection_script() -> Result<String, String> {
@@ -328,6 +446,7 @@ fn send_command_and_wait(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     method: &str,
     params: Value,
+    pending_bindings: &mut VecDeque<String>,
 ) -> Result<Value, String> {
     let id = send_command(socket, method, params)?;
     let deadline = Instant::now() + COMMAND_TIMEOUT;
@@ -340,7 +459,7 @@ fn send_command_and_wait(
                 let message: Value = serde_json::from_str(text.as_str())
                     .map_err(|error| format!("解析 CDP 回执失败：{error}"))?;
                 if message.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
-                    handle_cdp_message(socket, text.as_str())?;
+                    pending_bindings.push_back(text.to_string());
                     continue;
                 }
                 if message.get("id").and_then(Value::as_u64) != Some(id) {
@@ -394,6 +513,7 @@ struct InjectionHealth {
 
 fn verify_injection_health(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    pending_bindings: &mut VecDeque<String>,
 ) -> Result<InjectionHealth, String> {
     let expression = format!(
         "(() => ({{ deleteHealth: window.__codexTokenBarThreadDeleteHealth?.({}, {}), sessionHealth: window.__codexTokenBarSessionEnhancementsHealth?.(), expectedSessionRuntimeVersion: window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS_RUNTIME_VERSION__ }}))()",
@@ -404,6 +524,7 @@ fn verify_injection_health(
         socket,
         "Runtime.evaluate",
         json!({ "expression": expression, "returnByValue": true }),
+        pending_bindings,
     )?;
     let value = result
         .pointer("/result/value")
@@ -503,6 +624,7 @@ fn publish_health_status(port: u16, health: &InjectionHealth) {
 fn handle_cdp_message(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     text: &str,
+    pending_bindings: &mut VecDeque<String>,
 ) -> Result<(), String> {
     let message: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
     if message.get("method").and_then(Value::as_str) != Some("Runtime.bindingCalled") {
@@ -525,16 +647,110 @@ fn handle_cdp_message(
     if request.owner != OWNER {
         return Ok(());
     }
-    let result = session_enhancement_result(&request);
-    let expression = resolve_expression(&request.owner, &request.id, &result)?;
     let context_id = message
         .pointer("/params/executionContextId")
         .and_then(Value::as_u64);
-    let mut params = json!({ "expression": expression });
+    deliver_binding_result(
+        socket,
+        &request.owner,
+        &request.id,
+        session_enhancement_result(&request),
+        context_id,
+        pending_bindings,
+    )
+}
+
+fn deliver_binding_result(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    owner: &str,
+    request_id: &str,
+    mut result: SessionEnhancementBindingResult,
+    context_id: Option<u64>,
+    pending_bindings: &mut VecDeque<String>,
+) -> Result<(), String> {
+    if let Some(markdown) = result.markdown.take() {
+        let mut chunk_count = 0;
+        for (sequence, chunk) in markdown_chunks(&markdown).enumerate() {
+            let expression = markdown_chunk_expression(
+                owner,
+                request_id,
+                sequence,
+                chunk,
+            )?;
+            let response = send_command_and_wait(
+                socket,
+                "Runtime.evaluate",
+                runtime_evaluate_params(expression, context_id),
+                pending_bindings,
+            )?;
+            require_page_ack(
+                &response,
+                &format!("Markdown 分块 {sequence}"),
+            )?;
+            chunk_count = sequence + 1;
+        }
+        result.markdown_transfer = Some(true);
+        result.markdown_chunk_count = Some(chunk_count);
+    }
+    let expression = resolve_expression(owner, request_id, &result)?;
+    let response = send_command_and_wait(
+        socket,
+        "Runtime.evaluate",
+        runtime_evaluate_params(expression, context_id),
+        pending_bindings,
+    )?;
+    require_page_ack(&response, "会话增强结果")
+}
+
+fn runtime_evaluate_params(expression: String, context_id: Option<u64>) -> Value {
+    let mut params = json!({
+        "expression": expression,
+        "returnByValue": true,
+    });
     if let Some(context_id) = context_id {
         params["contextId"] = json!(context_id);
     }
-    send_command(socket, "Runtime.evaluate", params).map(|_| ())
+    params
+}
+
+fn require_page_ack(result: &Value, operation: &str) -> Result<(), String> {
+    if result.pointer("/result/value").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(format!("{operation}未被页面接收"))
+    }
+}
+
+fn markdown_chunk_expression(
+    owner: &str,
+    request_id: &str,
+    sequence: usize,
+    chunk: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "window.__codexTokenBarThreadDeleteMarkdownChunk({}, {}, {}, {})",
+        serde_json::to_string(owner).map_err(|error| error.to_string())?,
+        serde_json::to_string(request_id).map_err(|error| error.to_string())?,
+        sequence,
+        serde_json::to_string(chunk).map_err(|error| error.to_string())?,
+    ))
+}
+
+fn markdown_chunks(markdown: &str) -> impl Iterator<Item = &str> {
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        if start >= markdown.len() {
+            return None;
+        }
+        let mut end = (start + MARKDOWN_TRANSFER_CHUNK_BYTES).min(markdown.len());
+        while end > start && !markdown.is_char_boundary(end) {
+            end -= 1;
+        }
+        debug_assert!(end > start);
+        let chunk = &markdown[start..end];
+        start = end;
+        Some(chunk)
+    })
 }
 
 fn resolve_expression(
@@ -566,6 +782,8 @@ fn session_enhancement_result(
                     message,
                     filename: None,
                     markdown: None,
+                    markdown_transfer: None,
+                    markdown_chunk_count: None,
                     previous_cwd: None,
                     target_cwd: None,
                 })
@@ -584,6 +802,8 @@ fn session_enhancement_result(
                     message: result.message,
                     filename: Some(result.filename),
                     markdown: Some(result.markdown),
+                    markdown_transfer: None,
+                    markdown_chunk_count: None,
                     previous_cwd: None,
                     target_cwd: None,
                 })
@@ -608,6 +828,8 @@ fn session_enhancement_result(
                     message: result.message,
                     filename: None,
                     markdown: None,
+                    markdown_transfer: None,
+                    markdown_chunk_count: None,
                     previous_cwd: Some(result.previous_cwd),
                     target_cwd: Some(result.target_cwd),
                 })
@@ -619,6 +841,8 @@ fn session_enhancement_result(
         message,
         filename: None,
         markdown: None,
+        markdown_transfer: None,
+        markdown_chunk_count: None,
         previous_cwd: None,
         target_cwd: None,
     })
@@ -651,23 +875,41 @@ fn run_delete_command(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("启动 Codex 删除命令失败：{error}"))?;
+    let stdout = PipeTailCollector::spawn(child.stdout.take());
+    let stderr = PipeTailCollector::spawn(child.stderr.take());
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(25));
             }
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("Codex 删除命令超时".into());
+                break Err("Codex 删除命令超时".to_string());
             }
-            Err(error) => return Err(format!("等待 Codex 删除命令失败：{error}")),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("等待 Codex 删除命令失败：{error}"));
+            }
         }
     };
-    let stdout = read_pipe(child.stdout.take());
-    let stderr = read_pipe(child.stderr.take());
+    let stdout = stdout.finish();
+    let stderr = stderr.finish();
+    let status = status.map_err(|error| {
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        if detail.is_empty() {
+            error
+        } else {
+            format!("{error}：{detail}")
+        }
+    })?;
     if status.success() {
         let message = stdout.trim();
         return Ok(if message.is_empty() {
@@ -684,13 +926,83 @@ fn run_delete_command(
     Err(format!("Codex 删除失败：{}", detail.trim()))
 }
 
-fn read_pipe(pipe: Option<impl Read>) -> String {
-    let Some(mut pipe) = pipe else {
-        return String::new();
-    };
-    let mut bytes = Vec::new();
-    let _ = pipe.read_to_end(&mut bytes);
-    String::from_utf8_lossy(&bytes).into_owned()
+struct PipeTailCollector {
+    reader: Option<JoinHandle<()>>,
+    receiver: Option<mpsc::Receiver<()>>,
+    tail: Arc<Mutex<Vec<u8>>>,
+}
+
+impl PipeTailCollector {
+    fn spawn<R>(pipe: Option<R>) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        let tail = Arc::new(Mutex::new(Vec::with_capacity(
+            PIPE_TAIL_LIMIT_BYTES,
+        )));
+        let (reader, receiver) = if let Some(mut pipe) = pipe {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let reader_tail = tail.clone();
+            let reader = std::thread::spawn(move || {
+                let mut buffer = [0_u8; 8 * 1024];
+                loop {
+                    match pipe.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(count) => {
+                            let mut tail = reader_tail
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            append_pipe_tail(&mut tail, &buffer[..count]);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = sender.send(());
+            });
+            (Some(reader), Some(receiver))
+        } else {
+            (None, None)
+        };
+        Self {
+            reader,
+            receiver,
+            tail,
+        }
+    }
+
+    fn finish(mut self) -> String {
+        let completed = match self.receiver.take() {
+            Some(receiver) => receiver.recv_timeout(PIPE_DRAIN_GRACE).is_ok(),
+            None => true,
+        };
+        if completed {
+            if let Some(reader) = self.reader.take() {
+                let _ = reader.join();
+            }
+        }
+        let bytes = self
+            .tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+fn append_pipe_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
+    if bytes.len() >= PIPE_TAIL_LIMIT_BYTES {
+        tail.clear();
+        tail.extend_from_slice(&bytes[(bytes.len() - PIPE_TAIL_LIMIT_BYTES)..]);
+        return;
+    }
+    let overflow = tail
+        .len()
+        .saturating_add(bytes.len())
+        .saturating_sub(PIPE_TAIL_LIMIT_BYTES);
+    if overflow > 0 {
+        tail.drain(..overflow);
+    }
+    tail.extend_from_slice(bytes);
 }
 
 fn delete_command_args(thread_id: &str) -> [&str; 3] {
@@ -826,6 +1138,128 @@ mod tests {
             delete_command_args("019f5a7c-1234-7abc-8def-0123456789ab"),
             ["delete", "--force", "019f5a7c-1234-7abc-8def-0123456789ab"]
         );
+    }
+
+    #[test]
+    fn markdown_transfer_chunks_preserve_unicode_without_giant_expression() {
+        let markdown = format!(
+            "{}中文🙂{}",
+            "a".repeat(MARKDOWN_TRANSFER_CHUNK_BYTES - 2),
+            "b".repeat(MARKDOWN_TRANSFER_CHUNK_BYTES + 9)
+        );
+        let chunks = markdown_chunks(&markdown).collect::<Vec<_>>();
+        assert!(chunks.len() >= 3);
+        assert_eq!(chunks.concat(), markdown);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.len() <= MARKDOWN_TRANSFER_CHUNK_BYTES));
+        let expression = markdown_chunk_expression("tauri", "request", 0, chunks[0]).unwrap();
+        assert!(expression.starts_with(
+            "window.__codexTokenBarThreadDeleteMarkdownChunk("
+        ));
+        assert!(expression.len() < MARKDOWN_TRANSFER_CHUNK_BYTES + 256);
+    }
+
+    #[test]
+    fn page_ack_requires_an_explicit_true_value() {
+        assert!(require_page_ack(
+            &json!({"result": {"value": true}}),
+            "chunk"
+        )
+        .is_ok());
+        assert!(require_page_ack(
+            &json!({"result": {"value": false}}),
+            "chunk"
+        )
+        .is_err());
+        assert!(require_page_ack(&json!({}), "chunk").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_command_drains_large_stdout_and_stderr_before_exit() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct TestDirectory(std::path::PathBuf);
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = TestDirectory(std::env::temp_dir().join(format!(
+            "codex-token-bar-thread-delete-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::create_dir(&directory.0).unwrap();
+        let script = directory.0.join("fake-codex");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n\
+             dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\000' x\n\
+             printf '\\nSTDOUT_DONE\\n'\n\
+             dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\000' y >&2\n\
+             printf '\\nSTDERR_DONE\\n' >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let output = run_delete_command(
+            &script,
+            &directory.0,
+            "019f5a7c-1234-7abc-8def-0123456789ab",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        assert!(output.ends_with("STDOUT_DONE"));
+        assert!(output.len() <= PIPE_TAIL_LIMIT_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_command_does_not_wait_forever_for_descendant_inherited_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct TestDirectory(std::path::PathBuf);
+        impl Drop for TestDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = TestDirectory(std::env::temp_dir().join(format!(
+            "codex-token-bar-thread-delete-descendant-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )));
+        std::fs::create_dir(&directory.0).unwrap();
+        let script = directory.0.join("fake-codex");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nsleep 2 &\nprintf 'PARENT_DONE\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let started_at = Instant::now();
+        let output = run_delete_command(
+            &script,
+            &directory.0,
+            "019f5a7c-1234-7abc-8def-0123456789ab",
+            Duration::from_secs(2),
+        )
+        .unwrap();
+
+        assert!(output.ends_with("PARENT_DONE"));
+        assert!(started_at.elapsed() < Duration::from_millis(1_500));
     }
 
     #[test]

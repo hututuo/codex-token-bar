@@ -2,19 +2,27 @@
 // Behavior adapted from CodexPlusPlus v1.2.41 (BigPizzaV3), then rewritten
 // for Codex Token Bar's Rust bridge. See OPEN_SOURCE_NOTICES.md.
 
-use crate::core::atomic_file::{write_atomically_streaming, AtomicWriteError};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
-use serde::Serialize;
+use super::provider_repair::safe_fs::{AtomicInstallPhase, PinnedHome};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashSet;
+use std::fs::File;
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex, OnceLock,
+};
 use std::time::Duration;
 
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const BACKUP_ATTEMPTS: usize = 64;
 static BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static WORKSPACE_MOVE_LEASES: OnceLock<Mutex<HashSet<(PathBuf, String)>>> =
+    OnceLock::new();
+const WORKSPACE_MOVE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +45,23 @@ struct ThreadRecord {
     title: String,
     cwd: String,
     rollout_path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceMoveJournal {
+    schema_version: u32,
+    codex_home: String,
+    state_database: String,
+    thread_id: String,
+    rollout_relative_path: String,
+    retained_original_relative_path: String,
+    original_cwd: String,
+    target_cwd: String,
+}
+
+struct WorkspaceMoveLease {
+    key: (PathBuf, String),
 }
 
 pub fn export_markdown(
@@ -69,74 +94,129 @@ pub fn move_thread_workspace(
 ) -> Result<WorkspaceMoveResult, String> {
     validate_thread_id(thread_id)?;
     let target = canonical_target_directory(target_cwd)?;
-    let mut connection = open_state_database(codex_home, false)?;
-    let record = thread_record(&connection, thread_id)?;
-    let rollout = if record.rollout_path.trim().is_empty() {
-        None
-    } else {
-        Some(trusted_rollout_path(codex_home, &record.rollout_path)?)
-    };
-    let backup = rollout.as_deref().map(create_rollout_backup).transpose()?;
+    let pinned_home = PinnedHome::open(codex_home)?;
+    let _lease =
+        WorkspaceMoveLease::acquire(pinned_home.canonical_path(), thread_id)?;
+    let database_path = state_database_path(codex_home)?;
+    pinned_home.ensure_parent_directories(
+        &workspace_move_journal_relative_path(thread_id),
+    )?;
+    recover_interrupted_workspace_move(
+        &pinned_home,
+        &database_path,
+        thread_id,
+    )?;
 
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("启动会话项目移动事务失败：{error}"))?;
-    let changed = transaction
-        .execute(
-            "UPDATE threads SET cwd = ?1 WHERE id = ?2",
-            params![target.to_string_lossy().as_ref(), thread_id],
-        )
-        .map_err(|error| format!("更新会话项目目录失败：{error}"))?;
-    if changed != 1 {
-        cleanup_backup(backup.as_deref());
-        return Err(format!("本地数据库中未找到会话：{thread_id}"));
+    let connection = open_state_database(codex_home, true)?;
+    let record = thread_record(&connection, thread_id)?;
+    drop(connection);
+    let target = target.to_string_lossy().into_owned();
+    if record.cwd == target {
+        return Ok(WorkspaceMoveResult {
+            message: "会话已在目标项目目录".into(),
+            previous_cwd: record.cwd,
+            target_cwd: target,
+        });
     }
 
-    if let Some(rollout) = rollout.as_deref() {
-        if let Err(error) = rewrite_rollout_atomically(rollout, thread_id, &target) {
-            cleanup_backup(backup.as_deref());
-            return Err(error);
+    let rollout_relative = if record.rollout_path.trim().is_empty() {
+        None
+    } else {
+        let rollout = trusted_rollout_path(codex_home, &record.rollout_path)?;
+        Some(trusted_relative_path(
+            pinned_home.canonical_path(),
+            &rollout,
+        )?)
+    };
+
+    let journal = rollout_relative
+        .as_deref()
+        .map(|rollout_relative| {
+            WorkspaceMoveJournal::new(
+                &pinned_home,
+                &database_path,
+                thread_id,
+                rollout_relative,
+                &record.cwd,
+                &target,
+            )
+        })
+        .transpose()?;
+
+    if let Some(journal) = journal.as_ref() {
+        if let Err(error) = prepare_workspace_rollout_move(&pinned_home, journal) {
+            return recover_after_workspace_move_error(
+                &pinned_home,
+                &database_path,
+                thread_id,
+                "准备项目移动失败",
+                error,
+            );
         }
     }
 
-    if let Err(error) = transaction.commit() {
-        let restore = match (rollout.as_deref(), backup.as_deref()) {
-            (Some(rollout), Some(backup)) => restore_rollout(rollout, backup),
-            _ => Ok(()),
-        };
-        cleanup_backup(backup.as_deref());
-        return match restore {
-            Ok(()) => Err(format!("提交会话项目移动失败，rollout 已恢复：{error}")),
-            Err(restore_error) => Err(format!(
-                "提交会话项目移动失败且 rollout 恢复失败：{error}；{restore_error}"
-            )),
-        };
+    let connection = open_state_database(codex_home, false)?;
+    let changed = connection
+        .execute(
+            "
+            UPDATE threads
+            SET cwd = ?1
+            WHERE id = ?2
+              AND COALESCE(cwd, '') = ?3
+            ",
+            params![target, thread_id, record.cwd],
+        )
+        .map_err(|error| format!("更新会话项目目录失败：{error}"));
+    match changed {
+        Ok(1) => {}
+        Ok(_) => {
+            return recover_after_workspace_move_error(
+                &pinned_home,
+                &database_path,
+                thread_id,
+                "更新项目目录时检测到并发变化",
+                format!("会话 {thread_id} 的原目录已变化"),
+            )
+        }
+        Err(error) => {
+            return recover_after_workspace_move_error(
+                &pinned_home,
+                &database_path,
+                thread_id,
+                "更新项目目录失败",
+                error,
+            )
+        }
     }
 
-    cleanup_backup(backup.as_deref());
+    if journal.is_some() {
+        recover_interrupted_workspace_move(
+            &pinned_home,
+            &database_path,
+            thread_id,
+        )
+        .map_err(|error| {
+            format!(
+                "项目移动已写入数据库，但持久化事务收尾失败；下次会自动恢复：{error}"
+            )
+        })?;
+    }
+
     Ok(WorkspaceMoveResult {
         message: "已移动对话".into(),
         previous_cwd: record.cwd,
-        target_cwd: target.to_string_lossy().into_owned(),
+        target_cwd: target,
     })
 }
 
 fn open_state_database(codex_home: &Path, read_only: bool) -> Result<Connection, String> {
-    let database = codex_home.join("state_5.sqlite");
-    if !database.is_file() {
-        return Err(format!("Codex 本地数据库不可用：{}", database.display()));
-    }
-    let flags = if read_only {
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-    } else {
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-    } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let connection = Connection::open_with_flags(&database, flags)
-        .map_err(|error| format!("打开 Codex 本地数据库失败：{error}"))?;
-    connection
-        .busy_timeout(DATABASE_BUSY_TIMEOUT)
-        .map_err(|error| format!("设置 Codex 数据库等待时间失败：{error}"))?;
-    Ok(connection)
+    let database = state_database_path(codex_home)?;
+    open_state_database_at(&database, read_only)
+}
+
+fn state_database_path(codex_home: &Path) -> Result<PathBuf, String> {
+    Ok(super::provider_repair::resolve_sqlite_home_path(codex_home)?
+        .join("state_5.sqlite"))
 }
 
 fn thread_record(connection: &Connection, thread_id: &str) -> Result<ThreadRecord, String> {
@@ -223,7 +303,30 @@ fn canonical_target_directory(raw: &str) -> Result<PathBuf, String> {
     if !resolved.is_dir() {
         return Err(format!("目标项目目录不可用：{}", resolved.display()));
     }
-    Ok(resolved)
+    Ok(persisted_workspace_path(&resolved))
+}
+
+fn persisted_workspace_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        return PathBuf::from(strip_windows_extended_prefix(
+            path.to_string_lossy().as_ref(),
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+fn strip_windows_extended_prefix(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 fn expand_tilde(raw: &str) -> PathBuf {
@@ -369,133 +472,516 @@ fn build_filename(title: &str, thread_id: &str) -> String {
     format!("{safe}-{thread_id}.md")
 }
 
-fn create_rollout_backup(path: &Path) -> Result<PathBuf, String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "rollout 文件缺少父目录".to_string())?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("rollout.jsonl");
-    for _ in 0..BACKUP_ATTEMPTS {
-        let sequence = BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let backup = parent.join(format!(
-            ".{name}.codex-token-bar-move-backup-{}-{sequence:020}",
-            std::process::id()
-        ));
-        let mut destination = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&backup)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("创建 rollout 回滚副本失败：{error}")),
-        };
-        let mut source =
-            File::open(path).map_err(|error| format!("打开 rollout 备份源失败：{error}"))?;
-        if let Err(error) = std::io::copy(&mut source, &mut destination)
-            .and_then(|_| destination.flush())
-            .and_then(|_| destination.sync_all())
-        {
-            let _ = std::fs::remove_file(&backup);
-            return Err(format!("写入 rollout 回滚副本失败：{error}"));
-        }
-        return Ok(backup);
+impl WorkspaceMoveJournal {
+    fn new(
+        pinned_home: &PinnedHome,
+        database_path: &Path,
+        thread_id: &str,
+        rollout_relative_path: &Path,
+        original_cwd: &str,
+        target_cwd: &str,
+    ) -> Result<Self, String> {
+        let parent = rollout_relative_path
+            .parent()
+            .ok_or_else(|| "rollout 文件缺少父目录".to_string())?;
+        let retained_original_relative_path =
+            parent.join(format!(".provider-session-prefix-workspace-{thread_id}"));
+        let database_path = database_path.canonicalize().map_err(|error| {
+            format!(
+                "解析 Codex 本地数据库路径失败 {}：{error}",
+                database_path.display()
+            )
+        })?;
+        Ok(Self {
+            schema_version: WORKSPACE_MOVE_SCHEMA_VERSION,
+            codex_home: pinned_home
+                .canonical_path()
+                .to_string_lossy()
+                .into_owned(),
+            state_database: database_path.to_string_lossy().into_owned(),
+            thread_id: thread_id.into(),
+            rollout_relative_path: rollout_relative_path
+                .to_string_lossy()
+                .into_owned(),
+            retained_original_relative_path: retained_original_relative_path
+                .to_string_lossy()
+                .into_owned(),
+            original_cwd: original_cwd.into(),
+            target_cwd: target_cwd.into(),
+        })
     }
-    Err("创建唯一 rollout 回滚副本失败".into())
 }
 
-fn rewrite_rollout_atomically(path: &Path, thread_id: &str, target: &Path) -> Result<(), String> {
-    let target = target.to_string_lossy().into_owned();
-    write_atomically_streaming(path, |output| {
-        rewrite_rollout(path, output, thread_id, &target)
-    })
-    .map_err(atomic_write_error)
+impl WorkspaceMoveLease {
+    fn acquire(codex_home: &Path, thread_id: &str) -> Result<Self, String> {
+        let key = (codex_home.to_path_buf(), thread_id.to_string());
+        let leases = WORKSPACE_MOVE_LEASES.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut leases = leases.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !leases.insert(key.clone()) {
+            return Err(format!(
+                "会话 {thread_id} 的项目移动正在进行，请稍后重试"
+            ));
+        }
+        Ok(Self { key })
+    }
 }
 
-fn rewrite_rollout(
-    source_path: &Path,
-    output: &mut File,
+impl Drop for WorkspaceMoveLease {
+    fn drop(&mut self) {
+        if let Some(leases) = WORKSPACE_MOVE_LEASES.get() {
+            leases
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&self.key);
+        }
+    }
+}
+
+fn workspace_move_journal_relative_path(thread_id: &str) -> PathBuf {
+    PathBuf::from("backups_state")
+        .join("codex-token-bar")
+        .join("workspace-move")
+        .join(format!("{thread_id}.json"))
+}
+
+fn trusted_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        format!(
+            "rollout 文件不在固定 Codex Home 内：{}",
+            path.display()
+        )
+    })?;
+    if relative.as_os_str().is_empty() {
+        return Err("rollout 文件相对路径为空".into());
+    }
+    Ok(relative.to_path_buf())
+}
+
+fn prepare_workspace_rollout_move(
+    pinned_home: &PinnedHome,
+    journal: &WorkspaceMoveJournal,
+) -> Result<(), String> {
+    let rollout_relative = Path::new(&journal.rollout_relative_path);
+    let original_line = read_first_line(pinned_home, rollout_relative)?;
+    let current_cwd = workspace_metadata_cwd(&original_line, &journal.thread_id)?;
+    if current_cwd != journal.original_cwd {
+        return Err(format!(
+            "rollout 与数据库的项目目录不一致，已拒绝覆盖：数据库={}，rollout={current_cwd}",
+            journal.original_cwd
+        ));
+    }
+
+    let journal_relative = workspace_move_journal_relative_path(&journal.thread_id);
+    let journal_bytes = serde_json::to_vec(journal)
+        .map_err(|error| format!("编码项目移动事务失败：{error}"))?;
+    install_new_managed_file(pinned_home, &journal_relative, &journal_bytes)?;
+    install_new_managed_file(
+        pinned_home,
+        Path::new(&journal.retained_original_relative_path),
+        &original_line,
+    )?;
+
+    let changed = pinned_home.transform_first_line_atomically(
+        rollout_relative,
+        |current| {
+            if current != original_line {
+                return Err(
+                    "rollout 首行在项目移动准备期间发生变化，已拒绝覆盖".into(),
+                );
+            }
+            rewrite_workspace_metadata_line(
+                current,
+                &journal.thread_id,
+                &journal.target_cwd,
+            )
+            .map(Some)
+        },
+        |_, _| Ok(()),
+    )?;
+    if !changed {
+        return Err("项目移动未产生预期的 rollout 首行更新".into());
+    }
+    Ok(())
+}
+
+fn install_new_managed_file(
+    pinned_home: &PinnedHome,
+    relative: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let expected_size =
+        u64::try_from(bytes.len()).map_err(|_| "项目移动事务文件过大".to_string())?;
+    pinned_home.install_atomically(
+        relative,
+        Some(expected_size),
+        None,
+        |target| {
+            target
+                .write_all(bytes)
+                .map_err(|error| format!("写入项目移动事务文件失败：{error}"))
+        },
+        |phase, _| {
+            if phase == AtomicInstallPhase::BeforeReplace
+                && pinned_home.open_file(relative)?.is_some()
+            {
+                return Err(format!(
+                    "项目移动事务文件已存在，已拒绝覆盖：{}",
+                    relative.display()
+                ));
+            }
+            Ok(())
+        },
+    )
+}
+
+fn recover_interrupted_workspace_move(
+    pinned_home: &PinnedHome,
+    database_path: &Path,
+    thread_id: &str,
+) -> Result<(), String> {
+    let journal_relative = workspace_move_journal_relative_path(thread_id);
+    let Some(journal_bytes) = read_managed_file_if_present(pinned_home, &journal_relative)? else {
+        return Ok(());
+    };
+    let journal = serde_json::from_slice::<WorkspaceMoveJournal>(&journal_bytes)
+        .map_err(|error| format!("解析项目移动事务失败：{error}"))?;
+    validate_workspace_move_journal(
+        pinned_home,
+        database_path,
+        thread_id,
+        &journal,
+    )?;
+
+    let rollout_relative = Path::new(&journal.rollout_relative_path);
+    let current_line = read_first_line(pinned_home, rollout_relative)?;
+    let current_cwd = workspace_metadata_cwd(&current_line, thread_id)?;
+    let connection = open_state_database_at(database_path, true)?;
+    let record = thread_record(&connection, thread_id)?;
+    drop(connection);
+
+    let retained_relative = Path::new(&journal.retained_original_relative_path);
+    let retained_line = read_managed_file_if_present(pinned_home, retained_relative)?;
+    match retained_line {
+        Some(retained_line) => {
+            let retained_cwd = workspace_metadata_cwd(&retained_line, thread_id)?;
+            match (
+                record.cwd.as_str(),
+                current_cwd.as_str(),
+                retained_cwd.as_str(),
+            ) {
+                (database, current, retained)
+                    if database == journal.original_cwd
+                        && current == journal.original_cwd
+                        && retained == journal.original_cwd =>
+                {
+                    // The process stopped after persisting the prefix but before replacing
+                    // the rollout. Nothing was committed, so discard the prepared state.
+                }
+                (database, current, retained)
+                    if database == journal.original_cwd
+                        && current == journal.target_cwd
+                        && retained == journal.original_cwd =>
+                {
+                    replace_workspace_first_line(
+                        pinned_home,
+                        rollout_relative,
+                        &current_line,
+                        &retained_line,
+                    )?;
+                }
+                (database, current, retained)
+                    if database == journal.target_cwd
+                        && current == journal.original_cwd
+                        && retained == journal.original_cwd =>
+                {
+                    replace_workspace_cwd(
+                        pinned_home,
+                        rollout_relative,
+                        &current_line,
+                        thread_id,
+                        &journal.target_cwd,
+                    )?;
+                }
+                (database, current, retained)
+                    if database == journal.target_cwd
+                        && current == journal.target_cwd
+                        && retained == journal.original_cwd =>
+                {
+                    // Both durable stores reached the target. Cleanup below commits it.
+                }
+                _ => {
+                    return Err(format!(
+                        "项目移动事务状态无法安全判定：数据库={}，rollout={current_cwd}，保留原件={retained_cwd}；恢复文件保留在 {}",
+                        record.cwd,
+                        pinned_home
+                            .canonical_path()
+                            .join(&journal.retained_original_relative_path)
+                            .display()
+                    ))
+                }
+            }
+            pinned_home.remove_file(retained_relative, || Ok(()))?;
+        }
+        None => match (record.cwd.as_str(), current_cwd.as_str()) {
+            (database, current)
+                if database == journal.original_cwd
+                    && current == journal.original_cwd => {}
+            (database, current)
+                if database == journal.original_cwd
+                    && current == journal.target_cwd =>
+            {
+                compare_and_set_thread_cwd(
+                    database_path,
+                    thread_id,
+                    &journal.original_cwd,
+                    &journal.target_cwd,
+                )?;
+            }
+            (database, current)
+                if database == journal.target_cwd
+                    && current == journal.original_cwd =>
+            {
+                replace_workspace_cwd(
+                    pinned_home,
+                    rollout_relative,
+                    &current_line,
+                    thread_id,
+                    &journal.target_cwd,
+                )?;
+            }
+            (database, current)
+                if database == journal.target_cwd
+                    && current == journal.target_cwd => {}
+            _ => {
+                return Err(format!(
+                    "项目移动事务缺少保留原件且状态无法安全判定：数据库={}，rollout={current_cwd}；事务保留在 {}",
+                    record.cwd,
+                    pinned_home.canonical_path().join(&journal_relative).display()
+                ))
+            }
+        },
+    }
+
+    pinned_home.remove_file(&journal_relative, || Ok(()))?;
+    Ok(())
+}
+
+fn recover_after_workspace_move_error(
+    pinned_home: &PinnedHome,
+    database_path: &Path,
+    thread_id: &str,
+    context: &str,
+    error: String,
+) -> Result<WorkspaceMoveResult, String> {
+    match recover_interrupted_workspace_move(pinned_home, database_path, thread_id) {
+        Ok(()) => Err(format!("{context}，已自动恢复：{error}")),
+        Err(recovery_error) => Err(format!(
+            "{context}且自动恢复未完成：{error}；{recovery_error}"
+        )),
+    }
+}
+
+fn validate_workspace_move_journal(
+    pinned_home: &PinnedHome,
+    database_path: &Path,
+    thread_id: &str,
+    journal: &WorkspaceMoveJournal,
+) -> Result<(), String> {
+    let expected_database = database_path.canonicalize().map_err(|error| {
+        format!(
+            "解析 Codex 本地数据库路径失败 {}：{error}",
+            database_path.display()
+        )
+    })?;
+    let rollout_relative = Path::new(&journal.rollout_relative_path);
+    let expected_retained = rollout_relative
+        .parent()
+        .ok_or_else(|| "项目移动事务中的 rollout 缺少父目录".to_string())?
+        .join(format!(".provider-session-prefix-workspace-{thread_id}"));
+    if journal.schema_version != WORKSPACE_MOVE_SCHEMA_VERSION
+        || journal.thread_id != thread_id
+        || journal.codex_home
+            != pinned_home
+                .canonical_path()
+                .to_string_lossy()
+                .as_ref()
+        || journal.state_database != expected_database.to_string_lossy().as_ref()
+        || Path::new(&journal.retained_original_relative_path) != expected_retained
+    {
+        return Err(format!(
+            "项目移动事务与当前 Codex 数据源不匹配：{}",
+            pinned_home
+                .canonical_path()
+                .join(workspace_move_journal_relative_path(thread_id))
+                .display()
+        ));
+    }
+    Ok(())
+}
+
+fn compare_and_set_thread_cwd(
+    database_path: &Path,
+    thread_id: &str,
+    original_cwd: &str,
+    target_cwd: &str,
+) -> Result<(), String> {
+    let connection = open_state_database_at(database_path, false)?;
+    let changed = connection
+        .execute(
+            "
+            UPDATE threads
+            SET cwd = ?1
+            WHERE id = ?2
+              AND COALESCE(cwd, '') = ?3
+            ",
+            params![target_cwd, thread_id, original_cwd],
+        )
+        .map_err(|error| format!("恢复项目移动数据库状态失败：{error}"))?;
+    if changed != 1 {
+        return Err(format!(
+            "恢复项目移动时检测到数据库并发变化：{thread_id}"
+        ));
+    }
+    Ok(())
+}
+
+fn open_state_database_at(database: &Path, read_only: bool) -> Result<Connection, String> {
+    if !database.is_file() {
+        return Err(format!("Codex 本地数据库不可用：{}", database.display()));
+    }
+    let flags = if read_only {
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection = Connection::open_with_flags(database, flags)
+        .map_err(|error| format!("打开 Codex 本地数据库失败：{error}"))?;
+    connection
+        .busy_timeout(DATABASE_BUSY_TIMEOUT)
+        .map_err(|error| format!("设置 Codex 数据库等待时间失败：{error}"))?;
+    Ok(connection)
+}
+
+fn read_managed_file_if_present(
+    pinned_home: &PinnedHome,
+    relative: &Path,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(mut file) = pinned_home.open_file(relative)? else {
+        return Ok(None);
+    };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("读取项目移动事务文件失败：{error}"))?;
+    Ok(Some(bytes))
+}
+
+fn read_first_line(pinned_home: &PinnedHome, relative: &Path) -> Result<Vec<u8>, String> {
+    let file = pinned_home
+        .open_file(relative)?
+        .ok_or_else(|| format!("rollout 文件不存在：{}", relative.display()))?;
+    let mut line = Vec::new();
+    let read = BufReader::new(file)
+        .read_until(b'\n', &mut line)
+        .map_err(|error| format!("读取 rollout 首行失败：{error}"))?;
+    if read == 0 {
+        return Err(format!("rollout 文件为空：{}", relative.display()));
+    }
+    Ok(line)
+}
+
+fn workspace_metadata_cwd(line: &[u8], thread_id: &str) -> Result<String, String> {
+    let event = parse_workspace_metadata(line, thread_id)?;
+    Ok(event
+        .pointer("/payload/cwd")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .into())
+}
+
+fn parse_workspace_metadata(line: &[u8], thread_id: &str) -> Result<Value, String> {
+    let json = line
+        .strip_suffix(b"\r\n")
+        .or_else(|| line.strip_suffix(b"\n"))
+        .unwrap_or(line);
+    let event = serde_json::from_slice::<Value>(json)
+        .map_err(|error| format!("rollout 首行不是有效 JSON：{error}"))?;
+    let is_match = event.get("type").and_then(Value::as_str) == Some("session_meta")
+        && event
+            .pointer("/payload/id")
+            .and_then(Value::as_str)
+            == Some(thread_id);
+    if !is_match {
+        return Err(format!(
+            "rollout 首行不是会话 {thread_id} 的规范 session_meta"
+        ));
+    }
+    Ok(event)
+}
+
+fn rewrite_workspace_metadata_line(
+    line: &[u8],
+    thread_id: &str,
+    target_cwd: &str,
+) -> Result<Vec<u8>, String> {
+    let newline = if line.ends_with(b"\r\n") {
+        b"\r\n".as_slice()
+    } else if line.ends_with(b"\n") {
+        b"\n".as_slice()
+    } else {
+        b"".as_slice()
+    };
+    let mut event = parse_workspace_metadata(line, thread_id)?;
+    let payload = event
+        .get_mut("payload")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "rollout 首行缺少 session_meta payload".to_string())?;
+    payload.insert("cwd".into(), Value::String(target_cwd.into()));
+    let mut replacement = serde_json::to_vec(&event)
+        .map_err(|error| format!("编码 rollout 首行失败：{error}"))?;
+    replacement.extend_from_slice(newline);
+    Ok(replacement)
+}
+
+fn replace_workspace_first_line(
+    pinned_home: &PinnedHome,
+    rollout_relative: &Path,
+    expected_current: &[u8],
+    replacement: &[u8],
+) -> Result<(), String> {
+    let changed = pinned_home.transform_first_line_atomically(
+        rollout_relative,
+        |current| {
+            if current != expected_current {
+                return Err(
+                    "rollout 首行在项目移动恢复期间发生变化，已拒绝覆盖".into(),
+                );
+            }
+            Ok(Some(replacement.to_vec()))
+        },
+        |_, _| Ok(()),
+    )?;
+    if changed {
+        Ok(())
+    } else {
+        Err("项目移动恢复未产生预期的 rollout 更新".into())
+    }
+}
+
+fn replace_workspace_cwd(
+    pinned_home: &PinnedHome,
+    rollout_relative: &Path,
+    expected_current: &[u8],
     thread_id: &str,
     target_cwd: &str,
 ) -> Result<(), String> {
-    let source = File::open(source_path).map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(source);
-    let mut line = Vec::new();
-    let mut matched = false;
-    loop {
-        line.clear();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        let newline = if line.ends_with(b"\r\n") {
-            b"\r\n".as_slice()
-        } else if line.ends_with(b"\n") {
-            b"\n".as_slice()
-        } else {
-            b"".as_slice()
-        };
-        let json_len = line.len().saturating_sub(newline.len());
-        let mut event = match serde_json::from_slice::<Value>(&line[..json_len]) {
-            Ok(event) => event,
-            Err(_) => {
-                output.write_all(&line).map_err(|error| error.to_string())?;
-                continue;
-            }
-        };
-        let is_match = event.get("type").and_then(Value::as_str) == Some("session_meta")
-            && event
-                .get("payload")
-                .and_then(|payload| payload.get("id"))
-                .and_then(Value::as_str)
-                == Some(thread_id);
-        if !is_match {
-            output.write_all(&line).map_err(|error| error.to_string())?;
-            continue;
-        }
-        matched = true;
-        if let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) {
-            payload.insert("cwd".into(), Value::String(target_cwd.into()));
-        }
-        serde_json::to_writer(&mut *output, &event).map_err(|error| error.to_string())?;
-        output
-            .write_all(newline)
-            .map_err(|error| error.to_string())?;
-    }
-    if matched {
-        Ok(())
-    } else {
-        Err(format!("rollout 中未找到会话元数据：{thread_id}"))
-    }
-}
-
-fn restore_rollout(path: &Path, backup: &Path) -> Result<(), String> {
-    write_atomically_streaming(path, |output| {
-        let mut source = File::open(backup).map_err(|error| error.to_string())?;
-        std::io::copy(&mut source, output)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    })
-    .map_err(atomic_write_error)
-}
-
-fn atomic_write_error(error: AtomicWriteError) -> String {
-    format!("原子更新 rollout 失败：{error}")
-}
-
-fn cleanup_backup(path: Option<&Path>) {
-    if let Some(path) = path {
-        if let Err(error) = std::fs::remove_file(path) {
-            eprintln!(
-                "Codex Token Bar: rollout move backup cleanup failed path={} error={error}",
-                path.display()
-            );
-        }
-    }
+    let replacement =
+        rewrite_workspace_metadata_line(expected_current, thread_id, target_cwd)?;
+    replace_workspace_first_line(
+        pinned_home,
+        rollout_relative,
+        expected_current,
+        &replacement,
+    )
 }
 
 fn validate_thread_id(value: &str) -> Result<(), String> {
@@ -519,6 +1005,7 @@ mod tests {
 
     struct Fixture {
         home: PathBuf,
+        database: PathBuf,
         rollout: PathBuf,
         thread_id: String,
         original_cwd: PathBuf,
@@ -564,7 +1051,7 @@ mod tests {
             PathBuf::from(result.target_cwd),
             target.canonicalize().unwrap()
         );
-        let connection = Connection::open(fixture.home.join("state_5.sqlite")).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
         let cwd: String = connection
             .query_row(
                 "SELECT cwd FROM threads WHERE id = ?1",
@@ -610,7 +1097,7 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("目标项目目录不可用"));
         assert_eq!(std::fs::read(&fixture.rollout).unwrap(), before);
-        let connection = Connection::open(fixture.home.join("state_5.sqlite")).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
         let cwd: String = connection
             .query_row(
                 "SELECT cwd FROM threads WHERE id = ?1",
@@ -621,7 +1108,301 @@ mod tests {
         assert_eq!(PathBuf::from(cwd), fixture.original_cwd);
     }
 
+    #[test]
+    fn workspace_move_lease_blocks_overlap_and_releases() {
+        let fixture = fixture();
+        let canonical_home = fixture.home.canonicalize().unwrap();
+        let first =
+            WorkspaceMoveLease::acquire(&canonical_home, &fixture.thread_id).unwrap();
+        let error =
+            WorkspaceMoveLease::acquire(&canonical_home, &fixture.thread_id)
+                .err()
+                .unwrap();
+        assert!(error.contains("正在进行"));
+        drop(first);
+        WorkspaceMoveLease::acquire(&canonical_home, &fixture.thread_id).unwrap();
+    }
+
+    #[test]
+    fn persisted_windows_paths_drop_only_extended_namespace_prefixes() {
+        assert_eq!(
+            strip_windows_extended_prefix(r"\\?\C:\Users\Codex Project"),
+            r"C:\Users\Codex Project"
+        );
+        assert_eq!(
+            strip_windows_extended_prefix(r"\\?\UNC\server\share\Codex"),
+            r"\\server\share\Codex"
+        );
+        assert_eq!(
+            strip_windows_extended_prefix(r"C:\Users\Codex Project"),
+            r"C:\Users\Codex Project"
+        );
+    }
+
+    #[test]
+    fn session_enhancements_respect_configured_sqlite_home() {
+        let fixture = fixture_with_separate_sqlite_home(true);
+        assert!(!fixture.home.join("state_5.sqlite").exists());
+        let target = fixture.home.join("Separate SQLite Target");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let exported =
+            export_markdown(&fixture.home, &fixture.thread_id, "备用标题").unwrap();
+        assert!(exported.markdown.contains("你好，Codex"));
+        move_thread_workspace(
+            &fixture.home,
+            &fixture.thread_id,
+            target.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+
+        let connection = Connection::open(&fixture.database).unwrap();
+        let cwd: String = connection
+            .query_row(
+                "SELECT cwd FROM threads WHERE id = ?1",
+                params![fixture.thread_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(PathBuf::from(cwd), target.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn project_move_changes_only_canonical_first_session_meta() {
+        let fixture = fixture();
+        let embedded = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{}\",\"cwd\":\"embedded-fork\"}}}}\n",
+            fixture.thread_id
+        );
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&fixture.rollout)
+            .unwrap();
+        file.write_all(embedded.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        let before = std::fs::read(&fixture.rollout).unwrap();
+        let before_tail = before
+            .splitn(2, |byte| *byte == b'\n')
+            .nth(1)
+            .unwrap()
+            .to_vec();
+        let target = fixture.home.join("Canonical Only Target");
+        std::fs::create_dir_all(&target).unwrap();
+
+        move_thread_workspace(
+            &fixture.home,
+            &fixture.thread_id,
+            target.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+
+        let after = std::fs::read(&fixture.rollout).unwrap();
+        let after_tail = after
+            .splitn(2, |byte| *byte == b'\n')
+            .nth(1)
+            .unwrap();
+        assert_eq!(after_tail, before_tail);
+        assert!(std::str::from_utf8(after_tail)
+            .unwrap()
+            .contains("\"cwd\":\"embedded-fork\""));
+    }
+
+    #[test]
+    fn recovery_rolls_back_rollout_when_database_was_not_committed() {
+        let fixture = fixture();
+        let target = fixture.home.join("Recovery Rollback Target");
+        std::fs::create_dir_all(&target).unwrap();
+        let target = target.canonicalize().unwrap().to_string_lossy().into_owned();
+        let (pinned, journal) = prepared_workspace_move(&fixture, &target);
+
+        recover_interrupted_workspace_move(
+            &pinned,
+            &fixture.database,
+            &fixture.thread_id,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rollout_cwd(&fixture.rollout, &fixture.thread_id),
+            fixture.original_cwd.to_string_lossy()
+        );
+        assert_eq!(
+            database_cwd(&fixture.database, &fixture.thread_id),
+            fixture.original_cwd.to_string_lossy()
+        );
+        assert_workspace_move_artifacts_removed(&fixture, &journal);
+    }
+
+    #[test]
+    fn recovery_commits_rollout_when_database_was_already_advanced() {
+        let fixture = fixture();
+        let target = fixture.home.join("Recovery Commit Target");
+        std::fs::create_dir_all(&target).unwrap();
+        let target = target.canonicalize().unwrap().to_string_lossy().into_owned();
+        let (pinned, journal) = prepared_workspace_move(&fixture, &target);
+        compare_and_set_thread_cwd(
+            &fixture.database,
+            &fixture.thread_id,
+            fixture.original_cwd.to_string_lossy().as_ref(),
+            &target,
+        )
+        .unwrap();
+
+        recover_interrupted_workspace_move(
+            &pinned,
+            &fixture.database,
+            &fixture.thread_id,
+        )
+        .unwrap();
+
+        assert_eq!(rollout_cwd(&fixture.rollout, &fixture.thread_id), target);
+        assert_eq!(database_cwd(&fixture.database, &fixture.thread_id), target);
+        assert_workspace_move_artifacts_removed(&fixture, &journal);
+    }
+
+    #[test]
+    fn recovery_fails_closed_on_concurrent_database_change() {
+        let fixture = fixture();
+        let target = fixture.home.join("Recovery Conflict Target");
+        let concurrent = fixture.home.join("Concurrent Target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&concurrent).unwrap();
+        let target = target.canonicalize().unwrap().to_string_lossy().into_owned();
+        let concurrent = concurrent
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let (pinned, journal) = prepared_workspace_move(&fixture, &target);
+        Connection::open(&fixture.database)
+            .unwrap()
+            .execute(
+                "UPDATE threads SET cwd = ?1 WHERE id = ?2",
+                params![concurrent, fixture.thread_id],
+            )
+            .unwrap();
+
+        let error = recover_interrupted_workspace_move(
+            &pinned,
+            &fixture.database,
+            &fixture.thread_id,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("无法安全判定"));
+        assert!(fixture
+            .home
+            .join(workspace_move_journal_relative_path(&fixture.thread_id))
+            .exists());
+        assert!(fixture
+            .home
+            .join(&journal.retained_original_relative_path)
+            .exists());
+    }
+
+    #[test]
+    fn large_rollout_move_keeps_tail_and_never_creates_full_backup() {
+        let fixture = fixture();
+        let tail_chunk = vec![b'x'; 1024 * 1024];
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&fixture.rollout)
+            .unwrap();
+        for _ in 0..8 {
+            file.write_all(&tail_chunk).unwrap();
+        }
+        file.sync_all().unwrap();
+        let before_size = file.metadata().unwrap().len();
+        drop(file);
+        let target = fixture.home.join("Large Rollout Target");
+        std::fs::create_dir_all(&target).unwrap();
+
+        move_thread_workspace(
+            &fixture.home,
+            &fixture.thread_id,
+            target.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+
+        let after_size = std::fs::metadata(&fixture.rollout).unwrap().len();
+        assert!(after_size.abs_diff(before_size) < 4096);
+        assert!(std::fs::read_dir(fixture.rollout.parent().unwrap())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("move-backup")));
+    }
+
+    fn prepared_workspace_move(
+        fixture: &Fixture,
+        target: &str,
+    ) -> (PinnedHome, WorkspaceMoveJournal) {
+        let pinned = PinnedHome::open(&fixture.home).unwrap();
+        pinned
+            .ensure_parent_directories(&workspace_move_journal_relative_path(
+                &fixture.thread_id,
+            ))
+            .unwrap();
+        let relative = trusted_relative_path(
+            pinned.canonical_path(),
+            &fixture.rollout.canonicalize().unwrap(),
+        )
+        .unwrap();
+        let journal = WorkspaceMoveJournal::new(
+            &pinned,
+            &fixture.database,
+            &fixture.thread_id,
+            &relative,
+            fixture.original_cwd.to_string_lossy().as_ref(),
+            target,
+        )
+        .unwrap();
+        prepare_workspace_rollout_move(&pinned, &journal).unwrap();
+        (pinned, journal)
+    }
+
+    fn database_cwd(database: &Path, thread_id: &str) -> String {
+        Connection::open(database)
+            .unwrap()
+            .query_row(
+                "SELECT cwd FROM threads WHERE id = ?1",
+                params![thread_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn rollout_cwd(rollout: &Path, thread_id: &str) -> String {
+        let first = std::fs::read(rollout)
+            .unwrap()
+            .splitn(2, |byte| *byte == b'\n')
+            .next()
+            .unwrap()
+            .to_vec();
+        workspace_metadata_cwd(&first, thread_id).unwrap()
+    }
+
+    fn assert_workspace_move_artifacts_removed(
+        fixture: &Fixture,
+        journal: &WorkspaceMoveJournal,
+    ) {
+        assert!(!fixture
+            .home
+            .join(workspace_move_journal_relative_path(&fixture.thread_id))
+            .exists());
+        assert!(!fixture
+            .home
+            .join(&journal.retained_original_relative_path)
+            .exists());
+    }
+
     fn fixture() -> Fixture {
+        fixture_with_separate_sqlite_home(false)
+    }
+
+    fn fixture_with_separate_sqlite_home(separate_sqlite_home: bool) -> Fixture {
         let sequence = BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let home = std::env::temp_dir().join(format!(
             "codex-token-bar-session-enhancements-{}-{sequence}",
@@ -638,7 +1419,25 @@ mod tests {
             cwd = original_cwd.to_string_lossy(),
         );
         std::fs::write(&rollout, contents).unwrap();
-        let connection = Connection::open(home.join("state_5.sqlite")).unwrap();
+        let sqlite_home = if separate_sqlite_home {
+            let sqlite_home = home.join("sqlite-state");
+            std::fs::create_dir_all(&sqlite_home).unwrap();
+            let mut config = toml::Table::new();
+            config.insert(
+                "sqlite_home".into(),
+                toml::Value::String(sqlite_home.to_string_lossy().into_owned()),
+            );
+            std::fs::write(
+                home.join("config.toml"),
+                toml::to_string(&config).unwrap(),
+            )
+            .unwrap();
+            sqlite_home
+        } else {
+            home.clone()
+        };
+        let database = sqlite_home.join("state_5.sqlite");
+        let connection = Connection::open(&database).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, rollout_path TEXT);",
@@ -657,6 +1456,7 @@ mod tests {
             .unwrap();
         Fixture {
             home,
+            database,
             rollout,
             thread_id,
             original_cwd,

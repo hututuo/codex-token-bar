@@ -24,7 +24,7 @@ const ATOMIC_TEMP_ATTEMPTS: usize = 64;
 static ATOMIC_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AtomicInstallPhase {
+pub(crate) enum AtomicInstallPhase {
     BeforeTempCreate,
     ValidateTemp,
     BeforeReplace,
@@ -90,7 +90,7 @@ fn unsupported_platform_error() -> String {
     "Provider 写操作不支持当前平台。".into()
 }
 
-pub(super) struct PinnedHome {
+pub(crate) struct PinnedHome {
     canonical_path: PathBuf,
     #[cfg(unix)]
     root: OwnedFd,
@@ -101,7 +101,7 @@ pub(super) struct PinnedHome {
 }
 
 impl PinnedHome {
-    pub(super) fn open(path: &Path) -> Result<Self, String> {
+    pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let canonical_path = path
             .canonicalize()
             .map_err(|error| format!("无法确认 Codex Home {}：{error}", path.display()))?;
@@ -150,7 +150,7 @@ impl PinnedHome {
         }
     }
 
-    pub(super) fn canonical_path(&self) -> &Path {
+    pub(crate) fn canonical_path(&self) -> &Path {
         &self.canonical_path
     }
 
@@ -294,7 +294,7 @@ impl PinnedHome {
         Ok(bytes)
     }
 
-    pub(super) fn open_file(&self, relative: &Path) -> Result<Option<File>, String> {
+    pub(crate) fn open_file(&self, relative: &Path) -> Result<Option<File>, String> {
         #[cfg(unix)]
         {
             let parent = self.open_parent(relative, false)?;
@@ -309,6 +309,24 @@ impl PinnedHome {
                 relative,
                 windows_read_file_access(),
             );
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = relative;
+            Err(unsupported_platform_error())
+        }
+    }
+
+    pub(crate) fn ensure_parent_directories(&self, relative: &Path) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            let _ = self.open_parent(relative, true)?;
+            return Ok(());
+        }
+        #[cfg(windows)]
+        {
+            let _ = self.open_parent(relative, true)?;
+            return Ok(());
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -457,7 +475,7 @@ impl PinnedHome {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn install_atomically(
+    pub(crate) fn install_atomically(
         &self,
         relative: &Path,
         expected_size: Option<u64>,
@@ -575,7 +593,7 @@ impl PinnedHome {
         }
     }
 
-    pub(super) fn transform_first_line_atomically(
+    pub(crate) fn transform_first_line_atomically(
         &self,
         relative: &Path,
         mut transform: impl FnMut(&[u8]) -> Result<Option<Vec<u8>>, String>,
@@ -703,7 +721,7 @@ impl PinnedHome {
         }
     }
 
-    pub(super) fn remove_file(
+    pub(crate) fn remove_file(
         &self,
         relative: &Path,
         mut before_parent_sync: impl FnMut() -> Result<(), String>,

@@ -1107,6 +1107,16 @@ final class ProviderSyncHomeDirectory {
         try verifyRootPathIdentity()
     }
 
+    func syncParentDirectory(of file: ProviderSyncPinnedFile) throws {
+        try verifyParent(file)
+        guard fsync(file.parent.rawValue) == 0 else {
+            throw providerSyncPOSIXError(
+                "同步 pinned 父目录失败：\(file.displayURL.deletingLastPathComponent().path)"
+            )
+        }
+        try verifyParent(file)
+    }
+
     private func openDirectory(
         components: [String],
         createMissing: Bool

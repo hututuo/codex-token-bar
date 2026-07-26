@@ -9,7 +9,7 @@
 (() => {
   const settings = window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ || {};
   const stateKey = "__codexTokenBarSessionEnhancementsState";
-  const runtimeVersion = 3;
+  const runtimeVersion = 4;
   const styleId = "codex-token-bar-session-enhancements-style";
   const overlayId = "codex-token-bar-session-enhancements-overlay";
   const moreAttribute = "data-codex-token-bar-session-more";
@@ -229,8 +229,16 @@
     return await window.__codexTokenBarSessionEnhancementInvoke(payload);
   }
 
-  function downloadMarkdownFallback(filename, markdown) {
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  function markdownParts(value) {
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value) && value.every((part) => typeof part === "string")) {
+      return value;
+    }
+    return null;
+  }
+
+  function downloadMarkdownFallback(filename, parts) {
+    const blob = new Blob(parts, { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -241,9 +249,9 @@
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  async function saveMarkdown(filename, markdown) {
+  async function saveMarkdown(filename, parts) {
     if (typeof window.showSaveFilePicker !== "function") {
-      downloadMarkdownFallback(filename, markdown);
+      downloadMarkdownFallback(filename, parts);
       return "saved";
     }
     try {
@@ -252,7 +260,9 @@
         types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown"] } }],
       });
       const writable = await handle.createWritable();
-      await writable.write(markdown);
+      for (const part of parts) {
+        await writable.write(part);
+      }
       await writable.close();
       return "saved";
     } catch (error) {
@@ -268,10 +278,11 @@
       threadId,
       title: rowTitle(row),
     });
-    if (result?.status !== "exported" || typeof result.markdown !== "string" || !result.filename) {
+    const parts = markdownParts(result?.markdownChunks ?? result?.markdown);
+    if (result?.status !== "exported" || !parts || !result.filename) {
       throw new Error(result?.message || "导出失败");
     }
-    const saveStatus = await saveMarkdown(result.filename, result.markdown);
+    const saveStatus = await saveMarkdown(result.filename, parts);
     showToast(saveStatus === "cancelled" ? "导出已取消" : (result.message || "导出成功"));
   }
 

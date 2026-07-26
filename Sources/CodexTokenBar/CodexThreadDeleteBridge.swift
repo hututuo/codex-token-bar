@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 enum CodexThreadDeleteBridgePhase: Equatable, Sendable {
@@ -402,23 +403,16 @@ enum CodexThreadDeleteDesktopLauncher {
 
             let arguments = openCommandArguments(applicationPath: applicationURL.path)
             let result = try await Task.detached(priority: .userInitiated) {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                process.arguments = arguments
-                let stderr = Pipe()
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = stderr
-                process.standardInput = FileHandle.nullDevice
-                try process.run()
-                process.waitUntilExit()
-                let message = String(
-                    decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
-                    as: UTF8.self
-                ).trimmingCharacters(in: .whitespacesAndNewlines)
-                return (process.terminationStatus, message)
+                try CodexThreadDeleteSubprocess.run(
+                    executableURL: URL(fileURLWithPath: "/usr/bin/open"),
+                    arguments: arguments,
+                    timeout: 10
+                )
             }.value
-            guard result.0 == 0 else {
-                throw CodexThreadDeleteError.desktopRelaunchFailed(result.1)
+            guard result.terminationStatus == 0 else {
+                throw CodexThreadDeleteError.desktopRelaunchFailed(
+                    result.stderr.isEmpty ? result.stdout : result.stderr
+                )
             }
 
             let previousProcessIdentifiers = Set(runningApplications.map(\.processIdentifier))
@@ -679,10 +673,25 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
 
 struct CodexThreadDeleteCDPRemoteObject: Decodable, Equatable, Sendable {
     let value: CodexThreadDeleteInjectionHealth?
+    let booleanValue: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case value
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = try? container.decode(
+            CodexThreadDeleteInjectionHealth.self,
+            forKey: .value
+        )
+        booleanValue = try? container.decode(Bool.self, forKey: .value)
+    }
 }
 
 struct CodexThreadDeleteCDPCommandResult: Decodable, Equatable, Sendable {
     let result: CodexThreadDeleteCDPRemoteObject?
+    let identifier: String?
     let exceptionDetails: CodexThreadDeleteCDPException?
 }
 
@@ -713,6 +722,21 @@ struct CodexThreadDeleteCDPCommandResponse: Decodable, Equatable, Sendable {
             throw CodexThreadDeleteError.injectionVerificationFailed("页面没有返回删除按钮健康信息")
         }
         return health
+    }
+
+    func scriptIdentifier(method: String) throws -> String {
+        guard let identifier = result?.identifier, !identifier.isEmpty else {
+            throw CodexThreadDeleteError.cdpMalformedResponse(method)
+        }
+        return identifier
+    }
+
+    func acknowledgedBoolean(method: String) throws {
+        guard result?.result?.booleanValue == true else {
+            throw CodexThreadDeleteError.injectionVerificationFailed(
+                "\(method) 未被页面接收"
+            )
+        }
     }
 }
 
@@ -752,6 +776,10 @@ private struct CodexThreadDeleteCDPBindingParameters: Encodable, Sendable {
 
 private struct CodexThreadDeleteCDPSourceParameters: Encodable, Sendable {
     let source: String
+}
+
+private struct CodexThreadDeleteCDPScriptIdentifierParameters: Encodable, Sendable {
+    let identifier: String
 }
 
 private struct CodexThreadDeleteCDPEvaluateParameters: Encodable, Sendable {
@@ -963,6 +991,7 @@ actor CodexThreadDeleteBridgeService {
     private let session: URLSession
     private var enhancementSettings: CodexSessionEnhancementSettings
     private var activeTransport: CodexThreadDeleteCDPTransport?
+    private var bootstrapScriptRegistrations: [URL: String] = [:]
     private var lifecycleGeneration = 0
 
     init(
@@ -1103,7 +1132,10 @@ actor CodexThreadDeleteBridgeService {
         await transport.start()
 
         do {
-            let verification = try await installBridge(on: transport)
+            let verification = try await installBridge(
+                on: transport,
+                target: target
+            )
             guard generation == lifecycleGeneration else { throw CancellationError() }
             await publish(
                 verification: verification,
@@ -1201,7 +1233,8 @@ actor CodexThreadDeleteBridgeService {
     }
 
     private func installBridge(
-        on transport: CodexThreadDeleteCDPTransport
+        on transport: CodexThreadDeleteCDPTransport,
+        target: CodexThreadDeleteTarget
     ) async throws -> CodexThreadDeleteInjectionVerification {
         let script = try CodexThreadDeleteInjectionScript.render(
             owner: Self.owner,
@@ -1220,10 +1253,25 @@ actor CodexThreadDeleteBridgeService {
             method: "Runtime.addBinding",
             params: CodexThreadDeleteCDPBindingParameters(name: Self.bindingName)
         )
-        _ = try await transport.request(
+        if let previous = bootstrapScriptRegistrations[target.webSocketURL] {
+            _ = try await transport.request(
+                method: "Page.removeScriptToEvaluateOnNewDocument",
+                params: CodexThreadDeleteCDPScriptIdentifierParameters(
+                    identifier: previous
+                )
+            )
+            bootstrapScriptRegistrations.removeValue(
+                forKey: target.webSocketURL
+            )
+        }
+        let registration = try await transport.request(
             method: "Page.addScriptToEvaluateOnNewDocument",
             params: CodexThreadDeleteCDPSourceParameters(source: script)
         )
+        bootstrapScriptRegistrations[target.webSocketURL] = try registration
+            .scriptIdentifier(
+                method: "Page.addScriptToEvaluateOnNewDocument"
+            )
         _ = try await transport.request(
             method: "Runtime.evaluate",
             params: CodexThreadDeleteCDPEvaluateParameters(
@@ -1280,19 +1328,63 @@ actor CodexThreadDeleteBridgeService {
         }
         guard request.owner == Self.owner else { return }
 
-        let result = await bindingResult(for: request)
-        let expression = try CodexThreadDeleteInjectionScript.resolveExpression(
+        try await deliverBindingResult(
+            await bindingResult(for: request),
             owner: request.owner,
             requestID: request.id,
-            result: result
+            executionContextID: event.executionContextID,
+            transport: transport
         )
-        _ = try await transport.request(
+    }
+
+    private func deliverBindingResult(
+        _ result: CodexThreadDeleteBindingResult,
+        owner: String,
+        requestID: String,
+        executionContextID: Int?,
+        transport: CodexThreadDeleteCDPTransport
+    ) async throws {
+        var delivered = result
+        if let markdown = result.markdown {
+            let chunks = CodexThreadDeleteInjectionScript.markdownChunks(markdown)
+            for (sequence, chunk) in chunks.enumerated() {
+                let expression = try CodexThreadDeleteInjectionScript
+                    .markdownChunkExpression(
+                        owner: owner,
+                        requestID: requestID,
+                        sequence: sequence,
+                        chunk: String(chunk)
+                    )
+                let response = try await transport.request(
+                    method: "Runtime.evaluate",
+                    params: CodexThreadDeleteCDPEvaluateParameters(
+                        expression: expression,
+                        returnByValue: true,
+                        contextId: executionContextID
+                    )
+                )
+                try response.acknowledgedBoolean(
+                    method: "Markdown 分块 \(sequence)"
+                )
+            }
+            delivered = result.markingMarkdownAsTransferred(
+                chunkCount: chunks.count
+            )
+        }
+        let expression = try CodexThreadDeleteInjectionScript.resolveExpression(
+            owner: owner,
+            requestID: requestID,
+            result: delivered
+        )
+        let response = try await transport.request(
             method: "Runtime.evaluate",
             params: CodexThreadDeleteCDPEvaluateParameters(
                 expression: expression,
-                contextId: event.executionContextID
+                returnByValue: true,
+                contextId: executionContextID
             )
         )
+        try response.acknowledgedBoolean(method: "会话增强结果")
     }
 
     private func bindingResult(
@@ -1416,6 +1508,8 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
     let message: String
     let filename: String?
     let markdown: String?
+    let markdownTransfer: Bool?
+    let markdownChunkCount: Int?
     let previousCwd: String?
     let targetCwd: String?
 
@@ -1424,6 +1518,8 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
         message: String,
         filename: String? = nil,
         markdown: String? = nil,
+        markdownTransfer: Bool? = nil,
+        markdownChunkCount: Int? = nil,
         previousCwd: String? = nil,
         targetCwd: String? = nil
     ) {
@@ -1431,12 +1527,28 @@ struct CodexThreadDeleteBindingResult: Encodable, Equatable, Sendable {
         self.message = message
         self.filename = filename
         self.markdown = markdown
+        self.markdownTransfer = markdownTransfer
+        self.markdownChunkCount = markdownChunkCount
         self.previousCwd = previousCwd
         self.targetCwd = targetCwd
+    }
+
+    func markingMarkdownAsTransferred(chunkCount: Int) -> Self {
+        Self(
+            status: status,
+            message: message,
+            filename: filename,
+            markdownTransfer: true,
+            markdownChunkCount: chunkCount,
+            previousCwd: previousCwd,
+            targetCwd: targetCwd
+        )
     }
 }
 
 enum CodexThreadDeleteInjectionScript {
+    static let markdownTransferChunkCharacters = 16 * 1024
+
     static func render(
         owner: String,
         bindingName: String,
@@ -1462,6 +1574,41 @@ enum CodexThreadDeleteInjectionScript {
     ) throws -> String {
         let data = try JSONEncoder().encode(result)
         return "window.__codexTokenBarThreadDeleteResolve(\(try jsonString(owner)), \(try jsonString(requestID)), \(String(decoding: data, as: UTF8.self)))"
+    }
+
+    static func markdownChunks(
+        _ markdown: String,
+        maximumCharacters: Int = markdownTransferChunkCharacters
+    ) -> [Substring] {
+        precondition(maximumCharacters > 0)
+        var chunks: [Substring] = []
+        chunks.reserveCapacity(
+            max(1, markdown.count / maximumCharacters)
+        )
+        var start = markdown.startIndex
+        while start < markdown.endIndex {
+            let end = markdown.index(
+                start,
+                offsetBy: maximumCharacters,
+                limitedBy: markdown.endIndex
+            ) ?? markdown.endIndex
+            chunks.append(markdown[start..<end])
+            start = end
+        }
+        return chunks
+    }
+
+    static func markdownChunkExpression(
+        owner: String,
+        requestID: String,
+        sequence: Int,
+        chunk: String
+    ) throws -> String {
+        "window.__codexTokenBarThreadDeleteMarkdownChunk("
+            + "\(try jsonString(owner)), "
+            + "\(try jsonString(requestID)), "
+            + "\(sequence), "
+            + "\(try jsonString(chunk)))"
     }
 
     static func healthExpression(owner: String, bindingName: String) throws -> String {
@@ -1529,6 +1676,143 @@ protocol CodexThreadDeleteExecuting: Sendable {
     func delete(threadID: String) async throws -> String
 }
 
+struct CodexThreadDeleteSubprocessResult: Equatable, Sendable {
+    let terminationStatus: Int32
+    let stdout: String
+    let stderr: String
+}
+
+enum CodexThreadDeleteSubprocessError: LocalizedError {
+    case timeout(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .timeout(detail):
+            return detail.isEmpty
+                ? "子进程执行超时"
+                : "子进程执行超时：\(detail)"
+        }
+    }
+}
+
+enum CodexThreadDeleteSubprocess {
+    static let pipeTailBytes = 64 * 1024
+    static let pipeDrainGraceSeconds: TimeInterval = 0.5
+
+    static func run(
+        executableURL: URL,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        timeout: TimeInterval
+    ) throws -> CodexThreadDeleteSubprocessResult {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+
+        let stdout = CodexThreadDeletePipeCollector(
+            handle: stdoutPipe.fileHandleForReading,
+            maximumBytes: pipeTailBytes
+        )
+        let stderr = CodexThreadDeletePipeCollector(
+            handle: stderrPipe.fileHandleForReading,
+            maximumBytes: pipeTailBytes
+        )
+        let deadline = Date().addingTimeInterval(max(0.01, timeout))
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+
+        let timedOut = process.isRunning
+        if timedOut {
+            process.terminate()
+            let terminateDeadline = Date().addingTimeInterval(0.5)
+            while process.isRunning, Date() < terminateDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        process.waitUntilExit()
+
+        let output = stdout.finish(
+            waitTimeout: pipeDrainGraceSeconds
+        )
+        let error = stderr.finish(
+            waitTimeout: pipeDrainGraceSeconds
+        )
+        if timedOut {
+            let detail = error.isEmpty ? output : error
+            throw CodexThreadDeleteSubprocessError.timeout(detail)
+        }
+        return CodexThreadDeleteSubprocessResult(
+            terminationStatus: process.terminationStatus,
+            stdout: output,
+            stderr: error
+        )
+    }
+}
+
+private final class CodexThreadDeletePipeCollector: @unchecked Sendable {
+    private let group = DispatchGroup()
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private let maximumBytes: Int
+    private var tail = Data()
+
+    init(handle: FileHandle, maximumBytes: Int) {
+        self.handle = handle
+        self.maximumBytes = max(0, maximumBytes)
+        group.enter()
+        DispatchQueue.global(qos: .utility).async { [self] in
+            defer { group.leave() }
+            while true {
+                do {
+                    guard let data = try handle.read(upToCount: 8 * 1024),
+                          !data.isEmpty else {
+                        break
+                    }
+                    append(data)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    func finish(waitTimeout: TimeInterval) -> String {
+        if group.wait(timeout: .now() + max(0, waitTimeout)) == .timedOut {
+            try? handle.close()
+            _ = group.wait(timeout: .now() + 0.1)
+        }
+        return lock.withLock {
+            String(decoding: tail, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private func append(_ data: Data) {
+        guard maximumBytes > 0, !data.isEmpty else { return }
+        lock.withLock {
+            if data.count >= maximumBytes {
+                tail = Data(data.suffix(maximumBytes))
+                return
+            }
+            tail.append(data)
+            if tail.count > maximumBytes {
+                tail.removeFirst(tail.count - maximumBytes)
+            }
+        }
+    }
+}
+
 final class FoundationCodexThreadDeleteExecutor: CodexThreadDeleteExecuting, @unchecked Sendable {
     private let queue = DispatchQueue(label: "CodexTokenBar.ThreadDelete")
     private let timeout: TimeInterval
@@ -1553,41 +1837,29 @@ final class FoundationCodexThreadDeleteExecutor: CodexThreadDeleteExecuting, @un
     }
 
     private static func run(threadID: String, timeout: TimeInterval) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: try CodexBinaryLocator.findExecutable())
-        process.arguments = commandArguments(threadID: threadID)
         var environment = ProcessInfo.processInfo.environment
         if let dataSource = CodexDataSourceResolver().resolve() {
             environment["CODEX_HOME"] = dataSource.codexHome.path
         }
-        process.environment = environment
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        process.standardInput = FileHandle.nullDevice
-        try process.run()
-
-        let deadline = Date().addingTimeInterval(max(0.1, timeout))
-        while process.isRunning, Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.025)
-        }
-        if process.isRunning {
-            process.terminate()
+        let result: CodexThreadDeleteSubprocessResult
+        do {
+            result = try CodexThreadDeleteSubprocess.run(
+                executableURL: URL(
+                    fileURLWithPath: try CodexBinaryLocator.findExecutable()
+                ),
+                arguments: commandArguments(threadID: threadID),
+                environment: environment,
+                timeout: timeout
+            )
+        } catch is CodexThreadDeleteSubprocessError {
             throw CodexThreadDeleteError.timeout
         }
-        let output = String(
-            decoding: stdout.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let error = String(
-            decoding: stderr.fileHandleForReading.readDataToEndOfFile(),
-            as: UTF8.self
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard process.terminationStatus == 0 else {
-            throw CodexThreadDeleteError.commandFailed(error.isEmpty ? output : error)
+        guard result.terminationStatus == 0 else {
+            throw CodexThreadDeleteError.commandFailed(
+                result.stderr.isEmpty ? result.stdout : result.stderr
+            )
         }
-        return output.isEmpty ? "会话已永久删除" : output
+        return result.stdout.isEmpty ? "会话已永久删除" : result.stdout
     }
 }
 

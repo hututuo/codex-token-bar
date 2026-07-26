@@ -118,6 +118,84 @@ final class CodexSessionEnhancementTests: XCTestCase {
         XCTAssertEqual(cwd, fixture.originalCwd)
     }
 
+    func testProjectMoveRecoversInterruptedRolloutExchangeBeforeRetry() async throws {
+        let fixture = try makeFixture()
+        let target = fixture.home.appendingPathComponent("Recovered Target")
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        let retainedURL = try simulateInterruptedWorkspaceMove(
+            fixture: fixture,
+            targetCwd: target.path,
+            databaseAlreadyUpdated: false
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retainedURL.path))
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        _ = try await executor.moveThreadWorkspace(
+            threadID: fixture.threadID,
+            targetCwd: target.path
+        )
+
+        let database = SQLiteDatabaseDriver(
+            url: fixture.dataSource.stateDatabase,
+            readOnly: true
+        )
+        let cwd = try database.readRows(
+            "SELECT cwd FROM threads WHERE id = ?1",
+            bindings: [.text(fixture.threadID)]
+        ) { $0.text(0) ?? "" }.first
+        XCTAssertEqual(cwd, target.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retainedURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: fixture.home
+                .appendingPathComponent(
+                    "backups_state/codex-token-bar/workspace-move/\(fixture.threadID).json"
+                ).path
+        ))
+    }
+
+    func testProjectMoveCommitsInterruptedExchangeWhenDatabaseAlreadyAdvanced() async throws {
+        let fixture = try makeFixture()
+        let target = fixture.home.appendingPathComponent("Committed Target")
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true
+        )
+        let retainedURL = try simulateInterruptedWorkspaceMove(
+            fixture: fixture,
+            targetCwd: target.path,
+            databaseAlreadyUpdated: true
+        )
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        _ = try await executor.moveThreadWorkspace(
+            threadID: fixture.threadID,
+            targetCwd: target.path
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retainedURL.path))
+        let rollout = try String(
+            contentsOf: fixture.rolloutURL,
+            encoding: .utf8
+        )
+        let firstLine = try XCTUnwrap(
+            rollout.split(whereSeparator: \.isNewline).first
+        )
+        let event = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(firstLine.utf8)
+            ) as? [String: Any]
+        )
+        let payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        XCTAssertEqual(payload["cwd"] as? String, target.path)
+    }
+
     private struct Fixture: Sendable {
         let home: URL
         let dataSource: CodexDataSource
@@ -167,5 +245,82 @@ final class CodexSessionEnhancementTests: XCTestCase {
             originalCwd: originalCwd,
             rolloutURL: rolloutURL
         )
+    }
+
+    private func simulateInterruptedWorkspaceMove(
+        fixture: Fixture,
+        targetCwd: String,
+        databaseAlreadyUpdated: Bool
+    ) throws -> URL {
+        let homeDirectory = try ProviderSyncHomeDirectory(
+            canonicalURL: fixture.home
+        )
+        defer { try? homeDirectory.close() }
+        let rolloutRelativePath = "sessions/2026/07/20/\(fixture.rolloutURL.lastPathComponent)"
+        let retainedName =
+            ".provider-session-prefix-workspace-\(fixture.threadID)"
+        let journalRelativePath =
+            "backups_state/codex-token-bar/workspace-move/\(fixture.threadID).json"
+        let journalFile = try homeDirectory.pinFile(
+            relativePath: journalRelativePath,
+            createParents: true
+        )
+        let journal = CodexWorkspaceMoveJournal(
+            schemaVersion: 1,
+            codexHome: fixture.home.path,
+            stateDatabase: fixture.dataSource.stateDatabase.standardizedFileURL.path,
+            threadID: fixture.threadID,
+            rolloutRelativePath: rolloutRelativePath,
+            retainedOriginalName: retainedName,
+            originalCwd: fixture.originalCwd,
+            targetCwd: targetCwd
+        )
+        _ = try homeDirectory.createRegularFileAtomically(
+            journalFile,
+            data: JSONEncoder().encode(journal)
+        )
+        try homeDirectory.syncParentDirectory(of: journalFile)
+
+        let rolloutFile = try homeDirectory.pinFile(
+            relativePath: rolloutRelativePath,
+            createParents: false
+        )
+        let firstLine = try homeDirectory.readRegularFileFirstLine(
+            rolloutFile,
+            requireSingleLink: true
+        )
+        var event = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: firstLine.data)
+                as? [String: Any]
+        )
+        var payload = try XCTUnwrap(event["payload"] as? [String: Any])
+        payload["cwd"] = targetCwd
+        event["payload"] = payload
+        let replacementLine = try JSONSerialization.data(
+            withJSONObject: event,
+            options: [.sortedKeys]
+        )
+        _ = try homeDirectory.replaceRegularFileFirstLine(
+            rolloutFile,
+            expectedIdentity: firstLine.identity,
+            expectedLine: firstLine.data,
+            replacementLine: replacementLine,
+            preserving: firstLine.metadata,
+            retainedOriginalName: retainedName
+        )
+        try homeDirectory.syncParentDirectory(of: rolloutFile)
+
+        if databaseAlreadyUpdated {
+            let database = SQLiteDatabaseDriver(
+                url: fixture.dataSource.stateDatabase
+            )
+            try database.execute(
+                "UPDATE threads SET cwd = ?1 WHERE id = ?2",
+                bindings: [.text(targetCwd), .text(fixture.threadID)]
+            )
+        }
+
+        return fixture.rolloutURL.deletingLastPathComponent()
+            .appendingPathComponent(retainedName)
     }
 }

@@ -106,6 +106,98 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         XCTAssertFalse(expression.contains("id\" ); window.bad"))
     }
 
+    func testMarkdownTransferChunksPreserveUnicodeAndKeepExpressionsBounded() throws {
+        let markdown = String(
+            repeating: "a",
+            count: CodexThreadDeleteInjectionScript.markdownTransferChunkCharacters - 1
+        ) + "中文🙂" + String(
+            repeating: "b",
+            count: CodexThreadDeleteInjectionScript.markdownTransferChunkCharacters + 7
+        )
+        let chunks = CodexThreadDeleteInjectionScript.markdownChunks(markdown)
+
+        XCTAssertGreaterThanOrEqual(chunks.count, 3)
+        XCTAssertEqual(chunks.map(String.init).joined(), markdown)
+        XCTAssertTrue(chunks.allSatisfy {
+            $0.count <= CodexThreadDeleteInjectionScript.markdownTransferChunkCharacters
+        })
+        let expression = try CodexThreadDeleteInjectionScript.markdownChunkExpression(
+            owner: "swift",
+            requestID: "request",
+            sequence: 0,
+            chunk: String(chunks[0])
+        )
+        XCTAssertTrue(expression.hasPrefix(
+            "window.__codexTokenBarThreadDeleteMarkdownChunk("
+        ))
+        XCTAssertLessThan(
+            expression.utf8.count,
+            CodexThreadDeleteInjectionScript.markdownTransferChunkCharacters * 2
+        )
+
+        let transferred = CodexThreadDeleteBindingResult(
+            status: "exported",
+            message: "ok",
+            filename: "session.md",
+            markdown: markdown
+        ).markingMarkdownAsTransferred(chunkCount: chunks.count)
+        let encoded = try XCTUnwrap(
+            try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(transferred)
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(encoded["markdownTransfer"] as? Bool, true)
+        XCTAssertEqual(encoded["markdownChunkCount"] as? Int, chunks.count)
+        XCTAssertFalse(encoded["markdown"] is String)
+    }
+
+    func testSubprocessDrainsLargeStdoutAndStderrWhileChildRuns() throws {
+        let result = try CodexThreadDeleteSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                """
+                dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\000' x
+                printf '\\nSTDOUT_DONE\\n'
+                dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\000' y >&2
+                printf '\\nSTDERR_DONE\\n' >&2
+                """,
+            ],
+            timeout: 5
+        )
+
+        XCTAssertEqual(result.terminationStatus, 0)
+        XCTAssertTrue(result.stdout.hasSuffix("STDOUT_DONE"))
+        XCTAssertTrue(result.stderr.hasSuffix("STDERR_DONE"))
+        XCTAssertLessThanOrEqual(
+            result.stdout.utf8.count,
+            CodexThreadDeleteSubprocess.pipeTailBytes
+        )
+        XCTAssertLessThanOrEqual(
+            result.stderr.utf8.count,
+            CodexThreadDeleteSubprocess.pipeTailBytes
+        )
+    }
+
+    func testSubprocessDoesNotWaitForeverForDescendantInheritedPipe() throws {
+        let startedAt = Date()
+        let result = try CodexThreadDeleteSubprocess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                "sleep 2 & printf 'PARENT_DONE\\n'",
+            ],
+            timeout: 2
+        )
+
+        XCTAssertEqual(result.terminationStatus, 0)
+        XCTAssertTrue(result.stdout.hasSuffix("PARENT_DONE"))
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            1.5
+        )
+    }
+
     func testHealthExpressionEscapesOwnerAndBindingName() throws {
         let expression = try CodexThreadDeleteInjectionScript.healthExpression(
             owner: "swift\" ); window.bad = true; //",
@@ -207,6 +299,40 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         XCTAssertThrowsError(try emptyResponse.validated(method: "Runtime.enable")) { error in
             XCTAssertTrue(error.localizedDescription.contains("无效回执"))
         }
+
+        let registration = try JSONDecoder().decode(
+            CodexThreadDeleteCDPCommandResponse.self,
+            from: Data(#"{"id":104,"result":{"identifier":"bootstrap-7"}}"#.utf8)
+        )
+        XCTAssertEqual(
+            try registration
+                .validated(method: "Page.addScriptToEvaluateOnNewDocument")
+                .scriptIdentifier(
+                    method: "Page.addScriptToEvaluateOnNewDocument"
+                ),
+            "bootstrap-7"
+        )
+
+        let acknowledgement = try JSONDecoder().decode(
+            CodexThreadDeleteCDPCommandResponse.self,
+            from: Data(
+                #"{"id":105,"result":{"result":{"type":"boolean","value":true}}}"#.utf8
+            )
+        ).validated(method: "Runtime.evaluate")
+        XCTAssertNoThrow(
+            try acknowledgement.acknowledgedBoolean(method: "Markdown 分块")
+        )
+
+        let rejectedAcknowledgement = try JSONDecoder().decode(
+            CodexThreadDeleteCDPCommandResponse.self,
+            from: Data(
+                #"{"id":106,"result":{"result":{"type":"boolean","value":false}}}"#.utf8
+            )
+        ).validated(method: "Runtime.evaluate")
+        XCTAssertThrowsError(
+            try rejectedAcknowledgement
+                .acknowledgedBoolean(method: "Markdown 分块")
+        )
     }
 
     func testRealRuntimeEvaluateHealthResponseDecodesAndVerifies() throws {

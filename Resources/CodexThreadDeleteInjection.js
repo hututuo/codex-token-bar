@@ -6,7 +6,7 @@
   const overlayId = "codex-token-bar-thread-delete-overlay";
   const buttonAttribute = "data-codex-token-bar-thread-delete";
   const buttonThreadAttribute = "data-codex-token-bar-thread-delete-thread-id";
-  const runtimeVersion = 3;
+  const runtimeVersion = 4;
   const bridgeTimeoutMs = Number(window.__CODEX_TOKEN_BAR_DELETE_BRIDGE_TIMEOUT_MS__) || 25000;
   const requestedSettings = window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ || {};
 
@@ -14,6 +14,7 @@
     version: 2,
     runtimeVersion,
     bridges: new Map(),
+    markdownTransfers: new Map(),
     observer: null,
     documentReadyListener: null,
     scanQueued: false,
@@ -26,7 +27,7 @@
     scrollListener: null,
     resizeListener: null,
   };
-  if (state.runtimeVersion !== runtimeVersion) {
+    if (state.runtimeVersion !== runtimeVersion) {
     state.observer?.disconnect?.();
     if (state.pointerMoveListener) {
       document.removeEventListener("pointermove", state.pointerMoveListener, true);
@@ -51,7 +52,8 @@
     state.pointerMoveListener = null;
     state.pointerLeaveListener = null;
     state.scrollListener = null;
-    state.resizeListener = null;
+      state.resizeListener = null;
+      state.markdownTransfers?.clear?.();
   }
   state.version = 2;
   state.runtimeVersion = runtimeVersion;
@@ -68,7 +70,10 @@
   state.documentReadyListener ||= null;
   state.buttonsByReference ||= new Map();
   state.hoveredThreadReference ||= null;
+  state.markdownTransfers ||= new Map();
   window[stateKey] = state;
+
+  const markdownTransferKey = (targetOwner, requestId) => `${targetOwner}\u0000${requestId}`;
 
   const previousBridge = state.bridges.get(owner);
   const callbacks = previousBridge?.callbacks || new Map();
@@ -85,17 +90,28 @@
           return;
         }
         const requestId = `${owner}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const timer = window.setTimeout(() => {
-          callbacks.delete(requestId);
-          reject(new Error("会话增强请求超时"));
-        }, bridgeTimeoutMs);
-        callbacks.set(requestId, {
+        const transferKey = markdownTransferKey(owner, requestId);
+        const requestTimeoutMs = payload.action === "exportMarkdown"
+          ? Math.max(bridgeTimeoutMs, 10 * 60 * 1000)
+          : bridgeTimeoutMs;
+        let timer = null;
+        const callback = {
+          refreshTimeout() {
+            if (timer !== null) window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+              callbacks.delete(requestId);
+              state.markdownTransfers.delete(transferKey);
+              reject(new Error("会话增强请求超时"));
+            }, requestTimeoutMs);
+          },
           resolve(result) {
-            window.clearTimeout(timer);
+            if (timer !== null) window.clearTimeout(timer);
             callbacks.delete(requestId);
             resolve(result);
           },
-        });
+        };
+        callback.refreshTimeout();
+        callbacks.set(requestId, callback);
         try {
           nativeBinding(JSON.stringify({
             id: requestId,
@@ -104,8 +120,9 @@
             ...payload,
           }));
         } catch (error) {
-          window.clearTimeout(timer);
+          if (timer !== null) window.clearTimeout(timer);
           callbacks.delete(requestId);
+          state.markdownTransfers.delete(transferKey);
           reject(error);
         }
       });
@@ -113,9 +130,58 @@
   };
   state.bridges.set(owner, bridge);
 
+  window.__codexTokenBarThreadDeleteMarkdownChunk = (
+    targetOwner,
+    requestId,
+    sequence,
+    chunk,
+  ) => {
+    const target = state.bridges.get(targetOwner);
+    if (!target?.callbacks.has(requestId)
+        || !Number.isSafeInteger(sequence)
+        || sequence < 0
+        || typeof chunk !== "string") {
+      return false;
+    }
+    const key = markdownTransferKey(targetOwner, requestId);
+    const transfer = state.markdownTransfers.get(key) || { nextSequence: 0, chunks: [] };
+    if (sequence !== transfer.nextSequence) {
+      state.markdownTransfers.delete(key);
+      throw new Error("Markdown 分块顺序不一致");
+    }
+    transfer.chunks.push(chunk);
+    transfer.nextSequence += 1;
+    state.markdownTransfers.set(key, transfer);
+    target.callbacks.get(requestId)?.refreshTimeout?.();
+    return true;
+  };
+
   window.__codexTokenBarThreadDeleteResolve = (targetOwner, requestId, result) => {
     const target = state.bridges.get(targetOwner);
-    target?.callbacks.get(requestId)?.resolve(result);
+    const callback = target?.callbacks.get(requestId);
+    if (!callback) return false;
+    const key = markdownTransferKey(targetOwner, requestId);
+    if (result?.markdownTransfer === true) {
+      const transfer = state.markdownTransfers.get(key);
+      const expectedChunks = result.markdownChunkCount;
+      const receivedChunks = transfer?.nextSequence ?? 0;
+      if (!Number.isSafeInteger(expectedChunks)
+          || expectedChunks < 0
+          || receivedChunks !== expectedChunks) {
+        state.markdownTransfers.delete(key);
+        callback.resolve({
+          status: "failed",
+          message: "Markdown 分块传输不完整",
+        });
+        return true;
+      }
+      result.markdownChunks = transfer?.chunks || [];
+      delete result.markdownTransfer;
+      delete result.markdownChunkCount;
+    }
+    state.markdownTransfers.delete(key);
+    callback.resolve(result);
+    return true;
   };
 
   state.callDelete = async (payload) => {
