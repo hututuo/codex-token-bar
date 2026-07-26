@@ -751,6 +751,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             storedTail = nil
         }
         let hashingStartOffset = (tailChunkIndex ?? 0) * Self.chunkSize
+        // 活动文件的未完成行可以合法地跨过块边界：此时续扫起点（resumeOffset，
+        // 未完成行的行首）落在尾块起点之前，续扫不变量无法满足。必须回退全量
+        // 重建（返回 nil）而不是让流式层抛错——抛错会使整轮同步失败，检查点
+        // 固化后每轮复现，该 Home 的精确统计将永久停摆无自愈。
+        guard checkpoint.resumeOffset >= hashingStartOffset else { return nil }
 
         do {
             return try connection.transaction { transaction in

@@ -1302,6 +1302,93 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(total, 150)
     }
 
+    func testExactHistoryIndexFallsBackToFullRebuildWhenOpenLineCrossesChunkBoundary() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-crossbound"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        let firstLine = try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        )
+        let secondLine = try tokenCountLine(
+            timestamp: now.addingTimeInterval(-10),
+            total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 150),
+            last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
+        )
+        let chunkSize = 4 * 1_024 * 1_024
+        // 未完成的第二条 token 行行首落在首块内、行尾越过 4 MiB 块边界：
+        // 检查点的续扫位置（行首）< 尾块起点，续扫不变量无法满足。
+        var source = Data((firstLine + "\n").utf8)
+        let openLineStart = chunkSize - 100
+        let padPrefix = Data(#"{"padding":""#.utf8)
+        let padSuffix = Data("\"}\n".utf8)
+        let padBody = openLineStart - source.count - padPrefix.count - padSuffix.count
+        source.append(padPrefix)
+        source.append(Data(repeating: UInt8(ascii: "x"), count: padBody))
+        source.append(padSuffix)
+        let secondData = Data(secondLine.utf8)
+        let split = 150
+        source.append(secondData.prefix(split))
+        try source.write(to: sessionFile)
+        XCTAssertGreaterThan(source.count, chunkSize)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let cold = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        XCTAssertEqual(cold.changedFiles, 1)
+
+        // 补完该行：修复前第二轮同步在这里抛错且每轮复现，精确统计永久停摆。
+        let handle = try FileHandle(forWritingTo: sessionFile)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: secondData.suffix(secondData.count - split))
+        try handle.write(contentsOf: Data("\n".utf8))
+        try handle.close()
+
+        var appendRequests: [CodexUsageAnalyzer.IndexedSessionParseRequest] = []
+        let refreshed = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            appendRequests.append(request)
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        XCTAssertEqual(
+            refreshed.incrementallyParsedFiles,
+            0,
+            "跨块未完成行必须回退全量重建，不能走追加路径"
+        )
+        XCTAssertEqual(refreshed.changedFiles, 1)
+        XCTAssertEqual(
+            appendRequests.map(\.hashingStartOffset),
+            [0],
+            "全量重建必须从文件头重新 hash"
+        )
+        var total = 0
+        try index.forEachStoredEvent { total += $0.event.tokens }
+        XCTAssertEqual(total, 150)
+    }
+
     func testExactHistoryIndexRollingAuditRebuildsAfterMiddleRewriteAndAppend() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-auditappend"

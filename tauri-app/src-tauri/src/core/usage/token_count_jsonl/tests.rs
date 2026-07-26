@@ -374,6 +374,62 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
 }
 
 #[test]
+fn exact_index_append_falls_back_to_full_rebuild_when_open_line_crosses_chunk_boundary() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eappend-cross-0000-0000-0000-exact.jsonl");
+
+    let first_line = br#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let second_line = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
+
+    // 让未完成的第二条 token 行行首落在首个块内、行尾越过 4 MiB 块边界：
+    // 此时检查点的续扫位置（行首）< 尾块起点，续扫不变量无法满足。
+    let open_line_start = EXACT_INDEX_CHUNK_SIZE - 100;
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    handle.write_all(first_line).unwrap();
+    handle.write_all(b"\n").unwrap();
+    let pad_prefix = br#"{"padding":""#;
+    let pad_suffix = b"\"}\n";
+    let written = first_line.len() as u64 + 1;
+    let pad_body = usize::try_from(open_line_start - written).unwrap()
+        - pad_prefix.len()
+        - pad_suffix.len();
+    handle.write_all(pad_prefix).unwrap();
+    handle.write_all(&vec![b'x'; pad_body]).unwrap();
+    handle.write_all(pad_suffix).unwrap();
+    let split = 150usize;
+    handle.write_all(&second_line[..split]).unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    assert!(fs::metadata(&file).unwrap().len() > EXACT_INDEX_CHUNK_SIZE);
+
+    // 首轮：只统计完整行，检查点固化在未完成行行首（块边界之前）。
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    // 补完该行：修复前第二轮扫描在这里报"续扫边界无效"，且每轮复现。
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    handle.write_all(&second_line[split..]).unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let refreshed = dashboard_snapshot(&root).unwrap();
+    assert_eq!(refreshed.stats.total_tokens, 150);
+    assert_eq!(refreshed.stats.total_calls, 2);
+    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(
+        append_bytes, 0,
+        "跨块未完成行必须回退全量重建，不能走追加路径"
+    );
+    assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_rolling_audit_falls_back_to_full_rebuild_after_middle_rewrite_and_append() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     ExactUsageIndex::reset_scan_bytes_for_testing();

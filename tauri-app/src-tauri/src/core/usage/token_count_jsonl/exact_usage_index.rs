@@ -2811,6 +2811,13 @@ fn append_session_file(
     let hashing_start_offset = tail_chunk_index
         .unwrap_or(0)
         .saturating_mul(EXACT_INDEX_CHUNK_SIZE);
+    // 活动文件的未完成行可以合法地跨过块边界：此时续扫起点（resume_offset，
+    // 未完成行的行首）落在尾块起点之前，续扫不变量无法满足。必须回退全量
+    // 重建（Ok(false)）而不是让流式层报错——报错会使整轮同步失败，检查点
+    // 固化后每轮复现，该 Home 的精确统计将永久停摆无自愈。
+    if checkpoint.resume_offset < hashing_start_offset {
+        return Ok(false);
+    }
 
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
