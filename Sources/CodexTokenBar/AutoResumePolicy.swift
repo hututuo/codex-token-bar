@@ -123,6 +123,16 @@ enum AutoResumePolicy {
         state.lastQuotaWindowLabel = observation.windowLabel
         state.lastQuotaObservedAt = snapshot.updatedAt
 
+        // 逐窗口记录"曾进入低位"（与 Rust observe_window 的 armed 标志同语义）：
+        // lowestRemaining 的恢复门槛只对这些窗口生效。首次观察仅建立基线，不记录。
+        if hasBaseline {
+            for window in [snapshot.fiveHour, snapshot.sevenDay].compactMap({ $0 })
+            where window.remainingPercent <= configuration.quotaArmAtOrBelowPercent
+                && !state.quotaLowObservedWindowLabels.contains(window.label) {
+                state.quotaLowObservedWindowLabels.append(window.label)
+            }
+        }
+
         if state.quotaArmed {
             if state.quotaArmedWindowLabel == nil {
                 state.quotaArmedWindowLabel = observation.windowLabel
@@ -136,19 +146,29 @@ enum AutoResumePolicy {
 
             let cycleChanged = state.quotaArmedCycleID != nil
                 && state.quotaArmedCycleID != observation.cycleID
-            let allAvailableWindowsRecovered: Bool
+            let everyLowWindowRecovered: Bool
             if configuration.quotaWindow == .lowestRemaining {
                 let measuredWindows = [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
-                allAvailableWindowsRecovered = !measuredWindows.isEmpty
-                    && measuredWindows.allSatisfy {
+                // 决策口径：只有"曾进入低位"的已测窗口才需要达到恢复阈值；从未
+                // 低位的另一窗口长期低于恢复阈值（如 7d 常年 10%）不得阻塞触发。
+                // 撞限武装（quotaRecoveryRequiresTransition）无法归因触顶窗口，
+                // 保守要求全部已测窗口恢复。与 Rust selected_quota_recovered 同语义。
+                let windowsRequiredToRecover = state.quotaRecoveryRequiresTransition
+                    ? measuredWindows
+                    : measuredWindows.filter {
+                        state.quotaLowObservedWindowLabels.contains($0.label)
+                            || $0.label == state.quotaArmedWindowLabel
+                    }
+                everyLowWindowRecovered = !measuredWindows.isEmpty
+                    && windowsRequiredToRecover.allSatisfy {
                         $0.remainingPercent >= configuration.quotaResumeAtOrAbovePercent
                     }
             } else {
-                allAvailableWindowsRecovered = true
+                everyLowWindowRecovered = true
             }
             let recovered = observation.remainingPercent >= configuration.quotaResumeAtOrAbovePercent
                 && (state.quotaRecoveryObservedLow || cycleChanged)
-                && allAvailableWindowsRecovered
+                && everyLowWindowRecovered
                 && !observation.cycleID.hasSuffix(":unknown")
             guard recovered else { return nil }
 
@@ -158,6 +178,7 @@ enum AutoResumePolicy {
             state.quotaRecoveryRequiresTransition = false
             state.quotaRecoveryObservedLow = false
             state.quotaRecoveryArmObservationAt = nil
+            state.quotaLowObservedWindowLabels = []
             return AutoResumeTrigger(
                 kind: .quotaRecovery,
                 key: "quota:\(target.id):\(observation.cycleID)",

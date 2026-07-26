@@ -397,6 +397,128 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertFalse(state.quotaArmed)
     }
 
+    func testLowestRemainingIgnoresANeverLowWindowStuckBelowTheRecoveryThreshold() throws {
+        var configuration = enabledConfiguration()
+        configuration.quotaWindow = .lowestRemaining
+        configuration.quotaArmAtOrBelowPercent = 5
+        configuration.quotaResumeAtOrAbovePercent = 20
+        var state = AutoResumeRuntimeState.default
+        let fiveHourReset = date(2026, 7, 16, 15, 0)
+        let sevenDayReset = date(2026, 7, 23, 10, 0)
+
+        // 7d 长期 10% 剩余：高于武装阈值(5)从未低位，但一直低于恢复阈值(20)。
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 20,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 90,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 0)
+        ))
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 96,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 90,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 1)
+        ))
+        XCTAssertTrue(state.quotaArmed)
+        XCTAssertEqual(state.quotaLowObservedWindowLabels, ["5h"])
+
+        // 决策口径：只有曾进入低位的窗口需要达到恢复阈值；从未低位的 7d
+        // 不得阻塞 5h 重置后的触发（旧实现在此永不触发，可阻塞数天）。
+        let nextReset = date(2026, 7, 16, 20, 0)
+        let recovered = try XCTUnwrap(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 0,
+                fiveHourReset: nextReset,
+                sevenDayUsed: 90,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 5)
+        ))
+        XCTAssertEqual(recovered.kind, .quotaRecovery)
+        XCTAssertTrue(recovered.key.contains(":5h:"))
+        XCTAssertFalse(state.quotaArmed)
+        XCTAssertTrue(state.quotaLowObservedWindowLabels.isEmpty)
+    }
+
+    func testLowestRemainingStillWaitsForAWindowThatDippedLowEvenAfterItClimbsAboveArm() throws {
+        var configuration = enabledConfiguration()
+        configuration.quotaWindow = .lowestRemaining
+        configuration.quotaArmAtOrBelowPercent = 5
+        configuration.quotaResumeAtOrAbovePercent = 20
+        var state = AutoResumeRuntimeState.default
+        let fiveHourReset = date(2026, 7, 16, 15, 0)
+        let sevenDayReset = date(2026, 7, 23, 10, 0)
+
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 20,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 50,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 0)
+        ))
+        // 两个窗口同时进入低位：7d 的低位历史必须被记住。
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 97,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 96,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 1)
+        ))
+        XCTAssertTrue(state.quotaArmed)
+        XCTAssertEqual(Set(state.quotaLowObservedWindowLabels), Set(["5h", "7d"]))
+
+        // 5h 已重置、7d 爬回 10%（高于武装阈值但仍低于恢复阈值）：曾低位的
+        // 7d 仍须达到恢复阈值，不得因"当前不算低位"而放行。
+        let nextReset = date(2026, 7, 16, 20, 0)
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 0,
+                fiveHourReset: nextReset,
+                sevenDayUsed: 90,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 5)
+        ))
+        XCTAssertTrue(state.quotaArmed)
+
+        let recovered = try XCTUnwrap(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 0,
+                fiveHourReset: nextReset,
+                sevenDayUsed: 75,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 6)
+        ))
+        XCTAssertEqual(recovered.kind, .quotaRecovery)
+        XCTAssertTrue(recovered.key.contains(":5h:"))
+        XCTAssertFalse(state.quotaArmed)
+    }
+
     func testQuotaLimitArmIgnoresStaleHighAndRequiresFreshRecoveryTransition() throws {
         var configuration = enabledConfiguration()
         configuration.quotaWindow = .fiveHour

@@ -991,6 +991,7 @@ final class AutoResumeController: ObservableObject {
         runtimeState.quotaRecoveryRequiresTransition = false
         runtimeState.quotaRecoveryObservedLow = false
         runtimeState.quotaRecoveryArmObservationAt = nil
+        runtimeState.quotaLowObservedWindowLabels = []
         runtimeState.lastQuotaRemainingPercent = nil
         runtimeState.lastQuotaCycleID = nil
         runtimeState.lastQuotaWindowLabel = nil
@@ -1030,6 +1031,7 @@ final class AutoResumeController: ObservableObject {
             runtimeState.quotaRecoveryRequiresTransition = false
             runtimeState.quotaRecoveryObservedLow = false
             runtimeState.quotaRecoveryArmObservationAt = nil
+            runtimeState.quotaLowObservedWindowLabels = []
         case .satisfied:
             switch trigger.kind {
             case .interval, .daily:
@@ -1037,6 +1039,7 @@ final class AutoResumeController: ObservableObject {
             case .quotaRecovery:
                 runtimeState.quotaPendingFreshness = nil
                 runtimeState.quotaArmed = false
+                runtimeState.quotaLowObservedWindowLabels = []
             case .capacityRecovery:
                 runtimeState.capacityPendingFreshness = nil
             case .manual:

@@ -1244,14 +1244,16 @@ fn selected_quota_recovered(
         _ => {
             let any_recovery_edge = state.five_hour.armed && state.five_hour.recovery_ready
                 || state.seven_day.armed && state.seven_day.recovery_ready;
-            let every_measured_window_recovered = [
-                state.five_hour.remaining_percent,
-                state.seven_day.remaining_percent,
-            ]
-            .into_iter()
-            .flatten()
-            .all(|value| value >= recovered);
-            any_recovery_edge && every_measured_window_recovered
+            // 决策口径：只有"曾进入低位"（armed）的已测窗口才需要达到恢复阈值；
+            // 从未低位的另一窗口长期低于恢复阈值（如 7d 常年 10%）不得阻塞触发。
+            // 撞限武装（arm_selected_windows）会把两个窗口都置 armed，保守语义不变。
+            // 与 Swift observeQuota 的 everyLowWindowRecovered 同语义。
+            let every_low_window_recovered = [&state.five_hour, &state.seven_day]
+                .into_iter()
+                .filter(|window| window.armed)
+                .filter_map(|window| window.remaining_percent)
+                .all(|value| value >= recovered);
+            any_recovery_edge && every_low_window_recovered
         }
     }
 }
@@ -1774,6 +1776,38 @@ mod tests {
             quota_recovery_key(&settings, &state).as_deref(),
             Some("5h:500"),
             "双窗口同时恢复按跨端契约取 5h 单窗口，而不是拼接"
+        );
+    }
+
+    #[test]
+    fn lowest_window_ignores_a_never_low_window_stuck_below_the_recovery_threshold() {
+        let settings = enabled_settings();
+        let mut state = PersistedAutoResumeState::default();
+        // 7d 长期 0.10：高于低位阈值（0.05）从未武装，但一直低于恢复阈值（0.20）。
+        observe_quota_bundle(
+            &settings,
+            &mut state,
+            &bundle(limit("5h", 0.80, 200), limit("7d", 0.10, 900)),
+        );
+        observe_quota_bundle(
+            &settings,
+            &mut state,
+            &bundle(limit("5h", 0.04, 200), limit("7d", 0.10, 900)),
+        );
+        assert!(state.five_hour.armed);
+        assert!(!state.seven_day.armed);
+
+        // 决策口径：只有曾进入低位的窗口需要达到恢复阈值；从未低位的 7d
+        // 不得阻塞 5h 重置后的触发（旧实现在此永不触发，可阻塞数天）。
+        assert!(observe_quota_bundle(
+            &settings,
+            &mut state,
+            &bundle(limit("5h", 1.0, 500), limit("7d", 0.10, 900)),
+        ));
+        assert!(selected_quota_recovered(&settings, &state));
+        assert_eq!(
+            quota_recovery_key(&settings, &state).as_deref(),
+            Some("5h:500")
         );
     }
 

@@ -344,6 +344,9 @@ struct AutoResumeRuntimeState: Codable, Equatable, Sendable {
     var quotaRecoveryRequiresTransition = false
     var quotaRecoveryObservedLow = false
     var quotaRecoveryArmObservationAt: Date?
+    // 本轮武装期内"曾进入低位"的窗口标签（"5h"/"7d"）。lowestRemaining 恢复
+    // 门槛只对这些窗口生效，与 Rust 端按窗口的 armed 标志同语义。
+    var quotaLowObservedWindowLabels: [String] = []
     var lastQuotaRemainingPercent: Int?
     var lastQuotaCycleID: String?
     var lastQuotaWindowLabel: String?
@@ -467,6 +470,7 @@ extension AutoResumeRuntimeState {
         case quotaRecoveryRequiresTransition
         case quotaRecoveryObservedLow
         case quotaRecoveryArmObservationAt
+        case quotaLowObservedWindowLabels
         case lastQuotaRemainingPercent
         case lastQuotaCycleID
         case lastQuotaWindowLabel
@@ -536,6 +540,10 @@ extension AutoResumeRuntimeState {
             Date.self,
             forKey: .quotaRecoveryArmObservationAt
         )
+        value.quotaLowObservedWindowLabels = try container.decodeIfPresent(
+            [String].self,
+            forKey: .quotaLowObservedWindowLabels
+        ) ?? []
         value.lastQuotaRemainingPercent = try container.decodeIfPresent(
             Int.self,
             forKey: .lastQuotaRemainingPercent
