@@ -75,6 +75,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     let url: URL
 
     private let readOnly: Bool
+    private let createsFileIfMissing: Bool
     private let busyTimeoutMilliseconds: Int32
     private let enableWAL: Bool
     private let fileManager: FileManager
@@ -82,12 +83,14 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     init(
         url: URL,
         readOnly: Bool = false,
+        createsFileIfMissing: Bool = true,
         busyTimeoutMilliseconds: Int32 = 3_000,
         enableWAL: Bool = false,
         fileManager: FileManager = .default
     ) {
         self.url = url
         self.readOnly = readOnly
+        self.createsFileIfMissing = createsFileIfMissing
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
         self.enableWAL = enableWAL
         self.fileManager = fileManager
@@ -132,16 +135,33 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     }
 
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
-        if !readOnly {
+        if !readOnly, createsFileIfMissing {
             try fileManager.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
         }
+        if !createsFileIfMissing {
+            var isDirectory: ObjCBool = false
+            let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            guard exists, !isDirectory.boolValue else {
+                throw SQLiteDatabaseError(
+                    operation: "Open SQLite database",
+                    code: SQLITE_CANTOPEN,
+                    message: "Database file does not exist; refusing to create it implicitly",
+                    path: url.path
+                )
+            }
+        }
 
-        let flags = readOnly
-            ? SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-            : SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        let flags: Int32
+        if readOnly {
+            flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        } else if createsFileIfMissing {
+            flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        } else {
+            flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        }
 
         var database: OpaquePointer?
         let status = sqlite3_open_v2(url.path, &database, flags, nil)

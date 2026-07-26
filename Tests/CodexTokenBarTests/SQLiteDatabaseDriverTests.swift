@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import CodexTokenBar
 
@@ -175,6 +176,41 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         try writer.execute("INSERT INTO logs (body) VALUES ('two');")
         let secondRead = try reader.readRows("SELECT body FROM logs ORDER BY id;") { $0.text(0) ?? "" }
         XCTAssertEqual(secondRead, ["one", "two"])
+    }
+
+    func testNoCreateWriteConnectionRefusesToCreateAMissingDatabase() throws {
+        let url = try makeDatabaseURL()
+        let driver = SQLiteDatabaseDriver(url: url, createsFileIfMissing: false)
+
+        XCTAssertThrowsError(
+            try driver.executeChangedRows("UPDATE threads SET cwd = 'x';")
+        ) { error in
+            guard let databaseError = error as? SQLiteDatabaseError else {
+                return XCTFail("应抛 SQLiteDatabaseError，实际：\(error)")
+            }
+            XCTAssertEqual(databaseError.code, SQLITE_CANTOPEN)
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path),
+            "no-create 打开不得留下空的 decoy 数据库"
+        )
+    }
+
+    func testNoCreateWriteConnectionStillWritesToAnExistingDatabase() throws {
+        let url = try makeDatabaseURL()
+        let creator = SQLiteDatabaseDriver(url: url)
+        try creator.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT);")
+        try creator.execute("INSERT INTO threads (id, cwd) VALUES ('a', '/old');")
+
+        let driver = SQLiteDatabaseDriver(url: url, createsFileIfMissing: false)
+        let changed = try driver.executeChangedRows(
+            "UPDATE threads SET cwd = ?1 WHERE id = 'a';",
+            bindings: [.text("/new")]
+        )
+
+        XCTAssertEqual(changed, 1)
+        let values = try driver.readRows("SELECT cwd FROM threads WHERE id = 'a';") { $0.text(0) ?? "" }
+        XCTAssertEqual(values, ["/new"])
     }
 
     private func makeDatabaseURL() throws -> URL {

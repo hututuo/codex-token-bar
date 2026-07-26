@@ -279,6 +279,7 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         let database = SQLiteDatabaseDriver(
             url: dataSource.stateDatabase,
             readOnly: false,
+            createsFileIfMissing: false,
             busyTimeoutMilliseconds: 5_000
         )
         do {
@@ -918,6 +919,7 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         let database = SQLiteDatabaseDriver(
             url: dataSource.stateDatabase,
             readOnly: false,
+            createsFileIfMissing: false,
             busyTimeoutMilliseconds: 5_000
         )
         let changed = try database.executeChangedRows(
