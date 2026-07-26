@@ -34,8 +34,10 @@ use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
-const INDEX_SCHEMA_VERSION: i64 = 5;
-const LEGACY_APPEND_MIGRATION_SCHEMA_VERSION: i64 = 4;
+// v6：重放指纹与 Swift 统一为 11 字段（含 reasoning）。旧版指纹是 9 字段 72 字节
+// blob，与新 88 字节 blob 永不相等，混存会让历史 snapshot 重新计数；因此 v6 起
+// 不再提供任何旧版原地迁移，非当前版本一律整库重建（索引可完整重建）。
+const INDEX_SCHEMA_VERSION: i64 = 6;
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -221,27 +223,18 @@ impl ExactUsageIndex {
         if existed_before
             && !recovered_corrupt_index
             && schema_version != Some(INDEX_SCHEMA_VERSION)
-            && schema_version != Some(LEGACY_APPEND_MIGRATION_SCHEMA_VERSION)
         {
             // The index is fully rebuildable. Replacing an obsolete database,
             // rather than dropping its text columns in place, guarantees that
             // deleted SQLite pages and WAL frames cannot retain conversation
-            // plaintext from schema v1.
+            // plaintext from schema v1. Since v6 this also discards pre-v6
+            // 9-field fingerprint blobs that would break deduplication.
             drop(connection);
             remove_index_storage(&path)?;
             connection = managed_index_connection(&path, open_index_connection(&path)?)?;
             schema_version = None;
         }
         initialize_index_schema(&connection)?;
-        if schema_version == Some(LEGACY_APPEND_MIGRATION_SCHEMA_VERSION) {
-            migrate_v4_index_for_append(&connection)?;
-            set_metadata(
-                &connection,
-                "schema_version",
-                &INDEX_SCHEMA_VERSION.to_string(),
-            )?;
-            schema_version = Some(INDEX_SCHEMA_VERSION);
-        }
         if schema_version != Some(INDEX_SCHEMA_VERSION) {
             set_metadata(
                 &connection,
@@ -1401,8 +1394,8 @@ impl StageActivityGuard {
     }
 }
 
-fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> [u8; 9 * 8] {
-    let mut encoded = [0_u8; 9 * 8];
+fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> [u8; 11 * 8] {
+    let mut encoded = [0_u8; 11 * 8];
     for (index, value) in fingerprint.iter().enumerate() {
         let start = index * 8;
         encoded[start..start + 8].copy_from_slice(&value.to_le_bytes());
@@ -4049,34 +4042,6 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|error| format!("无法初始化精确 token 索引结构：{error}"))
-}
-
-fn migrate_v4_index_for_append(connection: &Connection) -> Result<(), String> {
-    let additions = [
-        ("append_ready", "INTEGER NOT NULL DEFAULT 0"),
-        ("resume_offset", "INTEGER"),
-        ("previous_total_tokens", "INTEGER"),
-        ("fork_replay_started_ns", "TEXT"),
-        ("fork_replay_active", "INTEGER NOT NULL DEFAULT 0"),
-        ("last_skipped_fork_replay_token_ns", "TEXT"),
-        ("current_user_prompt_start", "INTEGER"),
-        ("current_user_prompt_end", "INTEGER"),
-        ("assistant_response_start", "INTEGER"),
-        ("assistant_response_end", "INTEGER"),
-        ("audit_chunk_index", "INTEGER NOT NULL DEFAULT 0"),
-    ];
-    for (column, definition) in additions {
-        if column_exists(connection, "files", column) {
-            continue;
-        }
-        connection
-            .execute(
-                &format!("ALTER TABLE files ADD COLUMN {column} {definition}"),
-                [],
-            )
-            .map_err(|error| format!("无法增量迁移精确 token 追加索引字段 {column}：{error}"))?;
-    }
-    Ok(())
 }
 
 fn remove_index_storage(path: &Path) -> Result<(), String> {

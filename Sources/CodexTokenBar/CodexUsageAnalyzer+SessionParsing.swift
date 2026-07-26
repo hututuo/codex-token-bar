@@ -185,8 +185,10 @@ extension CodexUsageAnalyzer {
                 ) {
                     if isSkippingForkReplay {
                         let replayReference = lastSkippedForkReplayTokenAt ?? forkReplayStartedAt
+                        // 跨端契约：恰好等于宽限（2s）仍视为重放，严格大于才退出，
+                        // 与 Rust session_parser.rs 的 `> FORK_REPLAY_EXIT_GRACE` 一致。
                         guard let replayReference,
-                              timestamp.timeIntervalSince(replayReference) >= Self.forkReplayExitGrace else {
+                              timestamp.timeIntervalSince(replayReference) > Self.forkReplayExitGrace else {
                             return
                         }
                         isSkippingForkReplay = false

@@ -734,7 +734,7 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
 }
 
 #[test]
-fn exact_index_migrates_v4_without_discarding_published_events() {
+fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v6_fingerprints() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -750,9 +750,6 @@ fn exact_index_migrates_v4_without_discarding_published_events() {
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
-    let before = ExactUsageIndex::open(&root).unwrap();
-    let revision = before.revision().unwrap();
-    drop(before);
 
     let connection = Connection::open(&index_path).unwrap();
     connection
@@ -773,16 +770,19 @@ fn exact_index_migrates_v4_without_discarding_published_events() {
         .unwrap();
     drop(connection);
 
-    let migrated = ExactUsageIndex::open(&root).unwrap();
-    assert_eq!(migrated.revision().unwrap(), revision);
-    assert_eq!(
-        migrated
-            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
-            .unwrap()
-            .total_tokens,
-        120
+    // v4 指纹是 9 字段 72 字节布局，与 v6 的 11 字段 blob 不可混存（混存会让
+    // 历史 snapshot 重新计数）：不再原地迁移，任何旧版本一律整库丢弃重建。
+    let rebuilt = ExactUsageIndex::open(&root).unwrap();
+    assert!(
+        rebuilt.is_empty().unwrap(),
+        "旧版索引必须被丢弃而不是原地迁移"
     );
-    drop(migrated);
+    drop(rebuilt);
+    assert_eq!(
+        dashboard_snapshot(&root).unwrap().stats.total_tokens,
+        120,
+        "丢弃后必须能从会话源完整重建"
+    );
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
@@ -792,7 +792,7 @@ fn exact_index_migrates_v4_without_discarding_published_events() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "5"
+        "6"
     );
     assert_eq!(
         connection
@@ -803,20 +803,85 @@ fn exact_index_migrates_v4_without_discarding_published_events() {
     );
     drop(connection);
 
-    ExactUsageIndex::reset_scan_bytes_for_testing();
-    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-    writeln!(
-        handle,
-        "{}",
-        r#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#
-    )
-    .unwrap();
-    handle.flush().unwrap();
-    drop(handle);
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
-    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
-    assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
-    assert_eq!(append_bytes, 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn snapshots_differing_only_in_reasoning_tokens_are_distinct_events() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ereasoning-fp-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":0,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":0,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    // 跨端契约（review §3.10 4a）：与 Swift 的 11 字段指纹对齐，仅 reasoning 不同
+    // 的两条 snapshot 是两次独立计费；9 字段指纹会把第二条误判为重放丢弃。
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 240);
+    assert_eq!(snapshot.stats.total_calls, 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn fork_replay_exit_grace_boundary_requires_strictly_more_than_two_seconds() {
+    // 跨端契约（review §3.10 4b）：恰好等于 2s 宽限的 user_message 仍视为重放，
+    // 严格大于 2s 才退出（两端统一为 >，Swift 端同界测试对应修改）。
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+
+    let at_boundary = session_dir.join("rollout-019efork-grace-at-0000-0000-exact.jsonl");
+    write_lines(
+        &at_boundary,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:12Z","type":"event_msg","payload":{"type":"user_message","message":"恰在宽限边界的提问"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":620},"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    let mut warnings = Vec::new();
+    let parsed = parse_session_file_full_result(
+        &at_boundary,
+        "019efork-grace-at-0000-0000-exact",
+        &mut warnings,
+    );
+    assert_eq!(
+        parsed.events.iter().map(|event| event.tokens).sum::<u64>(),
+        0,
+        "恰好 2s 仍在宽限内，必须继续按重放跳过"
+    );
+    assert!(parsed.fork_replay_active);
+
+    let past_boundary = session_dir.join("rollout-019efork-grace-past-0000-0000-exact.jsonl");
+    write_lines(
+        &past_boundary,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":500},"last_token_usage":{"total_tokens":500}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:12.001Z","type":"event_msg","payload":{"type":"user_message","message":"刚越过宽限边界的提问"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:13Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":620},"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    let parsed = parse_session_file_full_result(
+        &past_boundary,
+        "019efork-grace-past-0000-0000-exact",
+        &mut warnings,
+    );
+    assert_eq!(
+        parsed.events.iter().map(|event| event.tokens).sum::<u64>(),
+        120,
+        "超过 2s 必须退出重放并正常计费"
+    );
+    assert!(!parsed.fork_replay_active);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1184,7 +1249,7 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "5"
+        "6"
     );
     drop(connection);
 

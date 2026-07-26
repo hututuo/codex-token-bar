@@ -848,6 +848,90 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 0)
     }
 
+    func testForkedSessionReplayExitGraceBoundaryIsStrictlyGreaterThanTwoSeconds() throws {
+        // 跨端契约（review §3.10 4b）：恰好等于 2s 宽限的 user_message 仍视为重放，
+        // 严格大于 2s 才退出——与 Rust FORK_REPLAY_EXIT_GRACE 的 `>` 语义一致。
+        let atBoundaryHome = try makeCodexHome()
+        try seedStateDatabase(at: atBoundaryHome)
+        let atID = "019eaaaa-bbbb-cccc-dddd-forkgraceat"
+        let atFile = atBoundaryHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(atID).jsonl")
+        let atLines = [
+            rawForkedSessionMetaLine(timestamp: "2026-06-18T01:00:00Z", sessionID: atID),
+            rawTokenCountLine(
+                timestamp: "2026-06-18T01:00:10Z",
+                total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+            ),
+            rawMessageLine(timestamp: "2026-06-18T01:00:12Z", type: "user_message", message: "Boundary prompt"),
+            rawTokenCountLine(
+                timestamp: "2026-06-18T01:00:13Z",
+                total: Usage(input: 160, cachedInput: 10, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ]
+        try atLines.joined(separator: "\n").appending("\n").write(to: atFile, atomically: true, encoding: .utf8)
+
+        let atSnapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: atBoundaryHome)).load()
+        XCTAssertEqual(atSnapshot.stats.totalTokens, 0, "恰好 2s 仍在宽限内，必须继续按重放跳过")
+        XCTAssertEqual(atSnapshot.stats.totalCalls, 0)
+
+        let pastBoundaryHome = try makeCodexHome()
+        try seedStateDatabase(at: pastBoundaryHome)
+        let pastID = "019eaaaa-bbbb-cccc-dddd-forkgracepast"
+        let pastFile = pastBoundaryHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(pastID).jsonl")
+        let pastLines = [
+            rawForkedSessionMetaLine(timestamp: "2026-06-18T01:00:00Z", sessionID: pastID),
+            rawTokenCountLine(
+                timestamp: "2026-06-18T01:00:10Z",
+                total: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 0, output: 20, reasoning: 0, total: 120)
+            ),
+            rawMessageLine(timestamp: "2026-06-18T01:00:12.001Z", type: "user_message", message: "Just past boundary prompt"),
+            rawTokenCountLine(
+                timestamp: "2026-06-18T01:00:13Z",
+                total: Usage(input: 160, cachedInput: 10, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ]
+        try pastLines.joined(separator: "\n").appending("\n").write(to: pastFile, atomically: true, encoding: .utf8)
+
+        let pastSnapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: pastBoundaryHome)).load()
+        XCTAssertEqual(pastSnapshot.stats.totalTokens, 80, "超过 2s 必须退出重放并正常计费")
+        XCTAssertEqual(pastSnapshot.stats.totalCalls, 1)
+    }
+
+    func testSnapshotsDifferingOnlyInReasoningTokensAreDistinctEvents() throws {
+        // 跨端契约（review §3.10 4a）：与 Rust 统一为 11 字段指纹，仅 reasoning
+        // 不同的两条 snapshot 是两次独立计费，不得判为重放丢弃。
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-reasonfp"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(sessionID).jsonl")
+        let lines = [
+            rawTokenCountLine(
+                timestamp: "2026-06-18T01:00:00Z",
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            ),
+            rawTokenCountLine(
+                timestamp: "2026-06-18T01:00:05Z",
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 7, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 7, total: 120)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 240)
+        XCTAssertEqual(snapshot.stats.totalCalls, 2)
+    }
+
     func testForkedSessionSkipsDenseReplayBeforeDelayedNewPrompt() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-forkdense"
@@ -2777,6 +2861,30 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     private func spacedMessageLine(timestamp: Date, type: String, message: String) -> String {
         "{ \"timestamp\" : \"\(iso8601String(from: timestamp))\", \"type\" : \"event_msg\", \"payload\" : { \"type\" : \"\(type)\", \"message\" : \"\(message)\" } }"
+    }
+
+    // raw* 变体接受字面时间戳：ISO8601DateFormatter 会截掉毫秒且 Date 运算受
+    // 浮点误差影响，重放宽限的 2.000s/2.001s 边界用例必须用精确字符串构造。
+    private func rawForkedSessionMetaLine(timestamp: String, sessionID: String) -> String {
+        "{ \"timestamp\" : \"\(timestamp)\", \"type\" : \"session_meta\", \"payload\" : { \"id\" : \"\(sessionID)\", \"forked_from_id\" : \"origin-session\" } }"
+    }
+
+    private func rawMessageLine(timestamp: String, type: String, message: String) -> String {
+        "{ \"timestamp\" : \"\(timestamp)\", \"type\" : \"event_msg\", \"payload\" : { \"type\" : \"\(type)\", \"message\" : \"\(message)\" } }"
+    }
+
+    private func rawTokenCountLine(timestamp: String, total: Usage, last: Usage) -> String {
+        encodeLine([
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": [
+                "type": "token_count",
+                "info": [
+                    "total_token_usage": usageObject(total),
+                    "last_token_usage": usageObject(last)
+                ]
+            ]
+        ])
     }
 
     private func tokenCountLine(timestamp: Date, total: Usage, last: Usage) throws -> String {

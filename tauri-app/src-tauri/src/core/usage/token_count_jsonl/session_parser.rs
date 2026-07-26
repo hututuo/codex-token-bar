@@ -17,7 +17,7 @@ use time::{Duration, OffsetDateTime};
 const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
 const RETAINED_JSONL_LINE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const EXACT_INDEX_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
-pub(super) type UsageSnapshotFingerprint = [u64; 9];
+pub(super) type UsageSnapshotFingerprint = [u64; 11];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SourceByteRange {
@@ -47,6 +47,7 @@ struct ParsedUsage {
     input_tokens: u64,
     cached_input_tokens: u64,
     output_tokens: u64,
+    reasoning_output_tokens: u64,
     total_tokens: u64,
 }
 
@@ -663,21 +664,25 @@ impl ExactSessionEventSink for TestExactSessionSink {
     }
 }
 
+// 与 Swift UsageSnapshotFingerprint（CodexUsageAnalyzerModels.swift）同为 11 字段、
+// 同字段顺序：仅 reasoning 不同的两条 snapshot 两端必须一致地判为不同事件。
 fn usage_snapshot_fingerprint(usage_line: &ParsedUsageLine) -> Option<UsageSnapshotFingerprint> {
     let total = usage_line.total.as_ref()?;
-    let mut fingerprint = [0; 9];
-    fingerprint[..4].copy_from_slice(&[
+    let mut fingerprint = [0; 11];
+    fingerprint[..5].copy_from_slice(&[
         total.input_tokens,
         total.cached_input_tokens,
         total.output_tokens,
+        total.reasoning_output_tokens,
         total.total_tokens,
     ]);
     if let Some(last) = usage_line.last.as_ref() {
-        fingerprint[4] = 1;
-        fingerprint[5..].copy_from_slice(&[
+        fingerprint[5] = 1;
+        fingerprint[6..].copy_from_slice(&[
             last.input_tokens,
             last.cached_input_tokens,
             last.output_tokens,
+            last.reasoning_output_tokens,
             last.total_tokens,
         ]);
     }
@@ -903,6 +908,7 @@ fn parse_usage(value: Option<&Value>) -> Option<ParsedUsage> {
         input_tokens: number_field(value, "input_tokens").unwrap_or(0),
         cached_input_tokens: number_field(value, "cached_input_tokens").unwrap_or(0),
         output_tokens: number_field(value, "output_tokens").unwrap_or(0),
+        reasoning_output_tokens: number_field(value, "reasoning_output_tokens").unwrap_or(0),
         total_tokens: number_field(value, "total_tokens")?,
     })
 }
