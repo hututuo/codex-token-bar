@@ -97,19 +97,25 @@ final class CodexInstanceStore: ObservableObject {
 
     func launch(id: String) {
         perform("launch") { engine in
-            try await engine.launchInstance(id: id)
+            try await Task.detached(priority: .utility) {
+                try await engine.launchInstance(id: id)
+            }.value
         }
     }
 
     func focus(id: String) {
         perform("focus") { engine in
-            try engine.focusInstance(id: id)
+            try await Task.detached(priority: .utility) {
+                try engine.focusInstance(id: id)
+            }.value
         }
     }
 
     func stop(id: String) {
         perform("stop") { engine in
-            try engine.stopInstance(id: id)
+            try await Task.detached(priority: .utility) {
+                try await engine.stopInstance(id: id)
+            }.value
         }
     }
 

@@ -308,7 +308,10 @@ final class CodexInstanceEngine: @unchecked Sendable {
         return try runtimeStatus(for: instance)
     }
 
-    @MainActor
+    // launch/stop/focus 不做 MainActor 隔离：文件锁、注册表读写、进程等待都是
+    // 阻塞 IO，必须在后台执行；本方法用到的 NSWorkspace.openApplication 与
+    // NSRunningApplication 按 SDK 文档线程安全（桥接层 ensureCodexIsRunning
+    // 已有同样的后台调用先例）。
     func launchInstance(id: String) async throws -> CodexInstanceActionResult {
         guard id != "default" else {
             throw codexInstanceError("默认实例由系统入口启动，实例管理器不会重复启动它")
@@ -367,14 +370,14 @@ final class CodexInstanceEngine: @unchecked Sendable {
         let pid = UInt32(application.processIdentifier)
         let identity: String
         do {
-            identity = try waitForVerifiedLaunch(
+            identity = try await waitForVerifiedLaunch(
                 application: application,
                 pid: pid,
                 expectedExecutable: executableURL,
                 marker: marker
             )
         } catch {
-            let cleanupError = terminateJustLaunchedApplication(application)
+            let cleanupError = await terminateJustLaunchedApplication(application)
             if let cleanupError {
                 throw codexInstanceError(
                     "启动后的进程身份无法核对：\(error.localizedDescription)；终止未登记实例也失败：\(cleanupError.localizedDescription)"
@@ -397,7 +400,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
         do {
             try saveRegistry(&document)
         } catch {
-            let cleanupError = terminateJustLaunchedApplication(application)
+            let cleanupError = await terminateJustLaunchedApplication(application)
             if let cleanupError {
                 throw codexInstanceError(
                     "Codex 实例已启动，但控制信息未能保存：\(error.localizedDescription)；终止未登记实例也失败：\(cleanupError.localizedDescription)"
@@ -410,7 +413,6 @@ final class CodexInstanceEngine: @unchecked Sendable {
         return CodexInstanceActionResult(instance: launched, message: "Codex 实例已用独立环境启动。")
     }
 
-    @MainActor
     func focusInstance(id: String) throws -> CodexInstanceActionResult {
         let lock = try registryLock()
         defer { lock.release() }
@@ -427,8 +429,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
         return CodexInstanceActionResult(instance: instance, message: "已切换到该 Codex 实例。")
     }
 
-    @MainActor
-    func stopInstance(id: String) throws -> CodexInstanceActionResult {
+    func stopInstance(id: String) async throws -> CodexInstanceActionResult {
         guard id != "default" else {
             throw codexInstanceError("实例管理器不会停止默认 Codex，避免中断当前任务")
         }
@@ -444,7 +445,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
             throw codexInstanceError("没有找到由 Token Bar 启动且身份匹配的实例进程")
         }
         guard application.terminate() else { throw codexInstanceError("Codex 实例拒绝退出") }
-        try waitForProcessExit(pid: process.pid, identity: process.processStartIdentity)
+        try await waitForProcessExit(pid: process.pid, identity: process.processStartIdentity)
         document.instances[index].controlledProcess = nil
         document.instances[index].updatedAt = nowMilliseconds()
         let stopped = document.instances[index]
@@ -821,10 +822,9 @@ final class CodexInstanceEngine: @unchecked Sendable {
         return value
     }
 
-    @MainActor
     private func terminateJustLaunchedApplication(
         _ application: NSRunningApplication
-    ) -> Error? {
+    ) async -> Error? {
         guard !application.isTerminated else { return nil }
         if !application.terminate() {
             guard application.forceTerminate() else {
@@ -833,12 +833,12 @@ final class CodexInstanceEngine: @unchecked Sendable {
         }
         for _ in 0..<50 {
             if application.isTerminated { return nil }
-            Thread.sleep(forTimeInterval: 0.05)
+            try? await Task.sleep(for: .milliseconds(50))
         }
         if application.forceTerminate() {
             for _ in 0..<20 {
                 if application.isTerminated { return nil }
-                Thread.sleep(forTimeInterval: 0.05)
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
         return codexInstanceError("等待未登记 Codex 实例退出超时")
@@ -862,7 +862,7 @@ final class CodexInstanceEngine: @unchecked Sendable {
         pid: UInt32,
         expectedExecutable: URL,
         marker: String
-    ) throws -> String {
+    ) async throws -> String {
         var lastError: Error?
         let expectedPath = expectedExecutable.resolvingSymlinksInPath().path
         for _ in 0..<40 {
@@ -887,15 +887,15 @@ final class CodexInstanceEngine: @unchecked Sendable {
             } catch {
                 lastError = error
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try? await Task.sleep(for: .milliseconds(50))
         }
         throw lastError ?? codexInstanceError("Codex 进程启动后无法核对身份")
     }
 
-    private func waitForProcessExit(pid: UInt32, identity: String) throws {
+    private func waitForProcessExit(pid: UInt32, identity: String) async throws {
         for _ in 0..<100 {
             guard let current = try? processIdentity(pid: pid), current == identity else { return }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(for: .milliseconds(100))
         }
         throw codexInstanceError("等待 Codex 实例退出超时；注册表未清除控制信息")
     }
