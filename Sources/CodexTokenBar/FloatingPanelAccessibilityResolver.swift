@@ -25,6 +25,69 @@ struct FloatingPanelAccessibilityFrameRequest: @unchecked Sendable {
     let displayMaxY: CGFloat
 }
 
+private final class FloatingPanelLatestRequestLane<Request: Sendable, Output: Sendable>: @unchecked Sendable {
+    typealias Query = @Sendable (Request) -> Output
+    typealias Completion = @MainActor @Sendable (Output) -> Void
+
+    private struct Work: Sendable {
+        let generation: UInt64
+        let request: Request
+        let completion: Completion
+    }
+
+    private let queue: DispatchQueue
+    private let query: Query
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var pendingWork: Work?
+    private var workerScheduled = false
+
+    init(queue: DispatchQueue, query: @escaping Query) {
+        self.queue = queue
+        self.query = query
+    }
+
+    func submit(_ request: Request, completion: @escaping Completion) {
+        let shouldScheduleWorker = lock.withLock {
+            generation &+= 1
+            pendingWork = Work(
+                generation: generation,
+                request: request,
+                completion: completion
+            )
+            guard !workerScheduled else { return false }
+            workerScheduled = true
+            return true
+        }
+        guard shouldScheduleWorker else { return }
+        queue.async { [weak self] in
+            self?.drain()
+        }
+    }
+
+    private func drain() {
+        while let work = lock.withLock({ () -> Work? in
+            guard let pendingWork else {
+                workerScheduled = false
+                return nil
+            }
+            self.pendingWork = nil
+            return pendingWork
+        }) {
+            let result = query(work.request)
+            guard isCurrent(work.generation) else { continue }
+            Task { @MainActor [weak self] in
+                guard let self, self.isCurrent(work.generation) else { return }
+                work.completion(result)
+            }
+        }
+    }
+
+    private func isCurrent(_ candidate: UInt64) -> Bool {
+        lock.withLock { generation == candidate }
+    }
+}
+
 final class FloatingPanelAccessibilityResolver: @unchecked Sendable {
     typealias PointQuery = @Sendable (
         FloatingPanelAccessibilityPointRequest
@@ -36,23 +99,43 @@ final class FloatingPanelAccessibilityResolver: @unchecked Sendable {
         FloatingPanelAccessibilityFrameRequest
     ) -> CGRect?
 
-    private let queue: DispatchQueue
-    private let pointQuery: PointQuery
-    private let windowQuery: WindowQuery
+    private let pointLane: FloatingPanelLatestRequestLane<
+        FloatingPanelAccessibilityPointRequest,
+        FloatingPanelAccessibilitySnapshot?
+    >
+    private let windowLane: FloatingPanelLatestRequestLane<
+        FloatingPanelAccessibilityWindowRequest,
+        FloatingPanelAccessibilitySnapshot?
+    >
+    private let frameQueue: DispatchQueue
     private let frameQuery: FrameQuery
 
     init(
-        queue: DispatchQueue = DispatchQueue(
-            label: "com.huyiyang.codex-token-bar.floating-panel-accessibility",
+        pointQueue: DispatchQueue = DispatchQueue(
+            label: "com.huyiyang.codex-token-bar.floating-panel-accessibility.point",
+            qos: .userInteractive
+        ),
+        windowQueue: DispatchQueue = DispatchQueue(
+            label: "com.huyiyang.codex-token-bar.floating-panel-accessibility.window",
+            qos: .userInitiated
+        ),
+        frameQueue: DispatchQueue = DispatchQueue(
+            label: "com.huyiyang.codex-token-bar.floating-panel-accessibility.frame",
             qos: .userInteractive
         ),
         pointQuery: @escaping PointQuery = FloatingPanelAccessibilityIPC.target,
         windowQuery: @escaping WindowQuery = FloatingPanelAccessibilityIPC.target,
         frameQuery: @escaping FrameQuery = FloatingPanelAccessibilityIPC.frame
     ) {
-        self.queue = queue
-        self.pointQuery = pointQuery
-        self.windowQuery = windowQuery
+        pointLane = FloatingPanelLatestRequestLane(
+            queue: pointQueue,
+            query: pointQuery
+        )
+        windowLane = FloatingPanelLatestRequestLane(
+            queue: windowQueue,
+            query: windowQuery
+        )
+        self.frameQueue = frameQueue
         self.frameQuery = frameQuery
     }
 
@@ -60,31 +143,21 @@ final class FloatingPanelAccessibilityResolver: @unchecked Sendable {
         at request: FloatingPanelAccessibilityPointRequest,
         completion: @escaping @MainActor @Sendable (FloatingPanelAccessibilitySnapshot?) -> Void
     ) {
-        queue.async { [pointQuery] in
-            let result = pointQuery(request)
-            Task { @MainActor in
-                completion(result)
-            }
-        }
+        pointLane.submit(request, completion: completion)
     }
 
     func resolveTarget(
         matching request: FloatingPanelAccessibilityWindowRequest,
         completion: @escaping @MainActor @Sendable (FloatingPanelAccessibilitySnapshot?) -> Void
     ) {
-        queue.async { [windowQuery] in
-            let result = windowQuery(request)
-            Task { @MainActor in
-                completion(result)
-            }
-        }
+        windowLane.submit(request, completion: completion)
     }
 
     func resolveFrame(
         _ request: FloatingPanelAccessibilityFrameRequest,
         completion: @escaping @MainActor @Sendable (CGRect?) -> Void
     ) {
-        queue.async { [frameQuery] in
+        frameQueue.async { [frameQuery] in
             let result = frameQuery(request)
             Task { @MainActor in
                 completion(result)
@@ -95,6 +168,7 @@ final class FloatingPanelAccessibilityResolver: @unchecked Sendable {
 
 enum FloatingPanelAccessibilityIPC {
     static let messagingTimeout: Float = 0.25
+    static let windowResolutionBudget: TimeInterval = 0.75
 
     static func target(
         _ request: FloatingPanelAccessibilityPointRequest
@@ -138,11 +212,15 @@ enum FloatingPanelAccessibilityIPC {
             return nil
         }
 
-        let candidates = windows.compactMap {
-            snapshot(from: $0, displayMaxY: request.displayMaxY)
-        }
-        .filter { $0.ownerPID == request.window.ownerPID }
-        let scored = candidates.map { target -> (FloatingPanelAccessibilitySnapshot, CGFloat) in
+        let deadline = ProcessInfo.processInfo.systemUptime + windowResolutionBudget
+        var best: (target: FloatingPanelAccessibilitySnapshot, score: CGFloat)?
+        for window in windows {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+            guard let target = snapshot(from: window, displayMaxY: request.displayMaxY),
+                  target.ownerPID == request.window.ownerPID
+            else {
+                continue
+            }
             let frameDelta = abs(target.frame.minX - request.window.frame.minX)
                 + abs(target.frame.minY - request.window.frame.minY)
                 + abs(target.frame.width - request.window.frame.width)
@@ -150,12 +228,14 @@ enum FloatingPanelAccessibilityIPC {
             let titleBonus: CGFloat = (
                 !request.window.title.isEmpty && target.title == request.window.title
             ) ? 2_000 : 0
-            return (target, titleBonus - frameDelta)
+            let candidate = (target, titleBonus - frameDelta)
+            if let currentBest = best, candidate.1 <= currentBest.score { continue }
+            best = candidate
         }
-        guard let best = scored.max(by: { $0.1 < $1.1 }) else { return nil }
-        let titleMatches = !request.window.title.isEmpty && best.0.title == request.window.title
-        let frameLooksClose = best.1 > -90
-        return titleMatches || frameLooksClose ? best.0 : nil
+        guard let best else { return nil }
+        let titleMatches = !request.window.title.isEmpty && best.target.title == request.window.title
+        let frameLooksClose = best.score > -90
+        return titleMatches || frameLooksClose ? best.target : nil
     }
 
     static func frame(_ request: FloatingPanelAccessibilityFrameRequest) -> CGRect? {

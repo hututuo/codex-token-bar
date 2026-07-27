@@ -288,8 +288,94 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         XCTAssertNil(controller.cachedFollowAccessibilityFrame)
     }
 
+    func testBlockedWindowResolutionDoesNotDelayFrameResolution() async {
+        let windowProbe = BlockingAccessibilityWindowQuery()
+        let expectedFrame = NSRect(x: 12, y: 34, width: 560, height: 420)
+        let resolver = FloatingPanelAccessibilityResolver(
+            windowQuery: windowProbe.query,
+            frameQuery: { _ in expectedFrame }
+        )
+        resolver.resolveTarget(
+            matching: FloatingPanelAccessibilityWindowRequest(
+                window: FloatingPanelTargetWindow(
+                    windowNumber: 1,
+                    ownerPID: 42,
+                    ownerBundleID: "test.blocked",
+                    ownerName: "Blocked",
+                    title: "Blocked",
+                    frame: .zero,
+                    rawFrame: .zero
+                ),
+                displayMaxY: 900
+            ),
+            completion: { _ in }
+        )
+        XCTAssertTrue(windowProbe.waitUntilStarted(timeout: 1))
+
+        var resolvedFrame: NSRect?
+        resolver.resolveFrame(
+            FloatingPanelAccessibilityFrameRequest(
+                window: AXUIElementCreateApplication(43),
+                ownerPID: 43,
+                displayMaxY: 900
+            )
+        ) { frame in
+            resolvedFrame = frame
+        }
+
+        let didResolve = await waitUntil {
+            resolvedFrame == expectedFrame
+        }
+        windowProbe.release()
+        XCTAssertTrue(didResolve, "慢窗口匹配不能堵住逐帧跟随通道")
+    }
+
+    func testPointResolutionCoalescesBurstToRunningAndLatestRequest() async {
+        let probe = BlockingAccessibilityPointQuery()
+        let resolver = FloatingPanelAccessibilityResolver(pointQuery: probe.query)
+        let staleCompletion = expectation(description: "stale completion")
+        staleCompletion.isInverted = true
+        let middleCompletion = expectation(description: "middle completion")
+        middleCompletion.isInverted = true
+        let latestCompletion = expectation(description: "latest completion")
+
+        resolver.resolveTarget(
+            at: FloatingPanelAccessibilityPointRequest(
+                location: CGPoint(x: 1, y: 0),
+                displayMaxY: 900
+            )
+        ) { _ in
+            staleCompletion.fulfill()
+        }
+        XCTAssertTrue(probe.waitUntilStarted(timeout: 1))
+        resolver.resolveTarget(
+            at: FloatingPanelAccessibilityPointRequest(
+                location: CGPoint(x: 2, y: 0),
+                displayMaxY: 900
+            )
+        ) { _ in
+            middleCompletion.fulfill()
+        }
+        resolver.resolveTarget(
+            at: FloatingPanelAccessibilityPointRequest(
+                location: CGPoint(x: 3, y: 0),
+                displayMaxY: 900
+            )
+        ) { _ in
+            latestCompletion.fulfill()
+        }
+        probe.release()
+
+        await fulfillment(
+            of: [latestCompletion, staleCompletion, middleCompletion],
+            timeout: 1
+        )
+        XCTAssertEqual(probe.locations, [1, 3])
+    }
+
     func testAccessibilityIPCUsesBoundedMessagingTimeout() {
         XCTAssertEqual(FloatingPanelAccessibilityIPC.messagingTimeout, 0.25)
+        XCTAssertEqual(FloatingPanelAccessibilityIPC.windowResolutionBudget, 0.75)
     }
 
     func testMainActorFloatingPanelFilesContainNoSynchronousAccessibilityReads() throws {
@@ -376,6 +462,88 @@ private final class BlockingAccessibilityFrameQuery: @unchecked Sendable {
         defer { condition.unlock() }
         let deadline = Date().addingTimeInterval(timeout)
         while calls == 0 {
+            guard condition.wait(until: deadline) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    func release() {
+        condition.lock()
+        isReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private final class BlockingAccessibilityWindowQuery: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var calls = 0
+    private var isReleased = false
+
+    var query: FloatingPanelAccessibilityResolver.WindowQuery {
+        { [self] _ in
+            condition.lock()
+            calls += 1
+            condition.broadcast()
+            while !isReleased {
+                condition.wait()
+            }
+            condition.unlock()
+            return nil
+        }
+    }
+
+    func waitUntilStarted(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while calls == 0 {
+            guard condition.wait(until: deadline) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    func release() {
+        condition.lock()
+        isReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private final class BlockingAccessibilityPointQuery: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var recordedLocations: [CGFloat] = []
+    private var isReleased = false
+
+    var query: FloatingPanelAccessibilityResolver.PointQuery {
+        { [self] request in
+            condition.lock()
+            recordedLocations.append(request.location.x)
+            condition.broadcast()
+            while recordedLocations.count == 1, !isReleased {
+                condition.wait()
+            }
+            condition.unlock()
+            return nil
+        }
+    }
+
+    var locations: [CGFloat] {
+        condition.lock()
+        defer { condition.unlock() }
+        return recordedLocations
+    }
+
+    func waitUntilStarted(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while recordedLocations.isEmpty {
             guard condition.wait(until: deadline) else {
                 return false
             }
