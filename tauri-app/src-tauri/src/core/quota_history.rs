@@ -34,6 +34,7 @@ use time::UtcOffset;
 const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
 const RETENTION_DAYS: i64 = 45;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
+const RESET_MATCH_GRACE_SECONDS: f64 = 2.0 * 60.0;
 pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
 static QUOTA_HISTORY_DATABASE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -452,22 +453,19 @@ fn normalized_used_percent(
     let Some(current_used) = current_used else {
         return None;
     };
-    match (current_reset, previous_reset, previous_used) {
-        (Some(current_reset), Some(previous_reset), Some(previous_used))
-            if same_reset_window(current_reset, previous_reset) =>
-        {
-            if should_accept_full_usage_spike_recovery(current_used, previous_used) {
-                return Some(current_used);
-            }
-            Some(current_used.max(previous_used))
-        }
-        (None, None, Some(previous_used)) => {
-            if should_accept_full_usage_spike_recovery(current_used, previous_used) {
-                return Some(current_used);
-            }
-            Some(current_used.max(previous_used))
-        }
-        _ => Some(current_used),
+    let current_used = current_used.clamp(0, 100);
+    let Some(previous_used) = previous_used.map(|value| value.clamp(0, 100)) else {
+        return Some(current_used);
+    };
+    if current_used >= previous_used
+        || !same_observed_cycle(current_reset, previous_reset)
+    {
+        return Some(current_used);
+    }
+    if previous_used - current_used >= 20 {
+        Some(current_used)
+    } else {
+        Some(previous_used)
     }
 }
 
@@ -490,12 +488,16 @@ fn history_bundle_from_rows(
     }
 }
 
-fn should_accept_full_usage_spike_recovery(current_used: i32, previous_used: i32) -> bool {
-    previous_used >= 95 && previous_used - current_used >= 20
+fn same_reset_window(left: f64, right: f64) -> bool {
+    (left - right).abs() <= RESET_MATCH_GRACE_SECONDS
 }
 
-fn same_reset_window(left: f64, right: f64) -> bool {
-    (left - right).abs() < 1.0
+fn same_observed_cycle(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => same_reset_window(left, right),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn should_insert(row: &QuotaHistoryRow, latest: &QuotaHistoryRow, now: f64) -> bool {

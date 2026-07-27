@@ -284,6 +284,117 @@ fn record_normalizes_same_reset_window_regressions() {
 }
 
 #[test]
+fn normalizer_matches_swift_reset_grace_and_recovered_spike_rules() {
+    let reset = 1_800_000_000.0;
+
+    assert_eq!(
+        normalized_used_percent(Some(71), Some(reset + 90.0), Some(84), Some(reset)),
+        Some(84)
+    );
+    assert_eq!(
+        normalized_used_percent(Some(62), Some(reset + 90.0), Some(84), Some(reset)),
+        Some(62)
+    );
+    assert_eq!(
+        normalized_used_percent(Some(71), Some(reset + 121.0), Some(84), Some(reset)),
+        Some(71)
+    );
+    assert_eq!(normalized_used_percent(Some(110), None, None, None), Some(100));
+}
+
+#[test]
+fn history_normalizes_regression_across_legacy_and_canonical_keys() {
+    let created_at = 1_800_000_000.0;
+    let reset = created_at + 3.0 * 60.0 * 60.0;
+    let previous = history_row(
+        created_at,
+        "tester|pro",
+        "pro",
+        None,
+        84,
+        reset,
+        40,
+        reset + 500_000.0,
+    );
+    let mut legacy = previous.clone();
+    legacy.created_at += 5.0 * 60.0;
+    legacy.account_key = "tester|Pro|codex".into();
+    legacy.plan_type = Some("Pro".into());
+    legacy.limit_name = Some("codex".into());
+    legacy.five_hour_used_percent = Some(71);
+    legacy.five_hour_resets_at = Some(reset + 90.0);
+
+    let sanitized = super::series::sanitized_rows(vec![previous, legacy]);
+
+    assert_eq!(sanitized[1].five_hour_used_percent, Some(84));
+}
+
+#[test]
+fn history_suppresses_midcycle_spike_across_reset_timestamp_drift() {
+    let created_at = 1_800_000_000.0;
+    let reset = created_at + 3.0 * 60.0 * 60.0;
+    let mut previous = history_row(
+        created_at,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        10,
+        reset,
+        20,
+        reset + 500_000.0,
+    );
+    let mut spike = previous.clone();
+    spike.created_at += 5.0 * 60.0;
+    spike.five_hour_used_percent = Some(45);
+    spike.five_hour_resets_at = Some(reset + 90.0);
+    let mut recovered = previous.clone();
+    recovered.created_at += 10.0 * 60.0;
+    recovered.five_hour_used_percent = Some(12);
+    previous.status = "stable-before".into();
+    spike.status = "official-spike".into();
+    recovered.status = "stable-after".into();
+
+    let sanitized = super::series::sanitized_rows(vec![previous, spike, recovered]);
+
+    assert_eq!(sanitized[1].five_hour_used_percent, Some(10));
+    assert_eq!(sanitized[2].five_hour_used_percent, Some(12));
+}
+
+#[test]
+fn interval_history_interpolates_between_same_cycle_samples() {
+    let now = 1_800_000_000.0;
+    let reset = now + 3.0 * 60.0 * 60.0;
+    let first = history_row(
+        now - 4.0 * 60.0 * 60.0,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        20,
+        reset,
+        40,
+        reset + 500_000.0,
+    );
+    let mut next = first.clone();
+    next.created_at = now - 30.0 * 60.0;
+    next.five_hour_used_percent = Some(22);
+
+    let history = super::series::make_interval_history_at(
+        vec![first, next],
+        49,
+        5 * 60,
+        now,
+    );
+
+    assert!(
+        history
+            .iter()
+            .filter_map(|point| point.five_hour_remaining_percent)
+            .any(|value| value > 0.781 && value < 0.799),
+        "quota curve should interpolate 80% to 78% across a no-sample gap"
+    );
+}
+
+#[test]
 fn history_recovers_from_isolated_full_usage_spike() {
     let path = temp_db_path("full-spike");
     let database = QuotaHistoryDatabase { path: path.clone() };
@@ -654,7 +765,8 @@ fn recent_history_includes_legacy_fake_pro_rows_for_same_codex_account() {
     let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
-        .any(|point| point.five_hour_remaining_percent == Some(0.90)));
+        .filter_map(|point| point.five_hour_remaining_percent)
+        .any(|value| value > 0.85 && value < 0.90));
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.85));
 
     let _ = std::fs::remove_file(path);
@@ -764,7 +876,8 @@ fn recent_history_includes_legacy_codex_account_key_rows() {
     let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
-        .any(|point| point.five_hour_remaining_percent == Some(0.90)));
+        .filter_map(|point| point.five_hour_remaining_percent)
+        .any(|value| value > 0.85 && value < 0.90));
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.85));
 
     let _ = std::fs::remove_file(path);
@@ -811,7 +924,8 @@ fn recent_history_mixes_different_sources_for_same_codex_account() {
     let history = database.recent_five_minute_history(12).unwrap();
     assert!(history
         .iter()
-        .any(|point| point.five_hour_remaining_percent == Some(0.90)));
+        .filter_map(|point| point.five_hour_remaining_percent)
+        .any(|value| value > 0.88 && value < 0.90));
     assert_eq!(history.last().unwrap().five_hour_remaining_percent, Some(0.88));
 
     let _ = std::fs::remove_file(path);
@@ -1533,10 +1647,16 @@ fn partial_window_rows_remain_missing_until_that_window_is_measured_again() {
         );
         if unavailable_window == "five" {
             assert_eq!(series[1].five_hour_remaining_percent, None);
-            assert_eq!(series[1].seven_day_remaining_percent, Some(0.60));
+            assert!(matches!(
+                series[1].seven_day_remaining_percent,
+                Some(value) if value > 0.55 && value <= 0.60
+            ));
             assert_eq!(series[2].five_hour_remaining_percent, Some(0.65));
         } else {
-            assert_eq!(series[1].five_hour_remaining_percent, Some(0.70));
+            assert!(matches!(
+                series[1].five_hour_remaining_percent,
+                Some(value) if value > 0.65 && value <= 0.70
+            ));
             assert_eq!(series[1].seven_day_remaining_percent, None);
             assert_eq!(series[2].seven_day_remaining_percent, Some(0.55));
         }

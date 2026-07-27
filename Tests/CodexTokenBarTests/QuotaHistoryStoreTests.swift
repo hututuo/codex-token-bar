@@ -646,6 +646,91 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 88)
     }
 
+    func testRecentHistoryNormalizesRegressionAcrossLegacyAndStableAccountKeys() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let stableTime = now.addingTimeInterval(-20 * 60)
+        let legacyTime = now.addingTimeInterval(-10 * 60)
+
+        try database.record(
+            snapshot(
+                usedPercent: 84,
+                reset: reset,
+                planType: "Pro",
+                limitName: "codex",
+                at: stableTime
+            ),
+            createdAt: stableTime
+        )
+        try insertRawSnapshot(
+            databaseURL: url,
+            createdAt: legacyTime,
+            accountKey: "来先生|pro",
+            source: "swift",
+            planType: "pro",
+            limitName: nil,
+            accountName: "来先生",
+            fiveHourUsedPercent: 71,
+            fiveHourResetsAt: reset.addingTimeInterval(90),
+            sevenDayUsedPercent: 40,
+            sevenDayResetsAt: reset.addingTimeInterval(4 * 24 * 60 * 60)
+        )
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+
+        XCTAssertEqual(
+            loaded.recentBins.last?.fiveHourRemainingPercent,
+            16,
+            "legacy and stable Codex keys must share one monotonic history stream"
+        )
+    }
+
+    func testRecentHistorySuppressesMidcycleSpikeAcrossResetTimestampDrift() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date()
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+
+        try database.record(
+            snapshot(
+                usedPercent: 10,
+                reset: reset,
+                planType: "Pro",
+                limitName: "codex",
+                at: now.addingTimeInterval(-20 * 60)
+            ),
+            createdAt: now.addingTimeInterval(-20 * 60)
+        )
+        try database.record(
+            snapshot(
+                usedPercent: 45,
+                reset: reset.addingTimeInterval(90),
+                planType: "Pro",
+                limitName: "codex",
+                at: now.addingTimeInterval(-15 * 60)
+            ),
+            createdAt: now.addingTimeInterval(-15 * 60)
+        )
+        try database.record(
+            snapshot(
+                usedPercent: 12,
+                reset: reset,
+                planType: "Pro",
+                limitName: "codex",
+                at: now.addingTimeInterval(-10 * 60)
+            ),
+            createdAt: now.addingTimeInterval(-10 * 60)
+        )
+
+        let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
+        let recentValues = loaded.recentBins.compactMap(\.fiveHourRemainingPercent)
+
+        XCTAssertFalse(recentValues.contains(55), "reset timestamp jitter must not split one spike-recovery cycle")
+        XCTAssertGreaterThanOrEqual(recentValues.min() ?? 100, 88)
+    }
+
     func testRecentHistoryInterpolatesAcrossMissingQuotaSamplesInSameCycle() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)

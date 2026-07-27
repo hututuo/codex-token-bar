@@ -1,4 +1,4 @@
-use super::{now_unix, QuotaHistoryRow};
+use super::{now_unix, same_observed_cycle, QuotaHistoryRow, RESET_MATCH_GRACE_SECONDS};
 use crate::core::time_series_timeline::{aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS};
 use crate::models::QuotaHistoryPoint;
 use std::collections::HashMap;
@@ -8,7 +8,6 @@ use time::OffsetDateTime;
 const MAX_CARRY_GAP_SECONDS: f64 = 90.0 * 60.0;
 const LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS: f64 = 6.0 * 60.0 * 60.0;
 const TRANSIENT_RESET_GLITCH_MAX_SECONDS: f64 = 30.0 * 60.0;
-const RESET_MATCH_GRACE_SECONDS: f64 = 2.0 * 60.0;
 
 #[derive(Clone, Debug)]
 pub(super) struct DailyQuotaHistory {
@@ -67,7 +66,11 @@ pub(super) fn make_interval_history_at(
 ) -> Vec<QuotaHistoryPoint> {
     let interval_seconds = interval_seconds.max(LONG_RECENT_INTERVAL_SECONDS);
     let bin_starts = aligned_bin_starts(now as i64, interval_seconds, count as i64);
-    let sorted = sanitized_rows(rows);
+    let sorted = sanitized_rows(
+        rows.into_iter()
+            .filter(|row| row.created_at <= now)
+            .collect(),
+    );
     let mut row_index = 0;
     let mut latest: Option<QuotaHistoryRow> = None;
 
@@ -81,11 +84,13 @@ pub(super) fn make_interval_history_at(
                 latest = Some(sorted[row_index].clone());
                 row_index += 1;
             }
+            let next = sorted.get(row_index);
             QuotaHistoryPoint {
                 label: format_unix_time(bin_start),
                 start_unix: bin_start.round() as i64,
                 five_hour_remaining_percent: quota_remaining(
                     latest.as_ref(),
+                    next,
                     bin_start,
                     sample_at,
                     |row| row.five_hour_remaining(),
@@ -93,6 +98,7 @@ pub(super) fn make_interval_history_at(
                 ),
                 seven_day_remaining_percent: quota_remaining(
                     latest.as_ref(),
+                    next,
                     bin_start,
                     sample_at,
                     |row| row.seven_day_remaining(),
@@ -206,7 +212,7 @@ fn suppress_recovered_full_remaining_jumps_for_window(
             .push(WindowObservation {
                 row_index,
                 created_at: row.created_at,
-                used_percent,
+                used_percent: used_percent.clamp(0, 100),
                 resets_at: reset(row),
             });
     }
@@ -282,42 +288,125 @@ fn suppress_recovered_usage_spikes(mut rows: Vec<QuotaHistoryRow>) -> Vec<QuotaH
     rows
 }
 
+#[derive(Clone, Copy)]
+struct UsageSpikeEntry {
+    row_index: usize,
+    used_percent: i32,
+    resets_at: Option<f64>,
+}
+
 fn suppress_recovered_usage_spikes_for_window(
     rows: &mut [QuotaHistoryRow],
     used: impl Fn(&QuotaHistoryRow) -> Option<i32> + Copy,
     reset: impl Fn(&QuotaHistoryRow) -> Option<f64> + Copy,
     mut set_used: impl FnMut(&mut QuotaHistoryRow, Option<i32>),
 ) {
-    let mut groups: HashMap<(String, Option<i64>), Vec<(usize, i32)>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<UsageSpikeEntry>> = HashMap::new();
     for (index, row) in rows.iter().enumerate() {
         if let Some(value) = used(row) {
             groups
-                .entry((row.history_match_key(), reset_bucket(reset(row))))
+                .entry(row.history_match_key())
                 .or_default()
-                .push((index, value));
+                .push(UsageSpikeEntry {
+                    row_index: index,
+                    used_percent: value.clamp(0, 100),
+                    resets_at: reset(row),
+                });
         }
     }
 
     for entries in groups.values() {
-        for window in entries.windows(3) {
-            let previous_used = window[0].1;
-            let current_index = window[1].0;
-            let current_used = window[1].1;
-            let next_used = window[2].1;
-            let recovered_floor = previous_used.max(next_used);
-            if current_used - recovered_floor >= 20 {
-                set_used(&mut rows[current_index], Some(previous_used));
+        for mut cycle_entries in reset_clusters(entries) {
+            cycle_entries.sort_by_key(|entry| entry.row_index);
+            for position in 0..cycle_entries.len() {
+                let current = cycle_entries[position];
+                let previous = position
+                    .checked_sub(1)
+                    .map(|index| cycle_entries[index].used_percent);
+                let next = cycle_entries
+                    .get(position + 1)
+                    .map(|entry| entry.used_percent);
+                if let Some(replacement) =
+                    recovered_usage_spike_replacement(current.used_percent, previous, next)
+                {
+                    set_used(&mut rows[current.row_index], Some(replacement));
+                }
             }
         }
     }
 }
 
-fn reset_bucket(value: Option<f64>) -> Option<i64> {
-    value.map(|value| value.round() as i64)
+fn reset_clusters(entries: &[UsageSpikeEntry]) -> Vec<Vec<UsageSpikeEntry>> {
+    let mut clusters = Vec::new();
+    let missing_reset = entries
+        .iter()
+        .copied()
+        .filter(|entry| entry.resets_at.is_none())
+        .collect::<Vec<_>>();
+    if !missing_reset.is_empty() {
+        clusters.push(missing_reset);
+    }
+    for invalid in entries
+        .iter()
+        .copied()
+        .filter(|entry| entry.resets_at.is_some_and(|value| !value.is_finite()))
+    {
+        clusters.push(vec![invalid]);
+    }
+
+    let mut measured = entries
+        .iter()
+        .copied()
+        .filter_map(|entry| {
+            entry
+                .resets_at
+                .filter(|value| value.is_finite())
+                .map(|reset| (entry, reset))
+        })
+        .collect::<Vec<_>>();
+    measured.sort_by(|left, right| left.1.total_cmp(&right.1));
+
+    let mut current = Vec::new();
+    let mut cluster_start = None;
+    for (entry, reset) in measured {
+        if cluster_start
+            .is_some_and(|start| reset - start > RESET_MATCH_GRACE_SECONDS)
+        {
+            clusters.push(std::mem::take(&mut current));
+            cluster_start = Some(reset);
+        } else if cluster_start.is_none() {
+            cluster_start = Some(reset);
+        }
+        current.push(entry);
+    }
+    if !current.is_empty() {
+        clusters.push(current);
+    }
+    clusters
+}
+
+fn recovered_usage_spike_replacement(
+    current: i32,
+    previous: Option<i32>,
+    next: Option<i32>,
+) -> Option<i32> {
+    if let Some(next) = next.filter(|next| current - *next >= 20) {
+        if let Some(previous) = previous {
+            if current < 95 && current - previous < 20 {
+                return None;
+            }
+            if previous < 95 {
+                return Some(previous);
+            }
+        }
+        return Some(next);
+    }
+    previous.filter(|previous| *previous <= 5 && current >= 95)
 }
 
 fn quota_remaining(
     row: Option<&QuotaHistoryRow>,
+    next_row: Option<&QuotaHistoryRow>,
     previous_boundary: f64,
     at: f64,
     remaining: impl Fn(&QuotaHistoryRow) -> Option<f64>,
@@ -332,13 +421,47 @@ fn quota_remaining(
         if at >= reset {
             return None;
         }
+        if let Some(interpolated) =
+            interpolated_quota_remaining(row, next_row, at, value, &remaining, &resets_at)
+        {
+            return Some(interpolated);
+        }
         return Some(value);
+    }
+    if let Some(interpolated) =
+        interpolated_quota_remaining(row, next_row, at, value, &remaining, &resets_at)
+    {
+        return Some(interpolated);
     }
     if at - row.created_at <= MAX_CARRY_GAP_SECONDS {
         Some(value)
     } else {
         None
     }
+}
+
+fn interpolated_quota_remaining(
+    row: &QuotaHistoryRow,
+    next_row: Option<&QuotaHistoryRow>,
+    at: f64,
+    start_value: f64,
+    remaining: &impl Fn(&QuotaHistoryRow) -> Option<f64>,
+    resets_at: &impl Fn(&QuotaHistoryRow) -> Option<f64>,
+) -> Option<f64> {
+    let next_row = next_row?;
+    if !same_observed_cycle(resets_at(row), resets_at(next_row)) {
+        return None;
+    }
+    let end_value = remaining(next_row)?;
+    if end_value >= start_value || at <= row.created_at || at >= next_row.created_at {
+        return None;
+    }
+    let duration = next_row.created_at - row.created_at;
+    if duration <= 0.0 {
+        return None;
+    }
+    let progress = ((at - row.created_at) / duration).clamp(0.0, 1.0);
+    Some(start_value + (end_value - start_value) * progress)
 }
 
 fn average(total: f64, count: u32) -> Option<f64> {

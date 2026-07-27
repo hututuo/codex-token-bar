@@ -54,6 +54,30 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         XCTAssertEqual(adjusted, 84)
     }
 
+    func testSameCycleLargeDropIsAcceptedAsRecoveredSpike() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
+            currentUsedPercent: 62,
+            currentResetsAt: reset.addingTimeInterval(90),
+            previousUsedPercent: 84,
+            previousResetsAt: reset
+        )
+
+        XCTAssertEqual(adjusted, 62)
+    }
+
+    func testResetTimestampDriftWithinGraceStillRejectsSmallRegression() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let adjusted = QuotaMonotonicNormalizer.normalizedUsedPercent(
+            currentUsedPercent: 71,
+            currentResetsAt: reset.addingTimeInterval(90),
+            previousUsedPercent: 84,
+            previousResetsAt: reset
+        )
+
+        XCTAssertEqual(adjusted, 84)
+    }
+
     func testCrossingResetAllowsQuotaToReturnToFull() {
         let reset = Date(timeIntervalSince1970: 10_000)
         let nextReset = Date(timeIntervalSince1970: 28_000)

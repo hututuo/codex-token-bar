@@ -186,6 +186,20 @@ private struct QuotaHistoryRow {
     let identityPlanType: String?
     let identityLimitID: String?
 
+    var historyMatchKey: String {
+        let fallbackAccountName = accountKey
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .first
+            .map(String.init)
+        let account = Self.nonempty(accountName) ?? Self.nonempty(fallbackAccountName) ?? "default"
+        let plan = Self.canonicalPlanType(planType)
+        let limit = Self.canonicalLimitName(limitName)
+        return [account, plan, limit]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "|")
+    }
+
     var fiveHourRemainingPercent: Double? {
         fiveHourUsedPercent.map { Double(max(0, min(100, 100 - $0))) }
     }
@@ -298,11 +312,49 @@ private struct QuotaHistoryRow {
             return false
         }
     }
+
+    private static func canonicalPlanType(_ value: String?) -> String? {
+        guard let value = nonempty(value) else { return nil }
+        let normalized = value.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+        switch normalized {
+        case "plus", "chatgptplus":
+            return "Plus"
+        case "pro", "chatgptpro":
+            return "Pro"
+        case "team", "teams", "business":
+            return "Team"
+        case "enterprise":
+            return "Enterprise"
+        case "free":
+            return "Free"
+        case "unknown", "null", "none", "unread":
+            return nil
+        default:
+            if value.contains("待读取") || value.contains("未知") {
+                return nil
+            }
+            return value
+        }
+    }
+
+    private static func canonicalLimitName(_ value: String?) -> String? {
+        guard let value = nonempty(value) else { return "codex" }
+        return value.caseInsensitiveCompare("codex") == .orderedSame ? "codex" : value
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 private struct QuotaHistorySpikeEntry {
     let index: Int
     let usedPercent: Int
+    let resetsAt: Date?
 }
 
 private struct QuotaHistoryWindowObservation {
@@ -461,8 +513,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         let reclassified = rows.map { $0.reclassifyingLegacySevenDayOnlyWindow() }
         let withoutFullRemainingJumps = suppressRecoveredFullRemainingJumps(reclassified)
         return suppressRecoveredFullUsageSpikes(withoutFullRemainingJumps).map { row in
-            let normalized = row.normalized(after: lastByAccount[row.accountKey])
-            lastByAccount[row.accountKey] = normalized
+            let key = row.historyMatchKey
+            let normalized = row.normalized(after: lastByAccount[key])
+            lastByAccount[key] = normalized
             return normalized
         }
     }
@@ -498,11 +551,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         var groups: [String: [QuotaHistoryWindowObservation]] = [:]
         for (rowIndex, row) in rows.enumerated() {
             guard let used = row[keyPath: usedPercent] else { continue }
-            groups[row.accountKey, default: []].append(
+            let clampedUsed = max(0, min(100, used))
+            groups[row.historyMatchKey, default: []].append(
                 QuotaHistoryWindowObservation(
                     rowIndex: rowIndex,
                     createdAt: row.createdAt,
-                    usedPercent: used,
+                    usedPercent: clampedUsed,
                     resetsAt: row[keyPath: resetDate]
                 )
             )
@@ -583,29 +637,67 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         var groups: [String: [QuotaHistorySpikeEntry]] = [:]
         for (index, row) in rows.enumerated() {
             guard let used = row[keyPath: usedPercent] else { continue }
-            let key = "\(row.accountKey)|\(resetBucket(row[keyPath: resetDate]))"
-            groups[key, default: []].append(QuotaHistorySpikeEntry(index: index, usedPercent: used))
+            groups[row.historyMatchKey, default: []].append(
+                QuotaHistorySpikeEntry(
+                    index: index,
+                    usedPercent: max(0, min(100, used)),
+                    resetsAt: row[keyPath: resetDate]
+                )
+            )
         }
 
         for entries in groups.values {
-            for position in entries.indices {
-                let entry = entries[position]
-                let previous = position > entries.startIndex ? entries[entries.index(before: position)].usedPercent : nil
-                let nextIndex = entries.index(after: position)
-                let next = nextIndex < entries.endIndex ? entries[nextIndex].usedPercent : nil
-                guard let replacement = recoveredFullUsageReplacement(
-                    current: entry.usedPercent,
-                    previous: previous,
-                    next: next
-                ) else { continue }
-                rows[entry.index] = replacing(rows[entry.index], replacement)
+            for cycleEntries in resetClusters(entries) {
+                let ordered = cycleEntries.sorted { $0.index < $1.index }
+                for position in ordered.indices {
+                    let entry = ordered[position]
+                    let previous = position > ordered.startIndex
+                        ? ordered[ordered.index(before: position)].usedPercent
+                        : nil
+                    let nextIndex = ordered.index(after: position)
+                    let next = nextIndex < ordered.endIndex ? ordered[nextIndex].usedPercent : nil
+                    guard let replacement = recoveredFullUsageReplacement(
+                        current: entry.usedPercent,
+                        previous: previous,
+                        next: next
+                    ) else { continue }
+                    rows[entry.index] = replacing(rows[entry.index], replacement)
+                }
             }
         }
     }
 
-    private static func resetBucket(_ date: Date?) -> String {
-        guard let date else { return "none" }
-        return String(Int((date.timeIntervalSince1970 / QuotaHistoryRow.resetGraceInterval).rounded()))
+    private static func resetClusters(_ entries: [QuotaHistorySpikeEntry]) -> [[QuotaHistorySpikeEntry]] {
+        var clusters: [[QuotaHistorySpikeEntry]] = []
+        let missingReset = entries.filter { $0.resetsAt == nil }
+        if !missingReset.isEmpty {
+            clusters.append(missingReset)
+        }
+
+        let sorted = entries
+            .compactMap { entry -> (QuotaHistorySpikeEntry, Date)? in
+                guard let reset = entry.resetsAt else { return nil }
+                return (entry, reset)
+            }
+            .sorted { $0.1 < $1.1 }
+
+        var current: [QuotaHistorySpikeEntry] = []
+        var clusterStart: Date?
+        for (entry, reset) in sorted {
+            if let start = clusterStart,
+               reset.timeIntervalSince(start) > QuotaHistoryRow.resetGraceInterval {
+                clusters.append(current)
+                current = []
+                clusterStart = reset
+            } else if clusterStart == nil {
+                clusterStart = reset
+            }
+            current.append(entry)
+        }
+        if !current.isEmpty {
+            clusters.append(current)
+        }
+        return clusters
     }
 
     private static func recoveredFullUsageReplacement(current: Int, previous: Int?, next: Int?) -> Int? {
