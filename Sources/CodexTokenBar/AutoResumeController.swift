@@ -40,12 +40,13 @@ private enum AutoResumeWorkerOutcome: Sendable {
         quotaLimited: Bool,
         claimedTrigger: Bool
     )
+    case deferred(String)
     case skipped(String)
 
     var claimedTrigger: Bool {
         switch self {
         case .succeeded: return true
-        case .satisfied, .dailyLimit: return false
+        case .satisfied, .dailyLimit, .deferred: return false
         case .failed(_, _, _, let claimedTrigger): return claimedTrigger
         case .skipped: return false
         }
@@ -59,7 +60,7 @@ private enum AutoResumeWorkerOutcome: Sendable {
             return claimedTrigger
         case .skipped(let message):
             return message.contains("本次触发已由")
-        case .dailyLimit:
+        case .dailyLimit, .deferred:
             return false
         }
     }
@@ -620,7 +621,8 @@ final class AutoResumeController: ObservableObject {
             nextState.quotaArmedWindowLabel = nextState.lastQuotaWindowLabel
             nextState.quotaRecoveryRequiresTransition = false
             nextState.quotaRecoveryObservedLow = true
-            nextState.quotaRecoveryArmObservationAt = nextState.lastQuotaObservedAt
+            nextState.quotaRecoveryArmObservationAt =
+                trigger.repeatAfter ?? nextState.lastQuotaObservedAt
             runtimeState = nextState
             synchronizePendingFreshness(now: now)
             refreshWaitingStatus()
@@ -754,20 +756,21 @@ final class AutoResumeController: ObservableObject {
                 }
                 defer { lease.release() }
 
-                let claimResult = try coordinator.claimTrigger(
+                let claim = try coordinator.claimTriggerResolved(
                     key: trigger.key,
                     threadID: target.id,
                     minimumInterval: sharedCooldown,
                     dailyLimit: sharedDailyLimit,
+                    repeatAfter: trigger.repeatAfter,
                     now: trigger.firedAt
                 )
-                switch claimResult {
+                switch claim.result {
                 case .claimed:
                     break
                 case .duplicate:
                     return .skipped("本次触发已由 Swift 或 Tauri 处理")
                 case .cooldown:
-                    return .skipped("另一个端的续跑仍在冷却")
+                    return .deferred("另一个端的续跑仍在冷却")
                 case .dailyLimit:
                     guard let sharedDailyLimit else {
                         return .failed(
@@ -779,6 +782,14 @@ final class AutoResumeController: ObservableObject {
                     }
                     return .dailyLimit(sharedDailyLimit)
                 }
+                guard let resolvedTriggerKey = claim.triggerKey else {
+                    return .failed(
+                        message: "共享触发记录未返回本次唯一标识",
+                        requiresHuman: false,
+                        quotaLimited: false,
+                        claimedTrigger: false
+                    )
+                }
 
                 do {
                     let codexPath = try codexBinaryProvider()
@@ -787,12 +798,12 @@ final class AutoResumeController: ObservableObject {
                         dataSource: dataSource,
                         target: target,
                         prompt: prompt,
-                        clientMessageID: trigger.key,
+                        clientMessageID: resolvedTriggerKey,
                         expectedFreshness: expectedFreshness,
                         startAuthorization: startAuthorization
                     )
                     try? coordinator.completeTrigger(
-                        key: trigger.key,
+                        key: resolvedTriggerKey,
                         outcome: "succeeded",
                         message: result.message
                     )
@@ -800,7 +811,7 @@ final class AutoResumeController: ObservableObject {
                 } catch CodexAutoResumeAppServerError.threadProgressed {
                     let message = "目标任务已有新进展，本次续跑已视为完成"
                     try? coordinator.completeTrigger(
-                        key: trigger.key,
+                        key: resolvedTriggerKey,
                         outcome: "satisfied",
                         message: message
                     )
@@ -808,7 +819,7 @@ final class AutoResumeController: ObservableObject {
                 } catch AutoResumeStartGuardError.invalidated {
                     let message = "自动续跑设置已变化，旧触发已作废"
                     try? coordinator.completeTrigger(
-                        key: trigger.key,
+                        key: resolvedTriggerKey,
                         outcome: "skipped",
                         message: message
                     )
@@ -829,7 +840,7 @@ final class AutoResumeController: ObservableObject {
                         quotaLimited = false
                     }
                     try? coordinator.completeTrigger(
-                        key: trigger.key,
+                        key: resolvedTriggerKey,
                         outcome: requiresHuman
                             ? "requiresHuman"
                             : (quotaLimited ? "waitingQuota" : "failed"),
@@ -890,7 +901,7 @@ final class AutoResumeController: ObservableObject {
             runtimeState.lastError = nil
         case .dailyLimit(let rejectedLimit):
             if trigger.kind == .quotaRecovery {
-                rearmQuotaAfterDeferredTrigger()
+                rearmQuotaAfterDeferredTrigger(repeatAfter: trigger.repeatAfter)
             }
             if configuration.maxRunsPerDay == rejectedLimit.maxRunsPerDay {
                 runtimeState.sharedDailyLimitUntil = Calendar.current.date(
@@ -910,7 +921,8 @@ final class AutoResumeController: ObservableObject {
             if quotaLimited, configuration.enabled, configuration.quotaRecoveryEnabled {
                 AutoResumePolicy.armAfterQuotaLimit(
                     configuration: configuration,
-                    state: &runtimeState
+                    state: &runtimeState,
+                    now: now
                 )
                 runtimeState.status = .waiting
                 runtimeState.statusMessage = "额度暂不可用，等待新的额度样本确认恢复"
@@ -921,6 +933,12 @@ final class AutoResumeController: ObservableObject {
                     : "续跑失败：\(message)"
             }
             runtimeState.lastError = message
+        case .deferred(let message):
+            if trigger.kind == .quotaRecovery {
+                rearmQuotaAfterDeferredTrigger(repeatAfter: trigger.repeatAfter)
+            }
+            runtimeState.status = .waiting
+            runtimeState.statusMessage = message
         case .skipped(let message):
             runtimeState.status = .waiting
             runtimeState.statusMessage = message
@@ -1007,13 +1025,14 @@ final class AutoResumeController: ObservableObject {
         runtimeState.capacityPendingFreshness = nil
     }
 
-    private func rearmQuotaAfterDeferredTrigger() {
+    private func rearmQuotaAfterDeferredTrigger(repeatAfter: Date? = nil) {
         runtimeState.quotaArmed = true
         runtimeState.quotaArmedCycleID = runtimeState.lastQuotaCycleID
         runtimeState.quotaArmedWindowLabel = runtimeState.lastQuotaWindowLabel
         runtimeState.quotaRecoveryRequiresTransition = false
         runtimeState.quotaRecoveryObservedLow = true
-        runtimeState.quotaRecoveryArmObservationAt = runtimeState.lastQuotaObservedAt
+        runtimeState.quotaRecoveryArmObservationAt =
+            repeatAfter ?? runtimeState.lastQuotaObservedAt
     }
 
     private func settlePendingFreshnessAfterExecution(
@@ -1051,7 +1070,7 @@ final class AutoResumeController: ObservableObject {
             guard claimedTrigger else { return }
             runtimeState.schedulePendingFreshness = nil
             runtimeState.quotaPendingFreshness = nil
-        case .skipped:
+        case .deferred, .skipped:
             break
         }
     }
@@ -1193,7 +1212,7 @@ final class AutoResumeController: ObservableObject {
                 title: "Codex 自动续跑需要留意",
                 body: runtimeState.statusMessage
             )
-        case .satisfied, .dailyLimit, .skipped:
+        case .satisfied, .dailyLimit, .deferred, .skipped:
             break
         }
     }

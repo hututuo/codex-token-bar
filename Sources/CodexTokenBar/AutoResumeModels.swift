@@ -211,6 +211,19 @@ struct AutoResumeTrigger: Equatable, Sendable {
     let kind: AutoResumeTriggerKind
     let key: String
     let firedAt: Date
+    let repeatAfter: Date?
+
+    init(
+        kind: AutoResumeTriggerKind,
+        key: String,
+        firedAt: Date,
+        repeatAfter: Date? = nil
+    ) {
+        self.kind = kind
+        self.key = key
+        self.firedAt = firedAt
+        self.repeatAfter = repeatAfter
+    }
 }
 
 struct AutoResumeThreadFreshness: Codable, Equatable, Sendable {

@@ -345,6 +345,7 @@ final class AutoResumeSharedCoordinatorTests: XCTestCase {
             JSONSerialization.jsonObject(with: Data(contentsOf: ledgerURL)) as? [String: Any]
         )
         XCTAssertEqual(object["schemaVersion"] as? Int, 1)
+        XCTAssertEqual(Set(object.keys), Set(["schemaVersion", "entries"]))
         let entries = try XCTUnwrap(object["entries"] as? [String: Any])
         let entry = try XCTUnwrap(entries[key] as? [String: Any])
 
@@ -362,6 +363,75 @@ final class AutoResumeSharedCoordinatorTests: XCTestCase {
             "outcome",
             "message",
         ]))
+    }
+
+    func testMissingResetEpisodeIsDedupedAcrossOwnersAndCanRepeatAfterCompletion() throws {
+        let home = try temporaryCodexHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let swift = AutoResumeSharedCoordinator(codexHome: home, ownerID: "swift")
+        let tauri = AutoResumeSharedCoordinator(codexHome: home, ownerID: "tauri")
+        let baseKey = "quota:thread-unknown-reset:5h:unknown"
+        let firstArmedAt = Date(timeIntervalSince1970: 100)
+
+        let first = try swift.claimTriggerResolved(
+            key: baseKey,
+            threadID: "thread-unknown-reset",
+            minimumInterval: 0,
+            dailyLimit: nil,
+            repeatAfter: firstArmedAt,
+            now: Date(timeIntervalSince1970: 200)
+        )
+        XCTAssertEqual(first.result, .claimed)
+        let firstResolvedKey = try XCTUnwrap(first.triggerKey)
+        XCTAssertEqual(firstResolvedKey, "\(baseKey):episode:100000000")
+        try swift.completeTrigger(
+            key: firstResolvedKey,
+            outcome: "succeeded",
+            message: nil,
+            now: Date(timeIntervalSince1970: 210)
+        )
+
+        let sameEpisode = try tauri.claimTriggerResolved(
+            key: baseKey,
+            threadID: "thread-unknown-reset",
+            minimumInterval: 0,
+            dailyLimit: nil,
+            repeatAfter: Date(timeIntervalSince1970: 150),
+            now: Date(timeIntervalSince1970: 220)
+        )
+        XCTAssertEqual(sameEpisode.result, .duplicate)
+        XCTAssertEqual(sameEpisode.triggerKey, firstResolvedKey)
+
+        let nextEpisode = try tauri.claimTriggerResolved(
+            key: baseKey,
+            threadID: "thread-unknown-reset",
+            minimumInterval: 0,
+            dailyLimit: nil,
+            repeatAfter: Date(timeIntervalSince1970: 211),
+            now: Date(timeIntervalSince1970: 230)
+        )
+        XCTAssertEqual(nextEpisode.result, .claimed)
+        XCTAssertEqual(nextEpisode.triggerKey, "\(baseKey):episode:211000000")
+
+        let ledger = try JSONDecoder().decode(
+            AutoResumeTriggerLedgerFile.self,
+            from: Data(
+                contentsOf: swift.rootDirectory
+                    .appendingPathComponent("trigger-ledger.json")
+            )
+        )
+        XCTAssertEqual(ledger.entries.count, 2)
+        XCTAssertNotNil(ledger.entries["\(baseKey):episode:100000000"])
+        XCTAssertNotNil(ledger.entries["\(baseKey):episode:211000000"])
+    }
+
+    func testOriginalLedgerSchemaStillDecodes() throws {
+        let ledger = try JSONDecoder().decode(
+            AutoResumeTriggerLedgerFile.self,
+            from: Data(#"{"schemaVersion":1,"entries":{}}"#.utf8)
+        )
+        XCTAssertEqual(ledger.schemaVersion, 1)
+        XCTAssertTrue(ledger.entries.isEmpty)
     }
 
     private func temporaryCodexHome() throws -> URL {

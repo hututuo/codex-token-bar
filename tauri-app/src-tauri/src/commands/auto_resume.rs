@@ -451,6 +451,7 @@ impl AutoResumeRegistry {
                 kind: TriggerKind::Manual,
                 consumes_pending,
                 freshness_not_before: None,
+                repeat_after_unix: None,
                 schedule_generation: None,
                 quota_generation: None,
             },
@@ -569,12 +570,13 @@ impl AutoResumeRegistry {
             day_start_unix: local_day_start_timestamp(unix_now()) as f64,
             max_runs: settings.max_runs_per_day,
         });
-        let claim_result = match auto_resume::claim_trigger(
+        let claim_result = match auto_resume::claim_trigger_with_repeat_after(
             &home,
             &trigger.thread_id,
             &trigger.key,
             shared_cooldown,
             automatic_limit,
+            trigger.repeat_after_unix.map(|value| value as f64),
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -639,7 +641,7 @@ impl AutoResumeRegistry {
 
         let thread_id = trigger.thread_id.clone();
         let prompt = settings.prompt.clone();
-        let client_message_id = trigger.key.clone();
+        let client_message_id = claim.trigger_key().to_string();
         let freshness_not_before = trigger.freshness_not_before;
         let start_generation_guard = match trigger.kind {
             TriggerKind::Interval | TriggerKind::Daily => {
@@ -865,6 +867,7 @@ struct Trigger {
     kind: TriggerKind,
     consumes_pending: bool,
     freshness_not_before: Option<i64>,
+    repeat_after_unix: Option<i64>,
     schedule_generation: Option<u64>,
     quota_generation: Option<u64>,
 }
@@ -980,7 +983,8 @@ pub fn cancel_auto_resume_run(
 // 会使同一触发两端各发一次"继续"）：
 // - daily:    daily:{线程}:{本地日期 YYYY-MM-DD}:{HHMM}
 // - interval: interval:{线程}:{间隔分钟}:{floor(触发时刻纪元秒 / 间隔秒)}
-// - quota:    quota:{线程}:{5h|7d}:{重置纪元秒}（双窗口同时恢复取 5h）
+// - quota:    quota:{线程}:{5h|7d}:{重置纪元秒|unknown}（双窗口同时恢复取 5h；
+//             unknown 由共享 ledger 按低位周期分配 episode 序号）
 // - capacity: capacity:{线程}:{turnId}（目前仅 Swift 端产生）
 // - manual:   manual: 前缀 + 各端自用唯一后缀（不参与跨端去重，只共享
 //             每日上限豁免）
@@ -1050,6 +1054,7 @@ fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
         kind,
         consumes_pending: false,
         freshness_not_before: Some(due),
+        repeat_after_unix: None,
         schedule_generation: Some(state.persisted.schedule_generation),
         quota_generation: None,
     })
@@ -1083,6 +1088,10 @@ fn recovered_trigger(state: &mut RegistryState) -> Option<Trigger> {
             quota_recovery_key(&state.settings, &state.persisted)
                 .map(|recovery_key| quota_trigger_key(&state.settings.thread_id, &recovery_key))
         })?;
+    let repeat_after_unix = (key.ends_with(":unknown")
+        && state.persisted.pending_trigger_key.is_none())
+    .then_some(state.persisted.pending_armed_at)
+    .flatten();
     let label = state
         .persisted
         .pending_trigger_label
@@ -1100,6 +1109,7 @@ fn recovered_trigger(state: &mut RegistryState) -> Option<Trigger> {
         kind,
         consumes_pending: true,
         freshness_not_before: state.persisted.pending_armed_at,
+        repeat_after_unix,
         schedule_generation,
         quota_generation: (kind == TriggerKind::QuotaRecovery)
             .then_some(state.persisted.quota_generation),
@@ -1271,16 +1281,24 @@ fn quota_recovery_key(
             .five_hour
             .remaining_percent
             .is_some_and(|value| value >= recovered))
-    .then(|| state.five_hour.reset_at.map(|reset| format!("5h:{reset}")))
-    .flatten();
+    .then(|| {
+        state
+            .five_hour
+            .reset_at
+            .map_or_else(|| "5h:unknown".into(), |reset| format!("5h:{reset}"))
+    });
     let seven = (state.seven_day.armed
         && state.seven_day.recovery_ready
         && state
             .seven_day
             .remaining_percent
             .is_some_and(|value| value >= recovered))
-    .then(|| state.seven_day.reset_at.map(|reset| format!("7d:{reset}")))
-    .flatten();
+    .then(|| {
+        state
+            .seven_day
+            .reset_at
+            .map_or_else(|| "7d:unknown".into(), |reset| format!("7d:{reset}"))
+    });
     match settings.quota_window.as_str() {
         "fiveHour" => five,
         "sevenDay" => seven,
@@ -1629,6 +1647,12 @@ mod tests {
         }
     }
 
+    fn limit_without_reset(label: &str, remaining: f64) -> QuotaLimit {
+        let mut limit = limit(label, remaining, 0);
+        limit.resets_at_unix = None;
+        limit
+    }
+
     fn bundle(five: QuotaLimit, seven: QuotaLimit) -> AccountQuotaBundle {
         AccountQuotaBundle {
             account: AccountInfo {
@@ -1716,6 +1740,41 @@ mod tests {
             &mut state,
             &bundle(limit("5h", 0.99, 500), limit("7d", 0.68, 900)),
         ));
+    }
+
+    #[test]
+    fn low_quota_without_reset_builds_repeatable_unknown_recovery_key() {
+        let mut settings = enabled_settings();
+        settings.quota_window = "fiveHour".into();
+        let mut state = PersistedAutoResumeState::default();
+        observe_quota_bundle(
+            &settings,
+            &mut state,
+            &bundle(
+                limit_without_reset("5h", 0.80),
+                limit("7d", 0.70, 900),
+            ),
+        );
+        observe_quota_bundle(
+            &settings,
+            &mut state,
+            &bundle(
+                limit_without_reset("5h", 0.04),
+                limit("7d", 0.70, 900),
+            ),
+        );
+        assert!(observe_quota_bundle(
+            &settings,
+            &mut state,
+            &bundle(
+                limit_without_reset("5h", 0.30),
+                limit("7d", 0.70, 900),
+            ),
+        ));
+        assert_eq!(
+            quota_recovery_key(&settings, &state).as_deref(),
+            Some("5h:unknown")
+        );
     }
 
     #[test]
@@ -1955,6 +2014,7 @@ mod tests {
             kind: TriggerKind::QuotaRecovery,
             consumes_pending: true,
             freshness_not_before: Some(90),
+            repeat_after_unix: None,
             schedule_generation: None,
             quota_generation: Some(9),
         };
@@ -2067,6 +2127,30 @@ mod tests {
             "纯额度恢复必须用跨端统一的 quota:{{线程}}:{{窗口}}:{{reset}} key"
         );
         assert!(automatic_trigger_is_current(&state, &trigger));
+    }
+
+    #[test]
+    fn missing_reset_recovery_trigger_carries_episode_boundary() {
+        let mut settings = enabled_settings();
+        settings.quota_window = "fiveHour".into();
+        let mut state = RegistryState {
+            settings,
+            ..RegistryState::default()
+        };
+        state.persisted.waiting_for_quota = true;
+        state.persisted.pending_thread_id = Some("thread".into());
+        state.persisted.pending_trigger_kind = Some("quotaRecovery".into());
+        state.persisted.pending_armed_at = Some(90);
+        state.persisted.quota_generation = 9;
+        state.persisted.five_hour.armed = true;
+        state.persisted.five_hour.recovery_ready = true;
+        state.persisted.five_hour.remaining_percent = Some(1.0);
+        state.persisted.five_hour.reset_at = None;
+
+        let trigger = recovered_trigger(&mut state).unwrap();
+        assert_eq!(trigger.key, "quota:thread:5h:unknown");
+        assert_eq!(trigger.repeat_after_unix, Some(90));
+        assert_eq!(trigger.quota_generation, Some(9));
     }
 
     #[test]

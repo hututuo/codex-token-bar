@@ -242,6 +242,56 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertNil(state.quotaArmedCycleID)
     }
 
+    func testQuotaRecoveryWithoutResetUsesArmedObservationAsRepeatBoundary() throws {
+        var configuration = enabledConfiguration()
+        configuration.quotaWindow = .fiveHour
+        configuration.quotaArmAtOrBelowPercent = 5
+        configuration.quotaResumeAtOrAbovePercent = 20
+        var state = AutoResumeRuntimeState.default
+        let baselineAt = date(2026, 7, 16, 10, 0)
+        let armedAt = date(2026, 7, 16, 10, 1)
+        let recoveredAt = date(2026, 7, 16, 10, 5)
+
+        func snapshot(usedPercent: Int, updatedAt: Date) -> AccountQuotaSnapshot {
+            AccountQuotaSnapshot(
+                fiveHour: AccountQuotaWindow(
+                    label: "5h",
+                    usedPercent: usedPercent,
+                    resetsAt: nil
+                ),
+                sevenDay: nil,
+                planType: "pro",
+                limitName: "codex",
+                accountName: "tests",
+                status: "额度已读取",
+                updatedAt: updatedAt
+            )
+        }
+
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: snapshot(usedPercent: 96, updatedAt: baselineAt),
+            now: baselineAt
+        ))
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: snapshot(usedPercent: 97, updatedAt: armedAt),
+            now: armedAt
+        ))
+        let recovered = try XCTUnwrap(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: snapshot(usedPercent: 80, updatedAt: recoveredAt),
+            now: recoveredAt
+        ))
+
+        XCTAssertEqual(recovered.key, "quota:\(target.id):5h:unknown")
+        XCTAssertEqual(recovered.repeatAfter, armedAt)
+        XCTAssertFalse(state.quotaArmed)
+    }
+
     func testQuotaCycleChangeStaysArmedWhileLowAndFiresOnlyAfterRecovery() throws {
         var configuration = enabledConfiguration()
         configuration.quotaWindow = .fiveHour
@@ -599,9 +649,15 @@ final class AutoResumePolicyTests: XCTestCase {
             snapshot: baseline,
             now: baselineAt
         ))
-        AutoResumePolicy.armAfterQuotaLimit(configuration: configuration, state: &state)
+        let failureAt = baselineAt.addingTimeInterval(30)
+        AutoResumePolicy.armAfterQuotaLimit(
+            configuration: configuration,
+            state: &state,
+            now: failureAt
+        )
         XCTAssertTrue(state.quotaArmed)
         XCTAssertTrue(state.quotaRecoveryRequiresTransition)
+        XCTAssertEqual(state.quotaRecoveryArmObservationAt, failureAt)
 
         XCTAssertNil(AutoResumePolicy.observeQuota(
             configuration: configuration,

@@ -24,7 +24,6 @@ const THREAD_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const LEDGER_LOCK_WAIT: Duration = Duration::from_secs(2);
 const LEDGER_LOCK_RETRY: Duration = Duration::from_millis(25);
 const LEDGER_VERSION: u32 = 1;
-const LEDGER_MAX_CLAIMS: usize = 256;
 const CHILD_ENV_REMOVE: &[&str] = &[
     "ELECTRON_RUN_AS_NODE",
     "NODE_OPTIONS",
@@ -176,6 +175,10 @@ pub struct AutoResumeClaim {
 }
 
 impl AutoResumeClaim {
+    pub fn trigger_key(&self) -> &str {
+        &self.trigger_key
+    }
+
     pub fn complete(&self, outcome: &AutoResumeRunOutcome) -> Result<(), String> {
         update_ledger_claim(
             &self.codex_home,
@@ -201,12 +204,31 @@ pub struct AutoResumeAutomaticClaimLimit {
     pub max_runs: u8,
 }
 
+#[cfg(test)]
 pub fn claim_trigger(
     codex_home: &Path,
     thread_id: &str,
     trigger_key: &str,
     minimum_interval: Duration,
     automatic_limit: Option<AutoResumeAutomaticClaimLimit>,
+) -> Result<AutoResumeClaimResult, String> {
+    claim_trigger_with_repeat_after(
+        codex_home,
+        thread_id,
+        trigger_key,
+        minimum_interval,
+        automatic_limit,
+        None,
+    )
+}
+
+pub fn claim_trigger_with_repeat_after(
+    codex_home: &Path,
+    thread_id: &str,
+    trigger_key: &str,
+    minimum_interval: Duration,
+    automatic_limit: Option<AutoResumeAutomaticClaimLimit>,
+    repeat_after_unix: Option<f64>,
 ) -> Result<AutoResumeClaimResult, String> {
     let directory = support_directory(codex_home)?;
     let owner_id = unique_id();
@@ -221,7 +243,26 @@ pub fn claim_trigger(
     };
     let ledger_path = directory.join("trigger-ledger.json");
     let mut ledger = read_ledger(&ledger_path)?;
-    if ledger.entries.contains_key(trigger_key) {
+    trim_ledger(&mut ledger);
+    let repeatable_prefix = format!("{trigger_key}:episode:");
+    let latest_repeatable_episode = ledger
+        .entries
+        .iter()
+        .filter_map(|(entry_key, entry)| {
+            entry_key.strip_prefix(&repeatable_prefix)?;
+            Some((
+                entry_key.clone(),
+                entry.completed_at_unix.unwrap_or(entry.claimed_at_unix),
+            ))
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1));
+    if let Some(repeat_after_unix) = repeat_after_unix {
+        if let Some((_, current_boundary)) = &latest_repeatable_episode {
+            if repeat_after_unix <= *current_boundary {
+                return Ok(AutoResumeClaimResult::Duplicate);
+            }
+        }
+    } else if ledger.entries.contains_key(trigger_key) {
         return Ok(AutoResumeClaimResult::Duplicate);
     }
     let now = unix_now_f64();
@@ -246,8 +287,27 @@ pub fn claim_trigger(
             return Ok(AutoResumeClaimResult::DailyLimit);
         }
     }
+    let resolved_trigger_key = if repeat_after_unix.is_some() {
+        let repeat_after_unix = repeat_after_unix.unwrap_or_default();
+        let micros = (repeat_after_unix * 1_000_000.0).floor();
+        if !micros.is_finite() || micros < 0.0 || micros >= i64::MAX as f64 {
+            return Err("自动续跑可重复触发时间无效".into());
+        }
+        let episode = micros as i64;
+        let mut resolved = format!("{repeatable_prefix}{episode}");
+        let mut collision = 1_u64;
+        while ledger.entries.contains_key(&resolved) {
+            collision = collision
+                .checked_add(1)
+                .ok_or_else(|| "自动续跑可重复触发冲突序号溢出".to_string())?;
+            resolved = format!("{repeatable_prefix}{episode}-{collision}");
+        }
+        resolved
+    } else {
+        trigger_key.into()
+    };
     ledger.entries.insert(
-        trigger_key.into(),
+        resolved_trigger_key.clone(),
         AutoResumeLedgerEntry {
             thread_id: thread_id.into(),
             owner_id: owner_id.clone(),
@@ -261,7 +321,7 @@ pub fn claim_trigger(
     write_ledger(&ledger_path, &ledger)?;
     Ok(AutoResumeClaimResult::Claimed(AutoResumeClaim {
         codex_home: codex_home.to_path_buf(),
-        trigger_key: trigger_key.into(),
+        trigger_key: resolved_trigger_key,
         thread_id: thread_id.into(),
         owner_id,
         _thread_lease: thread_lease,
@@ -1216,20 +1276,6 @@ fn trim_ledger(ledger: &mut AutoResumeLedger) {
     ledger
         .entries
         .retain(|_, entry| entry.claimed_at_unix >= cutoff);
-    if ledger.entries.len() > LEDGER_MAX_CLAIMS {
-        let mut ordered = ledger
-            .entries
-            .iter()
-            .map(|(key, entry)| (key.clone(), entry.claimed_at_unix))
-            .collect::<Vec<_>>();
-        ordered.sort_by(|left, right| left.1.total_cmp(&right.1));
-        for (key, _) in ordered
-            .into_iter()
-            .take(ledger.entries.len() - LEDGER_MAX_CLAIMS)
-        {
-            ledger.entries.remove(&key);
-        }
-    }
 }
 
 fn response_result(message: &Value) -> Result<&Value, String> {
@@ -1538,6 +1584,70 @@ mod tests {
             claim_trigger(&root, "thread-1", "quota:5h:123", Duration::ZERO, None,).unwrap(),
             AutoResumeClaimResult::Duplicate
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_reset_claims_share_one_episode_and_future_episode_gets_new_key() {
+        let root = std::env::temp_dir().join(format!("ctb-auto-resume-repeat-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let base_key = "quota:thread-1:5h:unknown";
+        let first = claim_trigger_with_repeat_after(
+            &root,
+            "thread-1",
+            base_key,
+            Duration::ZERO,
+            None,
+            Some(100.0),
+        )
+        .unwrap();
+        let AutoResumeClaimResult::Claimed(first) = first else {
+            panic!("first repeatable claim")
+        };
+        let first_key = first.trigger_key().to_string();
+        assert_eq!(first_key, format!("{base_key}:episode:100000000"));
+        first
+            .complete(&AutoResumeRunOutcome::completed(Some("turn-1".into())))
+            .unwrap();
+        drop(first);
+
+        let ledger_path = support_directory(&root).unwrap().join("trigger-ledger.json");
+        let ledger = read_ledger(&ledger_path).unwrap();
+        let first_boundary = ledger.entries[&first_key].completed_at_unix.unwrap();
+        assert!(matches!(
+            claim_trigger_with_repeat_after(
+                &root,
+                "thread-1",
+                base_key,
+                Duration::ZERO,
+                None,
+                Some(first_boundary - 1.0),
+            )
+            .unwrap(),
+            AutoResumeClaimResult::Duplicate
+        ));
+
+        let second = claim_trigger_with_repeat_after(
+            &root,
+            "thread-1",
+            base_key,
+            Duration::ZERO,
+            None,
+            Some(first_boundary + 1.0),
+        )
+        .unwrap();
+        let AutoResumeClaimResult::Claimed(second) = second else {
+            panic!("second repeatable claim")
+        };
+        let second_key = second.trigger_key().to_string();
+        assert!(second_key.starts_with(&format!("{base_key}:episode:")));
+        assert_ne!(second_key, first_key);
+        drop(second);
+
+        let ledger = read_ledger(&ledger_path).unwrap();
+        assert_eq!(ledger.entries.len(), 2);
+        assert!(ledger.entries.contains_key(&first_key));
+        assert!(ledger.entries.contains_key(&second_key));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -55,6 +55,11 @@ enum AutoResumeTriggerClaimResult: Equatable, Sendable {
     case dailyLimit
 }
 
+struct AutoResumeResolvedTriggerClaim: Equatable, Sendable {
+    let result: AutoResumeTriggerClaimResult
+    let triggerKey: String?
+}
+
 struct AutoResumeSharedCoordinator: Sendable {
     static let schemaVersion = 1
     static let defaultLeaseDuration: TimeInterval = 2 * 60
@@ -161,18 +166,60 @@ struct AutoResumeSharedCoordinator: Sendable {
         dailyLimit: AutoResumeSharedDailyLimit?,
         now: Date = Date()
     ) throws -> AutoResumeTriggerClaimResult {
+        try claimTriggerResolved(
+            key: key,
+            threadID: threadID,
+            minimumInterval: minimumInterval,
+            dailyLimit: dailyLimit,
+            repeatAfter: nil,
+            now: now
+        ).result
+    }
+
+    func claimTriggerResolved(
+        key: String,
+        threadID: String,
+        minimumInterval: TimeInterval,
+        dailyLimit: AutoResumeSharedDailyLimit?,
+        repeatAfter: Date?,
+        now: Date = Date()
+    ) throws -> AutoResumeResolvedTriggerClaim {
         try withLedgerLock {
             var ledger = try readLedger()
             let cutoff = now.addingTimeInterval(-30 * 24 * 60 * 60).timeIntervalSince1970
             ledger.entries = ledger.entries.filter { $0.value.claimedAtUnix >= cutoff }
-            guard ledger.entries[key] == nil else { return .duplicate }
+            let repeatablePrefix = "\(key):episode:"
+            let latestRepeatableEpisode = ledger.entries.compactMap {
+                entryKey,
+                entry -> (key: String, entry: AutoResumeTriggerLedgerEntry)? in
+                guard entryKey.hasPrefix(repeatablePrefix) else {
+                    return nil
+                }
+                return (entryKey, entry)
+            }.max {
+                $0.entry.claimedAtUnix < $1.entry.claimedAtUnix
+            }
+            if let repeatAfter {
+                if let current = latestRepeatableEpisode {
+                    let currentBoundary =
+                        current.entry.completedAtUnix ?? current.entry.claimedAtUnix
+                    guard repeatAfter.timeIntervalSince1970 > currentBoundary else {
+                        return AutoResumeResolvedTriggerClaim(
+                            result: .duplicate,
+                            triggerKey: current.key
+                        )
+                    }
+                }
+            } else if ledger.entries[key] != nil {
+                return AutoResumeResolvedTriggerClaim(result: .duplicate, triggerKey: key)
+            }
             let latestClaimForThread = ledger.entries.values
                 .filter { $0.threadID == threadID }
                 .map { $0.completedAtUnix ?? $0.claimedAtUnix }
                 .max()
             if let latestClaimForThread,
                now.timeIntervalSince1970 - latestClaimForThread < max(0, minimumInterval) {
-                return .cooldown
+                return AutoResumeResolvedTriggerClaim(result: .cooldown, triggerKey: nil)
             }
             if let dailyLimit {
                 let dayStartUnix = dailyLimit.dayStart.timeIntervalSince1970
@@ -183,10 +230,26 @@ struct AutoResumeSharedCoordinator: Sendable {
                         && entry.outcome != "satisfied"
                 }.count
                 if automaticRunsToday >= max(0, dailyLimit.maxRunsPerDay) {
-                    return .dailyLimit
+                    return AutoResumeResolvedTriggerClaim(result: .dailyLimit, triggerKey: nil)
                 }
             }
-            ledger.entries[key] = AutoResumeTriggerLedgerEntry(
+            var resolvedKey = key
+            if let repeatAfter {
+                let micros = (repeatAfter.timeIntervalSince1970 * 1_000_000).rounded(.down)
+                guard micros.isFinite,
+                      micros >= 0,
+                      micros < Double(Int64.max) else {
+                    throw AutoResumeCoordinationError.invalidLedger
+                }
+                let episode = Int64(micros)
+                resolvedKey = "\(repeatablePrefix)\(episode)"
+                var collision = 1
+                while ledger.entries[resolvedKey] != nil {
+                    collision += 1
+                    resolvedKey = "\(repeatablePrefix)\(episode)-\(collision)"
+                }
+            }
+            ledger.entries[resolvedKey] = AutoResumeTriggerLedgerEntry(
                 threadID: threadID,
                 ownerID: ownerID,
                 claimedAtUnix: now.timeIntervalSince1970,
@@ -195,7 +258,7 @@ struct AutoResumeSharedCoordinator: Sendable {
                 message: nil
             )
             try writeJSON(ledger, to: ledgerURL)
-            return .claimed
+            return AutoResumeResolvedTriggerClaim(result: .claimed, triggerKey: resolvedKey)
         }
     }
 

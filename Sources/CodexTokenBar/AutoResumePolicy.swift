@@ -94,9 +94,7 @@ enum AutoResumePolicy {
         selectedObservation: AutoResumeQuotaObservation
     ) -> AutoResumeQuotaObservation? {
         guard configuration.quotaWindow == .lowestRemaining else {
-            return selectedObservation.cycleID.hasSuffix(":unknown")
-                ? nil
-                : selectedObservation
+            return selectedObservation
         }
 
         // 跨端 key 契约：lowestRemaining 有多个真实低位窗口同时恢复时，
@@ -111,11 +109,13 @@ enum AutoResumePolicy {
         for candidate in candidates
         where eligibleLabels.contains(candidate.label)
             && candidate.remainingPercent >= configuration.quotaResumeAtOrAbovePercent {
-            guard let reset = candidate.resetsAt else { continue }
+            let cycle = candidate.resetsAt
+                .map { String(Int($0.timeIntervalSince1970)) }
+                ?? "unknown"
             return AutoResumeQuotaObservation(
                 windowLabel: candidate.label,
                 remainingPercent: candidate.remainingPercent,
-                cycleID: "\(candidate.label):\(Int(reset.timeIntervalSince1970))"
+                cycleID: "\(candidate.label):\(cycle)"
             )
         }
         return nil
@@ -212,6 +212,15 @@ enum AutoResumePolicy {
                   ) else {
                 return nil
             }
+            let repeatAfter = keyObservation.cycleID.hasSuffix(":unknown")
+                ? state.quotaRecoveryArmObservationAt
+                : nil
+            // 缺少 reset 时间时，共享 ledger 需要本轮进入低位的时间来区分
+            // “同一恢复事件的两个端”和“未来下一轮恢复”。没有这个边界就不能
+            // 安全地产生可重复 key，继续等待比跨端双发更安全。
+            if keyObservation.cycleID.hasSuffix(":unknown"), repeatAfter == nil {
+                return nil
+            }
 
             state.quotaArmed = false
             state.quotaArmedCycleID = nil
@@ -223,7 +232,8 @@ enum AutoResumePolicy {
             return AutoResumeTrigger(
                 kind: .quotaRecovery,
                 key: "quota:\(target.id):\(keyObservation.cycleID)",
-                firedAt: now
+                firedAt: now,
+                repeatAfter: repeatAfter
             )
         }
 
@@ -244,7 +254,8 @@ enum AutoResumePolicy {
 
     static func armAfterQuotaLimit(
         configuration: AutoResumeConfiguration,
-        state: inout AutoResumeRuntimeState
+        state: inout AutoResumeRuntimeState,
+        now: Date = Date()
     ) {
         let configuration = configuration.normalized
         guard configuration.enabled, configuration.quotaRecoveryEnabled else { return }
@@ -253,7 +264,9 @@ enum AutoResumePolicy {
         state.quotaArmedWindowLabel = state.lastQuotaWindowLabel
         state.quotaRecoveryRequiresTransition = true
         state.quotaRecoveryObservedLow = false
-        state.quotaRecoveryArmObservationAt = state.lastQuotaObservedAt
+        // 这是新一轮额度等待的起点，必须晚于刚完成的失败 claim。若沿用上一次
+        // 额度采样时间，无 reset 周期会被共享 ledger 判断成旧事件而永久去重。
+        state.quotaRecoveryArmObservationAt = now
     }
 
     static func capacityRecoveryTrigger(
