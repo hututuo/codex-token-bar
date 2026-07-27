@@ -415,6 +415,16 @@ fn install_bridge(
         json!({ "expression": script, "returnByValue": true }),
         pending_bindings,
     )?;
+    let cleanup = send_command_and_wait(
+        socket,
+        "Runtime.evaluate",
+        json!({
+            "expression": abort_orphan_transfers_expression(OWNER)?,
+            "returnByValue": true,
+        }),
+        pending_bindings,
+    )?;
+    require_page_ack(&cleanup, "清理重连前遗留 Markdown 传输")?;
     verify_injection_health(socket, pending_bindings)
 }
 
@@ -901,6 +911,30 @@ fn markdown_chunk_expression(
         sequence,
         serde_json::to_string(chunk).map_err(|error| error.to_string())?,
     ))
+}
+
+fn abort_orphan_transfers_expression(owner: &str) -> Result<String, String> {
+    let owner = serde_json::to_string(owner).map_err(|error| error.to_string())?;
+    Ok(
+        r#"(() => {
+  const owner = __CTB_OWNER__;
+  const state = window.__codexTokenBarThreadDeleteState;
+  if (!state?.markdownTransfers) return true;
+  const bridge = state.bridges?.get?.(owner);
+  const prefix = owner + "\u0000";
+  for (const [key, transfer] of [...state.markdownTransfers.entries()]) {
+    if (!key.startsWith(prefix)) continue;
+    state.markdownTransfers.delete(key);
+    try {
+      void Promise.resolve(transfer.sink?.abort?.()).catch(() => {});
+    } catch {}
+    bridge?.callbacks?.get?.(key.slice(prefix.length))
+      ?.resolve?.({ status: "failed", message: "会话增强桥已重连，导出中止" });
+  }
+  return true;
+})()"#
+            .replace("__CTB_OWNER__", &owner),
+    )
 }
 
 fn resolve_expression(
@@ -1410,6 +1444,28 @@ mod tests {
         let count = transfer.finish().unwrap();
         assert_eq!(count, 1);
         assert_eq!(evaluator.chunks(), vec!["# 标题\n\n正文🙂".to_string()]);
+    }
+
+    #[test]
+    fn reconnect_cleanup_aborts_only_the_current_owner_markdown_transfers() {
+        let expression = abort_orphan_transfers_expression("tauri").unwrap();
+        assert!(expression.contains(r#"const owner = "tauri";"#));
+        assert!(expression.contains(r#"const prefix = owner + "\u0000";"#));
+        assert!(expression.contains("if (!key.startsWith(prefix)) continue;"));
+        assert!(expression.contains("state.markdownTransfers.delete(key);"));
+        assert!(expression.contains("transfer.sink?.abort?.()"));
+        assert!(expression.contains("bridge?.callbacks?.get?."));
+        assert!(expression.contains("会话增强桥已重连，导出中止"));
+
+        let source = include_str!("thread_delete.rs");
+        assert!(
+            source.contains("abort_orphan_transfers_expression(OWNER)?"),
+            "install_bridge must execute owner-scoped orphan cleanup after reconnect"
+        );
+        assert!(
+            source.contains(r#"require_page_ack(&cleanup, "清理重连前遗留 Markdown 传输")?"#),
+            "install_bridge must reject a cleanup expression that was not acknowledged"
+        );
     }
 
     #[test]
