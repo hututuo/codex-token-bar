@@ -4,14 +4,25 @@ import Foundation
 extension ProviderSyncEngine {
     func createBackup(codexHome: URL, sessionFiles: [URL], targetProvider: String) throws -> URL {
         let canonicalHome = canonicalProviderHome(codexHome)
-        let homeDirectory = try ProviderSyncHomeDirectory(canonicalURL: canonicalHome)
-        defer { try? homeDirectory.close() }
-        return try createBackupForMutation(
+        guard let expectedHomeIdentity = CodexHomeIdentity.read(
+            at: canonicalHome,
+            fileManager: fileManager
+        ) else {
+            throw providerSyncDescriptorError(
+                "无法读取 Codex Home expected identity：\(canonicalHome.path)"
+            )
+        }
+        return try withMutationLease(
             codexHome: canonicalHome,
-            homeDirectory: homeDirectory,
-            sessionFiles: sessionFiles,
-            targetProvider: targetProvider
-        ).url
+            expectedHomeIdentity: expectedHomeIdentity
+        ) { pinnedHome, homeDirectory in
+            try createBackupForMutation(
+                codexHome: pinnedHome,
+                homeDirectory: homeDirectory,
+                sessionFiles: sessionFiles,
+                targetProvider: targetProvider
+            ).url
+        }
     }
 
     func createBackupForMutation(

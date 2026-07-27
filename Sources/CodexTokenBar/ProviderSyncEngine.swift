@@ -90,6 +90,8 @@ enum ProviderSyncMutationError: LocalizedError, Equatable, Sendable {
 
 final class ProviderSyncEngine {
     private static let mutationLeaseRegistry = ProviderSyncMutationLeaseRegistry()
+    static let providerOperationLockRelativePath =
+        "backups_state/codex-token-bar/provider-operation.lock"
 
     let fileManager: FileManager
     private let backupRootOverride: URL?
@@ -840,12 +842,22 @@ final class ProviderSyncEngine {
         defer {
             Self.mutationLeaseRegistry.release(canonicalHome.path)
         }
-        mutationLeaseDidAcquire?()
         let homeDirectory = try ProviderSyncHomeDirectory(
             canonicalURL: canonicalHome,
             expectedHomeIdentity: expectedHomeIdentity
         )
         defer { try? homeDirectory.close() }
+        let pinnedLock = try homeDirectory.pinFile(
+            relativePath: Self.providerOperationLockRelativePath,
+            createParents: true
+        )
+        let crossProcessLock = try CodexCrossProcessFileLock(
+            parentDirectoryDescriptor: pinnedLock.parent.rawValue,
+            fileName: pinnedLock.name,
+            label: "当前 Codex Home 的 Provider 修复"
+        )
+        defer { crossProcessLock.release() }
+        mutationLeaseDidAcquire?()
         return try body(canonicalHome, homeDirectory)
     }
 

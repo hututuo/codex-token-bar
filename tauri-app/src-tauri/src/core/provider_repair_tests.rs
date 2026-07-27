@@ -319,6 +319,44 @@ fn canonical_home_lease_rejects_concurrent_mutation_until_owner_exits() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn cross_process_provider_lock_blocks_mutation_and_failed_acquire_is_not_tombstoned() {
+    let root = temp_root("provider-cross-process-lock");
+    fs::create_dir_all(&root).unwrap();
+    assert_eq!(
+        PROVIDER_OPERATION_LOCK_RELATIVE_PATH,
+        "backups_state/codex-token-bar/provider-operation.lock"
+    );
+    let lock_path = root.join(PROVIDER_OPERATION_LOCK_RELATIVE_PATH);
+    let external = crate::core::cross_process_lock::CrossProcessFileLock::acquire(
+        &lock_path,
+        "测试 Provider 修复",
+    )
+    .unwrap();
+    let blocked_operation_id = operation_id(&root, "blocked");
+    let blocked = run_provider_mutation(&root, &blocked_operation_id, |_| Ok(()))
+        .err()
+        .unwrap();
+    assert!(matches!(
+        blocked,
+        ProviderOperationError::Failed { message }
+            if message.contains("正在由另一个 Token Bar 进程执行")
+    ));
+    assert_eq!(
+        read_provider_operation_status(&blocked_operation_id).lifecycle,
+        ProviderOperationLifecycle::NotStarted
+    );
+
+    drop(external);
+    let retry_operation_id = operation_id(&root, "retry");
+    run_provider_mutation(&root, &retry_operation_id, |_| Ok(())).unwrap();
+    assert_eq!(
+        read_provider_operation_status(&retry_operation_id).lifecycle,
+        ProviderOperationLifecycle::Finished
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn provider_operation_pins_canonical_home_when_alias_is_retargeted() {

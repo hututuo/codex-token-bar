@@ -1,3 +1,4 @@
+use crate::core::cross_process_lock::CrossProcessFileLock;
 use crate::models::{ProviderRepairActionResult, ProviderRepairSnapshot};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -41,6 +42,8 @@ use storage_roots::{open_sqlite_home_for_pinned, ProviderStorageRoots};
 use target_provider::detect_target_provider_from_config;
 
 const MAX_FINISHED_PROVIDER_OPERATIONS: usize = 256;
+const PROVIDER_OPERATION_LOCK_RELATIVE_PATH: &str =
+    "backups_state/codex-token-bar/provider-operation.lock";
 
 static PROVIDER_OPERATION_REGISTRY: OnceLock<Mutex<ProviderOperationRegistry>> = OnceLock::new();
 static STARTUP_RECOVERY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -311,6 +314,25 @@ impl ProviderOperationRegistry {
         self.prune_finished();
     }
 
+    fn cancel_acquire(&mut self, operation_id: &str) {
+        let Some(record) = self.operations.get(operation_id) else {
+            return;
+        };
+        if record.lifecycle != ProviderOperationLifecycle::Active {
+            return;
+        }
+        let canonical_home = record.canonical_home.clone();
+        if self
+            .active_by_home
+            .get(&canonical_home)
+            .map(String::as_str)
+            == Some(operation_id)
+        {
+            self.active_by_home.remove(&canonical_home);
+        }
+        self.operations.remove(operation_id);
+    }
+
     fn status(&self, operation_id: &str) -> ProviderOperationStatus {
         ProviderOperationStatus {
             operation_id: operation_id.to_string(),
@@ -379,6 +401,7 @@ impl ProviderOperationRegistry {
 struct ProviderOperationLease {
     canonical_home: PathBuf,
     operation_id: String,
+    _cross_process_lock: CrossProcessFileLock,
 }
 
 impl Drop for ProviderOperationLease {
@@ -1364,13 +1387,35 @@ fn acquire_provider_operation_lease(
     }
 
     let canonical_home = canonical_codex_home(codex_home)?;
-    let mut registry = provider_operation_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.acquire(canonical_home.clone(), operation_id)?;
+    {
+        let mut registry = provider_operation_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry.acquire(canonical_home.clone(), operation_id)?;
+    }
+
+    let cross_process_lock = match (|| {
+        let pinned_home = PinnedHome::open(&canonical_home)?;
+        let relative = Path::new(PROVIDER_OPERATION_LOCK_RELATIVE_PATH);
+        pinned_home.ensure_parent_directories(relative)?;
+        CrossProcessFileLock::acquire(
+            &canonical_home.join(relative),
+            "当前 Codex Home 的 Provider 修复",
+        )
+    })() {
+        Ok(lock) => lock,
+        Err(message) => {
+            provider_operation_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .cancel_acquire(operation_id);
+            return Err(ProviderOperationError::Failed { message });
+        }
+    };
     Ok(ProviderOperationLease {
         canonical_home,
         operation_id: operation_id.to_string(),
+        _cross_process_lock: cross_process_lock,
     })
 }
 

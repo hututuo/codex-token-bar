@@ -920,6 +920,46 @@ final class ProviderSyncEngineTests: XCTestCase {
         XCTAssertEqual(retry.detectedProvider, "openai")
     }
 
+    func testCrossProcessProviderLockBlocksMutationAndAllowsRetryAfterRelease() throws {
+        let fixture = try makeFixture()
+        XCTAssertEqual(
+            ProviderSyncEngine.providerOperationLockRelativePath,
+            "backups_state/codex-token-bar/provider-operation.lock"
+        )
+        let external = try CodexCrossProcessFileLock(
+            url: fixture.codexHome.appendingPathComponent(
+                ProviderSyncEngine.providerOperationLockRelativePath
+            ),
+            label: "测试 Provider 修复"
+        )
+        let engine = ProviderSyncEngine(
+            backupRoot: fixture.backupRoot,
+            applicationRunningProbe: { false }
+        )
+        XCTAssertThrowsError(try engine.legacySyncForRegressionTesting(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )) { error in
+            XCTAssertTrue(
+                error.localizedDescription.contains(
+                    "正在由另一个 Token Bar 进程执行"
+                ),
+                error.localizedDescription
+            )
+        }
+
+        external.release()
+        let retry = try engine.legacySyncForRegressionTesting(
+            codexHome: fixture.codexHome,
+            includeArchivedSessions: false,
+            targetProviderOverride: "openai",
+            dryRunOnly: false
+        )
+        XCTAssertEqual(retry.detectedProvider, "openai")
+    }
+
     func testSyncPinsCanonicalHomeBeforeLeaseHookRetargetsAlias() throws {
         let first = try makeFixture()
         let second = try makeFixture()
