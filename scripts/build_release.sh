@@ -15,7 +15,9 @@ PRIVATE_KEY_FILE="${SPARKLE_PRIVATE_KEY_FILE:-$HOME/.config/codex-token-bar/spar
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-$ROOT_DIR/release-notes/v$VERSION.md}"
 DMG_LAYOUT_TEMPLATE="${DMG_LAYOUT_TEMPLATE:-$ROOT_DIR/Resources/DMGLayout.dsstore}"
 NOTARIZE_RELEASE="${NOTARIZE_RELEASE:-auto}"
-RELEASE_SECURITY_STRICT="${RELEASE_SECURITY_STRICT:-1}"
+# The published macOS lane is intentionally ad-hoc and non-notarized unless the
+# caller opts into the stricter Developer ID + notarization profile.
+RELEASE_SECURITY_STRICT="${RELEASE_SECURITY_STRICT:-0}"
 ENABLE_HARDENED_RUNTIME_WAS_SET=0
 ENABLE_APP_SANDBOX_WAS_SET=0
 if [[ -n "${ENABLE_HARDENED_RUNTIME+x}" ]]; then
@@ -31,6 +33,14 @@ APPLE_ID="${APPLE_ID:-}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
 APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
 CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-${CODESIGN_IDENTITY:--}}"
+
+case "$RELEASE_SECURITY_STRICT" in
+  0|1) ;;
+  *)
+    echo "Unknown RELEASE_SECURITY_STRICT value: $RELEASE_SECURITY_STRICT (expected 0 or 1)" >&2
+    exit 1
+    ;;
+esac
 
 if [[ -z "$BUILD" ]]; then
   BUILD="$(python3 - "$VERSION" <<'PY'
@@ -161,6 +171,9 @@ APP_VERSION="$VERSION" APP_BUILD="$BUILD" CODEX_TOKEN_BAR_NO_OPEN=1 \
 APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
 RELEASE_DIR="$ROOT_DIR/dist/release/v$VERSION"
 APPCAST_SOURCE_DIR="$RELEASE_DIR/appcast-source"
+EXISTING_APPCAST="$RELEASE_DIR/appcast-existing.xml"
+GENERATED_APPCAST="$RELEASE_DIR/appcast-generated.xml"
+MERGED_APPCAST="$RELEASE_DIR/appcast.xml"
 VERSIONED_ZIP="CodexTokenBar-v$VERSION-macos-$ARCH_LABEL.app.zip"
 LEGACY_ZIP="CodexTokenBar.app.zip"
 DMG_NAME="CodexTokenBar-v$VERSION-macos-$ARCH_LABEL.dmg"
@@ -196,7 +209,8 @@ cleanup() {
   elif [[ -n "$DMG_DEVICE" ]]; then
     hdiutil detach "$DMG_DEVICE" >/dev/null 2>&1 || true
   fi
-  rm -rf "$DMG_STAGING"
+  rm -rf "$DMG_STAGING" "$APPCAST_SOURCE_DIR"
+  rm -f "$EXISTING_APPCAST" "$GENERATED_APPCAST"
 }
 trap cleanup EXIT
 
@@ -486,10 +500,9 @@ fi
 cp "$RELEASE_DIR/$VERSIONED_ZIP" "$APPCAST_SOURCE_DIR/$VERSIONED_ZIP"
 cp "$RELEASE_NOTES_FILE" "$APPCAST_SOURCE_DIR/${VERSIONED_ZIP%.zip}.md"
 
-EXISTING_APPCAST="$RELEASE_DIR/appcast-existing.xml"
-GENERATED_APPCAST="$RELEASE_DIR/appcast-generated.xml"
 if [[ -f "$ROOT_DIR/appcast.xml" ]]; then
   cp "$ROOT_DIR/appcast.xml" "$EXISTING_APPCAST"
+  cp "$ROOT_DIR/appcast.xml" "$MERGED_APPCAST"
 fi
 
 "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin/generate_appcast" \
@@ -502,20 +515,10 @@ fi
 
 # 已发布的 appcast 条目是不可变历史：同版本重发默认报错，
 # 仅 ALLOW_APPCAST_REPUBLISH=1 时放行（详见 merge_appcast.py）。
-python3 "$ROOT_DIR/scripts/merge_appcast.py" "$VERSION" "$GENERATED_APPCAST" "$EXISTING_APPCAST" "$ROOT_DIR/appcast.xml"
+python3 "$ROOT_DIR/scripts/merge_appcast.py" "$VERSION" "$GENERATED_APPCAST" "$EXISTING_APPCAST" "$MERGED_APPCAST"
 
-cp "$ROOT_DIR/appcast.xml" "$RELEASE_DIR/appcast.xml"
-
-UPDATE_SIGNATURE="$(python3 - "$ROOT_DIR/appcast.xml" <<'PY'
-import re
-import sys
-
-text = open(sys.argv[1], encoding="utf-8").read()
-match = re.search(r'sparkle:edSignature="([^"]+)"', text)
-if not match:
-    raise SystemExit("missing sparkle:edSignature in appcast")
-print(match.group(1))
-PY
+UPDATE_SIGNATURE="$(
+  python3 "$ROOT_DIR/scripts/read_appcast_signature.py" "$MERGED_APPCAST" "$VERSION"
 )"
 "$ROOT_DIR/.build/artifacts/sparkle/Sparkle/bin/sign_update" \
   --verify \
@@ -532,6 +535,14 @@ PY
 
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 spctl --assess --type execute -vv "$APP_DIR" >/dev/null 2>&1 || true
+
+# Only publish repository history after every build, archive, Sparkle and
+# signature gate above has succeeded. The helper also refuses a destination
+# changed or deleted since EXISTING_APPCAST was captured.
+python3 "$ROOT_DIR/scripts/publish_appcast.py" \
+  "$MERGED_APPCAST" \
+  "$EXISTING_APPCAST" \
+  "$ROOT_DIR/appcast.xml"
 
 cat <<REPORT
 Release build complete.

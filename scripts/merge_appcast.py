@@ -133,6 +133,7 @@ def publish_with_snapshot(
     output_path: Path,
     content: str,
     expected_existing: str | None,
+    require_exact_snapshot: bool = False,
 ) -> None:
     absolute_output = Path(os.path.abspath(output_path))
     lock_key = hashlib.sha256(os.fsencode(absolute_output)).hexdigest()
@@ -154,7 +155,12 @@ def publish_with_snapshot(
             if absolute_output.exists()
             else None
         )
-        if current is not None and current != expected_existing:
+        snapshot_changed = (
+            current != expected_existing
+            if require_exact_snapshot
+            else current is not None and current != expected_existing
+        )
+        if snapshot_changed:
             fail(
                 "appcast destination changed after the existing-history snapshot "
                 f"was captured: {absolute_output}"

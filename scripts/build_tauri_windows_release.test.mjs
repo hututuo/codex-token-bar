@@ -75,6 +75,23 @@ test("release builds run source tests and injection syntax gates before packagin
   assert.ok(mac.indexOf("swift test") < mac.indexOf("package_app.sh"));
 });
 
+test("mac release verifies staged appcast data before publishing history", async () => {
+  const source = await readFile(macReleaseScript, "utf8");
+  const signatureRead = source.indexOf("read_appcast_signature.py");
+  const updateVerify = source.indexOf("sign_update");
+  const appVerify = source.indexOf("codesign --verify --deep --strict");
+  const publish = source.indexOf("publish_appcast.py");
+
+  assert.match(source, /RELEASE_SECURITY_STRICT="\$\{RELEASE_SECURITY_STRICT:-0\}"/);
+  assert.match(source, /MERGED_APPCAST="\$RELEASE_DIR\/appcast\.xml"/);
+  assert.ok(signatureRead >= 0);
+  assert.ok(updateVerify > signatureRead);
+  assert.ok(appVerify > updateVerify);
+  assert.ok(publish > appVerify);
+  assert.doesNotMatch(source, /re\.search\(r?sparkle:edSignature/);
+  assert.match(source, /rm -rf "\$DMG_STAGING" "\$APPCAST_SOURCE_DIR"/);
+});
+
 test("PowerShell self-test captures config argv, stale output cleanup, and rerun immutability", async () => {
   const source = await readFile(windowsSelfTest, "utf8");
   assert.match(source, /ReleaseSelfTestCalls/);
