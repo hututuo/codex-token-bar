@@ -127,7 +127,8 @@ final class TaskCompletionMonitor: ObservableObject {
     @Published private(set) var lastCompletedTitle = ""
     @Published private(set) var unreadThreadCount = 0
 
-    private let pollInterval: TimeInterval = 2.0
+    private let pollInterval: TimeInterval
+    private let pollTimeout: TimeInterval
     private let liveSeedWindow: TimeInterval = 30.0
     private let defaults: UserDefaults
     private let pollLoader: any TaskCompletionPollLoading
@@ -143,6 +144,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var hasCodexUnreadState = false
     private var timer: Timer?
     private var pollTask: Task<Void, Never>?
+    private var pollTimeoutTask: Task<Void, Never>?
     private var pollGeneration = 0
     private(set) var sourceIdentityGeneration = 0
     private(set) var sourceBindingGeneration = 0
@@ -152,10 +154,14 @@ final class TaskCompletionMonitor: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         pollLoader: any TaskCompletionPollLoading = LiveTaskCompletionPollLoader(),
+        pollInterval: TimeInterval = 2.0,
+        pollTimeout: TimeInterval = 30.0,
         now: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
         self.pollLoader = pollLoader
+        self.pollInterval = pollInterval.isFinite && pollInterval > 0 ? pollInterval : 2.0
+        self.pollTimeout = pollTimeout.isFinite && pollTimeout > 0 ? pollTimeout : 30.0
         self.now = now
         fallbackSeedCutoff = now().addingTimeInterval(-liveSeedWindow)
         loadPersistedCompletedEventIDs()
@@ -184,6 +190,8 @@ final class TaskCompletionMonitor: ObservableObject {
         pollGeneration += 1
         pollTask?.cancel()
         pollTask = nil
+        pollTimeoutTask?.cancel()
+        pollTimeoutTask = nil
 
         if identityChanged {
             sourceIdentityGeneration += 1
@@ -282,6 +290,8 @@ final class TaskCompletionMonitor: ObservableObject {
                       self.pollGeneration == generation,
                       self.sourceIdentityGeneration == identityGeneration,
                       self.sourceBindingGeneration == bindingGeneration else { return }
+                self.pollTimeoutTask?.cancel()
+                self.pollTimeoutTask = nil
                 self.pollTask = nil
                 self.apply(
                     output.result,
@@ -289,6 +299,23 @@ final class TaskCompletionMonitor: ObservableObject {
                     officialReadBoundary: output.officialReadBoundary ?? request.pollStartedAt
                 )
             }
+        }
+        let maximumSleepSeconds = TimeInterval(UInt64.max) / 1_000_000_000
+        let timeoutNanoseconds = UInt64(min(pollTimeout, maximumSleepSeconds) * 1_000_000_000)
+        pollTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.pollGeneration == generation,
+                  self.sourceIdentityGeneration == identityGeneration,
+                  self.sourceBindingGeneration == bindingGeneration else { return }
+            self.pollGeneration += 1
+            self.pollTask?.cancel()
+            self.pollTask = nil
+            self.pollTimeoutTask = nil
         }
     }
 

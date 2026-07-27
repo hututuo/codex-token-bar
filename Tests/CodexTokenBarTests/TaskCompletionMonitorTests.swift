@@ -3,6 +3,30 @@ import XCTest
 
 @MainActor
 final class TaskCompletionMonitorTests: XCTestCase {
+    func testTimedOutPollDoesNotPermanentlyBlockFuturePolls() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskPollTimeout-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let loader = TimeoutThenFreshTaskCompletionPollLoader()
+        let monitor = TaskCompletionMonitor(
+            defaults: isolatedDefaults(),
+            pollLoader: loader,
+            pollInterval: 0.02,
+            pollTimeout: 0.05
+        )
+
+        monitor.start(dataSource: CodexDataSource(codexHome: home, origin: .userSelected))
+        await waitUntil("fresh poll after timeout", timeout: 1) {
+            await loader.requestCount() >= 2 && monitor.unreadThreadCount == 1
+        }
+
+        let requestCount = await loader.requestCount()
+        XCTAssertGreaterThanOrEqual(requestCount, 2)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        monitor.start(dataSource: nil)
+    }
+
     func testSameIdentityPathRebindCancelsOldPollAndStartsOneNewPathPoll() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("TaskPathRebind-\(UUID().uuidString)", isDirectory: true)
@@ -610,6 +634,34 @@ private actor SuspendedTaskCompletionPollLoader: TaskCompletionPollLoading {
 
     func completeRequest(at codexHome: URL, output: TaskCompletionPollOutput) {
         continuations.removeValue(forKey: codexHome.path)?.resume(returning: output)
+    }
+
+    func requestCount() -> Int {
+        count
+    }
+}
+
+private actor TimeoutThenFreshTaskCompletionPollLoader: TaskCompletionPollLoading {
+    private var count = 0
+
+    func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
+        count += 1
+        let requestNumber = count
+        if requestNumber == 1 {
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            } catch {
+                // The monitor deadline should cancel this stale request.
+            }
+            return TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["stale-thread-a", "stale-thread-b"])
+            )
+        }
+        return TaskCompletionPollOutput(
+            result: nil,
+            unreadThreadRead: .available(["fresh-thread"])
+        )
     }
 
     func requestCount() -> Int {
