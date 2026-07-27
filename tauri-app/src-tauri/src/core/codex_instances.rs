@@ -349,7 +349,6 @@ pub(crate) fn codex_home_for_process(pid: u32) -> Result<CodexProcessHomeBinding
         &runtime_statuses,
         pid,
         environment_home,
-        crate::platform::read_app_settings()?.codex_home.is_some(),
         &crate::platform::automatic_codex_home_path(),
     )?;
     Ok(CodexProcessHomeBinding {
@@ -366,7 +365,6 @@ fn process_home_for_binding(
     runtime_statuses: &[CodexInstanceRuntimeStatus],
     pid: u32,
     environment_home: crate::platform::ProcessCodexHomeEnvironment,
-    has_manually_selected_default_home: bool,
     automatic_home: &Path,
 ) -> Result<PathBuf, String> {
     if instance.is_default {
@@ -377,15 +375,10 @@ fn process_home_for_binding(
             crate::platform::ProcessCodexHomeEnvironment::Readable(None) => {
                 canonical_directory(automatic_home, "系统默认 Codex Home")
             }
-            crate::platform::ProcessCodexHomeEnvironment::Unavailable => {
-                if has_manually_selected_default_home {
-                    return Err(
-                        "当前平台无法读取默认 Codex 进程的 CODEX_HOME，且 Token Bar 选择了手动 Home；已拒绝猜测"
-                            .into(),
-                    );
-                }
-                canonical_directory(automatic_home, "系统默认 Codex Home")
-            }
+            crate::platform::ProcessCodexHomeEnvironment::Unavailable => Err(
+                "当前平台无法读取默认 Codex 进程的 CODEX_HOME，无法排除它由外部工具绑定到其他 Home；已拒绝猜测"
+                    .into(),
+            ),
         };
     }
 
@@ -2294,7 +2287,7 @@ mod tests {
     }
 
     #[test]
-    fn process_home_binding_prefers_readable_environment_and_never_guesses_manual_default() {
+    fn process_home_binding_prefers_readable_environment_and_never_guesses_default() {
         let root = std::env::temp_dir().join(format!("process-home-{}", Uuid::new_v4()));
         let automatic = root.join("automatic");
         let configured = root.join("configured");
@@ -2313,7 +2306,6 @@ mod tests {
             &[],
             42,
             crate::platform::ProcessCodexHomeEnvironment::Readable(Some(actual.clone())),
-            true,
             &automatic,
         )
         .unwrap();
@@ -2325,7 +2317,6 @@ mod tests {
             &[],
             42,
             crate::platform::ProcessCodexHomeEnvironment::Readable(None),
-            true,
             &automatic,
         )
         .unwrap();
@@ -2337,11 +2328,10 @@ mod tests {
             &[],
             42,
             crate::platform::ProcessCodexHomeEnvironment::Unavailable,
-            true,
             &automatic,
         )
         .unwrap_err();
-        assert!(error.contains("手动 Home"), "{error}");
+        assert!(error.contains("外部工具"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2364,7 +2354,6 @@ mod tests {
                 &[controlled],
                 42,
                 crate::platform::ProcessCodexHomeEnvironment::Unavailable,
-                false,
                 &registered_home,
             )
             .unwrap(),
@@ -2384,7 +2373,6 @@ mod tests {
             &[uncontrolled],
             42,
             crate::platform::ProcessCodexHomeEnvironment::Unavailable,
-            false,
             Path::new(&instance.codex_home),
         )
         .unwrap_err();
