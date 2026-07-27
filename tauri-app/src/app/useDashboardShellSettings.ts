@@ -43,6 +43,10 @@ import {
   DEFAULT_SESSION_ENHANCEMENTS,
   sanitizeSessionEnhancements,
 } from "../settings/sessionEnhancements";
+import {
+  createTrailingSettingsPersistence,
+  type TrailingSettingsPersistence,
+} from "../settings/trailingSettingsPersistence";
 import { useAutostartSettings } from "./useAutostartSettings";
 import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
 
@@ -109,7 +113,40 @@ export function useDashboardShellSettings({
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
+  const floatingSettingsEdits = useRef(0);
+  const floatingSettingsRef = useRef(DEFAULT_FLOATING_SETTINGS);
+  const floatingPersistenceRef = useRef<TrailingSettingsPersistence<FloatingWindowSettings> | null>(null);
+  if (floatingPersistenceRef.current === null) {
+    floatingPersistenceRef.current = createTrailingSettingsPersistence(
+      saveFloatingSettings,
+      {
+        equals: sameFloatingSettings,
+        persistedValue: (_requested, result) => sanitizeFloatingSettings(result.floatingWindow),
+        onLatestPersisted: () => {
+          setSettingsError((current) => (
+            current?.startsWith("保存悬浮窗设置失败") ? null : current
+          ));
+        },
+        onLatestError: (error) => {
+          setSettingsError(
+            `保存悬浮窗设置失败：${commandErrorMessage(error)}；当前修改仅本次会话生效。`,
+          );
+        },
+      },
+    );
+  }
   const { autostartStatus, toggleAutostart } = useAutostartSettings({ dashboardHydrated });
+  const reportDisplayPersistenceError = useCallback((error: unknown | null) => {
+    if (error === null) {
+      setSettingsError((current) => (
+        current?.startsWith("保存显示位置设置失败") ? null : current
+      ));
+      return;
+    }
+    setSettingsError(
+      `保存显示位置设置失败：${commandErrorMessage(error)}；当前修改仅本次会话生效。`,
+    );
+  }, []);
   const {
     applyDisplaySurfaces,
     displaySurfaces,
@@ -117,7 +154,10 @@ export function useDashboardShellSettings({
     toggleLiveRate: toggleLiveRateSurface,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
-  } = useDisplaySurfaceSettings({ platform });
+  } = useDisplaySurfaceSettings({
+    onPersistenceError: reportDisplayPersistenceError,
+    platform,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +170,15 @@ export function useDashboardShellSettings({
       floatingSettingsLoaded.current = true;
       setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
-      setFloatingSettings(sanitizeFloatingSettings(settings.floatingWindow));
+      const persistedFloatingSettings = sanitizeFloatingSettings(settings.floatingWindow);
+      floatingPersistenceRef.current?.setPersisted(persistedFloatingSettings);
+      if (floatingSettingsEdits.current === 0) {
+        floatingSettingsRef.current = persistedFloatingSettings;
+        setFloatingSettings(persistedFloatingSettings);
+        void desktopPlatform.publishFloatingSettings(persistedFloatingSettings);
+      } else {
+        floatingPersistenceRef.current?.schedule(floatingSettingsRef.current);
+      }
       setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
       setSessionEnhancements(sanitizeSessionEnhancements(settings.sessionEnhancements));
       applyDisplaySurfaces(settings.displaySurfaces);
@@ -150,16 +198,15 @@ export function useDashboardShellSettings({
   }, [applyDisplaySurfaces]);
 
   useEffect(() => {
-    const sanitized = sanitizeFloatingSettings(floatingSettings);
-    void desktopPlatform.publishFloatingSettings(sanitized);
-    if (floatingSettingsLoaded.current) {
-      void saveFloatingSettings(sanitized).then(() => {
-        setSettingsError((current) => current?.startsWith("保存悬浮窗设置失败") ? null : current);
-      }).catch((error) => {
-        setSettingsError(`保存悬浮窗设置失败：${commandErrorMessage(error)}；当前修改仅本次会话生效。`);
-      });
-    }
-  }, [floatingSettings]);
+    const flush = () => {
+      void floatingPersistenceRef.current?.flush();
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
 
   const refreshAutoResume = useCallback(async () => {
     setAutoResumeLoading(true);
@@ -225,45 +272,58 @@ export function useDashboardShellSettings({
   }, []);
 
   function updateFloatingOpacity(opacity: number) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, opacity }));
+    updateFloatingSettings({ opacity });
   }
 
   function updateFloatingScale(scale: number) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, scale }));
+    updateFloatingSettings({ scale });
   }
 
   function updateTokenRateFullScale(tokenRateFullScale: number) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, tokenRateFullScale }));
+    updateFloatingSettings({ tokenRateFullScale });
   }
 
   function updateFloatingUnreadEffect(unreadEffect: FloatingUnreadEffect) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, unreadEffect }));
+    updateFloatingSettings({ unreadEffect });
   }
 
   function updateFloatingGradient(
     patch: FloatingPalettePatch,
   ) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, ...patch }));
+    updateFloatingSettings(patch);
   }
 
   function updateFloatingTextTone(textTone: number) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, textTone }));
+    updateFloatingSettings({ textTone });
   }
 
   function updateFloatingContentVisibility(contentVisibility: FloatingContentVisibility) {
-    setFloatingSettings((current) => sanitizeFloatingSettings({ ...current, contentVisibility }));
+    updateFloatingSettings({ contentVisibility });
   }
 
   function toggleLiveRate() {
     const nextEnabled = !displaySurfaces.liveRateEnabled;
     toggleLiveRateSurface();
-    setFloatingSettings((current) => sanitizeFloatingSettings({
-      ...current,
+    updateFloatingSettings({
       contentVisibility: {
-        ...current.contentVisibility,
+        ...floatingSettingsRef.current.contentVisibility,
         showRateAndBar: nextEnabled,
       },
-    }));
+    });
+  }
+
+  function updateFloatingSettings(patch: Partial<FloatingWindowSettings>) {
+    const next = sanitizeFloatingSettings({ ...floatingSettingsRef.current, ...patch });
+    if (sameFloatingSettings(next, floatingSettingsRef.current)) {
+      return;
+    }
+    floatingSettingsEdits.current += 1;
+    floatingSettingsRef.current = next;
+    setFloatingSettings(next);
+    void desktopPlatform.publishFloatingSettings(next);
+    if (floatingSettingsLoaded.current) {
+      floatingPersistenceRef.current?.schedule(next);
+    }
   }
 
   async function updateCustomAccountDisplayName(displayName: string) {
@@ -400,4 +460,11 @@ function commandErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "未知错误";
+}
+
+function sameFloatingSettings(
+  left: FloatingWindowSettings,
+  right: FloatingWindowSettings,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
