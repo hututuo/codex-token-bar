@@ -12,6 +12,8 @@ const PERFORMANCE_TRACE_MAX_BYTES: u64 = 96 * 1024;
 
 static START: OnceLock<Instant> = OnceLock::new();
 static SEEN_ONCE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static STARTUP_TRACE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static PERFORMANCE_TRACE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn mark(label: &str) {
     write_mark(label, false);
@@ -22,6 +24,10 @@ pub fn mark_once(label: &'static str) {
 }
 
 pub fn mark_performance(label: impl AsRef<str>) {
+    let _write = PERFORMANCE_TRACE_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(path) = app_paths::performance_trace_log_path() else {
         return;
     };
@@ -57,6 +63,10 @@ fn write_mark(label: &str, once: bool) {
         return;
     }
 
+    let _write = STARTUP_TRACE_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(path) = app_paths::startup_trace_log_path() else {
         return;
     };
@@ -93,5 +103,69 @@ fn clear_once_marks() {
         if let Ok(mut labels) = seen.lock() {
             labels.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Barrier},
+        thread,
+    };
+
+    #[test]
+    fn concurrent_performance_marks_keep_each_record_intact() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-startup-trace-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _environment = app_paths::app_path_test_env_guard(&[(
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.clone(),
+        )]);
+        fs::create_dir_all(&root).unwrap();
+
+        let worker_count = 8;
+        let records_per_worker = 40;
+        let barrier = Arc::new(Barrier::new(worker_count));
+        let expected = (0..worker_count)
+            .flat_map(|worker| {
+                (0..records_per_worker)
+                    .map(move |record| format!("parallel-{worker:02}-{record:02}-{}", "x".repeat(96)))
+            })
+            .collect::<HashSet<_>>();
+        let workers = (0..worker_count)
+            .map(|worker| {
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for record in 0..records_per_worker {
+                        mark_performance(format!(
+                            "parallel-{worker:02}-{record:02}-{}",
+                            "x".repeat(96)
+                        ));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let contents = fs::read_to_string(root.join("performance-trace.log")).unwrap();
+        let actual = contents
+            .lines()
+            .filter_map(|line| line.split_once(' ').map(|(_, label)| label.to_string()))
+            .filter(|label| label.starts_with("parallel-"))
+            .collect::<HashSet<_>>();
+        assert_eq!(actual, expected);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
