@@ -49,6 +49,48 @@ struct PinnedSqliteDescriptorView {
 }
 
 #[cfg(unix)]
+struct PinnedSqliteDescriptorViewLease {
+    view: Option<PinnedSqliteDescriptorView>,
+}
+
+#[cfg(unix)]
+impl PinnedSqliteDescriptorViewLease {
+    fn acquire(create_if_missing: bool) -> Result<Self, String> {
+        let existing = {
+            let mut slot = pinned_sqlite_descriptor_view().lock().map_err(|_| {
+                "pinned unread SQLite descriptor view lock was poisoned".to_string()
+            })?;
+            slot.take()
+        };
+        let view = match (existing, create_if_missing) {
+            (Some(view), _) => Some(view),
+            (None, true) => Some(create_pinned_sqlite_descriptor_view()?),
+            (None, false) => None,
+        };
+        Ok(Self { view })
+    }
+
+    fn view_mut(&mut self) -> Option<&mut PinnedSqliteDescriptorView> {
+        self.view.as_mut()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PinnedSqliteDescriptorViewLease {
+    fn drop(&mut self) {
+        let Some(view) = self.view.take() else {
+            return;
+        };
+        let mut slot = pinned_sqlite_descriptor_view()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(view);
+        }
+    }
+}
+
+#[cfg(unix)]
 struct PinnedDescriptorFile {
     handle: std::fs::File,
     device: u64,
@@ -404,26 +446,16 @@ fn capture_pinned_unread_observation(
     let mut builder = UnreadObservationBuilder::from_native_state(state.as_deref())?;
     observe_recent_pinned_sessions(root, &mut builder)?;
     if !builder.has_native_unread_ids() {
-        if let Some(view) = PINNED_SQLITE_DESCRIPTOR_VIEW.get() {
-            let mut view = view.lock().map_err(|_| {
-                "pinned unread SQLite descriptor view lock was poisoned".to_string()
-            })?;
-            if let Some(view) = view.as_mut() {
-                install_pinned_sqlite_descriptor_files(view, None, HashMap::new())?;
-            }
+        let mut lease = PinnedSqliteDescriptorViewLease::acquire(false)?;
+        if let Some(view) = lease.view_mut() {
+            install_pinned_sqlite_descriptor_files(view, None, HashMap::new())?;
         }
         return builder.finish(None);
     }
 
-    let view = pinned_sqlite_descriptor_view();
-    let mut view = view
-        .lock()
-        .map_err(|_| "pinned unread SQLite descriptor view lock was poisoned".to_string())?;
-    if view.is_none() {
-        *view = Some(create_pinned_sqlite_descriptor_view()?);
-    }
-    let view = view
-        .as_mut()
+    let mut lease = PinnedSqliteDescriptorViewLease::acquire(true)?;
+    let view = lease
+        .view_mut()
         .ok_or_else(|| "pinned unread SQLite descriptor view is unavailable".to_string())?;
     refresh_pinned_sqlite_descriptor_view(root, source_root, view)?;
     builder.finish(Some(&view.directory.join("state_5.sqlite")))
@@ -2327,6 +2359,32 @@ mod tests {
 
         assert!(error.contains("is a directory"), "{error}");
         remove_source_test_directory(home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_view_lease_releases_global_lock_during_observation_io() {
+        let _guard = pinned_source_counter_test_guard();
+        let mut lease = PinnedSqliteDescriptorViewLease::acquire(true).unwrap();
+        assert!(lease.view_mut().is_some());
+
+        let slot = pinned_sqlite_descriptor_view()
+            .try_lock()
+            .expect("descriptor view mutex must not be held by the active observation");
+        assert!(
+            slot.is_none(),
+            "the active descriptor view must be owned by the observation lease"
+        );
+        drop(slot);
+        drop(lease);
+
+        assert!(
+            pinned_sqlite_descriptor_view()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some(),
+            "dropping the observation lease must return its descriptor view to the cache"
+        );
     }
 
     #[cfg(unix)]
