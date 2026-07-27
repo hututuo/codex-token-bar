@@ -113,48 +113,43 @@ final class AutoResumeSharedCoordinatorTests: XCTestCase {
         ))
     }
 
-    func testStolenLedgerLockAbortsWriteBackAndKeepsTheThiefsLock() throws {
+    func testLedgerFileLockRejectsConcurrentWriterAndPreservesBothClaims() throws {
         let home = try temporaryCodexHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        let coordinator = AutoResumeSharedCoordinator(codexHome: home, ownerID: "victim")
-        let fileManager = FileManager.default
-        let lockURL = coordinator.rootDirectory
-            .appendingPathComponent("trigger-ledger.lock", isDirectory: true)
+        let first = AutoResumeSharedCoordinator(codexHome: home, ownerID: "swift")
+        let second = AutoResumeSharedCoordinator(codexHome: home, ownerID: "tauri")
+        let firstKey = "daily:thread-lock:2026-07-16:0900"
+        let secondKey = "daily:thread-lock:2026-07-16:1000"
 
-        let heldAfterTheft: Bool = try coordinator.withLedgerLock { lock in
-            XCTAssertTrue(lock.stillHeld())
-            // 模拟另一进程 stale-break：把持有中的锁目录搬走清理，再以
-            // 自己的 owner 标记重建（与抢占路径同一动作序列）。
-            let stale = coordinator.rootDirectory
-                .appendingPathComponent(".stale-ledger-lock-test", isDirectory: true)
-            try fileManager.moveItem(at: lockURL, to: stale)
-            try? fileManager.removeItem(at: stale)
-            try fileManager.createDirectory(
-                at: lockURL,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try Data("thief".utf8).write(to: lockURL.appendingPathComponent("owner"))
-            return lock.stillHeld()
-        }
-
-        // 旧持有者复验必须发现锁已易主（claim/complete 写回前据此中止）。
-        XCTAssertFalse(heldAfterTheft)
-        // 释放路径不得误删他人的锁目录。
-        XCTAssertTrue(fileManager.fileExists(atPath: lockURL.path))
-        XCTAssertEqual(
-            try String(contentsOf: lockURL.appendingPathComponent("owner"), encoding: .utf8),
-            "thief"
-        )
-
-        // 抢占者释放后，一切照常可用。
-        try fileManager.removeItem(at: lockURL)
-        XCTAssertTrue(try coordinator.claimTrigger(
-            key: "daily:thread-lock:2026-07-16:0900",
+        XCTAssertTrue(try first.claimTrigger(
+            key: firstKey,
             threadID: "thread-lock",
             minimumInterval: 0,
             now: Date(timeIntervalSince1970: 30_000)
         ))
+        try first.withLedgerLock {
+            XCTAssertThrowsError(try second.withLedgerLock(waitTimeout: 0) {}) { error in
+                XCTAssertEqual(
+                    error as? AutoResumeCoordinationError,
+                    .ledgerLockTimedOut
+                )
+            }
+        }
+        XCTAssertTrue(try second.claimTrigger(
+            key: secondKey,
+            threadID: "thread-lock",
+            minimumInterval: 0,
+            now: Date(timeIntervalSince1970: 30_001)
+        ))
+
+        let ledger = try JSONDecoder().decode(
+            AutoResumeTriggerLedgerFile.self,
+            from: Data(
+                contentsOf: first.rootDirectory
+                    .appendingPathComponent("trigger-ledger.json")
+            )
+        )
+        XCTAssertEqual(Set(ledger.entries.keys), Set([firstKey, secondKey]))
     }
 
     func testThreadCooldownSpansDifferentKeysAndOwnersButManualZeroIntervalCanProceed() throws {

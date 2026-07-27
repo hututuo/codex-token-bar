@@ -1,5 +1,6 @@
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::Path;
 
 #[cfg(unix)]
@@ -11,6 +12,11 @@ pub(crate) struct CrossProcessFileLock {
 
 impl CrossProcessFileLock {
     pub(crate) fn acquire(path: &Path, label: &str) -> Result<Self, String> {
+        Self::try_acquire(path, label)?
+            .ok_or_else(|| format!("{label}正在由另一个 Token Bar 进程执行"))
+    }
+
+    pub(crate) fn try_acquire(path: &Path, label: &str) -> Result<Option<Self>, String> {
         let parent = path
             .parent()
             .ok_or_else(|| format!("{label}锁路径缺少父目录"))?;
@@ -30,10 +36,33 @@ impl CrossProcessFileLock {
         #[cfg(unix)]
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("收紧{label}锁权限失败：{error}"))?;
-        file.try_lock_exclusive()
-            .map_err(|error| format!("{label}正在由另一个 Token Bar 进程执行：{error}"))?;
-        Ok(Self { file })
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(error) if is_lock_contention(&error) => Ok(None),
+            Err(error) => Err(format!("获取{label}锁失败：{error}")),
+        }
     }
+}
+
+fn is_lock_contention(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        let code = error.raw_os_error();
+        if code == Some(libc::EWOULDBLOCK) || code == Some(libc::EAGAIN) {
+            return true;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // LockFileEx reports ERROR_LOCK_VIOLATION for a non-blocking conflict.
+        if error.raw_os_error() == Some(33) {
+            return true;
+        }
+    }
+    false
 }
 
 impl Drop for CrossProcessFileLock {
@@ -60,6 +89,9 @@ mod tests {
         let root = unique_test_root();
         let path = root.join("nested/operation.lock");
         let first = CrossProcessFileLock::acquire(&path, "测试").unwrap();
+        assert!(CrossProcessFileLock::try_acquire(&path, "测试")
+            .unwrap()
+            .is_none());
         let error = CrossProcessFileLock::acquire(&path, "测试")
             .err()
             .unwrap();
