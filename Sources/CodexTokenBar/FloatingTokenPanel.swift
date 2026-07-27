@@ -136,7 +136,15 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     var lastExternalClickWindowNumber: Int?
     var lastExternalClickOwnerPID: pid_t?
     var lastExternalClickAXWindow: AXUIElement?
+    var lastExternalClickAccessibilityTarget: FloatingPanelAccessibilityTarget?
+    var externalMouseButtonIsDown = false
+    var externalClickResolutionGeneration: UInt64 = 0
     var lockedAnchor: FloatingPanelWindowAnchor?
+    var accessibilityResolver = FloatingPanelAccessibilityResolver()
+    var followResolutionGeneration: UInt64 = 0
+    var followFrameResolutionInFlight = false
+    var anchorAccessibilityResolutionInFlight = false
+    var cachedFollowAccessibilityFrame: FloatingPanelAccessibilityFrameCache?
     var followTimer: Timer?
     var followTimerInterval: TimeInterval?
     var fastFollowUntil: Date?
@@ -263,6 +271,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     private func closePanel(destroy: Bool, unregisterActive: Bool) {
         eventSourceLifecycle.deactivate()
+        invalidateExternalAccessibilityResolution()
         stopFollowingAnchor()
         let existingPanel = panel
         panel = nil

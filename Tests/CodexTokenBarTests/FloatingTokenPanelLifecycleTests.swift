@@ -213,6 +213,111 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         XCTAssertEqual(controller.lastExternalClickAt, originalDate)
     }
 
+    func testFollowAccessibilityFrameResolutionIsOffMainActorAndSingleFlight() async throws {
+        let resolvedFrame = NSRect(x: 120, y: 80, width: 640, height: 480)
+        let probe = BlockingAccessibilityFrameQuery(result: resolvedFrame)
+        let controller = FloatingTokenPanelController()
+        controller.accessibilityResolver = FloatingPanelAccessibilityResolver(
+            frameQuery: probe.query
+        )
+        controller.relaxedVisibleWindowCache = FloatingPanelWindowListCache(
+            createdAt: Date(),
+            windows: []
+        )
+        let accessibilityWindow = AXUIElementCreateApplication(987_654)
+        let anchor = FloatingPanelWindowAnchor(
+            windowNumber: nil,
+            ownerPID: 987_654,
+            ownerBundleID: "test.target",
+            windowTitle: "Document",
+            targetDescription: "Target · Document",
+            offset: .zero,
+            accessibilityWindow: accessibilityWindow
+        )
+        controller.lockedAnchor = anchor
+
+        let startedAt = ContinuousClock.now
+        XCTAssertNil(controller.targetFrame(matching: anchor))
+        XCTAssertLessThan(
+            startedAt.duration(to: .now),
+            .milliseconds(100),
+            "阻塞中的 AX 查询不能占住 MainActor"
+        )
+        XCTAssertNil(controller.targetFrame(matching: anchor))
+        XCTAssertTrue(probe.waitUntilStarted(timeout: 1))
+        XCTAssertEqual(probe.callCount, 1, "同一时刻只允许一个 AX frame 查询")
+
+        probe.release()
+        let didResolve = await waitUntil {
+            controller.cachedFollowAccessibilityFrame?.frame == resolvedFrame
+        }
+        XCTAssertTrue(didResolve)
+        XCTAssertEqual(controller.targetFrame(matching: anchor)?.frame, resolvedFrame)
+    }
+
+    func testStaleFollowAccessibilityFrameCannotReplaceNewAnchorState() async {
+        let probe = BlockingAccessibilityFrameQuery(
+            result: NSRect(x: 20, y: 30, width: 400, height: 300)
+        )
+        let controller = FloatingTokenPanelController()
+        controller.accessibilityResolver = FloatingPanelAccessibilityResolver(
+            frameQuery: probe.query
+        )
+        controller.relaxedVisibleWindowCache = FloatingPanelWindowListCache(
+            createdAt: Date(),
+            windows: []
+        )
+        let anchor = FloatingPanelWindowAnchor(
+            windowNumber: nil,
+            ownerPID: 987_653,
+            ownerBundleID: "test.old-target",
+            windowTitle: "Old",
+            targetDescription: "Old",
+            offset: .zero,
+            accessibilityWindow: AXUIElementCreateApplication(987_653)
+        )
+        controller.lockedAnchor = anchor
+
+        XCTAssertNil(controller.targetFrame(matching: anchor))
+        XCTAssertTrue(probe.waitUntilStarted(timeout: 1))
+        controller.resetFollowTargetResolution()
+        controller.lockedAnchor = nil
+        probe.release()
+
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(controller.cachedFollowAccessibilityFrame)
+    }
+
+    func testAccessibilityIPCUsesBoundedMessagingTimeout() {
+        XCTAssertEqual(FloatingPanelAccessibilityIPC.messagingTimeout, 0.25)
+    }
+
+    func testMainActorFloatingPanelFilesContainNoSynchronousAccessibilityReads() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let mainActorFiles = [
+            "Sources/CodexTokenBar/FloatingTokenPanel+WindowFollow.swift",
+            "Sources/CodexTokenBar/FloatingTokenPanel+WindowTargeting.swift"
+        ]
+        for path in mainActorFiles {
+            let source = try String(
+                contentsOf: projectRoot.appendingPathComponent(path),
+                encoding: .utf8
+            )
+            XCTAssertFalse(source.contains("AXUIElementCopy"), "\(path) 不能重新引入同步 AX 读取")
+        }
+        let resolverSource = try String(
+            contentsOf: projectRoot.appendingPathComponent(
+                "Sources/CodexTokenBar/FloatingPanelAccessibilityResolver.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(resolverSource.contains("AXUIElementSetMessagingTimeout"))
+        XCTAssertTrue(resolverSource.contains("queue.async"))
+    }
+
     private func makePanel() -> FloatingTokenPanelWindow {
         FloatingTokenPanelWindow(
             contentRect: NSRect(x: 0, y: 0, width: 258, height: 97),
@@ -220,5 +325,68 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(1),
+        predicate: @MainActor () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if predicate() {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return predicate()
+    }
+}
+
+private final class BlockingAccessibilityFrameQuery: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let result: NSRect?
+    private var calls = 0
+    private var isReleased = false
+
+    init(result: NSRect?) {
+        self.result = result
+    }
+
+    var query: FloatingPanelAccessibilityResolver.FrameQuery {
+        { [self] _ in
+            condition.lock()
+            calls += 1
+            condition.broadcast()
+            while !isReleased {
+                condition.wait()
+            }
+            condition.unlock()
+            return result
+        }
+    }
+
+    var callCount: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return calls
+    }
+
+    func waitUntilStarted(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while calls == 0 {
+            guard condition.wait(until: deadline) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    func release() {
+        condition.lock()
+        isReleased = true
+        condition.broadcast()
+        condition.unlock()
     }
 }

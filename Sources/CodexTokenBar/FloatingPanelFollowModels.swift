@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
 
-struct FloatingPanelTargetWindow {
+struct FloatingPanelTargetWindow: Sendable {
     let windowNumber: Int
     let ownerPID: pid_t
     let ownerBundleID: String?
@@ -18,7 +18,7 @@ struct FloatingPanelTargetWindow {
     }
 }
 
-struct FloatingPanelAccessibilityTarget {
+struct FloatingPanelAccessibilityTarget: @unchecked Sendable {
     let window: AXUIElement
     let ownerPID: pid_t
     let ownerBundleID: String?
@@ -39,6 +39,17 @@ struct FloatingPanelFollowTarget {
     let targetDescription: String
 }
 
+struct FloatingPanelAccessibilityFrameCache: @unchecked Sendable {
+    let window: AXUIElement
+    let ownerPID: pid_t
+    let frame: NSRect
+
+    func matches(_ anchor: FloatingPanelWindowAnchor) -> Bool {
+        guard let accessibilityWindow = anchor.accessibilityWindow else { return false }
+        return ownerPID == anchor.ownerPID && CFEqual(window, accessibilityWindow)
+    }
+}
+
 struct FloatingPanelWindowListCache {
     let createdAt: Date
     let windows: [FloatingPanelTargetWindow]
@@ -52,6 +63,15 @@ struct FloatingPanelWindowAnchor {
     let targetDescription: String
     let offset: NSPoint
     let accessibilityWindow: AXUIElement?
+}
+
+extension FloatingPanelWindowAnchor {
+    func hasSameIdentity(as other: FloatingPanelWindowAnchor) -> Bool {
+        windowNumber == other.windowNumber
+            && ownerPID == other.ownerPID
+            && ownerBundleID == other.ownerBundleID
+            && windowTitle == other.windowTitle
+    }
 }
 
 struct FloatingPanelLockedTargetDrag {

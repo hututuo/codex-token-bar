@@ -9,26 +9,24 @@ extension FloatingTokenPanelController {
         guard FloatingPanelExternalEventRelevance.shouldRecordClick(isPresented: externalEventState.isPresented) else { return }
         if let panel, panel.frame.contains(location) {
             activeLockedTargetDrag = nil
+            externalMouseButtonIsDown = false
             return
         }
+        externalMouseButtonIsDown = true
+        externalClickResolutionGeneration &+= 1
         lastExternalClickLocation = location
         lastExternalClickAt = Date()
         lastExternalClickWindowNumber = nil
         lastExternalClickOwnerPID = nil
         lastExternalClickAXWindow = nil
+        lastExternalClickAccessibilityTarget = nil
         guard shouldInspectExternalMouseWindow else { return }
-        let clickedAXTarget: FloatingPanelAccessibilityTarget?
-        if let externalClickAccessibilityTargetProvider {
-            clickedAXTarget = externalClickAccessibilityTargetProvider(location)
-        } else {
-            clickedAXTarget = accessibilityTarget(at: location)
-        }
+        let clickedAXTarget = externalClickAccessibilityTargetProvider?(location)
         if let target = clickedAXTarget {
             lastExternalClickAXWindow = target.window
+            lastExternalClickAccessibilityTarget = target
             lastExternalClickOwnerPID = target.ownerPID
             lastExternalActivePID = target.ownerPID
-        } else {
-            lastExternalClickAXWindow = nil
         }
         let visibleTargets = externalClickVisibleWindowsProvider?() ?? visibleWindows(relaxed: true, forceRefresh: true)
         let clickedWindow = visibleTargets.first(where: { windowContainsClick(location, window: $0) })
@@ -47,6 +45,13 @@ extension FloatingTokenPanelController {
             clickedWindow: clickedWindow,
             clickedAXTarget: clickedAXTarget
         )
+        if externalClickAccessibilityTargetProvider == nil {
+            resolveExternalClickAccessibilityTarget(
+                at: location,
+                clickedWindow: clickedWindow,
+                generation: externalClickResolutionGeneration
+            )
+        }
     }
 
     func recordExternalMouseDrag(at location: NSPoint) {
@@ -58,6 +63,7 @@ extension FloatingTokenPanelController {
     }
 
     func finishExternalMouseDrag(at location: NSPoint) {
+        externalMouseButtonIsDown = false
         guard shouldInspectExternalMouseWindow else { return }
         guard activeLockedTargetDrag != nil else { return }
         followLockedTargetDrag(at: location)
@@ -262,12 +268,14 @@ extension FloatingTokenPanelController {
             windowTitle: targetWindow.title,
             targetDescription: targetWindow.displayName,
             offset: offset,
-            accessibilityWindow: accessibilityTarget(matching: targetWindow)?.window
+            accessibilityWindow: nil
         )
     }
 
     func startFollowingAnchor() {
         guard lockedAnchor != nil else { return }
+        resetFollowTargetResolution()
+        requestFollowTargetResolutionIfNeeded()
         installAccessibilityObserverForLockedAnchor()
         fastFollowUntil = Date().addingTimeInterval(fastFollowGracePeriod)
         scheduleFollowTimer(interval: fastFollowInterval)
@@ -289,6 +297,7 @@ extension FloatingTokenPanelController {
 
     func stopFollowingAnchor() {
         activeLockedTargetDrag = nil
+        resetFollowTargetResolution()
         followTimer?.invalidate()
         followTimer = nil
         followTimerInterval = nil
@@ -323,6 +332,7 @@ extension FloatingTokenPanelController {
         else {
             return
         }
+        FloatingPanelAccessibilityIPC.configure(accessibilityWindow)
 
         var observer: AXObserver?
         guard AXObserverCreate(anchor.ownerPID, Self.accessibilityObserverCallback, &observer) == .success,
@@ -345,6 +355,7 @@ extension FloatingTokenPanelController {
 
     func uninstallAccessibilityObserver() {
         if let observer = accessibilityObserver, let observedAccessibilityWindow {
+            FloatingPanelAccessibilityIPC.configure(observedAccessibilityWindow)
             AXObserverRemoveNotification(observer, observedAccessibilityWindow, kAXMovedNotification as CFString)
             AXObserverRemoveNotification(observer, observedAccessibilityWindow, kAXResizedNotification as CFString)
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
@@ -372,6 +383,58 @@ extension FloatingTokenPanelController {
         )
         let frame = anchoredPanelFrame(for: panel, size: panel.frame.size, topLeft: NSPoint(x: origin.x, y: origin.y + panel.frame.height))
         return movePanelIfNeeded(panel, to: frame.origin, persist: true)
+    }
+
+    func resolveExternalClickAccessibilityTarget(
+        at location: NSPoint,
+        clickedWindow: FloatingPanelTargetWindow?,
+        generation: UInt64
+    ) {
+        let request = FloatingPanelAccessibilityPointRequest(
+            location: location,
+            displayMaxY: FloatingPanelScreenGeometry.displayMaxY
+        )
+        accessibilityResolver.resolveTarget(at: request) { [weak self] snapshot in
+            guard let self,
+                  generation == self.externalClickResolutionGeneration,
+                  self.lastExternalClickLocation == location
+            else {
+                return
+            }
+            guard let snapshot,
+                  let target = self.accessibilityTarget(from: snapshot)
+            else {
+                return
+            }
+            self.lastExternalClickAXWindow = target.window
+            self.lastExternalClickAccessibilityTarget = target
+            self.lastExternalClickOwnerPID = target.ownerPID
+            self.lastExternalActivePID = target.ownerPID
+            self.attachAccessibilityTargetToLockedAnchorIfMatching(target)
+            guard self.externalMouseButtonIsDown,
+                  self.activeLockedTargetDrag == nil
+            else {
+                return
+            }
+            self.beginLockedTargetDragIfNeeded(
+                at: location,
+                clickedWindow: clickedWindow,
+                clickedAXTarget: target
+            )
+        }
+    }
+
+    func invalidateExternalAccessibilityResolution() {
+        externalClickResolutionGeneration &+= 1
+        externalMouseButtonIsDown = false
+        lastExternalClickAccessibilityTarget = nil
+    }
+
+    func resetFollowTargetResolution() {
+        followResolutionGeneration &+= 1
+        followFrameResolutionInFlight = false
+        anchorAccessibilityResolutionInFlight = false
+        cachedFollowAccessibilityFrame = nil
     }
 
     @discardableResult

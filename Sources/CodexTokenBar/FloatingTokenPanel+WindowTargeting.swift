@@ -61,13 +61,13 @@ extension FloatingTokenPanelController {
         else {
             return nil
         }
-        if let lastExternalClickAXWindow {
-            return accessibilityTarget(from: lastExternalClickAXWindow)
+        if let lastExternalClickAccessibilityTarget {
+            return lastExternalClickAccessibilityTarget
         }
         if let externalClickAccessibilityTargetProvider {
             return externalClickAccessibilityTargetProvider(location)
         }
-        return accessibilityTarget(at: location)
+        return nil
     }
 
     func windowContainsClick(_ location: NSPoint, window: FloatingPanelTargetWindow) -> Bool {
@@ -128,14 +128,15 @@ extension FloatingTokenPanelController {
     }
 
     func targetFrame(matching anchor: FloatingPanelWindowAnchor) -> FloatingPanelFollowTarget? {
-        if let accessibilityWindow = anchor.accessibilityWindow,
-           AXIsProcessTrusted() {
-            var ownerPID: pid_t = 0
-            if AXUIElementGetPid(accessibilityWindow, &ownerPID) == .success,
-               ownerPID == anchor.ownerPID,
-               let frame = accessibilityFrame(of: accessibilityWindow) {
-                return FloatingPanelFollowTarget(frame: frame, targetDescription: anchor.targetDescription)
-            }
+        if lockedAnchor?.hasSameIdentity(as: anchor) == true {
+            requestFollowTargetResolutionIfNeeded()
+        }
+        if let cachedFollowAccessibilityFrame,
+           cachedFollowAccessibilityFrame.matches(anchor) {
+            return FloatingPanelFollowTarget(
+                frame: cachedFollowAccessibilityFrame.frame,
+                targetDescription: anchor.targetDescription
+            )
         }
         if let targetWindow = findWindow(matching: anchor) {
             return FloatingPanelFollowTarget(frame: targetWindow.frame, targetDescription: targetWindow.displayName)
@@ -305,126 +306,124 @@ extension FloatingTokenPanelController {
         return blockedNames.contains(ownerName)
     }
 
-    func accessibilityTarget(at location: NSPoint) -> FloatingPanelAccessibilityTarget? {
-        guard AXIsProcessTrusted() else { return nil }
-        let systemWide = AXUIElementCreateSystemWide()
-        var element: AXUIElement?
-        let quartzLocation = NSPoint(x: location.x, y: FloatingPanelScreenGeometry.displayMaxY - location.y)
-        guard AXUIElementCopyElementAtPosition(
-            systemWide,
-            Float(quartzLocation.x),
-            Float(quartzLocation.y),
-            &element
-        ) == .success,
-              let element,
-              let window = accessibilityWindow(from: element)
-        else {
-            return nil
-        }
-        return accessibilityTarget(from: window)
-    }
-
-    func accessibilityTarget(matching window: FloatingPanelTargetWindow) -> FloatingPanelAccessibilityTarget? {
-        guard AXIsProcessTrusted() else { return nil }
-        let appElement = AXUIElementCreateApplication(window.ownerPID)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement]
-        else {
-            return nil
-        }
-
-        let candidates = windows.compactMap { accessibilityTarget(from: $0) }
-            .filter { $0.ownerPID == window.ownerPID }
-        let scored = candidates.map { target -> (FloatingPanelAccessibilityTarget, CGFloat) in
-            let frameDelta = abs(target.frame.minX - window.frame.minX)
-                + abs(target.frame.minY - window.frame.minY)
-                + abs(target.frame.width - window.frame.width)
-                + abs(target.frame.height - window.frame.height)
-            let titleBonus: CGFloat = (!window.title.isEmpty && target.title == window.title) ? 2_000 : 0
-            return (target, titleBonus - frameDelta)
-        }
-        guard let best = scored.max(by: { $0.1 < $1.1 }) else { return nil }
-        let titleMatches = !window.title.isEmpty && best.0.title == window.title
-        let frameLooksClose = best.1 > -90
-        return titleMatches || frameLooksClose ? best.0 : nil
-    }
-
-    func accessibilityTarget(from window: AXUIElement) -> FloatingPanelAccessibilityTarget? {
-        guard AXIsProcessTrusted() else { return nil }
-        var ownerPID: pid_t = 0
-        guard AXUIElementGetPid(window, &ownerPID) == .success,
-              ownerPID != ProcessInfo.processInfo.processIdentifier,
-              let frame = accessibilityFrame(of: window)
-        else {
-            return nil
-        }
+    func accessibilityTarget(
+        from snapshot: FloatingPanelAccessibilitySnapshot
+    ) -> FloatingPanelAccessibilityTarget? {
+        let ownerPID = snapshot.ownerPID
+        guard ownerPID != ProcessInfo.processInfo.processIdentifier else { return nil }
         let app = NSRunningApplication(processIdentifier: ownerPID)
         let ownerName = app?.localizedName ?? ""
         guard !isBlockedWindowOwner(ownerName: ownerName, bundleID: app?.bundleIdentifier) else {
             return nil
         }
-        let title = accessibilityStringAttribute(window, kAXTitleAttribute as CFString) ?? ""
         return FloatingPanelAccessibilityTarget(
-            window: window,
+            window: snapshot.window,
             ownerPID: ownerPID,
             ownerBundleID: app?.bundleIdentifier,
             ownerName: ownerName,
-            title: title,
-            frame: frame
+            title: snapshot.title,
+            frame: snapshot.frame
         )
     }
 
-    func accessibilityWindow(from element: AXUIElement) -> AXUIElement? {
-        if accessibilityStringAttribute(element, kAXRoleAttribute as CFString) == (kAXWindowRole as String) {
-            return element
+    func requestFollowTargetResolutionIfNeeded() {
+        guard let anchor = lockedAnchor else { return }
+        if anchor.accessibilityWindow == nil {
+            requestAnchorAccessibilityResolution(anchor)
+        } else {
+            requestAccessibilityFrameResolution(anchor)
         }
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &value) == .success,
-              let value,
-              CFGetTypeID(value) == AXUIElementGetTypeID()
-        else {
-            return nil
-        }
-        return unsafeDowncast(value, to: AXUIElement.self)
     }
 
-    func accessibilityFrame(of window: AXUIElement) -> NSRect? {
-        var positionValue: CFTypeRef?
-        var sizeValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionValue) == .success,
-              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeValue) == .success,
-              let positionValue,
-              let sizeValue,
-              CFGetTypeID(positionValue) == AXValueGetTypeID(),
-              CFGetTypeID(sizeValue) == AXValueGetTypeID()
+    func requestAccessibilityFrameResolution(_ anchor: FloatingPanelWindowAnchor) {
+        guard !followFrameResolutionInFlight,
+              let accessibilityWindow = anchor.accessibilityWindow
         else {
-            return nil
+            return
         }
-        let positionAXValue = unsafeDowncast(positionValue, to: AXValue.self)
-        let sizeAXValue = unsafeDowncast(sizeValue, to: AXValue.self)
-        var topLeft = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(positionAXValue, .cgPoint, &topLeft),
-              AXValueGetValue(sizeAXValue, .cgSize, &size),
-              size.width > 1,
-              size.height > 1
-        else {
-            return nil
-        }
-        return NSRect(
-            x: topLeft.x,
-            y: FloatingPanelScreenGeometry.displayMaxY - topLeft.y - size.height,
-            width: size.width,
-            height: size.height
+        let generation = followResolutionGeneration
+        followFrameResolutionInFlight = true
+        let request = FloatingPanelAccessibilityFrameRequest(
+            window: accessibilityWindow,
+            ownerPID: anchor.ownerPID,
+            displayMaxY: FloatingPanelScreenGeometry.displayMaxY
         )
+        accessibilityResolver.resolveFrame(request) { [weak self] frame in
+            guard let self,
+                  generation == self.followResolutionGeneration,
+                  let currentAnchor = self.lockedAnchor,
+                  currentAnchor.hasSameIdentity(as: anchor)
+            else {
+                return
+            }
+            self.followFrameResolutionInFlight = false
+            guard let frame,
+                  let currentWindow = currentAnchor.accessibilityWindow,
+                  CFEqual(currentWindow, accessibilityWindow)
+            else {
+                return
+            }
+            self.cachedFollowAccessibilityFrame = FloatingPanelAccessibilityFrameCache(
+                window: accessibilityWindow,
+                ownerPID: anchor.ownerPID,
+                frame: frame
+            )
+        }
     }
 
-    func accessibilityStringAttribute(_ element: AXUIElement, _ attribute: CFString) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
-            return nil
+    func requestAnchorAccessibilityResolution(_ anchor: FloatingPanelWindowAnchor) {
+        guard !anchorAccessibilityResolutionInFlight,
+              let targetWindow = findWindow(matching: anchor)
+        else {
+            return
         }
-        return value as? String
+        let generation = followResolutionGeneration
+        anchorAccessibilityResolutionInFlight = true
+        let request = FloatingPanelAccessibilityWindowRequest(
+            window: targetWindow,
+            displayMaxY: FloatingPanelScreenGeometry.displayMaxY
+        )
+        accessibilityResolver.resolveTarget(matching: request) { [weak self] snapshot in
+            guard let self,
+                  generation == self.followResolutionGeneration,
+                  let currentAnchor = self.lockedAnchor,
+                  currentAnchor.hasSameIdentity(as: anchor)
+            else {
+                return
+            }
+            self.anchorAccessibilityResolutionInFlight = false
+            guard let snapshot,
+                  let target = self.accessibilityTarget(from: snapshot),
+                  self.accessibilityTarget(target, matches: currentAnchor)
+            else {
+                return
+            }
+            self.attachAccessibilityTargetToLockedAnchorIfMatching(target)
+        }
+    }
+
+    func attachAccessibilityTargetToLockedAnchorIfMatching(
+        _ target: FloatingPanelAccessibilityTarget
+    ) {
+        guard let anchor = lockedAnchor,
+              accessibilityTarget(target, matches: anchor)
+        else {
+            return
+        }
+        lockedAnchor = FloatingPanelWindowAnchor(
+            windowNumber: anchor.windowNumber,
+            ownerPID: anchor.ownerPID,
+            ownerBundleID: anchor.ownerBundleID,
+            windowTitle: anchor.windowTitle,
+            targetDescription: anchor.targetDescription,
+            offset: anchor.offset,
+            accessibilityWindow: target.window
+        )
+        cachedFollowAccessibilityFrame = FloatingPanelAccessibilityFrameCache(
+            window: target.window,
+            ownerPID: target.ownerPID,
+            frame: target.frame
+        )
+        installAccessibilityObserverForLockedAnchor()
     }
 }
