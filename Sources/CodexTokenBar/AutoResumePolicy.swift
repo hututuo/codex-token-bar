@@ -402,7 +402,11 @@ enum AutoResumePolicy {
     }
 
     private static func dayKey(for date: Date, calendar: Calendar) -> String {
-        let values = calendar.dateComponents([.year, .month, .day], from: date)
+        // The schedule still follows the user's local calendar and time zone, but the
+        // shared trigger key must match Rust's Gregorian `time::Date` representation.
+        var keyCalendar = Calendar(identifier: .gregorian)
+        keyCalendar.timeZone = calendar.timeZone
+        let values = keyCalendar.dateComponents([.year, .month, .day], from: date)
         return String(
             format: "%04d-%02d-%02d",
             values.year ?? 0,

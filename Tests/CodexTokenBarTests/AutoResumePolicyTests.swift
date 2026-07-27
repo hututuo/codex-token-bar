@@ -118,6 +118,24 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertEqual(nextDay.key, "daily:\(target.id):2026-07-17:0930")
     }
 
+    func testDailyKeyUsesGregorianDateWithANonGregorianSchedulingCalendar() throws {
+        var configuration = enabledConfiguration()
+        configuration.scheduleMode = .daily
+        configuration.dailyHour = 9
+        configuration.dailyMinute = 30
+
+        var buddhistCalendar = Calendar(identifier: .buddhist)
+        buddhistCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let trigger = try XCTUnwrap(AutoResumePolicy.scheduledTrigger(
+            configuration: configuration,
+            state: .default,
+            now: date(2026, 7, 16, 9, 30),
+            calendar: buddhistCalendar
+        ))
+
+        XCTAssertEqual(trigger.key, "daily:\(target.id):2026-07-16:0930")
+    }
+
     func testDailyDoesNotBackfireImmediatelyWhenEnabledAfterTodaysTime() {
         var configuration = enabledConfiguration()
         configuration.scheduleMode = .daily
