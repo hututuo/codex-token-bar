@@ -193,3 +193,23 @@ test("sidebar rollback rejects a legacy backup without machine-readable identity
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /backup-metadata\.json/);
 });
+
+test("sidebar install cleans normal temporary work and restores after verification failure", () => {
+  const source = readFileSync(script, "utf8");
+  const trapIndex = source.indexOf("trap cleanup_patch_workdir EXIT");
+  const allocationIndex = source.indexOf('PATCH_WORKDIR="$(mktemp');
+
+  assert.doesNotMatch(source, /\bneeds_sudo\b/);
+  assert.match(source, /can_write_without_sudo\(\)/);
+  assert.ok(trapIndex >= 0 && trapIndex < allocationIndex);
+  assert.match(
+    source,
+    /if ! codesign --verify --deep --strict --verbose=2 "\$APP_PATH"/,
+  );
+  const verifyFailureIndex = source.indexOf("Installed app signature verification failed");
+  assert.ok(verifyFailureIndex >= 0);
+  assert.ok(
+    source.indexOf('restore_backup_files "$backup_dir"', verifyFailureIndex)
+      > verifyFailureIndex,
+  );
+});

@@ -13,6 +13,7 @@ OPEN_AFTER=1
 QUIT_CODEX=1
 DRY_RUN=0
 ROLLBACK_BACKUP=""
+PATCH_WORKDIR=""
 
 usage() {
   cat <<'EOF'
@@ -181,26 +182,33 @@ open_codex_if_needed() {
   open -a "$APP_PATH" >/dev/null 2>&1 || open "$APP_PATH" >/dev/null 2>&1 || true
 }
 
-needs_sudo() {
+can_write_without_sudo() {
   [[ -w "$ASAR_PATH" && -w "$APP_PATH/Contents" ]]
 }
 
 restore_backup_files() {
   local backup_dir="$1"
-  if needs_sudo; then
+  if can_write_without_sudo; then
     cp -p "$backup_dir/app.asar.before" "$ASAR_PATH"
+    rm -rf "$SIGNATURE_PATH"
     if [[ -d "$backup_dir/_CodeSignature.before" ]]; then
-      rm -rf "$SIGNATURE_PATH"
       ditto "$backup_dir/_CodeSignature.before" "$SIGNATURE_PATH"
     fi
   else
     sudo cp -p "$backup_dir/app.asar.before" "$ASAR_PATH"
+    sudo rm -rf "$SIGNATURE_PATH"
     if [[ -d "$backup_dir/_CodeSignature.before" ]]; then
-      sudo rm -rf "$SIGNATURE_PATH"
       sudo ditto "$backup_dir/_CodeSignature.before" "$SIGNATURE_PATH"
     fi
   fi
 }
+
+cleanup_patch_workdir() {
+  [[ "$DRY_RUN" == "0" ]] || return 0
+  [[ -n "$PATCH_WORKDIR" && -d "$PATCH_WORKDIR" ]] || return 0
+  rm -rf "$PATCH_WORKDIR"
+}
+trap cleanup_patch_workdir EXIT
 
 make_backup_dir() {
   mkdir -p "$BACKUP_ROOT"
@@ -537,9 +545,9 @@ case "$ACTION" in
     ;;
 
   install)
-    workdir="$(mktemp -d "${TMPDIR:-/tmp}/codex-sidebar-patch.XXXXXX")"
-    patched_asar="$workdir/app.asar.patched"
-    patch_manifest="$workdir/patch-manifest.json"
+    PATCH_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-sidebar-patch.XXXXXX")"
+    patched_asar="$PATCH_WORKDIR/app.asar.patched"
+    patch_manifest="$PATCH_WORKDIR/patch-manifest.json"
 
     log "Inspecting $ASAR_PATH..."
     patch_output="$(asar_status_or_patch patch "$ASAR_PATH" "$patched_asar" "$patch_manifest")"
@@ -547,7 +555,8 @@ case "$ACTION" in
 
     if grep -q '"state": "patched"' "$patch_manifest" 2>/dev/null; then
       log "Codex Desktop already appears to be patched. Nothing to install."
-      rm -rf "$workdir"
+      rm -rf "$PATCH_WORKDIR"
+      PATCH_WORKDIR=""
       exit 0
     fi
 
@@ -604,7 +613,7 @@ EOF
     quit_codex_if_needed
 
     set +e
-    if needs_sudo; then
+    if can_write_without_sudo; then
       cp -p "$patched_asar" "$ASAR_PATH"
       copy_status=$?
       if [[ "$copy_status" -eq 0 ]]; then
@@ -628,11 +637,19 @@ EOF
 
     if [[ "$copy_status" -ne 0 || "$sign_status" -ne 0 ]]; then
       log "Install failed; restoring the backup created for this run..."
-      restore_backup_files "$backup_dir" || true
+      if ! restore_backup_files "$backup_dir"; then
+        fail "failed to install or re-sign the Codex app, and automatic restore also failed. Backup: $backup_dir"
+      fi
       fail "failed to install or re-sign the Codex app. Backup: $backup_dir"
     fi
 
-    codesign --verify --deep --strict --verbose=2 "$APP_PATH" > "$backup_dir/codesign.verify.after.txt" 2>&1
+    if ! codesign --verify --deep --strict --verbose=2 "$APP_PATH" > "$backup_dir/codesign.verify.after.txt" 2>&1; then
+      log "Installed app signature verification failed; restoring the backup created for this run..."
+      if ! restore_backup_files "$backup_dir"; then
+        fail "installed app signature verification failed, and automatic restore also failed. Backup: $backup_dir"
+      fi
+      fail "installed app signature verification failed; the original app was restored. Backup: $backup_dir"
+    fi
     shasum -a 256 "$ASAR_PATH" > "$backup_dir/checksum.installed.txt"
     log "Patch installed."
     log "Backup: $backup_dir"
@@ -654,16 +671,7 @@ EOF
 
     quit_codex_if_needed
 
-    if [[ -d "$backup_dir/_CodeSignature.before" ]]; then
-      restore_backup_files "$backup_dir"
-    elif needs_sudo; then
-      cp -p "$backup_dir/app.asar.before" "$ASAR_PATH"
-      codesign --force --sign - "$APP_PATH"
-    else
-      log "Writing to $APP_PATH requires administrator privileges."
-      sudo cp -p "$backup_dir/app.asar.before" "$ASAR_PATH"
-      sudo codesign --force --sign - "$APP_PATH"
-    fi
+    restore_backup_files "$backup_dir"
 
     codesign --verify --deep --strict --verbose=2 "$APP_PATH"
     log "Rollback complete."
