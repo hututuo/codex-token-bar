@@ -1061,7 +1061,6 @@ fn recovered_trigger(state: &mut RegistryState) -> Option<Trigger> {
     {
         return None;
     }
-    let recovery_key = quota_recovery_key(&state.settings, &state.persisted)?;
     let pending_thread_id = state
         .persisted
         .pending_thread_id
@@ -1080,7 +1079,10 @@ fn recovered_trigger(state: &mut RegistryState) -> Option<Trigger> {
         .persisted
         .pending_trigger_key
         .clone()
-        .unwrap_or_else(|| quota_trigger_key(&state.settings.thread_id, &recovery_key));
+        .or_else(|| {
+            quota_recovery_key(&state.settings, &state.persisted)
+                .map(|recovery_key| quota_trigger_key(&state.settings.thread_id, &recovery_key))
+        })?;
     let label = state
         .persisted
         .pending_trigger_label
@@ -2001,7 +2003,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_pending_is_not_consumed_before_cross_process_claim() {
+    fn scheduled_recovery_does_not_require_reset_timestamp_or_consume_pending_early() {
         let mut settings = enabled_settings();
         settings.quota_window = "fiveHour".into();
         let mut state = RegistryState {
@@ -2019,7 +2021,7 @@ mod tests {
         state.persisted.five_hour.armed = true;
         state.persisted.five_hour.recovery_ready = true;
         state.persisted.five_hour.remaining_percent = Some(1.0);
-        state.persisted.five_hour.reset_at = Some(500);
+        state.persisted.five_hour.reset_at = None;
 
         let trigger = recovered_trigger(&mut state).unwrap();
         assert!(trigger.consumes_pending);

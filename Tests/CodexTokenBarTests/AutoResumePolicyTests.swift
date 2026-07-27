@@ -335,6 +335,69 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertFalse(recovered.key.contains(":7d:"))
     }
 
+    func testLowestRemainingUsesFiveHourKeyWhenSevenDayArmedBeforeBothWindowsRecover() throws {
+        var configuration = enabledConfiguration()
+        configuration.quotaWindow = .lowestRemaining
+        configuration.quotaArmAtOrBelowPercent = 5
+        configuration.quotaResumeAtOrAbovePercent = 20
+        var state = AutoResumeRuntimeState.default
+        let fiveHourReset = date(2026, 7, 16, 15, 0)
+        let sevenDayReset = date(2026, 7, 23, 10, 0)
+
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 50,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 96,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 0)
+        ))
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 50,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 97,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 1)
+        ))
+        XCTAssertEqual(state.quotaArmedWindowLabel, "7d")
+
+        XCTAssertNil(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 97,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 97,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 2)
+        ))
+        XCTAssertEqual(Set(state.quotaLowObservedWindowLabels), Set(["5h", "7d"]))
+
+        let recovered = try XCTUnwrap(AutoResumePolicy.observeQuota(
+            configuration: configuration,
+            state: &state,
+            snapshot: quotaSnapshot(
+                fiveHourUsed: 70,
+                fiveHourReset: fiveHourReset,
+                sevenDayUsed: 70,
+                sevenDayReset: sevenDayReset
+            ),
+            now: date(2026, 7, 16, 10, 3)
+        ))
+        XCTAssertEqual(
+            recovered.key,
+            "quota:\(target.id):5h:\(Int(fiveHourReset.timeIntervalSince1970))"
+        )
+    }
+
     func testLowestRemainingWaitsUntilEveryMeasuredWindowHasRecovered() throws {
         var configuration = enabledConfiguration()
         configuration.quotaWindow = .lowestRemaining

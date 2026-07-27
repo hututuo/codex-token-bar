@@ -87,6 +87,40 @@ enum AutoResumePolicy {
         )
     }
 
+    private static func quotaRecoveryKeyObservation(
+        configuration: AutoResumeConfiguration,
+        state: AutoResumeRuntimeState,
+        snapshot: AccountQuotaSnapshot,
+        selectedObservation: AutoResumeQuotaObservation
+    ) -> AutoResumeQuotaObservation? {
+        guard configuration.quotaWindow == .lowestRemaining else {
+            return selectedObservation.cycleID.hasSuffix(":unknown")
+                ? nil
+                : selectedObservation
+        }
+
+        // 跨端 key 契约：lowestRemaining 有多个真实低位窗口同时恢复时，
+        // 两端都按 5h、7d 的固定顺序选择一个单窗口周期。不能继续沿用最初
+        // armed 的窗口，否则 7d 先低、5h 后低时 Swift 取 7d、Rust 取 5h。
+        var eligibleLabels = Set(state.quotaLowObservedWindowLabels)
+        if eligibleLabels.isEmpty,
+           let armedLabel = state.quotaArmedWindowLabel {
+            eligibleLabels.insert(armedLabel)
+        }
+        let candidates = [snapshot.fiveHour, snapshot.sevenDay].compactMap { $0 }
+        for candidate in candidates
+        where eligibleLabels.contains(candidate.label)
+            && candidate.remainingPercent >= configuration.quotaResumeAtOrAbovePercent {
+            guard let reset = candidate.resetsAt else { continue }
+            return AutoResumeQuotaObservation(
+                windowLabel: candidate.label,
+                remainingPercent: candidate.remainingPercent,
+                cycleID: "\(candidate.label):\(Int(reset.timeIntervalSince1970))"
+            )
+        }
+        return nil
+    }
+
     static func observeQuota(
         configuration: AutoResumeConfiguration,
         state: inout AutoResumeRuntimeState,
@@ -169,8 +203,15 @@ enum AutoResumePolicy {
             let recovered = observation.remainingPercent >= configuration.quotaResumeAtOrAbovePercent
                 && (state.quotaRecoveryObservedLow || cycleChanged)
                 && everyLowWindowRecovered
-                && !observation.cycleID.hasSuffix(":unknown")
-            guard recovered else { return nil }
+            guard recovered,
+                  let keyObservation = quotaRecoveryKeyObservation(
+                      configuration: configuration,
+                      state: state,
+                      snapshot: snapshot,
+                      selectedObservation: observation
+                  ) else {
+                return nil
+            }
 
             state.quotaArmed = false
             state.quotaArmedCycleID = nil
@@ -181,7 +222,7 @@ enum AutoResumePolicy {
             state.quotaLowObservedWindowLabels = []
             return AutoResumeTrigger(
                 kind: .quotaRecovery,
-                key: "quota:\(target.id):\(observation.cycleID)",
+                key: "quota:\(target.id):\(keyObservation.cycleID)",
                 firedAt: now
             )
         }
