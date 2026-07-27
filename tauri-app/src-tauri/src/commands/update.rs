@@ -157,7 +157,6 @@ struct RuntimeState<A> {
     in_flight: Option<(u64, Arc<CompletionSlot>)>,
     next_generation: u64,
     revision: u64,
-    installing: bool,
     presented_version: Option<String>,
     shown_notification_version: Option<String>,
     notification_claim: Option<PresentationClaim>,
@@ -176,7 +175,6 @@ impl<A> Default for RuntimeState<A> {
             in_flight: None,
             next_generation: 0,
             revision: 0,
-            installing: false,
             presented_version: None,
             shown_notification_version: None,
             notification_claim: None,
@@ -212,6 +210,17 @@ struct RegistryCore<A> {
     persist_lock: Arc<Mutex<()>>,
     initialized: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
+    installing: Arc<AtomicBool>,
+}
+
+struct UpdateInstallOwner {
+    installing: Arc<AtomicBool>,
+}
+
+impl Drop for UpdateInstallOwner {
+    fn drop(&mut self) {
+        self.installing.store(false, Ordering::Release);
+    }
 }
 
 struct UpdateMonitorStartedOwner {
@@ -280,6 +289,7 @@ impl<A> Clone for RegistryCore<A> {
             persist_lock: self.persist_lock.clone(),
             initialized: self.initialized.clone(),
             started: self.started.clone(),
+            installing: self.installing.clone(),
         }
     }
 }
@@ -291,6 +301,7 @@ impl<A> Default for RegistryCore<A> {
             persist_lock: Arc::new(Mutex::new(())),
             initialized: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
+            installing: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -678,15 +689,19 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
         requested: &str,
         now: i64,
     ) -> Result<(), String> {
-        if self.state.lock().await.installing {
+        if self
+            .installing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return Err("更新安装已在进行中".into());
         }
+        let _install_owner = UpdateInstallOwner {
+            installing: self.installing.clone(),
+        };
         self.check(ops, true, now).await?;
         let artifact = {
-            let mut state = self.state.lock().await;
-            if state.installing {
-                return Err("更新安装已在进行中".into());
-            }
+            let state = self.state.lock().await;
             let available = state.persisted.available_version.as_deref();
             let checked = state.checked.as_ref();
             if available != Some(requested)
@@ -695,12 +710,9 @@ impl<A: Clone + Send + 'static> RegistryCore<A> {
                 return Err("可安装版本已变化，请重新确认".into());
             }
             let artifact = checked.unwrap().artifact.clone();
-            state.installing = true;
             artifact
         };
-        let result = ops.install(artifact).await;
-        self.state.lock().await.installing = false;
-        result
+        ops.install(artifact).await
     }
 }
 
@@ -843,6 +855,7 @@ impl UpdateMonitorRegistry {
             persist_lock: self.core.persist_lock.clone(),
             initialized: self.core.initialized.clone(),
             started: self.core.started.clone(),
+            installing: self.core.installing.clone(),
         };
         tauri::async_runtime::spawn(async move {
             let _started_owner = started_owner;
@@ -1657,7 +1670,7 @@ mod tests {
             assert_eq!(ops.installs.load(Ordering::SeqCst), 1);
             ops.fail_install.store(true, Ordering::SeqCst);
             assert!(core.install(&ops, "0.8.0", 2).await.is_err());
-            assert!(!core.state.lock().await.installing);
+            assert!(!core.installing.load(Ordering::Acquire));
             *ops.check_result.lock().unwrap() = Ok(Some(CheckedUpdate {
                 version: "0.9.0".into(),
                 body: String::new(),
@@ -1665,6 +1678,35 @@ mod tests {
                 artifact: "0.9.0".into(),
             }));
             assert!(core.install(&ops, "0.8.0", 3).await.is_err());
+            assert_eq!(ops.installs.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn cancelled_install_releases_owner_and_allows_retry() {
+        runtime().block_on(async {
+            let core = Arc::new(RegistryCore::<String>::default());
+            let ops = Arc::new(MockOps::available("0.8.0"));
+            ops.install_delay_ms.store(30_000, Ordering::SeqCst);
+            let install = tokio::spawn({
+                let core = core.clone();
+                let ops = ops.clone();
+                async move { core.install(ops.as_ref(), "0.8.0", 1).await }
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while ops.installs.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("install never reached the cancellable operation");
+
+            install.abort();
+            assert!(install.await.unwrap_err().is_cancelled());
+            assert!(!core.installing.load(Ordering::Acquire));
+
+            ops.install_delay_ms.store(0, Ordering::SeqCst);
+            core.install(ops.as_ref(), "0.8.0", 2).await.unwrap();
             assert_eq!(ops.installs.load(Ordering::SeqCst), 2);
         });
     }
