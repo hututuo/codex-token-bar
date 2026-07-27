@@ -68,6 +68,121 @@ final class CodexSessionEnhancementTests: XCTestCase {
         XCTAssertTrue(markdown.contains("2026"))
     }
 
+    func testMarkdownExportSpillsLargeJSONLineAndStreamsCompleteBodyWithoutDataCap() async throws {
+        let fixture = try makeFixture()
+        let handle = try FileHandle(forWritingTo: fixture.rolloutURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(
+            #"{"payload":{"content":[{"image_url":"https:\/\/example.com\/图.png","type":"input_image"},{"text":"\r\n  开始-"#.utf8
+        ))
+        let repeatedBytes =
+            CodexRolloutLineAccumulator.inMemoryByteThreshold + 128 * 1024
+        try handle.write(contentsOf: Data(repeating: 0x7E, count: repeatedBytes))
+        try handle.write(contentsOf: Data(
+            #"-结束  \r\n","type":"output_text"}],"role":"assistant","type":"message"},"timestamp":null,"type":"response_item"}"#.utf8
+        ))
+        try handle.write(contentsOf: Data([0x0A]))
+        try handle.synchronize()
+
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        let collector = MarkdownChunkCollector()
+        _ = try await executor.exportMarkdown(
+            threadID: fixture.threadID,
+            fallbackTitle: "备用标题",
+            emit: { chunk in await collector.append(chunk) }
+        )
+
+        let markdown = await collector.joined()
+        let repeatedByteCount = markdown.utf8.reduce(into: 0) { count, byte in
+            if byte == 0x7E { count += 1 }
+        }
+        XCTAssertEqual(repeatedByteCount, repeatedBytes)
+        XCTAssertTrue(markdown.contains("### Assistant"))
+        XCTAssertTrue(markdown.contains("[Image link](<https://example.com/图.png>)"))
+        XCTAssertTrue(markdown.contains("\n\n  开始-"))
+        XCTAssertTrue(markdown.hasSuffix("-结束\n"))
+        let maximumChunkBytes = await collector.maximumChunkBytes()
+        XCTAssertLessThanOrEqual(
+            maximumChunkBytes,
+            64 * 1024 + 4,
+            "映射的大行正文必须保持分块输出，不能重新拼成整行 String"
+        )
+    }
+
+    func testLargeMarkdownParserPropagatesTaskCancellation() async throws {
+        let line = CodexRolloutLineAccumulator()
+        try line.append(Data(
+            #"{"payload":{"content":[{"text":""#.utf8
+        ))
+        try line.append(
+            Data(
+                repeating: 0x78,
+                count: CodexRolloutLineAccumulator.inMemoryByteThreshold
+            )
+        )
+        try line.append(Data(
+            #"":","type":"output_text"}],"role":"assistant","type":"message"},"type":"response_item"}"#.utf8
+        ))
+        guard case .mapped(let mapped) = try line.finish() else {
+            return XCTFail("fixture 必须进入匿名落盘映射路径")
+        }
+
+        let task = Task {
+            withUnsafeCurrentTask { current in
+                current?.cancel()
+            }
+            return try CodexLargeRolloutMessage.parse(mapped)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("已取消的大行解析必须抛出 CancellationError")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
+    func testLineAccumulatorAcceptsLineBeyondFormer64MiBLimit() throws {
+        let line = CodexRolloutLineAccumulator()
+        let chunk = Data(repeating: 0x78, count: 1024 * 1024)
+        let formerLimit = 64 * 1024 * 1024
+        let expectedBytes = formerLimit + chunk.count
+        for _ in 0..<(expectedBytes / chunk.count) {
+            try line.append(chunk)
+        }
+        guard case .mapped(let mapped) = try line.finish() else {
+            return XCTFail("超过内存切换点的完整行必须进入匿名映射路径")
+        }
+        XCTAssertEqual(mapped.count, expectedBytes)
+    }
+
+    func testMarkdownExportPropagatesCallerCancellationToDetachedWorker() async throws {
+        let fixture = try makeFixture()
+        let executor = FoundationCodexSessionEnhancementExecutor(
+            dataSourceResolver: { fixture.dataSource }
+        )
+        let gate = MarkdownCancellationGate()
+        let task = Task {
+            try await executor.exportMarkdown(
+                threadID: fixture.threadID,
+                fallbackTitle: "备用标题",
+                emit: { _ in await gate.enterAndWait() }
+            )
+        }
+
+        await gate.waitUntilEntered()
+        task.cancel()
+        await gate.release()
+        do {
+            _ = try await task.value
+            XCTFail("调用方取消必须传递给 detached 导出任务")
+        } catch is CancellationError {
+            // expected
+        }
+    }
+
     func testProjectMoveUpdatesDatabaseAndRolloutSessionMetaTogether() async throws {
         let fixture = try makeFixture()
         let target = fixture.home.appendingPathComponent("Target Project")
@@ -563,12 +678,61 @@ final class CodexSessionEnhancementTests: XCTestCase {
 
 private actor MarkdownChunkCollector {
     private var chunks: [String] = []
+    private var largestChunkBytes = 0
 
     func append(_ chunk: String) {
         chunks.append(chunk)
+        largestChunkBytes = max(largestChunkBytes, chunk.utf8.count)
     }
 
     func joined() -> String {
         chunks.joined()
+    }
+
+    func maximumChunkBytes() -> Int {
+        largestChunkBytes
+    }
+}
+
+private actor MarkdownCancellationGate {
+    private var didEnter = false
+    private var isReleased = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func enterAndWait() async {
+        guard !isReleased else { return }
+        if !didEnter {
+            didEnter = true
+            let waiters = entryWaiters
+            entryWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+        await withCheckedContinuation { continuation in
+            if isReleased {
+                continuation.resume()
+            } else {
+                releaseWaiters.append(continuation)
+            }
+        }
+    }
+
+    func waitUntilEntered() async {
+        guard !didEnter else { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !isReleased else { return }
+        isReleased = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 }

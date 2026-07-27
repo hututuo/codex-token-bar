@@ -80,7 +80,7 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         emit: @escaping CodexMarkdownChunkEmitter
     ) async throws -> CodexMarkdownExportPayload {
         try CodexThreadID.validate(threadID)
-        return try await Task.detached(priority: .userInitiated) { [dataSourceResolver] in
+        let worker = Task.detached(priority: .userInitiated) { [dataSourceResolver] in
             guard let dataSource = dataSourceResolver() else {
                 throw CodexSessionEnhancementBackendError.dataSourceUnavailable
             }
@@ -91,7 +91,12 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
                 fileManager: .default,
                 emit: emit
             )
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     func moveThreadWorkspace(
@@ -956,11 +961,6 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         }
     }
 
-    /// 单条 rollout 行的上限。合法 Codex 事件远小于该值；没有上限时，一个
-    /// 无换行或单行数 GiB 的损坏文件会把整个文件累进内存，这正是流式导出
-    /// 要消灭的工作集。超限视为文件损坏并明确失败，不做静默截断。
-    static let maximumRolloutLineBytes = 64 * 1024 * 1024
-
     private static func streamMarkdown(
         from url: URL,
         title: String,
@@ -968,43 +968,57 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
     ) async throws {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-        var input = Data()
-        var cursor = 0
+        let line = CodexRolloutLineAccumulator()
         var messageCount = 0
 
-        func emitLine(_ data: Data) async throws {
-            guard let message = exportMessage(from: data) else { return }
+        func emitMessageHeader(speaker: String, timestamp: String?) async throws {
             if messageCount > 0 {
                 try await emit("\n\n")
             }
             messageCount += 1
-            try await emit("### \(message.speaker)\n")
-            if let timestamp = message.timestamp {
+            try await emit("### \(speaker)\n")
+            if let timestamp {
                 try await emit("_\(timestamp)_\n")
             }
             try await emit("\n")
-            try await emit(message.body)
+        }
+
+        func emitLine(_ completed: CodexCompletedRolloutLine) async throws {
+            switch completed {
+            case .memory(let data):
+                guard let message = exportMessage(from: data) else { return }
+                try await emitMessageHeader(
+                    speaker: message.speaker,
+                    timestamp: message.timestamp
+                )
+                try await emit(message.body)
+            case .mapped(let mapped):
+                guard let message = try CodexLargeRolloutMessage.parse(mapped) else { return }
+                try await emitMessageHeader(
+                    speaker: message.speaker,
+                    timestamp: formattedTimestamp(message.timestamp)
+                )
+                try await message.emitBody(emit)
+            }
         }
 
         try await emit("# \(title)\n\n")
         while let chunk = try handle.read(upToCount: 1024 * 1024),
               !chunk.isEmpty {
-            input.append(chunk)
-            while let newline = input[cursor...].firstIndex(of: 0x0A) {
-                try await emitLine(Data(input[cursor..<newline]))
-                cursor = newline + 1
+            try Task.checkCancellation()
+            var start = chunk.startIndex
+            while start < chunk.endIndex,
+                  let newline = chunk[start...].firstIndex(of: 0x0A) {
+                try line.append(Data(chunk[start..<newline]))
+                try await emitLine(line.finish())
+                start = chunk.index(after: newline)
             }
-            guard input.count - cursor <= maximumRolloutLineBytes else {
-                throw CodexSessionEnhancementBackendError
-                    .oversizedRolloutLine(maximumRolloutLineBytes)
-            }
-            if cursor > 0, cursor >= 1024 * 1024 {
-                input.removeSubrange(0..<cursor)
-                cursor = 0
+            if start < chunk.endIndex {
+                try line.append(Data(chunk[start...]))
             }
         }
-        if cursor < input.count {
-            try await emitLine(Data(input[cursor...]))
+        if !line.isEmpty {
+            try await emitLine(line.finish())
         }
         guard messageCount > 0 else {
             throw CodexSessionEnhancementBackendError.noExportableMessages
@@ -1146,7 +1160,6 @@ enum CodexSessionEnhancementBackendError: LocalizedError {
     case databaseUnavailable
     case invalidTargetDirectory(String)
     case noExportableMessages
-    case oversizedRolloutLine(Int)
     case rolloutPathMissing
     case rolloutMetadataMismatch(String)
     case threadNotFound(String)
@@ -1165,8 +1178,6 @@ enum CodexSessionEnhancementBackendError: LocalizedError {
             return "目标项目目录不可用：\(path)"
         case .noExportableMessages:
             return "未找到可导出的用户或助手消息"
-        case let .oversizedRolloutLine(limit):
-            return "rollout 单行超过 \(limit / (1024 * 1024)) MiB 上限，文件可能已损坏"
         case .rolloutPathMissing:
             return "会话缺少 rollout 文件路径"
         case let .rolloutMetadataMismatch(threadID):
