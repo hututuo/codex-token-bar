@@ -229,6 +229,108 @@ latest_backup_dir() {
   printf '%s\n' "$latest"
 }
 
+write_backup_metadata() {
+  local backup_dir="$1"
+  local patched_asar="$2"
+  python3 - "$APP_PATH" "$backup_dir" "$patched_asar" <<'PY'
+import hashlib
+import json
+import os
+import plistlib
+import sys
+
+app_path, backup_dir, patched_asar = sys.argv[1:4]
+info_path = os.path.join(app_path, "Contents", "Info.plist")
+original_asar = os.path.join(backup_dir, "app.asar.before")
+metadata_path = os.path.join(backup_dir, "backup-metadata.json")
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+with open(info_path, "rb") as handle:
+    info = plistlib.load(handle)
+
+metadata = {
+    "schemaVersion": 1,
+    "bundleIdentifier": info.get("CFBundleIdentifier", ""),
+    "bundleShortVersion": info.get("CFBundleShortVersionString", ""),
+    "bundleVersion": info.get("CFBundleVersion", ""),
+    "infoPlistSha256": sha256(info_path),
+    "originalAsarSha256": sha256(original_asar),
+    "installedPatchedAsarSha256": sha256(patched_asar),
+    "appPathAtBackup": os.path.realpath(app_path),
+}
+temporary_path = metadata_path + ".tmp"
+with open(temporary_path, "w", encoding="utf-8") as handle:
+    json.dump(metadata, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+os.replace(temporary_path, metadata_path)
+PY
+}
+
+validate_rollback_backup() {
+  local backup_dir="$1"
+  python3 - "$APP_PATH" "$backup_dir" <<'PY'
+import hashlib
+import json
+import os
+import plistlib
+import sys
+
+app_path, backup_dir = sys.argv[1:3]
+info_path = os.path.join(app_path, "Contents", "Info.plist")
+current_asar = os.path.join(app_path, "Contents", "Resources", "app.asar")
+backup_asar = os.path.join(backup_dir, "app.asar.before")
+metadata_path = os.path.join(backup_dir, "backup-metadata.json")
+
+def reject(message):
+    print(f"Error: unsafe rollback refused: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+try:
+    with open(metadata_path, "r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    with open(info_path, "rb") as handle:
+        info = plistlib.load(handle)
+except (OSError, ValueError, plistlib.InvalidFileException) as error:
+    reject(f"backup metadata or current app identity is unreadable ({error})")
+
+if metadata.get("schemaVersion") != 1:
+    reject("backup metadata schema is missing or unsupported")
+
+identity_fields = (
+    ("bundleIdentifier", "CFBundleIdentifier", "bundle identifier"),
+    ("bundleShortVersion", "CFBundleShortVersionString", "version"),
+    ("bundleVersion", "CFBundleVersion", "build version"),
+)
+for metadata_key, plist_key, label in identity_fields:
+    expected = str(metadata.get(metadata_key, ""))
+    actual = str(info.get(plist_key, ""))
+    if expected != actual:
+        reject(f"Codex {label} changed since this backup ({expected!r} != {actual!r})")
+
+if metadata.get("infoPlistSha256") != sha256(info_path):
+    reject("Codex Info.plist changed since this backup")
+if metadata.get("originalAsarSha256") != sha256(backup_asar):
+    reject("backup ASAR checksum does not match its metadata")
+if metadata.get("installedPatchedAsarSha256") != sha256(current_asar):
+    reject("current Codex ASAR is not the patched ASAR recorded by this backup")
+PY
+}
+
 asar_status_or_patch() {
   local mode="$1"
   local input="$2"
@@ -464,6 +566,7 @@ case "$ACTION" in
     /usr/libexec/PlistBuddy -c 'Print' "$APP_PATH/Contents/Info.plist" > "$backup_dir/Info.plist.before.txt" 2>/dev/null || true
     shasum -a 256 "$ASAR_PATH" "$patched_asar" > "$backup_dir/checksums.before-after.txt"
     cp "$patch_manifest" "$backup_dir/patch-manifest.json"
+    write_backup_metadata "$backup_dir" "$patched_asar"
 
     cat > "$backup_dir/README.md" <<EOF
 # Codex Desktop Sidebar Patch Backup
@@ -474,6 +577,10 @@ Created: $(date '+%Y-%m-%d %H:%M:%S %z')
 This backup was created before replacing:
 
 \`$ASAR_PATH\`
+
+Automated rollback is pinned to the exact Codex bundle identity and patched
+ASAR recorded in \`backup-metadata.json\`. It will refuse to overwrite an
+updated or otherwise changed Codex installation.
 
 Rollback:
 
@@ -536,6 +643,8 @@ EOF
   rollback)
     backup_dir="$(latest_backup_dir)"
     [[ -f "$backup_dir/app.asar.before" ]] || fail "backup is missing app.asar.before: $backup_dir"
+    [[ -f "$backup_dir/backup-metadata.json" ]] || fail "backup is missing backup-metadata.json and cannot be rolled back safely: $backup_dir"
+    validate_rollback_backup "$backup_dir"
     log "Rolling back from: $backup_dir"
 
     if [[ "$DRY_RUN" == "1" ]]; then
