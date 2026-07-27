@@ -251,9 +251,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         try driver.withConnection { connection in
             try configure(connection)
-            try connection.execute(
-                "CREATE TEMP TABLE IF NOT EXISTS scan_fingerprints (value TEXT PRIMARY KEY) WITHOUT ROWID;"
-            )
 
             for file in files {
                 try autoreleasepool {
@@ -839,17 +836,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         do {
             return try connection.transaction { transaction in
-                try transaction.execute("DELETE FROM scan_fingerprints;")
-                try transaction.execute(
-                    """
-                    INSERT OR IGNORE INTO scan_fingerprints(value)
-                    SELECT value FROM source_fingerprints WHERE source_id = ?;
-                    """,
-                    bindings: [.int64(existing.id)]
-                )
-                let fingerprintStatement = try transaction.prepare(
-                    "INSERT OR IGNORE INTO scan_fingerprints(value) VALUES (?);"
-                )
                 let persistentFingerprintStatement = try transaction.prepare(
                     "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
                 )
@@ -883,14 +869,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ),
                     { fingerprint in
                         let key = fingerprint.databaseKey
-                        let inserted = try fingerprintStatement.execute([.text(key)]) > 0
-                        if inserted {
-                            _ = try persistentFingerprintStatement.execute([
-                                .int64(existing.id),
-                                .text(key)
-                            ])
-                        }
-                        return inserted
+                        return try persistentFingerprintStatement.execute([
+                            .int64(existing.id),
+                            .text(key)
+                        ]) > 0
                     },
                     { indexedEvent in
                         let event = indexedEvent.event

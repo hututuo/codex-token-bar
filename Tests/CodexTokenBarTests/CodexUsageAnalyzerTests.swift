@@ -1384,6 +1384,26 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var total = 0
         try index.forEachStoredEvent { total += $0.event.tokens }
         XCTAssertEqual(total, 150)
+
+        // 同一个增量事件再次出现在尾部时，持久指纹主键直接承担查重；
+        // 不需要把该 source 的全部历史指纹复制到临时表。
+        try appendLines([appendedLine], to: sessionFile)
+        let duplicateRefresh = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        XCTAssertEqual(duplicateRefresh.incrementallyParsedFiles, 1)
+        var deduplicatedTotal = 0
+        try index.forEachStoredEvent { deduplicatedTotal += $0.event.tokens }
+        XCTAssertEqual(deduplicatedTotal, 150)
     }
 
     func testExactHistoryIndexFallsBackToFullRebuildWhenOpenLineCrossesChunkBoundary() throws {
