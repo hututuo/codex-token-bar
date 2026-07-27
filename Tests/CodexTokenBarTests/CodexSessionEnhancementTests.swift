@@ -98,6 +98,15 @@ final class CodexSessionEnhancementTests: XCTestCase {
         XCTAssertEqual(payload["cwd"] as? String, target.path)
     }
 
+    func testProjectMoveLockPathMatchesRustContract() {
+        XCTAssertEqual(
+            FoundationCodexSessionEnhancementExecutor.workspaceMoveLockRelativePath(
+                threadID: "thread-1"
+            ),
+            "backups_state/codex-token-bar/workspace-move/thread-1.lock"
+        )
+    }
+
     func testProjectMoveRejectsMissingDirectoryWithoutChangingSource() async throws {
         let fixture = try makeFixture()
         let executor = FoundationCodexSessionEnhancementExecutor(

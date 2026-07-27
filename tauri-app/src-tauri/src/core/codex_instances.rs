@@ -1,4 +1,6 @@
-use crate::core::{app_paths, atomic_file, auto_resume};
+use crate::core::{
+    app_paths, atomic_file, auto_resume, cross_process_lock::CrossProcessFileLock,
+};
 use crate::models::{
     CodexControlledProcess, CodexInstance, CodexInstanceActionResult, CodexInstanceConflict,
     CodexInstanceCreateMode, CodexInstanceCreateRequest, CodexInstanceImportRequest,
@@ -6,12 +8,11 @@ use crate::models::{
     CodexInstanceSyncPreview, CodexInstanceSyncResult, CodexInstanceSyncTransactionSummary,
     CodexInstanceUpdateRequest,
 };
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -59,34 +60,6 @@ impl InstancePaths {
             managed_root: app_paths::codex_instances_managed_root()?,
             sync_root: app_paths::codex_instance_sync_root()?,
         })
-    }
-}
-
-struct ExclusiveFileLock {
-    file: File,
-}
-
-impl ExclusiveFileLock {
-    fn acquire(path: &Path, label: &str) -> Result<Self, String> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| format!("{label}锁路径缺少父目录"))?;
-        fs::create_dir_all(parent).map_err(|error| format!("创建{label}锁目录失败：{error}"))?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)
-            .map_err(|error| format!("打开{label}锁失败：{error}"))?;
-        file.try_lock_exclusive()
-            .map_err(|error| format!("{label}正在由另一个 Token Bar 进程执行：{error}"))?;
-        Ok(Self { file })
-    }
-}
-
-impl Drop for ExclusiveFileLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
     }
 }
 
@@ -748,12 +721,12 @@ fn list_instances_at(paths: &InstancePaths) -> Result<CodexInstanceRegistrySnaps
     })
 }
 
-fn acquire_registry_lock(paths: &InstancePaths) -> Result<ExclusiveFileLock, String> {
-    ExclusiveFileLock::acquire(&paths.registry.with_extension("lock"), "实例注册表")
+fn acquire_registry_lock(paths: &InstancePaths) -> Result<CrossProcessFileLock, String> {
+    CrossProcessFileLock::acquire(&paths.registry.with_extension("lock"), "实例注册表")
 }
 
-fn acquire_sync_lock(paths: &InstancePaths) -> Result<ExclusiveFileLock, String> {
-    ExclusiveFileLock::acquire(&paths.sync_root.join("instance-sync.lock"), "实例同步")
+fn acquire_sync_lock(paths: &InstancePaths) -> Result<CrossProcessFileLock, String> {
+    CrossProcessFileLock::acquire(&paths.sync_root.join("instance-sync.lock"), "实例同步")
 }
 
 fn load_registry(paths: &InstancePaths) -> Result<CodexInstanceRegistry, String> {

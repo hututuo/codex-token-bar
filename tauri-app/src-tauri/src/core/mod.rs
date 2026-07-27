@@ -2,6 +2,7 @@ pub mod app_paths;
 pub mod auto_resume;
 pub(crate) mod atomic_file;
 pub mod codex_instances;
+pub(crate) mod cross_process_lock;
 pub mod dashboard;
 pub mod live_rate;
 pub mod localtime;

@@ -160,6 +160,17 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
             canonicalURL: canonicalHome
         )
         defer { try? homeDirectory.close() }
+        let lockRelativePath = workspaceMoveLockRelativePath(threadID: threadID)
+        let pinnedLock = try homeDirectory.pinFile(
+            relativePath: lockRelativePath,
+            createParents: true
+        )
+        let operationLock = try CodexCrossProcessFileLock(
+            parentDirectoryDescriptor: pinnedLock.parent.rawValue,
+            fileName: pinnedLock.name,
+            label: "会话 \(threadID) 的项目移动"
+        )
+        defer { operationLock.release() }
         try recoverInterruptedWorkspaceMove(
             threadID: threadID,
             dataSource: dataSource,
@@ -507,6 +518,10 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         threadID: String
     ) -> String {
         "backups_state/codex-token-bar/workspace-move/\(threadID).json"
+    }
+
+    static func workspaceMoveLockRelativePath(threadID: String) -> String {
+        "backups_state/codex-token-bar/workspace-move/\(threadID).lock"
     }
 
     private static func beginWorkspaceMoveJournal(

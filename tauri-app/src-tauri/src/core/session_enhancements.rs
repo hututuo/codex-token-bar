@@ -2,6 +2,7 @@
 // Behavior adapted from CodexPlusPlus v1.2.41 (BigPizzaV3), then rewritten
 // for Codex Token Bar's Rust bridge. See OPEN_SOURCE_NOTICES.md.
 
+use super::cross_process_lock::CrossProcessFileLock;
 use super::provider_repair::safe_fs::{AtomicInstallPhase, PinnedHome};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,7 @@ struct WorkspaceMoveJournal {
 
 struct WorkspaceMoveLease {
     key: (PathBuf, String),
+    _cross_process_lock: CrossProcessFileLock,
 }
 
 pub fn export_markdown(
@@ -99,8 +101,7 @@ pub fn move_thread_workspace(
     validate_thread_id(thread_id)?;
     let target = canonical_target_directory(target_cwd)?;
     let pinned_home = PinnedHome::open(codex_home)?;
-    let _lease =
-        WorkspaceMoveLease::acquire(pinned_home.canonical_path(), thread_id)?;
+    let _lease = WorkspaceMoveLease::acquire(&pinned_home, thread_id)?;
     let database_path = state_database_path(codex_home)?;
     pinned_home.ensure_parent_directories(
         &workspace_move_journal_relative_path(thread_id),
@@ -524,8 +525,13 @@ impl WorkspaceMoveJournal {
 }
 
 impl WorkspaceMoveLease {
-    fn acquire(codex_home: &Path, thread_id: &str) -> Result<Self, String> {
-        let key = (codex_home.to_path_buf(), thread_id.to_string());
+    fn acquire(pinned_home: &PinnedHome, thread_id: &str) -> Result<Self, String> {
+        let lock_relative = workspace_move_lock_relative_path(thread_id);
+        pinned_home.ensure_parent_directories(&lock_relative)?;
+        let key = (
+            pinned_home.canonical_path().to_path_buf(),
+            thread_id.to_string(),
+        );
         let leases = WORKSPACE_MOVE_LEASES.get_or_init(|| Mutex::new(HashSet::new()));
         let mut leases = leases.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if !leases.insert(key.clone()) {
@@ -533,7 +539,27 @@ impl WorkspaceMoveLease {
                 "会话 {thread_id} 的项目移动正在进行，请稍后重试"
             ));
         }
-        Ok(Self { key })
+        drop(leases);
+
+        let cross_process_lock = match CrossProcessFileLock::acquire(
+            &pinned_home.canonical_path().join(lock_relative),
+            &format!("会话 {thread_id} 的项目移动"),
+        ) {
+            Ok(lock) => lock,
+            Err(error) => {
+                WORKSPACE_MOVE_LEASES
+                    .get()
+                    .expect("workspace move leases initialized")
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&key);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            key,
+            _cross_process_lock: cross_process_lock,
+        })
     }
 }
 
@@ -553,6 +579,13 @@ fn workspace_move_journal_relative_path(thread_id: &str) -> PathBuf {
         .join("codex-token-bar")
         .join("workspace-move")
         .join(format!("{thread_id}.json"))
+}
+
+fn workspace_move_lock_relative_path(thread_id: &str) -> PathBuf {
+    PathBuf::from("backups_state")
+        .join("codex-token-bar")
+        .join("workspace-move")
+        .join(format!("{thread_id}.lock"))
 }
 
 fn trusted_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
@@ -1229,16 +1262,25 @@ mod tests {
     #[test]
     fn workspace_move_lease_blocks_overlap_and_releases() {
         let fixture = fixture();
-        let canonical_home = fixture.home.canonicalize().unwrap();
-        let first =
-            WorkspaceMoveLease::acquire(&canonical_home, &fixture.thread_id).unwrap();
+        let pinned_home = PinnedHome::open(&fixture.home).unwrap();
+        let first = WorkspaceMoveLease::acquire(&pinned_home, &fixture.thread_id).unwrap();
         let error =
-            WorkspaceMoveLease::acquire(&canonical_home, &fixture.thread_id)
+            WorkspaceMoveLease::acquire(&pinned_home, &fixture.thread_id)
                 .err()
                 .unwrap();
         assert!(error.contains("正在进行"));
         drop(first);
-        WorkspaceMoveLease::acquire(&canonical_home, &fixture.thread_id).unwrap();
+        WorkspaceMoveLease::acquire(&pinned_home, &fixture.thread_id).unwrap();
+    }
+
+    #[test]
+    fn workspace_move_lock_path_matches_swift_contract() {
+        assert_eq!(
+            workspace_move_lock_relative_path("thread-1"),
+            PathBuf::from(
+                "backups_state/codex-token-bar/workspace-move/thread-1.lock"
+            )
+        );
     }
 
     #[test]
