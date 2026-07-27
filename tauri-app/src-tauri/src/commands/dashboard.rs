@@ -1437,14 +1437,17 @@ fn platform_path_key(path: &Path) -> String {
 }
 
 #[tauri::command]
-pub fn read_platform_capabilities(
+pub async fn read_platform_capabilities(
     window: tauri::WebviewWindow,
 ) -> Result<PlatformCapabilities, String> {
     require_window_label(&window, "read_platform_capabilities")?;
-    startup_trace::mark("command read_platform_capabilities start");
-    let result = platform::platform_capabilities();
-    startup_trace::mark("command read_platform_capabilities end");
-    Ok(result)
+    run_blocking_command(|| {
+        startup_trace::mark("command read_platform_capabilities start");
+        let result = platform::platform_capabilities();
+        startup_trace::mark("command read_platform_capabilities end");
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]

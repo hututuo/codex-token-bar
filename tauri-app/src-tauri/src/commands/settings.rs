@@ -9,36 +9,42 @@ use super::window_auth::require_window_label;
 use crate::platform;
 
 #[tauri::command]
-pub fn read_app_settings(
+pub async fn read_app_settings(
     window: tauri::WebviewWindow,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "read_app_settings")?;
-    startup_trace::mark_once("command read_app_settings start");
-    let result = platform::read_app_settings();
-    startup_trace::mark_once("command read_app_settings end");
-    result
+    run_blocking_command(|| {
+        startup_trace::mark_once("command read_app_settings start");
+        let result = platform::read_app_settings();
+        startup_trace::mark_once("command read_app_settings end");
+        result
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn read_autostart_status(
+pub async fn read_autostart_status(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<AutostartStatus, String> {
     require_window_label(&window, "read_autostart_status")?;
-    startup_trace::mark_once("command read_autostart_status start");
-    let result = platform::read_autostart_status(&app);
-    startup_trace::mark_once("command read_autostart_status end");
-    Ok(result)
+    run_blocking_command(move || {
+        startup_trace::mark_once("command read_autostart_status start");
+        let result = platform::read_autostart_status(&app);
+        startup_trace::mark_once("command read_autostart_status end");
+        Ok(result)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_autostart_enabled(
+pub async fn set_autostart_enabled(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<AutostartStatus, String> {
     require_window_label(&window, "set_autostart_enabled")?;
-    platform::set_autostart_enabled(&app, enabled)
+    run_blocking_command(move || platform::set_autostart_enabled(&app, enabled)).await
 }
 
 #[tauri::command]
@@ -91,6 +97,42 @@ fn sync_saved_display_surfaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_and_capability_io_commands_stay_async_and_offloaded() {
+        let settings_source = include_str!("settings.rs");
+        for command in [
+            "read_app_settings",
+            "read_autostart_status",
+            "set_autostart_enabled",
+        ] {
+            assert_async_command_uses_blocking_pool(settings_source, command);
+        }
+        assert_async_command_uses_blocking_pool(
+            include_str!("dashboard.rs"),
+            "read_platform_capabilities",
+        );
+    }
+
+    fn assert_async_command_uses_blocking_pool(source: &str, command: &str) {
+        let marker = format!("pub async fn {command}(");
+        let start = source
+            .find(&marker)
+            .unwrap_or_else(|| panic!("{command} must remain async"));
+        let remainder = &source[start + marker.len()..];
+        let end = remainder
+            .find("#[tauri::command]")
+            .unwrap_or(remainder.len());
+        let body = &remainder[..end];
+        assert!(
+            body.contains("run_blocking_command"),
+            "{command} must keep blocking disk/OS work off the command executor"
+        );
+        assert!(
+            !source.contains(&format!("pub fn {command}(")),
+            "{command} must not regress to a synchronous Tauri command"
+        );
+    }
 
     #[test]
     fn successful_display_save_synchronously_updates_native_runtime() {
