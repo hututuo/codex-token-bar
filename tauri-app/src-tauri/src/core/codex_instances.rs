@@ -315,40 +315,30 @@ pub(crate) fn codex_home_for_process(pid: u32) -> Result<CodexProcessHomeBinding
     }
 
     let paths = InstancePaths::system()?;
-    let _registry_lock = acquire_registry_lock(&paths)?;
-    let registry = load_registry(&paths)?;
-    let instances = with_default_instance(registry.instances)?;
-    let runtime_statuses = instances
-        .iter()
-        .map(runtime_status)
-        .collect::<Result<Vec<_>, _>>()?;
+    let instances = {
+        let _registry_lock = acquire_registry_lock(&paths)?;
+        let registry = load_registry(&paths)?;
+        with_default_instance(registry.instances)?
+    };
     let environment_home = crate::platform::managed_process_codex_home_environment(pid)?;
-    let has_environment_home = matches!(
-        &environment_home,
-        crate::platform::ProcessCodexHomeEnvironment::Readable(Some(_))
-    );
-    let has_unattributed_active_instance = runtime_statuses
-        .iter()
-        .filter(|status| status.id != "default")
-        .any(|status| {
-            status.running
-                && (status.pid.is_none() || status.pid == Some(pid))
-                && !status.controlled
-        })
-        && !has_environment_home;
-    let instance = instance_for_process_command(
-        &instances,
-        &command,
-        has_unattributed_active_instance,
-    )?;
+    let instance = instance_for_process_command(&instances, &command)?;
     let registered_home =
         canonical_directory(Path::new(&instance.codex_home), "目标实例 Codex Home")?;
+    let controlled_launch = if !instance.is_default
+        && matches!(
+            &environment_home,
+            crate::platform::ProcessCodexHomeEnvironment::Unavailable
+        ) {
+        let executable = crate::platform::managed_process_executable_path(pid)?;
+        controlled_launch_matches_binding(instance, pid, &identity_after, &command, &executable)?
+    } else {
+        false
+    };
     let codex_home = process_home_for_binding(
         instance,
         &registered_home,
-        &runtime_statuses,
-        pid,
         environment_home,
+        controlled_launch,
         &crate::platform::automatic_codex_home_path(),
     )?;
     Ok(CodexProcessHomeBinding {
@@ -362,9 +352,8 @@ pub(crate) fn codex_home_for_process(pid: u32) -> Result<CodexProcessHomeBinding
 fn process_home_for_binding(
     instance: &CodexInstance,
     registered_home: &Path,
-    runtime_statuses: &[CodexInstanceRuntimeStatus],
-    pid: u32,
     environment_home: crate::platform::ProcessCodexHomeEnvironment,
+    controlled_launch: bool,
     automatic_home: &Path,
 ) -> Result<PathBuf, String> {
     if instance.is_default {
@@ -397,13 +386,7 @@ fn process_home_for_binding(
             return Err("调试端口进程缺少 CODEX_HOME，无法证明它对应已登记实例".into())
         }
         crate::platform::ProcessCodexHomeEnvironment::Unavailable => {
-            let controlled = runtime_statuses.iter().any(|status| {
-                status.id == instance.id
-                    && status.running
-                    && status.controlled
-                    && status.pid == Some(pid)
-            });
-            if !controlled {
+            if !controlled_launch {
                 return Err(
                     "当前平台无法读取实例进程的 CODEX_HOME，且该进程不是本次受控启动；已拒绝猜测"
                         .into(),
@@ -414,10 +397,29 @@ fn process_home_for_binding(
     Ok(registered_home.to_path_buf())
 }
 
+fn controlled_launch_matches_binding(
+    instance: &CodexInstance,
+    pid: u32,
+    process_start_identity: &str,
+    command: &str,
+    executable: &Path,
+) -> Result<bool, String> {
+    let Some(controlled) = instance.controlled_process.as_ref() else {
+        return Ok(false);
+    };
+    Ok(controlled.pid == pid
+        && controlled.process_start_identity == process_start_identity
+        && comparable_path(Path::new(&controlled.executable_path))?
+            == comparable_path(executable)?
+        && crate::platform::process_command_contains_argument(
+            command,
+            &controlled.user_data_marker,
+        ))
+}
+
 fn instance_for_process_command<'a>(
     instances: &'a [CodexInstance],
     command: &str,
-    has_unattributed_active_instance: bool,
 ) -> Result<&'a CodexInstance, String> {
     let matches = instances
         .iter()
@@ -440,11 +442,6 @@ fn instance_for_process_command<'a>(
         return Err(
             "调试端口进程使用了未登记的 Electron 数据目录，无法证明它对应哪个 Codex Home"
                 .into(),
-        );
-    }
-    if has_unattributed_active_instance {
-        return Err(
-            "存在无法归属的外部 Codex 实例，无法证明当前调试端口属于默认 Home".into(),
         );
     }
     instances
@@ -2245,14 +2242,14 @@ mod tests {
         );
 
         let instances = [default, clone.clone()];
-        let bound = instance_for_process_command(&instances, &command, false)
+        let bound = instance_for_process_command(&instances, &command)
             .expect("registered marker must bind the exact instance");
         assert_eq!(bound.id, clone.id);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn process_command_rejects_unregistered_or_unattributed_instance() {
+    fn process_command_rejects_unregistered_marker_and_binds_unmarked_default() {
         let root = std::env::temp_dir().join(format!("instance-binding-{}", Uuid::new_v4()));
         let mut default = fixture_instance("default", &root.join("default"));
         default.is_default = true;
@@ -2263,23 +2260,13 @@ mod tests {
         let unknown = instance_for_process_command(
             &instances,
             "/Applications/Codex --user-data-dir=/tmp/unregistered",
-            false,
         )
         .unwrap_err();
         assert!(unknown.contains("未登记"), "{unknown}");
 
-        let unattributed = instance_for_process_command(
-            &instances,
-            "/Applications/Codex --remote-debugging-port=9229",
-            true,
-        )
-        .unwrap_err();
-        assert!(unattributed.contains("无法归属"), "{unattributed}");
-
         let bound_default = instance_for_process_command(
             &instances,
             "/Applications/Codex --remote-debugging-port=9229",
-            false,
         )
         .unwrap();
         assert_eq!(bound_default.id, default.id);
@@ -2303,9 +2290,8 @@ mod tests {
         let from_environment = process_home_for_binding(
             &default,
             &configured,
-            &[],
-            42,
             crate::platform::ProcessCodexHomeEnvironment::Readable(Some(actual.clone())),
+            false,
             &automatic,
         )
         .unwrap();
@@ -2314,9 +2300,8 @@ mod tests {
         let without_environment = process_home_for_binding(
             &default,
             &configured,
-            &[],
-            42,
             crate::platform::ProcessCodexHomeEnvironment::Readable(None),
+            false,
             &automatic,
         )
         .unwrap();
@@ -2325,9 +2310,8 @@ mod tests {
         let error = process_home_for_binding(
             &default,
             &configured,
-            &[],
-            42,
             crate::platform::ProcessCodexHomeEnvironment::Unavailable,
+            false,
             &automatic,
         )
         .unwrap_err();
@@ -2340,44 +2324,85 @@ mod tests {
         let root = std::env::temp_dir().join(format!("process-home-{}", Uuid::new_v4()));
         let instance = fixture_instance("clone-a", &root.join("clone-a"));
         let registered_home = PathBuf::from(&instance.codex_home);
-        let controlled = CodexInstanceRuntimeStatus {
-            id: instance.id.clone(),
-            running: true,
-            controlled: true,
-            pid: Some(42),
-            message: String::new(),
-        };
         assert_eq!(
             process_home_for_binding(
                 &instance,
                 &registered_home,
-                &[controlled],
-                42,
                 crate::platform::ProcessCodexHomeEnvironment::Unavailable,
+                true,
                 &registered_home,
             )
             .unwrap(),
             registered_home
         );
 
-        let uncontrolled = CodexInstanceRuntimeStatus {
-            id: instance.id.clone(),
-            running: true,
-            controlled: false,
-            pid: Some(42),
-            message: String::new(),
-        };
         let error = process_home_for_binding(
             &instance,
             &PathBuf::from(&instance.codex_home),
-            &[uncontrolled],
-            42,
             crate::platform::ProcessCodexHomeEnvironment::Unavailable,
+            false,
             Path::new(&instance.codex_home),
         )
         .unwrap_err();
         assert!(error.contains("不是本次受控启动"), "{error}");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn controlled_launch_binding_requires_the_recorded_process_identity() {
+        let root = std::env::temp_dir().join(format!("process-home-{}", Uuid::new_v4()));
+        let executable = root.join("Codex.exe");
+        let mut instance = fixture_instance("clone-a", &root.join("clone-a"));
+        let marker = format!("--user-data-dir={}", instance.electron_data_directory);
+        instance.controlled_process = Some(CodexControlledProcess {
+            pid: 42,
+            executable_path: executable.display().to_string(),
+            user_data_marker: marker.clone(),
+            started_at: 1,
+            process_start_identity: "start-identity".into(),
+        });
+        let command = format!("Codex.exe {marker} --remote-debugging-port=9229");
+
+        assert!(controlled_launch_matches_binding(
+            &instance,
+            42,
+            "start-identity",
+            &command,
+            &executable,
+        )
+        .unwrap());
+        assert!(!controlled_launch_matches_binding(
+            &instance,
+            43,
+            "start-identity",
+            &command,
+            &executable,
+        )
+        .unwrap());
+        assert!(!controlled_launch_matches_binding(
+            &instance,
+            42,
+            "reused-pid",
+            &command,
+            &executable,
+        )
+        .unwrap());
+        assert!(!controlled_launch_matches_binding(
+            &instance,
+            42,
+            "start-identity",
+            "Codex.exe --remote-debugging-port=9229",
+            &executable,
+        )
+        .unwrap());
+        assert!(!controlled_launch_matches_binding(
+            &instance,
+            42,
+            "start-identity",
+            &command,
+            &root.join("OtherCodex.exe"),
+        )
+        .unwrap());
     }
 
     #[test]
