@@ -373,6 +373,35 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         XCTAssertEqual(probe.locations, [1, 3])
     }
 
+    func testAccessibilityObserverInstallationRunsOffMainActor() async {
+        let probe = BlockingAccessibilityObserverInstall()
+        let resolver = FloatingPanelAccessibilityObserverResolver(
+            installOperation: probe.install
+        )
+        var didComplete = false
+        let startedAt = ContinuousClock.now
+        resolver.install(
+            FloatingPanelAccessibilityObserverRequest(
+                ownerPID: 99,
+                window: AXUIElementCreateApplication(99),
+                context: FloatingPanelAccessibilityObserverContext {}
+            )
+        ) { _ in
+            didComplete = true
+        }
+        XCTAssertLessThan(
+            startedAt.duration(to: .now),
+            .milliseconds(100),
+            "AXObserver 注册不能占住 MainActor"
+        )
+        XCTAssertTrue(probe.waitUntilStarted(timeout: 1))
+        XCTAssertFalse(probe.ranOnMainThread)
+
+        probe.release()
+        let completed = await waitUntil { didComplete }
+        XCTAssertTrue(completed)
+    }
+
     func testAccessibilityIPCUsesBoundedMessagingTimeout() {
         XCTAssertEqual(FloatingPanelAccessibilityIPC.messagingTimeout, 0.25)
         XCTAssertEqual(FloatingPanelAccessibilityIPC.windowResolutionBudget, 0.75)
@@ -393,6 +422,8 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
                 encoding: .utf8
             )
             XCTAssertFalse(source.contains("AXUIElementCopy"), "\(path) 不能重新引入同步 AX 读取")
+            XCTAssertFalse(source.contains("AXObserverAddNotification"), "\(path) 不能在 MainActor 注册 AXObserver")
+            XCTAssertFalse(source.contains("AXObserverRemoveNotification"), "\(path) 不能在 MainActor 移除 AXObserver")
         }
         let resolverSource = try String(
             contentsOf: projectRoot.appendingPathComponent(
@@ -402,6 +433,15 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         )
         XCTAssertTrue(resolverSource.contains("AXUIElementSetMessagingTimeout"))
         XCTAssertTrue(resolverSource.contains("queue.async"))
+        let observerResolverSource = try String(
+            contentsOf: projectRoot.appendingPathComponent(
+                "Sources/CodexTokenBar/FloatingPanelAccessibilityObserverResolver.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(observerResolverSource.contains("AXObserverAddNotification"))
+        XCTAssertTrue(observerResolverSource.contains("AXObserverRemoveNotification"))
+        XCTAssertTrue(observerResolverSource.contains("queue.async"))
     }
 
     private func makePanel() -> FloatingTokenPanelWindow {
@@ -544,6 +584,52 @@ private final class BlockingAccessibilityPointQuery: @unchecked Sendable {
         defer { condition.unlock() }
         let deadline = Date().addingTimeInterval(timeout)
         while recordedLocations.isEmpty {
+            guard condition.wait(until: deadline) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    func release() {
+        condition.lock()
+        isReleased = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private final class BlockingAccessibilityObserverInstall: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var onMainThread = false
+    private var isReleased = false
+
+    var install: FloatingPanelAccessibilityObserverResolver.InstallOperation {
+        { [self] _ in
+            condition.lock()
+            started = true
+            onMainThread = Thread.isMainThread
+            condition.broadcast()
+            while !isReleased {
+                condition.wait()
+            }
+            condition.unlock()
+            return nil
+        }
+    }
+
+    var ranOnMainThread: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return onMainThread
+    }
+
+    func waitUntilStarted(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !started {
             guard condition.wait(until: deadline) else {
                 return false
             }

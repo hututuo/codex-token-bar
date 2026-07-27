@@ -332,36 +332,48 @@ extension FloatingTokenPanelController {
         else {
             return
         }
-        FloatingPanelAccessibilityIPC.configure(accessibilityWindow)
-
-        var observer: AXObserver?
-        guard AXObserverCreate(anchor.ownerPID, Self.accessibilityObserverCallback, &observer) == .success,
-              let observer
-        else {
-            return
+        let generation = accessibilityObserverGeneration
+        let resolver = accessibilityObserverResolver
+        let context = FloatingPanelAccessibilityObserverContext { [weak self] in
+            self?.handleAccessibilityWindowEvent()
         }
-
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
-        let moved = AXObserverAddNotification(observer, accessibilityWindow, kAXMovedNotification as CFString, refcon)
-        let resized = AXObserverAddNotification(observer, accessibilityWindow, kAXResizedNotification as CFString, refcon)
-        guard moved == .success || resized == .success else {
-            return
+        resolver.install(
+            FloatingPanelAccessibilityObserverRequest(
+                ownerPID: anchor.ownerPID,
+                window: accessibilityWindow,
+                context: context
+            )
+        ) { [weak self, resolver] registration in
+            guard let registration else { return }
+            guard let self,
+                  generation == self.accessibilityObserverGeneration,
+                  let currentAnchor = self.lockedAnchor,
+                  currentAnchor.hasSameIdentity(as: anchor),
+                  let currentWindow = currentAnchor.accessibilityWindow,
+                  CFEqual(currentWindow, accessibilityWindow)
+            else {
+                resolver.remove(registration)
+                return
+            }
+            CFRunLoopAddSource(
+                CFRunLoopGetMain(),
+                AXObserverGetRunLoopSource(registration.observer),
+                .commonModes
+            )
+            self.accessibilityObserverRegistration = registration
         }
-
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-        accessibilityObserver = observer
-        observedAccessibilityWindow = accessibilityWindow
     }
 
     func uninstallAccessibilityObserver() {
-        if let observer = accessibilityObserver, let observedAccessibilityWindow {
-            FloatingPanelAccessibilityIPC.configure(observedAccessibilityWindow)
-            AXObserverRemoveNotification(observer, observedAccessibilityWindow, kAXMovedNotification as CFString)
-            AXObserverRemoveNotification(observer, observedAccessibilityWindow, kAXResizedNotification as CFString)
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-        }
-        accessibilityObserver = nil
-        observedAccessibilityWindow = nil
+        accessibilityObserverGeneration &+= 1
+        guard let registration = accessibilityObserverRegistration else { return }
+        accessibilityObserverRegistration = nil
+        CFRunLoopRemoveSource(
+            CFRunLoopGetMain(),
+            AXObserverGetRunLoopSource(registration.observer),
+            .commonModes
+        )
+        accessibilityObserverResolver.remove(registration)
     }
 
     func handleAccessibilityWindowEvent() {

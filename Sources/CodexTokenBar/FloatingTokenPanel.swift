@@ -148,8 +148,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     var followTimer: Timer?
     var followTimerInterval: TimeInterval?
     var fastFollowUntil: Date?
-    var accessibilityObserver: AXObserver?
-    var observedAccessibilityWindow: AXUIElement?
+    var accessibilityObserverResolver = FloatingPanelAccessibilityObserverResolver()
+    var accessibilityObserverGeneration: UInt64 = 0
+    var accessibilityObserverRegistration: FloatingPanelAccessibilityObserverRegistration?
     var activeLockedTargetDrag: FloatingPanelLockedTargetDrag?
     var pendingLockedOriginToPersist: NSPoint?
     var lockedOriginPersistTimer: Timer?
@@ -177,14 +178,6 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         install: { [weak self] in self?.installEventSources() },
         remove: { [weak self] in self?.removeEventSources() }
     )
-
-    nonisolated static let accessibilityObserverCallback: AXObserverCallback = { _, _, _, refcon in
-        guard let refcon else { return }
-        let controller = Unmanaged<FloatingTokenPanelController>.fromOpaque(refcon).takeUnretainedValue()
-        Task { @MainActor in
-            controller.handleAccessibilityWindowEvent()
-        }
-    }
 
     override init() {
         super.init()
@@ -238,6 +231,14 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         }
         if let activationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+        }
+        if let registration = accessibilityObserverRegistration {
+            CFRunLoopRemoveSource(
+                CFRunLoopGetMain(),
+                AXObserverGetRunLoopSource(registration.observer),
+                .commonModes
+            )
+            accessibilityObserverResolver.remove(registration)
         }
     }
 
