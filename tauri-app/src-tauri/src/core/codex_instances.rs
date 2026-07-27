@@ -53,6 +53,14 @@ struct InstancePaths {
     sync_root: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodexProcessHomeBinding {
+    pub instance_id: String,
+    pub codex_home: PathBuf,
+    pub pid: u32,
+    pub process_start_identity: String,
+}
+
 impl InstancePaths {
     fn system() -> Result<Self, String> {
         Ok(Self {
@@ -293,6 +301,163 @@ pub fn list_instance_runtime_statuses() -> Result<Vec<CodexInstanceRuntimeStatus
             },
         })
         .collect())
+}
+
+pub(crate) fn codex_home_for_process(pid: u32) -> Result<CodexProcessHomeBinding, String> {
+    let identity_before = crate::platform::managed_process_identity(pid)?;
+    crate::platform::verify_codex_desktop_process(pid)?;
+    let command = crate::platform::managed_process_command(pid)?;
+    let identity_after = crate::platform::managed_process_identity(pid)?;
+    if identity_before != identity_after {
+        return Err(format!(
+            "调试端口监听进程 {pid} 在核对期间发生变化，已拒绝执行会话文件操作"
+        ));
+    }
+
+    let paths = InstancePaths::system()?;
+    let _registry_lock = acquire_registry_lock(&paths)?;
+    let registry = load_registry(&paths)?;
+    let instances = with_default_instance(registry.instances)?;
+    let runtime_statuses = instances
+        .iter()
+        .map(runtime_status)
+        .collect::<Result<Vec<_>, _>>()?;
+    let environment_home = crate::platform::managed_process_codex_home_environment(pid)?;
+    let has_environment_home = matches!(
+        &environment_home,
+        crate::platform::ProcessCodexHomeEnvironment::Readable(Some(_))
+    );
+    let has_unattributed_active_instance = runtime_statuses
+        .iter()
+        .filter(|status| status.id != "default")
+        .any(|status| {
+            status.running
+                && (status.pid.is_none() || status.pid == Some(pid))
+                && !status.controlled
+        })
+        && !has_environment_home;
+    let instance = instance_for_process_command(
+        &instances,
+        &command,
+        has_unattributed_active_instance,
+    )?;
+    let registered_home =
+        canonical_directory(Path::new(&instance.codex_home), "目标实例 Codex Home")?;
+    let codex_home = process_home_for_binding(
+        instance,
+        &registered_home,
+        &runtime_statuses,
+        pid,
+        environment_home,
+        crate::platform::read_app_settings()?.codex_home.is_some(),
+        &crate::platform::automatic_codex_home_path(),
+    )?;
+    Ok(CodexProcessHomeBinding {
+        instance_id: instance.id.clone(),
+        codex_home,
+        pid,
+        process_start_identity: identity_after,
+    })
+}
+
+fn process_home_for_binding(
+    instance: &CodexInstance,
+    registered_home: &Path,
+    runtime_statuses: &[CodexInstanceRuntimeStatus],
+    pid: u32,
+    environment_home: crate::platform::ProcessCodexHomeEnvironment,
+    has_manually_selected_default_home: bool,
+    automatic_home: &Path,
+) -> Result<PathBuf, String> {
+    if instance.is_default {
+        return match environment_home {
+            crate::platform::ProcessCodexHomeEnvironment::Readable(Some(home)) => {
+                canonical_directory(&home, "目标进程 CODEX_HOME")
+            }
+            crate::platform::ProcessCodexHomeEnvironment::Readable(None) => {
+                canonical_directory(automatic_home, "系统默认 Codex Home")
+            }
+            crate::platform::ProcessCodexHomeEnvironment::Unavailable => {
+                if has_manually_selected_default_home {
+                    return Err(
+                        "当前平台无法读取默认 Codex 进程的 CODEX_HOME，且 Token Bar 选择了手动 Home；已拒绝猜测"
+                            .into(),
+                    );
+                }
+                canonical_directory(automatic_home, "系统默认 Codex Home")
+            }
+        };
+    }
+
+    match environment_home {
+        crate::platform::ProcessCodexHomeEnvironment::Readable(Some(home)) => {
+            let actual = canonical_directory(&home, "目标进程 CODEX_HOME")?;
+            if actual != registered_home {
+                return Err(format!(
+                    "调试端口进程的 CODEX_HOME 与实例注册表不一致：{} != {}",
+                    actual.display(),
+                    registered_home.display()
+                ));
+            }
+        }
+        crate::platform::ProcessCodexHomeEnvironment::Readable(None) => {
+            return Err("调试端口进程缺少 CODEX_HOME，无法证明它对应已登记实例".into())
+        }
+        crate::platform::ProcessCodexHomeEnvironment::Unavailable => {
+            let controlled = runtime_statuses.iter().any(|status| {
+                status.id == instance.id
+                    && status.running
+                    && status.controlled
+                    && status.pid == Some(pid)
+            });
+            if !controlled {
+                return Err(
+                    "当前平台无法读取实例进程的 CODEX_HOME，且该进程不是本次受控启动；已拒绝猜测"
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok(registered_home.to_path_buf())
+}
+
+fn instance_for_process_command<'a>(
+    instances: &'a [CodexInstance],
+    command: &str,
+    has_unattributed_active_instance: bool,
+) -> Result<&'a CodexInstance, String> {
+    let matches = instances
+        .iter()
+        .filter(|instance| !instance.is_default && !instance.electron_data_directory.is_empty())
+        .filter(|instance| {
+            let marker = format!("--user-data-dir={}", instance.electron_data_directory);
+            crate::platform::process_command_contains_argument(command, &marker)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [instance] => return Ok(instance),
+        [] => {}
+        _ => {
+            return Err(
+                "调试端口进程同时匹配多个 Codex 实例标记，已拒绝猜测目标 Home".into(),
+            )
+        }
+    }
+    if command.contains("--user-data-dir") {
+        return Err(
+            "调试端口进程使用了未登记的 Electron 数据目录，无法证明它对应哪个 Codex Home"
+                .into(),
+        );
+    }
+    if has_unattributed_active_instance {
+        return Err(
+            "存在无法归属的外部 Codex 实例，无法证明当前调试端口属于默认 Home".into(),
+        );
+    }
+    instances
+        .iter()
+        .find(|instance| instance.is_default)
+        .ok_or_else(|| "实例列表缺少默认 Codex，无法绑定调试端口".into())
 }
 
 pub fn launch_instance(id: &str) -> Result<CodexInstanceActionResult, String> {
@@ -2072,6 +2237,159 @@ mod tests {
             updated_at: 1,
             controlled_process: None,
         }
+    }
+
+    #[test]
+    fn process_command_binds_registered_instance_home_before_default() {
+        let root = std::env::temp_dir().join(format!("instance-binding-{}", Uuid::new_v4()));
+        let mut default = fixture_instance("default", &root.join("default"));
+        default.is_default = true;
+        default.electron_data_directory.clear();
+        let clone = fixture_instance("clone-a", &root.join("clone-a"));
+        let command = format!(
+            "/Applications/Codex.app/Contents/MacOS/Codex --user-data-dir={} --remote-debugging-port=9229",
+            clone.electron_data_directory
+        );
+
+        let instances = [default, clone.clone()];
+        let bound = instance_for_process_command(&instances, &command, false)
+            .expect("registered marker must bind the exact instance");
+        assert_eq!(bound.id, clone.id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn process_command_rejects_unregistered_or_unattributed_instance() {
+        let root = std::env::temp_dir().join(format!("instance-binding-{}", Uuid::new_v4()));
+        let mut default = fixture_instance("default", &root.join("default"));
+        default.is_default = true;
+        default.electron_data_directory.clear();
+        let clone = fixture_instance("clone-a", &root.join("clone-a"));
+        let instances = [default.clone(), clone];
+
+        let unknown = instance_for_process_command(
+            &instances,
+            "/Applications/Codex --user-data-dir=/tmp/unregistered",
+            false,
+        )
+        .unwrap_err();
+        assert!(unknown.contains("未登记"), "{unknown}");
+
+        let unattributed = instance_for_process_command(
+            &instances,
+            "/Applications/Codex --remote-debugging-port=9229",
+            true,
+        )
+        .unwrap_err();
+        assert!(unattributed.contains("无法归属"), "{unattributed}");
+
+        let bound_default = instance_for_process_command(
+            &instances,
+            "/Applications/Codex --remote-debugging-port=9229",
+            false,
+        )
+        .unwrap();
+        assert_eq!(bound_default.id, default.id);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn process_home_binding_prefers_readable_environment_and_never_guesses_manual_default() {
+        let root = std::env::temp_dir().join(format!("process-home-{}", Uuid::new_v4()));
+        let automatic = root.join("automatic");
+        let configured = root.join("configured");
+        let actual = root.join("actual");
+        for directory in [&automatic, &configured, &actual] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        let mut default = fixture_instance("default", &configured);
+        default.is_default = true;
+        default.electron_data_directory.clear();
+        let configured = configured.canonicalize().unwrap();
+
+        let from_environment = process_home_for_binding(
+            &default,
+            &configured,
+            &[],
+            42,
+            crate::platform::ProcessCodexHomeEnvironment::Readable(Some(actual.clone())),
+            true,
+            &automatic,
+        )
+        .unwrap();
+        assert_eq!(from_environment, actual.canonicalize().unwrap());
+
+        let without_environment = process_home_for_binding(
+            &default,
+            &configured,
+            &[],
+            42,
+            crate::platform::ProcessCodexHomeEnvironment::Readable(None),
+            true,
+            &automatic,
+        )
+        .unwrap();
+        assert_eq!(without_environment, automatic.canonicalize().unwrap());
+
+        let error = process_home_for_binding(
+            &default,
+            &configured,
+            &[],
+            42,
+            crate::platform::ProcessCodexHomeEnvironment::Unavailable,
+            true,
+            &automatic,
+        )
+        .unwrap_err();
+        assert!(error.contains("手动 Home"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn process_home_binding_requires_controlled_instance_when_environment_is_unavailable() {
+        let root = std::env::temp_dir().join(format!("process-home-{}", Uuid::new_v4()));
+        let instance = fixture_instance("clone-a", &root.join("clone-a"));
+        let registered_home = PathBuf::from(&instance.codex_home);
+        let controlled = CodexInstanceRuntimeStatus {
+            id: instance.id.clone(),
+            running: true,
+            controlled: true,
+            pid: Some(42),
+            message: String::new(),
+        };
+        assert_eq!(
+            process_home_for_binding(
+                &instance,
+                &registered_home,
+                &[controlled],
+                42,
+                crate::platform::ProcessCodexHomeEnvironment::Unavailable,
+                false,
+                &registered_home,
+            )
+            .unwrap(),
+            registered_home
+        );
+
+        let uncontrolled = CodexInstanceRuntimeStatus {
+            id: instance.id.clone(),
+            running: true,
+            controlled: false,
+            pid: Some(42),
+            message: String::new(),
+        };
+        let error = process_home_for_binding(
+            &instance,
+            &PathBuf::from(&instance.codex_home),
+            &[uncontrolled],
+            42,
+            crate::platform::ProcessCodexHomeEnvironment::Unavailable,
+            false,
+            Path::new(&instance.codex_home),
+        )
+        .unwrap_err();
+        assert!(error.contains("不是本次受控启动"), "{error}");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

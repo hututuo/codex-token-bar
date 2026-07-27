@@ -25,6 +25,26 @@ pub(crate) fn managed_process_command(pid: u32) -> Result<String, String> {
     platform_managed_process_command(pid)
 }
 
+pub(crate) fn debug_listener_process_ids(port: u16) -> Result<Vec<u32>, String> {
+    platform_debug_listener_process_ids(port)
+}
+
+pub(crate) fn verify_codex_desktop_process(pid: u32) -> Result<(), String> {
+    platform_verify_codex_desktop_process(pid)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessCodexHomeEnvironment {
+    Readable(Option<std::path::PathBuf>),
+    Unavailable,
+}
+
+pub(crate) fn managed_process_codex_home_environment(
+    pid: u32,
+) -> Result<ProcessCodexHomeEnvironment, String> {
+    platform_managed_process_codex_home_environment(pid)
+}
+
 pub(crate) fn process_command_contains_argument(command: &str, argument: &str) -> bool {
     if argument.is_empty() {
         return false;
@@ -41,6 +61,192 @@ pub(crate) fn process_command_contains_argument(command: &str, argument: &str) -
             .is_none_or(process_argument_boundary);
         before && after
     })
+}
+
+fn parse_process_id_lines(output: &str) -> Vec<u32> {
+    let mut pids = output
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let numeric = trimmed.strip_prefix('p').unwrap_or(trimmed);
+            numeric.parse::<u32>().ok()
+        })
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+fn parse_process_environment_value(output: &str, key: &str) -> Option<String> {
+    let needle = format!(" {key}=");
+    let start = output.rfind(&needle)? + needle.len();
+    let tail = &output[start..];
+    let end = tail
+        .match_indices(' ')
+        .find_map(|(index, _)| {
+            let candidate = &tail[index + 1..];
+            looks_like_environment_assignment(candidate).then_some(index)
+        })
+        .unwrap_or(tail.len());
+    let value = tail[..end].trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn looks_like_environment_assignment(value: &str) -> bool {
+    let Some((key, _)) = value.split_once('=') else {
+        return false;
+    };
+    !key.is_empty()
+        && key
+            .chars()
+            .enumerate()
+            .all(|(index, character)| {
+                character == '_'
+                    || character.is_ascii_alphanumeric()
+                        && (index > 0 || character.is_ascii_alphabetic())
+            })
+}
+
+#[cfg(target_os = "macos")]
+fn platform_debug_listener_process_ids(port: u16) -> Result<Vec<u32>, String> {
+    let output = std::process::Command::new("/usr/sbin/lsof")
+        .args([
+            "-nP",
+            &format!("-iTCP:{port}"),
+            "-sTCP:LISTEN",
+            "-Fp",
+        ])
+        .output()
+        .map_err(|error| format!("检查调试端口 {port} 的监听进程失败：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "无法确认调试端口 {port} 的监听进程，已拒绝执行会话文件操作"
+        ));
+    }
+    Ok(parse_process_id_lines(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_managed_process_codex_home_environment(
+    pid: u32,
+) -> Result<ProcessCodexHomeEnvironment, String> {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["eww", "-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .map_err(|error| format!("读取进程 {pid} 的 Codex Home 环境失败：{error}"))?;
+    if !output.status.success() {
+        return Err(format!("进程 {pid} 已结束或环境不可读"));
+    }
+    let command = String::from_utf8_lossy(&output.stdout);
+    Ok(ProcessCodexHomeEnvironment::Readable(
+        parse_process_environment_value(&command, "CODEX_HOME")
+            .map(std::path::PathBuf::from),
+    ))
+}
+
+#[cfg(windows)]
+fn platform_debug_listener_process_ids(port: u16) -> Result<Vec<u32>, String> {
+    let script = format!(
+        "$ErrorActionPreference='Stop'; Get-NetTCPConnection -State Listen -LocalPort {port} | Select-Object -ExpandProperty OwningProcess -Unique"
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|error| format!("检查调试端口 {port} 的监听进程失败：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "无法确认调试端口 {port} 的监听进程，已拒绝执行会话文件操作"
+        ));
+    }
+    Ok(parse_process_id_lines(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[cfg(windows)]
+fn platform_managed_process_codex_home_environment(
+    _pid: u32,
+) -> Result<ProcessCodexHomeEnvironment, String> {
+    Ok(ProcessCodexHomeEnvironment::Unavailable)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn platform_debug_listener_process_ids(port: u16) -> Result<Vec<u32>, String> {
+    Err(format!(
+        "当前平台无法可靠确认调试端口 {port} 的监听进程，已拒绝执行会话文件操作"
+    ))
+}
+
+#[cfg(all(not(target_os = "macos"), not(windows)))]
+fn platform_managed_process_codex_home_environment(
+    pid: u32,
+) -> Result<ProcessCodexHomeEnvironment, String> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ"))
+        .map_err(|error| format!("读取进程 {pid} 的 Codex Home 环境失败：{error}"))?;
+    let home = raw
+        .split(|byte| *byte == 0)
+        .find_map(|entry| entry.strip_prefix(b"CODEX_HOME="))
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
+    Ok(ProcessCodexHomeEnvironment::Readable(home))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_verify_codex_desktop_process(pid: u32) -> Result<(), String> {
+    let executable = platform_managed_process_executable_path(pid)?;
+    let application = executable
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("app"))
+        .ok_or_else(|| format!("调试端口监听进程 {pid} 不在标准 macOS 应用包内"))?;
+    let info = application.join("Contents/Info.plist");
+    let output = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
+        .arg(&info)
+        .output()
+        .map_err(|error| format!("读取调试端口监听应用身份失败：{error}"))?;
+    let bundle_identifier = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() && bundle_identifier == CODEX_BUNDLE_IDENTIFIER {
+        Ok(())
+    } else {
+        Err(format!(
+            "调试端口监听进程 {pid} 不是受信任的 Codex 桌面应用：{}",
+            executable.display()
+        ))
+    }
+}
+
+#[cfg(windows)]
+fn platform_verify_codex_desktop_process(pid: u32) -> Result<(), String> {
+    let executable = platform_managed_process_executable_path(pid)?;
+    let name = executable
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("调试端口监听进程 {pid} 的文件名无效"))?;
+    if windows_process_name_matches(name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "调试端口监听进程 {pid} 不是受信任的 Codex 桌面应用：{}",
+            executable.display()
+        ))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn platform_verify_codex_desktop_process(pid: u32) -> Result<(), String> {
+    let executable = platform_managed_process_executable_path(pid)?;
+    match executable.file_name().and_then(|value| value.to_str()) {
+        Some("Codex" | "ChatGPT") => Ok(()),
+        _ => Err(format!(
+            "调试端口监听进程 {pid} 不是受信任的 Codex 桌面应用：{}",
+            executable.display()
+        )),
+    }
 }
 
 fn process_argument_boundary(value: char) -> bool {
@@ -894,8 +1100,12 @@ fn platform_relaunch_codex_with_debug_port() -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(100));
     }
 
+    let codex_home = crate::platform::default_codex_home();
     let output = Command::new("/usr/bin/open")
-        .args(["-na", application_path.as_str(), "--args"])
+        .args(["-na", application_path.as_str()])
+        .arg("--env")
+        .arg(macos_open_environment_argument("CODEX_HOME", &codex_home)?)
+        .arg("--args")
         .args(codex_debug_arguments())
         .output()
         .map_err(|error| format!("重新打开 Codex 失败：{error}"))?;
@@ -1018,6 +1228,24 @@ mod tests {
             "/Applications/Codex --other=--user-data-dir=/tmp/Codex Home",
             marker
         ));
+    }
+
+    #[test]
+    fn listener_pid_output_is_numeric_deduplicated_and_accepts_lsof_prefix() {
+        assert_eq!(
+            parse_process_id_lines("p42\n17\np42\nnot-a-pid\n"),
+            vec![17, 42]
+        );
+    }
+
+    #[test]
+    fn process_environment_parser_preserves_home_paths_with_spaces() {
+        let output = "/Applications/Codex --remote-debugging-port=9229 HOME=/Users/test CODEX_HOME=/Users/test/Application Support/Codex Home PATH=/usr/bin:/bin";
+        assert_eq!(
+            parse_process_environment_value(output, "CODEX_HOME"),
+            Some("/Users/test/Application Support/Codex Home".into())
+        );
+        assert_eq!(parse_process_environment_value(output, "MISSING"), None);
     }
 
     #[test]

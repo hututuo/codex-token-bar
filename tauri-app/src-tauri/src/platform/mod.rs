@@ -36,9 +36,11 @@ pub use startup::{SingleInstanceLaunchOutcome, StartupLaunchMode};
 pub use capabilities::platform_capabilities;
 pub(crate) use provider_app::{codex_desktop_is_running, relaunch_codex_with_debug_port};
 pub(crate) use provider_app::{
-    files_open_in_other_processes, focus_managed_process, launch_managed_codex_instance,
-    managed_process_command, managed_process_executable_path, managed_process_identity,
-    terminate_managed_process, process_command_contains_argument, ManagedCodexLaunch,
+    debug_listener_process_ids, files_open_in_other_processes, focus_managed_process,
+    launch_managed_codex_instance, managed_process_command, managed_process_executable_path,
+    managed_process_codex_home_environment, managed_process_identity,
+    process_command_contains_argument, terminate_managed_process, verify_codex_desktop_process,
+    ManagedCodexLaunch, ProcessCodexHomeEnvironment,
 };
 pub use settings::{
     read_app_settings, save_display_surfaces, save_floating_position, save_floating_settings,
@@ -69,6 +71,10 @@ fn automatic_codex_home() -> std::path::PathBuf {
 pub fn default_codex_home() -> PathBuf {
     let snapshot = settings::read_app_settings_or_default();
     codex_home_selection_from_snapshot(&snapshot, automatic_codex_home).0
+}
+
+pub(crate) fn automatic_codex_home_path() -> PathBuf {
+    automatic_codex_home()
 }
 
 #[cfg(target_os = "windows")]

@@ -323,6 +323,7 @@ fn run_cdp_session(
                 &mut socket,
                 &text,
                 &mut pending_bindings,
+                port,
             )?;
             continue;
         }
@@ -331,6 +332,7 @@ fn run_cdp_session(
                 &mut socket,
                 text.as_str(),
                 &mut pending_bindings,
+                port,
             )?,
             Ok(Message::Close(_)) => return Ok(SessionExit::Closed),
             Ok(Message::Ping(payload)) => socket
@@ -652,6 +654,7 @@ fn handle_cdp_message(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     text: &str,
     pending_bindings: &mut VecDeque<String>,
+    port: u16,
 ) -> Result<(), String> {
     let message: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
     if message.get("method").and_then(Value::as_str) != Some("Runtime.bindingCalled") {
@@ -684,9 +687,9 @@ fn handle_cdp_message(
         .and_then(Value::as_u64);
     let result = match request.action {
         SessionEnhancementBindingAction::ExportMarkdown => {
-            run_markdown_export(socket, &request, context_id, pending_bindings)
+            run_markdown_export(socket, &request, context_id, pending_bindings, port)
         }
-        _ => session_enhancement_result(&request),
+        _ => session_enhancement_result(&request, port),
     };
     deliver_binding_result(
         socket,
@@ -703,6 +706,7 @@ fn run_markdown_export(
     request: &SessionEnhancementBindingRequest,
     context_id: Option<u64>,
     pending_bindings: &mut VecDeque<String>,
+    port: u16,
 ) -> SessionEnhancementBindingResult {
     let settings = match crate::platform::read_app_settings() {
         Ok(settings) => settings.session_enhancements,
@@ -711,7 +715,10 @@ fn run_markdown_export(
     if !settings.markdown_export {
         return failed_binding_result("Markdown 导出未启用".into());
     }
-    let codex_home = crate::platform::default_codex_home();
+    let codex_home = match resolve_session_target_home(port) {
+        Ok(binding) => binding.codex_home,
+        Err(message) => return failed_binding_result(message),
+    };
     let mut evaluator = SocketCdpEvaluator {
         socket,
         pending_bindings,
@@ -952,26 +959,26 @@ fn resolve_expression(
 
 fn session_enhancement_result(
     request: &SessionEnhancementBindingRequest,
+    port: u16,
 ) -> SessionEnhancementBindingResult {
     let result = (|| {
         let settings = crate::platform::read_app_settings()?.session_enhancements;
-        let codex_home = crate::platform::default_codex_home();
         match request.action {
             SessionEnhancementBindingAction::Delete => {
                 if !settings.session_delete {
                     return Err("会话删除未启用".into());
                 }
-                if let Some(block) = multi_instance_mutation_guard() {
-                    return Err(block);
-                }
-                delete_thread(&request.thread_id).map(|message| SessionEnhancementBindingResult {
-                    status: "deleted",
-                    message,
-                    filename: None,
-                    markdown_transfer: None,
-                    markdown_chunk_count: None,
-                    previous_cwd: None,
-                    target_cwd: None,
+                let codex_home = resolve_session_target_home(port)?.codex_home;
+                delete_thread(&codex_home, &request.thread_id).map(|message| {
+                    SessionEnhancementBindingResult {
+                        status: "deleted",
+                        message,
+                        filename: None,
+                        markdown_transfer: None,
+                        markdown_chunk_count: None,
+                        previous_cwd: None,
+                        target_cwd: None,
+                    }
                 })
             }
             SessionEnhancementBindingAction::ExportMarkdown => {
@@ -982,9 +989,7 @@ fn session_enhancement_result(
                 if !settings.project_move {
                     return Err("会话项目移动未启用".into());
                 }
-                if let Some(block) = multi_instance_mutation_guard() {
-                    return Err(block);
-                }
+                let codex_home = resolve_session_target_home(port)?.codex_home;
                 let target = request
                     .target_cwd
                     .as_deref()
@@ -1011,45 +1016,59 @@ fn session_enhancement_result(
     result.unwrap_or_else(failed_binding_result)
 }
 
-/// 多实例强校验：CDP 注入按钮发起的删除/移动作用于 Token Bar 选定的
-/// CODEX_HOME，而点击按钮的窗口可能属于另一个 Codex Home。复用跨平台
-/// 实例引擎的进程身份、Electron user-data marker 与 fail-closed 状态，
-/// 不再由本模块维护一套 macOS-only 的字符串进程表。只有默认实例运行，
-/// 或所有非默认实例均能证明已停止时，才允许继续。
-fn multi_instance_mutation_guard() -> Option<String> {
-    multi_instance_runtime_block(crate::core::codex_instances::list_instance_runtime_statuses())
+fn resolve_session_target_home(
+    port: u16,
+) -> Result<crate::core::codex_instances::CodexProcessHomeBinding, String> {
+    resolve_session_target_home_with(
+        port,
+        &crate::platform::debug_listener_process_ids,
+        &crate::core::codex_instances::codex_home_for_process,
+        &crate::platform::managed_process_identity,
+    )
 }
 
-fn multi_instance_runtime_block(
-    statuses: Result<Vec<crate::models::CodexInstanceRuntimeStatus>, String>,
-) -> Option<String> {
-    let statuses = match statuses {
-        Ok(statuses) => statuses,
-        Err(error) => {
-            return Some(format!(
-                "无法确认 Codex 多实例状态，删除/移动已暂停以避免作用到错误的 Codex 目录：{error}"
-            ))
-        }
+fn resolve_session_target_home_with(
+    port: u16,
+    listener_processes: &dyn Fn(u16) -> Result<Vec<u32>, String>,
+    bind_process: &dyn Fn(
+        u32,
+    ) -> Result<crate::core::codex_instances::CodexProcessHomeBinding, String>,
+    process_identity: &dyn Fn(u32) -> Result<String, String>,
+) -> Result<crate::core::codex_instances::CodexProcessHomeBinding, String> {
+    let listeners = listener_processes(port)?;
+    let [pid] = listeners.as_slice() else {
+        return Err(format!(
+            "调试端口 {port} 必须且只能由一个 Codex 进程监听，实际发现 {} 个；已拒绝猜测目标 Home",
+            listeners.len()
+        ));
     };
-    statuses
-        .into_iter()
-        .find(|status| status.id != "default" && status.running)
-        .map(|status| {
-            format!(
-                "检测到非默认 Codex 实例正在运行，删除/移动已暂停：多实例下同一线程 ID 可能属于不同 Codex 目录。{}",
-                status.message
-            )
-        })
+    let binding = bind_process(*pid)?;
+    if binding.pid != *pid {
+        return Err("调试端口监听者与实例绑定进程不一致，已拒绝执行会话文件操作".into());
+    }
+    let final_listeners = listener_processes(port)?;
+    if final_listeners.as_slice() != [*pid] {
+        return Err(format!(
+            "调试端口 {port} 在目标 Home 核对期间发生了监听者变化，已拒绝执行会话文件操作"
+        ));
+    }
+    let final_identity = process_identity(*pid)?;
+    if final_identity != binding.process_start_identity {
+        return Err(format!(
+            "调试端口监听进程 {pid} 在目标 Home 核对期间发生了身份变化，已拒绝执行会话文件操作"
+        ));
+    }
+    Ok(binding)
 }
 
-fn delete_thread(thread_id: &str) -> Result<String, String> {
+fn delete_thread(codex_home: &std::path::Path, thread_id: &str) -> Result<String, String> {
     if !is_uuid(thread_id) {
         return Err("会话 ID 不是有效 UUID".into());
     }
     let codex = crate::core::quota::codex_binary::find_codex_binary_with_report()?.path;
     run_delete_command(
         &codex,
-        &crate::platform::default_codex_home(),
+        codex_home,
         thread_id,
         DELETE_TIMEOUT,
     )
@@ -1263,54 +1282,74 @@ mod tests {
         );
     }
 
-    fn runtime_status(
-        id: &str,
-        running: bool,
-    ) -> crate::models::CodexInstanceRuntimeStatus {
-        crate::models::CodexInstanceRuntimeStatus {
-            id: id.into(),
-            running,
-            controlled: id != "default",
-            pid: running.then_some(42),
-            message: format!("{id}:{running}"),
+    fn target_binding(
+        pid: u32,
+        identity: &str,
+    ) -> crate::core::codex_instances::CodexProcessHomeBinding {
+        crate::core::codex_instances::CodexProcessHomeBinding {
+            instance_id: "clone-a".into(),
+            codex_home: std::path::PathBuf::from("/tmp/clone-a"),
+            pid,
+            process_start_identity: identity.into(),
         }
     }
 
     #[test]
-    fn default_instance_alone_does_not_block_session_mutations() {
-        assert_eq!(
-            multi_instance_runtime_block(Ok(vec![runtime_status("default", true)])),
-            None
-        );
+    fn session_target_home_requires_one_stable_listener_and_process_identity() {
+        let result = resolve_session_target_home_with(
+            9229,
+            &|_| Ok(vec![42]),
+            &|pid| Ok(target_binding(pid, "start-42")),
+            &|_| Ok("start-42".into()),
+        )
+        .unwrap();
+        assert_eq!(result.instance_id, "clone-a");
+        assert_eq!(result.codex_home, std::path::PathBuf::from("/tmp/clone-a"));
     }
 
     #[test]
-    fn active_non_default_instance_blocks_session_mutations_on_every_platform() {
-        let block = multi_instance_runtime_block(Ok(vec![
-            runtime_status("default", true),
-            runtime_status("clone-a", true),
-        ]))
-        .expect("非默认实例运行时必须拒绝删除/移动");
-        assert!(block.contains("非默认"), "拒绝信息应说明实例边界：{block}");
-        assert!(block.contains("clone-a:true"), "拒绝信息应保留诊断：{block}");
+    fn session_target_home_rejects_missing_or_ambiguous_listener() {
+        for listeners in [Vec::new(), vec![41, 42]] {
+            let error = resolve_session_target_home_with(
+                9229,
+                &|_| Ok(listeners.clone()),
+                &|pid| Ok(target_binding(pid, "start")),
+                &|_| Ok("start".into()),
+            )
+            .unwrap_err();
+            assert!(error.contains("必须且只能由一个"), "{error}");
+        }
     }
 
     #[test]
-    fn stopped_non_default_instances_allow_session_mutations() {
-        assert_eq!(
-            multi_instance_runtime_block(Ok(vec![
-                runtime_status("default", true),
-                runtime_status("clone-a", false),
-            ])),
-            None
-        );
+    fn session_target_home_rejects_listener_handoff_during_resolution() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let error = resolve_session_target_home_with(
+            9229,
+            &|_| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(vec![42])
+                } else {
+                    Ok(vec![43])
+                }
+            },
+            &|pid| Ok(target_binding(pid, "start-42")),
+            &|_| Ok("start-42".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("监听者变化"), "{error}");
     }
 
     #[test]
-    fn unreadable_instance_state_blocks_session_mutations() {
-        let block = multi_instance_runtime_block(Err("registry corrupt".into()))
-            .expect("状态不可证明时必须 fail closed");
-        assert!(block.contains("registry corrupt"));
+    fn session_target_home_rejects_pid_reuse_after_binding() {
+        let error = resolve_session_target_home_with(
+            9229,
+            &|_| Ok(vec![42]),
+            &|pid| Ok(target_binding(pid, "start-42")),
+            &|_| Ok("reused-42".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("身份变化"), "{error}");
     }
 
     struct MockEvaluator {
