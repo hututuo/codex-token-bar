@@ -1,3 +1,4 @@
+use super::window_auth::require_window_label;
 use crate::{
     core::{atomic_file, startup_trace},
     platform,
@@ -953,9 +954,11 @@ fn now_ms() -> i64 {
 
 #[tauri::command]
 pub async fn read_app_update_state(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     registry: tauri::State<'_, UpdateMonitorRegistry>,
 ) -> Result<AppUpdateState, String> {
+    require_window_label(&window, "read_app_update_state")?;
     ensure_initialized_logged(&registry.core, &TauriUpdateOps { app }).await;
     let state = registry.core.state.lock().await;
     Ok(AppUpdateState::from_persisted(
@@ -966,9 +969,11 @@ pub async fn read_app_update_state(
 
 #[tauri::command]
 pub async fn check_app_update(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     registry: tauri::State<'_, UpdateMonitorRegistry>,
 ) -> Result<AppUpdateState, String> {
+    require_window_label(&window, "check_app_update")?;
     let ops = TauriUpdateOps { app };
     ensure_initialized_logged(&registry.core, &ops).await;
     let result = registry.core.check(&ops, true, now_ms()).await;
@@ -981,10 +986,12 @@ pub async fn check_app_update(
 
 #[tauri::command]
 pub async fn install_app_update(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     registry: tauri::State<'_, UpdateMonitorRegistry>,
     version: String,
 ) -> Result<(), String> {
+    require_window_label(&window, "install_app_update")?;
     let ops = TauriUpdateOps { app };
     ensure_initialized_logged(&registry.core, &ops).await;
     registry.core.install(&ops, &version, now_ms()).await

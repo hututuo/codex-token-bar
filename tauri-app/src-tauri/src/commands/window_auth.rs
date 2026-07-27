@@ -47,6 +47,9 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_auto_resume_status",
     "run_auto_resume_now",
     "cancel_auto_resume_run",
+    "read_app_update_state",
+    "check_app_update",
+    "install_app_update",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
@@ -239,6 +242,23 @@ mod tests {
                     .iter()
                     .any(|label| allows_window_label(command, label)),
                 "{command} 调用了 require_window_label 但不在任何窗口白名单中，任何窗口都无法调用"
+            );
+        }
+    }
+
+    // 反向对账：名单里的每个命令都必须在真实命令体调用校验。只把名字写进
+    // allowlist 不能保护没有接收 WebviewWindow 的生产入口。
+    #[test]
+    fn every_allowlisted_command_checks_its_caller_window() {
+        let checked = window_checked_commands();
+        for command in MAIN_WINDOW_ONLY_COMMANDS
+            .iter()
+            .chain(SURFACE_SAFE_COMMANDS.iter())
+            .chain(std::iter::once(&"save_floating_position"))
+        {
+            assert!(
+                checked.iter().any(|name| name == command),
+                "白名单条目 {command} 没有在真实命令体调用 require_window_label"
             );
         }
     }

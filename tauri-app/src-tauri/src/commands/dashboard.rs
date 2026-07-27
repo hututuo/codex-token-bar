@@ -1437,7 +1437,10 @@ fn platform_path_key(path: &Path) -> String {
 }
 
 #[tauri::command]
-pub fn read_platform_capabilities() -> Result<PlatformCapabilities, String> {
+pub fn read_platform_capabilities(
+    window: tauri::WebviewWindow,
+) -> Result<PlatformCapabilities, String> {
+    require_window_label(&window, "read_platform_capabilities")?;
     startup_trace::mark("command read_platform_capabilities start");
     let result = platform::platform_capabilities();
     startup_trace::mark("command read_platform_capabilities end");
@@ -1540,9 +1543,11 @@ where
 
 #[tauri::command]
 pub async fn read_usage_summary_snapshot(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     source_token: CodexHomeSourceToken,
 ) -> Result<TokenUsageSummary, String> {
+    require_window_label(&window, "read_usage_summary_snapshot")?;
     let started = Instant::now();
     let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
         token_count_jsonl::usage_summary_snapshot(&codex_home)
@@ -1564,11 +1569,13 @@ pub fn read_usage_cache_status(window: tauri::WebviewWindow) -> Result<UsageCach
 
 #[tauri::command]
 pub async fn read_account_quota(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     auto_resume: tauri::State<'_, crate::commands::auto_resume::AutoResumeRegistry>,
     source_token: CodexHomeSourceToken,
     force_refresh: Option<bool>,
 ) -> Result<AccountQuotaBundle, String> {
+    require_window_label(&window, "read_account_quota")?;
     startup_trace::mark_once("command read_account_quota start");
     let started = Instant::now();
     let forced = force_refresh.unwrap_or(false);

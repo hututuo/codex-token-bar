@@ -1,3 +1,4 @@
+use super::window_auth::require_window_label;
 use crate::core::{provider_repair, startup_trace};
 use crate::platform;
 use provider_repair::{ProviderRecoveryState, ProviderRecoveryStatus};
@@ -45,7 +46,11 @@ pub(crate) fn initialize_provider_recovery_at(
 }
 
 #[tauri::command]
-pub async fn record_startup_event(label: String) -> Result<bool, String> {
+pub async fn record_startup_event(
+    window: tauri::WebviewWindow,
+    label: String,
+) -> Result<bool, String> {
+    require_window_label(&window, "record_startup_event")?;
     // 埋点是追加写盘，不允许占用主线程/执行器线程。
     super::run_blocking_command(move || {
         startup_trace::mark(&format!("frontend {label}"));
@@ -55,7 +60,11 @@ pub async fn record_startup_event(label: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn record_performance_event(label: String) -> Result<bool, String> {
+pub async fn record_performance_event(
+    window: tauri::WebviewWindow,
+    label: String,
+) -> Result<bool, String> {
+    require_window_label(&window, "record_performance_event")?;
     super::run_blocking_command(move || {
         startup_trace::mark_performance(label);
         Ok(true)

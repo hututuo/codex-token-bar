@@ -9,7 +9,10 @@ use super::window_auth::require_window_label;
 use crate::platform;
 
 #[tauri::command]
-pub fn read_app_settings() -> Result<AppSettingsSnapshot, String> {
+pub fn read_app_settings(
+    window: tauri::WebviewWindow,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "read_app_settings")?;
     startup_trace::mark_once("command read_app_settings start");
     let result = platform::read_app_settings();
     startup_trace::mark_once("command read_app_settings end");

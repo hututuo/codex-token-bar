@@ -1267,11 +1267,13 @@ fn acknowledge_pinned_unread(
 
 #[tauri::command]
 pub async fn read_live_rate_snapshot(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, LiveRateMonitorRegistry>,
     selected_thread_id: Option<String>,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<LiveRateSnapshot, String> {
+    require_window_label(&window, "read_live_rate_snapshot")?;
     startup_trace::mark_once("command read_live_rate_snapshot start");
     let started = Instant::now();
     let registry = state.inner().clone();
@@ -1339,6 +1341,7 @@ pub async fn claim_live_rate_owner_session(
     owner_session_epoch: u64,
     source_token: CodexHomeSourceToken,
 ) -> Result<bool, String> {
+    require_window_label(&window, "claim_live_rate_owner_session")?;
     require_live_rate_owner(window.label(), &subscriber_owner_token)?;
     emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(Some(&source_token))?;
@@ -1367,6 +1370,7 @@ pub async fn start_live_rate_stream(
     owner_generation: u64,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<LiveRateStreamLease, String> {
+    require_window_label(&window, "start_live_rate_stream")?;
     require_live_rate_owner(window.label(), &subscriber_owner_token)?;
     startup_trace::mark_once("command start_live_rate_stream start");
     let started = Instant::now();
@@ -1436,19 +1440,23 @@ fn require_live_rate_owner(window_label: &str, owner_token: &str) -> Result<(), 
 
 #[tauri::command]
 pub async fn stop_live_rate_stream(
+    window: tauri::WebviewWindow,
     state: State<'_, LiveRateMonitorRegistry>,
     lease_id: String,
 ) -> Result<bool, String> {
+    require_window_label(&window, "stop_live_rate_stream")?;
     let registry = state.inner().clone();
     run_blocking_command(move || registry.stop_subscription(&lease_id)).await
 }
 
 #[tauri::command]
 pub async fn read_floating_snapshot(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, LiveRateMonitorRegistry>,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<FloatingPanelSnapshot, String> {
+    require_window_label(&window, "read_floating_snapshot")?;
     let started = Instant::now();
     let registry = state.inner().clone();
     emit_detected_source_transition(&app)?;
@@ -1478,10 +1486,12 @@ pub async fn read_floating_snapshot(
 
 #[tauri::command]
 pub async fn read_unread_summary(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, LiveRateMonitorRegistry>,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<UnreadSummary, String> {
+    require_window_label(&window, "read_unread_summary")?;
     let started = Instant::now();
     emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
@@ -1504,10 +1514,12 @@ pub async fn read_unread_summary(
 
 #[tauri::command]
 pub async fn acknowledge_current_unread(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, LiveRateMonitorRegistry>,
     source_token: Option<CodexHomeSourceToken>,
 ) -> Result<UnreadSummary, String> {
+    require_window_label(&window, "acknowledge_current_unread")?;
     let started = Instant::now();
     emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
