@@ -4,7 +4,8 @@ use super::recent_completion::{
 };
 use super::{
     acknowledge_current_unread, read_unread_summary, read_unread_summary_at,
-    try_read_unread_summary, try_read_unread_summary_at_with_writer,
+    try_read_unread_summary, try_read_unread_summary_at_with_parent_sync,
+    try_read_unread_summary_at_with_prepare,
     try_read_unread_summary_for_source, write_acknowledgement_at_with_sync,
     AcknowledgementWriteOutcome, UnreadAcknowledgement,
 };
@@ -12,9 +13,9 @@ use serde::Deserialize;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Barrier};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -151,7 +152,7 @@ fn rearm_write_failure_returns_error_and_preserves_previous_file() {
     let before = fs::read(&acknowledgement_path).unwrap();
 
     append_task_complete(&session, now + 1.0, "turn-write-failure");
-    let error = try_read_unread_summary_at_with_writer(
+    let error = try_read_unread_summary_at_with_prepare(
         &root,
         now + 1.0,
         &|_, _| Err("injected unread write failure".into()),
@@ -230,6 +231,152 @@ fn concurrent_home_acknowledgements_preserve_both_records() {
 }
 
 #[test]
+fn slow_prepare_does_not_hold_global_lock_and_cas_replays_without_lost_updates() {
+    let support = temp_root();
+    fs::create_dir_all(&support).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let (prepare_entered_tx, prepare_entered_rx) = mpsc::channel();
+    let prepare_release = Arc::new(Barrier::new(2));
+    let first_prepare = Arc::new(AtomicBool::new(true));
+
+    let handle_a = {
+        let prepare_release = prepare_release.clone();
+        let first_prepare = first_prepare.clone();
+        std::thread::spawn(move || {
+            let prepare = |path: &Path, acknowledgement: &UnreadAcknowledgement| {
+                if first_prepare.swap(false, Ordering::SeqCst) {
+                    prepare_entered_tx.send(()).unwrap();
+                    prepare_release.wait();
+                }
+                super::prepare_acknowledgement_at(path, acknowledgement)
+            };
+            write_test_acknowledgement(
+                "prepare-home-a",
+                "thread-a",
+                &prepare,
+                |_| Ok(()),
+            )
+        })
+    };
+    prepare_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first transaction never reached slow prepare");
+
+    let (home_b_done_tx, home_b_done_rx) = mpsc::channel();
+    let handle_b = std::thread::spawn(move || {
+        let result = write_test_acknowledgement(
+            "prepare-home-b",
+            "thread-b",
+            &super::prepare_acknowledgement_at,
+            |_| Ok(()),
+        );
+        home_b_done_tx.send(result).unwrap();
+    });
+    let home_b_result = home_b_done_rx.recv_timeout(Duration::from_secs(5));
+    prepare_release.wait();
+    let home_a_result = handle_a.join().unwrap();
+    handle_b.join().unwrap();
+
+    home_a_result.unwrap();
+    home_b_result
+        .expect("another transaction was blocked by slow temp-file preparation")
+        .unwrap();
+    assert_acknowledgement_homes(&support, &["prepare-home-a", "prepare-home-b"]);
+    let _ = fs::remove_dir_all(support);
+}
+
+#[test]
+fn parent_directory_sync_runs_after_releasing_global_lock() {
+    let support = temp_root();
+    fs::create_dir_all(&support).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    let (sync_entered_tx, sync_entered_rx) = mpsc::channel();
+    let sync_release = Arc::new(Barrier::new(2));
+
+    let handle_a = {
+        let sync_release = sync_release.clone();
+        std::thread::spawn(move || {
+            write_test_acknowledgement(
+                "sync-home-a",
+                "thread-a",
+                &super::prepare_acknowledgement_at,
+                move |_| {
+                    sync_entered_tx.send(()).unwrap();
+                    sync_release.wait();
+                    Ok(())
+                },
+            )
+        })
+    };
+    sync_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first transaction never reached parent-directory sync");
+
+    let (home_b_done_tx, home_b_done_rx) = mpsc::channel();
+    let handle_b = std::thread::spawn(move || {
+        let result = write_test_acknowledgement(
+            "sync-home-b",
+            "thread-b",
+            &super::prepare_acknowledgement_at,
+            |_| Ok(()),
+        );
+        home_b_done_tx.send(result).unwrap();
+    });
+    let home_b_result = home_b_done_rx.recv_timeout(Duration::from_secs(5));
+    sync_release.wait();
+    let home_a_result = handle_a.join().unwrap();
+    handle_b.join().unwrap();
+
+    home_a_result.unwrap();
+    home_b_result
+        .expect("another transaction was blocked by parent-directory fsync")
+        .unwrap();
+    assert_acknowledgement_homes(&support, &["sync-home-a", "sync-home-b"]);
+    let _ = fs::remove_dir_all(support);
+}
+
+#[test]
+fn cross_process_acknowledgement_lock_fails_closed_without_overwriting() {
+    let support = temp_root();
+    fs::create_dir_all(&support).unwrap();
+    let _support_env = TauriSupportEnvGuard::new(&support);
+    write_test_acknowledgement(
+        "locked-home-a",
+        "thread-a",
+        &super::prepare_acknowledgement_at,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let path = support.join("unread-acknowledgement.json");
+    let before = fs::read(&path).unwrap();
+    let lock = crate::core::cross_process_lock::CrossProcessFileLock::acquire(
+        &super::acknowledgement_lock_path(&path),
+        "测试未读基线事务",
+    )
+    .unwrap();
+
+    let error = write_test_acknowledgement(
+        "locked-home-b",
+        "thread-b",
+        &super::prepare_acknowledgement_at,
+        |_| Ok(()),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("正在由另一个 Token Bar 进程执行"));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    drop(lock);
+    assert!(
+        !fs::read_dir(&support)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")),
+        "contended transaction must clean its prepared file"
+    );
+    let _ = fs::remove_dir_all(support);
+}
+
+#[test]
 fn existing_acknowledgement_target_is_atomically_replaced() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();
@@ -247,6 +394,45 @@ fn existing_acknowledgement_target_is_atomically_replaced() {
     assert_ne!(fs::read(&path).unwrap(), b"old");
     serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap();
     let _ = fs::remove_dir_all(root);
+}
+
+fn write_test_acknowledgement<P, S>(
+    source_scope_key: &str,
+    thread_id: &str,
+    prepare: &P,
+    sync_parent: S,
+) -> Result<crate::models::UnreadSummary, String>
+where
+    P: Fn(
+            &Path,
+            &UnreadAcknowledgement,
+        ) -> Result<crate::core::atomic_file::PreparedAtomicWrite, String>
+        + ?Sized,
+    S: FnOnce(&Path) -> Result<(), String>,
+{
+    super::acknowledgement_transaction_with_io(
+        prepare,
+        sync_parent,
+        || Ok(()),
+        |acknowledgement| {
+            let home = acknowledgement
+                .by_codex_home
+                .entry(source_scope_key.to_string())
+                .or_default();
+            let changed = home.unread_thread_ids.insert(thread_id.to_string());
+            Ok((super::unread_state_summary(0), changed))
+        },
+    )
+}
+
+fn assert_acknowledgement_homes(support: &Path, expected: &[&str]) {
+    let data = fs::read(support.join("unread-acknowledgement.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    let homes = value["byCodexHome"].as_object().unwrap();
+    assert_eq!(homes.len(), expected.len());
+    for source_scope_key in expected {
+        assert!(homes.contains_key(*source_scope_key));
+    }
 }
 
 #[test]
@@ -286,11 +472,11 @@ fn post_commit_failure_publishes_new_summary_with_durability_diagnostic() {
     acknowledge_current_unread(&root).unwrap();
     append_task_complete(&session, now + 1.0, "turn-post-commit");
 
-    let summary = try_read_unread_summary_at_with_writer(&root, now + 1.0, &|_, _| {
-        Ok(AcknowledgementWriteOutcome::CommittedDurabilityUncertain(
-            "injected parent sync failure".into(),
-        ))
-    })
+    let summary = try_read_unread_summary_at_with_parent_sync(
+        &root,
+        now + 1.0,
+        |_| Err("injected parent sync failure".into()),
+    )
     .unwrap();
 
     assert_eq!(summary.count, 1);

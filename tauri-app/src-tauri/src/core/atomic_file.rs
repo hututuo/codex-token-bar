@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const TEMP_ATTEMPTS: usize = 64;
@@ -39,6 +39,23 @@ enum FileIdentity {
     Windows { volume: u64, id: [u8; 16] },
 }
 
+pub(crate) struct PreparedAtomicWrite {
+    destination: PathBuf,
+    parent: PathBuf,
+    temp: PathBuf,
+    identity: FileIdentity,
+    active: bool,
+}
+
+pub(crate) struct CommittedAtomicWrite {
+    parent: PathBuf,
+}
+
+pub(crate) struct AtomicCommitFailure {
+    error: String,
+    prepared: PreparedAtomicWrite,
+}
+
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), AtomicWriteError> {
     write_atomically_with_hook(path, bytes, |_, _| Ok(()))
 }
@@ -62,11 +79,33 @@ pub(crate) fn write_atomically_with_hook(
     )
 }
 
+pub(crate) fn prepare_atomic_write(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<PreparedAtomicWrite, AtomicWriteError> {
+    prepare_atomic_write_streaming_with_hook(
+        path,
+        |file| file.write_all(bytes).map_err(|error| error.to_string()),
+        &mut |_, _| Ok(()),
+    )
+}
+
 fn write_atomically_streaming_with_hook(
     path: &Path,
-    mut write_content: impl FnMut(&mut File) -> Result<(), String>,
+    write_content: impl FnMut(&mut File) -> Result<(), String>,
     mut hook: impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
 ) -> Result<(), AtomicWriteError> {
+    let prepared =
+        prepare_atomic_write_streaming_with_hook(path, write_content, &mut hook)?;
+    let committed = prepared.commit_with_hook(&mut hook)?;
+    committed.sync_parent_with(|parent| hook(AtomicWriteStage::ParentSync, parent))
+}
+
+fn prepare_atomic_write_streaming_with_hook(
+    path: &Path,
+    mut write_content: impl FnMut(&mut File) -> Result<(), String>,
+    hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
+) -> Result<PreparedAtomicWrite, AtomicWriteError> {
     let parent = path
         .parent()
         .ok_or_else(|| AtomicWriteError::NotCommitted(diagnostic(AtomicWriteStage::Write, path, "missing parent directory")))?;
@@ -89,7 +128,7 @@ fn write_atomically_streaming_with_hook(
             Err(error) => return Err(AtomicWriteError::NotCommitted(diagnostic(AtomicWriteStage::Write, &temp, error))),
         };
         let identity = file_identity(&file).map_err(|error| AtomicWriteError::NotCommitted(
-            cleanup_after_error(diagnostic(AtomicWriteStage::Cleanup, &temp, error), &temp, None, &mut hook)
+            cleanup_after_error(diagnostic(AtomicWriteStage::Cleanup, &temp, error), &temp, None, hook)
         ))?;
         let precommit = (|| {
             hook(AtomicWriteStage::Write, &temp)
@@ -101,25 +140,145 @@ fn write_atomically_streaming_with_hook(
             file.sync_all()
                 .map_err(|error| diagnostic(AtomicWriteStage::FileSync, &temp, error))?;
             drop(file);
-            hook(AtomicWriteStage::Replace, &temp)
-                .map_err(|error| diagnostic(AtomicWriteStage::Replace, path, error))?;
-            replace_destination(&temp, path)
-                .map_err(|error| diagnostic(AtomicWriteStage::Replace, path, error))?;
             Ok(())
         })();
         if let Err(error) = precommit {
-            return Err(AtomicWriteError::NotCommitted(cleanup_after_error(error, &temp, Some(&identity), &mut hook)));
+            return Err(AtomicWriteError::NotCommitted(cleanup_after_error(
+                error,
+                &temp,
+                Some(&identity),
+                hook,
+            )));
         }
-        if let Err(error) = hook(AtomicWriteStage::ParentSync, parent).and_then(|_| sync_parent(parent).map_err(|error| error.to_string())) {
-            return Err(AtomicWriteError::CommittedNotDurable(diagnostic(AtomicWriteStage::ParentSync, parent, error)));
-        }
-        return Ok(());
+        return Ok(PreparedAtomicWrite {
+            destination: path.to_path_buf(),
+            parent: parent.to_path_buf(),
+            temp,
+            identity,
+            active: true,
+        });
     }
     Err(AtomicWriteError::NotCommitted(diagnostic(
         AtomicWriteStage::Write,
         path,
         "exhausted unique temporary file attempts",
     )))
+}
+
+impl PreparedAtomicWrite {
+    pub(crate) fn commit(self) -> Result<CommittedAtomicWrite, AtomicWriteError> {
+        self.commit_with_hook(&mut |_, _| Ok(()))
+    }
+
+    pub(crate) fn try_commit(
+        self,
+    ) -> Result<CommittedAtomicWrite, AtomicCommitFailure> {
+        self.try_commit_with_hook(&mut |_, _| Ok(()))
+    }
+
+    pub(crate) fn discard(self) -> Result<(), AtomicWriteError> {
+        self.discard_with_hook(&mut |_, _| Ok(()))
+    }
+
+    fn commit_with_hook(
+        self,
+        hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
+    ) -> Result<CommittedAtomicWrite, AtomicWriteError> {
+        match self.try_commit_with_hook(hook) {
+            Ok(committed) => Ok(committed),
+            Err(failure) => Err(failure.cleanup_with_hook(hook)),
+        }
+    }
+
+    fn try_commit_with_hook(
+        mut self,
+        hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
+    ) -> Result<CommittedAtomicWrite, AtomicCommitFailure> {
+        let committed = hook(AtomicWriteStage::Replace, &self.temp)
+            .map_err(|error| diagnostic(AtomicWriteStage::Replace, &self.destination, error))
+            .and_then(|_| {
+                replace_destination(&self.temp, &self.destination)
+                    .map_err(|error| diagnostic(AtomicWriteStage::Replace, &self.destination, error))
+            });
+        if let Err(error) = committed {
+            return Err(AtomicCommitFailure {
+                error,
+                prepared: self,
+            });
+        }
+        self.active = false;
+        Ok(CommittedAtomicWrite {
+            parent: self.parent.clone(),
+        })
+    }
+
+    fn discard_with_hook(
+        mut self,
+        hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
+    ) -> Result<(), AtomicWriteError> {
+        let cleanup = hook(AtomicWriteStage::Cleanup, &self.temp).and_then(|_| {
+            cleanup_temp_if_same(&self.temp, &self.identity, hook)
+        });
+        self.active = false;
+        cleanup.map_err(|error| {
+            AtomicWriteError::NotCommitted(diagnostic(
+                AtomicWriteStage::Cleanup,
+                &self.temp,
+                error,
+            ))
+        })
+    }
+}
+
+impl AtomicCommitFailure {
+    pub(crate) fn cleanup(self) -> AtomicWriteError {
+        self.cleanup_with_hook(&mut |_, _| Ok(()))
+    }
+
+    fn cleanup_with_hook(
+        mut self,
+        hook: &mut impl FnMut(AtomicWriteStage, &Path) -> Result<(), String>,
+    ) -> AtomicWriteError {
+        let error = cleanup_after_error(
+            self.error,
+            &self.prepared.temp,
+            Some(&self.prepared.identity),
+            hook,
+        );
+        self.prepared.active = false;
+        AtomicWriteError::NotCommitted(error)
+    }
+}
+
+impl Drop for PreparedAtomicWrite {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let _ = cleanup_temp_if_same(
+            &self.temp,
+            &self.identity,
+            &mut |_, _| Ok(()),
+        );
+        self.active = false;
+    }
+}
+
+impl CommittedAtomicWrite {
+    pub(crate) fn sync_parent_with(
+        self,
+        before_sync: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<(), AtomicWriteError> {
+        before_sync(&self.parent)
+            .and_then(|_| sync_parent(&self.parent).map_err(|error| error.to_string()))
+            .map_err(|error| {
+                AtomicWriteError::CommittedNotDurable(diagnostic(
+                    AtomicWriteStage::ParentSync,
+                    &self.parent,
+                    error,
+                ))
+            })
+    }
 }
 
 fn cleanup_after_error(

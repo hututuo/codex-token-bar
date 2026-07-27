@@ -1,5 +1,6 @@
 use crate::core::app_paths;
 use crate::core::atomic_file;
+use crate::core::cross_process_lock::CrossProcessFileLock;
 use crate::models::UnreadSummary;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -127,7 +128,6 @@ pub fn try_read_unread_summary(codex_home: &Path) -> Result<UnreadSummary, Strin
         codex_home,
         &source_scope_key,
         recent_completion::current_time_seconds(),
-        &write_acknowledgement_at,
         || Ok(()),
     )?;
     remember_trusted_summary(&source_scope_key, &summary);
@@ -143,7 +143,6 @@ pub fn try_read_unread_summary_for_source(
         observation_home,
         source_scope_key,
         recent_completion::current_time_seconds(),
-        &write_acknowledgement_at,
         validate_before_write,
     )?;
     remember_trusted_summary(source_scope_key, &summary);
@@ -158,24 +157,21 @@ pub fn try_read_unread_summary_for_observation(
     let summary = try_read_unread_summary_for_observation_at(
         observation,
         source_scope_key,
-        &write_acknowledgement_at,
         validate_before_write,
     )?;
     remember_trusted_summary(source_scope_key, &summary);
     Ok(summary)
 }
 
-fn try_read_unread_summary_for_observation_at<W, V>(
+fn try_read_unread_summary_for_observation_at<V>(
     observation: &UnreadObservation,
     source_scope_key: &str,
-    writer: &W,
     validate_before_write: V,
 ) -> Result<UnreadSummary, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
     V: FnOnce() -> Result<(), String>,
 {
-    acknowledgement_transaction(writer, validate_before_write, |acknowledgement| {
+    acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
             .entry(source_scope_key.to_string())
@@ -216,31 +212,92 @@ where
 
 #[cfg(test)]
 fn read_unread_summary_at(codex_home: &Path, now: f64) -> Result<UnreadSummary, String> {
-    try_read_unread_summary_at_with_writer(codex_home, now, &write_acknowledgement_at)
+    try_read_unread_summary_for_source_at(
+        codex_home,
+        &codex_home_key(codex_home),
+        now,
+        || Ok(()),
+    )
 }
 
 #[cfg(test)]
-fn try_read_unread_summary_at_with_writer<W>(
+fn try_read_unread_summary_at_with_prepare<P>(
     codex_home: &Path,
     now: f64,
-    writer: &W,
+    prepare: &P,
 ) -> Result<UnreadSummary, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
+    P: Fn(
+            &Path,
+            &UnreadAcknowledgement,
+        ) -> Result<atomic_file::PreparedAtomicWrite, String>
+        + ?Sized,
 {
     let source_scope_key = codex_home_key(codex_home);
-    try_read_unread_summary_for_source_at(codex_home, &source_scope_key, now, writer, || Ok(()))
+    try_read_unread_summary_for_source_at_with_io(
+        codex_home,
+        &source_scope_key,
+        now,
+        prepare,
+        |_| Ok(()),
+        || Ok(()),
+    )
 }
 
-fn try_read_unread_summary_for_source_at<W, V>(
+#[cfg(test)]
+fn try_read_unread_summary_at_with_parent_sync<S>(
+    codex_home: &Path,
+    now: f64,
+    sync_parent: S,
+) -> Result<UnreadSummary, String>
+where
+    S: FnOnce(&Path) -> Result<(), String>,
+{
+    let source_scope_key = codex_home_key(codex_home);
+    try_read_unread_summary_for_source_at_with_io(
+        codex_home,
+        &source_scope_key,
+        now,
+        &prepare_acknowledgement_at,
+        sync_parent,
+        || Ok(()),
+    )
+}
+
+fn try_read_unread_summary_for_source_at<V>(
     codex_home: &Path,
     source_scope_key: &str,
     now: f64,
-    writer: &W,
     validate_before_write: V,
 ) -> Result<UnreadSummary, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
+    V: FnOnce() -> Result<(), String>,
+{
+    try_read_unread_summary_for_source_at_with_io(
+        codex_home,
+        source_scope_key,
+        now,
+        &prepare_acknowledgement_at,
+        |_| Ok(()),
+        validate_before_write,
+    )
+}
+
+fn try_read_unread_summary_for_source_at_with_io<P, S, V>(
+    codex_home: &Path,
+    source_scope_key: &str,
+    now: f64,
+    prepare: &P,
+    sync_parent: S,
+    validate_before_write: V,
+) -> Result<UnreadSummary, String>
+where
+    P: Fn(
+            &Path,
+            &UnreadAcknowledgement,
+        ) -> Result<atomic_file::PreparedAtomicWrite, String>
+        + ?Sized,
+    S: FnOnce(&Path) -> Result<(), String>,
     V: FnOnce() -> Result<(), String>,
 {
     let native_thread_ids = read_unread_thread_ids(codex_home);
@@ -249,42 +306,48 @@ where
     // 盘的并发刷新全部挂在锁上。
     let collected_completion_markers =
         recent_completion::collect_recent_completion_markers_at(codex_home, now);
-    acknowledgement_transaction(writer, validate_before_write, |acknowledgement| {
-        let home_acknowledgement = acknowledgement
-            .by_codex_home
-            .entry(source_scope_key.to_string())
-            .or_default();
-        let previous = home_acknowledgement.clone();
-        let summary = match native_thread_ids.as_ref() {
-            Some(thread_ids) => {
-                home_acknowledgement
-                    .unread_thread_ids
-                    .retain(|thread_id| thread_ids.contains(thread_id));
-                let completion_thread_ids = recent_completion::thread_ids_from_collected_markers(
+    acknowledgement_transaction_with_io(
+        prepare,
+        sync_parent,
+        validate_before_write,
+        |acknowledgement| {
+            let home_acknowledgement = acknowledgement
+                .by_codex_home
+                .entry(source_scope_key.to_string())
+                .or_default();
+            let previous = home_acknowledgement.clone();
+            let summary = match native_thread_ids.as_ref() {
+                Some(thread_ids) => {
+                    home_acknowledgement
+                        .unread_thread_ids
+                        .retain(|thread_id| thread_ids.contains(thread_id));
+                    let completion_thread_ids =
+                        recent_completion::thread_ids_from_collected_markers(
+                            &collected_completion_markers,
+                            &home_acknowledgement.completion_markers,
+                        );
+                    let reactivated_thread_ids: HashSet<String> = completion_thread_ids
+                        .intersection(thread_ids)
+                        .cloned()
+                        .collect();
+                    home_acknowledgement
+                        .unread_thread_ids
+                        .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
+                    let mut active_ids: HashSet<String> = thread_ids
+                        .difference(&home_acknowledgement.unread_thread_ids)
+                        .cloned()
+                        .collect();
+                    active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
+                    unread_state_summary(active_ids.len())
+                }
+                None => recent_completion::summary_from_collected_markers(
                     &collected_completion_markers,
                     &home_acknowledgement.completion_markers,
-                );
-                let reactivated_thread_ids: HashSet<String> = completion_thread_ids
-                    .intersection(thread_ids)
-                    .cloned()
-                    .collect();
-                home_acknowledgement
-                    .unread_thread_ids
-                    .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
-                let mut active_ids: HashSet<String> = thread_ids
-                    .difference(&home_acknowledgement.unread_thread_ids)
-                    .cloned()
-                    .collect();
-                active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
-                unread_state_summary(active_ids.len())
-            }
-            None => recent_completion::summary_from_collected_markers(
-                &collected_completion_markers,
-                &home_acknowledgement.completion_markers,
-            ),
-        };
-        Ok((summary, *home_acknowledgement != previous))
-    })
+                ),
+            };
+            Ok((summary, *home_acknowledgement != previous))
+        },
+    )
 }
 
 #[cfg(test)]
@@ -300,34 +363,30 @@ pub fn acknowledge_current_unread_for_source(
 ) -> Result<UnreadSummary, String> {
     let completion_markers = recent_completion::recent_completion_markers(observation_home);
     let native_thread_ids = read_unread_thread_ids(observation_home);
-    let summary = acknowledgement_transaction(
-        &write_acknowledgement_at,
-        validate_before_write,
-        |acknowledgement| {
-            let home_acknowledgement = acknowledgement
-                .by_codex_home
-                .entry(source_scope_key.to_string())
-                .or_default();
-            let previous = home_acknowledgement.clone();
-            match native_thread_ids.as_ref() {
-                Some(thread_ids) => {
-                    home_acknowledgement
-                        .unread_thread_ids
-                        .extend(thread_ids.iter().cloned());
-                    home_acknowledgement
-                        .completion_markers
-                        .extend(completion_markers.iter().cloned());
-                }
-                None => home_acknowledgement
+    let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
+        let home_acknowledgement = acknowledgement
+            .by_codex_home
+            .entry(source_scope_key.to_string())
+            .or_default();
+        let previous = home_acknowledgement.clone();
+        match native_thread_ids.as_ref() {
+            Some(thread_ids) => {
+                home_acknowledgement
+                    .unread_thread_ids
+                    .extend(thread_ids.iter().cloned());
+                home_acknowledgement
                     .completion_markers
-                    .extend(completion_markers.iter().cloned()),
+                    .extend(completion_markers.iter().cloned());
             }
-            Ok((
-                unread_state_summary(0),
-                *home_acknowledgement != previous,
-            ))
-        },
-    )?;
+            None => home_acknowledgement
+                .completion_markers
+                .extend(completion_markers.iter().cloned()),
+        }
+        Ok((
+            unread_state_summary(0),
+            *home_acknowledgement != previous,
+        ))
+    })?;
     remember_trusted_summary(source_scope_key, &summary);
     Ok(summary)
 }
@@ -337,32 +396,28 @@ pub fn acknowledge_current_unread_for_observation(
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
-    let summary = acknowledgement_transaction(
-        &write_acknowledgement_at,
-        validate_before_write,
-        |acknowledgement| {
-            let home_acknowledgement = acknowledgement
-                .by_codex_home
-                .entry(source_scope_key.to_string())
-                .or_default();
-            let previous = home_acknowledgement.clone();
-            if let Some(thread_ids) = observation.native_thread_ids.as_ref() {
-                home_acknowledgement
-                    .unread_thread_ids
-                    .extend(thread_ids.iter().cloned());
-            }
-            home_acknowledgement.completion_markers.extend(
-                observation
-                    .recent_completions
-                    .iter()
-                    .map(|(_, marker)| marker.clone()),
-            );
-            Ok((
-                unread_state_summary(0),
-                *home_acknowledgement != previous,
-            ))
-        },
-    )?;
+    let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
+        let home_acknowledgement = acknowledgement
+            .by_codex_home
+            .entry(source_scope_key.to_string())
+            .or_default();
+        let previous = home_acknowledgement.clone();
+        if let Some(thread_ids) = observation.native_thread_ids.as_ref() {
+            home_acknowledgement
+                .unread_thread_ids
+                .extend(thread_ids.iter().cloned());
+        }
+        home_acknowledgement.completion_markers.extend(
+            observation
+                .recent_completions
+                .iter()
+                .map(|(_, marker)| marker.clone()),
+        );
+        Ok((
+            unread_state_summary(0),
+            *home_acknowledgement != previous,
+        ))
+    })?;
     remember_trusted_summary(source_scope_key, &summary);
     Ok(summary)
 }
@@ -421,48 +476,143 @@ struct HomeUnreadAcknowledgement {
     completion_markers: HashSet<String>,
 }
 
-fn acknowledgement_transaction<T, W, V, F>(
-    writer: &W,
+fn acknowledgement_transaction<T, V, F>(
     validate_before_write: V,
     operation: F,
 ) -> Result<T, String>
 where
-    W: Fn(&Path, &UnreadAcknowledgement) -> Result<AcknowledgementWriteOutcome, String> + ?Sized,
     V: FnOnce() -> Result<(), String>,
-    F: FnOnce(&mut UnreadAcknowledgement) -> Result<(T, bool), String>,
+    F: Fn(&mut UnreadAcknowledgement) -> Result<(T, bool), String>,
     T: DurabilityWarning,
 {
-    let lock = ACKNOWLEDGEMENT_LOCK.get_or_init(|| Mutex::new(()));
-    let _guard = lock
-        .lock()
-        .map_err(|_| "未读基线事务锁已损坏".to_string())?;
+    acknowledgement_transaction_with_io(
+        &prepare_acknowledgement_at,
+        |_| Ok(()),
+        validate_before_write,
+        operation,
+    )
+}
+
+fn acknowledgement_transaction_with_io<T, P, S, V, F>(
+    prepare: &P,
+    sync_parent: S,
+    validate_before_write: V,
+    operation: F,
+) -> Result<T, String>
+where
+    P: Fn(
+            &Path,
+            &UnreadAcknowledgement,
+        ) -> Result<atomic_file::PreparedAtomicWrite, String>
+        + ?Sized,
+    S: FnOnce(&Path) -> Result<(), String>,
+    V: FnOnce() -> Result<(), String>,
+    F: Fn(&mut UnreadAcknowledgement) -> Result<(T, bool), String>,
+    T: DurabilityWarning,
+{
     let Some(path) = app_paths::unread_acknowledgement_path() else {
         return Err("无法定位 Tauri 应用支持目录，不能记录未读基线".into());
     };
-    let mut acknowledgement = read_acknowledgement_at(&path)?;
-    let (mut result, changed) = operation(&mut acknowledgement)?;
-    if changed {
-        validate_before_write()?;
+    let mut validate_before_write = Some(validate_before_write);
+    let mut sync_parent = Some(sync_parent);
+    loop {
+        let (mut acknowledgement, baseline) = read_acknowledgement_snapshot_at(&path)?;
+        let (mut result, changed) = operation(&mut acknowledgement)?;
+        if !changed {
+            return Ok(result);
+        }
+
+        // 序列化、临时文件写入和文件 fsync 都可能很慢，必须在全局事务锁外完成。
+        let prepared = prepare(&path, &acknowledgement)?;
+        let lock = ACKNOWLEDGEMENT_LOCK.get_or_init(|| Mutex::new(()));
+        let guard = lock
+            .lock()
+            .map_err(|_| "未读基线事务锁已损坏".to_string())?;
+        // 内核文件锁把同一个短 CAS 窗口扩展到其他 Token Bar 进程。
+        let cross_process_lock = match CrossProcessFileLock::acquire(
+            &acknowledgement_lock_path(&path),
+            "未读基线事务",
+        ) {
+            Ok(lock) => lock,
+            Err(error) => {
+                drop(guard);
+                return Err(discard_prepared_after_error(prepared, error));
+            }
+        };
+        let current = match read_acknowledgement_bytes_at(&path) {
+            Ok(current) => current,
+            Err(error) => {
+                drop(cross_process_lock);
+                drop(guard);
+                return Err(discard_prepared_after_error(prepared, error));
+            }
+        };
+        if current != baseline {
+            // 另一条事务已提交；锁外丢弃旧临时文件，再基于新快照重放纯操作。
+            drop(cross_process_lock);
+            drop(guard);
+            prepared
+                .discard()
+                .map_err(|error| format!("清理过期未读基线临时文件失败：{error}"))?;
+            continue;
+        }
+
+        let validation = validate_before_write
+            .take()
+            .expect("validation is consumed only after a successful compare");
+        if let Err(error) = validation() {
+            drop(cross_process_lock);
+            drop(guard);
+            return Err(discard_prepared_after_error(prepared, error));
+        }
+        let committed = match prepared.try_commit() {
+            Ok(committed) => committed,
+            Err(failure) => {
+                drop(cross_process_lock);
+                drop(guard);
+                return Err(format!(
+                    "写入未读基线失败：{}",
+                    failure.cleanup()
+                ));
+            }
+        };
+        drop(cross_process_lock);
+        drop(guard);
+
+        let parent_sync = sync_parent
+            .take()
+            .expect("parent sync is consumed only after a successful commit");
         if let AcknowledgementWriteOutcome::CommittedDurabilityUncertain(error) =
-            writer(&path, &acknowledgement)?
+            finish_acknowledgement_commit(committed, parent_sync)?
         {
             attach_durability_warning(&mut result, &error);
         }
+        return Ok(result);
     }
-    Ok(result)
 }
 
-fn read_acknowledgement_at(path: &Path) -> Result<UnreadAcknowledgement, String> {
-    let data = match fs::read(path) {
-        Ok(data) => data,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Ok(UnreadAcknowledgement::default());
-        }
-        Err(error) => {
-            return Err(format!("读取未读基线失败：{error}"));
-        }
+fn acknowledgement_lock_path(path: &Path) -> PathBuf {
+    path.with_file_name("unread-acknowledgement.lock")
+}
+
+fn read_acknowledgement_snapshot_at(
+    path: &Path,
+) -> Result<(UnreadAcknowledgement, Option<Vec<u8>>), String> {
+    let data = read_acknowledgement_bytes_at(path)?;
+    let Some(data) = data else {
+        return Ok((UnreadAcknowledgement::default(), None));
     };
-    serde_json::from_slice(&data).map_err(|error| format!("未读基线 JSON 损坏：{error}"))
+    let acknowledgement = serde_json::from_slice(&data)
+        .map_err(|error| format!("未读基线 JSON 损坏：{error}"))?;
+    Ok((acknowledgement, Some(data)))
+}
+
+fn read_acknowledgement_bytes_at(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match fs::read(path) {
+        Ok(data) => Ok(Some(data)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("读取未读基线失败：{error}")),
+    }
 }
 
 #[derive(Debug)]
@@ -486,32 +636,38 @@ fn attach_durability_warning<T: DurabilityWarning>(result: &mut T, error: &str) 
     result.attach_durability_warning(error);
 }
 
-fn write_acknowledgement_at(
-    path: &Path,
-    acknowledgement: &UnreadAcknowledgement,
-) -> Result<AcknowledgementWriteOutcome, String> {
-    write_acknowledgement_at_with_sync(path, acknowledgement, |_| Ok(()))
-}
-
 fn write_acknowledgement_at_with_sync<S>(
     path: &Path,
     acknowledgement: &UnreadAcknowledgement,
     sync_parent: S,
 ) -> Result<AcknowledgementWriteOutcome, String>
 where
-    S: Fn(&Path) -> Result<(), String>,
+    S: FnOnce(&Path) -> Result<(), String>,
 {
+    let prepared = prepare_acknowledgement_at(path, acknowledgement)?;
+    let committed = prepared
+        .commit()
+        .map_err(|error| format!("写入未读基线失败：{error}"))?;
+    finish_acknowledgement_commit(committed, sync_parent)
+}
+
+fn prepare_acknowledgement_at(
+    path: &Path,
+    acknowledgement: &UnreadAcknowledgement,
+) -> Result<atomic_file::PreparedAtomicWrite, String> {
     let data = serde_json::to_vec_pretty(acknowledgement).map_err(|error| error.to_string())?;
-    // temp+fsync+原子替换+父目录 fsync 统一走 atomic_file，未读侧不再自带一份
-    // 等价实现。注入的 sync_parent 挂在 ParentSync 钩子上：钩子先执行、真实目录
-    // fsync 紧随其后，测试注入“已提交但目录持久性未确认”故障时不会绕开真实同步。
-    match atomic_file::write_atomically_with_hook(path, &data, |stage, stage_path| {
-        if stage == atomic_file::AtomicWriteStage::ParentSync {
-            sync_parent(stage_path)
-        } else {
-            Ok(())
-        }
-    }) {
+    atomic_file::prepare_atomic_write(path, &data)
+        .map_err(|error| format!("准备未读基线写入失败：{error}"))
+}
+
+fn finish_acknowledgement_commit<S>(
+    committed: atomic_file::CommittedAtomicWrite,
+    sync_parent: S,
+) -> Result<AcknowledgementWriteOutcome, String>
+where
+    S: FnOnce(&Path) -> Result<(), String>,
+{
+    match committed.sync_parent_with(sync_parent) {
         Ok(()) => Ok(AcknowledgementWriteOutcome::Durable),
         Err(atomic_file::AtomicWriteError::CommittedNotDurable(error)) => {
             Ok(AcknowledgementWriteOutcome::CommittedDurabilityUncertain(
@@ -521,6 +677,16 @@ where
         Err(atomic_file::AtomicWriteError::NotCommitted(error)) => {
             Err(format!("写入未读基线失败：{error}"))
         }
+    }
+}
+
+fn discard_prepared_after_error(
+    prepared: atomic_file::PreparedAtomicWrite,
+    error: String,
+) -> String {
+    match prepared.discard() {
+        Ok(()) => error,
+        Err(cleanup_error) => format!("{error}; 清理未读基线临时文件失败：{cleanup_error}"),
     }
 }
 
