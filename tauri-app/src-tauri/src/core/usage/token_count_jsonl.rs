@@ -43,6 +43,22 @@ const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 6
 const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
 const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
 
+struct UsageSummaryRefreshOwner {
+    key: PathBuf,
+}
+
+impl Drop for UsageSummaryRefreshOwner {
+    fn drop(&mut self) {
+        let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() else {
+            return;
+        };
+        let mut guard = in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.remove(&self.key);
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageSummary {
@@ -278,24 +294,23 @@ fn usage_summary_from_events_at(
 fn schedule_usage_summary_refresh(codex_home: &Path) {
     let key = codex_home.to_path_buf();
     let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(mut guard) = in_flight.lock() {
-        if !guard.insert(key.clone()) {
-            return;
-        }
-    } else {
+    let mut guard = in_flight
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !guard.insert(key.clone()) {
         return;
     }
+    drop(guard);
+    let owner = UsageSummaryRefreshOwner { key: key.clone() };
 
-    std::thread::spawn(move || {
-        if usage_summary(&key).is_ok() {
-            mark_usage_summary_sources_synced(&key);
-        }
-        if let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() {
-            if let Ok(mut guard) = in_flight.lock() {
-                guard.remove(&key);
+    let _ = std::thread::Builder::new()
+        .name("codex-usage-summary".into())
+        .spawn(move || {
+            let _owner = owner;
+            if usage_summary(&key).is_ok() {
+                mark_usage_summary_sources_synced(&key);
             }
-        }
-    });
+        });
 }
 
 fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {

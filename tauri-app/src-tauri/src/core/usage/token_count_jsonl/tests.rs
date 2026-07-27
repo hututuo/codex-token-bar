@@ -13,6 +13,34 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn usage_summary_refresh_owner_releases_claim_during_unwind() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let key = PathBuf::from(format!(
+        "/usage-summary-refresh-owner-{}",
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    assert!(in_flight.lock().unwrap().insert(key.clone()));
+    let owner = UsageSummaryRefreshOwner { key: key.clone() };
+
+    let unwind = std::panic::catch_unwind(|| {
+        let _owner = owner;
+        panic!("injected usage summary refresh panic");
+    });
+
+    assert!(unwind.is_err());
+    let mut guard = in_flight
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        guard.insert(key.clone()),
+        "a panicked worker must not leave its refresh claim permanently occupied"
+    );
+    guard.remove(&key);
+}
+
+#[test]
 fn exact_index_deduplicates_a_replay_after_more_than_4096_unique_snapshots() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
