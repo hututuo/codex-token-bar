@@ -1259,20 +1259,24 @@ final class CodexInstanceEngine: @unchecked Sendable {
         var seen = Set<String>()
         var candidates: [URL] = []
         for operation in operations {
-            var paths = [operation.sourcePath]
-            if operation.destinationHash != nil {
-                paths.append(operation.destinationPath)
-            }
+            let paths = [operation.sourcePath, operation.destinationPath]
             for path in paths where seen.insert(path).inserted {
                 candidates.append(URL(fileURLWithPath: path))
             }
         }
+        try ensureFilesNotOpenElsewhere(candidates, operation: "实例同步")
+    }
+
+    private func ensureFilesNotOpenElsewhere(
+        _ candidates: [URL],
+        operation: String
+    ) throws {
         let held = try openFileHoldersProbe(candidates)
         guard !held.isEmpty else { return }
         let shown = held.prefix(3).joined(separator: "；")
         let suffix = held.count > 3 ? "；等共 \(held.count) 个文件" : ""
         throw codexInstanceError(
-            "实例同步已取消：检测到其他进程正打开候选会话文件（codex CLI 等非桌面进程不在运行检测范围内，请先退出后重试）：\(shown)\(suffix)"
+            "\(operation)已取消：检测到其他进程正打开候选会话文件（codex CLI 等非桌面进程不在运行检测范围内，请先退出后重试）：\(shown)\(suffix)"
         )
     }
 
@@ -1605,6 +1609,10 @@ final class CodexInstanceEngine: @unchecked Sendable {
                     "会话 \(transaction.operations[index].threadId) 的目标路径在预览后被占用：\(destination.path)"
                 )
             }
+            try ensureFilesNotOpenElsewhere(
+                [source, destination],
+                operation: "实例同步"
+            )
             try copyAtomicallyVerified(
                 from: source,
                 to: destination,
@@ -1632,6 +1640,10 @@ final class CodexInstanceEngine: @unchecked Sendable {
                 guard try hashFile(backup) == originalHash else {
                     throw codexInstanceError("回滚备份校验失败：\(backup.path)")
                 }
+                try ensureFilesNotOpenElsewhere(
+                    [destination],
+                    operation: "实例回滚"
+                )
                 try copyAtomicallyVerified(
                     from: backup,
                     to: destination,
@@ -1642,13 +1654,17 @@ final class CodexInstanceEngine: @unchecked Sendable {
                 try validateOperation(operation, instances: instances)
                 let destination = URL(fileURLWithPath: operation.destinationPath)
                 if !fileManager.fileExists(atPath: destination.path) {
-                    if operation.installedHash != nil {
-                        if let backupPath = operation.backupPath {
-                            // 同步前目标存在：从已校验的备份恢复原内容即为回滚目标。
-                            try restoreBackup(backupPath, destination: destination)
+                    if operation.destinationHash != nil {
+                        guard let backupPath = operation.backupPath else {
+                            throw codexInstanceError(
+                                "同步前目标存在，但回滚事务缺少备份路径：\(destination.path)"
+                            )
                         }
-                        // 新增文件的回滚就是删除：目标已不存在即为目标状态（幂等重试）。
+                        // 是否需要恢复由同步前状态决定，不能用 installedHash 猜测。
+                        // copy 已提交但 manifest 尚未写回时，installedHash 仍可能为空。
+                        try restoreBackup(backupPath, destination: destination)
                     }
+                    // 同步前目标不存在：当前仍不存在就是回滚目标（幂等重试）。
                 } else {
                     let currentHash = try hashFile(destination)
                     // 目标已是同步前内容：已回滚（或从未生效），幂等跳过。
@@ -1664,6 +1680,10 @@ final class CodexInstanceEngine: @unchecked Sendable {
                         if let backupPath = operation.backupPath {
                             try restoreBackup(backupPath, destination: destination)
                         } else {
+                            try ensureFilesNotOpenElsewhere(
+                                [destination],
+                                operation: "实例回滚"
+                            )
                             try fileManager.removeItem(at: destination)
                             try syncDirectory(destination.deletingLastPathComponent())
                         }

@@ -460,6 +460,22 @@ fn sync_instances_locked_with_visibility(
     instances: Vec<CodexInstance>,
     rebuild_visibility: &mut dyn FnMut(&Path) -> Result<(), String>,
 ) -> Result<CodexInstanceSyncResult, String> {
+    sync_instances_locked_with_visibility_and_open_file_probe(
+        paths,
+        registry,
+        instances,
+        rebuild_visibility,
+        &mut |candidates| crate::platform::files_open_in_other_processes(candidates),
+    )
+}
+
+fn sync_instances_locked_with_visibility_and_open_file_probe(
+    paths: &InstancePaths,
+    registry: &mut CodexInstanceRegistry,
+    instances: Vec<CodexInstance>,
+    rebuild_visibility: &mut dyn FnMut(&Path) -> Result<(), String>,
+    open_file_probe: &mut dyn FnMut(&[PathBuf]) -> Result<Vec<String>, String>,
+) -> Result<CodexInstanceSyncResult, String> {
     let preview = build_sync_preview(&instances)?;
     if preview.operations.is_empty() && preview.conflicts.is_empty() {
         return Ok(CodexInstanceSyncResult {
@@ -469,7 +485,18 @@ fn sync_instances_locked_with_visibility(
             message: "所选实例的会话历史已经一致。".into(),
         });
     }
-    ensure_candidate_files_not_open_elsewhere(&preview.operations)?;
+    let mut candidates = Vec::new();
+    for operation in &preview.operations {
+        candidates.push(PathBuf::from(&operation.source_path));
+        candidates.push(PathBuf::from(&operation.destination_path));
+    }
+    candidates.sort();
+    candidates.dedup();
+    ensure_files_not_open_elsewhere_with_probe(
+        &candidates,
+        "实例同步",
+        open_file_probe,
+    )?;
     let transaction_id = Uuid::new_v4().to_string();
     let transaction_root = transaction_root(paths, &transaction_id);
     fs::create_dir_all(&transaction_root)
@@ -503,9 +530,20 @@ fn sync_instances_locked_with_visibility(
         let _ = fs::remove_dir_all(&transaction_root);
         return Err(error);
     }
-    let apply_result = apply_transaction(paths, &instances, &mut transaction);
+    let apply_result = apply_transaction_with_open_file_probe(
+        paths,
+        &instances,
+        &mut transaction,
+        open_file_probe,
+    );
     if let Err(error) = apply_result {
-        let rollback_error = rollback_transaction_files(paths, &instances, &mut transaction).err();
+        let rollback_error = rollback_transaction_files_with_open_file_probe(
+            paths,
+            &instances,
+            &mut transaction,
+            open_file_probe,
+        )
+        .err();
         transaction.state = if rollback_error.is_some() {
             "failedNeedsRecovery".into()
         } else {
@@ -1243,19 +1281,12 @@ fn ensure_all_stopped(instances: &[CodexInstance]) -> Result<(), String> {
 // 运行检测（受控进程 / marker / 桌面 App）覆盖不到 codex CLI 这类无 marker 的
 // 进程；若同步 rename 时 CLI 仍持旧 inode 追加，事件会静默丢失。改写前对全部
 // 候选文件检查打开句柄，检测到或无法检测都 fail closed。
-fn ensure_candidate_files_not_open_elsewhere(
-    operations: &[CodexInstanceSyncOperation],
+fn ensure_files_not_open_elsewhere_with_probe(
+    candidates: &[PathBuf],
+    operation: &str,
+    probe: &mut dyn FnMut(&[PathBuf]) -> Result<Vec<String>, String>,
 ) -> Result<(), String> {
-    let mut candidates = Vec::new();
-    for operation in operations {
-        candidates.push(PathBuf::from(&operation.source_path));
-        if operation.destination_hash.is_some() {
-            candidates.push(PathBuf::from(&operation.destination_path));
-        }
-    }
-    candidates.sort();
-    candidates.dedup();
-    let held = crate::platform::files_open_in_other_processes(&candidates)?;
+    let held = probe(candidates)?;
     if held.is_empty() {
         return Ok(());
     }
@@ -1266,7 +1297,7 @@ fn ensure_candidate_files_not_open_elsewhere(
         String::new()
     };
     Err(format!(
-        "实例同步已取消：检测到其他进程正打开候选会话文件（codex CLI 等非桌面进程\
+        "{operation}已取消：检测到其他进程正打开候选会话文件（codex CLI 等非桌面进程\
          不在运行检测范围内，请先退出后重试）：{shown}{suffix}"
     ))
 }
@@ -1642,10 +1673,11 @@ fn copy_atomically_verified(
     }
 }
 
-fn apply_transaction(
+fn apply_transaction_with_open_file_probe(
     paths: &InstancePaths,
     instances: &[CodexInstance],
     transaction: &mut SyncTransaction,
+    open_file_probe: &mut dyn FnMut(&[PathBuf]) -> Result<Vec<String>, String>,
 ) -> Result<(), String> {
     for index in 0..transaction.operations.len() {
         ensure_all_stopped(instances)?;
@@ -1687,6 +1719,11 @@ fn apply_transaction(
             }
             None => {}
         }
+        ensure_files_not_open_elsewhere_with_probe(
+            &[source.to_path_buf(), destination.to_path_buf()],
+            "实例同步",
+            open_file_probe,
+        )?;
         copy_atomically_verified(source, destination, &operation.source_hash)?;
         operation.installed_hash = Some(operation.source_hash.clone());
         write_transaction(
@@ -1702,6 +1739,20 @@ fn rollback_transaction_files(
     instances: &[CodexInstance],
     transaction: &mut SyncTransaction,
 ) -> Result<(), String> {
+    rollback_transaction_files_with_open_file_probe(
+        paths,
+        instances,
+        transaction,
+        &mut |candidates| crate::platform::files_open_in_other_processes(candidates),
+    )
+}
+
+fn rollback_transaction_files_with_open_file_probe(
+    paths: &InstancePaths,
+    instances: &[CodexInstance],
+    transaction: &mut SyncTransaction,
+    open_file_probe: &mut dyn FnMut(&[PathBuf]) -> Result<Vec<String>, String>,
+) -> Result<(), String> {
     let transaction_root = transaction_root(paths, &transaction.transaction_id);
     let mut failures = Vec::new();
     for index in (0..transaction.operations.len()).rev() {
@@ -1709,7 +1760,7 @@ fn rollback_transaction_files(
         let outcome = (|| -> Result<(), String> {
             validate_operation_paths(instances, operation)?;
             let destination = Path::new(&operation.destination_path);
-            let restore_backup = |backup_path: &str| -> Result<(), String> {
+            let mut restore_backup = |backup_path: &str| -> Result<(), String> {
                 let backup = Path::new(backup_path);
                 ensure_path_inside(backup, &transaction_root)?;
                 let expected = operation
@@ -1719,17 +1770,27 @@ fn rollback_transaction_files(
                 if hash_file(backup)? != expected {
                     return Err(format!("回滚备份校验失败：{}", backup.display()));
                 }
+                ensure_files_not_open_elsewhere_with_probe(
+                    &[destination.to_path_buf()],
+                    "实例回滚",
+                    open_file_probe,
+                )?;
                 copy_atomically_verified(backup, destination, expected)
             };
             if !destination.exists() {
-                if operation.installed_hash.is_none() {
-                    return Ok(());
-                }
-                return match operation.backup_path.as_deref() {
+                return match (
+                    operation.destination_hash.as_deref(),
+                    operation.backup_path.as_deref(),
+                ) {
                     // 新增文件的回滚就是删除：目标已不存在即为目标状态（幂等重试）。
-                    None => Ok(()),
-                    // 同步前目标存在：从已校验的备份恢复原内容即为回滚目标。
-                    Some(backup_path) => restore_backup(backup_path),
+                    (None, _) => Ok(()),
+                    // 是否需要恢复由同步前状态决定，不能用 installed_hash 猜测。
+                    // copy 已提交但 manifest 尚未写回时，installed_hash 仍可能为空。
+                    (Some(_), Some(backup_path)) => restore_backup(backup_path),
+                    (Some(_), None) => Err(format!(
+                        "同步前目标存在，但回滚事务缺少备份路径：{}",
+                        destination.display()
+                    )),
                 };
             }
             let current_hash = hash_file(destination)?;
@@ -1751,6 +1812,11 @@ fn rollback_transaction_files(
             if let Some(backup_path) = operation.backup_path.as_deref() {
                 restore_backup(backup_path)
             } else {
+                ensure_files_not_open_elsewhere_with_probe(
+                    &[destination.to_path_buf()],
+                    "实例回滚",
+                    open_file_probe,
+                )?;
                 fs::remove_file(destination).map_err(|error| {
                     format!("删除同步新增文件失败 {}：{error}", destination.display())
                 })?;
@@ -2246,6 +2312,54 @@ mod tests {
     }
 
     #[test]
+    fn sync_rechecks_open_files_immediately_before_each_replace() {
+        let paths = temp_paths("late-open-gate");
+        let first_home = paths.managed_root.join("a");
+        let second_home = paths.managed_root.join("b");
+        let mut first = fixture_instance("a", &first_home);
+        let mut second = fixture_instance("b", &second_home);
+        first.managed = true;
+        second.managed = true;
+        let destination = write_rollout(
+            &first_home,
+            "late-open",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n",
+        );
+        let original = fs::read(&destination).unwrap();
+        write_rollout(
+            &second_home,
+            "late-open",
+            "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}\n{\"type\":\"event_msg\",\"payload\":{\"n\":2}}\n",
+        );
+        let mut registry = CodexInstanceRegistry {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            updated_at: 1,
+            instances: vec![first.clone(), second.clone()],
+            conflicts: Vec::new(),
+        };
+        let mut calls = 0_u32;
+        let error = sync_instances_locked_with_visibility_and_open_file_probe(
+            &paths,
+            &mut registry,
+            vec![first, second],
+            &mut |_| Ok(()),
+            &mut |_| {
+                calls += 1;
+                if calls == 2 {
+                    Ok(vec!["late-open.jsonl（进程 4242）".into()])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(calls >= 2);
+        assert!(error.contains("late-open.jsonl"), "{error}");
+        assert_eq!(fs::read(&destination).unwrap(), original);
+        let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
     fn registry_rejects_duplicate_canonical_homes() {
         let paths = temp_paths("duplicate");
         let home = paths.managed_root.join("same");
@@ -2365,8 +2479,27 @@ mod tests {
         let mut transaction = read_transaction(&transaction_root(&paths, &transaction_id)).unwrap();
         assert_eq!(transaction.state, "committed");
 
+        let mut held_probe = |_: &[PathBuf]| {
+            Ok(vec!["transaction.jsonl（进程 4242）".to_string()])
+        };
+        let error = rollback_transaction_files_with_open_file_probe(
+            &paths,
+            &[first.clone(), second.clone()],
+            &mut transaction,
+            &mut held_probe,
+        )
+        .unwrap_err();
+        assert!(error.contains("实例回滚已取消"), "{error}");
+        assert_eq!(
+            fs::read(&first_path).unwrap(),
+            fs::read(&second_path).unwrap()
+        );
+
+        // 模拟 live replace 已提交、原目标随后缺失，但 installed_hash 尚未落盘。
+        // 回滚必须依据 destination_hash + 已校验备份恢复，不能把缺失误判为成功。
         transaction.state = "prepared".into();
         transaction.operations[0].installed_hash = None;
+        fs::remove_file(&first_path).unwrap();
         rollback_transaction_files(&paths, &[first, second], &mut transaction).unwrap();
         assert_eq!(fs::read(&first_path).unwrap(), original);
         let _ = fs::remove_dir_all(paths.managed_root.parent().unwrap().parent().unwrap());

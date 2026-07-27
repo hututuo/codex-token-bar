@@ -117,6 +117,44 @@ final class CodexInstanceEngineTests: XCTestCase {
         XCTAssertEqual(result.operationsApplied, 1)
     }
 
+    func testSyncRechecksOpenFilesImmediatelyBeforeReplacingDestination() throws {
+        let probe = ScriptedOpenFileHoldersProbe([
+            [],
+            ["late-open.jsonl（进程 4242）"],
+        ])
+        let fixture = try Fixture(openFileHoldersProbe: { candidates in
+            probe.call(candidates)
+        })
+        defer { fixture.cleanup() }
+        let first = try fixture.importInstance(name: "一", home: fixture.firstHome)
+        let second = try fixture.importInstance(name: "二", home: fixture.secondHome)
+        let destination = try fixture.writeRollout(
+            home: fixture.firstHome,
+            threadID: "late-open",
+            events: ["{\"type\":\"event_msg\",\"payload\":{\"n\":1}}"]
+        )
+        let original = try Data(contentsOf: destination)
+        _ = try fixture.writeRollout(
+            home: fixture.secondHome,
+            threadID: "late-open",
+            events: [
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}",
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":2}}",
+            ]
+        )
+
+        XCTAssertThrowsError(
+            try fixture.engine.syncInstances(instanceIDs: [first.id, second.id])
+        ) { error in
+            XCTAssertTrue(
+                error.localizedDescription.contains("late-open.jsonl"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertGreaterThanOrEqual(probe.callCount, 2)
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+    }
+
     func testInstanceFileLockHoldsUntilExplicitReleaseAndReleaseIsIdempotent() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-instance-lock-\(UUID().uuidString)", isDirectory: true)
@@ -184,6 +222,89 @@ final class CodexInstanceEngineTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: firstURL), original)
         XCTAssertFalse(FileManager.default.fileExists(atPath: newFile.path))
         XCTAssertEqual(try fixture.engine.listSyncTransactions().first?.state, "rolledBack")
+    }
+
+    func testRollbackRefusesWhileDestinationIsOpenAndSucceedsAfterRelease() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let first = try fixture.importInstance(name: "一", home: fixture.firstHome)
+        let second = try fixture.importInstance(name: "二", home: fixture.secondHome)
+        let destination = try fixture.writeRollout(
+            home: fixture.firstHome,
+            threadID: "rollback-held",
+            events: ["{\"type\":\"event_msg\",\"payload\":{\"n\":1}}"]
+        )
+        let original = try Data(contentsOf: destination)
+        _ = try fixture.writeRollout(
+            home: fixture.secondHome,
+            threadID: "rollback-held",
+            events: [
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}",
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":2}}",
+            ]
+        )
+        let transactionID = try XCTUnwrap(
+            fixture.engine.syncInstances(
+                instanceIDs: [first.id, second.id]
+            ).transactionId
+        )
+        let holder = try Self.spawnFileHolder(path: destination.path)
+        XCTAssertThrowsError(
+            try fixture.engine.rollbackSync(transactionID: transactionID)
+        ) { error in
+            XCTAssertTrue(
+                error.localizedDescription.contains("实例回滚已取消"),
+                error.localizedDescription
+            )
+            XCTAssertTrue(
+                error.localizedDescription.contains("\(holder.processIdentifier)"),
+                error.localizedDescription
+            )
+        }
+        holder.terminate()
+        holder.waitUntilExit()
+
+        _ = try fixture.engine.rollbackSync(transactionID: transactionID)
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+    }
+
+    func testRollbackRestoresMissingOriginalEvenWhenInstalledHashWasNotPersisted() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let first = try fixture.importInstance(name: "一", home: fixture.firstHome)
+        let second = try fixture.importInstance(name: "二", home: fixture.secondHome)
+        let destination = try fixture.writeRollout(
+            home: fixture.firstHome,
+            threadID: "rollback-missing-original",
+            events: ["{\"type\":\"event_msg\",\"payload\":{\"n\":1}}"]
+        )
+        let original = try Data(contentsOf: destination)
+        _ = try fixture.writeRollout(
+            home: fixture.secondHome,
+            threadID: "rollback-missing-original",
+            events: [
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":1}}",
+                "{\"type\":\"event_msg\",\"payload\":{\"n\":2}}",
+            ]
+        )
+        let transactionID = try XCTUnwrap(
+            fixture.engine.syncInstances(
+                instanceIDs: [first.id, second.id]
+            ).transactionId
+        )
+        try fixture.setTransactionState(
+            transactionID,
+            state: "committed",
+            clearInstalledHashes: true
+        )
+        try FileManager.default.removeItem(at: destination)
+
+        _ = try fixture.engine.rollbackSync(transactionID: transactionID)
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+        XCTAssertEqual(
+            try fixture.engine.listSyncTransactions().first?.state,
+            "rolledBack"
+        )
     }
 
     func testDivergentRolloutsStaySeparateAndAreRecordedAsConflict() throws {
@@ -424,7 +545,9 @@ private final class Fixture {
     let secondHome: URL
     let engine: CodexInstanceEngine
 
-    init() throws {
+    init(
+        openFileHoldersProbe: (@Sendable ([URL]) throws -> [String])? = nil
+    ) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-instance-tests-\(UUID().uuidString)", isDirectory: true)
         paths = CodexInstancePaths(
@@ -442,7 +565,8 @@ private final class Fixture {
             paths: paths,
             defaultCodexHome: defaultHome,
             visibilityRebuilder: { _ in },
-            globalCodexRunningProbe: { false }
+            globalCodexRunningProbe: { false },
+            openFileHoldersProbe: openFileHoldersProbe
         )
     }
 
@@ -511,5 +635,29 @@ private final class Fixture {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private final class ScriptedOpenFileHoldersProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var responses: [[String]]
+    private var calls = 0
+
+    init(_ responses: [[String]]) {
+        self.responses = responses
+    }
+
+    func call(_ candidates: [URL]) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        calls += 1
+        guard !responses.isEmpty else { return [] }
+        return responses.removeFirst()
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }
