@@ -13,6 +13,27 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testLogWatcherRetriesAfterDirectoryAppears() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateWatcherRetry-\(UUID().uuidString)", isDirectory: true)
+        let logsDirectory = root.appendingPathComponent("late-logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        temporaryDirectories.append(root)
+
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.configureLogWatcher(logsDirectory: logsDirectory.path)
+        XCTAssertEqual(monitor.watchedLogsDirectory, "")
+        XCTAssertNil(monitor.logsDirectorySource)
+
+        try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
+        monitor.configureLogWatcher(logsDirectory: logsDirectory.path)
+        XCTAssertEqual(monitor.watchedLogsDirectory, logsDirectory.path)
+        XCTAssertNotNil(monitor.logsDirectorySource)
+
+        monitor.setPollingActive(false)
+    }
+
+    @MainActor
     func testPausedPollRejectsSuspendedCompletionAndResumeAcceptsCurrentGeneration() async throws {
         let source = try makeCodexDataSource(named: "PausedPoll")
         let logsURL = source.codexHome.appendingPathComponent("logs_2.sqlite")

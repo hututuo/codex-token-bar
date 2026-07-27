@@ -48,10 +48,10 @@ extension LiveRateMonitor {
 
         logsDirectorySource?.cancel()
         logsDirectorySource = nil
-        watchedLogsDirectory = directory
 
         let descriptor = open(directory, O_EVTONLY)
         guard descriptor >= 0 else { return }
+        watchedLogsDirectory = directory
 
         let eventSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
