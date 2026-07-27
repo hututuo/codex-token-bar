@@ -12,8 +12,18 @@
 //   ② 八项资产必须都在 release 目录里、是常规文件，重新哈希后与清单一致；
 //   ③ 非 Release 资产（build-manifest.json、appcast.xml）不得进入统一清单；
 //   ④ 已存在的统一清单视为不可变发布历史：内容一致幂等通过，不一致报错。
-import { createHash } from "node:crypto";
-import { createReadStream, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  createReadStream,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -137,6 +147,59 @@ function assertRegularFile(file, label) {
   if (info.isSymbolicLink() || !info.isFile()) fail(`${label} must be a regular file: ${file}`);
 }
 
+function fsyncFile(file) {
+  const descriptor = openSync(file, "r");
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function fsyncParentDirectory(file) {
+  if (process.platform === "win32") return;
+  const descriptor = openSync(path.dirname(file), "r");
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+export function publishImmutableFile(output, content) {
+  const tmp = `${output}.tmp-${process.pid}-${randomUUID()}`;
+  let temporaryExists = false;
+  try {
+    writeFileSync(tmp, content, { encoding: "utf8", flag: "wx", mode: 0o644 });
+    temporaryExists = true;
+    fsyncFile(tmp);
+    try {
+      // A same-directory hard link is an atomic no-replace publication:
+      // EEXIST can never overwrite a manifest created after our earlier reads.
+      linkSync(tmp, output);
+      fsyncParentDirectory(output);
+      return "written";
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      assertRegularFile(output, "Existing unified checksum manifest");
+      const existing = readFileSync(output, "utf8");
+      if (existing === content) return "unchanged";
+      fail(
+        `Refusing to overwrite existing unified checksum manifest with different content: ${output}\n` +
+          "Published checksum manifests are immutable history; delete the file manually if regenerating is intentional.",
+      );
+    }
+  } finally {
+    if (temporaryExists) {
+      try {
+        unlinkSync(tmp);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+  }
+}
+
 async function main(argv) {
   let version = "";
   let releaseDir = "";
@@ -175,28 +238,14 @@ async function main(argv) {
 
   const output = path.join(releaseDir, unifiedChecksumName(version));
   const content = `${unified.lines.join("\n")}\n`;
-  let existing = null;
-  try {
-    existing = readFileSync(output, "utf8");
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (existing !== null) {
-    if (existing === content) {
-      process.stdout.write(`Unified checksum manifest already up to date: ${output}\n`);
-      return;
-    }
-    fail(
-      `Refusing to overwrite existing unified checksum manifest with different content: ${output}\n` +
-        "Published checksum manifests are immutable history; delete the file manually if regenerating is intentional.",
+  const publication = publishImmutableFile(output, content);
+  if (publication === "unchanged") {
+    process.stdout.write(`Unified checksum manifest already up to date: ${output}\n`);
+  } else {
+    process.stdout.write(
+      `Unified checksum manifest written: ${output} (${unified.lines.length} assets, macOS arch ${unified.archLabel})\n`,
     );
   }
-  const tmp = `${output}.tmp-${process.pid}`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, output);
-  process.stdout.write(
-    `Unified checksum manifest written: ${output} (${unified.lines.length} assets, macOS arch ${unified.archLabel})\n`,
-  );
 }
 
 const invokedDirectly =

@@ -36,7 +36,7 @@ function appcastXml(items) {
   ].join("\n");
 }
 
-async function runMerge({ version, generated, existing, env = {} }) {
+async function runMerge({ version, generated, existing, outputExisting, env = {} }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "merge-appcast-"));
   const generatedPath = path.join(root, "generated.xml");
   const existingPath = path.join(root, "existing.xml");
@@ -44,6 +44,9 @@ async function runMerge({ version, generated, existing, env = {} }) {
   await writeFile(generatedPath, generated);
   if (existing !== undefined) {
     await writeFile(existingPath, existing);
+  }
+  if (outputExisting !== undefined) {
+    await writeFile(outputPath, outputExisting);
   }
   const baseEnv = { ...process.env };
   delete baseEnv.ALLOW_APPCAST_REPUBLISH;
@@ -133,4 +136,64 @@ test("generated appcast without the current version is rejected", async () => {
   const run = await runMerge({ version: "1.1.0", generated });
   assert.notEqual(run.code, 0);
   assert.match(run.stderr, /generated appcast missing current version 1\.1\.0/);
+});
+
+test("structured merge accepts compact XML and noncanonical indentation", async () => {
+  const generated = appcastXml([appcastItem("1.1.0", "fresh")])
+    .replaceAll("\n", "")
+    .replaceAll("        ", "");
+  const existing = appcastXml([appcastItem("1.0.0", "published")])
+    .replaceAll("        ", "\t");
+  const run = await runMerge({ version: "1.1.0", generated, existing });
+  assert.equal(run.code, 0, run.stderr);
+  const output = await readFile(run.outputPath, "utf8");
+  assert.ok(output.includes(shortVersionTag("1.1.0")));
+  assert.ok(output.includes(shortVersionTag("1.0.0")));
+});
+
+test("malformed published XML fails closed without writing output", async () => {
+  const generated = appcastXml([appcastItem("1.1.0", "fresh")]);
+  const run = await runMerge({
+    version: "1.1.0",
+    generated,
+    existing: "<rss><channel><item>",
+  });
+  assert.notEqual(run.code, 0);
+  assert.match(run.stderr, /published appcast is not well-formed XML/);
+  await assert.rejects(access(run.outputPath));
+});
+
+test("duplicate generated versions fail closed", async () => {
+  const generated = appcastXml([
+    appcastItem("1.1.0", "first"),
+    appcastItem("1.1.0", "second"),
+  ]);
+  const run = await runMerge({ version: "1.1.0", generated });
+  assert.notEqual(run.code, 0);
+  assert.match(run.stderr, /generated appcast contains duplicate version 1\.1\.0/);
+  await assert.rejects(access(run.outputPath));
+});
+
+test("forbidden entity declarations fail closed", async () => {
+  const generated = appcastXml([appcastItem("1.1.0", "fresh")])
+    .replace("<rss ", '<!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><rss ');
+  const run = await runMerge({ version: "1.1.0", generated });
+  assert.notEqual(run.code, 0);
+  assert.match(run.stderr, /forbidden DTD or entity declaration/);
+  await assert.rejects(access(run.outputPath));
+});
+
+test("publication refuses a destination changed after the history snapshot", async () => {
+  const generated = appcastXml([appcastItem("1.1.0", "fresh")]);
+  const existing = appcastXml([appcastItem("1.0.0", "snapshot")]);
+  const competing = appcastXml([appcastItem("1.0.1", "competing")]);
+  const run = await runMerge({
+    version: "1.1.0",
+    generated,
+    existing,
+    outputExisting: competing,
+  });
+  assert.notEqual(run.code, 0);
+  assert.match(run.stderr, /destination changed after the existing-history snapshot/);
+  assert.equal(await readFile(run.outputPath, "utf8"), competing);
 });

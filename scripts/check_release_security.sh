@@ -10,11 +10,15 @@ APPLE_NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
 APPLE_ID="${APPLE_ID:-}"
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
 APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
+failures=0
 
 status_line() {
   local state="$1"
   local text="$2"
   printf '%-8s %s\n' "[$state]" "$text"
+  if [[ "$state" == "FAIL" ]]; then
+    failures=$((failures + 1))
+  fi
 }
 
 notary_configured() {
@@ -81,4 +85,9 @@ if [[ -n "$DMG_PATH" ]]; then
   else
     status_line "FAIL" "DMG file does not exist: $DMG_PATH"
   fi
+fi
+
+if (( failures > 0 )); then
+  printf '\nRelease security preflight failed with %d blocking finding(s).\n' "$failures" >&2
+  exit 1
 fi

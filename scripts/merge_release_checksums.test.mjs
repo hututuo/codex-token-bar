@@ -13,6 +13,7 @@ import {
   expectedWindowsReleaseAssetNames,
   macChecksumName,
   parseChecksumManifest,
+  publishImmutableFile,
   unifiedChecksumName,
   windowsChecksumName,
 } from "./merge_release_checksums.mjs";
@@ -269,6 +270,60 @@ test("CLI treats an existing different unified manifest as immutable history", a
       `${fakeDigest("stale")}  stale.zip\n`,
     );
     await assertMergeFails(releaseDir, /Refusing to overwrite existing unified checksum manifest/);
+  } finally {
+    await rm(releaseDir, { recursive: true, force: true });
+  }
+});
+
+test("no-replace publication never overwrites a competing manifest and cleans staging", async () => {
+  const releaseDir = await mkdtemp(path.join(os.tmpdir(), "merge-sha256sums-publish-"));
+  try {
+    const output = path.join(releaseDir, "SHA256SUMS.txt");
+    await writeFile(output, "competing publication\n");
+    assert.throws(
+      () => publishImmutableFile(output, "our publication\n"),
+      /Refusing to overwrite existing unified checksum manifest/,
+    );
+    assert.equal(await readFile(output, "utf8"), "competing publication\n");
+    const entries = await import("node:fs/promises").then(({ readdir }) => readdir(releaseDir));
+    assert.deepEqual(entries, ["SHA256SUMS.txt"]);
+  } finally {
+    await rm(releaseDir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent no-replace publishers cannot overwrite the winner", async () => {
+  const releaseDir = await mkdtemp(path.join(os.tmpdir(), "merge-sha256sums-race-"));
+  try {
+    const output = path.join(releaseDir, "SHA256SUMS.txt");
+    const moduleURL = new URL("./merge_release_checksums.mjs", import.meta.url).href;
+    const program = [
+      `import { publishImmutableFile } from ${JSON.stringify(moduleURL)};`,
+      "publishImmutableFile(process.env.TEST_OUTPUT, process.env.TEST_CONTENT);",
+    ].join("\n");
+    const publish = (content) =>
+      execFileAsync(process.execPath, ["--input-type=module", "-e", program], {
+        env: {
+          ...process.env,
+          TEST_OUTPUT: output,
+          TEST_CONTENT: content,
+        },
+      });
+    const firstContent = "first publication\n";
+    const secondContent = "second publication\n";
+    const results = await Promise.allSettled([
+      publish(firstContent),
+      publish(secondContent),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+    const published = await readFile(output, "utf8");
+    assert.ok(
+      published === firstContent || published === secondContent,
+      "the destination must contain one complete winner",
+    );
+    const entries = await import("node:fs/promises").then(({ readdir }) => readdir(releaseDir));
+    assert.deepEqual(entries, ["SHA256SUMS.txt"]);
   } finally {
     await rm(releaseDir, { recursive: true, force: true });
   }
