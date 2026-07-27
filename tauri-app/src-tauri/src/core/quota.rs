@@ -1,3 +1,4 @@
+use crate::core::process_tail::ProcessPipeTail;
 use crate::core::quota_history;
 use crate::models::{
     AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot,
@@ -13,7 +14,7 @@ use rate_limits::{parse_rate_limits_with_plan, placeholder_quota, ParsedRateLimi
 use reset_credit::read_reset_credits;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
@@ -31,6 +32,7 @@ const RATE_LIMIT_READ_ATTEMPTS: usize = 3;
 const RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(12);
 const RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(350);
 const STDERR_TAIL_LIMIT_BYTES: usize = 16 * 1024;
+const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(500);
 pub(super) const RESET_CREDIT_READ_ATTEMPTS: usize = 3;
 pub(super) const RESET_CREDIT_TIMEOUT: Duration = Duration::from_secs(14);
 const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
@@ -980,66 +982,6 @@ fn read_rate_limits_from_command(
     Err(quota_deadline_error(timeout, Some(&stderr_tail)))
 }
 
-struct StderrTailCollector {
-    reader: Option<thread::JoinHandle<Vec<u8>>>,
-}
-
-impl StderrTailCollector {
-    fn spawn<R>(mut stderr: R) -> Self
-    where
-        R: Read + Send + 'static,
-    {
-        let reader = thread::spawn(move || {
-            let mut tail = Vec::with_capacity(STDERR_TAIL_LIMIT_BYTES);
-            let mut buffer = [0_u8; 4 * 1024];
-            loop {
-                match stderr.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(count) => append_stderr_tail(&mut tail, &buffer[..count]),
-                    Err(_) => break,
-                }
-            }
-            tail
-        });
-        Self {
-            reader: Some(reader),
-        }
-    }
-
-    fn finish(mut self) -> String {
-        let bytes = self
-            .reader
-            .take()
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-}
-
-impl Drop for StderrTailCollector {
-    fn drop(&mut self) {
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
-    }
-}
-
-fn append_stderr_tail(tail: &mut Vec<u8>, bytes: &[u8]) {
-    if bytes.len() >= STDERR_TAIL_LIMIT_BYTES {
-        tail.clear();
-        tail.extend_from_slice(&bytes[(bytes.len() - STDERR_TAIL_LIMIT_BYTES)..]);
-        return;
-    }
-    let overflow = tail
-        .len()
-        .saturating_add(bytes.len())
-        .saturating_sub(STDERR_TAIL_LIMIT_BYTES);
-    if overflow > 0 {
-        tail.drain(..overflow);
-    }
-    tail.extend_from_slice(bytes);
-}
-
 trait QuotaChildProcess {
     fn kill_for_cleanup(&mut self);
     fn wait_for_cleanup(&mut self);
@@ -1058,7 +1000,7 @@ impl QuotaChildProcess for Child {
 struct QuotaChildGuard<C: QuotaChildProcess> {
     child: C,
     cleaned: bool,
-    stderr: Option<StderrTailCollector>,
+    stderr: Option<ProcessPipeTail>,
 }
 
 impl<C: QuotaChildProcess> QuotaChildGuard<C> {
@@ -1070,13 +1012,6 @@ impl<C: QuotaChildProcess> QuotaChildGuard<C> {
         }
     }
 
-    fn collect_stderr<R>(&mut self, stderr: R)
-    where
-        R: Read + Send + 'static,
-    {
-        self.stderr = Some(StderrTailCollector::spawn(stderr));
-    }
-
     fn cleanup(&mut self) -> String {
         if !self.cleaned {
             self.child.kill_for_cleanup();
@@ -1085,12 +1020,20 @@ impl<C: QuotaChildProcess> QuotaChildGuard<C> {
         }
         self.stderr
             .take()
-            .map(StderrTailCollector::finish)
+            .map(ProcessPipeTail::finish)
             .unwrap_or_default()
     }
 }
 
 impl QuotaChildGuard<Child> {
+    fn collect_stderr(&mut self, stderr: std::process::ChildStderr) {
+        self.stderr = Some(ProcessPipeTail::spawn(
+            Some(stderr),
+            STDERR_TAIL_LIMIT_BYTES,
+            STDERR_DRAIN_GRACE,
+        ));
+    }
+
     fn child_mut(&mut self) -> &mut Child {
         &mut self.child
     }
@@ -1962,26 +1905,6 @@ mod tests {
         assert_eq!(RESET_CREDIT_TIMEOUT, Duration::from_secs(14));
     }
 
-    #[test]
-    fn quota_stderr_collector_keeps_only_the_bounded_tail() {
-        let marker = "stderr-final-marker";
-        let mut bytes = b"discarded-prefix".to_vec();
-        bytes.extend(vec![b'x'; STDERR_TAIL_LIMIT_BYTES * 4]);
-        bytes.extend_from_slice(marker.as_bytes());
-
-        let tail = StderrTailCollector::spawn(std::io::Cursor::new(bytes)).finish();
-
-        assert!(tail.len() <= STDERR_TAIL_LIMIT_BYTES);
-        assert!(tail.ends_with(marker));
-        assert!(!tail.contains("discarded-prefix"));
-    }
-
-    #[test]
-    fn quota_stderr_collector_handles_empty_stderr() {
-        let tail = StderrTailCollector::spawn(std::io::Cursor::new(Vec::<u8>::new())).finish();
-        assert!(tail.is_empty());
-    }
-
     #[cfg(unix)]
     #[test]
     fn quota_stderr_large_output_does_not_block_successful_json_rpc() {
@@ -2026,7 +1949,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_stderr_reader_is_joined_when_child_guard_drops() {
+    fn quota_child_guard_cleans_child_when_dropped() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         struct ProbeChild {
@@ -2044,34 +1967,17 @@ mod tests {
             }
         }
 
-        struct DropReader(Arc<AtomicBool>);
-
-        impl Read for DropReader {
-            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
-                Ok(0)
-            }
-        }
-
-        impl Drop for DropReader {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Relaxed);
-            }
-        }
-
         let killed = Arc::new(AtomicBool::new(false));
         let waited = Arc::new(AtomicBool::new(false));
-        let reader_dropped = Arc::new(AtomicBool::new(false));
         {
-            let mut guard = QuotaChildGuard::new(ProbeChild {
+            let _guard = QuotaChildGuard::new(ProbeChild {
                 killed: killed.clone(),
                 waited: waited.clone(),
             });
-            guard.collect_stderr(DropReader(reader_dropped.clone()));
         }
 
         assert!(killed.load(Ordering::Relaxed));
         assert!(waited.load(Ordering::Relaxed));
-        assert!(reader_dropped.load(Ordering::Relaxed));
     }
 
     #[cfg(unix)]

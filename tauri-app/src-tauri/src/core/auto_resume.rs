@@ -1,14 +1,15 @@
 use crate::core::quota::codex_binary::find_codex_binary_with_report;
+use crate::core::process_tail::ProcessPipeTail;
 use crate::models::{AutoResumeThreadOption, ConversationVisibilityRebuildResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,7 @@ const APP_SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const INTERRUPT_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
 const STDERR_TAIL_LIMIT: usize = 16 * 1024;
+const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const THREAD_LEASE_DURATION: Duration = Duration::from_secs(2 * 60);
 const THREAD_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const LEDGER_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
@@ -823,7 +825,7 @@ struct AppServerSession {
     child: Child,
     stdin: std::process::ChildStdin,
     messages: mpsc::Receiver<Value>,
-    stderr: StderrTail,
+    stderr: ProcessPipeTail,
 }
 
 impl AppServerSession {
@@ -866,7 +868,11 @@ impl AppServerSession {
             child,
             stdin,
             messages: receiver,
-            stderr: StderrTail::collect(stderr),
+            stderr: ProcessPipeTail::spawn(
+                Some(stderr),
+                STDERR_TAIL_LIMIT,
+                STDERR_DRAIN_GRACE,
+            ),
         })
     }
 
@@ -973,59 +979,6 @@ impl Drop for AppServerSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-struct StderrTail {
-    buffer: Arc<Mutex<Vec<u8>>>,
-    reader: Option<thread::JoinHandle<Vec<u8>>>,
-}
-
-impl StderrTail {
-    fn collect<R>(mut reader: R) -> Self
-    where
-        R: Read + Send + 'static,
-    {
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        let shared = buffer.clone();
-        Self {
-            buffer,
-            reader: Some(thread::spawn(move || {
-                let mut tail = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    match reader.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(count) => {
-                            tail.extend_from_slice(&buffer[..count]);
-                            if tail.len() > STDERR_TAIL_LIMIT {
-                                tail.drain(..tail.len() - STDERR_TAIL_LIMIT);
-                            }
-                            if let Ok(mut current) = shared.lock() {
-                                *current = tail.clone();
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                tail
-            })),
-        }
-    }
-
-    fn text(&self) -> String {
-        self.buffer
-            .lock()
-            .map(|value| String::from_utf8_lossy(&value).into_owned())
-            .unwrap_or_default()
-    }
-}
-
-impl Drop for StderrTail {
-    fn drop(&mut self) {
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
     }
 }
 

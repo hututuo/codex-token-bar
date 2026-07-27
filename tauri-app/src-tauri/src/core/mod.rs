@@ -6,6 +6,7 @@ pub mod dashboard;
 pub mod live_rate;
 pub mod localtime;
 pub mod provider_repair;
+pub(crate) mod process_tail;
 pub mod quota;
 pub mod quota_history;
 pub mod session_enhancements;
