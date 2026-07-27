@@ -112,6 +112,52 @@ pub(crate) struct CodexHomeSourceTransitionClaim {
     pub claim_nonce: u64,
 }
 
+struct CodexHomeSourceTransitionClaimOwner<'a> {
+    state: &'a Mutex<CodexHomeTransitionState>,
+    claim: Option<CodexHomeSourceTransitionClaim>,
+}
+
+impl<'a> CodexHomeSourceTransitionClaimOwner<'a> {
+    fn new(
+        state: &'a Mutex<CodexHomeTransitionState>,
+        claim: CodexHomeSourceTransitionClaim,
+    ) -> Self {
+        Self {
+            state,
+            claim: Some(claim),
+        }
+    }
+
+    fn claim(&self) -> &CodexHomeSourceTransitionClaim {
+        self.claim
+            .as_ref()
+            .expect("Codex Home transition claim owner was already finished")
+    }
+
+    fn finish(mut self, published: bool) -> Result<(), String> {
+        let claim = self.claim();
+        with_locked_codex_home_transition_state(self.state, |transition| {
+            finish_codex_home_source_transition_claim_in_state(transition, claim, published);
+            Ok(())
+        })?;
+        self.claim = None;
+        Ok(())
+    }
+}
+
+impl Drop for CodexHomeSourceTransitionClaimOwner<'_> {
+    fn drop(&mut self) {
+        let Some(claim) = self.claim.take() else {
+            return;
+        };
+        let mut transition = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        finish_codex_home_source_transition_claim_in_state(&mut transition, &claim, false);
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexHomeSourceToken {
@@ -269,38 +315,30 @@ pub(crate) fn capture_codex_home_source(
     })
 }
 
-pub(crate) fn claim_codex_home_source_transition(
-) -> Result<Option<CodexHomeSourceTransitionClaim>, String> {
-    claim_codex_home_source_transition_from(codex_home_transition_state())
-}
-
 fn claim_codex_home_source_transition_from(
     state: &Mutex<CodexHomeTransitionState>,
 ) -> Result<Option<CodexHomeSourceTransitionClaim>, String> {
     with_locked_codex_home_transition_state(state, claim_codex_home_source_transition_in_state)
 }
 
-pub(crate) fn finish_codex_home_source_transition_claim(
-    claim: &CodexHomeSourceTransitionClaim,
-    published: bool,
-) -> Result<(), String> {
-    with_codex_home_transition_state(|transition| {
-        finish_codex_home_source_transition_claim_in_state(transition, claim, published);
-        Ok(())
+pub(crate) fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
+    emit_detected_source_transition_from(codex_home_transition_state(), |envelope| {
+        let payload = serde_json::to_string(envelope).map_err(|error| error.to_string())?;
+        app.emit_str(CODEX_HOME_SOURCE_CHANGED_EVENT, payload)
+            .map_err(|error| error.to_string())
     })
 }
 
-pub(crate) fn emit_detected_source_transition(app: &AppHandle) -> Result<bool, String> {
-    let Some(claim) = claim_codex_home_source_transition()? else {
+fn emit_detected_source_transition_from(
+    state: &Mutex<CodexHomeTransitionState>,
+    publish: impl FnOnce(&CodexHomeSourceEnvelope) -> Result<(), String>,
+) -> Result<bool, String> {
+    let Some(claim) = claim_codex_home_source_transition_from(state)? else {
         return Ok(false);
     };
-    let publish_result = serde_json::to_string(&claim.envelope)
-        .map_err(|error| error.to_string())
-        .and_then(|payload| {
-            app.emit_str(CODEX_HOME_SOURCE_CHANGED_EVENT, payload)
-                .map_err(|error| error.to_string())
-        });
-    finish_codex_home_source_transition_claim(&claim, publish_result.is_ok())?;
+    let owner = CodexHomeSourceTransitionClaimOwner::new(state, claim);
+    let publish_result = publish(&owner.claim().envelope);
+    owner.finish(publish_result.is_ok())?;
     publish_result.map(|_| true)
 }
 
@@ -1997,6 +2035,40 @@ mod tests {
                 .is_none(),
             "successful publish acknowledgement must consume the event exactly once"
         );
+
+        remove_source_test_directory(home);
+        remove_source_test_directory(displaced);
+    }
+
+    #[test]
+    fn panicked_source_event_publisher_requeues_its_claim() {
+        let home = disposable_source_test_directory("background-publish-panic");
+        let displaced = home.with_extension("displaced");
+        let mut transition = CodexHomeTransitionState::default();
+        resolve_codex_home_source(
+            &mut transition,
+            codex_home_status_for_test(home.clone(), "manual"),
+        )
+        .unwrap();
+        std::fs::rename(&home, &displaced).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        let state = Mutex::new(transition);
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = emit_detected_source_transition_from(&state, |_| {
+                panic!("injected Codex Home event publisher panic");
+            });
+        }));
+
+        assert!(unwind.is_err());
+        let retry = claim_codex_home_source_transition_from(&state)
+            .unwrap()
+            .expect("publisher panic must requeue the pending source generation");
+        with_locked_codex_home_transition_state(&state, |transition| {
+            finish_codex_home_source_transition_claim_in_state(transition, &retry, true);
+            Ok(())
+        })
+        .unwrap();
 
         remove_source_test_directory(home);
         remove_source_test_directory(displaced);
