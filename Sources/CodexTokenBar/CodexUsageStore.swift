@@ -31,6 +31,8 @@ final class CodexUsageStore: ObservableObject {
     private var didRunPreciseScan = false
     private var backgroundActivityEnabled = true
     private var onlyCompactSurfaceVisible = false
+    private var activeRefreshCompactOnly = false
+    private var pendingFullRefresh = false
 
     var currentDataSource: CodexDataSource? {
         dataSource
@@ -89,6 +91,8 @@ final class CodexUsageStore: ObservableObject {
         refreshGeneration += 1
         sourceBindingGeneration += 1
         activeRefreshSourceID = nil
+        activeRefreshCompactOnly = false
+        pendingFullRefresh = false
         isRefreshing = false
         isPreparingUsageCache = false
         guard identityChanged else { return true }
@@ -124,6 +128,11 @@ final class CodexUsageStore: ObservableObject {
         if isRefreshing,
            requestedSourceID == activeRefreshSourceID,
            requestedBindingKey == dataSourceBindingKey {
+            if includePreciseScan,
+               !onlyCompactSurfaceVisible,
+               activeRefreshCompactOnly {
+                pendingFullRefresh = true
+            }
             trace?.end("skipped-refresh-in-flight")
             return
         }
@@ -143,6 +152,8 @@ final class CodexUsageStore: ObservableObject {
             refreshTask?.cancel()
             refreshGeneration += 1
             activeRefreshSourceID = nil
+            activeRefreshCompactOnly = false
+            pendingFullRefresh = false
             snapshot = .empty
             snapshotSourceID = nil
             status = "未找到本地 Codex 数据目录"
@@ -160,6 +171,11 @@ final class CodexUsageStore: ObservableObject {
         }
         let isFirstLoad = !didFinishInitialLoad
         let needsCacheInitialization = includePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
+        activeRefreshCompactOnly = includePreciseScan
+            && !isFirstLoad
+            && onlyCompactSurfaceVisible
+            && snapshot.hasPreciseTokenUsage
+            && snapshotSourceID == sourceID
         isRefreshing = true
         refreshGeneration += 1
         let generation = refreshGeneration
@@ -324,11 +340,19 @@ final class CodexUsageStore: ObservableObject {
                 bindingGeneration: bindingGeneration,
                 sourceID: sourceID
             ) {
+                let shouldRunPendingFullRefresh = self.pendingFullRefresh
+                    && !self.onlyCompactSurfaceVisible
+                    && self.backgroundActivityEnabled
+                self.pendingFullRefresh = false
+                self.activeRefreshCompactOnly = false
                 self.isRefreshing = false
                 self.activeRefreshSourceID = nil
                 self.didFinishInitialLoad = true
                 self.isInitialLoading = false
                 self.isPreparingUsageCache = false
+                if shouldRunPendingFullRefresh {
+                    self.refresh(includePreciseScan: true)
+                }
             }
         }
     }
@@ -470,6 +494,8 @@ final class CodexUsageStore: ObservableObject {
             refreshTask = nil
             refreshGeneration += 1
             activeRefreshSourceID = nil
+            activeRefreshCompactOnly = false
+            pendingFullRefresh = false
             isRefreshing = false
             isPreparingUsageCache = false
         }

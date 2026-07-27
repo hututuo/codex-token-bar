@@ -755,6 +755,52 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(preciseCount, 1)
     }
 
+    func testExpandingDashboardQueuesFullRefreshBehindInFlightCompactSummary() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-expand-race/.codex"),
+            origin: .defaultHome
+        )
+        let loader = SuspendedCompactSummaryProbeLoader(
+            preciseResults: [
+                makeSnapshot(totalTokens: 1_000, dayTokens: 100),
+                makeSnapshot(totalTokens: 2_000, dayTokens: 200),
+            ]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("initial precise load before compact race") {
+            store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
+        }
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refresh()
+        await waitUntil("suspended compact summary") {
+            await loader.hasPendingCompactSummary()
+        }
+
+        store.setOnlyCompactSurfaceVisible(false)
+        await loader.completeCompactSummary(
+            CodexUsageAnalyzer.CompactUsageSummary(
+                totalTokens: 1_500,
+                todayTokens: 150,
+                todayCalls: 5,
+                generatedAt: Date()
+            )
+        )
+        await waitUntil("queued full refresh after dashboard expansion") {
+            store.snapshot.stats.totalTokens == 2_000 && !store.isRefreshing
+        }
+
+        let compactSummaryCount = await loader.compactSummaryCount
+        let preciseLoadCount = await loader.preciseLoadCount
+        XCTAssertEqual(compactSummaryCount, 1)
+        XCTAssertEqual(preciseLoadCount, 2)
+    }
+
     private func makeSnapshot(
         totalTokens: Int,
         dayTokens: Int,
@@ -859,6 +905,46 @@ private actor CompactSummaryProbeLoader: DashboardSnapshotLoading {
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         compactSummaryCount += 1
         return summary
+    }
+}
+
+private actor SuspendedCompactSummaryProbeLoader: DashboardSnapshotLoading {
+    private var preciseResults: [DashboardSnapshot]
+    private var compactContinuation:
+        CheckedContinuation<CodexUsageAnalyzer.CompactUsageSummary?, Error>?
+    private(set) var preciseLoadCount = 0
+    private(set) var compactSummaryCount = 0
+
+    init(preciseResults: [DashboardSnapshot]) {
+        self.preciseResults = preciseResults
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        preciseLoadCount += 1
+        guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
+        return preciseResults.count == 1 ? preciseResults[0] : preciseResults.removeFirst()
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        compactSummaryCount += 1
+        return try await withCheckedThrowingContinuation { continuation in
+            compactContinuation = continuation
+        }
+    }
+
+    func hasPendingCompactSummary() -> Bool {
+        compactContinuation != nil
+    }
+
+    func completeCompactSummary(_ summary: CodexUsageAnalyzer.CompactUsageSummary) {
+        compactContinuation?.resume(returning: summary)
+        compactContinuation = nil
     }
 }
 
