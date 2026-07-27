@@ -433,14 +433,28 @@ fn replace_destination(source: &Path, destination: &Path) -> std::io::Result<()>
     if !destination.exists() {
         return fs::rename(source, destination);
     }
-    let destination = crate::core::windows_path::extended_length_path(destination)
+    let destination_wide = crate::core::windows_path::extended_length_path(destination)
         .map_err(std::io::Error::other)?;
-    let source = crate::core::windows_path::extended_length_path(source)
+    let source_wide = crate::core::windows_path::extended_length_path(source)
         .map_err(std::io::Error::other)?;
     let ok = unsafe {
-        ReplaceFileW(destination.as_ptr(), source.as_ptr(), std::ptr::null(), REPLACEFILE_WRITE_THROUGH, std::ptr::null(), std::ptr::null())
+        ReplaceFileW(
+            destination_wide.as_ptr(),
+            source_wide.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
     };
-    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+    if ok == 0 {
+        crate::core::windows_path::retry_missing_replace_target(
+            std::io::Error::last_os_error(),
+            || fs::rename(source, destination),
+        )
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(unix)]

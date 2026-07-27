@@ -95,9 +95,22 @@ pub(crate) fn extended_length_path(path: &std::path::Path) -> Result<Vec<u16>, S
         .map_err(|error| format!("{error}：{}", path.display()))
 }
 
+#[cfg(any(test, windows))]
+pub(crate) fn retry_missing_replace_target(
+    replace_error: std::io::Error,
+    retry: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if replace_error.kind() == std::io::ErrorKind::NotFound {
+        retry()
+    } else {
+        Err(replace_error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::extended_length_path_from_wide;
+    use super::{extended_length_path_from_wide, retry_missing_replace_target};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn accepts_case_insensitive_extended_unc_prefixes() {
@@ -113,5 +126,31 @@ mod tests {
         }
         assert!(extended_length_path_from_wide(r"\\?\unc\server".encode_utf16().collect())
             .is_err());
+    }
+
+    #[test]
+    fn retries_only_when_replace_target_disappeared() {
+        let retried = AtomicBool::new(false);
+        retry_missing_replace_target(
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+            || {
+                retried.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(retried.load(Ordering::Acquire));
+
+        let retried = AtomicBool::new(false);
+        let error = retry_missing_replace_target(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            || {
+                retried.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!retried.load(Ordering::Acquire));
     }
 }
