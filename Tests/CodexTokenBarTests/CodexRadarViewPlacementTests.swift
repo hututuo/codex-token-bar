@@ -180,7 +180,17 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains(".foregroundStyle(primaryAccent ?? .secondary)"))
         XCTAssertTrue(source.contains("accent: AppTheme.accentCyan"))
         XCTAssertTrue(source.contains("let bestAccent = best.map { accent(for: $0) }"))
-        XCTAssertTrue(source.contains("AppTheme.radarScoreColor(passed: model.passed, tasks: model.graded, score: model.iq)"))
+        XCTAssertTrue(
+            source.contains(
+                """
+                AppTheme.radarScoreColor(
+                            passed: model.scorePassed,
+                            tasks: model.scoreSamples,
+                            score: model.iq
+                        )
+                """
+            )
+        )
         XCTAssertTrue(source.contains("Text(title)\n                .foregroundStyle(accent ?? .secondary)"))
     }
 }
