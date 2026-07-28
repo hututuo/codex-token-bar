@@ -124,7 +124,7 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(86px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?padding-right: calc\(17px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(58px \* var\(--floating-scale\)\) calc\(20px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(19px \* var\(--floating-scale\)\);[\s\S]*?font-variant-numeric: tabular-nums;/);
-  assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(8px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(8\.5px \* var\(--floating-scale\)\);/);
   assert.match(previewSource, /function FloatingRateMeter/);
   assert.match(previewSource, /fullScale=\{settings\.tokenRateFullScale\}/);
   assert.match(previewSource, /floating-rate-meter--with-status/);
@@ -135,9 +135,9 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-rate-meter--with-status \.floating-rate-track\s*{[\s\S]*?top: calc\(22px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-meter--solo \.floating-rate-track\s*{[\s\S]*?top: calc\(12\.25px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.rate-fill\s*{[\s\S]*?transform: scaleX\(var\(--rate-fill-scale, 0\)\);/);
-  assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?font-size: calc\(9\.8px \* var\(--floating-scale\)\);[\s\S]*?text-overflow: clip;[\s\S]*?white-space: nowrap;/);
-  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?font-size: calc\(12\.6px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.4px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?font-size: calc\(10\.3px \* var\(--floating-scale\)\);[\s\S]*?text-overflow: clip;[\s\S]*?white-space: nowrap;/);
+  assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?font-size: calc\(13\.1px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.9px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(7px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface > :not\(\.unread-effect\):not\(\.floating-close-button\)\s*{/);
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
