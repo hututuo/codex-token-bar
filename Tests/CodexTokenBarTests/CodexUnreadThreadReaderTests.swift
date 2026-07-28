@@ -13,7 +13,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testUnreadReaderKeepsUnresolvedOfficialUnreadIDsButFiltersKnownSubagents() throws {
+    func testUnreadReaderKeepsOnlyConfirmedVisibleUserThreads() throws {
         let codexHome = try makeCodexHome()
         let userID = "019edaaa-1111-7222-8333-aaaaaaaaaaaa"
         let subagentID = "019edaaa-2222-7333-8444-bbbbbbbbbbbb"
@@ -35,7 +35,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         guard case let .available(threadIDs) = result else {
             return XCTFail("Expected unread state to be readable")
         }
-        XCTAssertEqual(threadIDs, [userID, unresolvedID, vscodeID])
+        XCTAssertEqual(threadIDs, [userID, vscodeID])
     }
 
     func testSessionVisibilityIndexOnlyParsesNewOrReplacedSessionMetas() throws {
@@ -60,7 +60,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
 
         XCTAssertEqual(
             availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
-            [userID, unresolvedID]
+            [userID]
         )
         let initialParseCount = CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome)
         XCTAssertEqual(initialParseCount, 2)
@@ -68,7 +68,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
 
         XCTAssertEqual(
             availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
-            [userID, unresolvedID]
+            [userID]
         )
         XCTAssertEqual(
             CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome),
@@ -85,7 +85,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         try writeUnreadState([userID, subagentID, secondUserID, unresolvedID], to: codexHome)
         XCTAssertEqual(
             availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
-            [userID, secondUserID, unresolvedID]
+            [userID, secondUserID]
         )
         XCTAssertEqual(
             CodexUnreadThreadReader.sessionMetaParseCountForTesting(codexHome: codexHome),
@@ -98,7 +98,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         try FileManager.default.moveItem(at: userSession, to: archivedUserSession)
         XCTAssertEqual(
             availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
-            [secondUserID, unresolvedID],
+            [secondUserID],
             "Moving a session into the archive must immediately remove it from visible unread threads"
         )
         XCTAssertEqual(

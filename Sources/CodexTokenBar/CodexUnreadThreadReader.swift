@@ -60,7 +60,7 @@ enum CodexUnreadThreadReader {
         guard !threadIDs.isEmpty else { return [] }
         let databaseURL = codexHome.appendingPathComponent("state_5.sqlite")
         guard FileManager.default.fileExists(atPath: databaseURL.path) else {
-            return visibleOrUnresolvedThreadIDs(from: threadIDs, codexHome: codexHome)
+            return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
         }
 
         do {
@@ -121,7 +121,6 @@ enum CodexUnreadThreadReader {
         if !unresolvedIDs.isEmpty {
             let sessionVisibility = sessionVisibleThreadIDs(from: unresolvedIDs, codexHome: codexHome)
             visibleIDs.formUnion(sessionVisibility.visibleIDs)
-            visibleIDs.formUnion(unresolvedIDs.subtracting(sessionVisibility.foundIDs))
         }
         return visibleIDs
     }
@@ -420,11 +419,6 @@ enum CodexUnreadThreadReader {
     private static func sessionVisibleThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> SessionVisibility {
         guard !threadIDs.isEmpty else { return SessionVisibility() }
         return sessionVisibilityCache.read(threadIDs: threadIDs, codexHome: codexHome)
-    }
-
-    private static func visibleOrUnresolvedThreadIDs(from threadIDs: Set<String>, codexHome: URL) -> Set<String> {
-        let sessionVisibility = sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome)
-        return sessionVisibility.visibleIDs.union(threadIDs.subtracting(sessionVisibility.foundIDs))
     }
 
     private static func sessionMetaPayload(in file: URL) -> [String: Any]? {

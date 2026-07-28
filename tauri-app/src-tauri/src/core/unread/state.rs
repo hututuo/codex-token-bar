@@ -77,9 +77,9 @@ pub(super) fn visible_user_thread_ids_from_observation(
                 visible.insert(unresolved.clone());
             }
             Some(_) => {}
-            None => {
-                visible.insert(unresolved.clone());
-            }
+            // 官方状态可能长期保留已经删除的临时/子 Agent ID。没有 SQLite
+            // 或 session_meta 证据时不制造提醒；真实主会话落库后下一轮会出现。
+            None => {}
         }
     }
     Ok(visible)
@@ -129,7 +129,7 @@ fn visible_user_thread_ids(thread_ids: &HashSet<String>, codex_home: &Path) -> H
 
     let database_path = codex_home.join("state_5.sqlite");
     if !database_path.exists() {
-        return visible_or_unresolved_thread_ids(thread_ids, codex_home);
+        return session_visible_thread_ids(thread_ids, codex_home).visible_ids;
     }
 
     match read_visible_user_thread_ids(thread_ids, &database_path, codex_home) {
@@ -151,7 +151,6 @@ fn read_visible_user_thread_ids(
     if !unresolved.is_empty() {
         let session_visibility = session_visible_thread_ids(&unresolved, codex_home);
         visible.extend(session_visibility.visible_ids);
-        visible.extend(unresolved.difference(&session_visibility.found_ids).cloned());
     }
     Ok(visible)
 }
@@ -247,15 +246,6 @@ impl ObservedSessionMetadata {
 struct SessionVisibility {
     visible_ids: HashSet<String>,
     found_ids: HashSet<String>,
-}
-
-fn visible_or_unresolved_thread_ids(
-    thread_ids: &HashSet<String>,
-    codex_home: &Path,
-) -> HashSet<String> {
-    let session_visibility = session_visible_thread_ids(thread_ids, codex_home);
-    let unresolved = thread_ids.difference(&session_visibility.found_ids).cloned();
-    session_visibility.visible_ids.into_iter().chain(unresolved).collect()
 }
 
 fn session_visible_thread_ids(

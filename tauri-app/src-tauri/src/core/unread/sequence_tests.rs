@@ -172,9 +172,13 @@ fn corrupt_acknowledgement_is_reported_and_never_overwritten() {
     fs::create_dir_all(&support).unwrap();
     let _support_env = TauriSupportEnvGuard::new(&support);
     let path = support.join("unread-acknowledgement.json");
+    let thread_id = "019eaaaa-0000-0000-0000-0000000000ff";
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    write_session_meta(&sessions.join("corrupt.jsonl"), thread_id);
     write_unread_state(
         &root,
-        &["019eaaaa-0000-0000-0000-0000000000ff".to_string()],
+        &[thread_id.to_string()],
     );
     assert_eq!(read_unread_summary(&root).count, 1);
     let corrupt = b"{not-json";
@@ -198,13 +202,21 @@ fn concurrent_home_acknowledgements_preserve_both_records() {
     fs::create_dir_all(&home_a).unwrap();
     fs::create_dir_all(&home_b).unwrap();
     let _support_env = TauriSupportEnvGuard::new(&support);
+    let thread_a = "019eaaaa-0000-0000-0000-000000000101";
+    let thread_b = "019eaaaa-0000-0000-0000-000000000102";
+    let sessions_a = home_a.join("sessions");
+    let sessions_b = home_b.join("sessions");
+    fs::create_dir_all(&sessions_a).unwrap();
+    fs::create_dir_all(&sessions_b).unwrap();
+    write_session_meta(&sessions_a.join("home-a.jsonl"), thread_a);
+    write_session_meta(&sessions_b.join("home-b.jsonl"), thread_b);
     write_unread_state(
         &home_a,
-        &["019eaaaa-0000-0000-0000-000000000101".to_string()],
+        &[thread_a.to_string()],
     );
     write_unread_state(
         &home_b,
-        &["019eaaaa-0000-0000-0000-000000000102".to_string()],
+        &[thread_b.to_string()],
     );
     let barrier = Arc::new(Barrier::new(3));
 
@@ -492,6 +504,9 @@ fn physical_source_scope_does_not_inherit_acknowledgement_at_same_path() {
     fs::create_dir_all(&root).unwrap();
     let _support_env = TauriSupportEnvGuard::new(&support);
     let thread_id = "019eaaaa-0000-0000-0000-000000000199";
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    write_session_meta(&sessions.join("physical-source.jsonl"), thread_id);
     write_unread_state(&root, &[thread_id.to_string()]);
 
     super::acknowledge_current_unread_for_source(&root, "same-path|physical-a", || Ok(()))

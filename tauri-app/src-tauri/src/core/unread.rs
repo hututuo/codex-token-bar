@@ -745,11 +745,21 @@ mod tests {
         let archived = "019eaaaa-0000-0000-0000-000000000002";
         let subagent = "019eaaaa-0000-0000-0000-000000000003";
         let empty_preview = "019eaaaa-0000-0000-0000-000000000004";
-        write_unread_state(&root, &[visible, archived, subagent, empty_preview]);
+        let unresolved = "019eaaaa-0000-0000-0000-000000000099";
+        write_unread_state(
+            &root,
+            &[visible, archived, subagent, empty_preview, unresolved],
+        );
         create_state_database(&root, visible, archived, subagent, empty_preview);
 
         let ids = read_unread_thread_ids(&root).unwrap();
         assert_eq!(ids, HashSet::from([visible.to_string()]));
+        let state = fs::read(root.join(".codex-global-state.json")).unwrap();
+        let observation = UnreadObservationBuilder::from_native_state(Some(&state))
+            .unwrap()
+            .finish(Some(&root.join("state_5.sqlite")))
+            .unwrap();
+        assert_eq!(observation.native_unread_count(), Some(1));
         let summary = read_unread_summary(&root);
         assert!(summary.active);
         assert_eq!(summary.count, 1);
@@ -850,6 +860,7 @@ mod tests {
         let _support_env = TauriSupportEnvGuard::new(&support);
         let existing = "019eaaaa-0000-0000-0000-000000000012";
         let later = "019eaaaa-0000-0000-0000-000000000013";
+        write_visible_session_meta(&root, existing);
         write_unread_state(&root, &[existing]);
 
         assert!(read_unread_summary(&root).active);
@@ -863,6 +874,7 @@ mod tests {
             "acknowledgement must not modify Codex unread state"
         );
 
+        write_visible_session_meta(&root, later);
         write_unread_state(&root, &[existing, later]);
         let summary = read_unread_summary(&root);
         assert!(summary.active);
@@ -878,7 +890,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&support).unwrap();
         let _support_env = TauriSupportEnvGuard::new(&support);
-        write_unread_state(&root, &["019eaaaa-0000-0000-0000-000000000099"]);
+        let thread_id = "019eaaaa-0000-0000-0000-000000000099";
+        write_visible_session_meta(&root, thread_id);
+        write_unread_state(&root, &[thread_id]);
         let acknowledgement_path = support.join("unread-acknowledgement.json");
         let before = br#"{
   "byCodexHome": {
@@ -914,6 +928,8 @@ mod tests {
         fs::create_dir_all(&home_b).unwrap();
         let _support_env = TauriSupportEnvGuard::new(&support);
         let shared_thread_id = "019eaaaa-0000-0000-0000-000000000020";
+        write_visible_session_meta(&home_a, shared_thread_id);
+        write_visible_session_meta(&home_b, shared_thread_id);
         write_unread_state(&home_a, &[shared_thread_id]);
         write_unread_state(&home_b, &[shared_thread_id]);
 
@@ -1046,6 +1062,12 @@ mod tests {
             if subagent { r#""subagent""# } else { r#""user""# }
         )
         .unwrap();
+    }
+
+    fn write_visible_session_meta(root: &Path, id: &str) {
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        write_session_meta(&sessions.join(format!("{id}.jsonl")), id, false);
     }
 
     fn write_session_complete(path: &Path, id: &str, subagent: bool, completed_at: f64) {

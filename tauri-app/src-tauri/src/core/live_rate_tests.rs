@@ -1513,6 +1513,7 @@ fn unread_acknowledgement_invalidates_live_rate_unread_cache() {
     fs::create_dir_all(&root).unwrap();
     let _support_env = TauriSupportEnvGuard::new(&support);
     let thread_id = "019eaaaa-0000-0000-0000-000000000099";
+    write_visible_session_meta(&root, thread_id);
     write_unread_state(&root, &[thread_id]);
 
     let before = read_snapshot(&root, None);
@@ -1532,6 +1533,7 @@ fn scoped_monitor_snapshot_does_not_mutate_canonical_unread_baseline() {
     fs::create_dir_all(&root).unwrap();
     let _support_env = TauriSupportEnvGuard::new(&support);
     let thread_id = "019eaaaa-0000-0000-0000-000000000299";
+    write_visible_session_meta(&root, thread_id);
     write_unread_state(&root, &[thread_id]);
     unread::acknowledge_current_unread(&root).unwrap();
     let acknowledgement_path = support.join("unread-acknowledgement.json");
@@ -1578,6 +1580,18 @@ fn write_unread_state(root: &Path, ids: &[&str]) {
         root.join(".codex-global-state.json"),
         format!(
             r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}}}}}}"#
+        ),
+    )
+    .unwrap();
+}
+
+fn write_visible_session_meta(root: &Path, thread_id: &str) {
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(format!("{thread_id}.jsonl")),
+        format!(
+            r#"{{"type":"session_meta","payload":{{"id":"{thread_id}","thread_source":"user","source":"desktop"}}}}"#
         ),
     )
     .unwrap();
