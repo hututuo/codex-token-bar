@@ -18,6 +18,8 @@ const FORK_REPLAY_EXIT_GRACE: Duration = Duration::seconds(2);
 const RETAINED_JSONL_LINE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const EXACT_INDEX_CHUNK_SIZE: u64 = 4 * 1024 * 1024;
 pub(super) type UsageSnapshotFingerprint = [u64; 11];
+pub(super) const USAGE_SNAPSHOT_FINGERPRINT_BYTES: usize =
+    std::mem::size_of::<UsageSnapshotFingerprint>();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SourceByteRange {

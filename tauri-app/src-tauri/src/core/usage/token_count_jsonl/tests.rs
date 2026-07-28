@@ -560,6 +560,12 @@ fn exact_index_parallel_stages_large_cold_files() {
                 "payload": {
                     "type": "token_count",
                     "info": {
+                        "total_token_usage": {
+                            "input_tokens": 100 + index,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 20,
+                            "total_tokens": total
+                        },
                         "last_token_usage": {
                             "input_tokens": 100 + index,
                             "cached_input_tokens": 20,
@@ -634,6 +640,12 @@ fn exact_index_reuses_private_staging_after_an_interrupted_import() {
             "payload": {
                 "type": "token_count",
                 "info": {
+                    "total_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 20,
+                        "output_tokens": 20,
+                        "total_tokens": 120
+                    },
                     "last_token_usage": {
                         "input_tokens": 100,
                         "cached_input_tokens": 20,

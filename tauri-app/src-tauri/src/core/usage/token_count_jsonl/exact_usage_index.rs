@@ -3,6 +3,7 @@ use super::session_parser::{
     read_event_excerpts, stream_session_file_exact, stream_session_file_exact_from, ExactChunkHash,
     ExactEventSourceOffsets, ExactSessionEventSink, ExactSessionParserState, ExactTokenEvent,
     SourceByteRange, UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
+    USAGE_SNAPSHOT_FINGERPRINT_BYTES,
 };
 use super::TokenUsageSummary;
 #[cfg(not(test))]
@@ -1394,8 +1395,10 @@ impl StageActivityGuard {
     }
 }
 
-fn encode_fingerprint(fingerprint: &UsageSnapshotFingerprint) -> [u8; 11 * 8] {
-    let mut encoded = [0_u8; 11 * 8];
+fn encode_fingerprint(
+    fingerprint: &UsageSnapshotFingerprint,
+) -> [u8; USAGE_SNAPSHOT_FINGERPRINT_BYTES] {
+    let mut encoded = [0_u8; USAGE_SNAPSHOT_FINGERPRINT_BYTES];
     for (index, value) in fingerprint.iter().enumerate() {
         let start = index * 8;
         encoded[start..start + 8].copy_from_slice(&value.to_le_bytes());
@@ -1914,10 +1917,10 @@ fn validated_staged_full_rebuild(
         .query_row(
             r#"
             SELECT
-                EXISTS(SELECT 1 FROM fingerprints WHERE length(fingerprint) <> 72),
+                EXISTS(SELECT 1 FROM fingerprints WHERE length(fingerprint) <> ?1),
                 EXISTS(SELECT 1 FROM chunks WHERE length(sha256) <> 32)
             "#,
-            [],
+            params![USAGE_SNAPSHOT_FINGERPRINT_BYTES as i64],
             |row| Ok(row.get::<_, bool>(0)? || row.get::<_, bool>(1)?),
         )
         .map_err(|error| format!("无法验证精确 token 暂存哈希形状：{error}"))?;
