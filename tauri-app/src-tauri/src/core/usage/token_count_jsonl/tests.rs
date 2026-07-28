@@ -600,6 +600,140 @@ fn exact_index_parallel_stages_large_cold_files() {
 }
 
 #[test]
+fn exact_index_parallel_stage_publishes_scan_start_prefix_then_catches_active_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let active_file =
+        session_dir.join("rollout-019eprestage-active-0000-0000-exact.jsonl");
+    let stable_file =
+        session_dir.join("rollout-019eprestage-stable-0000-0000-exact.jsonl");
+    let write_large_total = |file: &Path, padding: u8, total: u64| {
+        let mut handle = std::io::BufWriter::new(fs::File::create(file).unwrap());
+        handle.write_all(br#"{"padding":""#).unwrap();
+        handle
+            .write_all(&vec![padding; EXACT_INDEX_CHUNK_SIZE as usize])
+            .unwrap();
+        handle.write_all(b"\"}\n").unwrap();
+        writeln!(
+            handle,
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-07-20T01:00:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": total,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": total
+                        },
+                        "last_token_usage": {
+                            "input_tokens": total,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": total
+                        }
+                    }
+                }
+            })
+        )
+        .unwrap();
+        handle.flush().unwrap();
+    };
+    write_large_total(&active_file, b'a', 120);
+    write_large_total(&stable_file, b's', 30);
+    let active_start_size = fs::metadata(&active_file).unwrap().len();
+    let stable_start_size = fs::metadata(&stable_file).unwrap().len();
+    let appended_line = serde_json::json!({
+        "timestamp": "2026-07-20T01:05:00Z",
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {
+                "total_token_usage": {
+                    "input_tokens": 170,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 170
+                },
+                "last_token_usage": {
+                    "input_tokens": 50,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 50
+                }
+            }
+        }
+    })
+    .to_string();
+    let appended_bytes = appended_line.len() as u64 + 1;
+    ExactUsageIndex::set_before_staging_open_hook_for_testing(
+        fs::canonicalize(&active_file).unwrap(),
+        move |active_file| {
+            let mut append = fs::OpenOptions::new()
+                .append(true)
+                .open(active_file)
+                .unwrap();
+            writeln!(append, "{appended_line}").unwrap();
+            append.flush().unwrap();
+        },
+    );
+    ExactUsageIndex::reset_stage_concurrency_for_testing(75);
+
+    let first = dashboard_snapshot(&root).unwrap();
+    assert_eq!(first.stats.total_tokens, 150);
+    assert_eq!(first.stats.total_calls, 2);
+    assert_eq!(first.stats.total_threads, 2);
+    assert!(
+        ExactUsageIndex::stage_peak_concurrency_for_testing() >= 2,
+        "the active and stable large files must overlap in staging workers"
+    );
+    let (full_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_bytes, active_start_size + stable_start_size);
+    assert_eq!(append_scan_bytes, 0);
+    let mut first_index = ExactUsageIndex::open(&root).unwrap();
+    assert!(
+        first_index
+            .sources_changed(&root, &mut Vec::new())
+            .unwrap(),
+        "the appended suffix must remain pending after the frozen-prefix generation"
+    );
+    drop(first_index);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    ExactUsageIndex::reset_stage_concurrency_for_testing(0);
+    let second = dashboard_snapshot(&root).unwrap();
+    assert_eq!(second.stats.total_tokens, 200);
+    assert_eq!(second.stats.total_calls, 3);
+    assert_eq!(second.stats.total_threads, 2);
+    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_bytes, 0, "the follow-up must not rebuild the large file");
+    assert!(
+        append_bytes >= appended_bytes,
+        "the follow-up must consume the appended JSONL record"
+    );
+    assert!(
+        append_bytes <= EXACT_INDEX_CHUNK_SIZE + appended_bytes,
+        "the follow-up may re-read at most one tail chunk plus the new suffix"
+    );
+    let mut second_index = ExactUsageIndex::open(&root).unwrap();
+    assert!(
+        !second_index
+            .sources_changed(&root, &mut Vec::new())
+            .unwrap(),
+        "the second generation must catch up completely"
+    );
+    drop(second_index);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_reuses_private_staging_after_an_interrupted_import() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     ExactUsageIndex::reset_scan_bytes_for_testing();

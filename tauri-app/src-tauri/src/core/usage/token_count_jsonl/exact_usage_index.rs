@@ -181,6 +181,14 @@ struct IndexedTurnCandidate {
 type AfterPrefixScanHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
 type AfterFileCommitHook = Box<dyn FnOnce(&Path) -> Result<(), String>>;
+#[cfg(test)]
+struct BeforeStagingOpenHook {
+    target: PathBuf,
+    action: Box<dyn FnOnce(&Path) + Send>,
+}
+
+#[cfg(test)]
+static BEFORE_STAGING_OPEN_HOOK: OnceLock<Mutex<Option<BeforeStagingOpenHook>>> = OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -283,6 +291,20 @@ impl ExactUsageIndex {
         AFTER_PREFIX_SCAN_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(hook));
         });
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_before_staging_open_hook_for_testing(
+        target: PathBuf,
+        hook: impl FnOnce(&Path) + Send + 'static,
+    ) {
+        let slot = BEFORE_STAGING_OPEN_HOOK.get_or_init(|| Mutex::new(None));
+        *slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BeforeStagingOpenHook {
+                target,
+                action: Box::new(hook),
+            });
     }
 
     #[cfg(test)]
@@ -1555,6 +1577,7 @@ fn build_staged_full_rebuild(
 ) -> Result<StagedFullRebuild, String> {
     let _activity = StageActivityGuard::begin();
     remove_index_storage(&database_path)?;
+    run_before_staging_open_hook_for_testing(&job.file);
     let mut handle = fs::File::open(&job.file).map_err(|error| {
         format!(
             "读取精确 token 暂存源文件失败：{}（{}）",
@@ -1563,12 +1586,24 @@ fn build_staged_full_rebuild(
         )
     })?;
     let current_signature = file_signature_from_handle(&handle, &job.file)?;
-    if current_signature != job.signature {
+    if current_signature.identity != job.signature.identity
+        || current_signature.size < job.signature.size
+    {
         return Err(format!(
-            "会话文件在进入并行暂存前发生变化，将在下一次刷新重试：{}",
+            "会话文件在进入并行暂存前被替换或截断，将在下一次刷新重试：{}",
             relative_display_path(codex_home, &job.file)
         ));
     }
+    // Freeze the discovery-time prefix. A normal active-session append changes
+    // size/mtime/ctime before the worker opens the file, but must not invalidate
+    // the generation: the post-scan identity + prefix hash validation below
+    // proves that the frozen bytes are still the same. The next sync consumes
+    // only the appended suffix from this checkpoint, matching the Swift index.
+    let committed_signature = if current_signature.size == job.signature.size {
+        current_signature
+    } else {
+        job.signature
+    };
 
     let mut stage = open_staging_connection(&database_path)?;
     initialize_staging_schema(&stage)?;
@@ -1663,11 +1698,11 @@ fn build_staged_full_rebuild(
             params![
                 &job.path,
                 &job.session_id,
-                checked_i64(job.signature.size, "暂存会话文件大小")?,
-                job.signature.modified_ns.to_string(),
-                job.signature.identity.device_id.to_string(),
-                job.signature.identity.file_id.to_string(),
-                job.signature.changed_ns.to_string(),
+                checked_i64(committed_signature.size, "暂存会话文件大小")?,
+                committed_signature.modified_ns.to_string(),
+                committed_signature.identity.device_id.to_string(),
+                committed_signature.identity.file_id.to_string(),
+                committed_signature.changed_ns.to_string(),
                 parsed.prefix_sha256.as_slice(),
                 checked_i64(parsed.resume_offset, "暂存会话文件续扫位置")?,
                 checked_optional_i64(state.previous_total_tokens, "暂存累计 token")?,
@@ -1702,7 +1737,10 @@ fn build_staged_full_rebuild(
     quick_check_index(&stage)?;
 
     Ok(StagedFullRebuild {
-        job: job.clone(),
+        job: FullRebuildJob {
+            signature: committed_signature,
+            ..job.clone()
+        },
         database_path,
         prefix_sha256: parsed.prefix_sha256,
         resume_offset: parsed.resume_offset,
@@ -4420,6 +4458,30 @@ fn run_after_file_commit_hook_for_testing(path: &Path) -> Result<(), String> {
 fn run_after_file_commit_hook_for_testing(_path: &Path) -> Result<(), String> {
     Ok(())
 }
+
+#[cfg(test)]
+fn run_before_staging_open_hook_for_testing(path: &Path) {
+    let slot = BEFORE_STAGING_OPEN_HOOK.get_or_init(|| Mutex::new(None));
+    let hook = {
+        let mut guard = slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard
+            .as_ref()
+            .is_some_and(|pending| pending.target == path)
+        {
+            guard.take()
+        } else {
+            None
+        }
+    };
+    if let Some(hook) = hook {
+        (hook.action)(path);
+    }
+}
+
+#[cfg(not(test))]
+fn run_before_staging_open_hook_for_testing(_path: &Path) {}
 
 fn fresh_revision_seed() -> i64 {
     let nanos = SystemTime::now()
