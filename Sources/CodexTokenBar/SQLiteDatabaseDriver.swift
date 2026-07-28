@@ -303,14 +303,23 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
 
         try bind(bindings, to: statement)
 
-        while true {
-            let stepStatus = sqlite3_step(statement)
-            if stepStatus == SQLITE_ROW {
-                try body(SQLiteStatement(raw: statement))
-            } else if stepStatus == SQLITE_DONE {
-                return
-            } else {
-                throw error(operation: "Step SQLite query", code: stepStatus)
+        // Long-running readers can bridge dates and strings for hundreds of thousands of rows.
+        // Drain temporary Foundation objects in bounded batches without materializing the result set.
+        let autoreleaseBatchSize = 512
+        var isComplete = false
+        while !isComplete {
+            try autoreleasepool {
+                for _ in 0..<autoreleaseBatchSize {
+                    let stepStatus = sqlite3_step(statement)
+                    if stepStatus == SQLITE_ROW {
+                        try body(SQLiteStatement(raw: statement))
+                    } else if stepStatus == SQLITE_DONE {
+                        isComplete = true
+                        break
+                    } else {
+                        throw error(operation: "Step SQLite query", code: stepStatus)
+                    }
+                }
             }
         }
     }
