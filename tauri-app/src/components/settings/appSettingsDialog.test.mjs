@@ -95,6 +95,7 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     await click(act, tabByName(container, "内容与排序"), window);
     assert.equal(tabName(selectedTab(container)), "内容与排序");
     assert.match(activePanel(container).textContent, /速率|额度|雷达/);
+    assert.match(activePanel(container).textContent, /运行线程/);
   });
 });
 

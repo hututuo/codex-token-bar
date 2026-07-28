@@ -3,6 +3,7 @@ import type {
   FloatingPanelSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  RunningThreadSummary,
   UnreadSummary,
 } from "../types/dashboard";
 import {
@@ -48,6 +49,16 @@ export function readUnreadSummary(
   sourceToken: CodexHomeSourceToken | null = null,
 ): Promise<UnreadSummary> {
   return callCommandStrict<UnreadSummary>("read_unread_summary", { sourceToken }, 1_500);
+}
+
+export function readRunningThreadSummary(
+  sourceToken: CodexHomeSourceToken,
+): Promise<RunningThreadSummary> {
+  return callCommandStrict<RunningThreadSummary>(
+    "read_running_thread_summary",
+    { sourceToken },
+    1_500,
+  );
 }
 
 export function acknowledgeUnreadSummary(

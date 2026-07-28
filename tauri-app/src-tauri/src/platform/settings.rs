@@ -2401,6 +2401,7 @@ fn sanitize_floating_content_visibility(
         show_rate_and_bar: visibility.show_rate_and_bar,
         show_usage_status: visibility.show_usage_status,
         show_metrics: visibility.show_metrics,
+        show_running_threads: visibility.show_running_threads,
         show_quota: visibility.show_quota,
         show_radar: visibility.show_radar,
         show_crowd_radar: visibility.show_crowd_radar,
@@ -2409,7 +2410,15 @@ fn sanitize_floating_content_visibility(
 }
 
 fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
-    let defaults = ["rateAndBar", "usageStatus", "metrics", "radar", "crowdRadar", "quota"];
+    let defaults = [
+        "rateAndBar",
+        "usageStatus",
+        "metrics",
+        "runningThreads",
+        "radar",
+        "crowdRadar",
+        "quota",
+    ];
     let mut next: Vec<String> = Vec::new();
     for item in order {
         if defaults.contains(&item.as_str()) && !next.iter().any(|existing| existing == &item) {
@@ -2418,6 +2427,12 @@ fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
     }
     for item in defaults {
         if !next.iter().any(|existing| existing == item) {
+            if item == "runningThreads" {
+                if let Some(metrics_index) = next.iter().position(|existing| existing == "metrics") {
+                    next.insert(metrics_index + 1, item.into());
+                    continue;
+                }
+            }
             if item == "crowdRadar" {
                 if let Some(radar_index) = next.iter().position(|existing| existing == "radar") {
                     next.insert(radar_index + 1, item.into());
@@ -2612,9 +2627,18 @@ mod tests {
         assert_eq!(sanitized.floating_window.text_tone, 1.0);
         assert!(!sanitized.floating_window.content_visibility.show_radar);
         assert!(sanitized.floating_window.content_visibility.show_crowd_radar);
+        assert!(sanitized.floating_window.content_visibility.show_running_threads);
         assert_eq!(
             sanitized.floating_window.content_visibility.order,
-            ["quota", "rateAndBar", "usageStatus", "metrics", "radar", "crowdRadar"]
+            [
+                "quota",
+                "rateAndBar",
+                "usageStatus",
+                "metrics",
+                "runningThreads",
+                "radar",
+                "crowdRadar",
+            ]
         );
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);

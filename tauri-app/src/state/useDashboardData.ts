@@ -53,6 +53,7 @@ import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
+import { useRunningThreadSummary } from "./useRunningThreadSummary";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
 
@@ -633,6 +634,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const providerSourceKey = sourceToken === null
     ? "unavailable"
     : `${sourceToken.transitionGeneration}:${sourceToken.canonicalHomeKey}:${sourceToken.physicalHomeKey}`;
+  const runningThreads = useRunningThreadSummary({
+    active: sourceToken !== null,
+    sourceToken,
+  });
 
   return {
     state,
@@ -648,6 +653,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     restoreAutoCodexHome,
     updateProviderRepair,
     providerSourceKey,
+    runningThreads,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
   };

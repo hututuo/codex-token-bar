@@ -668,6 +668,8 @@ function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentV
       return "showUsageStatus";
     case "metrics":
       return "showMetrics";
+    case "runningThreads":
+      return "showRunningThreads";
     case "quota":
       return "showQuota";
     case "radar":

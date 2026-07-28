@@ -224,9 +224,10 @@ function floatingSettingsFixture() {
       showRateAndBar: true,
       showUsageStatus: true,
       showMetrics: true,
+      showRunningThreads: true,
       showQuota: true,
       showRadar: true,
-      order: ["rateAndBar", "usageStatus", "metrics", "radar", "quota"],
+      order: ["rateAndBar", "usageStatus", "metrics", "runningThreads", "radar", "quota"],
     },
   };
 }

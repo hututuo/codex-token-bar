@@ -150,6 +150,7 @@ function floatingSettingsFixture() {
       showRateAndBar: false,
       showUsageStatus: false,
       showMetrics: false,
+      showRunningThreads: false,
       showQuota: true,
       showRadar: false,
       order: ["quota"],

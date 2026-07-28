@@ -10,7 +10,7 @@ import {
 
 test("floating height separates Swift-style protection from the default expanded content", () => {
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 134);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 151);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
@@ -82,4 +82,24 @@ test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-s
 
   assert.equal(DEFAULT_FLOATING_SETTINGS.tokenRateFullScale, 200);
   assert.equal(settings.tokenRateFullScale, 200);
+});
+
+test("sanitizeFloatingSettings migrates legacy content order with running threads visible after metrics", () => {
+  const settings = sanitizeFloatingSettings({
+    contentVisibility: {
+      showMetrics: true,
+      order: ["quota", "metrics", "radar"],
+    },
+  });
+
+  assert.equal(settings.contentVisibility.showRunningThreads, true);
+  assert.deepEqual(settings.contentVisibility.order, [
+    "quota",
+    "metrics",
+    "runningThreads",
+    "radar",
+    "crowdRadar",
+    "rateAndBar",
+    "usageStatus",
+  ]);
 });

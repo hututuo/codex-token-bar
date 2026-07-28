@@ -17,13 +17,15 @@ test("DashboardHeader renders restrained provider repair entry", async () => {
     assert.match(button.attrs, /class="toolbar-button/);
     assert.match(button.attrs, /title="找回消失的历史会话"/);
     assert.match(html, /class="header-context"/);
-    assert.equal((html.match(/class="header-info-cell/g) ?? []).length, 3);
-    assert.equal((html.match(/class="header-info-kicker"/g) ?? []).length, 3);
-    assert.equal((html.match(/class="header-info-main"/g) ?? []).length, 3);
+    assert.equal((html.match(/class="header-info-cell/g) ?? []).length, 4);
+    assert.equal((html.match(/class="header-info-kicker"/g) ?? []).length, 4);
+    assert.equal((html.match(/class="header-info-main"/g) ?? []).length, 4);
     assert.equal((html.match(/class="header-action-divider"/g) ?? []).length, 2);
     assert.match(html, /class="header-info-kicker">Codex Token Bar/);
     assert.match(html, /class="header-info-kicker">数据源/);
     assert.match(html, /class="header-info-kicker">统计状态/);
+    assert.match(html, /class="header-info-kicker">运行线程/);
+    assert.match(html, /总 5 · 主 2 · 子 3/);
     assert.match(html, /class="platform-badge">跨平台版/);
     assert.match(html, /class="header-data-mode">本地统计/);
     assert.match(html, /class="header-primary-actions" aria-label="常用操作"/);
@@ -56,6 +58,31 @@ test("DashboardHeader exposes complete update states on the primary action", asy
     assert.match(available, /class="toolbar-button update-action update-action--available"[^>]*title="发现新版本 v0.7.4"[^>]*>安装更新<\/button>/);
     assert.match(failed, /class="toolbar-button update-action update-action--error"[^>]*title="暂时无法检查更新，请稍后重试"[^>]*>重试更新检查<\/button>/);
     assert.match(failed, /aria-live="polite"/);
+  });
+});
+
+test("DashboardHeader running thread states never turn loading into fake zero", async () => {
+  await withSsrModules(async (load) => {
+    const { runningThreadHeaderText } = await load("/src/components/DashboardHeader.tsx");
+    const pending = {
+      total: null,
+      mainThreads: null,
+      subagents: null,
+      status: "scanning",
+      updatedAt: null,
+      detail: "loading",
+      livenessLeaseHours: 24,
+    };
+
+    assert.equal(runningThreadHeaderText(pending), "正在读取…");
+    assert.equal(runningThreadHeaderText({ ...pending, status: "unavailable" }), "暂不可用");
+    assert.equal(runningThreadHeaderText({
+      ...pending,
+      total: 4,
+      mainThreads: 1,
+      subagents: 3,
+      status: "stale",
+    }), "上次 · 总 4 · 主 1 · 子 3");
   });
 });
 
@@ -107,6 +134,15 @@ function headerProps(overrides = {}) {
       connected: false,
       debugPort: null,
       message: "等待 Codex 调试连接（需以调试模式启动 Codex）",
+    },
+    runningThreads: {
+      total: 5,
+      mainThreads: 2,
+      subagents: 3,
+      status: "ready",
+      updatedAt: 1,
+      detail: "test",
+      livenessLeaseHours: 24,
     },
     ...overrides,
   };

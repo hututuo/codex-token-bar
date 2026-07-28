@@ -10,7 +10,13 @@ import {
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
 import { formatLiveRateValue, rateFillStyle, sanitizeRateFullScale } from "../components/liveRate/rateDisplay";
-import type { FloatingContentGroup, FloatingPanelSnapshot, FloatingUnreadEffect, FloatingWindowSettings } from "../types/dashboard";
+import type {
+  FloatingContentGroup,
+  FloatingPanelSnapshot,
+  FloatingUnreadEffect,
+  FloatingWindowSettings,
+  RunningThreadSummary,
+} from "../types/dashboard";
 import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";
 import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./floatingPanelLabels";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
@@ -23,11 +29,22 @@ interface FloatingPanelSurfaceProps {
   snapshot: FloatingPanelSnapshot;
   radarSnapshot?: CodexRadarSnapshot | null;
   crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
+  runningThreads?: RunningThreadSummary;
   unreadEffect?: FloatingUnreadEffect;
   onClose?: () => void;
   onDragStart?: (event: MouseEvent<HTMLElement>) => void;
   onOpenDashboard?: () => void;
 }
+
+const PENDING_FLOATING_RUNNING_THREADS: RunningThreadSummary = {
+  total: null,
+  mainThreads: null,
+  subagents: null,
+  status: "scanning",
+  updatedAt: null,
+  detail: "正在读取当前数据源的会话生命周期",
+  livenessLeaseHours: 24,
+};
 
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) {
@@ -169,6 +186,7 @@ export function FloatingPanelSurface({
   snapshot,
   radarSnapshot,
   crowdRadarSnapshot,
+  runningThreads = PENDING_FLOATING_RUNNING_THREADS,
   unreadEffect = "ripple",
   onClose,
   onDragStart,
@@ -218,6 +236,7 @@ export function FloatingPanelSurface({
             key={group}
             radarSnapshot={radarSnapshot}
             crowdRadarSnapshot={crowdRadarSnapshot}
+            runningThreads={runningThreads}
             settings={settings}
             snapshot={snapshot}
             total={groups.length}
@@ -234,6 +253,7 @@ interface FloatingContentRowProps {
   index: number;
   radarSnapshot?: CodexRadarSnapshot | null;
   crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
+  runningThreads: RunningThreadSummary;
   settings: FloatingWindowSettings;
   snapshot: FloatingPanelSnapshot;
   total: number;
@@ -245,6 +265,7 @@ function FloatingContentRow({
   index,
   radarSnapshot,
   crowdRadarSnapshot,
+  runningThreads,
   settings,
   snapshot,
   total,
@@ -290,6 +311,19 @@ function FloatingContentRow({
           <span>{snapshot.requestsLabel}</span>
         </div>
       );
+    case "runningThreads":
+      return (
+        <div
+          className={`floating-row floating-running-threads floating-running-threads--${runningThreads.status}`}
+          role="status"
+          style={style}
+          title={runningThreads.detail}
+        >
+          {floatingRunningThreadLabels(runningThreads).map((label) => (
+            <span key={label}>{label}</span>
+          ))}
+        </div>
+      );
     case "radar":
       return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
     case "crowdRadar":
@@ -330,6 +364,22 @@ function FloatingContentRow({
       );
     }
   }
+}
+
+export function floatingRunningThreadLabels(summary: RunningThreadSummary): string[] {
+  if (
+    summary.total === null
+    || summary.mainThreads === null
+    || summary.subagents === null
+  ) {
+    return [summary.status === "unavailable" ? "运行线程暂不可用" : "运行线程读取中…"];
+  }
+  const totalPrefix = summary.status === "stale" ? "上次总" : "总";
+  return [
+    `${totalPrefix} ${summary.total}`,
+    `主 ${summary.mainThreads}`,
+    `子 ${summary.subagents}`,
+  ];
 }
 
 export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {

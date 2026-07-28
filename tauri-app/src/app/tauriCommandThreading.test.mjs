@@ -26,3 +26,15 @@ test("live commands that read local files run off the command thread", async () 
   assert.match(liveCommands, /last_active_at/);
   assert.match(liveCommands, /last_active\.elapsed\(\) <= ACTIVE_STREAM_HOLD/);
 });
+
+test("running thread summary starts its scanner on the blocking pool", async () => {
+  const source = await readFile(
+    new URL("../../src-tauri/src/commands/thread_activity.rs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /pub async fn read_running_thread_summary\b/);
+  assert.match(source, /tauri::async_runtime::spawn_blocking/);
+  assert.match(source, /snapshot_or_start/);
+  assert.match(source, /validate_codex_home_source\(&completed_source_token\)/);
+});

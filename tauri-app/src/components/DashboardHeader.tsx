@@ -1,4 +1,9 @@
-import type { AccountInfo, AutostartStatus, CodexHomeStatus } from "../types/dashboard";
+import type {
+  AccountInfo,
+  AutostartStatus,
+  CodexHomeStatus,
+  RunningThreadSummary,
+} from "../types/dashboard";
 import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
 import {
   committedCustomAccountDisplayName,
@@ -32,7 +37,18 @@ interface DashboardHeaderProps {
   };
   threadDeleteBridgeStatus: ThreadDeleteBridgeStatus;
   autoResumeEnabled: boolean;
+  runningThreads?: RunningThreadSummary;
 }
+
+const PENDING_HEADER_RUNNING_THREADS: RunningThreadSummary = {
+  total: null,
+  mainThreads: null,
+  subagents: null,
+  status: "scanning",
+  updatedAt: null,
+  detail: "正在读取当前数据源的会话生命周期",
+  livenessLeaseHours: 24,
+};
 
 export function DashboardHeader({
   account,
@@ -54,6 +70,7 @@ export function DashboardHeader({
   appUpdateState,
   threadDeleteBridgeStatus,
   autoResumeEnabled,
+  runningThreads = PENDING_HEADER_RUNNING_THREADS,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
   const [editingDisplayName, setEditingDisplayName] = useState(false);
@@ -164,6 +181,16 @@ export function DashboardHeader({
               <span className="updated-label">更新于 {updatedLabel}</span>
             </span>
           </span>
+          <span
+            aria-live="polite"
+            className={`header-info-cell header-info-cell--running header-info-cell--running-${runningThreads.status}`}
+            title={runningThreads.detail}
+          >
+            <span className="header-info-kicker">运行线程</span>
+            <span className="header-info-main">
+              {runningThreadHeaderText(runningThreads)}
+            </span>
+          </span>
         </div>
         <div className="header-primary-actions" aria-label="常用操作">
           <span className="header-action-group header-action-group--primary">
@@ -255,4 +282,16 @@ export function DashboardHeader({
       ) : null}
     </header>
   );
+}
+
+export function runningThreadHeaderText(summary: RunningThreadSummary): string {
+  if (
+    summary.total === null
+    || summary.mainThreads === null
+    || summary.subagents === null
+  ) {
+    return summary.status === "unavailable" ? "暂不可用" : "正在读取…";
+  }
+  const prefix = summary.status === "stale" ? "上次 · " : "";
+  return `${prefix}总 ${summary.total} · 主 ${summary.mainThreads} · 子 ${summary.subagents}`;
 }

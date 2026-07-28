@@ -14,6 +14,7 @@ pub mod session_enhancements;
 pub mod sqlite;
 pub mod startup_trace;
 pub mod thread_delete;
+pub mod thread_activity;
 pub(crate) mod time_series_timeline;
 pub mod unread;
 pub mod usage;

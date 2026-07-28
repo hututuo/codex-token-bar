@@ -8,6 +8,7 @@ pub(crate) mod settings;
 pub(crate) mod startup;
 pub(crate) mod surface;
 pub(crate) mod thread_delete;
+pub(crate) mod thread_activity;
 pub(crate) mod update;
 pub(crate) mod window_auth;
 

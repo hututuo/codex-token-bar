@@ -258,7 +258,11 @@ button {
 
 .header-context {
   display: grid;
-  grid-template-columns: minmax(150px, 0.74fr) minmax(280px, 1.42fr) minmax(190px, 0.86fr);
+  grid-template-columns:
+    minmax(150px, 0.72fr)
+    minmax(260px, 1.28fr)
+    minmax(180px, 0.82fr)
+    minmax(170px, 0.78fr);
   gap: 6px;
   min-height: 42px;
   padding: 5px;
@@ -306,6 +310,15 @@ button {
 
 .header-info-cell--freshness {
   border-left: 2px solid color-mix(in srgb, var(--green) 70%, transparent);
+}
+
+.header-info-cell--running {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 68%, var(--green));
+}
+
+.header-info-cell--running-stale,
+.header-info-cell--running-unavailable {
+  border-left-color: color-mix(in srgb, var(--orange) 72%, transparent);
 }
 
 .header-info-kicker {
@@ -6100,6 +6113,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-topline,
 .floating-metrics,
+.floating-running-threads,
 .floating-quota,
 .floating-radar,
 .floating-usage-status {
@@ -6139,6 +6153,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-topline span,
 .floating-topline em,
 .floating-metrics,
+.floating-running-threads,
 .floating-quota,
 .floating-radar,
 .floating-usage-status {
@@ -6258,8 +6273,35 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-height: calc(13px * var(--floating-scale));
 }
 
-.floating-metrics span {
+.floating-metrics span,
+.floating-running-threads span {
   white-space: nowrap;
+}
+
+.floating-running-threads {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  color: var(--floating-primary);
+  font-size: calc(9.2px * var(--floating-scale));
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  min-height: calc(13px * var(--floating-scale));
+  text-align: center;
+}
+
+.floating-running-threads span + span {
+  border-left: 1px solid var(--floating-divider);
+}
+
+.floating-running-threads span:only-child {
+  grid-column: 1 / -1;
+  color: var(--floating-secondary);
+}
+
+.floating-running-threads--stale,
+.floating-running-threads--unavailable {
+  color: var(--floating-muted);
 }
 
 .floating-usage-status {

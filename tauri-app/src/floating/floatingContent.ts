@@ -4,6 +4,7 @@ export const FLOATING_CONTENT_GROUPS: FloatingContentGroup[] = [
   "rateAndBar",
   "usageStatus",
   "metrics",
+  "runningThreads",
   "radar",
   "crowdRadar",
   "quota",
@@ -13,6 +14,7 @@ export const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showRateAndBar: true,
   showUsageStatus: true,
   showMetrics: true,
+  showRunningThreads: true,
   showQuota: true,
   showRadar: true,
   showCrowdRadar: true,
@@ -23,6 +25,7 @@ export const FLOATING_CONTENT_LABELS: Record<FloatingContentGroup, { title: stri
   rateAndBar: { title: "速率" },
   usageStatus: { title: "趣味话", subtitle: "靠近速率会吸附" },
   metrics: { title: "总今次" },
+  runningThreads: { title: "运行线程", subtitle: "总数 / 主线程 / 子 Agent" },
   radar: { title: "Radar" },
   crowdRadar: { title: "众测雷达" },
   quota: { title: "5h/7d" },
@@ -33,6 +36,7 @@ export function sanitizeFloatingContentVisibility(value: Partial<FloatingContent
     showRateAndBar: value?.showRateAndBar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRateAndBar,
     showUsageStatus: value?.showUsageStatus ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showUsageStatus,
     showMetrics: value?.showMetrics ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showMetrics,
+    showRunningThreads: value?.showRunningThreads ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRunningThreads,
     showQuota: value?.showQuota ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showQuota,
     showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
     showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
@@ -123,6 +127,8 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
         return 11;
       case "metrics":
         return 13;
+      case "runningThreads":
+        return 13;
       case "radar":
         return 26;
       case "crowdRadar":
@@ -151,6 +157,8 @@ function showsGroup(visibility: FloatingContentVisibility, group: FloatingConten
       return visibility.showUsageStatus;
     case "metrics":
       return visibility.showMetrics;
+    case "runningThreads":
+      return visibility.showRunningThreads;
     case "quota":
       return visibility.showQuota;
     case "radar":
@@ -172,7 +180,9 @@ function sanitizeContentOrder(value: unknown): FloatingContentGroup[] {
   });
   const result = [...decoded];
   for (const group of FLOATING_CONTENT_GROUPS.filter((item) => !seen.has(item))) {
-    if (group === "crowdRadar" && result.includes("radar")) {
+    if (group === "runningThreads" && result.includes("metrics")) {
+      result.splice(result.indexOf("metrics") + 1, 0, group);
+    } else if (group === "crowdRadar" && result.includes("radar")) {
       result.splice(result.indexOf("radar") + 1, 0, group);
     } else {
       result.push(group);

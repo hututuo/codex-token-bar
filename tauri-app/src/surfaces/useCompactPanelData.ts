@@ -3,6 +3,7 @@ import type {
   AccountQuotaBundle,
   CodexHomeSourceToken,
   FloatingPanelSnapshot,
+  RunningThreadSummary,
 } from "../types/dashboard";
 import { compactQuotaLabel, expectedRemainingPercentByEvenPace } from "../utils/quota";
 import {
@@ -12,6 +13,7 @@ import {
 } from "./compactPanelLabels";
 import { useCompactPanelQuota } from "./useCompactPanelQuota";
 import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
+import { useRunningThreadSummary } from "../state/useRunningThreadSummary";
 
 interface CompactPanelDataOptions {
   active?: boolean;
@@ -31,6 +33,7 @@ export interface CompactPanelData {
     fiveHour: string;
     sevenDay: string;
   };
+  runningThreads: RunningThreadSummary;
 }
 
 const DEFAULT_QUOTA_INITIAL_DELAY_MS = 8_000;
@@ -57,6 +60,10 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     enabled: quotaEnabled,
     initialDelayMs: quotaInitialDelayMs,
     intervalMs: quotaIntervalMs,
+    sourceToken,
+  });
+  const runningThreads = useRunningThreadSummary({
+    active: sourceActive,
     sourceToken,
   });
 
@@ -101,5 +108,6 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     rawSnapshot,
     quota,
     quotaLabels,
+    runningThreads,
   };
 }

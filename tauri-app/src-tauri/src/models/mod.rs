@@ -7,6 +7,7 @@ mod platform;
 mod provider_repair;
 mod quota;
 mod settings;
+mod thread_activity;
 
 pub use common::{AccountInfo, LocalDataWarning, QuotaDiagnostic};
 pub use codex_instances::{
@@ -38,3 +39,4 @@ pub use settings::{
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
 };
+pub use thread_activity::RunningThreadSummary;

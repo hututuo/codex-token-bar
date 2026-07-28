@@ -281,6 +281,8 @@ pub struct FloatingContentVisibilitySnapshot {
     #[serde(default = "default_enabled")]
     pub show_metrics: bool,
     #[serde(default = "default_enabled")]
+    pub show_running_threads: bool,
+    #[serde(default = "default_enabled")]
     pub show_quota: bool,
     #[serde(default = "default_enabled")]
     pub show_radar: bool,
@@ -296,6 +298,7 @@ impl Default for FloatingContentVisibilitySnapshot {
             show_rate_and_bar: default_enabled(),
             show_usage_status: default_enabled(),
             show_metrics: default_enabled(),
+            show_running_threads: default_enabled(),
             show_quota: default_enabled(),
             show_radar: default_enabled(),
             show_crowd_radar: default_enabled(),
@@ -305,7 +308,15 @@ impl Default for FloatingContentVisibilitySnapshot {
 }
 
 fn default_floating_content_order() -> Vec<String> {
-    ["rateAndBar", "usageStatus", "metrics", "radar", "crowdRadar", "quota"]
+    [
+        "rateAndBar",
+        "usageStatus",
+        "metrics",
+        "runningThreads",
+        "radar",
+        "crowdRadar",
+        "quota",
+    ]
         .into_iter()
         .map(String::from)
         .collect()

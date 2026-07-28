@@ -30,7 +30,7 @@ export function FloatingWindowApp() {
   const [liveRateEnabled, setLiveRateEnabled] = useState(true);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const { sourceReady, sourceToken } = useCompactPanelSource(surfaceLifecycle.active);
-  const { snapshot } = useCompactPanelData({
+  const { runningThreads, snapshot } = useCompactPanelData({
     active: surfaceLifecycle.active && sourceReady,
     liveRateEnabled,
     liveRateOwnerToken: "floating-live-rate",
@@ -219,6 +219,7 @@ export function FloatingWindowApp() {
         snapshot={snapshot}
         radarSnapshot={radarSnapshot}
         crowdRadarSnapshot={crowdRadarSnapshot}
+        runningThreads={runningThreads}
         unreadEffect={settings.unreadEffect}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}

@@ -21,12 +21,20 @@ export type FloatingPalettePatch = Partial<Pick<
   FloatingWindowSettings,
   "gradientStart" | "gradientEnd" | "gradientDirection" | "gradientType" | "quotaColorMode" | "quotaFixedColor"
 >>;
-export type FloatingContentGroup = "rateAndBar" | "usageStatus" | "metrics" | "quota" | "radar" | "crowdRadar";
+export type FloatingContentGroup =
+  | "rateAndBar"
+  | "usageStatus"
+  | "metrics"
+  | "runningThreads"
+  | "quota"
+  | "radar"
+  | "crowdRadar";
 
 export interface FloatingContentVisibility {
   showRateAndBar: boolean;
   showUsageStatus: boolean;
   showMetrics: boolean;
+  showRunningThreads: boolean;
   showQuota: boolean;
   showRadar: boolean;
   showCrowdRadar: boolean;

@@ -1512,6 +1512,7 @@ function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: Fl
     case "rateAndBar": return visibility.showRateAndBar;
     case "usageStatus": return visibility.showUsageStatus;
     case "metrics": return visibility.showMetrics;
+    case "runningThreads": return visibility.showRunningThreads;
     case "quota": return visibility.showQuota;
     case "radar": return visibility.showRadar;
     case "crowdRadar": return visibility.showCrowdRadar;
@@ -1523,6 +1524,7 @@ function visibilityKey(group: FloatingContentGroup): keyof FloatingContentVisibi
     case "rateAndBar": return "showRateAndBar";
     case "usageStatus": return "showUsageStatus";
     case "metrics": return "showMetrics";
+    case "runningThreads": return "showRunningThreads";
     case "quota": return "showQuota";
     case "radar": return "showRadar";
     case "crowdRadar": return "showCrowdRadar";

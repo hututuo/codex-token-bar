@@ -67,6 +67,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "stop_live_rate_stream",
     "read_floating_snapshot",
     "read_unread_summary",
+    "read_running_thread_summary",
     "acknowledge_current_unread",
     "show_floating_window",
     "hide_floating_window",

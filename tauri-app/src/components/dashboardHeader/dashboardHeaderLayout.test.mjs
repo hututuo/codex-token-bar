@@ -14,7 +14,7 @@ test("DashboardHeader CSS keeps information and primary actions on separate stab
   assert.match(shared, /min-width:\s*0/);
   assert.match(shared, /white-space:\s*nowrap/);
   assert.match(css, /\.header-context\s*\{[^}]*display:\s*grid/s);
-  assert.match(css, /\.header-context\s*\{[^}]*grid-template-columns:\s*minmax\(150px, 0\.74fr\) minmax\(280px, 1\.42fr\) minmax\(190px, 0\.86fr\)/s);
+  assert.match(css, /\.header-context\s*\{[^}]*grid-template-columns:[^}]*minmax\(150px, 0\.72fr\)[^}]*minmax\(260px, 1\.28fr\)[^}]*minmax\(180px, 0\.82fr\)[^}]*minmax\(170px, 0\.78fr\)/s);
   assert.match(css, /\.header-context\s*\{[^}]*gap:\s*6px/s);
   assert.match(css, /\.header-info-cell\s*\{[^}]*display:\s*grid/s);
   assert.match(css, /\.header-info-main\s*\{[^}]*display:\s*inline-flex/s);

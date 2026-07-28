@@ -397,6 +397,7 @@ function floatingSettingsFixture() {
       showRateAndBar: false,
       showUsageStatus: false,
       showMetrics: false,
+      showRunningThreads: false,
       showQuota: false,
       showRadar: true,
       order: ["radar"],

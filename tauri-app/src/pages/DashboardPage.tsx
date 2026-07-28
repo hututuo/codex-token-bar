@@ -18,6 +18,7 @@ import type {
   PlatformCapabilities,
   SessionEnhancementSettings,
   ProviderRepairSnapshot,
+  RunningThreadSummary,
 } from "../types/dashboard";
 import { DashboardAnalyticsSection } from "./dashboard/DashboardAnalyticsSection";
 import { DashboardSummarySection } from "./dashboard/DashboardSummarySection";
@@ -91,6 +92,7 @@ interface DashboardPageProps {
   providerRepairOpen: boolean;
   providerRepairSnapshot: ProviderRepairSnapshot;
   providerSourceKey: string;
+  runningThreads: RunningThreadSummary;
   radarRefreshGeneration: number;
   refreshing: boolean;
   appUpdateState: AppUpdateViewState;
@@ -156,6 +158,7 @@ export function DashboardPage({
   providerRepairOpen,
   providerRepairSnapshot,
   providerSourceKey,
+  runningThreads,
   radarRefreshGeneration,
   refreshing,
   appUpdateState,
@@ -215,6 +218,7 @@ export function DashboardPage({
           refreshing={refreshing}
           appUpdateState={appUpdateState}
           threadDeleteBridgeStatus={threadDeleteBridgeStatus}
+          runningThreads={runningThreads}
         />
 
         {usageCacheInitializing ? <UsageCacheInitializationNotice /> : null}

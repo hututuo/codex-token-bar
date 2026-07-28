@@ -25,6 +25,8 @@ test("content settings rows show Swift-style subtitles and movement feedback", a
 
   assert.equal(panel.includes("label.subtitle"), true);
   assert.equal(labels.includes("靠近速率会吸附"), true);
+  assert.equal(labels.includes("运行线程"), true);
+  assert.equal(labels.includes("总数 / 主线程 / 子 Agent"), true);
   assert.equal(panel.includes("moveFloatingContent"), true);
   assert.equal(panel.includes("aria-live"), true);
   assert.equal(panel.includes("movedInfo"), true);

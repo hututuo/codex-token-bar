@@ -22,6 +22,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(commands::auto_resume::AutoResumeRegistry::default())
         .manage(core::provider_repair::ProviderRecoveryState::default())
@@ -110,6 +111,7 @@ pub fn run() {
             commands::codex_radar::read_codex_crowd_radar_payload,
             commands::live::read_floating_snapshot,
             commands::live::read_unread_summary,
+            commands::thread_activity::read_running_thread_summary,
             commands::live::acknowledge_current_unread,
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,

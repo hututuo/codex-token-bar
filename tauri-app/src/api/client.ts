@@ -20,6 +20,7 @@ export {
   readFloatingPanelSnapshot,
   readLiveRateSnapshot,
   readLiveThreadOptions,
+  readRunningThreadSummary,
   readUnreadSummary,
   acknowledgeUnreadSummary,
   resetLiveRateMonitor,

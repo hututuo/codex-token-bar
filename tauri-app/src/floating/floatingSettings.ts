@@ -9,12 +9,13 @@ import type {
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 296;
 export const FLOATING_MIN_HEIGHT = 88;
-export const FLOATING_DEFAULT_HEIGHT = 134;
+export const FLOATING_DEFAULT_HEIGHT = 151;
 
 const FLOATING_CONTENT_GROUPS: FloatingContentGroup[] = [
   "rateAndBar",
   "usageStatus",
   "metrics",
+  "runningThreads",
   "radar",
   "crowdRadar",
   "quota",
@@ -24,6 +25,7 @@ const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showRateAndBar: true,
   showUsageStatus: true,
   showMetrics: true,
+  showRunningThreads: true,
   showQuota: true,
   showRadar: true,
   showCrowdRadar: true,
@@ -125,9 +127,10 @@ function sanitizeFloatingContentVisibility(value: Partial<FloatingContentVisibil
     showRateAndBar: value?.showRateAndBar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRateAndBar,
     showUsageStatus: value?.showUsageStatus ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showUsageStatus,
     showMetrics: value?.showMetrics ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showMetrics,
+    showRunningThreads: value?.showRunningThreads ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRunningThreads,
     showQuota: value?.showQuota ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showQuota,
-      showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
-      showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
+    showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
+    showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
     order: sanitizeContentOrder(value?.order),
   };
 }
@@ -142,5 +145,15 @@ function sanitizeContentOrder(value: unknown): FloatingContentGroup[] {
     seen.add(item as FloatingContentGroup);
     return true;
   });
-  return [...decoded, ...FLOATING_CONTENT_GROUPS.filter((group) => !seen.has(group))];
+  const result = [...decoded];
+  for (const group of FLOATING_CONTENT_GROUPS.filter((item) => !seen.has(item))) {
+    if (group === "runningThreads" && result.includes("metrics")) {
+      result.splice(result.indexOf("metrics") + 1, 0, group);
+    } else if (group === "crowdRadar" && result.includes("radar")) {
+      result.splice(result.indexOf("radar") + 1, 0, group);
+    } else {
+      result.push(group);
+    }
+  }
+  return result;
 }
