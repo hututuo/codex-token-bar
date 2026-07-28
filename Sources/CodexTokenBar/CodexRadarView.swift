@@ -298,7 +298,11 @@ private struct CodexCrowdRadarBlock: View {
     }
 
     private func accent(for model: CodexCrowdRadarModel) -> Color {
-        AppTheme.radarScoreColor(passed: model.passed, tasks: model.graded, score: model.iq)
+        AppTheme.radarScoreColor(
+            passed: model.scorePassed,
+            tasks: model.scoreSamples,
+            score: model.iq
+        )
     }
 }
 
@@ -461,6 +465,7 @@ struct CodexRadarDetailCard: View {
 private struct CodexCrowdRadarDetail: View {
     let snapshot: CodexCrowdRadarSnapshot?
     let staleDataDisplayed: Bool
+    @State private var mode: CodexCrowdRadarMode = .realtime
 
     var body: some View {
         CodexRadarDetailSection(title: "众测雷达", systemImage: "antenna.radiowaves.left.and.right") {
@@ -470,21 +475,49 @@ private struct CodexCrowdRadarDetail: View {
                     .foregroundStyle(.orange)
             }
             if let snapshot {
-                CodexRadarDetailSubsection(title: "实时覆盖") {
+                Picker("统计口径", selection: $mode) {
+                    ForEach(CodexCrowdRadarMode.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+                .accessibilityLabel("众测雷达统计口径")
+
+                Text(mode.explanation)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                if mode == .realtime, !snapshot.realtimeAvailable {
+                    Label("实时表格暂不可用，当前以近期结果安全兜底", systemImage: "clock.arrow.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.orange)
+                }
+
+                let best = snapshot.bestModel(for: mode)
+                let rankedModels = snapshot.rankedModels(for: mode)
+                CodexRadarDetailSubsection(title: "众测覆盖") {
                     CodexRadarKeyValueGrid(rows: [
                         ("任务", "\(snapshot.taskCount) 道"),
                         ("众测格子", "\(snapshot.cellCount)"),
                         ("参与者", "\(snapshot.contributorCount) 人"),
                         ("等待判分", "\(snapshot.pendingGrades)"),
                         ("判分异常", "\(snapshot.errorGrades)"),
-                        ("当前领先", snapshot.bestModel.map { "\($0.label) · IQ \(String(format: "%.1f", $0.iq))" } ?? "--")
+                        ("数据时间", snapshot.generatedAt.isEmpty ? "--" : snapshot.generatedAt),
+                        ("当前领先", best.map { "\($0.label) · IQ \(String(format: "%.1f", $0.iq))" } ?? "--")
                     ])
                 }
-                CodexRadarDetailSubsection(title: "通过率排名") {
+                CodexRadarDetailSubsection(title: "\(mode.title)排名") {
                     CodexRadarTable(
-                        headers: ["模型", "通过率", "众测 IQ", "已判"],
-                        rows: snapshot.rankedModels.prefix(8).map {
-                            [$0.label, String(format: "%.1f%%", $0.passRate * 100), String(format: "%.1f", $0.iq), "\($0.passed)/\($0.graded)"]
+                        headers: ["模型", "通过率", "众测 IQ", "本口径结果", "累计已判"],
+                        rows: rankedModels.prefix(8).map {
+                            [
+                                $0.label,
+                                String(format: "%.1f%%", $0.passRate * 100),
+                                String(format: "%.1f", $0.iq),
+                                "\($0.scorePassed)/\($0.scoreSamples)",
+                                "\($0.graded)"
+                            ]
                         }
                     )
                 }

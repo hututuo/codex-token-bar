@@ -25,16 +25,43 @@ final class CodexCrowdRadarTests: XCTestCase {
         let table = Data(#"""
         {
           "baseline_generated_at": "2026-07-20T23:21:14Z",
+          "combos": [
+            {"model":"gpt-5.6-sol","effort":"max"},
+            {"model":"gpt-5.6-terra","effort":"ultra"}
+          ],
           "tasks": [{"id":"one"},{"id":"two"}],
-          "cells": {"one|sol|max":{},"two|sol|max":{}}
+          "cells": {
+            "one|gpt-5.6-sol|max": {
+              "n":3,"p":1,
+              "ran_by":[{"passed":true,"graded_at":"2026-07-22T20:00:00Z"}]
+            },
+            "two|gpt-5.6-sol|max": {
+              "n":3,"p":0,
+              "ran_by":[{"passed":true,"graded_at":"2026-07-22T23:00:00Z"}]
+            },
+            "one|gpt-5.6-terra|ultra": {
+              "n":3,"p":3,
+              "ran_by":[{"passed":true,"graded_at":"2026-07-22T21:00:00Z"}]
+            },
+            "two|gpt-5.6-terra|ultra": {
+              "n":3,"p":3,
+              "ran_by":[{"passed":false,"graded_at":"2026-07-22T22:00:00Z"}]
+            }
+          }
         }
         """#.utf8)
         let leaderboard = Data(#"""
         {
-          "models": [{
-            "model":"gpt-5.6-sol","effort":"max","graded":440,
-            "passed":288,"cells":112,"pass_rate":0.696
-          }],
+          "models": [
+            {
+              "model":"gpt-5.6-sol","effort":"max","graded":440,
+              "passed":288,"cells":112,"cells_passed":78,"pass_rate":0.696
+            },
+            {
+              "model":"gpt-5.6-terra","effort":"ultra","graded":700,
+              "passed":500,"cells":112,"cells_passed":84,"pass_rate":0.75
+            }
+          ],
           "contributors": [{"login":"one"},{"login":"two"}],
           "pending_grades": 3,
           "error_grades": 4
@@ -46,14 +73,28 @@ final class CodexCrowdRadarTests: XCTestCase {
             leaderboardData: leaderboard
         )
 
-        XCTAssertEqual(snapshot.generatedAt, "2026-07-20T23:21:14Z")
+        XCTAssertEqual(snapshot.generatedAt, "2026-07-22T23:00:00Z")
         XCTAssertEqual(snapshot.taskCount, 2)
-        XCTAssertEqual(snapshot.cellCount, 2)
+        XCTAssertEqual(snapshot.cellCount, 4)
         XCTAssertEqual(snapshot.contributorCount, 2)
         XCTAssertEqual(snapshot.pendingGrades, 3)
         XCTAssertEqual(snapshot.errorGrades, 4)
+        XCTAssertTrue(snapshot.realtimeAvailable)
         XCTAssertEqual(snapshot.models.first?.model, "gpt-5.6-sol")
-        XCTAssertEqual(snapshot.models.first?.passRate ?? 0, 0.696, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.models.first?.graded, 440)
+        XCTAssertEqual(snapshot.models.first?.scorePassed, 2)
+        XCTAssertEqual(snapshot.models.first?.scoreSamples, 2)
+        XCTAssertEqual(snapshot.models.first?.passRate ?? 0, 1, accuracy: 0.0001)
+        XCTAssertEqual(
+            snapshot.rankedModels(for: .realtime).map(\.model),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
+        )
+        XCTAssertEqual(
+            snapshot.rankedModels(for: .recent).map(\.model),
+            ["gpt-5.6-terra", "gpt-5.6-sol"]
+        )
+        XCTAssertEqual(snapshot.recentModels.first?.scorePassed, 1)
+        XCTAssertEqual(snapshot.recentModels.first?.scoreSamples, 6)
     }
 
     func testParserToleratesWrappersAliasesStringsMapsAndMalformedRows() throws {
@@ -94,6 +135,7 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.contributorCount, 3)
         XCTAssertEqual(snapshot.pendingGrades, 2)
         XCTAssertEqual(snapshot.errorGrades, 1)
+        XCTAssertFalse(snapshot.realtimeAvailable)
         XCTAssertEqual(snapshot.models.count, 2)
         let sol = try XCTUnwrap(snapshot.models.first { $0.model == "gpt-5.6-sol" })
         XCTAssertEqual(sol.effort, "max")
@@ -132,6 +174,7 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(luna.passRate, 0.8, accuracy: 0.0001)
         XCTAssertEqual(luna.cells, 2)
         XCTAssertEqual(snapshot.taskCount, 2)
+        XCTAssertFalse(snapshot.realtimeAvailable)
     }
 
     func testParserKeepsLeaderboardWhenOptionalTableJSONIsMalformed() throws {
@@ -150,6 +193,74 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.models.first?.model, "gpt-5.6-sol")
         XCTAssertEqual(snapshot.taskCount, 0)
         XCTAssertEqual(snapshot.cellCount, 0)
+        XCTAssertFalse(snapshot.realtimeAvailable)
+    }
+
+    func testParserKeepsTableWhenLeaderboardIsUnavailableAndAcceptsStringTaskIDs() throws {
+        let table = Data(#"""
+        {
+          "combos":[{"model":"gpt-5.6-sol","effort":"high"}],
+          "tasks":["one","two"],
+          "cells":{
+            "one|gpt-5.6-sol|high":{
+              "n":3,"p":2,
+              "ran_by":[{"passed":true,"graded_at":"2026-07-23T01:00:00Z"}]
+            },
+            "two|gpt-5.6-sol|high":{
+              "n":2,"p":1,
+              "ran_by":[{"passed":false,"graded_at":"2026-07-23T02:00:00Z"}]
+            }
+          }
+        }
+        """#.utf8)
+
+        let snapshot = try CodexCrowdRadarParser.decode(
+            tableData: table,
+            leaderboardData: nil
+        )
+
+        XCTAssertTrue(snapshot.realtimeAvailable)
+        XCTAssertEqual(snapshot.generatedAt, "2026-07-23T02:00:00Z")
+        XCTAssertEqual(snapshot.models.first?.graded, 2)
+        XCTAssertEqual(snapshot.models.first?.scorePassed, 1)
+        XCTAssertEqual(snapshot.models.first?.scoreSamples, 2)
+        XCTAssertEqual(snapshot.recentModels.first?.scorePassed, 3)
+        XCTAssertEqual(snapshot.recentModels.first?.scoreSamples, 5)
+    }
+
+    func testTieOrderDoesNotUseCumulativeGradedTotals() {
+        let snapshot = CodexCrowdRadarSnapshot(
+            generatedAt: "",
+            taskCount: 1,
+            cellCount: 2,
+            contributorCount: 0,
+            pendingGrades: 0,
+            errorGrades: 0,
+            models: [
+                CodexCrowdRadarModel(
+                    model: "gpt-5.6-terra",
+                    effort: "ultra",
+                    graded: 9_999,
+                    passed: 9_999,
+                    passRate: 1,
+                    cells: 1,
+                    scorePassed: 1,
+                    scoreSamples: 1
+                ),
+                CodexCrowdRadarModel(
+                    model: "gpt-5.6-sol",
+                    effort: "low",
+                    graded: 1,
+                    passed: 1,
+                    passRate: 1,
+                    cells: 1,
+                    scorePassed: 1,
+                    scoreSamples: 1
+                )
+            ]
+        )
+
+        XCTAssertEqual(snapshot.rankedModels.map(\.model), ["gpt-5.6-sol", "gpt-5.6-terra"])
     }
 
     func testParserRejectsPayloadWithoutRankableModels() throws {

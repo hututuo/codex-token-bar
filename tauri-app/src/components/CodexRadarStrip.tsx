@@ -13,6 +13,7 @@ import {
   crowdRadarModelLabel,
   rankedCodexCrowdRadarModels,
   readCodexCrowdRadarSnapshot,
+  type CodexCrowdRadarMode,
   type CodexCrowdRadarSnapshot,
 } from "../api/codexCrowdRadarClient";
 import {
@@ -741,32 +742,60 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
 });
 
 function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnapshot | null; status: string }) {
-  const rows = rankedCodexCrowdRadarModels(snapshot, 8);
-  const best = bestCodexCrowdRadarModel(snapshot);
+  const [mode, setMode] = useState<CodexCrowdRadarMode>("realtime");
+  const rows = rankedCodexCrowdRadarModels(snapshot, 8, mode);
+  const best = bestCodexCrowdRadarModel(snapshot, mode);
   const staleDataDisplayed = snapshot !== null && status.startsWith("众测刷新失败");
+  const modeTitle = mode === "realtime" ? "实时监控" : "近期表现";
+  const modeExplanation = mode === "realtime"
+    ? "每格取最新 1 次有效结果"
+    : "每格汇总最近 3 次有效结果";
   return (
     <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">
       {snapshot ? (
         <>
           {staleDataDisplayed ? <p className="codex-radar-stale-note" role="status">{status}</p> : null}
-          <RadarDetailSubsection title="实时覆盖">
+          <div className="codex-crowd-radar-mode-row">
+            <div aria-label="众测雷达统计口径" className="segmented codex-crowd-radar-mode" role="group">
+              {(["realtime", "recent"] as const).map((option) => (
+                <button
+                  aria-pressed={mode === option}
+                  className={mode === option ? "active" : ""}
+                  key={option}
+                  onClick={() => setMode(option)}
+                  type="button"
+                >
+                  {option === "realtime" ? "实时监控" : "近期表现"}
+                </button>
+              ))}
+            </div>
+            <span>{modeExplanation}</span>
+          </div>
+          {mode === "realtime" && !snapshot.realtimeAvailable ? (
+            <p className="codex-radar-fallback-note" role="status">
+              实时表格暂不可用，当前以近期结果安全兜底
+            </p>
+          ) : null}
+          <RadarDetailSubsection title="众测覆盖">
             <RadarKeyValueGrid rows={[
               ["任务", `${snapshot.taskCount} 道`],
               ["众测格子", `${snapshot.cellCount}`],
               ["参与者", `${snapshot.contributorCount} 人`],
               ["等待判分", `${snapshot.pendingGrades}`],
               ["判分异常", `${snapshot.errorGrades}`],
+              ["数据时间", snapshot.generatedAt || "--"],
               ["当前领先", best ? `${crowdRadarModelLabel(best)} · IQ ${(best.passRate * 150).toFixed(1)}` : "--"],
             ]} />
           </RadarDetailSubsection>
-          <RadarDetailSubsection title="通过率排名">
+          <RadarDetailSubsection title={`${modeTitle}排名`}>
             <RadarTable
-              headers={["模型", "通过率", "众测 IQ", "已判"]}
+              headers={["模型", "通过率", "众测 IQ", "本口径结果", "累计已判"]}
               rows={rows.map((row) => [
                 crowdRadarModelLabel(row),
                 `${(row.passRate * 100).toFixed(1)}%`,
                 (row.passRate * 150).toFixed(1),
-                `${row.passed}/${row.graded}`,
+                `${row.scorePassed}/${row.scoreSamples}`,
+                `${row.graded}`,
               ])}
             />
           </RadarDetailSubsection>

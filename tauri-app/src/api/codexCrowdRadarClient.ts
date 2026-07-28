@@ -5,7 +5,12 @@ export interface CodexCrowdRadarModel {
   passed: number;
   passRate: number;
   cells: number;
+  scorePassed: number;
+  scoreSamples: number;
+  latestGradedAt: string | null;
 }
+
+export type CodexCrowdRadarMode = "realtime" | "recent";
 
 export interface CodexCrowdRadarSnapshot {
   generatedAt: string;
@@ -15,6 +20,8 @@ export interface CodexCrowdRadarSnapshot {
   pendingGrades: number;
   errorGrades: number;
   models: CodexCrowdRadarModel[];
+  recentModels: CodexCrowdRadarModel[];
+  realtimeAvailable: boolean;
 }
 
 const CROWD_RADAR_COMMAND = "read_codex_crowd_radar_payload";
@@ -52,13 +59,24 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
       "errorGrades", "errors", "errorCount", "failedGrades",
     ],
   );
-  const models = parseModels(leaderboard);
-  if (!models.some((model) => model.graded > 0)) {
-    const nativeError = stringValue(valueFor(nativePayload, ["leaderboardError", "error", "message"]));
+  const leaderboardModels = parseModels(leaderboard);
+  const tableAggregation = parseTableModels(table, leaderboardModels);
+  const recentModels = tableAggregation.recentModels.length > 0
+    ? tableAggregation.recentModels
+    : leaderboardModels;
+  const models = tableAggregation.realtimeModels.length > 0
+    ? tableAggregation.realtimeModels
+    : recentModels;
+  if (!models.some((model) => model.scoreSamples > 0)) {
+    const nativeError = [
+      stringValue(valueFor(nativePayload, ["tableError"])),
+      stringValue(valueFor(nativePayload, ["leaderboardError"])),
+      stringValue(valueFor(nativePayload, ["error", "message"])),
+    ].find(Boolean);
     throw new Error(nativeError || "众测雷达没有可排名的模型数据");
   }
   return {
-    generatedAt: firstString(table, [
+    generatedAt: tableAggregation.latestGradedAt || firstString(table, [
       "baselineGeneratedAt",
       "generatedAt",
       "updatedAt",
@@ -88,20 +106,30 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
       "failedGrades",
     ]) ?? 0,
     models,
+    recentModels,
+    realtimeAvailable: tableAggregation.realtimeModels.length > 0,
   };
 }
 
-export function bestCodexCrowdRadarModel(snapshot?: CodexCrowdRadarSnapshot | null): CodexCrowdRadarModel | null {
-  return rankedCodexCrowdRadarModels(snapshot, 1)[0] ?? null;
+export function bestCodexCrowdRadarModel(
+  snapshot?: CodexCrowdRadarSnapshot | null,
+  mode: CodexCrowdRadarMode = "realtime",
+): CodexCrowdRadarModel | null {
+  return rankedCodexCrowdRadarModels(snapshot, 1, mode)[0] ?? null;
 }
 
 export function rankedCodexCrowdRadarModels(
   snapshot?: CodexCrowdRadarSnapshot | null,
   limit = Number.MAX_SAFE_INTEGER,
+  mode: CodexCrowdRadarMode = "realtime",
 ): CodexCrowdRadarModel[] {
-  return (snapshot?.models ?? [])
-    .filter((row) => row.graded > 0)
-    .sort((left, right) => right.passRate - left.passRate || right.graded - left.graded)
+  const requestedModels = mode === "recent" ? snapshot?.recentModels : snapshot?.models;
+  const fallbackModels = requestedModels && requestedModels.length > 0
+    ? requestedModels
+    : snapshot?.models ?? snapshot?.recentModels ?? [];
+  return [...fallbackModels]
+    .filter((row) => scoreSampleCount(row) > 0)
+    .sort(compareCrowdRadarModels)
     .slice(0, Math.max(0, Math.floor(limit)));
 }
 
@@ -176,6 +204,13 @@ function parseModel(value: unknown, fallbackKey: string): CodexCrowdRadarModel |
     "taskCount",
     "coveredTasks",
   ]) ?? Object.keys(taskStats ?? {}).length;
+  const scorePassed = firstInteger(row, [
+    "cellsPassed",
+    "passedCells",
+    "tasksPassed",
+    "passedTasks",
+  ]) ?? (cells > 0 ? Math.round(passRate * cells) : passed);
+  const scoreSamples = cells > 0 ? cells : graded;
   return {
     model,
     effort,
@@ -183,7 +218,245 @@ function parseModel(value: unknown, fallbackKey: string): CodexCrowdRadarModel |
     passed: Math.max(0, passed),
     passRate,
     cells: Math.max(0, cells),
+    scorePassed: Math.max(0, scorePassed),
+    scoreSamples: Math.max(0, scoreSamples),
+    latestGradedAt: firstString(row, [
+      "latestGradedAt",
+      "gradedAt",
+      "updatedAt",
+      "monitoredAt",
+    ]) || null,
   };
+}
+
+interface TableAggregation {
+  realtimeModels: CodexCrowdRadarModel[];
+  recentModels: CodexCrowdRadarModel[];
+  latestGradedAt: string;
+}
+
+function parseTableModels(
+  table: Record<string, unknown> | null,
+  leaderboardModels: CodexCrowdRadarModel[],
+): TableAggregation {
+  const explicitCombos = collectionRows(valueFor(table, ["combos", "modelCombos", "models"]));
+  const combos = explicitCombos.length > 0
+    ? explicitCombos
+    : leaderboardModels.map((model, index) => ({ key: String(index), value: model }));
+  const tasks = collectionRows(valueFor(table, ["tasks", "taskRows", "taskList"]));
+  const cells = asRecord(valueFor(table, ["cells", "cellMap", "cellRows"]));
+  if (combos.length === 0 || tasks.length === 0 || !cells || Object.keys(cells).length === 0) {
+    return { realtimeModels: [], recentModels: [], latestGradedAt: "" };
+  }
+
+  const leaderboardByIdentity = new Map(
+    leaderboardModels.map((model) => [modelIdentity(model.model, model.effort), model]),
+  );
+  const realtimeModels: CodexCrowdRadarModel[] = [];
+  const recentModels: CodexCrowdRadarModel[] = [];
+  let globalLatestGradedAt = "";
+
+  for (const comboEntry of combos) {
+    const combo = asRecord(comboEntry.value);
+    if (!combo) continue;
+    let model = firstString(combo, ["model", "modelName", "name", "modelId", "modelKey"]);
+    let effort = firstString(combo, ["effort", "reasoningEffort", "reasoning", "level", "tier"]);
+    ({ model, effort } = fillModelIdentity(model, effort, comboEntry.key));
+    if (!model || !effort) continue;
+
+    let realtimePassed = 0;
+    let realtimeSamples = 0;
+    let recentPassed = 0;
+    let recentSamples = 0;
+    let recentCells = 0;
+    let latestGradedAt = "";
+
+    for (const taskEntry of tasks) {
+      const task = asRecord(taskEntry.value);
+      const taskId = identifierValue(valueFor(task, ["id", "taskId", "taskKey", "name"]))
+        || identifierValue(taskEntry.value)
+        || nonEmpty(taskEntry.key);
+      if (!taskId) continue;
+      const cellKey = `${taskId}|${model}|${effort}`;
+      const cell = asRecord(cells[cellKey] ?? valueFor(cells, [cellKey]));
+      if (!cell) continue;
+
+      const runners = valueFor(cell, ["ranBy", "runners", "runs", "results"]);
+      const latestRunner = Array.isArray(runners) ? asRecord(runners[0]) : null;
+      if (latestRunner) {
+        const passedLatest = booleanValue(valueFor(latestRunner, ["passed", "success", "ok"]));
+        if (passedLatest !== null) {
+          realtimeSamples += 1;
+          if (passedLatest) realtimePassed += 1;
+        }
+        const gradedAt = firstString(latestRunner, [
+          "gradedAt",
+          "judgedAt",
+          "updatedAt",
+          "completedAt",
+        ]) || firstString(cell, ["lastGradedAt", "gradedAt", "updatedAt"]);
+        if (gradedAt) {
+          latestGradedAt = newestTimestamp(latestGradedAt, gradedAt);
+          globalLatestGradedAt = newestTimestamp(globalLatestGradedAt, gradedAt);
+        }
+      }
+
+      const sampleCount = firstInteger(cell, ["n", "recentSamples", "sampleCount", "samples"]);
+      const passCount = firstInteger(cell, ["p", "recentPassed", "passCount", "passes"]);
+      if (
+        sampleCount !== null
+        && passCount !== null
+        && sampleCount > 0
+        && passCount >= 0
+        && passCount <= sampleCount
+      ) {
+        recentSamples += sampleCount;
+        recentPassed += passCount;
+        recentCells += 1;
+      }
+    }
+
+    const metadata = leaderboardByIdentity.get(modelIdentity(model, effort));
+    if (realtimeSamples > 0) {
+      realtimeModels.push(makeTableModel({
+        model,
+        effort,
+        scorePassed: realtimePassed,
+        scoreSamples: realtimeSamples,
+        coveredCells: realtimeSamples,
+        latestGradedAt,
+        metadata,
+      }));
+    }
+    if (recentSamples > 0) {
+      recentModels.push(makeTableModel({
+        model,
+        effort,
+        scorePassed: recentPassed,
+        scoreSamples: recentSamples,
+        coveredCells: recentCells,
+        latestGradedAt,
+        metadata,
+      }));
+    }
+  }
+
+  return {
+    realtimeModels,
+    recentModels,
+    latestGradedAt: globalLatestGradedAt,
+  };
+}
+
+function makeTableModel({
+  model,
+  effort,
+  scorePassed,
+  scoreSamples,
+  coveredCells,
+  latestGradedAt,
+  metadata,
+}: {
+  model: string;
+  effort: string;
+  scorePassed: number;
+  scoreSamples: number;
+  coveredCells: number;
+  latestGradedAt: string;
+  metadata?: CodexCrowdRadarModel;
+}): CodexCrowdRadarModel {
+  return {
+    model,
+    effort,
+    graded: metadata?.graded ?? scoreSamples,
+    passed: metadata?.passed ?? scorePassed,
+    passRate: scorePassed / scoreSamples,
+    cells: Math.max(metadata?.cells ?? 0, coveredCells),
+    scorePassed,
+    scoreSamples,
+    latestGradedAt: latestGradedAt || null,
+  };
+}
+
+function collectionRows(value: unknown): Array<{ key: string; value: unknown }> {
+  if (Array.isArray(value)) {
+    return value.map((row, index) => ({ key: String(index), value: row }));
+  }
+  const rows = asRecord(value);
+  return Object.keys(rows ?? {})
+    .sort()
+    .map((key) => ({ key, value: rows?.[key] }));
+}
+
+function identifierValue(value: unknown): string {
+  if (typeof value === "string") return nonEmpty(value);
+  const integer = integerValue(value);
+  return integer === null ? "" : String(integer);
+}
+
+function nonEmpty(value: string): string {
+  return value.trim();
+}
+
+function booleanValue(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (value === 1 || value === "1") return true;
+  if (value === 0 || value === "0") return false;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLocaleLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return null;
+}
+
+function modelIdentity(model: string, effort: string): string {
+  return `${model.trim().toLocaleLowerCase()}|${effort.trim().toLocaleLowerCase()}`;
+}
+
+function newestTimestamp(current: string, candidate: string): string {
+  if (!current) return candidate;
+  const currentTime = Date.parse(current);
+  const candidateTime = Date.parse(candidate);
+  if (Number.isFinite(currentTime) && Number.isFinite(candidateTime)) {
+    return candidateTime > currentTime ? candidate : current;
+  }
+  return candidate > current ? candidate : current;
+}
+
+function scoreSampleCount(row: CodexCrowdRadarModel): number {
+  return Number.isFinite(row.scoreSamples) ? row.scoreSamples : row.graded;
+}
+
+function compareCrowdRadarModels(
+  left: CodexCrowdRadarModel,
+  right: CodexCrowdRadarModel,
+): number {
+  const passRateOrder = right.passRate - left.passRate;
+  if (passRateOrder !== 0) return passRateOrder;
+  const modelOrder = modelRank(left.model) - modelRank(right.model);
+  if (modelOrder !== 0) return modelOrder;
+  const effortOrder = effortRank(left.effort) - effortRank(right.effort);
+  if (effortOrder !== 0) return effortOrder;
+  return modelIdentity(left.model, left.effort).localeCompare(
+    modelIdentity(right.model, right.effort),
+    undefined,
+    { numeric: true, sensitivity: "base" },
+  );
+}
+
+function modelRank(model: string): number {
+  const normalized = model.toLocaleLowerCase();
+  if (normalized.includes("gpt-5.6-sol")) return 0;
+  if (normalized.includes("gpt-5.6-terra")) return 1;
+  if (normalized.includes("gpt-5.6-luna")) return 2;
+  if (normalized.includes("gpt-5.5")) return 3;
+  return 4;
+}
+
+function effortRank(effort: string): number {
+  const rank = ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"]
+    .indexOf(effort.toLocaleLowerCase());
+  return rank < 0 ? 7 : rank;
 }
 
 function fillModelIdentity(

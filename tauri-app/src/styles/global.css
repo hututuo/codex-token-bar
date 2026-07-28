@@ -1862,6 +1862,30 @@ button.quota-side-card:hover {
   font-weight: 650;
 }
 
+.codex-crowd-radar-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 10px;
+}
+
+.codex-crowd-radar-mode {
+  width: fit-content;
+}
+
+.codex-crowd-radar-mode-row > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.codex-radar-fallback-note {
+  margin: 0;
+  color: #8a4a12;
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .codex-radar-grid {
   display: grid;
   grid-template-columns: 0.82fr 1.08fr 1.08fr 1.02fr;
