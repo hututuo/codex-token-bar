@@ -38,7 +38,10 @@ export function readDashboardSnapshot(
 export function readPreciseDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,
 ): Promise<DashboardSnapshot | null> {
-  return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, 30_000);
+  // This native read owns a serialized, potentially multi-minute index sync.
+  // A JavaScript-only timeout cannot cancel it and only creates another queued
+  // read on the next refresh, so wait for the real native outcome.
+  return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, null);
 }
 
 export function readUsageSummarySnapshot(

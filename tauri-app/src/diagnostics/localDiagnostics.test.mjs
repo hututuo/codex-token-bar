@@ -77,3 +77,47 @@ test("clearing a command failure removes it from bounded diagnostics", async () 
     false,
   );
 });
+
+test("a late success clears the timeout from the same native attempt", async () => {
+  const diagnostics = await import("./localDiagnostics.ts");
+  const command = "late_success_same_attempt";
+  diagnostics.clearCommandFailure(command);
+
+  const attempt = diagnostics.beginCommandAttempt(command);
+  diagnostics.recordCommandFailure(command, new Error("soft timeout"), attempt);
+  assert.equal(
+    diagnostics.getCommandDiagnosticsSnapshot().some((item) => item.command === command),
+    true,
+  );
+
+  diagnostics.clearCommandFailure(command, attempt);
+  assert.equal(
+    diagnostics.getCommandDiagnosticsSnapshot().some((item) => item.command === command),
+    false,
+  );
+});
+
+test("an old late success cannot clear a newer command attempt", async () => {
+  const diagnostics = await import("./localDiagnostics.ts");
+  const command = "late_success_old_attempt";
+  diagnostics.clearCommandFailure(command);
+
+  const oldAttempt = diagnostics.beginCommandAttempt(command);
+  diagnostics.recordCommandFailure(command, new Error("old timeout"), oldAttempt);
+  const currentAttempt = diagnostics.beginCommandAttempt(command);
+  diagnostics.recordCommandFailure(command, new Error("current failure"), currentAttempt);
+
+  diagnostics.clearCommandFailure(command, oldAttempt);
+  assert.equal(
+    diagnostics
+      .getCommandDiagnosticsSnapshot()
+      .find((item) => item.command === command)?.message,
+    "current failure",
+  );
+
+  diagnostics.clearCommandFailure(command, currentAttempt);
+  assert.equal(
+    diagnostics.getCommandDiagnosticsSnapshot().some((item) => item.command === command),
+    false,
+  );
+});

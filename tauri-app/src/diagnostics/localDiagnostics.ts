@@ -11,6 +11,8 @@ const SILENT_FAILURE_COMMANDS = new Set([
 const lastWarningAtByKey = new Map<string, number>();
 const diagnosticsByKey = new Map<string, CommandFailureDiagnostic>();
 const diagnosticsListeners = new Set<(diagnostics: CommandFailureDiagnostic[]) => void>();
+const latestAttemptByCommand = new Map<string, number>();
+let commandAttemptSequence = 0;
 
 export interface CommandFailureDiagnostic {
   command: string;
@@ -35,19 +37,31 @@ export function subscribeCommandDiagnostics(
   };
 }
 
-export function recordCommandFailure(command: string, error: unknown) {
+export function beginCommandAttempt(command: string): number {
+  commandAttemptSequence += 1;
+  latestAttemptByCommand.set(command, commandAttemptSequence);
+  return commandAttemptSequence;
+}
+
+export function recordCommandFailure(command: string, error: unknown, attempt?: number) {
+  if (!isCurrentCommandAttempt(command, attempt)) {
+    return;
+  }
   if (SILENT_FAILURE_COMMANDS.has(command)) {
     return;
   }
 
   const now = Date.now();
   const lastWarningAt = lastWarningAtByKey.get(command) ?? 0;
-  if (now - lastWarningAt < WARNING_THROTTLE_MS) {
+  const throttled = now - lastWarningAt < WARNING_THROTTLE_MS;
+  if (throttled && attempt === undefined) {
     return;
   }
 
   const previous = diagnosticsByKey.get(command);
-  lastWarningAtByKey.set(command, now);
+  if (!throttled) {
+    lastWarningAtByKey.set(command, now);
+  }
   if (previous) {
     diagnosticsByKey.delete(command);
   }
@@ -55,18 +69,32 @@ export function recordCommandFailure(command: string, error: unknown) {
     command,
     message: commandFailureMessage(error),
     occurredAt: new Date(now).toISOString(),
-    count: (previous?.count ?? 0) + 1,
+    count: previous === undefined
+      ? 1
+      : previous.count + (throttled ? 0 : 1),
   });
   trimCommandDiagnostics();
   emitCommandDiagnostics();
-  console.warn(`Local operation failed: ${command}`, error);
+  if (!throttled) {
+    console.warn(`Local operation failed: ${command}`, error);
+  }
 }
 
-export function clearCommandFailure(command: string) {
+export function clearCommandFailure(command: string, attempt?: number) {
+  if (!isCurrentCommandAttempt(command, attempt)) {
+    return;
+  }
+  if (attempt === undefined) {
+    latestAttemptByCommand.delete(command);
+  }
   if (diagnosticsByKey.delete(command)) {
     lastWarningAtByKey.delete(command);
     emitCommandDiagnostics();
   }
+}
+
+function isCurrentCommandAttempt(command: string, attempt?: number): boolean {
+  return attempt === undefined || latestAttemptByCommand.get(command) === attempt;
 }
 
 function trimCommandDiagnostics() {
