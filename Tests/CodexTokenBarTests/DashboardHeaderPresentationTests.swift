@@ -110,6 +110,26 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertFalse(source.contains("systemImage: \"trash\""))
     }
 
+    func testHeaderExposesSharedRunningThreadSummaryInContextRail() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let headerFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
+        let dashboardFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let headerSource = try String(contentsOf: headerFile, encoding: .utf8)
+        let dashboardSource = try String(contentsOf: dashboardFile, encoding: .utf8)
+
+        XCTAssertTrue(headerSource.contains("let runningThreadSummary: RunningThreadSummary"))
+        XCTAssertTrue(headerSource.contains("Text(runningThreadPresentation.displayText)"))
+        XCTAssertTrue(headerSource.contains(".accessibilityLabel(\"运行线程\")"))
+        XCTAssertTrue(
+            dashboardSource.contains(
+                "runningThreadSummary: taskCompletionMonitor.runningThreadSummary"
+            )
+        )
+    }
+
     @MainActor
     func testHostedAutomaticSourceBadgeKeepsStableSingleLineFrame() {
         let hostingView = NSHostingView(

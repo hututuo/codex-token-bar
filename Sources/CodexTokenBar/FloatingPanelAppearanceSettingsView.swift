@@ -163,6 +163,7 @@ struct FloatingPanelContentSettingsMenu: View {
     @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var showRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var showUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var showMetrics = FloatingPanelContentVisibility.default.showMetrics
+    @AppStorage(FloatingPanelContentVisibility.runningThreadsKey) private var showRunningThreads = FloatingPanelContentVisibility.default.showRunningThreads
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var showQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var showRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var showCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
@@ -241,6 +242,8 @@ struct FloatingPanelContentSettingsMenu: View {
             return $showUsageStatus
         case .metrics:
             return $showMetrics
+        case .runningThreads:
+            return $showRunningThreads
         case .quota:
             return $showQuota
         case .radar:

@@ -5,12 +5,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testDefaultVisibilityShowsAllFloatingPanelGroups() {
         let visibility = FloatingPanelContentVisibility.default
 
-        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .radar, .crowdRadar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .radar, .crowdRadar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,radar,crowdRadar,quota")
+        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,runningThreads,radar,crowdRadar,quota")
         XCTAssertTrue(visibility.shows(.rateAndBar))
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
+        XCTAssertTrue(visibility.shows(.runningThreads))
         XCTAssertTrue(visibility.shows(.quota))
         XCTAssertTrue(visibility.shows(.radar))
         XCTAssertTrue(visibility.shows(.crowdRadar))
@@ -37,27 +38,29 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let height = FloatingTokenPanelMetrics.contentHeight(visibility: .default)
         let expectedHeight = FloatingTokenPanelMetrics.rateRowHeight
             + FloatingTokenPanelMetrics.metricRowHeight
+            + FloatingTokenPanelMetrics.runningThreadsRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
             + FloatingTokenPanelMetrics.crowdRadarRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 3
+            + FloatingTokenPanelMetrics.rowSpacing * 4
             + FloatingTokenPanelMetrics.radarCrowdRowSpacing
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 117, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 133, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.usageStatusRowHeight, 20, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.runningThreadsRowHeight, 14, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 104.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 117, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 120.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 133, accuracy: 0.001)
     }
 
     func testRadarCrowdPairTightensOnlyItsUpperGap() {
@@ -141,8 +144,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
     func testFloatingPanelLayoutGroupsFollowStoredOrder() {
         let decoded = FloatingPanelContentVisibility.order(from: "radar,metrics,rateAndBar,unknown,radar")
-        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .rateAndBar, .usageStatus, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,rateAndBar,usageStatus,quota")
+        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .runningThreads, .rateAndBar, .usageStatus, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,runningThreads,rateAndBar,usageStatus,quota")
 
         let visibility = FloatingPanelContentVisibility(
             showRateAndBar: true,
@@ -223,6 +226,30 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertNil(model.rateBarUsageStatus)
         XCTAssertNil(model.standaloneUsageStatus)
         XCTAssertFalse(model.accessibilityParts.contains("读取中"))
+    }
+
+    func testFloatingPanelRunningThreadsRowUsesSharedCountsAndAccessibility() {
+        let running = RunningThreadSummary(
+            main: 2,
+            subagents: 3,
+            updatedAt: Date(timeIntervalSince1970: 100),
+            freshness: .fresh
+        )
+        let snapshot = makeTokenDisplaySnapshot(runningThreads: running)
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: false,
+            showMetrics: false,
+            showRunningThreads: true,
+            showQuota: false,
+            showRadar: false
+        )
+
+        let model = FloatingPanelPresentationModel(snapshot: snapshot, visibility: visibility)
+
+        XCTAssertEqual(model.rows.map(\.group), [.runningThreads])
+        XCTAssertTrue(model.accessibilityValue.contains("当前运行 5 个线程"))
+        XCTAssertTrue(model.accessibilityValue.contains("子 Agent 3 个"))
     }
 
     func testFloatingPanelAccessibilityUsesPendingLabelsForMetadataOnlyMetrics() {
@@ -311,7 +338,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .metrics,
                 placement: .after
             ),
-            [.usageStatus, .metrics, .rateAndBar, .quota, .radar, .crowdRadar]
+            [.usageStatus, .metrics, .rateAndBar, .runningThreads, .quota, .radar, .crowdRadar]
         )
 
         XCTAssertEqual(
@@ -321,7 +348,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .usageStatus,
                 placement: .before
             ),
-            [.rateAndBar, .radar, .usageStatus, .metrics, .quota, .crowdRadar]
+            [.rateAndBar, .radar, .usageStatus, .metrics, .runningThreads, .quota, .crowdRadar]
         )
     }
 
@@ -806,7 +833,11 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: "60").accessibilityLabel,
             "额度刷新"
         )
-        XCTAssertTrue(tokenDisplaySource.contains("static func make(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore)"))
+        XCTAssertTrue(tokenDisplaySource.contains("static func make("))
+        XCTAssertTrue(tokenDisplaySource.contains("store: CodexUsageStore"))
+        XCTAssertTrue(tokenDisplaySource.contains("monitor: LiveRateMonitor"))
+        XCTAssertTrue(tokenDisplaySource.contains("quota: AccountQuotaStore"))
+        XCTAssertTrue(tokenDisplaySource.contains("runningThreads: RunningThreadSummary"))
         XCTAssertFalse(tokenDisplaySource.contains("@AppStorage(AccountQuotaRefreshCadence.storageKey)"))
     }
 
@@ -1214,7 +1245,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             updatedAt: Date(timeIntervalSince1970: 1_000)
         ),
         usagePrecision: DashboardUsagePrecision = .precise,
-        usageReadStatus: String = ""
+        usageReadStatus: String = "",
+        runningThreads: RunningThreadSummary = .unavailable
     ) -> TokenDisplaySnapshot {
         TokenDisplaySnapshot(
             title: "全会话实时",
@@ -1226,6 +1258,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             usagePrecision: usagePrecision,
             usageReadStatus: usageReadStatus,
             quota: quota,
+            runningThreads: runningThreads,
             updatedAt: Date(timeIntervalSince1970: 1_000)
         )
     }

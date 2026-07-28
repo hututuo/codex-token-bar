@@ -243,6 +243,7 @@ struct ExportSnapshotView: View {
                     dataSourceOrigin: "导出",
                     isRefreshing: false,
                     unreadThreadCount: 0,
+                    runningThreadSummary: .unavailable,
                     presentationMode: .export,
                     onRefresh: {},
                     onMarkAllRead: {},

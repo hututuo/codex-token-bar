@@ -88,6 +88,7 @@ struct AppSettingsView: View {
     @Binding var showRateAndBar: Bool
     @Binding var showUsageStatus: Bool
     @Binding var showMetrics: Bool
+    @Binding var showRunningThreads: Bool
     @Binding var showQuota: Bool
     @Binding var showRadar: Bool
     @Binding var showCrowdRadar: Bool
@@ -892,6 +893,7 @@ struct AppSettingsView: View {
         case .rateAndBar: return $showRateAndBar
         case .usageStatus: return $showUsageStatus
         case .metrics: return $showMetrics
+        case .runningThreads: return $showRunningThreads
         case .quota: return $showQuota
         case .radar: return $showRadar
         case .crowdRadar: return $showCrowdRadar

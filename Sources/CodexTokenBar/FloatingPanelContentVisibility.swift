@@ -4,6 +4,7 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
     case rateAndBar
     case usageStatus
     case metrics
+    case runningThreads
     case quota
     case radar
     case crowdRadar
@@ -18,6 +19,8 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
             return "趣味话"
         case .metrics:
             return "总今次"
+        case .runningThreads:
+            return "运行线程"
         case .quota:
             return "5h/7d"
         case .radar:
@@ -35,6 +38,8 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
             return "sparkles"
         case .metrics:
             return "number"
+        case .runningThreads:
+            return "point.3.connected.trianglepath.dotted"
         case .quota:
             return "chart.bar.fill"
         case .radar:
@@ -63,17 +68,27 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let rateAndBarKey = "floatingPanelShowRateAndBar"
     static let usageStatusKey = "floatingPanelShowUsageStatus"
     static let metricsKey = "floatingPanelShowMetrics"
+    static let runningThreadsKey = "floatingPanelShowRunningThreads"
     static let quotaKey = "floatingPanelShowQuota"
     static let radarKey = "floatingPanelShowRadar"
     static let crowdRadarKey = "floatingPanelShowCrowdRadar"
     static let orderKey = "floatingPanelContentOrderV01"
-    static let defaultOrder: [FloatingPanelContentGroup] = [.rateAndBar, .usageStatus, .metrics, .radar, .crowdRadar, .quota]
+    static let defaultOrder: [FloatingPanelContentGroup] = [
+        .rateAndBar,
+        .usageStatus,
+        .metrics,
+        .runningThreads,
+        .radar,
+        .crowdRadar,
+        .quota,
+    ]
     static let defaultOrderRaw = encodedOrder(defaultOrder)
 
     static let `default` = FloatingPanelContentVisibility(
         showRateAndBar: true,
         showUsageStatus: true,
         showMetrics: true,
+        showRunningThreads: true,
         showQuota: true,
         showRadar: true,
         showCrowdRadar: true
@@ -82,6 +97,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     var showRateAndBar: Bool
     var showUsageStatus: Bool
     var showMetrics: Bool
+    var showRunningThreads: Bool
     var showQuota: Bool
     var showRadar: Bool
     var showCrowdRadar: Bool
@@ -91,6 +107,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         showRateAndBar: Bool,
         showUsageStatus: Bool,
         showMetrics: Bool,
+        showRunningThreads: Bool = false,
         showQuota: Bool,
         showRadar: Bool,
         showCrowdRadar: Bool = false,
@@ -99,6 +116,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         self.showRateAndBar = showRateAndBar
         self.showUsageStatus = showUsageStatus
         self.showMetrics = showMetrics
+        self.showRunningThreads = showRunningThreads
         self.showQuota = showQuota
         self.showRadar = showRadar
         self.showCrowdRadar = showCrowdRadar
@@ -153,6 +171,8 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
             return showUsageStatus
         case .metrics:
             return showMetrics
+        case .runningThreads:
+            return showRunningThreads
         case .quota:
             return showQuota
         case .radar:
@@ -174,7 +194,9 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
             }
         var result = decoded
         for group in defaultOrder where !seen.contains(group) {
-            if group == .crowdRadar, let radarIndex = result.firstIndex(of: .radar) {
+            if group == .runningThreads, let metricsIndex = result.firstIndex(of: .metrics) {
+                result.insert(group, at: metricsIndex + 1)
+            } else if group == .crowdRadar, let radarIndex = result.firstIndex(of: .radar) {
                 result.insert(group, at: radarIndex + 1)
             } else {
                 result.append(group)

@@ -163,6 +163,7 @@ struct TokenDisplaySnapshot {
     let usagePrecision: DashboardUsagePrecision
     let usageReadStatus: String
     let quota: AccountQuotaSnapshot
+    let runningThreads: RunningThreadSummary
     let updatedAt: Date
 
     init(
@@ -175,6 +176,7 @@ struct TokenDisplaySnapshot {
         usagePrecision: DashboardUsagePrecision = .precise,
         usageReadStatus: String = "",
         quota: AccountQuotaSnapshot,
+        runningThreads: RunningThreadSummary = .unavailable,
         updatedAt: Date
     ) {
         self.title = title
@@ -186,11 +188,17 @@ struct TokenDisplaySnapshot {
         self.usagePrecision = usagePrecision
         self.usageReadStatus = usageReadStatus
         self.quota = quota
+        self.runningThreads = runningThreads
         self.updatedAt = updatedAt
     }
 
     @MainActor
-    static func make(store: CodexUsageStore, monitor: LiveRateMonitor, quota: AccountQuotaStore) -> TokenDisplaySnapshot {
+    static func make(
+        store: CodexUsageStore,
+        monitor: LiveRateMonitor,
+        quota: AccountQuotaStore,
+        runningThreads: RunningThreadSummary = .unavailable
+    ) -> TokenDisplaySnapshot {
         let calendar = Calendar.current
         let today = Date()
         let todayUsage = store.snapshot.dailyUsage.first { calendar.isDate($0.date, inSameDayAs: today) }
@@ -205,7 +213,17 @@ struct TokenDisplaySnapshot {
             usagePrecision: store.snapshot.usagePrecision,
             usageReadStatus: store.status,
             quota: quota.snapshot,
-            updatedAt: max(store.snapshot.generatedAt, max(monitor.totalSnapshot.updatedAt, quota.snapshot.updatedAt ?? .distantPast))
+            runningThreads: runningThreads,
+            updatedAt: max(
+                store.snapshot.generatedAt,
+                max(
+                    monitor.totalSnapshot.updatedAt,
+                    max(
+                        quota.snapshot.updatedAt ?? .distantPast,
+                        runningThreads.updatedAt ?? .distantPast
+                    )
+                )
+            )
         )
     }
 
@@ -304,6 +322,7 @@ struct TokenDisplayCard: View {
             let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
             let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
+            let runningThreadsRowHeight = FloatingTokenPanelMetrics.runningThreadsRowHeight.scaled(by: displayScale)
             let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
             let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
             let crowdRadarRowHeight = FloatingTokenPanelMetrics.crowdRadarRowHeight.scaled(by: displayScale)
@@ -331,6 +350,10 @@ struct TokenDisplayCard: View {
                             metricRow
                                 .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
                                 .frame(height: metricRowHeight, alignment: .center)
+                        case .runningThreads:
+                            TokenDisplayRunningThreadsRow(summary: snapshot.runningThreads)
+                                .environment(\.tokenDisplayTextPalette, palette(for: .runningThreads))
+                                .frame(height: runningThreadsRowHeight, alignment: .center)
                         case .quota:
                             TokenQuotaMiniStrip(snapshot: snapshot.quota)
                                 .environment(\.tokenDisplayTextPalette, palette(for: .quota))

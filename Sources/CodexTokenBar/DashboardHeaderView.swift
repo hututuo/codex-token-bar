@@ -147,6 +147,7 @@ struct HeaderView: View {
     let dataSourceOrigin: String
     let isRefreshing: Bool
     let unreadThreadCount: Int
+    let runningThreadSummary: RunningThreadSummary
     let presentationMode: DashboardHeaderPresentationMode
     let onRefresh: () -> Void
     let onMarkAllRead: () -> Void
@@ -210,6 +211,21 @@ struct HeaderView: View {
             isRefreshing: isRefreshing,
             generatedAt: snapshot.generatedAt
         )
+    }
+
+    private var runningThreadPresentation: RunningThreadPresentation {
+        RunningThreadPresentation(summary: runningThreadSummary)
+    }
+
+    private var runningThreadIndicatorColor: Color {
+        switch runningThreadSummary.freshness {
+        case .fresh:
+            return runningThreadSummary.total > 0 ? AppTheme.accentGreen : .secondary
+        case .stale:
+            return .orange
+        case .loading, .unavailable:
+            return .secondary
+        }
     }
 
     var body: some View {
@@ -302,6 +318,27 @@ struct HeaderView: View {
 
                         DashboardHeaderRailDivider()
                         DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin)
+
+                        DashboardHeaderRailDivider()
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(runningThreadIndicatorColor)
+                                .frame(width: 6, height: 6)
+                            Text(runningThreadPresentation.displayText)
+                                .foregroundStyle(
+                                    runningThreadSummary.freshness == .stale
+                                        ? Color.orange
+                                        : Color.primary
+                                )
+                                .monospacedDigit()
+                                .lineLimit(1)
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 9)
+                        .help(runningThreadPresentation.accessibilityText)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("运行线程")
+                        .accessibilityValue(runningThreadPresentation.accessibilityText)
 
                         DashboardHeaderRailDivider()
                         HStack(spacing: 7) {

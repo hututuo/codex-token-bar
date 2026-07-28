@@ -62,22 +62,42 @@ final class TaskCompletionMonitorTests: XCTestCase {
             at: oldHome,
             output: TaskCompletionPollOutput(
                 result: nil,
+                runningThreadResult: RunningThreadScanResult(
+                    states: [:],
+                    summary: RunningThreadSummary(
+                        main: 99,
+                        subagents: 0,
+                        updatedAt: Date(),
+                        freshness: .fresh
+                    )
+                ),
                 unreadThreadRead: .available(["old-path-thread"])
             )
         )
         try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.runningThreadSummary, .loading)
 
         await loader.completeRequest(
             at: newHome,
             output: TaskCompletionPollOutput(
                 result: nil,
+                runningThreadResult: RunningThreadScanResult(
+                    states: [:],
+                    summary: RunningThreadSummary(
+                        main: 1,
+                        subagents: 2,
+                        updatedAt: Date(),
+                        freshness: .fresh
+                    )
+                ),
                 unreadThreadRead: .available(["trusted-thread", "new-path-thread"])
             )
         )
         await waitUntil("new-path task completion") {
             monitor.unreadThreadCount == 2
         }
+        XCTAssertEqual(monitor.runningThreadSummary.total, 3)
 
         let requestCount = await loader.requestCount()
         monitor.start(dataSource: sourceAtNewPath)
@@ -582,6 +602,114 @@ final class TaskCompletionMonitorTests: XCTestCase {
         )
     }
 
+    func testRunningThreadFailureRetainsLastGoodCountsAsStale() {
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        let fresh = RunningThreadScanResult(
+            states: [:],
+            summary: RunningThreadSummary(
+                main: 2,
+                subagents: 3,
+                updatedAt: Date(timeIntervalSince1970: 100),
+                freshness: .fresh
+            )
+        )
+
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available([]),
+            runningThreadResult: fresh
+        )
+        XCTAssertEqual(monitor.runningThreadSummary.total, 5)
+        XCTAssertEqual(monitor.runningThreadSummary.freshness, .fresh)
+
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available([]),
+            runningThreadResult: nil
+        )
+        XCTAssertEqual(monitor.runningThreadSummary.total, 5)
+        XCTAssertEqual(monitor.runningThreadSummary.main, 2)
+        XCTAssertEqual(monitor.runningThreadSummary.subagents, 3)
+        XCTAssertEqual(monitor.runningThreadSummary.freshness, .stale)
+    }
+
+    func testSourceSwitchClearsRunningThreadCountsBeforeNewSourceLoads() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RunningThreadSourceSwitch-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let firstHome = root.appendingPathComponent("first", isDirectory: true)
+        let secondHome = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondHome, withIntermediateDirectories: true)
+        let loader = SuspendedTaskCompletionPollLoader()
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults(), pollLoader: loader)
+
+        monitor.start(dataSource: CodexDataSource(codexHome: firstHome, origin: .userSelected))
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available([]),
+            runningThreadResult: RunningThreadScanResult(
+                states: [:],
+                summary: RunningThreadSummary(
+                    main: 1,
+                    subagents: 4,
+                    updatedAt: Date(),
+                    freshness: .fresh
+                )
+            )
+        )
+        XCTAssertEqual(monitor.runningThreadSummary.total, 5)
+
+        monitor.start(dataSource: CodexDataSource(codexHome: secondHome, origin: .userSelected))
+        XCTAssertEqual(monitor.runningThreadSummary, .loading)
+        XCTAssertTrue(
+            monitor.pollRequestForTesting(
+                dataSource: CodexDataSource(codexHome: secondHome, origin: .userSelected)
+            ).previousRunningThreadStates.isEmpty
+        )
+        monitor.start(dataSource: nil)
+        XCTAssertEqual(monitor.runningThreadSummary, .unavailable)
+    }
+
+    func testLiveLoaderRunsRunningScannerWhenOfficialUnreadIsAvailable() async {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RunningThreadOfficialUnread-\(UUID().uuidString)", isDirectory: true)
+        let source = CodexDataSource(codexHome: home, origin: .userSelected)
+        let completionScanner = RecordingTaskCompletionScanner(
+            result: TaskCompletionScanResult(states: [:], events: [], fileCount: 0)
+        )
+        let expected = RunningThreadScanResult(
+            states: [:],
+            summary: RunningThreadSummary(
+                main: 1,
+                subagents: 2,
+                updatedAt: Date(timeIntervalSince1970: 200),
+                freshness: .fresh
+            )
+        )
+        let runningScanner = RecordingRunningThreadScanner(result: expected)
+        let loader = LiveTaskCompletionPollLoader(
+            unreadReader: SequencedCodexUnreadThreadReader(results: [.available([])]),
+            scanner: completionScanner,
+            runningThreadScanner: runningScanner
+        )
+        let output = await loader.load(
+            request: TaskCompletionPollRequest(
+                dataSource: source,
+                previousStates: [:],
+                seedMode: false,
+                seedCutoff: .distantPast
+            )
+        )
+
+        XCTAssertNil(output.result)
+        XCTAssertEqual(output.runningThreadResult, expected)
+        let completionCallCount = await completionScanner.callCount()
+        let runningCallCount = await runningScanner.callCount()
+        XCTAssertEqual(completionCallCount, 0)
+        XCTAssertEqual(runningCallCount, 1)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 2,
@@ -684,6 +812,24 @@ private actor RecordingTaskCompletionScanner: TaskCompletionScanning {
 
     func callCount() -> Int {
         requests.count
+    }
+}
+
+private actor RecordingRunningThreadScanner: RunningThreadScanning {
+    private let result: RunningThreadScanResult?
+    private var count = 0
+
+    init(result: RunningThreadScanResult?) {
+        self.result = result
+    }
+
+    func scan(request: TaskCompletionPollRequest) -> RunningThreadScanResult? {
+        count += 1
+        return result
+    }
+
+    func callCount() -> Int {
+        count
     }
 }
 

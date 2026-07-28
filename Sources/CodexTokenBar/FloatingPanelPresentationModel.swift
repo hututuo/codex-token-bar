@@ -38,6 +38,9 @@ struct FloatingPanelPresentationModel: Equatable {
             parts.append("今天 \(snapshot.todayTokensText) token")
             parts.append("今天 \(snapshot.todayRequestsText) 次请求")
         }
+        if visibility.showRunningThreads {
+            parts.append(RunningThreadPresentation(summary: snapshot.runningThreads).accessibilityText)
+        }
         if visibility.showUsageStatus {
             parts.append(snapshot.compactUsageStatus)
         }

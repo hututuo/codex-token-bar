@@ -10,7 +10,7 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         XCTAssertEqual(scale.value, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.effectiveScale, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.size.width, 336, accuracy: 0.001)
-        XCTAssertEqual(layout.size.height, 153, accuracy: 0.001)
+        XCTAssertEqual(layout.size.height, 173, accuracy: 0.001)
         XCTAssertEqual(layout.cornerRadius, 18.2, accuracy: 0.001)
     }
 

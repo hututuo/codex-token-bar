@@ -990,6 +990,7 @@ private struct FloatingPanelTextPaletteCacheKey: Equatable {
     let showRateAndBar: Bool
     let showUsageStatus: Bool
     let showMetrics: Bool
+    let showRunningThreads: Bool
     let showQuota: Bool
     let showRadar: Bool
     let hasPreciseTokenUsage: Bool
@@ -1016,6 +1017,7 @@ private struct FloatingPanelTextPaletteCacheKey: Equatable {
         showRateAndBar = visibility.showRateAndBar
         showUsageStatus = visibility.showUsageStatus
         showMetrics = visibility.showMetrics
+        showRunningThreads = visibility.showRunningThreads
         showQuota = visibility.showQuota
         showRadar = visibility.showRadar
         self.hasPreciseTokenUsage = hasPreciseTokenUsage

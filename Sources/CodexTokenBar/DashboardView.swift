@@ -40,6 +40,7 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.rateAndBarKey) private var floatingPanelShowRateAndBar = FloatingPanelContentVisibility.default.showRateAndBar
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
+    @AppStorage(FloatingPanelContentVisibility.runningThreadsKey) private var floatingPanelShowRunningThreads = FloatingPanelContentVisibility.default.showRunningThreads
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var floatingPanelShowCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
@@ -225,7 +226,7 @@ struct DashboardView: View {
         .overlayPreferenceValue(FloatingPanelContentSettingsButtonBoundsKey.self) { anchor in
             GeometryReader { proxy in
                 if showingContentSettingsMenu {
-                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 312, estimatedHeight: 272)
+                    let cardFrame = floatingSettingsCardFrame(in: proxy, anchor: anchor, width: 312, estimatedHeight: 316)
 
                     ZStack(alignment: .topLeading) {
                         Color.clear
@@ -375,6 +376,7 @@ struct DashboardView: View {
                 showRateAndBar: $floatingPanelShowRateAndBar,
                 showUsageStatus: $floatingPanelShowUsageStatus,
                 showMetrics: $floatingPanelShowMetrics,
+                showRunningThreads: $floatingPanelShowRunningThreads,
                 showQuota: $floatingPanelShowQuota,
                 showRadar: $floatingPanelShowRadar,
                 showCrowdRadar: $floatingPanelShowCrowdRadar,
@@ -465,6 +467,7 @@ struct DashboardView: View {
                 dataSourceOrigin: store.dataSourceOrigin,
                 isRefreshing: store.isRefreshing,
                 unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
+                runningThreadSummary: taskCompletionMonitor.runningThreadSummary,
                 presentationMode: .dashboard,
                 onRefresh: {
                     refreshAllData()
@@ -598,6 +601,7 @@ struct DashboardView: View {
             showRateAndBar: floatingPanelShowRateAndBar,
             showUsageStatus: floatingPanelShowUsageStatus,
             showMetrics: floatingPanelShowMetrics,
+            showRunningThreads: floatingPanelShowRunningThreads,
             showQuota: floatingPanelShowQuota,
             showRadar: floatingPanelShowRadar,
             showCrowdRadar: floatingPanelShowCrowdRadar,
@@ -614,6 +618,7 @@ struct DashboardView: View {
             floatingPanelShowRateAndBar ? "1" : "0",
             floatingPanelShowUsageStatus ? "1" : "0",
             floatingPanelShowMetrics ? "1" : "0",
+            floatingPanelShowRunningThreads ? "1" : "0",
             floatingPanelShowQuota ? "1" : "0",
             floatingPanelShowRadar ? "1" : "0",
             interfaceScaleAutoEnabled ? "1" : "0",

@@ -499,7 +499,12 @@ struct FloatingTokenPanelView: View {
             fixedHex: floatingQuotaFixedHex,
             gradientAppearance: appearance
         )
-        let displaySnapshot = TokenDisplaySnapshot.make(store: store, monitor: monitor, quota: quota)
+        let displaySnapshot = TokenDisplaySnapshot.make(
+            store: store,
+            monitor: monitor,
+            quota: quota,
+            runningThreads: taskCompletionMonitor.runningThreadSummary
+        )
         let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
         let automaticTextPalettes = appearance.textPalettes(
             panelSize: size,

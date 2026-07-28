@@ -3,6 +3,7 @@ import Foundation
 struct TaskCompletionPollRequest: Sendable {
     let dataSource: CodexDataSource
     let previousStates: [String: TaskCompletionFileState]
+    let previousRunningThreadStates: [String: RunningThreadFileState]
     let seedMode: Bool
     let seedCutoff: Date
     let suppressedOfficialThreadIDs: Set<String>
@@ -11,6 +12,7 @@ struct TaskCompletionPollRequest: Sendable {
     init(
         dataSource: CodexDataSource,
         previousStates: [String: TaskCompletionFileState],
+        previousRunningThreadStates: [String: RunningThreadFileState] = [:],
         seedMode: Bool,
         seedCutoff: Date,
         suppressedOfficialThreadIDs: Set<String> = [],
@@ -18,6 +20,7 @@ struct TaskCompletionPollRequest: Sendable {
     ) {
         self.dataSource = dataSource
         self.previousStates = previousStates
+        self.previousRunningThreadStates = previousRunningThreadStates
         self.seedMode = seedMode
         self.seedCutoff = seedCutoff
         self.suppressedOfficialThreadIDs = suppressedOfficialThreadIDs
@@ -27,15 +30,18 @@ struct TaskCompletionPollRequest: Sendable {
 
 struct TaskCompletionPollOutput: Sendable {
     let result: TaskCompletionScanResult?
+    let runningThreadResult: RunningThreadScanResult?
     let unreadThreadRead: CodexUnreadThreadReadResult
     let officialReadBoundary: Date?
 
     init(
         result: TaskCompletionScanResult?,
+        runningThreadResult: RunningThreadScanResult? = nil,
         unreadThreadRead: CodexUnreadThreadReadResult,
         officialReadBoundary: Date? = nil
     ) {
         self.result = result
+        self.runningThreadResult = runningThreadResult
         self.unreadThreadRead = unreadThreadRead
         self.officialReadBoundary = officialReadBoundary
     }
@@ -51,6 +57,10 @@ protocol CodexUnreadThreadReading: Sendable {
 
 protocol TaskCompletionScanning: Sendable {
     func scan(request: TaskCompletionPollRequest) async -> TaskCompletionScanResult
+}
+
+protocol RunningThreadScanning: Sendable {
+    func scan(request: TaskCompletionPollRequest) async -> RunningThreadScanResult?
 }
 
 struct LiveCodexUnreadThreadReader: CodexUnreadThreadReading {
@@ -74,28 +84,52 @@ struct LiveTaskCompletionScanner: TaskCompletionScanning {
     }
 }
 
+struct LiveRunningThreadScanner: RunningThreadScanning {
+    func scan(request: TaskCompletionPollRequest) async -> RunningThreadScanResult? {
+        let task = Task.detached(priority: .utility) {
+            RunningThreadScanner.scan(
+                dataSource: request.dataSource,
+                previousStates: request.previousRunningThreadStates,
+                now: request.pollStartedAt
+            )
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+}
+
 struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
     private let unreadReader: any CodexUnreadThreadReading
     private let scanner: any TaskCompletionScanning
+    private let runningThreadScanner: any RunningThreadScanning
 
     init(
         unreadReader: any CodexUnreadThreadReading = LiveCodexUnreadThreadReader(),
-        scanner: any TaskCompletionScanning = LiveTaskCompletionScanner()
+        scanner: any TaskCompletionScanning = LiveTaskCompletionScanner(),
+        runningThreadScanner: any RunningThreadScanning = LiveRunningThreadScanner()
     ) {
         self.unreadReader = unreadReader
         self.scanner = scanner
+        self.runningThreadScanner = runningThreadScanner
     }
 
     func load(request: TaskCompletionPollRequest) async -> TaskCompletionPollOutput {
-        let unreadThreadRead = await unreadReader.readUnreadThreadIDs(
+        async let unreadThreadReadTask = unreadReader.readUnreadThreadIDs(
             codexHome: request.dataSource.codexHome
         )
+        async let runningThreadResultTask = runningThreadScanner.scan(request: request)
+        let unreadThreadRead = await unreadThreadReadTask
+        let runningThreadResult = await runningThreadResultTask
         switch unreadThreadRead {
         case let .available(threadIDs):
             let reactivationThreadIDs = request.suppressedOfficialThreadIDs.intersection(threadIDs)
             guard !reactivationThreadIDs.isEmpty else {
                 return TaskCompletionPollOutput(
                     result: nil,
+                    runningThreadResult: runningThreadResult,
                     unreadThreadRead: unreadThreadRead,
                     officialReadBoundary: request.pollStartedAt
                 )
@@ -107,12 +141,17 @@ struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
                     events: result.events.filter { reactivationThreadIDs.contains($0.threadID) },
                     fileCount: result.fileCount
                 ),
+                runningThreadResult: runningThreadResult,
                 unreadThreadRead: unreadThreadRead,
                 officialReadBoundary: request.pollStartedAt
             )
         case .unavailable:
             let result = await scanner.scan(request: request)
-            return TaskCompletionPollOutput(result: result, unreadThreadRead: unreadThreadRead)
+            return TaskCompletionPollOutput(
+                result: result,
+                runningThreadResult: runningThreadResult,
+                unreadThreadRead: unreadThreadRead
+            )
         }
     }
 }
@@ -126,6 +165,7 @@ final class TaskCompletionMonitor: ObservableObject {
     @Published private(set) var detailText = "Codex 有未读会话时在悬浮窗显示小红点"
     @Published private(set) var lastCompletedTitle = ""
     @Published private(set) var unreadThreadCount = 0
+    @Published private(set) var runningThreadSummary = RunningThreadSummary.unavailable
 
     private let pollInterval: TimeInterval
     private let pollTimeout: TimeInterval
@@ -135,6 +175,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private let now: () -> Date
     private var dataSource: CodexDataSource?
     private var fileStates: [String: TaskCompletionFileState] = [:]
+    private var runningThreadStates: [String: RunningThreadFileState] = [:]
     private var completedEventIDs: Set<String> = []
     private var completedEventIDOrder: [String] = []
     private var completedTaskThreadIDs: [String: String] = [:]
@@ -218,6 +259,8 @@ final class TaskCompletionMonitor: ObservableObject {
             }
             fileStates = reboundStates
         }
+        runningThreadStates.removeAll()
+        runningThreadSummary = dataSource == nil ? .unavailable : .loading
 
         updateStatusText()
         configureTimer()
@@ -239,10 +282,12 @@ final class TaskCompletionMonitor: ObservableObject {
     func applyForTesting(
         result: TaskCompletionScanResult?,
         unreadThreadRead: CodexUnreadThreadReadResult,
-        officialReadBoundary: Date? = nil
+        officialReadBoundary: Date? = nil,
+        runningThreadResult: RunningThreadScanResult? = nil
     ) {
         apply(
             result,
+            runningThreadResult: runningThreadResult,
             unreadThreadRead: unreadThreadRead,
             officialReadBoundary: officialReadBoundary
         )
@@ -251,6 +296,7 @@ final class TaskCompletionMonitor: ObservableObject {
     func applyForTesting(output: TaskCompletionPollOutput) {
         apply(
             output.result,
+            runningThreadResult: output.runningThreadResult,
             unreadThreadRead: output.unreadThreadRead,
             officialReadBoundary: output.officialReadBoundary
         )
@@ -295,6 +341,7 @@ final class TaskCompletionMonitor: ObservableObject {
                 self.pollTask = nil
                 self.apply(
                     output.result,
+                    runningThreadResult: output.runningThreadResult,
                     unreadThreadRead: output.unreadThreadRead,
                     officialReadBoundary: output.officialReadBoundary ?? request.pollStartedAt
                 )
@@ -316,6 +363,7 @@ final class TaskCompletionMonitor: ObservableObject {
             self.pollTask?.cancel()
             self.pollTask = nil
             self.pollTimeoutTask = nil
+            self.markRunningThreadSummaryStale()
         }
     }
 
@@ -323,6 +371,7 @@ final class TaskCompletionMonitor: ObservableObject {
         return TaskCompletionPollRequest(
             dataSource: dataSource,
             previousStates: fileStates,
+            previousRunningThreadStates: runningThreadStates,
             seedMode: !seeded,
             seedCutoff: fallbackSeedCutoff,
             suppressedOfficialThreadIDs: suppressedOfficialThreadIDs,
@@ -336,9 +385,11 @@ final class TaskCompletionMonitor: ObservableObject {
 
     private func apply(
         _ result: TaskCompletionScanResult?,
+        runningThreadResult: RunningThreadScanResult?,
         unreadThreadRead: CodexUnreadThreadReadResult,
         officialReadBoundary: Date?
     ) {
+        applyRunningThreadResult(runningThreadResult)
         applyCodexUnreadRead(unreadThreadRead)
 
         if hasCodexUnreadState, result == nil {
@@ -385,6 +436,24 @@ final class TaskCompletionMonitor: ObservableObject {
             detailText = lastCompletedTitle
         } else {
             updateStatusText(fileCount: result.fileCount)
+        }
+    }
+
+    private func applyRunningThreadResult(_ result: RunningThreadScanResult?) {
+        guard let result else {
+            markRunningThreadSummaryStale()
+            return
+        }
+        runningThreadStates = result.states
+        if runningThreadSummary != result.summary {
+            runningThreadSummary = result.summary
+        }
+    }
+
+    private func markRunningThreadSummaryStale() {
+        let next = runningThreadSummary.markedStale()
+        if runningThreadSummary != next {
+            runningThreadSummary = next
         }
     }
 

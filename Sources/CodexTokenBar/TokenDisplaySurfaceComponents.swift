@@ -136,6 +136,39 @@ struct TokenDisplayUsageStatusLine: View {
     }
 }
 
+struct TokenDisplayRunningThreadsRow: View {
+    let summary: RunningThreadSummary
+    @Environment(\.tokenDisplayScale) private var displayScale
+    @Environment(\.tokenDisplayTextPalette) private var textPalette
+
+    var body: some View {
+        let presentation = RunningThreadPresentation(summary: summary)
+        HStack(spacing: 0) {
+            value("运行", count: presentation.hasCounts ? summary.total : nil)
+            value("主", count: presentation.hasCounts ? summary.main : nil)
+            value("子", count: presentation.hasCounts ? summary.subagents : nil)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .help(presentation.accessibilityText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("运行线程")
+        .accessibilityValue(presentation.accessibilityText)
+    }
+
+    private func value(_ label: String, count: Int?) -> some View {
+        HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
+            Text(label)
+                .foregroundStyle(textPalette.secondaryColor)
+            Text(count.map { String($0) } ?? "--")
+                .foregroundStyle(summary.freshness == .stale ? Color.orange : textPalette.primaryColor)
+                .monospacedDigit()
+        }
+        .font(.system(size: 9.2.scaled(by: displayScale), weight: .bold))
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
 private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
     let dividerColor: Color
     let leading: Leading

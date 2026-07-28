@@ -1,7 +1,7 @@
 import AppKit
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 258, height: 117)
+    static let baseSize = NSSize(width: 258, height: 133)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
@@ -12,6 +12,7 @@ enum FloatingTokenPanelMetrics {
     static let rateRowHeight: CGFloat = 28
     static let usageStatusRowHeight: CGFloat = 20
     static let metricRowHeight: CGFloat = 11
+    static let runningThreadsRowHeight: CGFloat = 14
     static let quotaRowHeight: CGFloat = 15.5
     static let radarRowHeight: CGFloat = 24
     static let crowdRadarRowHeight: CGFloat = 20
@@ -92,6 +93,8 @@ enum FloatingTokenPanelMetrics {
             return usageStatusRowHeight
         case .metrics:
             return metricRowHeight
+        case .runningThreads:
+            return runningThreadsRowHeight
         case .quota:
             return quotaRowHeight
         case .radar:
@@ -103,7 +106,7 @@ enum FloatingTokenPanelMetrics {
 
     static func rowWidth(for group: FloatingPanelContentGroup) -> CGFloat {
         switch group {
-        case .rateAndBar, .quota, .radar, .crowdRadar:
+        case .rateAndBar, .runningThreads, .quota, .radar, .crowdRadar:
             return baseSize.width - horizontalPadding * 2
         case .usageStatus:
             return 174
