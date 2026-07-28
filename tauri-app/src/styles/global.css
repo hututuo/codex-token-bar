@@ -6162,7 +6162,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-rate-readout > span {
   color: var(--floating-secondary);
-  font-size: calc(8px * var(--floating-scale));
+  font-size: calc(8.5px * var(--floating-scale));
   font-weight: 650;
   transform: translateY(calc(3.5px * var(--floating-scale)));
 }
@@ -6173,7 +6173,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   max-width: none;
   margin: 0;
   color: var(--floating-secondary);
-  font-size: calc(9.4px * var(--floating-scale));
+  font-size: calc(9.9px * var(--floating-scale));
   font-style: normal;
   overflow: visible;
   text-align: right;
@@ -6206,7 +6206,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-status-text em {
   display: block;
   color: var(--floating-primary);
-  font-size: calc(9.8px * var(--floating-scale));
+  font-size: calc(10.3px * var(--floating-scale));
   font-style: normal;
   font-weight: 650;
   line-height: 1;
@@ -6267,15 +6267,44 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-metrics {
+  gap: calc(5px * var(--floating-scale));
   color: var(--floating-primary);
-  font-size: calc(9.4px * var(--floating-scale));
+  font-size: calc(9.9px * var(--floating-scale));
   font-weight: 650;
   min-height: calc(13px * var(--floating-scale));
 }
 
-.floating-metrics span,
+.floating-metric-values,
+.floating-metric-values > span,
+.floating-embedded-running,
+.floating-embedded-running > span,
 .floating-running-threads span {
   white-space: nowrap;
+}
+
+.floating-metric-values {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.floating-metrics--with-running .floating-metric-values {
+  gap: calc(6px * var(--floating-scale));
+}
+
+.floating-embedded-running {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(2, max-content);
+  align-items: center;
+  gap: calc(6px * var(--floating-scale));
+  padding-left: calc(5px * var(--floating-scale));
+  border-left: 1px solid var(--floating-divider);
+  color: var(--floating-primary);
+  font-size: calc(9.9px * var(--floating-scale));
+  font-variant-numeric: tabular-nums;
 }
 
 .floating-running-threads {
@@ -6283,7 +6312,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   color: var(--floating-primary);
-  font-size: calc(9.2px * var(--floating-scale));
+  font-size: calc(9.7px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   font-weight: 650;
   min-height: calc(13px * var(--floating-scale));
@@ -6304,6 +6333,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-muted);
 }
 
+.floating-metrics--with-running.floating-running-threads--stale .floating-embedded-running,
+.floating-metrics--with-running.floating-running-threads--unavailable .floating-embedded-running {
+  color: var(--floating-muted);
+}
+
 .floating-usage-status {
   justify-content: center;
   color: var(--floating-secondary);
@@ -6320,7 +6354,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-height: calc(14px * var(--floating-scale));
   padding: 0 calc(1px * var(--floating-scale));
   color: var(--floating-primary);
-  font-size: calc(12.6px * var(--floating-scale));
+  font-size: calc(13.1px * var(--floating-scale));
   font-weight: 650;
   line-height: 1;
   overflow: visible;
@@ -6349,7 +6383,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   border-top: 1px solid var(--floating-divider);
   padding-top: calc(3px * var(--floating-scale));
   color: var(--floating-secondary);
-  font-size: calc(9.3px * var(--floating-scale));
+  font-size: calc(9.8px * var(--floating-scale));
 }
 
 .floating-crowd-radar {
@@ -6358,7 +6392,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-height: calc(20px * var(--floating-scale));
   border-top: 1px solid var(--floating-divider);
   padding-top: calc(1px * var(--floating-scale));
-  font-size: calc(7.5px * var(--floating-scale));
+  font-size: calc(8px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
 }
 
@@ -6440,7 +6474,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   gap: calc(4px * var(--floating-scale));
   align-items: baseline;
   color: var(--floating-primary);
-  font-size: calc(11.6px * var(--floating-scale));
+  font-size: calc(12.1px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -6455,7 +6489,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar strong em {
   color: var(--floating-primary);
-  font-size: calc(8.3px * var(--floating-scale));
+  font-size: calc(8.8px * var(--floating-scale));
   font-style: normal;
   font-weight: 680;
   min-width: 0;
@@ -6465,7 +6499,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar em {
   color: var(--floating-muted);
-  font-size: calc(8.4px * var(--floating-scale));
+  font-size: calc(8.9px * var(--floating-scale));
   font-style: normal;
   font-weight: 650;
 }
@@ -6473,7 +6507,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-radar p {
   margin: 0;
   color: color-mix(in srgb, var(--floating-muted) 68%, var(--radar-secondary-color) 32%);
-  font-size: calc(8.1px * var(--floating-scale));
+  font-size: calc(8.6px * var(--floating-scale));
   font-weight: 650;
 }
 
@@ -6483,7 +6517,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   text-overflow: clip;
   white-space: nowrap;
   letter-spacing: 0;
-  font-size: calc(7.85px * var(--floating-scale));
+  font-size: calc(8.35px * var(--floating-scale));
 }
 
 .floating-quota-bar {
@@ -6502,7 +6536,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
     inset 0 -1px 1px rgba(26, 80, 157, 0.07);
   padding: 0 calc(3px * var(--floating-scale));
   overflow: hidden;
-  font-size: calc(9.4px * var(--floating-scale));
+  font-size: calc(9.9px * var(--floating-scale));
   font-weight: 720;
   line-height: 1;
   isolation: isolate;

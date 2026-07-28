@@ -9,7 +9,7 @@ import type {
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 296;
 export const FLOATING_MIN_HEIGHT = 88;
-export const FLOATING_DEFAULT_HEIGHT = 151;
+export const FLOATING_DEFAULT_HEIGHT = 134;
 
 const FLOATING_CONTENT_GROUPS: FloatingContentGroup[] = [
   "rateAndBar",

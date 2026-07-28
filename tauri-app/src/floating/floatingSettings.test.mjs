@@ -10,7 +10,7 @@ import {
 
 test("floating height separates Swift-style protection from the default expanded content", () => {
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 151);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 134);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {

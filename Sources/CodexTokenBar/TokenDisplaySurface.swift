@@ -476,29 +476,57 @@ struct TokenDisplayCard: View {
     }
 
     private var metricRow: some View {
-        HStack(spacing: 6.scaled(by: displayScale)) {
-            TokenDisplayMetric(label: "总", value: snapshot.consumedTokensText)
-                .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
-                .offset(
-                    x: FloatingTokenPanelMetrics.metricTotalOffset(
-                        hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
-                    ).scaled(by: displayScale)
-                )
-            TokenDisplayMetric(label: "今", value: snapshot.todayTokensText)
-                .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
-                .offset(
-                    x: FloatingTokenPanelMetrics.metricTodayOffset(
-                        hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
-                    ).scaled(by: displayScale)
-                )
-            TokenDisplayMetric(label: "次", value: snapshot.todayRequestsText)
-                .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
-                .offset(
-                    x: FloatingTokenPanelMetrics.metricRequestsOffset(
-                        requestCount: snapshot.todayRequests,
-                        hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
-                    ).scaled(by: displayScale)
-                )
+        Group {
+            if visibility.embedsRunningThreadsInMetricsRow {
+                HStack(spacing: 5.scaled(by: displayScale)) {
+                    HStack(spacing: 8.scaled(by: displayScale)) {
+                        TokenDisplayMetric(label: "总", value: snapshot.consumedTokensText, expands: false)
+                            .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
+                        TokenDisplayMetric(label: "今", value: snapshot.todayTokensText, expands: false)
+                            .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
+                        TokenDisplayMetric(label: "次", value: snapshot.todayRequestsText, expands: false)
+                            .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .minimumScaleFactor(0.72)
+
+                    Rectangle()
+                        .fill(palette(for: .runningThreads).dividerColor)
+                        .frame(width: 1, height: 9.scaled(by: displayScale))
+
+                    TokenDisplayRunningThreadsRow(
+                        summary: snapshot.runningThreads,
+                        showsTotal: false
+                    )
+                    .environment(\.tokenDisplayTextPalette, palette(for: .runningThreads))
+                    .frame(width: 62.scaled(by: displayScale))
+                }
+            } else {
+                HStack(spacing: 6.scaled(by: displayScale)) {
+                    TokenDisplayMetric(label: "总", value: snapshot.consumedTokensText)
+                        .environment(\.tokenDisplayTextPalette, metricPalette(for: .total))
+                        .offset(
+                            x: FloatingTokenPanelMetrics.metricTotalOffset(
+                                hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+                            ).scaled(by: displayScale)
+                        )
+                    TokenDisplayMetric(label: "今", value: snapshot.todayTokensText)
+                        .environment(\.tokenDisplayTextPalette, metricPalette(for: .today))
+                        .offset(
+                            x: FloatingTokenPanelMetrics.metricTodayOffset(
+                                hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+                            ).scaled(by: displayScale)
+                        )
+                    TokenDisplayMetric(label: "次", value: snapshot.todayRequestsText)
+                        .environment(\.tokenDisplayTextPalette, metricPalette(for: .requests))
+                        .offset(
+                            x: FloatingTokenPanelMetrics.metricRequestsOffset(
+                                requestCount: snapshot.todayRequests,
+                                hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+                            ).scaled(by: displayScale)
+                        )
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }

@@ -138,13 +138,16 @@ struct TokenDisplayUsageStatusLine: View {
 
 struct TokenDisplayRunningThreadsRow: View {
     let summary: RunningThreadSummary
+    var showsTotal = true
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         let presentation = RunningThreadPresentation(summary: summary)
         HStack(spacing: 0) {
-            value("运行", count: presentation.hasCounts ? summary.total : nil)
+            if showsTotal {
+                value("运行", count: presentation.hasCounts ? summary.total : nil)
+            }
             value("主", count: presentation.hasCounts ? summary.main : nil)
             value("子", count: presentation.hasCounts ? summary.subagents : nil)
         }
@@ -158,12 +161,14 @@ struct TokenDisplayRunningThreadsRow: View {
     private func value(_ label: String, count: Int?) -> some View {
         HStack(alignment: .lastTextBaseline, spacing: 3.scaled(by: displayScale)) {
             Text(label)
+                .fontWeight(.medium)
                 .foregroundStyle(textPalette.secondaryColor)
             Text(count.map { String($0) } ?? "--")
+                .fontWeight(.semibold)
                 .foregroundStyle(summary.freshness == .stale ? Color.orange : textPalette.primaryColor)
                 .monospacedDigit()
         }
-        .font(.system(size: 9.2.scaled(by: displayScale), weight: .bold))
+        .font(.system(size: 9.4.scaled(by: displayScale)))
         .lineLimit(1)
         .frame(maxWidth: .infinity, alignment: .center)
     }
@@ -451,6 +456,7 @@ struct TokenDisplayRateBar: View {
 struct TokenDisplayMetric: View {
     let label: String
     let value: String
+    var expands = true
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
 
@@ -467,7 +473,7 @@ struct TokenDisplayMetric: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
-        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(maxWidth: expands ? .infinity : nil, alignment: .center)
     }
 }
 

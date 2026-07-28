@@ -45,22 +45,14 @@ export function sanitizeFloatingContentVisibility(value: Partial<FloatingContent
 }
 
 export function layoutFloatingContentGroups(visibility: FloatingContentVisibility): FloatingContentGroup[] {
-  const visible = visibleFloatingContentGroups(visibility);
-  if (!embedsUsageStatusInRateRow(visibility)) {
-    return visible;
+  let groups = visibleFloatingContentGroups(visibility);
+  if (embedsUsageStatusInRateRow(visibility)) {
+    groups = collapseAdjacentPair(groups, "rateAndBar", "usageStatus", "rateAndBar");
   }
-
-  let appendedAttachedRateRow = false;
-  return visible.flatMap((group) => {
-    if (group !== "rateAndBar" && group !== "usageStatus") {
-      return [group];
-    }
-    if (appendedAttachedRateRow) {
-      return [];
-    }
-    appendedAttachedRateRow = true;
-    return ["rateAndBar"];
-  });
+  if (embedsRunningThreadsInMetricsRow(visibility)) {
+    groups = collapseAdjacentPair(groups, "metrics", "runningThreads", "metrics");
+  }
+  return groups;
 }
 
 export function embedsUsageStatusInRateRow(visibility: FloatingContentVisibility): boolean {
@@ -71,6 +63,35 @@ export function embedsUsageStatusInRateRow(visibility: FloatingContentVisibility
   const rateIndex = visible.indexOf("rateAndBar");
   const usageIndex = visible.indexOf("usageStatus");
   return rateIndex >= 0 && usageIndex >= 0 && Math.abs(rateIndex - usageIndex) === 1;
+}
+
+export function embedsRunningThreadsInMetricsRow(visibility: FloatingContentVisibility): boolean {
+  if (!visibility.showMetrics || !visibility.showRunningThreads) {
+    return false;
+  }
+  const visible = visibleFloatingContentGroups(visibility);
+  const metricsIndex = visible.indexOf("metrics");
+  const runningIndex = visible.indexOf("runningThreads");
+  return metricsIndex >= 0 && runningIndex >= 0 && Math.abs(metricsIndex - runningIndex) === 1;
+}
+
+function collapseAdjacentPair(
+  groups: FloatingContentGroup[],
+  first: FloatingContentGroup,
+  second: FloatingContentGroup,
+  representative: FloatingContentGroup,
+): FloatingContentGroup[] {
+  let appendedRepresentative = false;
+  return groups.flatMap((group) => {
+    if (group !== first && group !== second) {
+      return [group];
+    }
+    if (appendedRepresentative) {
+      return [];
+    }
+    appendedRepresentative = true;
+    return [representative];
+  });
 }
 
 export function reorderFloatingContent(

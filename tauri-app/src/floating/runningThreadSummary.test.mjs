@@ -17,6 +17,30 @@ test("floating running thread labels expose total, main, and child counts", asyn
   });
 });
 
+test("embedded running thread labels keep only main and child counts", async () => {
+  await withSsrModules(async (load) => {
+    const { floatingEmbeddedRunningThreadLabels } = await load("/src/floating/FloatingPanelPreview.tsx");
+    assert.deepEqual(floatingEmbeddedRunningThreadLabels({
+      total: 7,
+      mainThreads: 3,
+      subagents: 4,
+      status: "ready",
+      updatedAt: 1,
+      detail: "ready",
+      livenessLeaseHours: 24,
+    }), ["主 3", "子 4"]);
+    assert.deepEqual(floatingEmbeddedRunningThreadLabels({
+      total: null,
+      mainThreads: null,
+      subagents: null,
+      status: "scanning",
+      updatedAt: null,
+      detail: "loading",
+      livenessLeaseHours: 24,
+    }), ["主 --", "子 --"]);
+  });
+});
+
 test("loading and unavailable running summaries never render fake zero", async () => {
   await withSsrModules(async (load) => {
     const { floatingRunningThreadLabels } = await load("/src/floating/FloatingPanelPreview.tsx");

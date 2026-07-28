@@ -53,6 +53,8 @@ enum FloatingPanelContentGroup: String, CaseIterable, Identifiable {
         switch self {
         case .usageStatus:
             return "与速率相邻会吸附，分开时居中"
+        case .runningThreads:
+            return "与总今次相邻时吸附到右侧"
         default:
             return nil
         }
@@ -128,19 +130,40 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     }
 
     var layoutGroups: [FloatingPanelContentGroup] {
-        let groups = visibleGroups
-        guard embedsUsageStatusInRateRow else { return groups }
+        var groups = visibleGroups
+        if embedsUsageStatusInRateRow {
+            groups = Self.collapsingAdjacentPair(
+                in: groups,
+                first: .rateAndBar,
+                second: .usageStatus,
+                representative: .rateAndBar
+            )
+        }
+        if embedsRunningThreadsInMetricsRow {
+            groups = Self.collapsingAdjacentPair(
+                in: groups,
+                first: .metrics,
+                second: .runningThreads,
+                representative: .metrics
+            )
+        }
+        return groups
+    }
 
-        var didAppendAttachedRateRow = false
+    private static func collapsingAdjacentPair(
+        in groups: [FloatingPanelContentGroup],
+        first: FloatingPanelContentGroup,
+        second: FloatingPanelContentGroup,
+        representative: FloatingPanelContentGroup
+    ) -> [FloatingPanelContentGroup] {
+        var didAppendRepresentative = false
         return groups.compactMap { group in
-            switch group {
-            case .rateAndBar, .usageStatus:
-                guard !didAppendAttachedRateRow else { return nil }
-                didAppendAttachedRateRow = true
-                return .rateAndBar
-            default:
+            guard group == first || group == second else {
                 return group
             }
+            guard !didAppendRepresentative else { return nil }
+            didAppendRepresentative = true
+            return representative
         }
     }
 
@@ -152,6 +175,16 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         else { return false }
 
         return abs(rateIndex - usageIndex) == 1
+    }
+
+    var embedsRunningThreadsInMetricsRow: Bool {
+        guard showMetrics,
+              showRunningThreads,
+              let metricsIndex = visibleGroups.firstIndex(of: .metrics),
+              let runningIndex = visibleGroups.firstIndex(of: .runningThreads)
+        else { return false }
+
+        return abs(metricsIndex - runningIndex) == 1
     }
 
     var showsStandaloneUsageStatus: Bool {

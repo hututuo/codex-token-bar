@@ -18,7 +18,6 @@ test("layoutFloatingContentGroups embeds usage status into adjacent rate row", (
 
   assert.deepEqual(layoutFloatingContentGroups(visibility), [
     "metrics",
-    "runningThreads",
     "rateAndBar",
     "radar",
     "crowdRadar",
@@ -35,7 +34,6 @@ test("layoutFloatingContentGroups keeps usage status standalone when it is not a
   assert.deepEqual(layoutFloatingContentGroups(visibility), [
     "rateAndBar",
     "metrics",
-    "runningThreads",
     "usageStatus",
     "radar",
     "crowdRadar",
@@ -98,7 +96,30 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 151);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 134);
+});
+
+test("adjacent running thread counts attach to the right of metrics", () => {
+  assert.deepEqual(layoutFloatingContentGroups(DEFAULT_FLOATING_CONTENT_VISIBILITY), [
+    "rateAndBar",
+    "metrics",
+    "radar",
+    "crowdRadar",
+    "quota",
+  ]);
+
+  const separated = sanitizeFloatingContentVisibility({
+    ...DEFAULT_FLOATING_CONTENT_VISIBILITY,
+    order: ["metrics", "radar", "runningThreads", "quota"],
+  });
+  assert.deepEqual(layoutFloatingContentGroups(separated), [
+    "metrics",
+    "radar",
+    "crowdRadar",
+    "runningThreads",
+    "quota",
+    "rateAndBar",
+  ]);
 });
 
 test("legacy floating order inserts running threads after metrics and enables it", () => {

@@ -17,7 +17,11 @@ import type {
   FloatingWindowSettings,
   RunningThreadSummary,
 } from "../types/dashboard";
-import { embedsUsageStatusInRateRow, layoutFloatingContentGroups } from "./floatingContent";
+import {
+  embedsRunningThreadsInMetricsRow,
+  embedsUsageStatusInRateRow,
+  layoutFloatingContentGroups,
+} from "./floatingContent";
 import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./floatingPanelLabels";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
@@ -195,6 +199,7 @@ export function FloatingPanelSurface({
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
   const groups = layoutFloatingContentGroups(settings.contentVisibility);
   const attachedUsageStatus = embedsUsageStatusInRateRow(settings.contentVisibility);
+  const attachedRunningThreads = embedsRunningThreadsInMetricsRow(settings.contentVisibility);
   const rootPalette = floatingTextPaletteForGroup(settings, groups[0] ?? "rateAndBar", 0, Math.max(groups.length, 1));
   const effectRgb = useMemo(
     () => effectRgbFromGradient(settings.gradientStart, settings.gradientEnd),
@@ -230,6 +235,7 @@ export function FloatingPanelSurface({
       <div className="floating-content">
         {groups.map((group, index) => (
           <FloatingContentRow
+            attachedRunningThreads={attachedRunningThreads}
             attachedUsageStatus={attachedUsageStatus}
             group={group}
             index={index}
@@ -248,6 +254,7 @@ export function FloatingPanelSurface({
 }
 
 interface FloatingContentRowProps {
+  attachedRunningThreads: boolean;
   attachedUsageStatus: boolean;
   group: FloatingContentGroup;
   index: number;
@@ -260,6 +267,7 @@ interface FloatingContentRowProps {
 }
 
 function FloatingContentRow({
+  attachedRunningThreads,
   attachedUsageStatus,
   group,
   index,
@@ -305,10 +313,29 @@ function FloatingContentRow({
       );
     case "metrics":
       return (
-        <div className="floating-row floating-metrics" style={style}>
-          <span>{snapshot.totalTokensLabel}</span>
-          <span>{snapshot.todayTokensLabel}</span>
-          <span>{snapshot.requestsLabel}</span>
+        <div
+          aria-label={attachedRunningThreads
+            ? `${snapshot.totalTokensLabel}，${snapshot.todayTokensLabel}，${snapshot.requestsLabel}，${runningThreads.detail}`
+            : undefined}
+          className={attachedRunningThreads
+            ? `floating-row floating-metrics floating-metrics--with-running floating-running-threads--${runningThreads.status}`
+            : "floating-row floating-metrics"}
+          role={attachedRunningThreads ? "status" : undefined}
+          style={style}
+          title={attachedRunningThreads ? runningThreads.detail : undefined}
+        >
+          <span className="floating-metric-values">
+            <span>{snapshot.totalTokensLabel}</span>
+            <span>{snapshot.todayTokensLabel}</span>
+            <span>{snapshot.requestsLabel}</span>
+          </span>
+          {attachedRunningThreads ? (
+            <span className="floating-embedded-running">
+              {floatingEmbeddedRunningThreadLabels(runningThreads).map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </span>
+          ) : null}
         </div>
       );
     case "runningThreads":
@@ -379,6 +406,13 @@ export function floatingRunningThreadLabels(summary: RunningThreadSummary): stri
     `${totalPrefix} ${summary.total}`,
     `主 ${summary.mainThreads}`,
     `子 ${summary.subagents}`,
+  ];
+}
+
+export function floatingEmbeddedRunningThreadLabels(summary: RunningThreadSummary): string[] {
+  return [
+    `主 ${summary.mainThreads ?? "--"}`,
+    `子 ${summary.subagents ?? "--"}`,
   ];
 }
 

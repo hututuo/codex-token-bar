@@ -38,18 +38,17 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let height = FloatingTokenPanelMetrics.contentHeight(visibility: .default)
         let expectedHeight = FloatingTokenPanelMetrics.rateRowHeight
             + FloatingTokenPanelMetrics.metricRowHeight
-            + FloatingTokenPanelMetrics.runningThreadsRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
             + FloatingTokenPanelMetrics.crowdRadarRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 4
+            + FloatingTokenPanelMetrics.rowSpacing * 3
             + FloatingTokenPanelMetrics.radarCrowdRowSpacing
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 133, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 117, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
@@ -59,8 +58,33 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 120.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 133, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 104.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 117, accuracy: 0.001)
+    }
+
+    func testDefaultMetricsEmbedMainAndSubagentCountsOnTheRight() {
+        let visibility = FloatingPanelContentVisibility.default
+
+        XCTAssertTrue(visibility.embedsRunningThreadsInMetricsRow)
+        XCTAssertEqual(
+            visibility.layoutGroups,
+            [.rateAndBar, .metrics, .radar, .crowdRadar, .quota]
+        )
+    }
+
+    func testRunningThreadsStayStandaloneWhenSeparatedFromMetrics() {
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: false,
+            showUsageStatus: false,
+            showMetrics: true,
+            showRunningThreads: true,
+            showQuota: false,
+            showRadar: true,
+            groupOrder: [.metrics, .radar, .runningThreads]
+        )
+
+        XCTAssertFalse(visibility.embedsRunningThreadsInMetricsRow)
+        XCTAssertEqual(visibility.layoutGroups, [.metrics, .radar, .runningThreads])
     }
 
     func testRadarCrowdPairTightensOnlyItsUpperGap() {
