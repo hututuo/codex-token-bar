@@ -474,7 +474,7 @@ function FloatingCrowdRadarResult({ index, model }: { index: number; model?: Ret
   return (
     <div className="floating-crowd-radar-result">
       <span>{index + 1} {model ? crowdRadarModelLabel(model) : "--"}</span>
-      <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.graded}判` : "IQ -- · --判"}</em>
+      <em>{model ? `IQ ${(model.passRate * 150).toFixed(1)} · ${model.scoreSamples}判` : "IQ -- · --判"}</em>
     </div>
   );
 }
