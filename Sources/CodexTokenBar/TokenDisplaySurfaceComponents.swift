@@ -341,7 +341,7 @@ struct TokenDisplayCrowdRadarRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(model.map { "\(position) \($0.label)" } ?? "\(position) --")
                 .fontWeight(.semibold)
-            Text(model.map { "IQ \(String(format: "%.1f", $0.iq)) · \($0.scoreSamples)判" } ?? "IQ -- · --判")
+            Text(model.map { "IQ \(String(format: "%.1f", $0.iq)) · \($0.scorePassed)/\($0.scoreSamples)" } ?? "IQ -- · --/--")
                 .foregroundStyle(textPalette.secondaryColor)
                 .monospacedDigit()
         }
@@ -350,7 +350,7 @@ struct TokenDisplayCrowdRadarRow: View {
 
     private func accessibilityValue(_ leaders: [CodexCrowdRadarModel]) -> String {
         leaders.enumerated().map { index, model in
-            "第\(index + 1)名 \(model.label)，IQ \(String(format: "%.1f", model.iq))，本口径 \(model.scoreSamples) 个已判样本"
+            "第\(index + 1)名 \(model.label)，IQ \(String(format: "%.1f", model.iq))，本口径通过 \(model.scorePassed)/\(model.scoreSamples)"
         }.joined(separator: "；")
     }
 }

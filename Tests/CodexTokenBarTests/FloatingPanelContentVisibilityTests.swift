@@ -1043,13 +1043,14 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: 1)"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst().first, position: 2)"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst(2).first, position: 3)"))
-        XCTAssertTrue(crowdRow.contains("· \\($0.scoreSamples)判"))
+        XCTAssertTrue(crowdRow.contains("· \\($0.scorePassed)/\\($0.scoreSamples)"))
+        XCTAssertFalse(crowdRow.contains("· \\($0.scoreSamples)判"))
         XCTAssertFalse(crowdRow.contains("· \\($0.graded)判"))
         XCTAssertFalse(crowdRow.contains("crowd.taskCount"))
         XCTAssertFalse(crowdRow.contains("crowd.cellCount"))
         XCTAssertFalse(crowdRow.contains("crowd.contributorCount"))
         XCTAssertFalse(crowdRow.contains("crowd.pendingGrades"))
-        XCTAssertFalse(crowdRow.contains("通过"))
+        XCTAssertFalse(crowdRow.contains("通过率"))
         XCTAssertTrue(crowdRow.contains(".accessibilityLabel(\"众测雷达\")"))
     }
 
