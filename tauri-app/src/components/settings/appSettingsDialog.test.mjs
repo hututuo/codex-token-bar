@@ -308,6 +308,21 @@ test("auto resume exposes selectable interruption reasons, select-all, schedules
     );
     const quotaToggle = panel.querySelector('input[aria-label="开启额度恢复续跑"]');
     assert.ok(quotaToggle?.checked);
+    const quotaWindowChoices = panel.querySelector('[aria-label="额度恢复监测窗口"]');
+    assert.deepEqual(
+      [...quotaWindowChoices.querySelectorAll('[role="radio"]')].map((button) => button.textContent),
+      [
+        "取较低值5 小时与 7 天中，按剩余更低者判断",
+        "5 小时只按 5 小时额度判断（若可用）",
+        "7 天只按 7 天额度判断（若可用）",
+      ],
+    );
+    const quotaWindowChoice = (label) => [...quotaWindowChoices.querySelectorAll('[role="radio"]')]
+      .find((button) => button.querySelector("strong")?.textContent === label);
+    assert.equal(quotaWindowChoice("取较低值")?.getAttribute("aria-checked"), "true");
+    await click(act, quotaWindowChoice("7 天"), window);
+    assert.equal(quotaWindowChoice("7 天")?.getAttribute("aria-checked"), "true");
+    assert.match(panel.querySelector("button.auto-resume-task-disclosure").textContent, /额度·7d/);
     assert.ok(panel.querySelector('input[aria-label="额度开始等待刷新值"]'));
     assert.ok(panel.querySelector('input[aria-label="额度刷新后续跑值"]'));
     await click(act, quotaToggle, window);

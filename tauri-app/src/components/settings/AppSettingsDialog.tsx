@@ -1217,21 +1217,29 @@ function AutomationSettings({
                       </header>
                       {task.quotaResumeEnabled ? (
                         <>
-                        <SettingRow title="监测窗口" description="选择哪个额度窗口参与恢复判断。">
-                          <select
-                            aria-label="额度恢复监测窗口"
-                            className="app-settings-select"
-                            disabled={isTaskRunning}
-                            onChange={(event) => updateTask(task.id, {
-                              quotaWindow: event.currentTarget.value as AutoResumeTaskSettings["quotaWindow"],
-                            })}
-                            value={task.quotaWindow}
-                          >
-                            <option value="either">可用窗口中剩余更低者</option>
-                            <option value="fiveHour">5h 窗口</option>
-                            <option value="sevenDay">7d 窗口</option>
-                          </select>
-                        </SettingRow>
+                        <div
+                          aria-label="额度恢复监测窗口"
+                          className="auto-resume-mode-choice"
+                          role="radiogroup"
+                        >
+                          {([
+                            ["either", "取较低值", "5 小时与 7 天中，按剩余更低者判断"],
+                            ["fiveHour", "5 小时", "只按 5 小时额度判断（若可用）"],
+                            ["sevenDay", "7 天", "只按 7 天额度判断（若可用）"],
+                          ] as const).map(([window, label, description]) => (
+                            <button
+                              aria-checked={task.quotaWindow === window}
+                              className={task.quotaWindow === window ? "is-active" : ""}
+                              disabled={isTaskRunning}
+                              key={window}
+                              onClick={() => updateTask(task.id, { quotaWindow: window })}
+                              role="radio"
+                              type="button"
+                            >
+                              <strong>{label}</strong><span>{description}</span>
+                            </button>
+                          ))}
+                        </div>
                         <p className="auto-resume-threshold-explanation">
                           额度先降到“开始等待刷新”值或以下，才记录本轮耗尽；之后恢复到“刷新后续跑”值或以上时续跑，避免额度本来充足时误触发。
                         </p>
@@ -1809,7 +1817,12 @@ function autoResumeTriggerLabels(task: AutoResumeTaskSettings): string[] {
     labels.push(`失败 ${task.failureRecoveryReasons.length}项`);
   }
   if (task.scheduleMode !== "off") labels.push("定时");
-  if (task.quotaResumeEnabled) labels.push("额度恢复");
+  if (task.quotaResumeEnabled) {
+    const quotaLabel = task.quotaWindow === "fiveHour"
+      ? "额度·5h"
+      : (task.quotaWindow === "sevenDay" ? "额度·7d" : "额度·低者");
+    labels.push(quotaLabel);
+  }
   return labels.length > 0 ? labels : ["未设触发"];
 }
 
