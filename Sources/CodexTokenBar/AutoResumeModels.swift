@@ -187,6 +187,70 @@ struct AutoResumeConfiguration: Codable, Equatable, Sendable {
         copy.maxRunsPerDay = min(max(maxRunsPerDay, 1), 24)
         return copy
     }
+
+    var hasAutomaticTrigger: Bool {
+        scheduleMode != .off || capacityRecoveryEnabled || quotaRecoveryEnabled
+    }
+}
+
+struct AutoResumeTaskDefinition: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let createdAt: Date
+    var updatedAt: Date
+    var configuration: AutoResumeConfiguration
+
+    init(
+        id: String = UUID().uuidString.lowercased(),
+        createdAt: Date = Date(),
+        updatedAt: Date? = nil,
+        configuration: AutoResumeConfiguration
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
+        self.configuration = configuration.normalized
+    }
+
+    var normalized: AutoResumeTaskDefinition {
+        var copy = self
+        copy.configuration = configuration.normalized
+        if copy.configuration.target == nil || !copy.configuration.hasAutomaticTrigger {
+            copy.configuration.enabled = false
+        }
+        return copy
+    }
+}
+
+struct AutoResumeTaskCollection: Codable, Equatable, Sendable {
+    var schemaVersion = 2
+    var selectedTaskID: String?
+    var tasks: [AutoResumeTaskDefinition] = []
+
+    static let empty = AutoResumeTaskCollection()
+
+    var normalized: AutoResumeTaskCollection {
+        var seenTaskIDs = Set<String>()
+        var seenThreadIDs = Set<String>()
+        let normalizedTasks = tasks.compactMap { task -> AutoResumeTaskDefinition? in
+            let normalized = task.normalized
+            guard !normalized.id.isEmpty,
+                  seenTaskIDs.insert(normalized.id).inserted,
+                  let threadID = normalized.configuration.target?.id,
+                  !threadID.isEmpty,
+                  seenThreadIDs.insert(threadID).inserted else {
+                return nil
+            }
+            return normalized
+        }
+        let selected = selectedTaskID.flatMap { id in
+            normalizedTasks.contains(where: { $0.id == id }) ? id : nil
+        } ?? normalizedTasks.first?.id
+        return AutoResumeTaskCollection(
+            schemaVersion: 2,
+            selectedTaskID: selected,
+            tasks: normalizedTasks
+        )
+    }
 }
 
 enum AutoResumeTriggerKind: String, Codable, Equatable, Sendable {

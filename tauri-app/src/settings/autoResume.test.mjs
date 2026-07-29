@@ -25,6 +25,68 @@ test("auto resume defaults off and sanitizes quota hysteresis and limits", async
     assert.equal(result.quotaRecoveryThresholdPercent, 21);
     assert.equal(result.cooldownMinutes, 1);
     assert.equal(result.maxRunsPerDay, 24);
+    assert.equal(result.tasks.length, 1, "legacy single-task settings must migrate");
+    assert.equal(result.taskCollectionVersion, 2);
+    assert.match(result.selectedTaskId, /^legacy-/);
+    assert.equal(result.tasks[0].threadId, "thread-a");
+  });
+});
+
+test("a versioned empty task collection cannot resurrect a deleted legacy mirror", async () => {
+  await withSsrModules(async (load) => {
+    const { sanitizeAutoResumeSettings } = await load("/src/settings/autoResume.ts");
+    const result = sanitizeAutoResumeSettings({
+      taskCollectionVersion: 2,
+      selectedTaskId: "",
+      tasks: [],
+      enabled: true,
+      threadId: "stale-deleted-thread",
+      threadTitle: "stale title",
+      quotaResumeEnabled: true,
+    });
+    assert.equal(result.taskCollectionVersion, 2);
+    assert.deepEqual(result.tasks, []);
+    assert.equal(result.selectedTaskId, "");
+    assert.equal(result.threadId, "");
+    assert.equal(result.threadTitle, "");
+    assert.equal(result.enabled, false);
+  });
+});
+
+test("auto resume sanitizes task collections, removes duplicates, and fails closed without triggers", async () => {
+  await withSsrModules(async (load) => {
+    const { sanitizeAutoResumeSettings } = await load("/src/settings/autoResume.ts");
+    const result = sanitizeAutoResumeSettings({
+      selectedTaskId: "duplicate-id",
+      tasks: [
+        {
+          id: "task-a",
+          enabled: true,
+          threadId: "thread-a",
+          threadTitle: "A",
+          quotaResumeEnabled: false,
+          capacityRecoveryEnabled: false,
+          scheduleMode: "off",
+        },
+        {
+          id: "duplicate-id",
+          enabled: true,
+          threadId: "thread-a",
+          threadTitle: "duplicate thread",
+        },
+        {
+          id: "task-b",
+          enabled: true,
+          threadId: "thread-b",
+          threadTitle: "B",
+          quotaResumeEnabled: true,
+        },
+      ],
+    });
+    assert.equal(result.tasks.length, 2);
+    assert.equal(result.tasks[0].enabled, false, "a task without an automatic trigger must not stay protected");
+    assert.equal(result.tasks[1].enabled, true);
+    assert.equal(result.selectedTaskId, "task-a", "an invalid selected id falls back to the first task");
   });
 });
 

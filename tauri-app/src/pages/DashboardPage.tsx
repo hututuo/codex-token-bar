@@ -81,7 +81,7 @@ interface DashboardPageProps {
   onRefresh: () => Promise<void>;
   onCancelAutoResume: () => Promise<void>;
   onRefreshAutoResume: () => Promise<void>;
-  onRunAutoResume: () => Promise<void>;
+  onRunAutoResume: (taskId: string) => Promise<void>;
   onSaveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
   onSaveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;

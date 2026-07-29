@@ -1,13 +1,14 @@
 use crate::core::{app_paths, atomic_file, auto_resume, quota};
 use crate::models::{
     AccountQuotaBundle, AutoResumeRuntimeStatus, AutoResumeSettingsSnapshot,
-    AutoResumeThreadOption, QuotaLimit,
+    AutoResumeTaskRuntimeStatus, AutoResumeThreadOption, QuotaLimit,
 };
 use crate::platform;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_plugin_notification::NotificationExt;
@@ -65,6 +66,14 @@ struct PersistedAutoResumeState {
     #[serde(default)]
     quota_generation: u64,
     #[serde(default)]
+    capacity_generation: u64,
+    #[serde(default)]
+    capacity_monitor_initialized: bool,
+    #[serde(default)]
+    last_capacity_monitor_key: Option<String>,
+    #[serde(default)]
+    last_capacity_observed_turn_id: Option<String>,
+    #[serde(default)]
     deferred_until: Option<i64>,
     #[serde(default)]
     last_quota_check_at: Option<i64>,
@@ -97,6 +106,10 @@ impl Default for PersistedAutoResumeState {
             pending_schedule_generation: None,
             schedule_generation: 0,
             quota_generation: 0,
+            capacity_generation: 0,
+            capacity_monitor_initialized: false,
+            last_capacity_monitor_key: None,
+            last_capacity_observed_turn_id: None,
             deferred_until: None,
             last_quota_check_at: None,
             last_quota_persist_at: None,
@@ -125,12 +138,47 @@ impl Default for RegistryState {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct AutoResumeRegistry {
+#[derive(Clone)]
+struct AutoResumeTaskRuntime {
     state: Arc<Mutex<RegistryState>>,
     started: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
     schedule_generation: Arc<RwLock<u64>>,
     quota_generation: Arc<RwLock<u64>>,
+    capacity_generation: Arc<RwLock<u64>>,
+    task_id: Arc<String>,
+    legacy_state_path: bool,
+    local_execution_gate: Arc<AtomicBool>,
+}
+
+impl Default for AutoResumeTaskRuntime {
+    fn default() -> Self {
+        Self::new(
+            String::new(),
+            false,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+}
+
+impl AutoResumeTaskRuntime {
+    fn new(
+        task_id: String,
+        legacy_state_path: bool,
+        local_execution_gate: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RegistryState::default())),
+            started: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            schedule_generation: Arc::new(RwLock::new(0)),
+            quota_generation: Arc::new(RwLock::new(0)),
+            capacity_generation: Arc::new(RwLock::new(0)),
+            task_id: Arc::new(task_id),
+            legacy_state_path,
+            local_execution_gate,
+        }
+    }
 }
 
 struct BackgroundStartedOwner {
@@ -143,16 +191,14 @@ impl Drop for BackgroundStartedOwner {
     }
 }
 
-impl AutoResumeRegistry {
-    pub fn initialize_and_start(&self, app: tauri::AppHandle) {
+impl AutoResumeTaskRuntime {
+    fn initialize(&self, settings: AutoResumeSettingsSnapshot) {
         if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
-        let settings = platform::read_app_settings()
-            .map(|value| value.auto_resume)
-            .unwrap_or_default();
-        let persisted = load_state().unwrap_or_default();
-        let (schedule_generation, quota_generation, persisted) = {
+        self.shutdown.store(false, Ordering::Release);
+        let persisted = self.load_state().unwrap_or_default();
+        let (schedule_generation, quota_generation, capacity_generation, persisted) = {
             let mut state = lock(&self.state);
             state.settings = settings;
             state.persisted = persisted;
@@ -168,30 +214,14 @@ impl AutoResumeRegistry {
             (
                 state.persisted.schedule_generation,
                 state.persisted.quota_generation,
+                state.persisted.capacity_generation,
                 state.persisted.clone(),
             )
         };
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
         set_generation(&self.schedule_generation, schedule_generation);
         set_generation(&self.quota_generation, quota_generation);
-        let registry = self.clone();
-        let started = self.started.clone();
-        tauri::async_runtime::spawn(async move {
-            let _started_owner = BackgroundStartedOwner { started };
-            let mut interval = tokio::time::interval(TICK_INTERVAL);
-            loop {
-                interval.tick().await;
-                let tick_registry = registry.clone();
-                let tick_app = app.clone();
-                let mut tick = tokio::task::JoinSet::new();
-                tick.spawn(async move {
-                    tick_registry.tick(tick_app).await;
-                });
-                if let Some(Err(error)) = tick.join_next().await {
-                    eprintln!("Codex Token Bar: auto-resume tick recovered after panic: {error}");
-                }
-            }
-        });
+        set_generation(&self.capacity_generation, capacity_generation);
     }
 
     pub fn update_settings(&self, settings: AutoResumeSettingsSnapshot) {
@@ -206,6 +236,12 @@ impl AutoResumeRegistry {
             || state.settings.quota_recovery_threshold_percent
                 != settings.quota_recovery_threshold_percent;
         let safety_limits_changed = automatic_safety_limits_changed(&state.settings, &settings);
+        let capacity_monitor_context_changed = state.settings.enabled != settings.enabled
+            || target_changed
+            || state.settings.capacity_recovery_enabled != settings.capacity_recovery_enabled;
+        let capacity_generation_changed = capacity_monitor_context_changed
+            || state.settings.prompt != settings.prompt
+            || safety_limits_changed;
         let quota_wait_disabled = state.settings.quota_resume_enabled
             && !settings.quota_resume_enabled
             && state.persisted.waiting_for_quota;
@@ -237,6 +273,19 @@ impl AutoResumeRegistry {
         if quota_generation_changed {
             state.persisted.quota_generation = state.persisted.quota_generation.saturating_add(1);
             set_generation(&self.quota_generation, state.persisted.quota_generation);
+        }
+        if capacity_generation_changed {
+            state.persisted.capacity_generation =
+                state.persisted.capacity_generation.saturating_add(1);
+            set_generation(
+                &self.capacity_generation,
+                state.persisted.capacity_generation,
+            );
+        }
+        if capacity_monitor_context_changed {
+            state.persisted.capacity_monitor_initialized = false;
+            state.persisted.last_capacity_monitor_key = None;
+            state.persisted.last_capacity_observed_turn_id = None;
         }
         if quota_context_changed || quota_wait_disabled || target_changed {
             state.persisted.five_hour = QuotaWindowRuntime::default();
@@ -282,7 +331,7 @@ impl AutoResumeRegistry {
         bump(&mut state.persisted);
         let persisted = state.persisted.clone();
         drop(state);
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
     }
 
     pub fn status(&self) -> AutoResumeRuntimeStatus {
@@ -305,7 +354,7 @@ impl AutoResumeRegistry {
             (status_from(&state), persisted)
         };
         if let Some(persisted) = persisted {
-            let _ = persist_state(&persisted);
+            let _ = self.persist_state(&persisted);
         }
         status
     }
@@ -346,7 +395,7 @@ impl AutoResumeRegistry {
         };
         drop(state);
         if let Some(persisted) = persisted {
-            let _ = persist_state(&persisted);
+            let _ = self.persist_state(&persisted);
         }
         if recovered {
             // The background tick consumes the pending/recovery trigger. Keeping the
@@ -354,57 +403,234 @@ impl AutoResumeRegistry {
         }
     }
 
-    async fn tick(&self, app: tauri::AppHandle) {
+    fn handle_capacity_observation(
+        &self,
+        observation: Option<auto_resume::AutoResumeLatestTurnObservation>,
+        now: i64,
+    ) -> Option<Trigger> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut state = lock(&self.state);
+        if !state.settings.enabled
+            || !state.settings.capacity_recovery_enabled
+            || state.settings.thread_id.is_empty()
+            || state.running
+        {
+            return None;
+        }
+        let Some(observation) = observation else { return None };
+        let monitor_key = observation.monitor_key();
+        let monitor_key_changed =
+            state.persisted.last_capacity_monitor_key.as_deref() != Some(&monitor_key);
+        if observation.started_at.is_none()
+            && observation.completed_at.is_none()
+            && !state.persisted.capacity_monitor_initialized
+        {
+            state.persisted.capacity_monitor_initialized = true;
+            state.persisted.last_capacity_monitor_key = Some(monitor_key);
+            bump(&mut state.persisted);
+            let persisted = state.persisted.clone();
+            drop(state);
+            let _ = self.persist_state(&persisted);
+            return None;
+        }
+        state.persisted.capacity_monitor_initialized = true;
+        let already_observed = state.persisted.last_capacity_observed_turn_id.as_deref()
+            == Some(observation.turn_id.as_str());
+        if observation.is_generated_by_capacity_recovery()
+            && observation.is_server_capacity_failure()
+        {
+            if !already_observed {
+                state.persisted.last_capacity_monitor_key = Some(monitor_key);
+                state.persisted.last_capacity_observed_turn_id =
+                    Some(observation.turn_id.clone());
+                state.persisted.state = "waiting".into();
+                state.persisted.message =
+                    "自动启动的后续轮仍遇容量不足，本次不再重试".into();
+                bump(&mut state.persisted);
+                let persisted = state.persisted.clone();
+                drop(state);
+                let _ = self.persist_state(&persisted);
+            }
+            return None;
+        }
+        if already_observed {
+            if monitor_key_changed {
+                state.persisted.last_capacity_monitor_key = Some(monitor_key);
+                bump(&mut state.persisted);
+                let persisted = state.persisted.clone();
+                drop(state);
+                let _ = self.persist_state(&persisted);
+            }
+            return None;
+        }
+        if !observation.is_recoverable_capacity_failure() {
+            if monitor_key_changed {
+                state.persisted.last_capacity_monitor_key = Some(monitor_key);
+                if observation.is_server_capacity_failure()
+                    && observation.client_user_message_id.is_none()
+                {
+                    state.persisted.state = "waiting".into();
+                    state.persisted.message =
+                        "检测到容量错误，但无法确认消息来源，已安全停下".into();
+                }
+                bump(&mut state.persisted);
+                let persisted = state.persisted.clone();
+                drop(state);
+                let _ = self.persist_state(&persisted);
+            }
+            return None;
+        }
+        if let Some(event_at) = observation.completed_at.or(observation.started_at) {
+            if event_at < now.saturating_sub(5 * 60) || event_at > now.saturating_add(60) {
+                if monitor_key_changed {
+                    state.persisted.last_capacity_monitor_key = Some(monitor_key);
+                    bump(&mut state.persisted);
+                    let persisted = state.persisted.clone();
+                    drop(state);
+                    let _ = self.persist_state(&persisted);
+                }
+                return None;
+            }
+        } else if !monitor_key_changed {
+            return None;
+        }
+
+        state.persisted.last_capacity_monitor_key = Some(monitor_key);
+        state.persisted.state = "waiting".into();
+        state.persisted.message = "检测到服务容量不足，准备续跑一次".into();
+        bump(&mut state.persisted);
+        let generation = state.persisted.capacity_generation;
+        let thread_id = state.settings.thread_id.clone();
+        let persisted = state.persisted.clone();
+        drop(state);
+        let _ = self.persist_state(&persisted);
+        Some(Trigger {
+            key: capacity_trigger_key(&thread_id, &observation.turn_id),
+            label: "容量中断续跑".into(),
+            thread_id,
+            kind: TriggerKind::CapacityRecovery,
+            consumes_pending: false,
+            freshness_not_before: observation.completed_at.or(observation.started_at),
+            repeat_after_unix: None,
+            schedule_generation: None,
+            quota_generation: None,
+            capacity_generation: Some(generation),
+        })
+    }
+
+    fn wants_quota_refresh(&self, now: i64) -> bool {
+        if self.shutdown.load(Ordering::Acquire) {
+            return false;
+        }
+        let state = lock(&self.state);
+        state.settings.enabled
+            && !state.running
+            && !state.settings.thread_id.is_empty()
+            && state.settings.quota_resume_enabled
+            && state
+                .persisted
+                .last_quota_check_at
+                .is_none_or(|last| now.saturating_sub(last) >= QUOTA_CHECK_INTERVAL_SECONDS)
+    }
+
+    fn mark_quota_refresh_failed(&self, now: i64) {
+        let persisted = {
+            let mut state = lock(&self.state);
+            state.persisted.last_quota_check_at = Some(now);
+            bump(&mut state.persisted);
+            state.persisted.clone()
+        };
+        let _ = self.persist_state(&persisted);
+    }
+
+    fn wants_capacity_check(&self) -> bool {
+        if self.shutdown.load(Ordering::Acquire) {
+            return false;
+        }
+        let state = lock(&self.state);
+        state.settings.enabled
+            && !state.running
+            && !state.settings.thread_id.is_empty()
+            && state.settings.capacity_recovery_enabled
+    }
+
+    async fn check_capacity(&self, app: tauri::AppHandle) {
+        if !self.wants_capacity_check() {
+            return;
+        }
+        let Some(capacity_owner) =
+            LocalExecutionOwner::try_acquire(self.local_execution_gate.clone())
+        else {
+            return;
+        };
+        let home = auto_resume::default_codex_home();
+        let thread_id = {
+            let state = lock(&self.state);
+            state.settings.thread_id.clone()
+        };
+        let observation = tauri::async_runtime::spawn_blocking(move || {
+            auto_resume::read_latest_turn_observation(&home, &thread_id)
+        })
+        .await;
+        match observation {
+            Ok(Ok(observation)) => {
+                if let Some(trigger) = self.handle_capacity_observation(observation, unix_now()) {
+                    drop(capacity_owner);
+                    let registry = self.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = registry.execute_owned(app, trigger, false).await;
+                    });
+                }
+            }
+            Ok(Err(error)) => {
+                let persisted = {
+                    let mut state = lock(&self.state);
+                    state.persisted.state = "waiting".into();
+                    state.persisted.message =
+                        "容量中断监控检查失败，15 秒后重试".into();
+                    bump(&mut state.persisted);
+                    state.persisted.clone()
+                };
+                eprintln!("Codex Token Bar: capacity monitor failed: {error}");
+                let _ = self.persist_state(&persisted);
+            }
+            Err(error) => {
+                eprintln!("Codex Token Bar: capacity monitor task failed: {error}");
+            }
+        }
+    }
+
+    async fn tick_schedule(&self, app: tauri::AppHandle) -> bool {
         let now = unix_now();
-        let (should_read_quota, stop, persisted) = {
+        let (stop, persisted) = {
             let mut state = lock(&self.state);
             let before = state.persisted.clone();
             normalize_day(&mut state.persisted);
             let stop =
-                !state.settings.enabled || state.running || state.settings.thread_id.is_empty();
-            let should_read_quota = if stop {
+                self.shutdown.load(Ordering::Acquire)
+                    || !state.settings.enabled
+                    || state.running
+                    || state.settings.thread_id.is_empty();
+            if stop {
                 let settings = state.settings.clone();
                 refresh_idle_status(&settings, &mut state.persisted);
-                false
             } else {
                 let settings = state.settings.clone();
                 reconcile_schedule(&settings, &mut state.persisted, now);
-                state.settings.quota_resume_enabled
-                    && state.persisted.last_quota_check_at.is_none_or(|last| {
-                        now.saturating_sub(last) >= QUOTA_CHECK_INTERVAL_SECONDS
-                    })
-            };
+            }
             let persisted = (state.persisted != before).then(|| {
                 bump(&mut state.persisted);
                 state.persisted.clone()
             });
-            (should_read_quota, stop, persisted)
+            (stop, persisted)
         };
         if let Some(persisted) = persisted {
-            let _ = persist_state(&persisted);
+            let _ = self.persist_state(&persisted);
         }
         if stop {
-            return;
-        }
-
-        if should_read_quota {
-            let home = auto_resume::default_codex_home();
-            let quota = tauri::async_runtime::spawn_blocking(move || {
-                quota::read_account_quota(&home, false)
-            })
-            .await;
-            match quota {
-                Ok(Ok(bundle)) => self.observe_quota(&bundle),
-                _ => {
-                    let persisted = {
-                        let mut state = lock(&self.state);
-                        state.persisted.last_quota_check_at = Some(unix_now());
-                        bump(&mut state.persisted);
-                        state.persisted.clone()
-                    };
-                    let _ = persist_state(&persisted);
-                }
-            }
+            return false;
         }
 
         let trigger = {
@@ -426,10 +652,16 @@ impl AutoResumeRegistry {
             tauri::async_runtime::spawn(async move {
                 let _ = registry.execute_owned(app, trigger, false).await;
             });
+            true
+        } else {
+            false
         }
     }
 
     async fn run_manual(&self, app: tauri::AppHandle) -> Result<AutoResumeRuntimeStatus, String> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err("监控任务已被删除或停用".into());
+        }
         let (thread_id, consumes_pending) = {
             let state = lock(&self.state);
             let thread_id = state.settings.thread_id.clone();
@@ -454,6 +686,7 @@ impl AutoResumeRegistry {
                 repeat_after_unix: None,
                 schedule_generation: None,
                 quota_generation: None,
+                capacity_generation: None,
             },
             true,
         )
@@ -487,8 +720,38 @@ impl AutoResumeRegistry {
         trigger: Trigger,
         manual: bool,
     ) -> Result<AutoResumeRuntimeStatus, String> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err("监控任务已被删除或停用".into());
+        }
+        let _local_execution_owner =
+            match LocalExecutionOwner::try_acquire(self.local_execution_gate.clone()) {
+                Some(owner) => owner,
+                None if manual => return Err("另一条监控任务正在续跑，请稍后再试".into()),
+                None => {
+                    if self.shutdown.load(Ordering::Acquire) {
+                        return Err("监控任务已被删除或停用".into());
+                    }
+                    let (status, persisted) = {
+                        let mut state = lock(&self.state);
+                        if self.shutdown.load(Ordering::Acquire) {
+                            return Err("监控任务已被删除或停用".into());
+                        }
+                        state.persisted.deferred_until =
+                            Some(unix_now().saturating_add(TICK_INTERVAL.as_secs() as i64));
+                        state.persisted.state = "waiting".into();
+                        state.persisted.message = "另一条监控任务正在续跑，本任务稍后重试".into();
+                        bump(&mut state.persisted);
+                        (status_from(&state), state.persisted.clone())
+                    };
+                    let _ = self.persist_state(&persisted);
+                    return Ok(status);
+                }
+            };
         let (settings, cancel, home, persisted) = {
             let mut state = lock(&self.state);
+            if self.shutdown.load(Ordering::Acquire) {
+                return Err("监控任务已被删除或停用".into());
+            }
             if state.running {
                 return Err("已有自动续跑正在执行".into());
             }
@@ -508,7 +771,7 @@ impl AutoResumeRegistry {
                 let status = status_from(&state);
                 let persisted = state.persisted.clone();
                 drop(state);
-                let _ = persist_state(&persisted);
+                let _ = self.persist_state(&persisted);
                 return Ok(status);
             }
             if !manual {
@@ -519,14 +782,14 @@ impl AutoResumeRegistry {
                     let status = settle_stale_automatic_trigger(&mut state, &trigger);
                     let persisted = state.persisted.clone();
                     drop(state);
-                    let _ = persist_state(&persisted);
+                    let _ = self.persist_state(&persisted);
                     return Ok(status);
                 }
                 if state.persisted.runs_today >= u32::from(state.settings.max_runs_per_day) {
                     let status = settle_daily_limit(&mut state, &trigger, unix_now());
                     let persisted = state.persisted.clone();
                     drop(state);
-                    let _ = persist_state(&persisted);
+                    let _ = self.persist_state(&persisted);
                     return Ok(status);
                 }
                 if let Some(last) = state.persisted.last_run_at {
@@ -539,7 +802,7 @@ impl AutoResumeRegistry {
                         let status = status_from(&state);
                         let persisted = state.persisted.clone();
                         drop(state);
-                        let _ = persist_state(&persisted);
+                        let _ = self.persist_state(&persisted);
                         return Ok(status);
                     }
                 }
@@ -559,7 +822,7 @@ impl AutoResumeRegistry {
                 state.persisted.clone(),
             )
         };
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
 
         let shared_cooldown = if manual {
             Duration::ZERO
@@ -596,7 +859,7 @@ impl AutoResumeRegistry {
             }
         };
         if let Some((status, persisted)) = stale_status {
-            let _ = persist_state(&persisted);
+            let _ = self.persist_state(&persisted);
             if let auto_resume::AutoResumeClaimResult::Claimed(claim) = &claim_result {
                 let outcome = auto_resume::AutoResumeRunOutcome {
                     status: "skipped".into(),
@@ -624,7 +887,7 @@ impl AutoResumeRegistry {
                     let status = settle_daily_limit(&mut state, &trigger, unix_now());
                     (status, state.persisted.clone())
                 };
-                let _ = persist_state(&persisted);
+                let _ = self.persist_state(&persisted);
                 return Ok(status);
             }
         };
@@ -636,7 +899,7 @@ impl AutoResumeRegistry {
                 bump(&mut state.persisted);
                 state.persisted.clone()
             };
-            let _ = persist_state(&persisted);
+            let _ = self.persist_state(&persisted);
         }
 
         let thread_id = trigger.thread_id.clone();
@@ -655,6 +918,12 @@ impl AutoResumeRegistry {
             TriggerKind::QuotaRecovery => trigger.quota_generation.map(|generation| {
                 auto_resume::AutoResumeStartGenerationGuard::new(
                     self.quota_generation.clone(),
+                    generation,
+                )
+            }),
+            TriggerKind::CapacityRecovery => trigger.capacity_generation.map(|generation| {
+                auto_resume::AutoResumeStartGenerationGuard::new(
+                    self.capacity_generation.clone(),
                     generation,
                 )
             }),
@@ -697,7 +966,7 @@ impl AutoResumeRegistry {
                 bump(&mut state.persisted);
                 state.persisted.clone()
             };
-            let _ = persist_state(&persisted);
+            let _ = self.persist_state(&persisted);
         }
         let _ = claim.complete(&outcome);
 
@@ -707,6 +976,10 @@ impl AutoResumeRegistry {
             state.cancel = None;
             state.persisted.state = outcome.status.clone();
             state.persisted.message = outcome.message.clone();
+            if trigger.kind == TriggerKind::CapacityRecovery {
+                state.persisted.last_capacity_observed_turn_id =
+                    trigger.key.rsplit(':').next().map(str::to_string);
+            }
             if outcome.status != "skipped" {
                 state.persisted.last_run_at = Some(unix_now());
             }
@@ -758,7 +1031,7 @@ impl AutoResumeRegistry {
             bump(&mut state.persisted);
             (status_from(&state), state.persisted.clone())
         };
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
 
         if settings.notify_on_result {
             let title = if outcome.status == "succeeded" {
@@ -786,7 +1059,7 @@ impl AutoResumeRegistry {
             bump(&mut state.persisted);
             (status_from(&state), state.persisted.clone())
         };
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
         status
     }
 
@@ -802,7 +1075,7 @@ impl AutoResumeRegistry {
             bump(&mut state.persisted);
             state.persisted.clone()
         };
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
     }
 
     fn settle_duplicate_trigger(&self, trigger: &Trigger) -> AutoResumeRuntimeStatus {
@@ -818,14 +1091,363 @@ impl AutoResumeRegistry {
                 let settings = state.settings.clone();
                 advance_schedule_after_trigger(&settings, &mut state.persisted, unix_now());
             }
+            if trigger.kind == TriggerKind::CapacityRecovery {
+                state.persisted.last_capacity_observed_turn_id =
+                    trigger.key.rsplit(':').next().map(str::to_string);
+            }
             state.persisted.state = "skipped".into();
             state.persisted.message = "该触发已由另一端处理".into();
             bump(&mut state.persisted);
             (status_from(&state), state.persisted.clone())
         };
-        let _ = persist_state(&persisted);
+        let _ = self.persist_state(&persisted);
         status
     }
+
+    fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        let cancel = {
+            let state = lock(&self.state);
+            state.cancel.clone()
+        };
+        if let Some(cancel) = cancel {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+
+    fn state_path(&self) -> Result<PathBuf, String> {
+        if self.legacy_state_path {
+            return state_path();
+        }
+        state_path_for_task(&self.task_id)
+    }
+
+    fn load_state(&self) -> Result<PersistedAutoResumeState, String> {
+        load_state_at(&self.state_path()?)
+    }
+
+    fn persist_state(&self, state: &PersistedAutoResumeState) -> Result<(), String> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        persist_state_at(&self.state_path()?, state)
+    }
+
+    fn delete_persisted_state(&self) -> Result<(), String> {
+        match std::fs::remove_file(self.state_path()?) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+struct LocalExecutionOwner {
+    gate: Arc<AtomicBool>,
+}
+
+impl LocalExecutionOwner {
+    fn try_acquire(gate: Arc<AtomicBool>) -> Option<Self> {
+        gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self { gate })
+    }
+}
+
+impl Drop for LocalExecutionOwner {
+    fn drop(&mut self) {
+        self.gate.store(false, Ordering::Release);
+    }
+}
+
+struct AutoResumeManagerState {
+    settings: AutoResumeSettingsSnapshot,
+    runtimes: HashMap<String, AutoResumeTaskRuntime>,
+}
+
+impl Default for AutoResumeManagerState {
+    fn default() -> Self {
+        Self {
+            settings: AutoResumeSettingsSnapshot::default(),
+            runtimes: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AutoResumeRegistry {
+    state: Arc<Mutex<AutoResumeManagerState>>,
+    local_execution_gate: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    tick_cursor: Arc<AtomicUsize>,
+    capacity_cursor: Arc<AtomicUsize>,
+}
+
+impl Default for AutoResumeRegistry {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(AutoResumeManagerState::default())),
+            local_execution_gate: Arc::new(AtomicBool::new(false)),
+            started: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            tick_cursor: Arc::new(AtomicUsize::new(0)),
+            capacity_cursor: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl AutoResumeRegistry {
+    pub fn initialize_and_start(&self, app: tauri::AppHandle) {
+        let settings = platform::read_app_settings()
+            .map(|value| value.auto_resume)
+            .unwrap_or_default();
+        self.update_settings(settings);
+        if self.started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.shutdown.store(false, Ordering::Release);
+        let registry = self.clone();
+        let started = self.started.clone();
+        tauri::async_runtime::spawn(async move {
+            let _started_owner = BackgroundStartedOwner { started };
+            let mut interval = tokio::time::interval(TICK_INTERVAL);
+            loop {
+                interval.tick().await;
+                if registry.shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                let tick_registry = registry.clone();
+                let tick_app = app.clone();
+                let mut tick = tokio::task::JoinSet::new();
+                tick.spawn(async move {
+                    tick_registry.tick(tick_app).await;
+                });
+                if let Some(Err(error)) = tick.join_next().await {
+                    eprintln!("Codex Token Bar: auto-resume manager tick recovered after panic: {error}");
+                }
+            }
+        });
+    }
+
+    pub fn update_settings(&self, settings: AutoResumeSettingsSnapshot) {
+        let tasks = settings.resolved_tasks();
+        let incoming_ids = tasks
+            .iter()
+            .map(|task| task.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut state = lock(&self.state);
+        let removed = state
+            .runtimes
+            .keys()
+            .filter(|id| !incoming_ids.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in removed {
+            if let Some(runtime) = state.runtimes.remove(&id) {
+                runtime.shutdown();
+                let _ = runtime.delete_persisted_state();
+            }
+        }
+        for task in tasks {
+            if let Some(runtime) = state.runtimes.get(&task.id) {
+                runtime.update_settings(task.as_legacy_settings());
+                continue;
+            }
+            let runtime = AutoResumeTaskRuntime::new(
+                task.id.clone(),
+                task.id.starts_with("legacy-"),
+                self.local_execution_gate.clone(),
+            );
+            runtime.initialize(task.as_legacy_settings());
+            state.runtimes.insert(task.id, runtime);
+        }
+        state.settings = settings;
+    }
+
+    async fn tick(&self, app: tauri::AppHandle) {
+        let mut runtimes = {
+            let state = lock(&self.state);
+            state
+                .settings
+                .resolved_tasks()
+                .into_iter()
+                .filter_map(|task| state.runtimes.get(&task.id).cloned())
+                .collect::<Vec<_>>()
+        };
+        if runtimes.is_empty() {
+            return;
+        }
+
+        let start = next_round_robin_index(&self.tick_cursor, runtimes.len())
+            .expect("non-empty runtime list");
+        runtimes.rotate_left(start);
+
+        let now = unix_now();
+        let quota_due = runtimes
+            .iter()
+            .filter(|runtime| runtime.wants_quota_refresh(now))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !quota_due.is_empty() {
+            let home = auto_resume::default_codex_home();
+            let quota_result = tauri::async_runtime::spawn_blocking(move || {
+                quota::read_account_quota(&home, false)
+            })
+            .await;
+            match quota_result {
+                Ok(Ok(bundle)) => {
+                    for runtime in &runtimes {
+                        runtime.observe_quota(&bundle);
+                    }
+                }
+                _ => {
+                    let failed_at = unix_now();
+                    for runtime in quota_due {
+                        runtime.mark_quota_refresh_failed(failed_at);
+                    }
+                }
+            }
+        }
+
+        let mut started_execution = false;
+        for runtime in &runtimes {
+            started_execution |= runtime.tick_schedule(app.clone()).await;
+        }
+        if started_execution {
+            return;
+        }
+
+        let capacity_runtimes = runtimes
+            .into_iter()
+            .filter(AutoResumeTaskRuntime::wants_capacity_check)
+            .collect::<Vec<_>>();
+        if capacity_runtimes.is_empty() {
+            return;
+        }
+        let capacity_index = next_round_robin_index(
+            &self.capacity_cursor,
+            capacity_runtimes.len(),
+        )
+        .expect("non-empty capacity runtime list");
+        capacity_runtimes[capacity_index]
+            .check_capacity(app)
+            .await;
+    }
+
+    pub fn status(&self) -> AutoResumeRuntimeStatus {
+        let state = lock(&self.state);
+        aggregate_status(&state)
+    }
+
+    pub fn cancel(&self) -> AutoResumeRuntimeStatus {
+        let runtime = {
+            let state = lock(&self.state);
+            state
+                .runtimes
+                .values()
+                .find(|runtime| runtime.status().is_running)
+                .cloned()
+        };
+        if let Some(runtime) = runtime {
+            let _ = runtime.cancel();
+        }
+        self.status()
+    }
+
+    pub fn observe_quota(&self, bundle: &AccountQuotaBundle) {
+        let runtimes = {
+            let state = lock(&self.state);
+            state.runtimes.values().cloned().collect::<Vec<_>>()
+        };
+        for runtime in runtimes {
+            runtime.observe_quota(bundle);
+        }
+    }
+
+    async fn run_manual(
+        &self,
+        app: tauri::AppHandle,
+        task_id: Option<String>,
+    ) -> Result<AutoResumeRuntimeStatus, String> {
+        let runtime = {
+            let state = lock(&self.state);
+            let resolved_id = task_id
+                .filter(|id| state.runtimes.contains_key(id))
+                .or_else(|| {
+                    (!state.settings.selected_task_id.is_empty()
+                        && state.runtimes.contains_key(&state.settings.selected_task_id))
+                    .then(|| state.settings.selected_task_id.clone())
+                })
+                .or_else(|| state.settings.resolved_tasks().first().map(|task| task.id.clone()))
+                .ok_or_else(|| "请先创建一条监控任务".to_string())?;
+            state
+                .runtimes
+                .get(&resolved_id)
+                .cloned()
+                .ok_or_else(|| "监控任务不存在".to_string())?
+        };
+        runtime.run_manual(app).await?;
+        Ok(self.status())
+    }
+}
+
+fn aggregate_status(state: &AutoResumeManagerState) -> AutoResumeRuntimeStatus {
+    let task_settings = state.settings.resolved_tasks();
+    let mut task_statuses = Vec::with_capacity(task_settings.len());
+    let mut selected_status: Option<AutoResumeRuntimeStatus> = None;
+    let mut running_task_id = None;
+    for task in &task_settings {
+        let mut status = state
+            .runtimes
+            .get(&task.id)
+            .map(AutoResumeTaskRuntime::status)
+            .unwrap_or_default();
+        status.task_id = Some(task.id.clone());
+        if status.is_running {
+            running_task_id = Some(task.id.clone());
+            selected_status = Some(status.clone());
+        } else if selected_status.is_none() && task.id == state.settings.selected_task_id {
+            selected_status = Some(status.clone());
+        }
+        task_statuses.push(AutoResumeTaskRuntimeStatus {
+            task_id: task.id.clone(),
+            state: status.state,
+            message: status.message,
+            is_running: status.is_running,
+            waiting_for_quota: status.waiting_for_quota,
+            last_trigger: status.last_trigger,
+            last_run_at: status.last_run_at,
+            next_scheduled_at: status.next_scheduled_at,
+            runs_today: status.runs_today,
+            revision: status.revision,
+        });
+    }
+    let mut result = selected_status.unwrap_or_default();
+    result.task_id = running_task_id
+        .clone()
+        .or_else(|| (!state.settings.selected_task_id.is_empty()).then(|| state.settings.selected_task_id.clone()));
+    result.running_task_id = running_task_id;
+    result.protected_tasks = u32::try_from(task_settings.iter().filter(|task| task.enabled).count())
+        .unwrap_or(u32::MAX);
+    result.total_tasks = u32::try_from(task_settings.len()).unwrap_or(u32::MAX);
+    result.revision = task_statuses
+        .iter()
+        .map(|status| status.revision)
+        .max()
+        .unwrap_or(0);
+    result.tasks = task_statuses;
+    if result.total_tasks == 0 {
+        result.state = "empty".into();
+        result.message = "还没有监控任务".into();
+    } else if result.running_task_id.is_none() && result.protected_tasks > 0 {
+        result.state = "waiting".into();
+        result.message = format!(
+            "{} 条任务正在保护中",
+            result.protected_tasks
+        );
+    }
+    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -834,6 +1456,7 @@ enum TriggerKind {
     Interval,
     Daily,
     QuotaRecovery,
+    CapacityRecovery,
 }
 
 impl TriggerKind {
@@ -847,6 +1470,7 @@ impl TriggerKind {
             Self::Interval => "interval",
             Self::Daily => "daily",
             Self::QuotaRecovery => "quotaRecovery",
+            Self::CapacityRecovery => "capacityRecovery",
         }
     }
 
@@ -854,6 +1478,7 @@ impl TriggerKind {
         match value {
             Some("interval") => Self::Interval,
             Some("daily") => Self::Daily,
+            Some("capacityRecovery") => Self::CapacityRecovery,
             _ => Self::QuotaRecovery,
         }
     }
@@ -870,6 +1495,7 @@ struct Trigger {
     repeat_after_unix: Option<i64>,
     schedule_generation: Option<u64>,
     quota_generation: Option<u64>,
+    capacity_generation: Option<u64>,
 }
 
 fn scheduled_trigger_is_current(state: &RegistryState, trigger: &Trigger) -> bool {
@@ -889,7 +1515,14 @@ fn quota_trigger_is_current(state: &RegistryState, trigger: &Trigger) -> bool {
 }
 
 fn automatic_trigger_is_current(state: &RegistryState, trigger: &Trigger) -> bool {
-    scheduled_trigger_is_current(state, trigger) && quota_trigger_is_current(state, trigger)
+    let capacity_current = trigger.kind != TriggerKind::CapacityRecovery
+        || (state.settings.enabled
+            && state.settings.capacity_recovery_enabled
+            && state.settings.thread_id == trigger.thread_id
+            && trigger.capacity_generation == Some(state.persisted.capacity_generation));
+    scheduled_trigger_is_current(state, trigger)
+        && quota_trigger_is_current(state, trigger)
+        && capacity_current
 }
 
 fn automatic_safety_limits_changed(
@@ -964,9 +1597,10 @@ pub async fn run_auto_resume_now(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     registry: tauri::State<'_, AutoResumeRegistry>,
+    task_id: Option<String>,
 ) -> Result<AutoResumeRuntimeStatus, String> {
     super::window_auth::require_window_label(&window, "run_auto_resume_now")?;
-    registry.run_manual(app).await
+    registry.run_manual(app, task_id).await
 }
 
 #[tauri::command]
@@ -985,7 +1619,7 @@ pub fn cancel_auto_resume_run(
 // - interval: interval:{线程}:{间隔分钟}:{floor(触发时刻纪元秒 / 间隔秒)}
 // - quota:    quota:{线程}:{5h|7d}:{重置纪元秒|unknown}（双窗口同时恢复取 5h；
 //             unknown 由共享 ledger 按低位周期分配 episode 序号）
-// - capacity: capacity:{线程}:{turnId}（目前仅 Swift 端产生）
+// - capacity: capacity:{线程}:{turnId}（Swift / Tauri 共用）
 // - manual:   manual: 前缀 + 各端自用唯一后缀（不参与跨端去重，只共享
 //             每日上限豁免）
 fn daily_trigger_key(thread_id: &str, day: &str, hour: u8, minute: u8) -> String {
@@ -1002,6 +1636,10 @@ fn interval_trigger_key(thread_id: &str, interval_minutes: u32, now: i64) -> Str
 
 fn quota_trigger_key(thread_id: &str, recovery_key: &str) -> String {
     format!("quota:{thread_id}:{recovery_key}")
+}
+
+fn capacity_trigger_key(thread_id: &str, turn_id: &str) -> String {
+    format!("capacity:{thread_id}:{turn_id}")
 }
 
 fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
@@ -1057,6 +1695,7 @@ fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
         repeat_after_unix: None,
         schedule_generation: Some(state.persisted.schedule_generation),
         quota_generation: None,
+        capacity_generation: None,
     })
 }
 
@@ -1113,6 +1752,8 @@ fn recovered_trigger(state: &mut RegistryState) -> Option<Trigger> {
         schedule_generation,
         quota_generation: (kind == TriggerKind::QuotaRecovery)
             .then_some(state.persisted.quota_generation),
+        capacity_generation: (kind == TriggerKind::CapacityRecovery)
+            .then_some(state.persisted.capacity_generation),
     })
 }
 
@@ -1450,12 +2091,16 @@ fn status_from(state: &RegistryState) -> AutoResumeRuntimeStatus {
         next_scheduled_at: state.persisted.next_scheduled_at,
         runs_today: state.persisted.runs_today,
         revision: state.persisted.revision,
+        ..AutoResumeRuntimeStatus::default()
     }
 }
 
 fn load_state() -> Result<PersistedAutoResumeState, String> {
-    let path = state_path()?;
-    match std::fs::read(&path) {
+    load_state_at(&state_path()?)
+}
+
+fn load_state_at(path: &std::path::Path) -> Result<PersistedAutoResumeState, String> {
+    match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(PersistedAutoResumeState::default())
@@ -1465,24 +2110,53 @@ fn load_state() -> Result<PersistedAutoResumeState, String> {
 }
 
 fn persist_state(state: &PersistedAutoResumeState) -> Result<(), String> {
-    let path = state_path()?;
+    persist_state_at(&state_path()?, state)
+}
+
+fn persist_state_at(
+    path: &std::path::Path,
+    state: &PersistedAutoResumeState,
+) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(state).map_err(|error| error.to_string())?;
     let _writer = AUTO_RESUME_STATE_WRITE_GATE
         .get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Ok(current_bytes) = std::fs::read(&path) {
+    if let Ok(current_bytes) = std::fs::read(path) {
         if let Ok(current) = serde_json::from_slice::<PersistedAutoResumeState>(&current_bytes) {
             if current.revision > state.revision {
                 return Ok(());
             }
         }
     }
-    atomic_file::write_atomically(&path, &bytes).map_err(|error| error.to_string())
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    atomic_file::write_atomically(path, &bytes).map_err(|error| error.to_string())
 }
 
 fn state_path() -> Result<PathBuf, String> {
     app_paths::auto_resume_state_path().ok_or_else(|| "无法定位自动续跑状态文件".into())
+}
+
+fn state_path_for_task(task_id: &str) -> Result<PathBuf, String> {
+    let legacy = state_path()?;
+    let parent = legacy
+        .parent()
+        .ok_or_else(|| "自动续跑状态目录无效".to_string())?;
+    let safe_id = task_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    Ok(parent
+        .join("auto-resume-state-v2")
+        .join(format!("{safe_id}.json")))
 }
 
 fn bump(state: &mut PersistedAutoResumeState) {
@@ -1516,6 +2190,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn next_round_robin_index(cursor: &AtomicUsize, item_count: usize) -> Option<usize> {
+    (item_count > 0).then(|| cursor.fetch_add(1, Ordering::AcqRel) % item_count)
 }
 
 fn spawn_supervised_task<F, T, R>(
@@ -1584,6 +2262,67 @@ mod tests {
             assert_eq!(receiver.await.unwrap(), 9);
             assert!(recovered.load(Ordering::Acquire));
         });
+    }
+
+    #[test]
+    fn manager_round_robin_visits_every_task_and_handles_empty_lists() {
+        let cursor = AtomicUsize::new(0);
+        assert_eq!(next_round_robin_index(&cursor, 0), None);
+        assert_eq!(
+            (0..7)
+                .map(|_| next_round_robin_index(&cursor, 3).unwrap())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 0, 1, 2, 0]
+        );
+    }
+
+    #[test]
+    fn aggregate_status_reports_each_task_and_prefers_the_running_task() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let first = AutoResumeTaskRuntime::new("task-a".into(), false, gate.clone());
+        let second = AutoResumeTaskRuntime::new("task-b".into(), false, gate);
+        {
+            let mut state = lock(&first.state);
+            state.persisted.state = "waiting".into();
+            state.persisted.message = "A waiting".into();
+        }
+        {
+            let mut state = lock(&second.state);
+            state.running = true;
+            state.persisted.state = "running".into();
+            state.persisted.message = "B running".into();
+        }
+        let task_a = crate::models::AutoResumeTaskSettingsSnapshot {
+            id: "task-a".into(),
+            enabled: true,
+            thread_id: "thread-a".into(),
+            ..crate::models::AutoResumeTaskSettingsSnapshot::default()
+        };
+        let task_b = crate::models::AutoResumeTaskSettingsSnapshot {
+            id: "task-b".into(),
+            enabled: false,
+            thread_id: "thread-b".into(),
+            ..crate::models::AutoResumeTaskSettingsSnapshot::default()
+        };
+        let manager = AutoResumeManagerState {
+            settings: AutoResumeSettingsSnapshot {
+                selected_task_id: "task-a".into(),
+                tasks: vec![task_a, task_b],
+                ..AutoResumeSettingsSnapshot::default()
+            },
+            runtimes: HashMap::from([
+                ("task-a".into(), first),
+                ("task-b".into(), second),
+            ]),
+        };
+
+        let status = aggregate_status(&manager);
+        assert_eq!(status.total_tasks, 2);
+        assert_eq!(status.protected_tasks, 1);
+        assert_eq!(status.running_task_id.as_deref(), Some("task-b"));
+        assert_eq!(status.task_id.as_deref(), Some("task-b"));
+        assert_eq!(status.tasks.len(), 2);
+        assert!(status.is_running);
     }
 
     #[test]
@@ -2017,6 +2756,7 @@ mod tests {
             repeat_after_unix: None,
             schedule_generation: None,
             quota_generation: Some(9),
+            capacity_generation: None,
         };
 
         state.settings.schedule_mode = "daily".into();
@@ -2170,7 +2910,10 @@ mod tests {
             quota_trigger_key("thread-1", "5h:1753602000"),
             "quota:thread-1:5h:1753602000"
         );
-        // capacity 触发目前仅 Swift 端产生（capacity:{线程}:{turnId}）；
+        assert_eq!(
+            capacity_trigger_key("thread-1", "turn-1"),
+            "capacity:thread-1:turn-1"
+        );
         // manual 触发不参与跨端去重，仅约定 manual: 前缀共享每日上限豁免。
     }
 

@@ -881,6 +881,180 @@ pub fn default_codex_home() -> PathBuf {
         .unwrap_or_else(|| crate::core::app_paths::home_dir().join(".codex"))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoResumeLatestTurnObservation {
+    pub turn_id: String,
+    pub status: String,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub error_message: Option<String>,
+    pub codex_error_code: Option<String>,
+    pub client_user_message_id: Option<String>,
+}
+
+impl AutoResumeLatestTurnObservation {
+    pub fn monitor_key(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.turn_id,
+            normalized_identifier(&self.status),
+            self.codex_error_code
+                .as_deref()
+                .map(normalized_identifier)
+                .unwrap_or_else(|| "none".into())
+        )
+    }
+
+    pub fn is_generated_by_capacity_recovery(&self) -> bool {
+        self.client_user_message_id
+            .as_deref()
+            .is_some_and(|value| value.starts_with("capacity:"))
+    }
+
+    pub fn is_server_capacity_failure(&self) -> bool {
+        if normalized_identifier(&self.status) != "failed" {
+            return false;
+        }
+        if self
+            .codex_error_code
+            .as_deref()
+            .is_some_and(|value| normalized_identifier(value) == "serveroverloaded")
+        {
+            return true;
+        }
+        let message = self.error_message.as_deref().unwrap_or("").to_lowercase();
+        [
+            "selected model is at capacity",
+            "server is overloaded",
+            "server overloaded",
+            "insufficient capacity",
+            "no available capacity",
+            "currently experiencing high demand",
+            "服务容量不足",
+            "服务器容量不足",
+        ]
+        .iter()
+        .any(|needle| message.contains(needle))
+    }
+
+    pub fn is_recoverable_capacity_failure(&self) -> bool {
+        self.is_server_capacity_failure()
+            && self.client_user_message_id.is_some()
+            && !self.is_generated_by_capacity_recovery()
+    }
+}
+
+pub fn read_latest_turn_observation(
+    codex_home: &Path,
+    thread_id: &str,
+) -> Result<Option<AutoResumeLatestTurnObservation>, String> {
+    let mut session = AppServerSession::launch(codex_home)?;
+    session.initialize_with_experimental(APP_SERVER_STARTUP_TIMEOUT, true)?;
+    let mut next_request_id = 2_i64;
+    let summary = request_latest_turn(&mut session, &mut next_request_id, thread_id, "summary")?;
+    let Some(mut observation) = summary.as_ref().map(parse_latest_turn_observation).transpose()?
+    else {
+        return Ok(None);
+    };
+    if observation.is_server_capacity_failure() && observation.client_user_message_id.is_none() {
+        if let Some(full_turn) =
+            request_latest_turn(&mut session, &mut next_request_id, thread_id, "full")?
+        {
+            if full_turn.get("id").and_then(Value::as_str) == Some(observation.turn_id.as_str()) {
+                observation = parse_latest_turn_observation(&full_turn)?;
+            }
+        }
+    }
+    Ok(Some(observation))
+}
+
+fn request_latest_turn(
+    session: &mut AppServerSession,
+    next_request_id: &mut i64,
+    thread_id: &str,
+    items_view: &str,
+) -> Result<Option<Value>, String> {
+    let request_id = *next_request_id;
+    *next_request_id = next_request_id
+        .checked_add(1)
+        .ok_or_else(|| "Codex app-server 请求编号溢出".to_string())?;
+    session.send(json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "thread/turns/list",
+        "params": {
+            "threadId": thread_id,
+            "limit": 1,
+            "sortDirection": "desc",
+            "itemsView": items_view
+        }
+    }))?;
+    let response = session.wait_for_response(request_id, APP_SERVER_STARTUP_TIMEOUT, None)?;
+    let result = response_result(&response)?;
+    let turns = result
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Codex thread/turns/list 响应缺少 data".to_string())?;
+    Ok(turns.first().cloned())
+}
+
+fn parse_latest_turn_observation(
+    turn: &Value,
+) -> Result<AutoResumeLatestTurnObservation, String> {
+    let turn_id = turn
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "Codex 最新 turn 缺少 id".to_string())?
+        .to_string();
+    let status = turn
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "Codex 最新 turn 缺少 status".to_string())?
+        .to_string();
+    let error = turn.get("error");
+    let codex_error_info = error.and_then(|value| value.get("codexErrorInfo"));
+    let codex_error_code = match codex_error_info {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
+        Some(Value::Object(value)) => value.keys().min().cloned(),
+        _ => None,
+    };
+    let client_user_message_id = turn
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| {
+            item.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|value| normalized_identifier(value) == "usermessage")
+        })
+        .and_then(|item| item.get("clientId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(AutoResumeLatestTurnObservation {
+        turn_id,
+        status,
+        started_at: turn.get("startedAt").and_then(Value::as_i64),
+        completed_at: turn.get("completedAt").and_then(Value::as_i64),
+        error_message: error
+            .and_then(|value| value.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        codex_error_code,
+        client_user_message_id,
+    })
+}
+
+fn normalized_identifier(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphabetic())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn parse_thread_option(value: &Value) -> Option<AutoResumeThreadOption> {
     let id = value.get("id")?.as_str()?.to_string();
     let preview = value.get("preview").and_then(Value::as_str).unwrap_or("");
@@ -1022,6 +1196,14 @@ impl AppServerSession {
     }
 
     fn initialize(&mut self, timeout: Duration) -> Result<(), String> {
+        self.initialize_with_experimental(timeout, false)
+    }
+
+    fn initialize_with_experimental(
+        &mut self,
+        timeout: Duration,
+        experimental_api: bool,
+    ) -> Result<(), String> {
         self.send(json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1033,7 +1215,7 @@ impl AppServerSession {
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {
-                    "experimentalApi": false,
+                    "experimentalApi": experimental_api,
                     "requestAttestation": false
                 }
             }
@@ -2091,6 +2273,69 @@ mod tests {
             None,
             &compatibility_error
         ));
+    }
+
+    #[test]
+    fn capacity_recovery_only_accepts_owned_server_overload_failures_once() {
+        let recoverable = AutoResumeLatestTurnObservation {
+            turn_id: "turn-capacity".into(),
+            status: "failed".into(),
+            started_at: Some(100),
+            completed_at: Some(110),
+            error_message: Some("Selected model is at capacity".into()),
+            codex_error_code: Some("serverOverloaded".into()),
+            client_user_message_id: Some("user-message-1".into()),
+        };
+        assert!(recoverable.is_server_capacity_failure());
+        assert!(recoverable.is_recoverable_capacity_failure());
+
+        let mut missing_owner = recoverable.clone();
+        missing_owner.client_user_message_id = None;
+        assert!(missing_owner.is_server_capacity_failure());
+        assert!(!missing_owner.is_recoverable_capacity_failure());
+
+        let mut generated = recoverable.clone();
+        generated.client_user_message_id = Some("capacity:thread:turn-capacity".into());
+        assert!(generated.is_generated_by_capacity_recovery());
+        assert!(!generated.is_recoverable_capacity_failure());
+
+        let mut quota = recoverable.clone();
+        quota.codex_error_code = Some("usageLimitExceeded".into());
+        quota.error_message = Some("quota exhausted".into());
+        assert!(!quota.is_server_capacity_failure());
+        assert!(!quota.is_recoverable_capacity_failure());
+
+        let mut interrupted = recoverable;
+        interrupted.status = "interrupted".into();
+        assert!(!interrupted.is_server_capacity_failure());
+        assert!(!interrupted.is_recoverable_capacity_failure());
+    }
+
+    #[test]
+    fn latest_turn_parser_reads_capacity_code_and_client_message_identity() {
+        let parsed = parse_latest_turn_observation(&json!({
+            "id": "turn-1",
+            "status": "failed",
+            "startedAt": 100,
+            "completedAt": 110,
+            "error": {
+                "message": "Selected model is at capacity",
+                "codexErrorInfo": { "serverOverloaded": {} }
+            },
+            "items": [
+                {
+                    "type": "userMessage",
+                    "clientId": "message-owned-by-user"
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(parsed.codex_error_code.as_deref(), Some("serverOverloaded"));
+        assert_eq!(
+            parsed.client_user_message_id.as_deref(),
+            Some("message-owned-by-user")
+        );
+        assert!(parsed.is_recoverable_capacity_failure());
     }
 
     #[test]

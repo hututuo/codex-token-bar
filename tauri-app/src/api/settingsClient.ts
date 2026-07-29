@@ -62,10 +62,10 @@ export function readAutoResumeStatus(): Promise<AutoResumeRuntimeStatus> {
   return callCommandStrict<AutoResumeRuntimeStatus>("read_auto_resume_status");
 }
 
-export function runAutoResumeNow(): Promise<AutoResumeRuntimeStatus> {
+export function runAutoResumeNow(taskId: string): Promise<AutoResumeRuntimeStatus> {
   return callCommandStrict<AutoResumeRuntimeStatus>(
     "run_auto_resume_now",
-    undefined,
+    { taskId },
     6 * 60 * 60 * 1_000 + 60_000,
   );
 }

@@ -71,7 +71,7 @@ test("auto resume client uses the exact native command contract", async () => {
       await saveAutoResumeSettings(settings);
       await listAutoResumeThreads();
       await readAutoResumeStatus();
-      await runAutoResumeNow();
+      await runAutoResumeNow("task-a");
       await cancelAutoResumeRun();
       await saveSessionEnhancementSettings({ markdownExport: true });
     });
@@ -80,7 +80,7 @@ test("auto resume client uses the exact native command contract", async () => {
       { command: "save_auto_resume_settings", args: { settings } },
       { command: "list_auto_resume_threads", args: {} },
       { command: "read_auto_resume_status", args: {} },
-      { command: "run_auto_resume_now", args: {} },
+      { command: "run_auto_resume_now", args: { taskId: "task-a" } },
       { command: "cancel_auto_resume_run", args: {} },
       { command: "save_session_enhancement_settings", args: { settings: { markdownExport: true } } },
     ]);

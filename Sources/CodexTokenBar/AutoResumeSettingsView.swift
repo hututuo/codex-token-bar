@@ -1,308 +1,483 @@
 import SwiftUI
 
 struct AutoResumeSettingsView: View {
-    @ObservedObject var controller: AutoResumeController
+    @ObservedObject var controller: AutoResumeTaskManager
     @State private var threadSearchQuery = ""
     @State private var selectedProjectID = ""
+    @State private var composerThreadID = ""
+    @State private var expandedTaskID: String?
+    @State private var pendingDeleteTaskID: String?
+    @State private var localMessage: String?
     private let menuPickerWidth: CGFloat = 240
 
     var body: some View {
         VStack(spacing: 18) {
-            statusSection
-            targetSection
-                .disabled(controller.isRunning)
-            scheduleSection
-                .disabled(controller.isRunning)
-            capacitySection
-                .disabled(controller.isRunning)
-            quotaSection
-                .disabled(controller.isRunning)
-            safetySection
-                .disabled(controller.isRunning)
-            manualSection
+            safetyBanner
+            creationSection
+            taskListSection
         }
-        .onAppear(perform: synchronizeSelectedProject)
+        .onAppear {
+            synchronizeSelectedProject()
+            if controller.availableThreads.isEmpty {
+                controller.refreshThreads()
+            }
+        }
         .onChange(of: controller.availableThreads) {
             synchronizeSelectedProject()
         }
-        .onChange(of: controller.configuration.target?.cwd) {
-            synchronizeSelectedProject()
+        .confirmationDialog(
+            "删除这条监控任务？",
+            isPresented: Binding(
+                get: { pendingDeleteTaskID != nil },
+                set: { if !$0 { pendingDeleteTaskID = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除任务", role: .destructive) {
+                guard let id = pendingDeleteTaskID else { return }
+                if controller.deleteTask(id: id) {
+                    if expandedTaskID == id { expandedTaskID = nil }
+                    localMessage = "监控任务已删除"
+                } else {
+                    localMessage = "任务正在续跑，请先停止后再删除"
+                }
+                pendingDeleteTaskID = nil
+            }
+            Button("取消", role: .cancel) {
+                pendingDeleteTaskID = nil
+            }
+        } message: {
+            Text("只会删除 Token Bar 中的监控配置，不会删除 Codex 会话。")
         }
     }
 
-    private var statusSection: some View {
-        section(
-            title: "运行状态",
-            subtitle: "总开关默认关闭；设置页关闭后仍由应用根生命周期守候"
-        ) {
-            infoRow(statusTitle, systemImage: statusSystemImage, detail: statusDetail)
-            toggleRow("启用自动续跑", systemImage: "play.circle.fill", isOn: enabledBinding)
+    private var safetyBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.shield.fill")
+                .foregroundStyle(AppTheme.accentBlue)
+                .font(.system(size: 17, weight: .semibold))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("一条任务，保护一个 Codex 会话")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Text("每条任务独立设置触发条件；应用内串行执行，并与跨平台版共用会话锁和触发记录。授权确认、人工输入和主动停止都不会被自动越过。")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
         }
+        .padding(12)
+        .background(AppTheme.selectedControlBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.accentBlue.opacity(0.2), lineWidth: 1)
+        )
     }
 
-    private var targetSection: some View {
-        section(
-            title: "目标与提示词",
-            subtitle: "默认“继续”优先无痕续跑；自定义文字会作为可见消息发送"
+    private var creationSection: some View {
+        settingsSection(
+            title: "创建监控任务",
+            subtitle: "先选项目和会话；创建后默认暂停，再按需要开启保护条件"
         ) {
-            actionRow(
-                controller.configuration.target?.displayTitle ?? "尚未选择目标会话",
-                systemImage: "text.bubble",
-                detail: controller.configuration.target?.cwd ?? "进入本页会自动读取，也可随时手动刷新",
-                buttonTitle: controller.isRefreshingThreads ? "刷新中" : "刷新会话",
-                buttonSystemImage: "arrow.clockwise",
-                action: controller.refreshThreads
-            )
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: "text.bubble.fill")
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .frame(width: 18)
+                    .padding(.top, 3)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(selectedComposerThread?.displayTitle ?? "尚未选择会话")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .lineLimit(2)
+                    Text(selectedComposerThread?.cwd ?? "读取本机 Codex 会话后即可创建监控任务")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 12)
+                Button {
+                    controller.refreshThreads()
+                } label: {
+                    Label(
+                        controller.isRefreshingThreads ? "刷新中" : "刷新会话",
+                        systemImage: "arrow.clockwise"
+                    )
+                    .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(controller.isRefreshingThreads)
+            }
+            .padding(12)
+            .autoResumeRowDivider()
+
             projectPickerRow
             threadSearchRow
             pickerRow(
                 "目标会话",
                 systemImage: "scope",
-                selection: targetBinding,
-                options: threadOptions
+                selection: $composerThreadID,
+                options: composerThreadOptions
             )
-            textFieldRow(
-                "续跑提示词",
-                systemImage: "text.cursor",
-                text: promptBinding,
-                placeholder: AutoResumeConfiguration.defaultPrompt
-            )
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(composerStatusTitle)
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Text(composerStatusDetail)
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Button("创建任务") {
+                    createSelectedTask()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(selectedComposerThread == nil)
+                .accessibilityHint("创建后默认暂停，不会立即续跑")
+            }
+            .padding(12)
         }
     }
 
-    private var scheduleSection: some View {
-        section(
-            title: "定时触发",
-            subtitle: "选择按间隔运行，或每天在本机固定时间运行一次"
+    private var taskListSection: some View {
+        settingsSection(
+            title: "监控任务",
+            subtitle: "\(controller.tasks.filter { $0.configuration.enabled }.count) 条保护中 · \(controller.tasks.count) 条任务"
         ) {
-            pickerRow(
-                "定时方式",
-                systemImage: "calendar.badge.clock",
-                selection: scheduleModeBinding,
-                options: AutoResumeScheduleMode.allCases.map { ($0.rawValue, $0.label) }
-            )
-            if controller.configuration.scheduleMode == .interval {
-                pickerRow(
-                    "续跑间隔",
-                    systemImage: "timer",
-                    selection: intervalBinding,
-                    options: intervalOptions
-                )
-            } else if controller.configuration.scheduleMode == .daily {
-                datePickerRow(
-                    "每天时间",
-                    systemImage: "clock",
-                    selection: dailyTimeBinding
-                )
+            if controller.tasks.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Text("还没有监控任务")
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Text("在上方选择一个 Codex 会话并创建；任务默认暂停，配置确认后再开启。")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+            } else {
+                ForEach(controller.tasks) { task in
+                    taskCard(task)
+                    if task.id != controller.tasks.last?.id {
+                        Divider().padding(.leading, 12)
+                    }
+                }
+            }
+            if let message = localMessage ?? controller.catalogError {
+                Text(message)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(message.contains("失败") ? AppTheme.accentRed : .secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 
-    private var quotaSection: some View {
-        section(
-            title: "额度恢复触发",
-            subtitle: "观察当前实际可用的额度窗口；先在低位武装，再在恢复或周期变化时续跑"
-        ) {
-            toggleRow(
-                "额度恢复时续跑",
-                systemImage: "battery.100percent.bolt",
-                isOn: quotaEnabledBinding
-            )
-            if controller.configuration.quotaRecoveryEnabled {
-                pickerRow(
-                    "观察额度",
-                    systemImage: "chart.bar",
-                    selection: quotaWindowBinding,
-                    options: AutoResumeQuotaWindow.allCases.map { ($0.rawValue, $0.label) }
+    @ViewBuilder
+    private func taskCard(_ task: AutoResumeManagedTask) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 10) {
+                Circle()
+                    .fill(taskStatusColor(task))
+                    .frame(width: 8, height: 8)
+                    .shadow(color: taskStatusColor(task).opacity(0.28), radius: 3)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(task.configuration.target?.displayTitle ?? "目标会话不可用")
+                            .font(.system(size: 11.8, weight: .semibold))
+                            .lineLimit(1)
+                        statusPill(taskStatusTitle(task), color: taskStatusColor(task))
+                    }
+                    HStack(spacing: 5) {
+                        ForEach(triggerLabels(task.configuration), id: \.self) { label in
+                            Text(label)
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .frame(height: 18)
+                                .background(AppTheme.panelBackgroundAlt, in: Capsule())
+                        }
+                        Text("ID \(String(task.configuration.target?.id.suffix(6) ?? ""))")
+                            .font(.system(size: 8.5, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .monospaced()
+                    }
+                }
+                Spacer(minLength: 10)
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { task.configuration.enabled },
+                        set: { enabled in
+                            if enabled && !task.configuration.hasAutomaticTrigger {
+                                localMessage = "请先为任务开启至少一个自动触发条件"
+                                expandedTaskID = task.id
+                                return
+                            }
+                            task.controller.setEnabled(enabled)
+                            localMessage = enabled ? "任务已进入保护状态" : "任务已暂停"
+                        }
+                    )
                 )
-                sliderRow(
-                    "低位武装",
-                    systemImage: "arrow.down.to.line",
-                    value: quotaArmBinding,
-                    range: 0...25,
-                    display: "≤\(controller.configuration.quotaArmAtOrBelowPercent)%"
-                )
-                sliderRow(
-                    "恢复续跑",
-                    systemImage: "arrow.up.to.line",
-                    value: quotaResumeBinding,
-                    range: 10...100,
-                    display: "≥\(controller.configuration.quotaResumeAtOrAbovePercent)%"
-                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(task.isRunning)
+                .accessibilityLabel("\(task.configuration.target?.displayTitle ?? "监控任务")保护开关")
+                Button(expandedTaskID == task.id ? "收起" : "编辑") {
+                    expandedTaskID = expandedTaskID == task.id ? nil : task.id
+                    controller.selectTask(id: task.id)
+                    localMessage = nil
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(12)
+
+            if expandedTaskID == task.id {
+                Divider().padding(.leading, 12)
+                taskEditor(task)
             }
         }
-    }
-
-    private var capacitySection: some View {
-        section(
-            title: "中断续跑",
-            subtitle: "监督所选任务的最终失败状态；每个容量中断最多续跑一次"
-        ) {
-            toggleRow(
-                "容量不足时续跑",
-                systemImage: "bolt.horizontal.circle.fill",
-                isOn: capacityRecoveryEnabledBinding
-            )
-            infoRow(
-                "只认服务容量不足",
-                systemImage: "checkmark.shield.fill",
-                detail: "仅处理 Codex 的 serverOverloaded；额度耗尽、上下文超限、用户主动停止、审批和人工输入都不会触发。自动启动的后续轮若仍容量不足，也不会循环重试。"
-            )
-        }
-    }
-
-    private var safetySection: some View {
-        section(
-            title: "安全限制",
-            subtitle: "Swift 与 Tauri 共用同一任务锁、触发记录和跨端冷却"
-        ) {
-            stepperRow(
-                "冷却时间",
-                systemImage: "snowflake",
-                value: cooldownBinding,
-                range: 1...1_440,
-                display: "\(controller.configuration.cooldownMinutes) 分钟"
-            )
-            stepperRow(
-                "每天最多",
-                systemImage: "shield.checkered",
-                value: dailyLimitBinding,
-                range: 1...24,
-                display: "\(controller.configuration.maxRunsPerDay) 次"
-            )
-            toggleRow(
-                "结果通知",
-                systemImage: "bell.badge",
-                isOn: notifyOnResultBinding
-            )
-            infoRow(
-                "审批一律停下",
-                systemImage: "hand.raised.fill",
-                detail: "遇到命令或文件审批会明确拒绝；权限、用户输入或 elicitation 请求会返回错误并中断，绝不自动批准。"
-            )
-        }
-    }
-
-    private var manualSection: some View {
-        section(
-            title: "手动验证",
-            subtitle: "即使自动开关关闭，也可以按当前提示词规则安全续跑一次"
-        ) {
-            manualActionRow
-        }
-    }
-
-    private var enabledBinding: Binding<Bool> {
-        Binding(
-            get: { controller.configuration.enabled },
-            set: { controller.setEnabled($0) }
+        .background(
+            task.configuration.enabled
+                ? AppTheme.selectedControlBackground.opacity(0.36)
+                : Color.clear
         )
     }
 
-    private var targetBinding: Binding<String> {
-        Binding(
-            get: { controller.selectedThreadID ?? "" },
-            set: { controller.selectThread(id: $0.isEmpty ? nil : $0) }
-        )
+    private func taskEditor(_ task: AutoResumeManagedTask) -> some View {
+        let taskController = task.controller
+        let configuration = task.configuration
+        return VStack(spacing: 0) {
+            taskInfoRow(
+                "当前状态",
+                systemImage: "waveform.path.ecg",
+                detail: task.runtimeState.statusMessage
+            )
+            Group {
+                toggleRow(
+                    "容量不足时续跑",
+                    systemImage: "bolt.horizontal.circle.fill",
+                    isOn: Binding(
+                        get: { configuration.capacityRecoveryEnabled },
+                        set: { taskController.setCapacityRecoveryEnabled($0) }
+                    )
+                )
+                taskInfoRow(
+                    "严格识别容量中断",
+                    systemImage: "checkmark.shield.fill",
+                    detail: "只处理 Codex 的 serverOverloaded；每个容量中断最多续跑一次。自动启动的后续轮若仍容量不足，不会循环重试。额度耗尽、上下文超限、主动停止、审批和人工输入都不会触发。"
+                )
+                pickerRow(
+                    "定时方式",
+                    systemImage: "calendar.badge.clock",
+                    selection: Binding(
+                        get: { configuration.scheduleMode.rawValue },
+                        set: {
+                            taskController.setScheduleMode(
+                                AutoResumeScheduleMode(rawValue: $0) ?? .off
+                            )
+                        }
+                    ),
+                    options: AutoResumeScheduleMode.allCases.map { ($0.rawValue, $0.label) }
+                )
+                if configuration.scheduleMode == .interval {
+                    pickerRow(
+                        "续跑间隔",
+                        systemImage: "timer",
+                        selection: Binding(
+                            get: { String(configuration.intervalMinutes) },
+                            set: { taskController.setIntervalMinutes(Int($0) ?? 60) }
+                        ),
+                        options: intervalOptions
+                    )
+                } else if configuration.scheduleMode == .daily {
+                    datePickerRow(
+                        "每天时间",
+                        systemImage: "clock",
+                        selection: Binding(
+                            get: {
+                                var components = Calendar.current.dateComponents(
+                                    [.year, .month, .day],
+                                    from: Date()
+                                )
+                                components.hour = configuration.dailyHour
+                                components.minute = configuration.dailyMinute
+                                return Calendar.current.date(from: components) ?? Date()
+                            },
+                            set: { taskController.setDailyTime($0) }
+                        )
+                    )
+                }
+                toggleRow(
+                    "额度恢复时续跑",
+                    systemImage: "battery.100percent.bolt",
+                    isOn: Binding(
+                        get: { configuration.quotaRecoveryEnabled },
+                        set: { taskController.setQuotaRecoveryEnabled($0) }
+                    )
+                )
+                if configuration.quotaRecoveryEnabled {
+                    pickerRow(
+                        "观察额度",
+                        systemImage: "chart.bar",
+                        selection: Binding(
+                            get: { configuration.quotaWindow.rawValue },
+                            set: {
+                                taskController.setQuotaWindow(
+                                    AutoResumeQuotaWindow(rawValue: $0) ?? .lowestRemaining
+                                )
+                            }
+                        ),
+                        options: AutoResumeQuotaWindow.allCases.map { ($0.rawValue, $0.label) }
+                    )
+                    sliderRow(
+                        "低位武装",
+                        systemImage: "arrow.down.to.line",
+                        value: Binding(
+                            get: { Double(configuration.quotaArmAtOrBelowPercent) },
+                            set: { taskController.setQuotaArmPercent(Int($0.rounded())) }
+                        ),
+                        range: 0...25,
+                        display: "≤\(configuration.quotaArmAtOrBelowPercent)%"
+                    )
+                    sliderRow(
+                        "恢复续跑",
+                        systemImage: "arrow.up.to.line",
+                        value: Binding(
+                            get: { Double(configuration.quotaResumeAtOrAbovePercent) },
+                            set: { taskController.setQuotaResumePercent(Int($0.rounded())) }
+                        ),
+                        range: 10...100,
+                        display: "≥\(configuration.quotaResumeAtOrAbovePercent)%"
+                    )
+                }
+                textFieldRow(
+                    "续跑提示词",
+                    systemImage: "text.cursor",
+                    text: Binding(
+                        get: { configuration.prompt },
+                        set: { taskController.setPrompt($0) }
+                    ),
+                    placeholder: AutoResumeConfiguration.defaultPrompt
+                )
+                taskInfoRow(
+                    "默认“继续”优先无痕续跑",
+                    systemImage: "text.bubble.fill",
+                    detail: "默认用空输入启动后续轮；旧版不支持时才发送可见的“继续”。自定义文字会作为可见消息发送。"
+                )
+                stepperRow(
+                    "冷却时间",
+                    systemImage: "snowflake",
+                    value: Binding(
+                        get: { configuration.cooldownMinutes },
+                        set: { taskController.setCooldownMinutes($0) }
+                    ),
+                    range: 1...1_440,
+                    display: "\(configuration.cooldownMinutes) 分钟"
+                )
+                stepperRow(
+                    "每天最多",
+                    systemImage: "shield.checkered",
+                    value: Binding(
+                        get: { configuration.maxRunsPerDay },
+                        set: { taskController.setMaxRunsPerDay($0) }
+                    ),
+                    range: 1...24,
+                    display: "\(configuration.maxRunsPerDay) 次"
+                )
+                toggleRow(
+                    "结果通知",
+                    systemImage: "bell.badge",
+                    isOn: Binding(
+                        get: { configuration.notifyOnResult },
+                        set: { taskController.setNotifyOnResult($0) }
+                    )
+                )
+            }
+            .disabled(task.isRunning)
+            HStack(spacing: 8) {
+                Button("删除任务", role: .destructive) {
+                    pendingDeleteTaskID = task.id
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(task.isRunning)
+                Spacer()
+                if task.isRunning {
+                    Button("停止本次续跑") {
+                        taskController.stopCurrentRun()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(AppTheme.accentAmber)
+                }
+                Button(task.isRunning ? "正在续跑" : "立即测试 / 续跑") {
+                    taskController.runNow()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(task.isRunning)
+            }
+            .padding(12)
+        }
     }
 
-    private var projectBinding: Binding<String> {
-        Binding(
-            get: { selectedProjectID },
-            set: { value in
-                selectedProjectID = value
+    private var projectPickerRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "folder.fill").foregroundStyle(.secondary).frame(width: 16)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("项目文件夹").font(.system(size: 11.5, weight: .medium))
+                Text(selectedProject?.cwd ?? "刷新后选择项目文件夹")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 10)
+            Picker("", selection: $selectedProjectID) {
+                ForEach(projectOptions, id: \.0) { value, label in
+                    Text(label).tag(value)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: menuPickerWidth, alignment: .trailing)
+            .clipped()
+            .disabled(projectDescriptors.isEmpty)
+            .onChange(of: selectedProjectID) {
                 threadSearchQuery = ""
+                composerThreadID = ""
             }
-        )
+            .accessibilityLabel("自动续跑项目文件夹")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .autoResumeRowDivider()
     }
 
-    private var promptBinding: Binding<String> {
-        Binding(
-            get: { controller.configuration.prompt },
-            set: { controller.setPrompt($0) }
-        )
-    }
-
-    private var scheduleModeBinding: Binding<String> {
-        Binding(
-            get: { controller.configuration.scheduleMode.rawValue },
-            set: { controller.setScheduleMode(AutoResumeScheduleMode(rawValue: $0) ?? .off) }
-        )
-    }
-
-    private var intervalBinding: Binding<String> {
-        Binding(
-            get: { String(controller.configuration.intervalMinutes) },
-            set: { controller.setIntervalMinutes(Int($0) ?? 60) }
-        )
-    }
-
-    private var dailyTimeBinding: Binding<Date> {
-        Binding(
-            get: {
-                var components = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-                components.hour = controller.configuration.dailyHour
-                components.minute = controller.configuration.dailyMinute
-                return Calendar.current.date(from: components) ?? Date()
-            },
-            set: { controller.setDailyTime($0) }
-        )
-    }
-
-    private var quotaEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { controller.configuration.quotaRecoveryEnabled },
-            set: { controller.setQuotaRecoveryEnabled($0) }
-        )
-    }
-
-    private var capacityRecoveryEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { controller.configuration.capacityRecoveryEnabled },
-            set: { controller.setCapacityRecoveryEnabled($0) }
-        )
-    }
-
-    private var quotaWindowBinding: Binding<String> {
-        Binding(
-            get: { controller.configuration.quotaWindow.rawValue },
-            set: { controller.setQuotaWindow(AutoResumeQuotaWindow(rawValue: $0) ?? .lowestRemaining) }
-        )
-    }
-
-    private var quotaArmBinding: Binding<Double> {
-        Binding(
-            get: { Double(controller.configuration.quotaArmAtOrBelowPercent) },
-            set: { controller.setQuotaArmPercent(Int($0.rounded())) }
-        )
-    }
-
-    private var quotaResumeBinding: Binding<Double> {
-        Binding(
-            get: { Double(controller.configuration.quotaResumeAtOrAbovePercent) },
-            set: { controller.setQuotaResumePercent(Int($0.rounded())) }
-        )
-    }
-
-    private var cooldownBinding: Binding<Int> {
-        Binding(
-            get: { controller.configuration.cooldownMinutes },
-            set: { controller.setCooldownMinutes($0) }
-        )
-    }
-
-    private var dailyLimitBinding: Binding<Int> {
-        Binding(
-            get: { controller.configuration.maxRunsPerDay },
-            set: { controller.setMaxRunsPerDay($0) }
-        )
-    }
-
-    private var notifyOnResultBinding: Binding<Bool> {
-        Binding(
-            get: { controller.configuration.notifyOnResult },
-            set: { controller.setNotifyOnResult($0) }
-        )
+    private var threadSearchRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).frame(width: 16)
+            Text("搜索会话").font(.system(size: 11.5, weight: .medium))
+            Spacer(minLength: 10)
+            TextField("当前项目的标题或 thread ID", text: $threadSearchQuery)
+                .textFieldStyle(.roundedBorder)
+                .submitLabel(.search)
+                .onSubmit { controller.refreshThreads() }
+                .frame(minWidth: 250)
+                .accessibilityLabel("搜索自动续跑会话")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .autoResumeRowDivider()
     }
 
     private var projectDescriptors: [AutoResumeProjectDescriptor] {
@@ -318,98 +493,100 @@ struct AutoResumeSettingsView: View {
             from: controller.availableThreads,
             projectID: selectedProjectID,
             query: threadSearchQuery,
-            selectedThreadID: controller.selectedThreadID
+            selectedThreadID: composerThreadID
         )
+    }
+
+    private var selectedComposerThread: AutoResumeThreadDescriptor? {
+        controller.availableThreads.first { $0.id == composerThreadID }
     }
 
     private var projectOptions: [(String, String)] {
         guard !projectDescriptors.isEmpty else { return [("", "暂无可选项目")] }
-        return projectDescriptors.map { project in
-            (project.id, "\(project.displayName) · \(project.threadCount) 个会话")
+        return projectDescriptors.map { ($0.id, "\($0.displayName) · \($0.threadCount) 个会话") }
+    }
+
+    private var composerThreadOptions: [(String, String)] {
+        [("", "请选择目标会话")] + visibleThreads.map {
+            ($0.id, "\($0.displayTitle) · ID \(String($0.id.suffix(6)))")
         }
     }
 
-    private var threadOptions: [(String, String)] {
-        var values: [(String, String)] = [("", "请选择目标会话")]
-        values.append(contentsOf: visibleThreads.map { thread in
-            (thread.id, "\(thread.displayTitle) · ID \(String(thread.id.suffix(6)))")
-        })
-        if let target = controller.configuration.target,
-           !values.contains(where: { $0.0 == target.id }) {
-            values.append((target.id, "当前已选：\(target.displayTitle) · ID \(String(target.id.suffix(6)))"))
+    private var composerStatusTitle: String {
+        guard let selectedComposerThread else { return "选择会话后创建" }
+        if controller.tasks.contains(where: { $0.configuration.target?.id == selectedComposerThread.id }) {
+            return "这个会话已经在任务列表中"
         }
-        return values
+        return "将创建为暂停状态"
     }
 
-    private var projectPickerRow: some View {
-        HStack(alignment: .center, spacing: 9) {
-            Image(systemName: "folder.fill").foregroundStyle(.secondary).frame(width: 16)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("项目文件夹").font(.system(size: 11.5, weight: .medium))
-                Text(selectedProject?.cwd ?? (controller.isRefreshingThreads ? "正在读取本机项目…" : "刷新后选择项目文件夹"))
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                if let selectedProject {
-                    Text("项目共 \(selectedProject.threadCount) 个会话 · 当前显示 \(visibleThreads.count) 个 · 最多最近 \(AutoResumeThreadPicker.visibleThreadLimit) 个")
-                        .font(.system(size: 8.5, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            Spacer(minLength: 10)
-            Picker("", selection: projectBinding) {
-                ForEach(projectOptions, id: \.0) { value, label in Text(label).tag(value) }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(width: menuPickerWidth, alignment: .trailing)
-            .clipped()
-            .disabled(projectDescriptors.isEmpty)
-            .accessibilityLabel("自动续跑项目文件夹")
+    private var composerStatusDetail: String {
+        guard selectedComposerThread != nil else {
+            return "创建任务本身不会发送任何内容；开启保护后才会按条件自动续跑。"
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .autoResumeRowDivider()
+        if composerStatusTitle.contains("已经") {
+            return "点击“创建任务”会直接定位到已有任务，不会重复监控同一个会话。"
+        }
+        return "默认开启额度恢复条件，但保护开关保持关闭；可以先修改容量中断、定时和安全限制。"
     }
 
-    private var threadSearchRow: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).frame(width: 16)
-            Text("搜索会话").font(.system(size: 11.5, weight: .medium))
-            Spacer(minLength: 10)
-            HStack(spacing: 5) {
-                TextField("当前项目的标题或 thread ID；回车即可刷新", text: $threadSearchQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .submitLabel(.search)
-                    .onSubmit { controller.refreshThreads() }
-                    .frame(minWidth: 250)
-                    .accessibilityLabel("搜索自动续跑会话")
-                Button(action: controller.refreshThreads) {
-                    Image(systemName: "arrow.right.circle.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(AppTheme.accentBlue)
-                .disabled(controller.isRefreshingThreads)
-                .help("应用搜索并刷新会话")
-                .accessibilityLabel("应用搜索并刷新会话")
-            }
+    private func createSelectedTask() {
+        guard let target = selectedComposerThread else { return }
+        let result = controller.createTask(target: target)
+        switch result {
+        case .created(let id):
+            expandedTaskID = id
+            localMessage = "任务已创建，确认条件后再开启保护"
+        case .existing(let id):
+            expandedTaskID = id
+            localMessage = "已定位到这个会话的监控任务"
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .autoResumeRowDivider()
     }
 
     private func synchronizeSelectedProject() {
         let resolved = AutoResumeThreadPicker.resolvedProjectID(
             projects: projectDescriptors,
             currentID: selectedProjectID,
-            preferredCWD: controller.configuration.target?.cwd ?? ""
+            preferredCWD: selectedComposerThread?.cwd ?? ""
         )
         if resolved != selectedProjectID {
             selectedProjectID = resolved
         }
+    }
+
+    private func triggerLabels(_ configuration: AutoResumeConfiguration) -> [String] {
+        var labels: [String] = []
+        if configuration.capacityRecoveryEnabled { labels.append("容量中断") }
+        if configuration.scheduleMode != .off { labels.append("定时") }
+        if configuration.quotaRecoveryEnabled { labels.append("额度恢复") }
+        return labels.isEmpty ? ["未设触发"] : labels
+    }
+
+    private func taskStatusTitle(_ task: AutoResumeManagedTask) -> String {
+        if task.isRunning { return "正在续跑" }
+        switch task.runtimeState.status {
+        case .requiresHuman: return "需人工处理"
+        case .failed: return "检查失败"
+        case .succeeded: return task.configuration.enabled ? "保护中" : "已暂停"
+        default: return task.configuration.enabled ? "保护中" : "已暂停"
+        }
+    }
+
+    private func taskStatusColor(_ task: AutoResumeManagedTask) -> Color {
+        if task.isRunning { return AppTheme.accentBlue }
+        switch task.runtimeState.status {
+        case .requiresHuman, .failed: return AppTheme.accentRed
+        default: return task.configuration.enabled ? .green : .secondary
+        }
+    }
+
+    private func statusPill(_ title: String, color: Color) -> some View {
+        Text(title)
+            .font(.system(size: 8.5, weight: .bold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .frame(height: 19)
+            .background(color.opacity(0.1), in: Capsule())
     }
 
     private let intervalOptions = AutoResumeConfiguration.allowedIntervalMinutes.map { minutes in
@@ -417,73 +594,7 @@ struct AutoResumeSettingsView: View {
         return (String(minutes), label)
     }
 
-    private var statusTitle: String {
-        switch controller.runtimeState.status {
-        case .requiresHuman: return "需要人工处理"
-        case .running: return "正在续跑"
-        case .succeeded: return "最近续跑成功"
-        case .failed: return "最近续跑失败"
-        case .refreshingThreads: return "正在刷新任务"
-        case .stopped: return "续跑已停止"
-        case .idle, .waiting: return controller.configuration.enabled ? "自动续跑待命" : "自动续跑已关闭"
-        }
-    }
-
-    private var statusSystemImage: String {
-        switch controller.runtimeState.status {
-        case .requiresHuman: return "person.crop.circle.badge.exclamationmark"
-        case .running, .refreshingThreads: return "arrow.triangle.2.circlepath"
-        case .succeeded: return "checkmark.circle.fill"
-        case .failed: return "xmark.octagon.fill"
-        case .stopped: return "stop.circle"
-        case .idle, .waiting: return "clock.badge.checkmark"
-        }
-    }
-
-    private var statusDetail: String {
-        var parts = [controller.runtimeState.statusMessage]
-        parts.append(
-            "本端今日 \(controller.runsToday) 次 · 跨端上限 \(controller.configuration.maxRunsPerDay) 次"
-        )
-        if let last = controller.runtimeState.lastRunAt {
-            parts.append("最近 \(last.formatted(date: .abbreviated, time: .shortened))")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private var manualActionRow: some View {
-        HStack(alignment: .center, spacing: 11) {
-            Image(systemName: "play.fill")
-                .foregroundStyle(AppTheme.accentBlue)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(controller.configuration.prompt)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .lineLimit(2)
-                Text("恢复原会话后，默认用空输入启动后续轮；旧版不支持时才发送可见的“继续”。")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            if controller.isRunning {
-                Button("停止") { controller.stopCurrentRun() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(AppTheme.accentAmber)
-                    .accessibilityLabel("停止当前自动续跑")
-            }
-            Button("立即测试 / 续跑") { controller.runNow() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(controller.configuration.target == nil || controller.isRunning)
-                .accessibilityHint("在所选 Codex 任务中按当前提示词规则启动后续轮次")
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func section<Content: View>(
+    private func settingsSection<Content: View>(
         title: String,
         subtitle: String,
         @ViewBuilder content: () -> Content
@@ -494,8 +605,15 @@ struct AutoResumeSettingsView: View {
                 Text(subtitle).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary)
             }
             VStack(spacing: 0) { content() }
-                .background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(AppTheme.border, lineWidth: 1))
+                .background(
+                    AppTheme.solidControlBackground,
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(AppTheme.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -510,7 +628,6 @@ struct AutoResumeSettingsView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .accessibilityLabel(title)
-                .accessibilityValue(isOn.wrappedValue ? "已开启" : "已关闭")
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 40)
@@ -591,8 +708,6 @@ struct AutoResumeSettingsView: View {
             Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 16)
             Text(title).font(.system(size: 11.5, weight: .medium)).frame(width: 88, alignment: .leading)
             Slider(value: value, in: range, step: 1)
-                .accessibilityLabel(title)
-                .accessibilityValue(display)
             Text(display)
                 .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -622,15 +737,13 @@ struct AutoResumeSettingsView: View {
             Stepper("", value: value, in: range)
                 .labelsHidden()
                 .controlSize(.small)
-                .accessibilityLabel(title)
-                .accessibilityValue(display)
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 40)
         .autoResumeRowDivider()
     }
 
-    private func infoRow(_ title: String, systemImage: String, detail: String) -> some View {
+    private func taskInfoRow(_ title: String, systemImage: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: 9) {
             Image(systemName: systemImage)
                 .foregroundStyle(AppTheme.accentBlue)
@@ -647,45 +760,7 @@ struct AutoResumeSettingsView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func actionRow(
-        _ title: String,
-        systemImage: String,
-        detail: String,
-        buttonTitle: String,
-        buttonSystemImage: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: systemImage)
-                .foregroundStyle(AppTheme.accentBlue)
-                .frame(width: 18)
-                .padding(.top, 3)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 11.5, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            Spacer(minLength: 12)
-            Button(action: action) {
-                Label(buttonTitle, systemImage: buttonSystemImage)
-                    .font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(AppTheme.selectedControlBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(AppTheme.accentBlue.opacity(0.2), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(AppTheme.accentBlue)
-            .disabled(controller.isRefreshingThreads)
-            .accessibilityLabel(buttonTitle)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .autoResumeRowDivider()
     }
 }
 

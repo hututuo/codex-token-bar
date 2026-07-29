@@ -9,7 +9,7 @@ struct CodexTokenBarApp: App {
     @StateObject private var statusBarPanel: StatusBarTokenController
     @StateObject private var dashboardRuntime: DashboardRuntime
     @StateObject private var threadDeleteBridge: CodexThreadDeleteBridgeController
-    @StateObject private var autoResumeController: AutoResumeController
+    @StateObject private var autoResumeController: AutoResumeTaskManager
     private let updaterController: SPUStandardUpdaterController
 
     init() {
@@ -25,7 +25,7 @@ struct CodexTokenBarApp: App {
             floatingPanel: floatingPanel,
             statusBarPanel: statusBarPanel
         )
-        let autoResumeController = AutoResumeController(
+        let autoResumeController = AutoResumeTaskManager(
             quotaStore: dashboardRuntime.quotaStore,
             dataSourceProvider: { [weak dashboardRuntime] in
                 dashboardRuntime?.usageStore.currentDataSource

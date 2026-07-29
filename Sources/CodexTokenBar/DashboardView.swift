@@ -6,7 +6,7 @@ struct DashboardView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
-    @ObservedObject var autoResumeController: AutoResumeController
+    @ObservedObject var autoResumeController: AutoResumeTaskManager
     private let runtime: DashboardRuntime
     @State private var runtimeConsumerID = UUID()
     @ObservedObject private var store: CodexUsageStore
@@ -62,7 +62,7 @@ struct DashboardView: View {
         loginItemStore: LoginItemStore,
         updateSettingsStore: AppUpdateSettingsStore,
         threadDeleteBridge: CodexThreadDeleteBridgeController,
-        autoResumeController: AutoResumeController,
+        autoResumeController: AutoResumeTaskManager,
         runtime: DashboardRuntime
     ) {
         self.loginItemStore = loginItemStore
@@ -494,7 +494,7 @@ struct DashboardView: View {
                     openAppSettings(.autoResume)
                 },
                 threadDeleteStatus: threadDeleteBridge.status,
-                autoResumeEnabled: autoResumeController.configuration.enabled,
+                autoResumeEnabled: autoResumeController.hasProtectedTasks,
                 showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,

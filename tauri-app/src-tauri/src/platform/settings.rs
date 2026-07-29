@@ -2,7 +2,7 @@ use crate::core::{app_paths, app_paths::home_dir};
 use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot,
+    FloatingWindowSettingsSnapshot, AUTO_RESUME_TASK_COLLECTION_VERSION,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -2331,6 +2331,92 @@ fn sanitize_session_enhancement_settings(
 fn sanitize_auto_resume_settings(
     mut settings: AutoResumeSettingsSnapshot,
 ) -> AutoResumeSettingsSnapshot {
+    sanitize_auto_resume_legacy_fields(&mut settings);
+    if settings.task_collection_version < AUTO_RESUME_TASK_COLLECTION_VERSION
+        && settings.tasks.is_empty()
+        && !settings.thread_id.is_empty()
+    {
+        settings.tasks = settings.resolved_tasks();
+    }
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_threads = std::collections::HashSet::new();
+    settings.tasks = settings
+        .tasks
+        .into_iter()
+        .filter_map(|task| {
+            let mut legacy = task.as_legacy_settings();
+            sanitize_auto_resume_legacy_fields(&mut legacy);
+            if legacy.thread_id.is_empty() {
+                return None;
+            }
+            let id = {
+                let trimmed = task.id.trim();
+                if trimmed.is_empty() {
+                    stable_auto_resume_task_id(&legacy.thread_id)
+                } else {
+                    trimmed.chars().take(128).collect()
+                }
+            };
+            if !seen_ids.insert(id.clone()) || !seen_threads.insert(legacy.thread_id.clone()) {
+                return None;
+            }
+            Some(crate::models::AutoResumeTaskSettingsSnapshot {
+                id,
+                created_at: task.created_at.max(0),
+                updated_at: task.updated_at.max(task.created_at).max(0),
+                enabled: legacy.enabled,
+                thread_id: legacy.thread_id,
+                thread_title: legacy.thread_title,
+                thread_cwd: legacy.thread_cwd,
+                prompt: legacy.prompt,
+                schedule_mode: legacy.schedule_mode,
+                interval_minutes: legacy.interval_minutes,
+                daily_hour: legacy.daily_hour,
+                daily_minute: legacy.daily_minute,
+                capacity_recovery_enabled: legacy.capacity_recovery_enabled,
+                quota_resume_enabled: legacy.quota_resume_enabled,
+                quota_window: legacy.quota_window,
+                quota_low_threshold_percent: legacy.quota_low_threshold_percent,
+                quota_recovery_threshold_percent: legacy.quota_recovery_threshold_percent,
+                cooldown_minutes: legacy.cooldown_minutes,
+                max_runs_per_day: legacy.max_runs_per_day,
+                notify_on_result: legacy.notify_on_result,
+            })
+        })
+        .collect();
+    settings.selected_task_id = settings.selected_task_id.trim().chars().take(128).collect();
+    if !settings.tasks.is_empty() {
+        if !settings
+            .tasks
+            .iter()
+            .any(|task| task.id == settings.selected_task_id)
+        {
+            settings.selected_task_id = settings.tasks[0].id.clone();
+        }
+        let selected = settings
+            .tasks
+            .iter()
+            .find(|task| task.id == settings.selected_task_id)
+            .unwrap_or(&settings.tasks[0])
+            .as_legacy_settings();
+        let tasks = std::mem::take(&mut settings.tasks);
+        let selected_task_id = settings.selected_task_id.clone();
+        settings = selected;
+        settings.task_collection_version = AUTO_RESUME_TASK_COLLECTION_VERSION;
+        settings.selected_task_id = selected_task_id;
+        settings.tasks = tasks;
+    } else {
+        settings.task_collection_version = AUTO_RESUME_TASK_COLLECTION_VERSION;
+        settings.selected_task_id.clear();
+        settings.enabled = false;
+        settings.thread_id.clear();
+        settings.thread_title.clear();
+        settings.thread_cwd.clear();
+    }
+    settings
+}
+
+fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot) {
     settings.thread_id = settings.thread_id.trim().chars().take(128).collect();
     settings.thread_title = settings.thread_title.trim().chars().take(240).collect();
     settings.thread_cwd = settings.thread_cwd.trim().chars().take(2_048).collect();
@@ -2365,7 +2451,22 @@ fn sanitize_auto_resume_settings(
     if settings.thread_id.is_empty() {
         settings.enabled = false;
     }
-    settings
+    if settings.enabled
+        && settings.schedule_mode == "off"
+        && !settings.capacity_recovery_enabled
+        && !settings.quota_resume_enabled
+    {
+        settings.enabled = false;
+    }
+}
+
+fn stable_auto_resume_task_id(thread_id: &str) -> String {
+    let mut hash = 14_695_981_039_346_656_037_u64;
+    for byte in thread_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    format!("task-{hash:016x}")
 }
 
 fn sanitize_quota_refresh_interval_ms(value: u64) -> u64 {
@@ -2582,6 +2683,73 @@ mod tests {
         assert_eq!(sanitized.quota_recovery_threshold_percent, 21);
         assert_eq!(sanitized.cooldown_minutes, 1);
         assert_eq!(sanitized.max_runs_per_day, 24);
+    }
+
+    #[test]
+    fn auto_resume_task_collection_migrates_legacy_and_deduplicates_fail_closed() {
+        let legacy = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            enabled: true,
+            thread_id: " legacy-thread ".into(),
+            thread_title: " Legacy ".into(),
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        let migrated = legacy.resolved_tasks();
+        assert_eq!(migrated.len(), 1);
+        assert!(migrated[0].id.starts_with("legacy-"));
+        assert_eq!(migrated[0].thread_id, "legacy-thread");
+        assert_eq!(
+            legacy.task_collection_version,
+            AUTO_RESUME_TASK_COLLECTION_VERSION
+        );
+        assert_eq!(legacy.tasks.len(), 1);
+
+        let task_a = crate::models::AutoResumeTaskSettingsSnapshot {
+            id: "task-a".into(),
+            enabled: true,
+            thread_id: "thread-a".into(),
+            quota_resume_enabled: false,
+            capacity_recovery_enabled: false,
+            schedule_mode: "off".into(),
+            ..crate::models::AutoResumeTaskSettingsSnapshot::default()
+        };
+        let duplicate_thread = crate::models::AutoResumeTaskSettingsSnapshot {
+            id: "duplicate".into(),
+            thread_id: "thread-a".into(),
+            ..crate::models::AutoResumeTaskSettingsSnapshot::default()
+        };
+        let task_b = crate::models::AutoResumeTaskSettingsSnapshot {
+            id: "task-b".into(),
+            enabled: true,
+            thread_id: "thread-b".into(),
+            ..crate::models::AutoResumeTaskSettingsSnapshot::default()
+        };
+        let sanitized = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            selected_task_id: "missing".into(),
+            tasks: vec![task_a, duplicate_thread, task_b],
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert_eq!(sanitized.tasks.len(), 2);
+        assert_eq!(sanitized.selected_task_id, "task-a");
+        assert!(!sanitized.tasks[0].enabled);
+        assert!(sanitized.tasks[1].enabled);
+        assert_eq!(sanitized.thread_id, "thread-a");
+
+        let deleted = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            task_collection_version: AUTO_RESUME_TASK_COLLECTION_VERSION,
+            enabled: true,
+            thread_id: "stale-deleted-thread".into(),
+            thread_title: "stale title".into(),
+            tasks: Vec::new(),
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert_eq!(
+            deleted.task_collection_version,
+            AUTO_RESUME_TASK_COLLECTION_VERSION
+        );
+        assert!(deleted.tasks.is_empty());
+        assert!(deleted.resolved_tasks().is_empty());
+        assert!(deleted.thread_id.is_empty());
+        assert!(!deleted.enabled);
     }
 
     #[test]

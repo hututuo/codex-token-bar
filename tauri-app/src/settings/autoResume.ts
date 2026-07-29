@@ -3,11 +3,15 @@ import type {
   AutoResumeRuntimeStatus,
   AutoResumeScheduleMode,
   AutoResumeSettings,
+  AutoResumeTaskSettings,
 } from "../types/dashboard";
 
 export const AUTO_RESUME_INTERVAL_OPTIONS = [15, 30, 60, 120, 360, 720] as const;
 
 export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
+  taskCollectionVersion: 2,
+  selectedTaskId: "",
+  tasks: [],
   enabled: false,
   threadId: "",
   threadTitle: "",
@@ -17,6 +21,7 @@ export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
   intervalMinutes: 60,
   dailyHour: 9,
   dailyMinute: 0,
+  capacityRecoveryEnabled: false,
   quotaResumeEnabled: true,
   quotaWindow: "either",
   quotaLowThresholdPercent: 5,
@@ -36,27 +41,81 @@ export const DEFAULT_AUTO_RESUME_STATUS: AutoResumeRuntimeStatus = {
   nextScheduledAt: null,
   runsToday: 0,
   revision: 0,
+  taskId: null,
+  runningTaskId: null,
+  protectedTasks: 0,
+  totalTasks: 0,
+  tasks: [],
 };
 
 export function sanitizeAutoResumeSettings(
   settings?: Partial<AutoResumeSettings> | null,
 ): AutoResumeSettings {
   const source = settings ?? {};
+  const legacy = sanitizeAutoResumeTaskSettings(source);
+  const hasVersionedTaskCollection = Number(source.taskCollectionVersion) >= 2;
+  const seenIds = new Set<string>();
+  const seenThreads = new Set<string>();
+  const providedTasks = Array.isArray(source.tasks) ? source.tasks : [];
+  const tasks = providedTasks
+    .map((task) => sanitizeAutoResumeTaskSettings(task))
+    .filter((task) => {
+      if (!task.threadId) return false;
+      if (seenIds.has(task.id) || seenThreads.has(task.threadId)) return false;
+      seenIds.add(task.id);
+      seenThreads.add(task.threadId);
+      return true;
+    });
+  if (!hasVersionedTaskCollection && tasks.length === 0 && legacy.threadId) {
+    tasks.push({
+      ...legacy,
+      id: stableLegacyTaskId(legacy.threadId),
+      createdAt: 0,
+      updatedAt: 0,
+    });
+  }
+  const requestedSelectedId = cleanText(source.selectedTaskId, 128);
+  const selectedTaskId = tasks.some((task) => task.id === requestedSelectedId)
+    ? requestedSelectedId
+    : (tasks[0]?.id ?? "");
+  const selected = tasks.find((task) => task.id === selectedTaskId);
+  const rootConfiguration = selected
+    ?? (hasVersionedTaskCollection ? sanitizeAutoResumeTaskSettings(null) : legacy);
+  return {
+    ...rootConfiguration,
+    taskCollectionVersion: 2,
+    selectedTaskId,
+    tasks,
+  };
+}
+
+export function sanitizeAutoResumeTaskSettings(
+  settings?: Partial<AutoResumeTaskSettings> | Partial<AutoResumeSettings> | null,
+): AutoResumeTaskSettings {
+  const source = settings ?? {};
   const threadId = cleanText(source.threadId, 128);
   const lowThreshold = clampWholeNumber(source.quotaLowThresholdPercent, 0, 20, 5);
+  const scheduleMode = sanitizeScheduleMode(source.scheduleMode);
+  const capacityRecoveryEnabled = source.capacityRecoveryEnabled === true;
+  const quotaResumeEnabled = source.quotaResumeEnabled !== false;
+  const hasTrigger = scheduleMode !== "off" || capacityRecoveryEnabled || quotaResumeEnabled;
   return {
-    enabled: Boolean(source.enabled) && threadId.length > 0,
+    id: cleanText("id" in source ? source.id : "", 128) || stableLegacyTaskId(threadId),
+    createdAt: clampTimestamp("createdAt" in source ? source.createdAt : 0),
+    updatedAt: clampTimestamp("updatedAt" in source ? source.updatedAt : 0),
+    enabled: Boolean(source.enabled) && threadId.length > 0 && hasTrigger,
     threadId,
     threadTitle: cleanText(source.threadTitle, 240),
     threadCwd: cleanText(source.threadCwd, 2_048),
     prompt: cleanText(source.prompt, 8_000) || DEFAULT_AUTO_RESUME_SETTINGS.prompt,
-    scheduleMode: sanitizeScheduleMode(source.scheduleMode),
+    scheduleMode,
     intervalMinutes: AUTO_RESUME_INTERVAL_OPTIONS.includes(source.intervalMinutes as typeof AUTO_RESUME_INTERVAL_OPTIONS[number])
       ? Number(source.intervalMinutes)
       : DEFAULT_AUTO_RESUME_SETTINGS.intervalMinutes,
     dailyHour: clampWholeNumber(source.dailyHour, 0, 23, DEFAULT_AUTO_RESUME_SETTINGS.dailyHour),
     dailyMinute: clampWholeNumber(source.dailyMinute, 0, 59, DEFAULT_AUTO_RESUME_SETTINGS.dailyMinute),
-    quotaResumeEnabled: source.quotaResumeEnabled !== false,
+    capacityRecoveryEnabled,
+    quotaResumeEnabled,
     quotaWindow: sanitizeQuotaWindow(source.quotaWindow),
     quotaLowThresholdPercent: lowThreshold,
     quotaRecoveryThresholdPercent: clampWholeNumber(
@@ -69,6 +128,22 @@ export function sanitizeAutoResumeSettings(
     maxRunsPerDay: clampWholeNumber(source.maxRunsPerDay, 1, 24, DEFAULT_AUTO_RESUME_SETTINGS.maxRunsPerDay),
     notifyOnResult: source.notifyOnResult !== false,
   };
+}
+
+export function createAutoResumeTask(
+  thread: { id: string; title: string; cwd: string },
+  now = Date.now(),
+): AutoResumeTaskSettings {
+  return sanitizeAutoResumeTaskSettings({
+    ...DEFAULT_AUTO_RESUME_SETTINGS,
+    id: globalThis.crypto?.randomUUID?.() ?? `task-${now}-${Math.random().toString(16).slice(2)}`,
+    createdAt: now,
+    updatedAt: now,
+    enabled: false,
+    threadId: thread.id,
+    threadTitle: thread.title,
+    threadCwd: thread.cwd,
+  });
 }
 
 export function formatAutoResumeTimestamp(value: number | null): string {
@@ -101,4 +176,20 @@ function clampWholeNumber(value: unknown, minimum: number, maximum: number, fall
   const number = typeof value === "number" ? value : Number.NaN;
   if (!Number.isFinite(number)) return fallback;
   return Math.min(maximum, Math.max(minimum, Math.round(number)));
+}
+
+function clampTimestamp(value: unknown): number {
+  const number = typeof value === "number" ? value : Number.NaN;
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+}
+
+function stableLegacyTaskId(threadId: string): string {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (const byte of new TextEncoder().encode(threadId)) {
+    hash ^= BigInt(byte);
+    hash = (hash * prime) & mask;
+  }
+  return `legacy-${hash.toString(16).padStart(16, "0")}`;
 }

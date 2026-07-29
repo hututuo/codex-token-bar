@@ -67,7 +67,7 @@ export interface SessionEnhancementSettings {
 export type AutoResumeScheduleMode = "off" | "interval" | "daily";
 export type AutoResumeQuotaWindow = "fiveHour" | "sevenDay" | "either";
 
-export interface AutoResumeSettings {
+export interface AutoResumeTaskConfiguration {
   enabled: boolean;
   threadId: string;
   threadTitle: string;
@@ -77,6 +77,7 @@ export interface AutoResumeSettings {
   intervalMinutes: number;
   dailyHour: number;
   dailyMinute: number;
+  capacityRecoveryEnabled: boolean;
   quotaResumeEnabled: boolean;
   quotaWindow: AutoResumeQuotaWindow;
   quotaLowThresholdPercent: number;
@@ -84,6 +85,18 @@ export interface AutoResumeSettings {
   cooldownMinutes: number;
   maxRunsPerDay: number;
   notifyOnResult: boolean;
+}
+
+export interface AutoResumeTaskSettings extends AutoResumeTaskConfiguration {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AutoResumeSettings extends AutoResumeTaskConfiguration {
+  taskCollectionVersion: number;
+  selectedTaskId: string;
+  tasks: AutoResumeTaskSettings[];
 }
 
 export interface AutoResumeThreadOption {
@@ -96,6 +109,24 @@ export interface AutoResumeThreadOption {
 }
 
 export interface AutoResumeRuntimeStatus {
+  state: string;
+  message: string;
+  isRunning: boolean;
+  waitingForQuota: boolean;
+  lastTrigger: string | null;
+  lastRunAt: number | null;
+  nextScheduledAt: number | null;
+  runsToday: number;
+  revision: number;
+  taskId: string | null;
+  runningTaskId: string | null;
+  protectedTasks: number;
+  totalTasks: number;
+  tasks: AutoResumeTaskRuntimeStatus[];
+}
+
+export interface AutoResumeTaskRuntimeStatus {
+  taskId: string;
   state: string;
   message: string;
   isRunning: boolean;

@@ -79,9 +79,17 @@ fn default_conversation_view_max_width() -> u32 {
     900
 }
 
+pub const AUTO_RESUME_TASK_COLLECTION_VERSION: u8 = 2;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoResumeSettingsSnapshot {
+    #[serde(default)]
+    pub task_collection_version: u8,
+    #[serde(default)]
+    pub selected_task_id: String,
+    #[serde(default)]
+    pub tasks: Vec<AutoResumeTaskSettingsSnapshot>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -100,6 +108,8 @@ pub struct AutoResumeSettingsSnapshot {
     pub daily_hour: u8,
     #[serde(default)]
     pub daily_minute: u8,
+    #[serde(default)]
+    pub capacity_recovery_enabled: bool,
     #[serde(default = "default_enabled")]
     pub quota_resume_enabled: bool,
     #[serde(default = "default_auto_resume_quota_window")]
@@ -119,6 +129,9 @@ pub struct AutoResumeSettingsSnapshot {
 impl Default for AutoResumeSettingsSnapshot {
     fn default() -> Self {
         Self {
+            task_collection_version: 0,
+            selected_task_id: String::new(),
+            tasks: Vec::new(),
             enabled: false,
             thread_id: String::new(),
             thread_title: String::new(),
@@ -128,6 +141,7 @@ impl Default for AutoResumeSettingsSnapshot {
             interval_minutes: default_auto_resume_interval_minutes(),
             daily_hour: default_auto_resume_daily_hour(),
             daily_minute: 0,
+            capacity_recovery_enabled: false,
             quota_resume_enabled: true,
             quota_window: default_auto_resume_quota_window(),
             quota_low_threshold_percent: default_auto_resume_low_threshold(),
@@ -137,6 +151,149 @@ impl Default for AutoResumeSettingsSnapshot {
             notify_on_result: true,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoResumeTaskSettingsSnapshot {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub thread_id: String,
+    #[serde(default)]
+    pub thread_title: String,
+    #[serde(default)]
+    pub thread_cwd: String,
+    #[serde(default = "default_auto_resume_prompt")]
+    pub prompt: String,
+    #[serde(default = "default_auto_resume_schedule_mode")]
+    pub schedule_mode: String,
+    #[serde(default = "default_auto_resume_interval_minutes")]
+    pub interval_minutes: u32,
+    #[serde(default = "default_auto_resume_daily_hour")]
+    pub daily_hour: u8,
+    #[serde(default)]
+    pub daily_minute: u8,
+    #[serde(default)]
+    pub capacity_recovery_enabled: bool,
+    #[serde(default = "default_enabled")]
+    pub quota_resume_enabled: bool,
+    #[serde(default = "default_auto_resume_quota_window")]
+    pub quota_window: String,
+    #[serde(default = "default_auto_resume_low_threshold")]
+    pub quota_low_threshold_percent: u8,
+    #[serde(default = "default_auto_resume_recovery_threshold")]
+    pub quota_recovery_threshold_percent: u8,
+    #[serde(default = "default_auto_resume_cooldown_minutes")]
+    pub cooldown_minutes: u32,
+    #[serde(default = "default_auto_resume_max_runs_per_day")]
+    pub max_runs_per_day: u8,
+    #[serde(default = "default_enabled")]
+    pub notify_on_result: bool,
+}
+
+impl Default for AutoResumeTaskSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            enabled: false,
+            thread_id: String::new(),
+            thread_title: String::new(),
+            thread_cwd: String::new(),
+            prompt: default_auto_resume_prompt(),
+            schedule_mode: default_auto_resume_schedule_mode(),
+            interval_minutes: default_auto_resume_interval_minutes(),
+            daily_hour: default_auto_resume_daily_hour(),
+            daily_minute: 0,
+            capacity_recovery_enabled: false,
+            quota_resume_enabled: true,
+            quota_window: default_auto_resume_quota_window(),
+            quota_low_threshold_percent: default_auto_resume_low_threshold(),
+            quota_recovery_threshold_percent: default_auto_resume_recovery_threshold(),
+            cooldown_minutes: default_auto_resume_cooldown_minutes(),
+            max_runs_per_day: default_auto_resume_max_runs_per_day(),
+            notify_on_result: true,
+        }
+    }
+}
+
+impl AutoResumeTaskSettingsSnapshot {
+    pub fn as_legacy_settings(&self) -> AutoResumeSettingsSnapshot {
+        AutoResumeSettingsSnapshot {
+            task_collection_version: 0,
+            selected_task_id: self.id.clone(),
+            tasks: Vec::new(),
+            enabled: self.enabled,
+            thread_id: self.thread_id.clone(),
+            thread_title: self.thread_title.clone(),
+            thread_cwd: self.thread_cwd.clone(),
+            prompt: self.prompt.clone(),
+            schedule_mode: self.schedule_mode.clone(),
+            interval_minutes: self.interval_minutes,
+            daily_hour: self.daily_hour,
+            daily_minute: self.daily_minute,
+            capacity_recovery_enabled: self.capacity_recovery_enabled,
+            quota_resume_enabled: self.quota_resume_enabled,
+            quota_window: self.quota_window.clone(),
+            quota_low_threshold_percent: self.quota_low_threshold_percent,
+            quota_recovery_threshold_percent: self.quota_recovery_threshold_percent,
+            cooldown_minutes: self.cooldown_minutes,
+            max_runs_per_day: self.max_runs_per_day,
+            notify_on_result: self.notify_on_result,
+        }
+    }
+}
+
+impl AutoResumeSettingsSnapshot {
+    pub fn resolved_tasks(&self) -> Vec<AutoResumeTaskSettingsSnapshot> {
+        if self.task_collection_version >= AUTO_RESUME_TASK_COLLECTION_VERSION
+            || !self.tasks.is_empty()
+        {
+            return self.tasks.clone();
+        }
+        if self.thread_id.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![AutoResumeTaskSettingsSnapshot {
+            id: legacy_auto_resume_task_id(&self.thread_id),
+            created_at: 0,
+            updated_at: 0,
+            enabled: self.enabled,
+            thread_id: self.thread_id.clone(),
+            thread_title: self.thread_title.clone(),
+            thread_cwd: self.thread_cwd.clone(),
+            prompt: self.prompt.clone(),
+            schedule_mode: self.schedule_mode.clone(),
+            interval_minutes: self.interval_minutes,
+            daily_hour: self.daily_hour,
+            daily_minute: self.daily_minute,
+            capacity_recovery_enabled: self.capacity_recovery_enabled,
+            quota_resume_enabled: self.quota_resume_enabled,
+            quota_window: self.quota_window.clone(),
+            quota_low_threshold_percent: self.quota_low_threshold_percent,
+            quota_recovery_threshold_percent: self.quota_recovery_threshold_percent,
+            cooldown_minutes: self.cooldown_minutes,
+            max_runs_per_day: self.max_runs_per_day,
+            notify_on_result: self.notify_on_result,
+        }]
+    }
+}
+
+fn legacy_auto_resume_task_id(thread_id: &str) -> String {
+    let mut hash = 14_695_981_039_346_656_037_u64;
+    for byte in thread_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    format!("legacy-{hash:016x}")
 }
 
 fn default_auto_resume_prompt() -> String {

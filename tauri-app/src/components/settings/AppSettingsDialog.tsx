@@ -20,6 +20,7 @@ import { floatingTextPaletteForGroup } from "../../floating/floatingTextPalette"
 import { QUOTA_REFRESH_CADENCE_OPTIONS } from "../../settings/quotaRefreshCadence";
 import {
   AUTO_RESUME_INTERVAL_OPTIONS,
+  createAutoResumeTask,
   formatAutoResumeTimestamp,
   sanitizeAutoResumeSettings,
 } from "../../settings/autoResume";
@@ -35,6 +36,8 @@ import type {
   AutostartStatus,
   AutoResumeRuntimeStatus,
   AutoResumeSettings,
+  AutoResumeTaskRuntimeStatus,
+  AutoResumeTaskSettings,
   AutoResumeThreadOption,
   CodexHomeStatus,
   DisplaySurfaceSettings,
@@ -121,7 +124,7 @@ interface AppSettingsDialogProps {
   onCancelAutoResume: () => Promise<void>;
   onRefreshAutoResume: () => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;
-  onRunAutoResume: () => Promise<void>;
+  onRunAutoResume: (taskId: string) => Promise<void>;
   onSaveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
   onSaveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   onTokenRateFullScaleChange: (fullScale: number) => void;
@@ -728,10 +731,21 @@ function AutomationSettings({
   const [selectedProjectKey, setSelectedProjectKey] = useState(
     () => autoResumeProjectKey(autoResumeSettings.threadCwd),
   );
+  const [composerThreadId, setComposerThreadId] = useState("");
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(
+    () => sanitizeAutoResumeSettings(autoResumeSettings).selectedTaskId || null,
+  );
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
-    setDraft(sanitizeAutoResumeSettings(autoResumeSettings));
+    const next = sanitizeAutoResumeSettings(autoResumeSettings);
+    setDraft(next);
+    setExpandedTaskId((current) => (
+      current && next.tasks.some((task) => task.id === current)
+        ? current
+        : (next.selectedTaskId || null)
+    ));
     setLocalError(null);
   }, [autoResumeSettings]);
 
@@ -744,12 +758,13 @@ function AutomationSettings({
     setSelectedProjectKey((current) => resolveAutoResumeProjectKey(
       projectOptions,
       current,
-      autoResumeSettings.threadCwd,
+      autoResumeThreads.find((thread) => thread.id === composerThreadId)?.cwd
+        ?? autoResumeSettings.threadCwd,
     ));
-  }, [autoResumeSettings.threadCwd, projectOptions]);
+  }, [autoResumeSettings.threadCwd, autoResumeThreads, composerThreadId, projectOptions]);
 
   const normalizedDraft = sanitizeAutoResumeSettings(draft);
-  const dirty = JSON.stringify({ ...normalizedDraft, enabled: draft.enabled })
+  const dirty = JSON.stringify(normalizedDraft)
     !== JSON.stringify(sanitizeAutoResumeSettings(autoResumeSettings));
   const selectedProject = projectOptions.find((project) => project.key === selectedProjectKey);
   const projectThreads = useMemo(
@@ -761,41 +776,41 @@ function AutomationSettings({
       autoResumeThreads,
       selectedProjectKey,
       threadQuery,
-      draft.threadId,
+      composerThreadId,
     ),
-    [autoResumeThreads, draft.threadId, selectedProjectKey, threadQuery],
+    [autoResumeThreads, composerThreadId, selectedProjectKey, threadQuery],
   );
-  const selectedThread = autoResumeThreads.find((thread) => thread.id === draft.threadId);
+  const selectedThread = autoResumeThreads.find((thread) => thread.id === composerThreadId);
   const busy = autoResumeLoading || autoResumeSaving || autoResumeRunning || autoResumeStatus.isRunning;
   const runInProgress = autoResumeRunning || autoResumeStatus.isRunning;
   const cancellationPending = autoResumeCancelling || autoResumeStatus.state === "cancelling";
+  const taskStatusById = new Map(
+    (autoResumeStatus.tasks ?? []).map((status) => [status.taskId, status]),
+  );
 
-  function updateDraft<Key extends keyof AutoResumeSettings>(
-    key: Key,
-    value: AutoResumeSettings[Key],
-  ) {
-    setDraft((current) => ({ ...current, [key]: value }));
-    setLocalError(null);
-  }
-
-  function selectThread(thread: AutoResumeThreadOption) {
-    setDraft((current) => ({
+  function updateTask(taskId: string, patch: Partial<AutoResumeTaskSettings>) {
+    setDraft((current) => sanitizeAutoResumeSettings({
       ...current,
-      threadId: thread.id,
-      threadTitle: thread.title,
-      threadCwd: thread.cwd,
+      selectedTaskId: taskId,
+      tasks: current.tasks.map((task) => (
+        task.id === taskId
+          ? { ...task, ...patch, updatedAt: Date.now() }
+          : task
+      )),
     }));
     setLocalError(null);
   }
 
-  async function saveDraft() {
-    const validation = validateAutoResumeDraft(draft, false);
-    if (validation) {
-      setLocalError(validation);
-      return false;
-    }
+  function selectThread(thread: AutoResumeThreadOption) {
+    setComposerThreadId(thread.id);
+    setLocalError(null);
+  }
+
+  async function persist(next: AutoResumeSettings) {
     try {
-      await onSaveAutoResume(normalizedDraft);
+      const normalized = sanitizeAutoResumeSettings(next);
+      await onSaveAutoResume(normalized);
+      setDraft(normalized);
       setLocalError(null);
       return true;
     } catch (error) {
@@ -804,15 +819,90 @@ function AutomationSettings({
     }
   }
 
-  async function runNow() {
-    const validation = validateAutoResumeDraft(draft, true);
+  async function saveTask(taskId: string) {
+    const task = normalizedDraft.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) return false;
+    const validation = validateAutoResumeTask(task, false);
+    if (validation) {
+      setLocalError(validation);
+      return false;
+    }
+    return persist({ ...normalizedDraft, selectedTaskId: taskId });
+  }
+
+  async function createTask() {
+    if (!selectedThread) {
+      setLocalError("请先选择一个 Codex 会话。");
+      return;
+    }
+    const existing = normalizedDraft.tasks.find((task) => task.threadId === selectedThread.id);
+    if (existing) {
+      setExpandedTaskId(existing.id);
+      setDraft((current) => sanitizeAutoResumeSettings({
+        ...current,
+        selectedTaskId: existing.id,
+      }));
+      setLocalError("这个会话已经在保护列表中，已定位到原任务。");
+      return;
+    }
+    const task = createAutoResumeTask(selectedThread);
+    const next = sanitizeAutoResumeSettings({
+      ...normalizedDraft,
+      selectedTaskId: task.id,
+      tasks: [...normalizedDraft.tasks, task],
+    });
+    if (await persist(next)) {
+      setExpandedTaskId(task.id);
+      setLocalError("任务已创建并保持暂停；确认条件后再开启保护。");
+    }
+  }
+
+  async function toggleProtection(task: AutoResumeTaskSettings) {
+    const enabling = !task.enabled;
+    if (enabling && !hasAutomaticTrigger(task)) {
+      setExpandedTaskId(task.id);
+      setLocalError("请先开启容量中断、定时或额度恢复中的至少一项。");
+      return;
+    }
+    const next = sanitizeAutoResumeSettings({
+      ...normalizedDraft,
+      selectedTaskId: task.id,
+      tasks: normalizedDraft.tasks.map((candidate) => (
+        candidate.id === task.id
+          ? { ...candidate, enabled: enabling, updatedAt: Date.now() }
+          : candidate
+      )),
+    });
+    if (await persist(next)) {
+      setLocalError(enabling ? "任务已进入保护状态。" : "任务已暂停。");
+    }
+  }
+
+  async function deleteTask(taskId: string) {
+    const remaining = normalizedDraft.tasks.filter((task) => task.id !== taskId);
+    const next = sanitizeAutoResumeSettings({
+      ...normalizedDraft,
+      selectedTaskId: remaining[0]?.id ?? "",
+      tasks: remaining,
+    });
+    if (await persist(next)) {
+      setExpandedTaskId(remaining[0]?.id ?? null);
+      setPendingDeleteId(null);
+      setLocalError("监控任务已删除；Codex 原会话未受影响。");
+    }
+  }
+
+  async function runNow(taskId: string) {
+    const task = normalizedDraft.tasks.find((candidate) => candidate.id === taskId);
+    if (!task) return;
+    const validation = validateAutoResumeTask(task, true);
     if (validation) {
       setLocalError(validation);
       return;
     }
-    if (dirty && !(await saveDraft())) return;
+    if (dirty && !(await saveTask(taskId))) return;
     try {
-      await onRunAutoResume();
+      await onRunAutoResume(taskId);
       setLocalError(null);
     } catch (error) {
       setLocalError(shortErrorMessage(error, "本次续跑没有启动，请重试。"));
@@ -831,30 +921,11 @@ function AutomationSettings({
   return (
     <>
       <div className="auto-resume-safety-note" role="note">
-        <strong>安全边界</strong>
-        <span>遇到授权确认或需要用户输入时会明确拒绝并中断本次续跑，等待你回到 Codex 手动处理；不会代替你自动批准。</span>
+        <strong>一条任务保护一个 Codex 会话</strong>
+        <span>每条任务独立配置并持久化；应用内串行执行。授权确认、需要人工输入和主动停止都不会被自动越过。</span>
       </div>
 
-      {runInProgress ? <div className="app-settings-note">续跑进行中，目标与触发设置已暂时锁定；停止后可修改。</div> : null}
-
-      <fieldset className="auto-resume-config-fieldset" disabled={runInProgress}>
-
-      <SettingsGroup title="总开关" description="默认关闭。保存后，只有选定的会话会按下方规则续跑。">
-        <SettingRow
-          title="自动续跑"
-          description={draft.enabled ? "已准备启用；检查会话、提示词与触发规则后保存。" : "关闭时不会产生任何自动发送。"}
-        >
-          <ToggleButton
-            active={draft.enabled}
-            disabled={autoResumeSaving}
-            label="自动续跑"
-            onClick={() => updateDraft("enabled", !draft.enabled)}
-          />
-        </SettingRow>
-        <div className="app-settings-note">定时触发和额度恢复触发都受此总开关控制；Run Now 可用于手动验证。</div>
-      </SettingsGroup>
-
-      <SettingsGroup title="目标会话" description="先选项目文件夹，再从该项目的完整会话记录中选择；相同目录下的会话不会合并。">
+      <SettingsGroup title="创建监控任务" description="保留完整会话选择器；创建后默认暂停，可以先编辑再开启保护。">
         <label className="auto-resume-project-picker">
           <span>项目文件夹</span>
           <select
@@ -864,6 +935,7 @@ function AutomationSettings({
             onChange={(event) => {
               setSelectedProjectKey(event.currentTarget.value);
               setThreadQuery("");
+              setComposerThreadId("");
             }}
             value={selectedProjectKey}
           >
@@ -921,11 +993,11 @@ function AutomationSettings({
             ? `当前显示 ${filteredThreads.length} 条 · 项目共 ${projectThreads.length} 条 · 最多列出最近 ${AUTO_RESUME_VISIBLE_THREAD_LIMIT} 条`
             : "请先选择项目文件夹"}
         </div>
-        <div aria-label="自动续跑目标会话" className="auto-resume-thread-list" role="listbox">
+        <div aria-label="自动续跑目标会话" className="auto-resume-thread-list is-compact" role="listbox">
           {filteredThreads.length > 0 ? filteredThreads.map((thread) => (
             <button
-              aria-selected={draft.threadId === thread.id}
-              className={draft.threadId === thread.id ? "is-selected" : ""}
+              aria-selected={composerThreadId === thread.id}
+              className={composerThreadId === thread.id ? "is-selected" : ""}
               key={thread.id}
               onClick={() => selectThread(thread)}
               role="option"
@@ -947,170 +1019,255 @@ function AutomationSettings({
         </div>
         <div className="auto-resume-selected" aria-live="polite">
           <strong>当前选择</strong>
-          <span>{selectedThread?.title || draft.threadTitle || "尚未选择会话"}</span>
-          {(selectedThread?.cwd || draft.threadCwd) ? <code>{selectedThread?.cwd || draft.threadCwd}</code> : null}
-          {draft.threadId ? <small>thread ID: {draft.threadId}</small> : null}
+          <span>{selectedThread?.title || "尚未选择会话"}</span>
+          {selectedThread?.cwd ? <code>{selectedThread.cwd}</code> : null}
+          {selectedThread?.id ? <small>thread ID: {selectedThread.id}</small> : null}
+          <button
+            className="app-settings-action is-primary"
+            disabled={!selectedThread || autoResumeSaving}
+            onClick={() => void createTask()}
+            type="button"
+          >
+            {autoResumeSaving ? "创建中…" : "创建任务"}
+          </button>
         </div>
+        <div className="app-settings-note">创建本身不会发送任何内容；默认开启额度恢复条件，但保护开关保持关闭。</div>
       </SettingsGroup>
 
       <SettingsGroup
-        title="续跑提示词"
-        description="保持默认“继续”时，优先用 app-server 空输入无痕启动后续轮；旧版不支持才发送可见的“继续”。自定义文字会直接作为可见消息发送。"
+        title="监控任务"
+        description={`${normalizedDraft.tasks.filter((task) => task.enabled).length} 条保护中 · ${normalizedDraft.tasks.length} 条任务；同一时间只执行一条。`}
       >
-        <label className="auto-resume-prompt">
-          <span>提示词</span>
-          <textarea
-            aria-label="自动续跑提示词"
-            maxLength={8_000}
-            onChange={(event) => updateDraft("prompt", event.currentTarget.value)}
-            rows={4}
-            value={draft.prompt}
-          />
-          <small>{draft.prompt.length} / 8000</small>
-        </label>
-      </SettingsGroup>
-
-      <SettingsGroup title="时间计划" description="关闭时间计划只会停用时钟触发，不会关闭额度恢复触发。">
-        <div aria-label="自动续跑时间计划" className="auto-resume-mode-choice" role="radiogroup">
-          {([
-            ["off", "关闭", "不按时钟触发"],
-            ["interval", "按间隔", "固定分钟数后触发"],
-            ["daily", "每天", "每天固定时间触发"],
-          ] as const).map(([mode, label, description]) => (
-            <button
-              aria-checked={draft.scheduleMode === mode}
-              className={draft.scheduleMode === mode ? "is-active" : ""}
-              key={mode}
-              onClick={() => updateDraft("scheduleMode", mode)}
-              role="radio"
-              type="button"
-            >
-              <strong>{label}</strong><span>{description}</span>
-            </button>
-          ))}
-        </div>
-        {draft.scheduleMode === "interval" ? (
-          <SettingRow title="触发间隔" description="从上一次自动续跑完成后计算。">
-            <select
-              aria-label="自动续跑间隔"
-              className="app-settings-select"
-              onChange={(event) => updateDraft("intervalMinutes", Number(event.currentTarget.value))}
-              value={draft.intervalMinutes}
-            >
-              {AUTO_RESUME_INTERVAL_OPTIONS.map((minutes) => (
-                <option key={minutes} value={minutes}>{formatInterval(minutes)}</option>
-              ))}
-            </select>
-          </SettingRow>
-        ) : null}
-        {draft.scheduleMode === "daily" ? (
-          <SettingRow title="每日时间" description="使用当前设备的本地时区。">
-            <input
-              aria-label="自动续跑每日时间"
-              className="app-settings-time"
-              onChange={(event) => {
-                const [hour, minute] = event.currentTarget.value.split(":").map(Number);
-                if (!Number.isFinite(hour) || !Number.isFinite(minute)) return;
-                setDraft((current) => ({ ...current, dailyHour: hour, dailyMinute: minute }));
-                setLocalError(null);
-              }}
-              type="time"
-              value={`${String(draft.dailyHour).padStart(2, "0")}:${String(draft.dailyMinute).padStart(2, "0")}`}
-            />
-          </SettingRow>
-        ) : null}
-      </SettingsGroup>
-
-      <SettingsGroup title="额度恢复触发" description="先确认额度确实降到低位，再等它恢复，避免边界附近反复触发。">
-        <SettingRow title="额度恢复后续跑" description="任一已测量窗口进入低位就等待，全部恢复到阈值后才续跑。">
-          <ToggleButton
-            active={draft.quotaResumeEnabled}
-            label="额度恢复后续跑"
-            onClick={() => updateDraft("quotaResumeEnabled", !draft.quotaResumeEnabled)}
-          />
-        </SettingRow>
-        {draft.quotaResumeEnabled ? (
-          <>
-            <SettingRow title="监测窗口" description="选择哪个额度窗口可以触发恢复续跑。">
-              <select
-                aria-label="额度恢复监测窗口"
-                className="app-settings-select"
-                onChange={(event) => updateDraft("quotaWindow", event.currentTarget.value as AutoResumeSettings["quotaWindow"])}
-                value={draft.quotaWindow}
-              >
-                <option value="either">可用窗口中剩余更低者</option>
-                <option value="fiveHour">5h 窗口</option>
-                <option value="sevenDay">7d 窗口</option>
-              </select>
-            </SettingRow>
-            <div className="auto-resume-number-grid">
-              <label>
-                <span><strong>低位阈值</strong><em>可用额度降到此值或以下</em></span>
-                <span><input aria-label="额度低位阈值" max="20" min="0" onChange={(event) => updateDraft("quotaLowThresholdPercent", Number(event.currentTarget.value))} type="number" value={draft.quotaLowThresholdPercent} />%</span>
-              </label>
-              <label>
-                <span><strong>恢复阈值</strong><em>随后恢复到此值或以上</em></span>
-                <span><input aria-label="额度恢复阈值" max="100" min="1" onChange={(event) => updateDraft("quotaRecoveryThresholdPercent", Number(event.currentTarget.value))} type="number" value={draft.quotaRecoveryThresholdPercent} />%</span>
-              </label>
+        <div className="auto-resume-task-list">
+          {normalizedDraft.tasks.length === 0 ? (
+            <div className="auto-resume-empty is-task-empty">
+              还没有监控任务。请在上方选择会话并创建。
             </div>
-          </>
-        ) : null}
-      </SettingsGroup>
+          ) : normalizedDraft.tasks.map((task) => {
+            const status = taskStatusById.get(task.id);
+            const expanded = expandedTaskId === task.id;
+            const isTaskRunning = status?.isRunning === true
+              || autoResumeStatus.runningTaskId === task.id;
+            return (
+              <article
+                className={`auto-resume-task-card${task.enabled ? " is-protected" : ""}${expanded ? " is-expanded" : ""}`}
+                data-state={status?.state ?? (task.enabled ? "waiting" : "disabled")}
+                key={task.id}
+              >
+                <header className="auto-resume-task-header">
+                  <span className="auto-resume-task-state-dot" aria-hidden="true" />
+                  <button
+                    className="auto-resume-task-summary"
+                    onClick={() => {
+                      setExpandedTaskId(expanded ? null : task.id);
+                      setDraft((current) => sanitizeAutoResumeSettings({
+                        ...current,
+                        selectedTaskId: task.id,
+                      }));
+                    }}
+                    type="button"
+                  >
+                    <span>
+                      <strong>{task.threadTitle || "未命名会话"}</strong>
+                      <em>{displayAutoResumeTaskState(task, status)}</em>
+                    </span>
+                    <small>{task.threadCwd || "未记录项目"} · ID {task.threadId.slice(-6)}</small>
+                    <span className="auto-resume-task-chips">
+                      {autoResumeTriggerLabels(task).map((label) => <i key={label}>{label}</i>)}
+                    </span>
+                  </button>
+                  <ToggleButton
+                    active={task.enabled}
+                    disabled={autoResumeSaving || isTaskRunning}
+                    label={`${task.threadTitle || "监控任务"}保护`}
+                    onClick={() => void toggleProtection(task)}
+                  />
+                  <button
+                    className="app-settings-action"
+                    onClick={() => setExpandedTaskId(expanded ? null : task.id)}
+                    type="button"
+                  >
+                    {expanded ? "收起" : "编辑"}
+                  </button>
+                </header>
 
-      <SettingsGroup title="频率与通知" description="限制自动操作频率，并决定是否通知每次结果。">
-        <div className="auto-resume-number-grid">
-          <label>
-            <span><strong>冷却时间</strong><em>两次自动续跑之间至少等待</em></span>
-            <span><input aria-label="自动续跑冷却分钟" max="1440" min="1" onChange={(event) => updateDraft("cooldownMinutes", Number(event.currentTarget.value))} type="number" value={draft.cooldownMinutes} />分钟</span>
-          </label>
-          <label>
-            <span><strong>每日上限</strong><em>Swift 与 Tauri 合计，达到后当天不再自动触发</em></span>
-            <span><input aria-label="自动续跑每日上限" max="24" min="1" onChange={(event) => updateDraft("maxRunsPerDay", Number(event.currentTarget.value))} type="number" value={draft.maxRunsPerDay} />次</span>
-          </label>
-        </div>
-        <SettingRow title="结果通知" description="成功、等待或失败后显示系统通知。">
-          <ToggleButton
-            active={draft.notifyOnResult}
-            label="自动续跑结果通知"
-            onClick={() => updateDraft("notifyOnResult", !draft.notifyOnResult)}
-          />
-        </SettingRow>
-      </SettingsGroup>
+                {expanded ? (
+                  <div className="auto-resume-task-editor">
+                    <div className="auto-resume-task-runtime" aria-live="polite">
+                      <strong>{displayAutoResumeTaskState(task, status)}</strong>
+                      <span>{status?.message || (task.enabled ? "正在等待触发条件" : "任务已暂停")}</span>
+                    </div>
 
-      </fieldset>
+                    <SettingRow title="容量不足时续跑" description="只识别 Codex 的 serverOverloaded；每个容量中断最多续跑一次。">
+                      <ToggleButton
+                        active={task.capacityRecoveryEnabled}
+                        disabled={isTaskRunning}
+                        label="容量不足时续跑"
+                        onClick={() => updateTask(task.id, { capacityRecoveryEnabled: !task.capacityRecoveryEnabled })}
+                      />
+                    </SettingRow>
+                    <div className="app-settings-note">每个容量中断最多续跑一次；自动启动的后续轮若仍容量不足，不会循环重试。额度耗尽、上下文超限、主动停止、审批和人工输入都不会触发。</div>
 
-      <SettingsGroup title="运行状态" description="状态会自动刷新，也可手动刷新会话与下一次时间。">
-        <div className="auto-resume-status-card" data-state={autoResumeStatus.state} aria-live="polite">
-          <header>
-            <strong>{autoResumeRunning && !autoResumeStatus.isRunning ? "正在启动续跑" : displayAutoResumeState(autoResumeStatus)}</strong>
-            <span>{autoResumeLoading ? "刷新中" : `状态版本 ${autoResumeStatus.revision}`}</span>
-          </header>
-          <p>{autoResumeRunning && !autoResumeStatus.isRunning ? "正在把续跑请求交给本地 Codex…" : autoResumeStatus.message || "等待运行状态"}</p>
-          <dl>
-            <div><dt>下一次</dt><dd>{formatAutoResumeTimestamp(autoResumeStatus.nextScheduledAt)}</dd></div>
-            <div><dt>上次运行</dt><dd>{formatAutoResumeTimestamp(autoResumeStatus.lastRunAt)}</dd></div>
-            <div><dt>上次触发</dt><dd>{autoResumeStatus.lastTrigger || "尚无"}</dd></div>
-            <div><dt>本端今日</dt><dd>{autoResumeStatus.runsToday} 次 · 跨端上限 {draft.maxRunsPerDay} 次</dd></div>
-          </dl>
+                    <div aria-label="自动续跑时间计划" className="auto-resume-mode-choice" role="radiogroup">
+                      {([
+                        ["off", "关闭定时", "只保留其他触发"],
+                        ["interval", "按间隔", "固定分钟数后触发"],
+                        ["daily", "每天", "每天固定时间触发"],
+                      ] as const).map(([mode, label, description]) => (
+                        <button
+                          aria-checked={task.scheduleMode === mode}
+                          className={task.scheduleMode === mode ? "is-active" : ""}
+                          disabled={isTaskRunning}
+                          key={mode}
+                          onClick={() => updateTask(task.id, { scheduleMode: mode })}
+                          role="radio"
+                          type="button"
+                        >
+                          <strong>{label}</strong><span>{description}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {task.scheduleMode === "interval" ? (
+                      <SettingRow title="触发间隔" description="从上一次自动续跑完成后计算。">
+                        <select
+                          aria-label="自动续跑间隔"
+                          className="app-settings-select"
+                          disabled={isTaskRunning}
+                          onChange={(event) => updateTask(task.id, { intervalMinutes: Number(event.currentTarget.value) })}
+                          value={task.intervalMinutes}
+                        >
+                          {AUTO_RESUME_INTERVAL_OPTIONS.map((minutes) => (
+                            <option key={minutes} value={minutes}>{formatInterval(minutes)}</option>
+                          ))}
+                        </select>
+                      </SettingRow>
+                    ) : null}
+                    {task.scheduleMode === "daily" ? (
+                      <SettingRow title="每日时间" description="使用当前设备的本地时区。">
+                        <input
+                          aria-label="自动续跑每日时间"
+                          className="app-settings-time"
+                          disabled={isTaskRunning}
+                          onChange={(event) => {
+                            const [dailyHour, dailyMinute] = event.currentTarget.value.split(":").map(Number);
+                            if (Number.isFinite(dailyHour) && Number.isFinite(dailyMinute)) {
+                              updateTask(task.id, { dailyHour, dailyMinute });
+                            }
+                          }}
+                          type="time"
+                          value={`${String(task.dailyHour).padStart(2, "0")}:${String(task.dailyMinute).padStart(2, "0")}`}
+                        />
+                      </SettingRow>
+                    ) : null}
+
+                    <SettingRow title="额度恢复后续跑" description="先在低位武装，再等额度真实恢复，避免边界附近反复触发。">
+                      <ToggleButton
+                        active={task.quotaResumeEnabled}
+                        disabled={isTaskRunning}
+                        label="额度恢复后续跑"
+                        onClick={() => updateTask(task.id, { quotaResumeEnabled: !task.quotaResumeEnabled })}
+                      />
+                    </SettingRow>
+                    {task.quotaResumeEnabled ? (
+                      <>
+                        <SettingRow title="监测窗口" description="选择哪个额度窗口参与恢复判断。">
+                          <select
+                            aria-label="额度恢复监测窗口"
+                            className="app-settings-select"
+                            disabled={isTaskRunning}
+                            onChange={(event) => updateTask(task.id, {
+                              quotaWindow: event.currentTarget.value as AutoResumeTaskSettings["quotaWindow"],
+                            })}
+                            value={task.quotaWindow}
+                          >
+                            <option value="either">可用窗口中剩余更低者</option>
+                            <option value="fiveHour">5h 窗口</option>
+                            <option value="sevenDay">7d 窗口</option>
+                          </select>
+                        </SettingRow>
+                        <div className="auto-resume-number-grid">
+                          <label>
+                            <span><strong>低位阈值</strong><em>降到此值或以下</em></span>
+                            <span><input aria-label="额度低位阈值" disabled={isTaskRunning} max="20" min="0" onChange={(event) => updateTask(task.id, { quotaLowThresholdPercent: Number(event.currentTarget.value) })} type="number" value={task.quotaLowThresholdPercent} />%</span>
+                          </label>
+                          <label>
+                            <span><strong>恢复阈值</strong><em>恢复到此值或以上</em></span>
+                            <span><input aria-label="额度恢复阈值" disabled={isTaskRunning} max="100" min="1" onChange={(event) => updateTask(task.id, { quotaRecoveryThresholdPercent: Number(event.currentTarget.value) })} type="number" value={task.quotaRecoveryThresholdPercent} />%</span>
+                          </label>
+                        </div>
+                      </>
+                    ) : null}
+
+                    <label className="auto-resume-prompt">
+                      <span>续跑提示词</span>
+                      <textarea
+                        aria-label="自动续跑提示词"
+                        disabled={isTaskRunning}
+                        maxLength={8_000}
+                        onChange={(event) => updateTask(task.id, { prompt: event.currentTarget.value })}
+                        rows={3}
+                        value={task.prompt}
+                      />
+                      <small>{task.prompt.length} / 8000 · 默认“继续”先用 app-server 空输入无痕续跑；旧版不支持时才发送可见的“继续”，自定义文字会直接显示</small>
+                    </label>
+
+                    <div className="auto-resume-number-grid">
+                      <label>
+                        <span><strong>冷却时间</strong><em>两次自动续跑至少等待</em></span>
+                        <span><input aria-label="自动续跑冷却分钟" disabled={isTaskRunning} max="1440" min="1" onChange={(event) => updateTask(task.id, { cooldownMinutes: Number(event.currentTarget.value) })} type="number" value={task.cooldownMinutes} />分钟</span>
+                      </label>
+                      <label>
+                        <span><strong>每日上限</strong><em>Swift 与 Tauri 合计</em></span>
+                        <span><input aria-label="自动续跑每日上限" disabled={isTaskRunning} max="24" min="1" onChange={(event) => updateTask(task.id, { maxRunsPerDay: Number(event.currentTarget.value) })} type="number" value={task.maxRunsPerDay} />次</span>
+                      </label>
+                    </div>
+                    <SettingRow title="结果通知" description="成功、等待或失败后显示系统通知。">
+                      <ToggleButton
+                        active={task.notifyOnResult}
+                        disabled={isTaskRunning}
+                        label="自动续跑结果通知"
+                        onClick={() => updateTask(task.id, { notifyOnResult: !task.notifyOnResult })}
+                      />
+                    </SettingRow>
+
+                    <div className="auto-resume-task-actions">
+                      {pendingDeleteId === task.id ? (
+                        <span className="auto-resume-delete-confirm">
+                          <strong>确认删除？</strong>
+                          <button className="app-settings-action is-danger" disabled={isTaskRunning} onClick={() => void deleteTask(task.id)} type="button">确认删除</button>
+                          <button className="app-settings-action" onClick={() => setPendingDeleteId(null)} type="button">取消</button>
+                        </span>
+                      ) : (
+                        <button className="app-settings-action is-danger" disabled={isTaskRunning} onClick={() => setPendingDeleteId(task.id)} type="button">删除任务</button>
+                      )}
+                      <span />
+                      <button className="app-settings-action" disabled={autoResumeSaving || isTaskRunning} onClick={() => void saveTask(task.id)} type="button">
+                        {autoResumeSaving ? "保存中…" : "保存任务"}
+                      </button>
+                      {isTaskRunning ? (
+                        <button className="app-settings-action is-danger" disabled={cancellationPending} onClick={() => void cancelRun()} type="button">
+                          {cancellationPending ? "停止中…" : "停止本次续跑"}
+                        </button>
+                      ) : (
+                        <button className="app-settings-action is-primary" disabled={busy || autoResumeCancelling} onClick={() => void runNow(task.id)} type="button">
+                          {autoResumeRunning ? "启动中…" : "立即测试 / 续跑"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
         </div>
         {(localError || autoResumeError) ? (
           <div className="auto-resume-error" role="alert">{localError || autoResumeError}</div>
         ) : null}
         <div className="auto-resume-actions">
-          <span>{dirty ? "有未保存的更改" : "当前设置已同步"}</span>
+          <span>{dirty ? "有任务修改尚未保存" : `当前设置已同步 · 状态版本 ${autoResumeStatus.revision}`}</span>
           <button className="app-settings-action" disabled={autoResumeLoading} onClick={() => void onRefreshAutoResume()} type="button">刷新状态</button>
-          <button className="app-settings-action is-primary" disabled={autoResumeSaving} onClick={() => void saveDraft()} type="button">{autoResumeSaving ? "保存中…" : "保存设置"}</button>
-          {runInProgress ? (
-            <button className="app-settings-action is-danger" disabled={cancellationPending} onClick={() => void cancelRun()} type="button">
-              {cancellationPending ? "停止中…" : "停止本次续跑"}
-            </button>
-          ) : (
-            <button className="app-settings-action is-primary" disabled={busy || autoResumeCancelling} onClick={() => void runNow()} type="button">
-              {autoResumeRunning ? "启动中…" : "Run Now · 立即续跑"}
-            </button>
-          )}
+          {runInProgress ? <strong>{autoResumeStatus.message || "一条任务正在续跑"}</strong> : null}
         </div>
-        <div className="app-settings-note">Run Now 会先保存当前更改，再调用同一套安全续跑流程。</div>
       </SettingsGroup>
     </>
   );
@@ -1454,7 +1611,7 @@ function ToggleButton({
   );
 }
 
-function validateAutoResumeDraft(settings: AutoResumeSettings, forRun: boolean): string | null {
+function validateAutoResumeTask(settings: AutoResumeTaskSettings, forRun: boolean): string | null {
   if ((settings.enabled || forRun) && settings.threadId.trim().length === 0) {
     return forRun ? "请先明确选择要立即续跑的会话。" : "开启自动续跑前，请先选择目标会话。";
   }
@@ -1471,13 +1628,20 @@ function validateAutoResumeDraft(settings: AutoResumeSettings, forRun: boolean):
   if (!Number.isFinite(settings.maxRunsPerDay) || settings.maxRunsPerDay < 1) {
     return "每日续跑上限至少为 1 次。";
   }
+  if (settings.enabled && !hasAutomaticTrigger(settings)) {
+    return "开启保护前，请至少选择一种自动触发条件。";
+  }
   return null;
 }
 
-function displayAutoResumeState(status: AutoResumeRuntimeStatus): string {
-  if (status.isRunning) return "正在续跑";
-  if (status.waitingForQuota) return "等待额度恢复";
-  switch (status.state) {
+function displayAutoResumeTaskState(
+  task: AutoResumeTaskSettings,
+  status?: AutoResumeTaskRuntimeStatus,
+): string {
+  if (status?.isRunning) return "正在续跑";
+  if (status?.waitingForQuota) return "等待额度恢复";
+  if (!task.enabled) return "已暂停";
+  switch (status?.state) {
     case "disabled": return "已关闭";
     case "needsTarget": return "等待选择任务";
     case "armed": return "已就绪";
@@ -1494,8 +1658,22 @@ function displayAutoResumeState(status: AutoResumeRuntimeStatus): string {
     case "error": return "续跑失败";
     case "guarded": return "安全限制已生效";
     case "skipped": return "本次已跳过";
-    default: return status.state || "等待状态";
+    default: return task.enabled ? "保护中" : "已暂停";
   }
+}
+
+function hasAutomaticTrigger(task: AutoResumeTaskSettings): boolean {
+  return task.capacityRecoveryEnabled
+    || task.quotaResumeEnabled
+    || task.scheduleMode !== "off";
+}
+
+function autoResumeTriggerLabels(task: AutoResumeTaskSettings): string[] {
+  const labels: string[] = [];
+  if (task.capacityRecoveryEnabled) labels.push("容量中断");
+  if (task.scheduleMode !== "off") labels.push("定时");
+  if (task.quotaResumeEnabled) labels.push("额度恢复");
+  return labels.length > 0 ? labels : ["未设触发"];
 }
 
 function formatInterval(minutes: number): string {

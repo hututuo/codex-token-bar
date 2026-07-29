@@ -34,5 +34,11 @@ final class AutoResumeSettingsLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("每个容量中断最多续跑一次"))
         XCTAssertTrue(source.contains("自动启动的后续轮若仍容量不足"))
         XCTAssertFalse(source.contains("每个容量中断最多发送一次“继续”"))
+        XCTAssertTrue(source.contains("Group {"))
+        XCTAssertTrue(source.contains(".disabled(task.isRunning)"))
+        XCTAssertFalse(
+            source.contains(".disabled(task.isRunning && !task.configuration.enabled)"),
+            "paused tasks started manually must keep the stop action available"
+        )
     }
 }

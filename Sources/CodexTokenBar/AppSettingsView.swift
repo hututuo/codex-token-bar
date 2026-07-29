@@ -64,7 +64,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
 struct AppSettingsView: View {
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
-    @ObservedObject var autoResumeController: AutoResumeController
+    @ObservedObject var autoResumeController: AutoResumeTaskManager
     @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
     @Binding var selectedCategory: AppSettingsCategory
     @Binding var floatingPanelEnabled: Bool

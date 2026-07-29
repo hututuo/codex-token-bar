@@ -1,22 +1,28 @@
 import Combine
 import Foundation
 
-private enum AutoResumeStorage {
+enum AutoResumeStorage {
     static let configurationKey = "CodexTokenBar.autoResume.configuration.v1"
     static let runtimeStateKey = "CodexTokenBar.autoResume.runtimeState.v1"
 
-    static func loadConfiguration(defaults: UserDefaults) -> AutoResumeConfiguration {
-        guard let data = defaults.data(forKey: configurationKey),
+    static func loadConfiguration(
+        defaults: UserDefaults,
+        key: String = configurationKey
+    ) -> AutoResumeConfiguration? {
+        guard let data = defaults.data(forKey: key),
               let value = try? JSONDecoder().decode(AutoResumeConfiguration.self, from: data) else {
-            return .default
+            return nil
         }
         return value.normalized
     }
 
-    static func loadRuntimeState(defaults: UserDefaults) -> AutoResumeRuntimeState {
-        guard let data = defaults.data(forKey: runtimeStateKey),
+    static func loadRuntimeState(
+        defaults: UserDefaults,
+        key: String = runtimeStateKey
+    ) -> AutoResumeRuntimeState? {
+        guard let data = defaults.data(forKey: key),
               let value = try? JSONDecoder().decode(AutoResumeRuntimeState.self, from: data) else {
-            return .default
+            return nil
         }
         return value
     }
@@ -27,6 +33,22 @@ private enum AutoResumeStorage {
         guard let data = try? encoder.encode(value) else { return }
         guard defaults.data(forKey: key) != data else { return }
         defaults.set(data, forKey: key)
+    }
+}
+
+@MainActor
+final class AutoResumeLocalExecutionGate {
+    private var ownerID: String?
+
+    func acquire(ownerID: String) -> Bool {
+        guard self.ownerID == nil else { return false }
+        self.ownerID = ownerID
+        return true
+    }
+
+    func release(ownerID: String) {
+        guard self.ownerID == ownerID else { return }
+        self.ownerID = nil
     }
 }
 
@@ -98,6 +120,10 @@ final class AutoResumeController: ObservableObject {
     private let codexBinaryProvider: @Sendable () throws -> String
     private let notifier: any AutoResumeNotifying
     private let startGuard: AutoResumeStartGuard
+    private let configurationStorageKey: String
+    private let runtimeStateStorageKey: String
+    private let externallyManaged: Bool
+    private let localExecutionGate: AutoResumeLocalExecutionGate?
     private var cancellables: Set<AnyCancellable> = []
     private var schedulerTimer: Timer?
     private var executionTask: Task<Void, Never>?
@@ -120,7 +146,13 @@ final class AutoResumeController: ObservableObject {
         notifier: any AutoResumeNotifying = SystemAutoResumeNotifier(),
         codexBinaryProvider: @escaping @Sendable () throws -> String = {
             try CodexBinaryLocator.findExecutable()
-        }
+        },
+        configurationStorageKey: String = AutoResumeStorage.configurationKey,
+        runtimeStateStorageKey: String = AutoResumeStorage.runtimeStateKey,
+        initialConfiguration: AutoResumeConfiguration? = nil,
+        initialRuntimeState: AutoResumeRuntimeState? = nil,
+        externallyManaged: Bool = false,
+        localExecutionGate: AutoResumeLocalExecutionGate? = nil
     ) {
         self.quotaStore = quotaStore
         self.appServer = appServer
@@ -130,9 +162,19 @@ final class AutoResumeController: ObservableObject {
         self.quotaBackgroundActivityChanged = quotaBackgroundActivityChanged
         self.notifier = notifier
         self.codexBinaryProvider = codexBinaryProvider
-        let loadedConfiguration = AutoResumeStorage.loadConfiguration(defaults: defaults)
+        self.configurationStorageKey = configurationStorageKey
+        self.runtimeStateStorageKey = runtimeStateStorageKey
+        self.externallyManaged = externallyManaged
+        self.localExecutionGate = localExecutionGate
+        let loadedConfiguration = AutoResumeStorage.loadConfiguration(
+            defaults: defaults,
+            key: configurationStorageKey
+        ) ?? initialConfiguration ?? .default
         configuration = loadedConfiguration
-        runtimeState = AutoResumeStorage.loadRuntimeState(defaults: defaults)
+        runtimeState = AutoResumeStorage.loadRuntimeState(
+            defaults: defaults,
+            key: runtimeStateStorageKey
+        ) ?? initialRuntimeState ?? .default
         startGuard = AutoResumeStartGuard(configuration: loadedConfiguration)
     }
 
@@ -142,6 +184,7 @@ final class AutoResumeController: ObservableObject {
         workerTask?.cancel()
         capacityCheckTask?.cancel()
         capacityCheckToken = nil
+        localExecutionGate?.release(ownerID: ownerID)
     }
 
     func start() {
@@ -158,6 +201,12 @@ final class AutoResumeController: ObservableObject {
         refreshWaitingStatus()
         persistRuntimeState()
         updateQuotaBackgroundActivity()
+
+        guard !externallyManaged else {
+            synchronizePendingFreshness()
+            persistRuntimeState()
+            return
+        }
 
         quotaStore.$snapshot
             .receive(on: DispatchQueue.main)
@@ -282,6 +331,34 @@ final class AutoResumeController: ObservableObject {
         )
     }
 
+    func setTarget(_ target: AutoResumeThreadDescriptor?) {
+        var next = configuration
+        next.target = target
+        applyConfiguration(
+            next,
+            resetsScheduleAnchor: true,
+            resetsQuotaArming: true,
+            resetsCapacityMonitoring: true
+        )
+    }
+
+    func evaluateManagedTick(includeCapacity: Bool) {
+        guard externallyManaged else { return }
+        if includeCapacity {
+            evaluateCapacityRecovery()
+        }
+        evaluateSchedule()
+    }
+
+    func observeManagedQuota(_ snapshot: AccountQuotaSnapshot) {
+        guard externallyManaged else { return }
+        handleQuotaSnapshot(snapshot)
+    }
+
+    var isCapacityCheckInFlight: Bool {
+        capacityCheckTask != nil
+    }
+
     func refreshThreads() {
         guard !isRefreshingThreads else { return }
         isRefreshingThreads = true
@@ -341,6 +418,7 @@ final class AutoResumeController: ObservableObject {
         capacityCheckTask = nil
         capacityCheckToken = nil
         isRunning = false
+        localExecutionGate?.release(ownerID: ownerID)
         runtimeState.status = .stopped
         runtimeState.statusMessage = "自动续跑已停止"
         synchronizePendingFreshness()
@@ -407,7 +485,7 @@ final class AutoResumeController: ObservableObject {
         }
         AutoResumeStorage.save(
             configuration,
-            key: AutoResumeStorage.configurationKey,
+            key: configurationStorageKey,
             defaults: defaults
         )
         updateQuotaBackgroundActivity()
@@ -649,6 +727,19 @@ final class AutoResumeController: ObservableObject {
         if requiresAutomationEnabled, !configuration.enabled {
             return
         }
+        if let localExecutionGate,
+           !localExecutionGate.acquire(ownerID: ownerID) {
+            runtimeState.status = .waiting
+            runtimeState.statusMessage = "另一条监控任务正在续跑，本任务稍后重试"
+            persistRuntimeState()
+            return
+        }
+        var keepsLocalExecutionGate = false
+        defer {
+            if !keepsLocalExecutionGate {
+                localExecutionGate?.release(ownerID: ownerID)
+            }
+        }
         let expectedFreshness: AutoResumeThreadFreshness?
         if trigger.kind == .manual {
             expectedFreshness = nil
@@ -725,6 +816,7 @@ final class AutoResumeController: ObservableObject {
         state.lastError = nil
         runtimeState = state
         isRunning = true
+        keepsLocalExecutionGate = true
         persistRuntimeState()
 
         let appServer = self.appServer
@@ -881,6 +973,7 @@ final class AutoResumeController: ObservableObject {
         executionTask = nil
         workerTask = nil
         isRunning = false
+        localExecutionGate?.release(ownerID: ownerID)
         runtimeState.pruneRunHistory(now: now, calendar: .current)
         if outcome.claimedTrigger {
             runtimeState.lastRunAt = now
@@ -1220,7 +1313,7 @@ final class AutoResumeController: ObservableObject {
     private func persistRuntimeState() {
         AutoResumeStorage.save(
             runtimeState,
-            key: AutoResumeStorage.runtimeStateKey,
+            key: runtimeStateStorageKey,
             defaults: defaults
         )
     }

@@ -76,7 +76,7 @@ export interface DashboardShellSettingsState {
   completeSetupGuide: () => Promise<void>;
   cancelAutoResume: () => Promise<void>;
   refreshAutoResume: () => Promise<void>;
-  runAutoResume: () => Promise<void>;
+  runAutoResume: (taskId: string) => Promise<void>;
   saveAutoResume: (settings: AutoResumeSettings) => Promise<void>;
   saveSessionEnhancements: (settings: SessionEnhancementSettings) => Promise<void>;
   toggleAutostart: () => void;
@@ -381,11 +381,11 @@ export function useDashboardShellSettings({
     }
   }
 
-  async function runAutoResume() {
+  async function runAutoResume(taskId: string) {
     setAutoResumeRunning(true);
     setAutoResumeError(null);
     try {
-      const status = await runAutoResumeNow();
+      const status = await runAutoResumeNow(taskId);
       updateAutoResumeStatus(setAutoResumeStatus, status);
     } catch (error) {
       setAutoResumeError(`立即续跑失败：${commandErrorMessage(error)}`);

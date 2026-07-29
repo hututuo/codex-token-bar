@@ -60,7 +60,7 @@ test("header shortcuts can open session enhancements and auto resume directly", 
 
     await render({ initialCategory: "automation" });
     assert.equal(tabName(selectedTab(container)), "自动续跑");
-    assert.match(activePanel(container).textContent, /Run Now/);
+    assert.match(activePanel(container).textContent, /创建监控任务/);
   }, { initialCategory: "session" });
 });
 
@@ -148,10 +148,8 @@ test("auto resume settings preserve same-directory threads and save the selected
   await withMountedSettings(async ({ act, calls, container, window }) => {
     await click(act, tabByName(container, "自动续跑"), window);
     const panel = activePanel(container);
-    assert.match(panel.textContent, /授权确认或需要用户输入时会明确拒绝并中断本次续跑/);
-    assert.match(panel.textContent, /不会代替你自动批准/);
-    assert.match(panel.textContent, /app-server 空输入无痕启动后续轮/);
-    assert.match(panel.textContent, /自定义文字会直接作为可见消息发送/);
+    assert.match(panel.textContent, /一条任务保护一个 Codex 会话/);
+    assert.match(panel.textContent, /主动停止都不会被自动越过/);
 
     const threadButtons = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
     assert.equal(threadButtons.length, 2, "same-directory threads must not be deduplicated");
@@ -176,22 +174,48 @@ test("auto resume settings preserve same-directory threads and save the selected
       .find((button) => button.textContent.includes("Beta thread"));
     assert.ok(beta);
     await click(act, beta, window);
-    const masterSwitch = panel.querySelector('button[aria-label^="自动续跑："]');
-    assert.ok(masterSwitch);
-    await click(act, masterSwitch, window);
-    await click(act, buttonWithText(panel, "保存设置"), window);
+    await click(act, buttonWithText(panel, "创建任务"), window);
     await flushPromises(act);
 
     assert.equal(calls.autoResumeSaves.length, 1);
-    assert.equal(calls.autoResumeSaves[0].threadId, "thread-beta");
-    assert.equal(calls.autoResumeSaves[0].threadTitle, "Beta thread");
-    assert.equal(calls.autoResumeSaves[0].threadCwd, sharedCwd);
-    assert.equal(calls.autoResumeSaves[0].enabled, true);
+    const created = calls.autoResumeSaves[0].tasks[0];
+    assert.equal(created.threadId, "thread-beta");
+    assert.equal(created.threadTitle, "Beta thread");
+    assert.equal(created.threadCwd, sharedCwd);
+    assert.equal(created.enabled, false, "new tasks must start paused");
+    assert.equal(created.quotaResumeEnabled, true);
+
+    const protectionToggle = panel.querySelector('button[aria-label="Beta thread保护：关"]');
+    assert.ok(protectionToggle);
+    await click(act, protectionToggle, window);
+    await flushPromises(act);
+    assert.equal(calls.autoResumeSaves.length, 2);
+    assert.equal(calls.autoResumeSaves[1].tasks[0].enabled, true);
   }, {
     autoResumeThreads: [
       { id: "thread-alpha", title: "Alpha thread", cwd: sharedCwd, updatedAt: 1_784_000_000, status: "idle", source: "state-db" },
       { id: "thread-beta", title: "Beta thread", cwd: sharedCwd, updatedAt: 1_784_100_000, status: "active", source: "state-db" },
     ],
+  });
+});
+
+test("deleting the final auto resume task persists an explicit empty collection", async () => {
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    await click(act, buttonWithText(panel, "删除任务"), window);
+    await click(act, buttonWithText(panel, "确认删除"), window);
+    await flushPromises(act);
+
+    assert.equal(calls.autoResumeSaves.length, 1);
+    const saved = calls.autoResumeSaves[0];
+    assert.equal(saved.taskCollectionVersion, 2);
+    assert.deepEqual(saved.tasks, []);
+    assert.equal(saved.selectedTaskId, "");
+    assert.equal(saved.threadId, "");
+    assert.equal(saved.enabled, false);
+  }, {
+    autoResumeSettings: settingsWithTask(),
   });
 });
 
@@ -255,18 +279,14 @@ test("auto resume exposes interval, daily, quota and real run-now controls", asy
     assert.ok(panel.querySelector('input[aria-label="额度低位阈值"]'));
     assert.ok(panel.querySelector('input[aria-label="额度恢复阈值"]'));
 
-    await click(act, buttonWithText(panel, "Run Now"), window);
+    await click(act, buttonWithText(panel, "立即测试 / 续跑"), window);
     await flushPromises(act);
     assert.equal(calls.autoResumeSaves.length, 1, "run now should save dirty settings first");
     assert.equal(calls.autoResumeRuns, 1);
+    assert.deepEqual(calls.autoResumeRunTaskIds, ["task-alpha"]);
     assert.deepEqual(calls.autoResumeOrder, ["save", "run"]);
   }, {
-    autoResumeSettings: {
-      ...defaultAutoResumeSettings(),
-      threadId: "thread-alpha",
-      threadTitle: "Alpha thread",
-      threadCwd: "/Users/test/project",
-    },
+    autoResumeSettings: settingsWithTask(),
   });
 });
 
@@ -274,20 +294,14 @@ test("running auto resume replaces run-now with a real cancel action", async () 
   await withMountedSettings(async ({ act, calls, container, window }) => {
     await click(act, tabByName(container, "自动续跑"), window);
     const panel = activePanel(container);
-    assert.equal(buttonWithTextOrNull(panel, "Run Now"), null);
-    assert.equal(panel.querySelector("fieldset.auto-resume-config-fieldset")?.disabled, true);
-    assert.match(panel.textContent, /目标与触发设置已暂时锁定/);
+    assert.equal(buttonWithTextOrNull(panel, "立即测试 / 续跑"), null);
+    assert.equal(panel.querySelector('button[aria-label="容量不足时续跑：关"]')?.disabled, true);
     await click(act, buttonWithText(panel, "停止本次续跑"), window);
     await flushPromises(act);
     assert.equal(calls.autoResumeCancels, 1);
   }, {
-    autoResumeStatus: {
-      ...defaultAutoResumeStatus(),
-      state: "running",
-      message: "正在发送续跑提示",
-      isRunning: true,
-      revision: 7,
-    },
+    autoResumeSettings: settingsWithTask(),
+    autoResumeStatus: statusWithTask({ state: "running", message: "正在发送续跑提示", isRunning: true, revision: 7 }),
   });
 });
 
@@ -298,12 +312,8 @@ test("auto resume translates the native armed state", async () => {
     assert.match(panel.textContent, /已就绪/);
     assert.doesNotMatch(panel.textContent, /\barmed\b/);
   }, {
-    autoResumeStatus: {
-      ...defaultAutoResumeStatus(),
-      state: "armed",
-      message: "自动续跑已就绪",
-      revision: 8,
-    },
+    autoResumeSettings: settingsWithTask({ enabled: true }),
+    autoResumeStatus: statusWithTask({ state: "armed", message: "自动续跑已就绪", revision: 8 }),
   });
 });
 
@@ -315,7 +325,7 @@ test("auto resume surfaces backend loading and error states", async () => {
     const alert = panel.querySelector('[role="alert"]');
     assert.ok(alert);
     assert.match(alert.textContent, /无法连接自动续跑服务/);
-    assert.equal(buttonWithText(panel, "Run Now").disabled, true);
+    assert.equal(buttonWithText(panel, "刷新状态").disabled, true);
   }, {
     autoResumeError: "无法连接自动续跑服务",
     autoResumeLoading: true,
@@ -412,6 +422,7 @@ async function withMountedSettings(run, initialOverrides = {}) {
         autoResumeCancels: 0,
         autoResumeOrder: [],
         autoResumeRefreshes: 0,
+        autoResumeRunTaskIds: [],
         autoResumeRuns: 0,
         autoResumeSaves: [],
         close: 0,
@@ -449,6 +460,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     autoResumeCancels: 0,
     autoResumeOrder: [],
     autoResumeRefreshes: 0,
+    autoResumeRunTaskIds: [],
     autoResumeRuns: 0,
     autoResumeSaves: [],
     close: 0,
@@ -504,8 +516,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onQuotaRefreshIntervalChange: async () => {},
     onRefreshAutoResume: async () => { callLog.autoResumeRefreshes += 1; },
     onReconnectThreadDelete: async () => { callLog.threadDeleteReconnect += 1; },
-    onRunAutoResume: async () => {
+    onRunAutoResume: async (taskId) => {
       callLog.autoResumeRuns += 1;
+      callLog.autoResumeRunTaskIds.push(taskId);
       callLog.autoResumeOrder.push("run");
     },
     onSaveAutoResume: async (settings) => {
@@ -555,6 +568,9 @@ function platformCapabilities() {
 
 function defaultAutoResumeSettings() {
   return {
+    taskCollectionVersion: 2,
+    selectedTaskId: "",
+    tasks: [],
     enabled: false,
     threadId: "",
     threadTitle: "",
@@ -564,6 +580,7 @@ function defaultAutoResumeSettings() {
     intervalMinutes: 60,
     dailyHour: 9,
     dailyMinute: 0,
+    capacityRecoveryEnabled: false,
     quotaResumeEnabled: true,
     quotaWindow: "either",
     quotaLowThresholdPercent: 5,
@@ -585,6 +602,60 @@ function defaultAutoResumeStatus() {
     nextScheduledAt: null,
     runsToday: 0,
     revision: 0,
+    taskId: null,
+    runningTaskId: null,
+    protectedTasks: 0,
+    totalTasks: 0,
+    tasks: [],
+  };
+}
+
+function defaultAutoResumeTask(overrides = {}) {
+  return {
+    ...defaultAutoResumeSettings(),
+    id: "task-alpha",
+    createdAt: 1_784_000_000_000,
+    updatedAt: 1_784_000_000_000,
+    threadId: "thread-alpha",
+    threadTitle: "Alpha thread",
+    threadCwd: "/Users/test/project",
+    ...overrides,
+    selectedTaskId: undefined,
+    tasks: undefined,
+  };
+}
+
+function settingsWithTask(overrides = {}) {
+  const task = defaultAutoResumeTask(overrides);
+  return {
+    ...task,
+    selectedTaskId: task.id,
+    tasks: [task],
+  };
+}
+
+function statusWithTask(overrides = {}) {
+  const taskStatus = {
+    taskId: "task-alpha",
+    state: "waiting",
+    message: "正在等待触发条件",
+    isRunning: false,
+    waitingForQuota: false,
+    lastTrigger: null,
+    lastRunAt: null,
+    nextScheduledAt: null,
+    runsToday: 0,
+    revision: 1,
+    ...overrides,
+  };
+  return {
+    ...defaultAutoResumeStatus(),
+    ...overrides,
+    taskId: taskStatus.taskId,
+    runningTaskId: taskStatus.isRunning ? taskStatus.taskId : null,
+    protectedTasks: 1,
+    totalTasks: 1,
+    tasks: [taskStatus],
   };
 }
 

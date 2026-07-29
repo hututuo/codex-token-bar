@@ -17,7 +17,9 @@ pub use codex_instances::{
     CodexInstanceSyncOperation, CodexInstanceSyncPreview, CodexInstanceSyncResult,
     CodexInstanceSyncTransactionSummary, CodexInstanceUpdateRequest,
 };
-pub use auto_resume::{AutoResumeRuntimeStatus, AutoResumeThreadOption};
+pub use auto_resume::{
+    AutoResumeRuntimeStatus, AutoResumeTaskRuntimeStatus, AutoResumeThreadOption,
+};
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, RecentUsagePoint,
     SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
@@ -35,7 +37,8 @@ pub use quota::{
     QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
 };
 pub use settings::{
-    AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
+    AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutoResumeTaskSettingsSnapshot,
+    DisplaySurfaceSettingsSnapshot, AUTO_RESUME_TASK_COLLECTION_VERSION,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
 };
