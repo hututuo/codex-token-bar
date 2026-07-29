@@ -71,6 +71,7 @@ extension CodexAutoResumeAppServerServing {
 enum CodexAutoResumeAppServerError: LocalizedError, Equatable, Sendable {
     case invalidResponse(String)
     case serverError(String)
+    case rpcRejected(code: Int?, message: String)
     case timeout(String)
     case processExited(String)
     case activeTurn(String)
@@ -85,6 +86,8 @@ enum CodexAutoResumeAppServerError: LocalizedError, Equatable, Sendable {
             return "Codex App Server 返回无效：\(detail)"
         case .serverError(let message):
             return "Codex App Server 错误：\(message)"
+        case .rpcRejected(_, let message):
+            return "Codex App Server 拒绝请求：\(message)"
         case .timeout(let stage):
             return "等待 Codex \(stage) 超时"
         case .processExited(let stage):
@@ -416,16 +419,43 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                 throw CodexAutoResumeAppServerError.activeTurn(activeTurnID)
             }
 
-            let started = try channel.request(
-                method: "turn/start",
-                params: [
-                    "clientUserMessageId": clientMessageID,
-                    "threadId": target.id,
-                    "input": [["type": "text", "text": prompt]],
-                ],
-                timeout: requestTimeout,
-                startAuthorization: startAuthorization
-            )
+            let prefersInvisibleContinuation =
+                prompt == AutoResumeConfiguration.defaultPrompt
+            let primaryInput: [[String: Any]] = prefersInvisibleContinuation
+                ? []
+                : [["type": "text", "text": prompt]]
+            let started: [String: Any]
+            do {
+                started = try channel.request(
+                    method: "turn/start",
+                    params: [
+                        "clientUserMessageId": clientMessageID,
+                        "threadId": target.id,
+                        "input": primaryInput,
+                    ],
+                    timeout: requestTimeout,
+                    startAuthorization: startAuthorization
+                )
+            } catch {
+                guard prefersInvisibleContinuation,
+                      !channel.hasBoundTurn,
+                      Self.isEmptyInputCompatibilityRejection(error) else {
+                    throw error
+                }
+                // Older app-server builds may reject an empty input array. The first
+                // request was explicitly rejected before a turn existed, so retrying
+                // once with the visible default prompt cannot duplicate an accepted turn.
+                started = try channel.request(
+                    method: "turn/start",
+                    params: [
+                        "clientUserMessageId": clientMessageID,
+                        "threadId": target.id,
+                        "input": [["type": "text", "text": prompt]],
+                    ],
+                    timeout: requestTimeout,
+                    startAuthorization: startAuthorization
+                )
+            }
             guard let turn = started["turn"] as? [String: Any],
                   let turnID = Self.nonemptyString(turn["id"]) else {
                 throw CodexAutoResumeAppServerError.invalidResponse("turn/start 缺少 turn id")
@@ -487,6 +517,27 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         }
         try Task.checkCancellation()
         return try outcome.get()
+    }
+
+    private static func isEmptyInputCompatibilityRejection(_ error: Error) -> Bool {
+        guard let appServerError = error as? CodexAutoResumeAppServerError,
+              case .rpcRejected(let code, let message) = appServerError else {
+            return false
+        }
+        if code == -32_602 {
+            return true
+        }
+        let normalized = message.lowercased()
+        let mentionsInput = normalized.contains("input")
+            || normalized.contains("message")
+            || message.contains("输入")
+        let rejectsEmpty = normalized.contains("empty")
+            || normalized.contains("non-empty")
+            || normalized.contains("at least one")
+            || normalized.contains("minimum of 1")
+            || message.contains("不能为空")
+            || message.contains("至少一个")
+        return mentionsInput && rejectsEmpty
     }
 
     private static func parseThread(_ value: [String: Any]) -> AutoResumeThreadDescriptor? {
@@ -657,6 +708,10 @@ struct CodexAutoResumeRPCChannel {
         boundTurnID = turnID
     }
 
+    var hasBoundTurn: Bool {
+        boundTurnID != nil
+    }
+
     mutating func request(
         method: String,
         params: [String: Any],
@@ -799,7 +854,11 @@ struct CodexAutoResumeRPCChannel {
                     if CodexAppServerClient.looksLikeQuotaLimit(detail) {
                         throw CodexAutoResumeAppServerError.quotaLimited(detail)
                     }
-                    throw CodexAutoResumeAppServerError.serverError(detail)
+                    let code = (error["code"] as? NSNumber)?.intValue
+                    throw CodexAutoResumeAppServerError.rpcRejected(
+                        code: code,
+                        message: detail
+                    )
                 }
                 guard let result = message["result"] as? [String: Any] else {
                     throw CodexAutoResumeAppServerError.invalidResponse("\(stage) 缺少 result")

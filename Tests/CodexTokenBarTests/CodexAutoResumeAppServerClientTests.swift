@@ -224,7 +224,8 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(lists.count, 0, "超时后不得再发起分页请求")
     }
 
-    func testResumeUsesStableSequenceAndDeterministicClientMessageID() async throws {
+    func testDefaultPromptUsesInvisibleInputWithStableSequenceAndDeterministicClientMessageID()
+        async throws {
         let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
             beforeMatchingCompletion: [
                 notification("turn/completed", params: [
@@ -268,8 +269,147 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(startParams["clientUserMessageId"] as? String, "daily:thread-1:2026-07-16:0900")
         XCTAssertEqual(startParams["threadId"] as? String, "thread-1")
         let input = try XCTUnwrap(startParams["input"] as? [[String: Any]])
+        XCTAssertTrue(input.isEmpty)
+    }
+
+    func testCustomPromptRemainsAVisibleUserMessage() async throws {
+        let transport = AutoResumeScriptedTransport(events: successfulResumeEvents())
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        _ = try await client.resumeThread(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            target: thread(id: "thread-1"),
+            prompt: "先复核测试，再继续实现",
+            clientMessageID: "manual-custom"
+        )
+
+        let start = try XCTUnwrap(transport.writes.first { rpcMethod($0) == "turn/start" })
+        let params = try XCTUnwrap(start["params"] as? [String: Any])
+        let input = try XCTUnwrap(params["input"] as? [[String: Any]])
+        XCTAssertEqual(input.count, 1)
         XCTAssertEqual(input.first?["type"] as? String, "text")
-        XCTAssertEqual(input.first?["text"] as? String, "继续")
+        XCTAssertEqual(input.first?["text"] as? String, "先复核测试，再继续实现")
+    }
+
+    func testInvalidParamsForEmptyInputFallsBackOnceToVisibleDefaultPrompt() async throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["thread": ["id": "thread-1"]]),
+            rpcResult(id: 3, result: [
+                "thread": [
+                    "id": "thread-1",
+                    "turns": [["id": "old-turn", "status": "completed"]],
+                ],
+            ]),
+            rpcError(id: 4, code: -32_602, message: "Invalid params"),
+            rpcResult(id: 5, result: ["turn": ["id": "turn-1", "status": "inProgress"]]),
+            notification("turn/completed", params: [
+                "threadId": "thread-1",
+                "turn": [
+                    "id": "turn-1",
+                    "status": "completed",
+                    "result": "done",
+                ],
+            ]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let result = try await client.resumeThread(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            target: thread(id: "thread-1"),
+            prompt: "继续",
+            clientMessageID: "compatibility-test"
+        )
+
+        XCTAssertEqual(result.turnID, "turn-1")
+        let starts = transport.writes.filter { rpcMethod($0) == "turn/start" }
+        XCTAssertEqual(starts.count, 2)
+        let firstParams = try XCTUnwrap(starts[0]["params"] as? [String: Any])
+        XCTAssertTrue(try XCTUnwrap(firstParams["input"] as? [[String: Any]]).isEmpty)
+        let fallbackParams = try XCTUnwrap(starts[1]["params"] as? [String: Any])
+        let fallbackInput = try XCTUnwrap(fallbackParams["input"] as? [[String: Any]])
+        XCTAssertEqual(fallbackInput.first?["text"] as? String, "继续")
+        XCTAssertEqual(
+            fallbackParams["clientUserMessageId"] as? String,
+            "compatibility-test"
+        )
+    }
+
+    func testUnrelatedTurnStartRejectionDoesNotSendVisibleFallback() async {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["thread": ["id": "thread-1"]]),
+            rpcResult(id: 3, result: [
+                "thread": [
+                    "id": "thread-1",
+                    "turns": [["id": "old-turn", "status": "completed"]],
+                ],
+            ]),
+            rpcError(id: 4, code: -32_000, message: "server unavailable"),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        do {
+            _ = try await client.resumeThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                target: thread(id: "thread-1"),
+                prompt: "继续",
+                clientMessageID: "no-fallback-test"
+            )
+            XCTFail("Expected turn/start rejection")
+        } catch {
+            XCTAssertEqual(
+                error as? CodexAutoResumeAppServerError,
+                .rpcRejected(code: -32_000, message: "server unavailable")
+            )
+        }
+        XCTAssertEqual(
+            transport.writes.filter { rpcMethod($0) == "turn/start" }.count,
+            1
+        )
+    }
+
+    func testRejectedStartAfterTurnStartedNotificationNeverSendsVisibleFallback() async {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["thread": ["id": "thread-1"]]),
+            rpcResult(id: 3, result: [
+                "thread": [
+                    "id": "thread-1",
+                    "turns": [["id": "old-turn", "status": "completed"]],
+                ],
+            ]),
+            notification("turn/started", params: [
+                "threadId": "thread-1",
+                "turn": ["id": "turn-already-created", "status": "inProgress"],
+            ]),
+            rpcError(id: 4, code: -32_602, message: "Invalid params"),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        do {
+            _ = try await client.resumeThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                target: thread(id: "thread-1"),
+                prompt: "继续",
+                clientMessageID: "inconsistent-server-test"
+            )
+            XCTFail("Expected the inconsistent start response to fail")
+        } catch {
+            XCTAssertEqual(
+                error as? CodexAutoResumeAppServerError,
+                .rpcRejected(code: -32_602, message: "Invalid params")
+            )
+        }
+        XCTAssertEqual(
+            transport.writes.filter { rpcMethod($0) == "turn/start" }.count,
+            1,
+            "一旦观察到 turn/started，就不得再用可见消息重试"
+        )
     }
 
     func testReadThreadFreshnessUsesThreadReadAndReturnsLastTurn() async throws {
@@ -718,6 +858,10 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? CodexAutoResumeAppServerError, .serverError(message))
         }
+        let starts = transport.writes.filter { rpcMethod($0) == "turn/start" }
+        XCTAssertEqual(starts.count, 1, "已接受的空输入轮次失败后不得再伪造可见继续")
+        let params = starts.first?["params"] as? [String: Any]
+        XCTAssertTrue((params?["input"] as? [[String: Any]])?.isEmpty == true)
     }
 
     func testCancellationBeforeTurnStartResponseWaitsForTurnIDAndInterrupts() async {
@@ -964,6 +1108,14 @@ private func successfulResumeEvents(
 
 private func rpcResult(id: Int, result: [String: Any]) -> Data {
     jsonLine(["jsonrpc": "2.0", "id": id, "result": result])
+}
+
+private func rpcError(id: Int, code: Int, message: String) -> Data {
+    jsonLine([
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": ["code": code, "message": message],
+    ])
 }
 
 private func notification(_ method: String, params: [String: Any]) -> Data {

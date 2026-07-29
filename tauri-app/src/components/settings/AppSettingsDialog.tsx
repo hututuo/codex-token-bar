@@ -953,7 +953,10 @@ function AutomationSettings({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title="续跑提示词" description="触发时会把这段文字发送到上面明确选择的会话。">
+      <SettingsGroup
+        title="续跑提示词"
+        description="保持默认“继续”时，优先用 app-server 空输入无痕启动后续轮；旧版不支持才发送可见的“继续”。自定义文字会直接作为可见消息发送。"
+      >
         <label className="auto-resume-prompt">
           <span>提示词</span>
           <textarea

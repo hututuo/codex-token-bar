@@ -150,6 +150,8 @@ test("auto resume settings preserve same-directory threads and save the selected
     const panel = activePanel(container);
     assert.match(panel.textContent, /授权确认或需要用户输入时会明确拒绝并中断本次续跑/);
     assert.match(panel.textContent, /不会代替你自动批准/);
+    assert.match(panel.textContent, /app-server 空输入无痕启动后续轮/);
+    assert.match(panel.textContent, /自定义文字会直接作为可见消息发送/);
 
     const threadButtons = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
     assert.equal(threadButtons.length, 2, "same-directory threads must not be deduplicated");

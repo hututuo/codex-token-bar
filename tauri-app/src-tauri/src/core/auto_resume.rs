@@ -17,6 +17,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const APP_SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const INTERRUPT_GRACE_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_AUTO_RESUME_PROMPT: &str = "继续";
+const PRIMARY_TURN_START_REQUEST_ID: i64 = 3;
+const FALLBACK_TURN_START_REQUEST_ID: i64 = 6;
 const STDERR_TAIL_LIMIT: usize = 16 * 1024;
 const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const THREAD_LEASE_DURATION: Duration = Duration::from_secs(2 * 60);
@@ -528,6 +531,10 @@ pub fn run_turn(
     start_generation_guard: Option<AutoResumeStartGenerationGuard>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<AutoResumeRunOutcome, String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err("续跑提示词为空".into());
+    }
     let mut session = AppServerSession::launch(codex_home)?;
     session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
     session.send(json!({
@@ -555,16 +562,13 @@ pub fn run_turn(
         ));
     }
 
-    let start_request = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "turn/start",
-        "params": {
-            "threadId": thread_id,
-            "clientUserMessageId": client_message_id,
-            "input": [{ "type": "text", "text": prompt }]
-        }
-    });
+    let prefers_invisible_continuation = prompt == DEFAULT_AUTO_RESUME_PROMPT;
+    let start_request = turn_start_request(
+        PRIMARY_TURN_START_REQUEST_ID,
+        thread_id,
+        client_message_id,
+        turn_start_input(prompt, prefers_invisible_continuation),
+    );
     let started = if let Some(guard) = start_generation_guard.as_ref() {
         guard.run_if_current(|| session.send(start_request))?
     } else {
@@ -584,6 +588,8 @@ pub fn run_turn(
     let mut interrupt_sent_at: Option<Instant> = None;
     let mut timed_out = false;
     let mut early_completions = Vec::new();
+    let mut start_request_id = PRIMARY_TURN_START_REQUEST_ID;
+    let mut visible_fallback_started = false;
     loop {
         let now = Instant::now();
         if !timed_out && now >= deadline {
@@ -630,8 +636,35 @@ pub fn run_turn(
             continue;
         };
 
-        if message.get("id").and_then(Value::as_i64) == Some(3) {
+        if message.get("id").and_then(Value::as_i64) == Some(start_request_id) {
             if let Some(error) = json_rpc_error_message(&message) {
+                if should_fallback_empty_turn_start(
+                    prefers_invisible_continuation,
+                    visible_fallback_started,
+                    turn_id.as_deref(),
+                    &message,
+                ) {
+                    let fallback_request = turn_start_request(
+                        FALLBACK_TURN_START_REQUEST_ID,
+                        thread_id,
+                        client_message_id,
+                        turn_start_input(prompt, false),
+                    );
+                    let fallback_started = if let Some(guard) = start_generation_guard.as_ref() {
+                        guard.run_if_current(|| session.send(fallback_request))?
+                    } else {
+                        session.send(fallback_request)?;
+                        true
+                    };
+                    if !fallback_started {
+                        return Ok(AutoResumeRunOutcome::skipped(
+                            "自动续跑设置已更改，旧触发已在兼容重试前作废",
+                        ));
+                    }
+                    visible_fallback_started = true;
+                    start_request_id = FALLBACK_TURN_START_REQUEST_ID;
+                    continue;
+                }
                 return Ok(AutoResumeRunOutcome::failed(error, turn_id));
             }
             let response_turn_id = message
@@ -732,6 +765,64 @@ pub fn run_turn(
             }
         }
     }
+}
+
+fn turn_start_input(prompt: &str, prefer_empty: bool) -> Value {
+    if prefer_empty {
+        json!([])
+    } else {
+        json!([{ "type": "text", "text": prompt }])
+    }
+}
+
+fn turn_start_request(
+    request_id: i64,
+    thread_id: &str,
+    client_message_id: &str,
+    input: Value,
+) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "turn/start",
+        "params": {
+            "threadId": thread_id,
+            "clientUserMessageId": client_message_id,
+            "input": input
+        }
+    })
+}
+
+fn is_empty_input_compatibility_rejection(message: &Value) -> bool {
+    if message.pointer("/error/code").and_then(Value::as_i64) == Some(-32_602) {
+        return true;
+    }
+    let detail = message
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let normalized = detail.to_ascii_lowercase();
+    let mentions_input =
+        normalized.contains("input") || normalized.contains("message") || detail.contains("输入");
+    let rejects_empty = normalized.contains("empty")
+        || normalized.contains("non-empty")
+        || normalized.contains("at least one")
+        || normalized.contains("minimum of 1")
+        || detail.contains("不能为空")
+        || detail.contains("至少一个");
+    mentions_input && rejects_empty
+}
+
+fn should_fallback_empty_turn_start(
+    prefers_invisible_continuation: bool,
+    visible_fallback_started: bool,
+    observed_turn_id: Option<&str>,
+    message: &Value,
+) -> bool {
+    prefers_invisible_continuation
+        && !visible_fallback_started
+        && observed_turn_id.is_none()
+        && is_empty_input_compatibility_rejection(message)
 }
 
 fn take_early_completion(
@@ -1916,6 +2007,90 @@ mod tests {
             "temporary rate limit; retry shortly"
         ));
         assert!(!looks_like_quota_limit("working directory missing"));
+    }
+
+    #[test]
+    fn default_prompt_builds_an_invisible_turn_start_request() {
+        let request = turn_start_request(
+            PRIMARY_TURN_START_REQUEST_ID,
+            "thread-1",
+            "daily:thread-1:2026-07-29:0900",
+            turn_start_input(DEFAULT_AUTO_RESUME_PROMPT, true),
+        );
+
+        assert_eq!(
+            request
+                .pointer("/params/input")
+                .and_then(Value::as_array)
+                .map(Vec::is_empty),
+            Some(true)
+        );
+        assert_eq!(
+            request
+                .pointer("/params/clientUserMessageId")
+                .and_then(Value::as_str),
+            Some("daily:thread-1:2026-07-29:0900")
+        );
+    }
+
+    #[test]
+    fn custom_prompt_builds_a_visible_turn_start_request() {
+        let request = turn_start_request(
+            PRIMARY_TURN_START_REQUEST_ID,
+            "thread-1",
+            "manual:test",
+            turn_start_input("先复核测试，再继续实现", false),
+        );
+
+        assert_eq!(
+            request
+                .pointer("/params/input/0/type")
+                .and_then(Value::as_str),
+            Some("text")
+        );
+        assert_eq!(
+            request
+                .pointer("/params/input/0/text")
+                .and_then(Value::as_str),
+            Some("先复核测试，再继续实现")
+        );
+    }
+
+    #[test]
+    fn empty_input_fallback_only_accepts_compatibility_rejections() {
+        let compatibility_error = json!({
+            "error": { "code": -32602, "message": "Invalid params" }
+        });
+        assert!(is_empty_input_compatibility_rejection(
+            &compatibility_error
+        ));
+        assert!(is_empty_input_compatibility_rejection(&json!({
+            "error": { "code": -32000, "message": "input must contain at least one item" }
+        })));
+        assert!(!is_empty_input_compatibility_rejection(&json!({
+            "error": { "code": -32000, "message": "Selected model is at capacity" }
+        })));
+        assert!(!is_empty_input_compatibility_rejection(&json!({
+            "error": { "code": -32000, "message": "thread not found" }
+        })));
+        assert!(should_fallback_empty_turn_start(
+            true,
+            false,
+            None,
+            &compatibility_error
+        ));
+        assert!(!should_fallback_empty_turn_start(
+            true,
+            false,
+            Some("turn-already-created"),
+            &compatibility_error
+        ));
+        assert!(!should_fallback_empty_turn_start(
+            true,
+            true,
+            None,
+            &compatibility_error
+        ));
     }
 
     #[test]

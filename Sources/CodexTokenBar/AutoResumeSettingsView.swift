@@ -43,7 +43,7 @@ struct AutoResumeSettingsView: View {
     private var targetSection: some View {
         section(
             title: "目标与提示词",
-            subtitle: "先选项目文件夹，再选其中的会话；同目录会话不会被合并"
+            subtitle: "默认“继续”优先无痕续跑；自定义文字会作为可见消息发送"
         ) {
             actionRow(
                 controller.configuration.target?.displayTitle ?? "尚未选择目标会话",
@@ -136,7 +136,7 @@ struct AutoResumeSettingsView: View {
     private var capacitySection: some View {
         section(
             title: "中断续跑",
-            subtitle: "监督所选任务的最终失败状态；每个容量中断最多发送一次“继续”"
+            subtitle: "监督所选任务的最终失败状态；每个容量中断最多续跑一次"
         ) {
             toggleRow(
                 "容量不足时续跑",
@@ -146,7 +146,7 @@ struct AutoResumeSettingsView: View {
             infoRow(
                 "只认服务容量不足",
                 systemImage: "checkmark.shield.fill",
-                detail: "仅处理 Codex 的 serverOverloaded；额度耗尽、上下文超限、用户主动停止、审批和人工输入都不会触发。自动发送的“继续”若仍容量不足，也不会循环重试。"
+                detail: "仅处理 Codex 的 serverOverloaded；额度耗尽、上下文超限、用户主动停止、审批和人工输入都不会触发。自动启动的后续轮若仍容量不足，也不会循环重试。"
             )
         }
     }
@@ -186,7 +186,7 @@ struct AutoResumeSettingsView: View {
     private var manualSection: some View {
         section(
             title: "手动验证",
-            subtitle: "即使自动开关关闭，也可以在所选任务上安全发送一次提示词"
+            subtitle: "即使自动开关关闭，也可以按当前提示词规则安全续跑一次"
         ) {
             manualActionRow
         }
@@ -460,7 +460,7 @@ struct AutoResumeSettingsView: View {
                 Text(controller.configuration.prompt)
                     .font(.system(size: 11.5, weight: .semibold))
                     .lineLimit(2)
-                Text("获取跨端任务锁后，恢复指定任务并发送带确定性消息 ID 的续跑提示词。")
+                Text("恢复原会话后，默认用空输入启动后续轮；旧版不支持时才发送可见的“继续”。")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -477,7 +477,7 @@ struct AutoResumeSettingsView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(controller.configuration.target == nil || controller.isRunning)
-                .accessibilityHint("在所选 Codex 任务中发送一次续跑提示词")
+                .accessibilityHint("在所选 Codex 任务中按当前提示词规则启动后续轮次")
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
