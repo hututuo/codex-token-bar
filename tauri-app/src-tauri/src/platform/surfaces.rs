@@ -1,8 +1,10 @@
 use crate::core::startup_trace;
-use crate::models::AppSettingsSnapshot;
 use super::StartupLaunchMode;
 use std::{
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::Duration,
 };
 use tauri::{
@@ -34,6 +36,7 @@ const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
 const STATUS_TRAY_UPDATE_ID: &str = "status-tray-update";
 const STATUS_TRAY_QUIT_ID: &str = "status-tray-quit";
 const STATUS_PANEL_PRESS_TIMEOUT: Duration = Duration::from_secs(2);
+const DASHBOARD_VISIBILITY_WATCHDOG_DELAY: Duration = Duration::from_secs(6);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PhysicalBounds {
@@ -105,7 +108,6 @@ enum StatusPanelReleaseAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FloatingStartupAction {
     None,
-    CreateHidden,
     CreateAndShow,
 }
 
@@ -118,18 +120,15 @@ struct SurfaceStartupPlan {
 fn surface_startup_plan(
     mode: StartupLaunchMode,
     floating_enabled: bool,
-    windows: bool,
 ) -> SurfaceStartupPlan {
     match mode {
         StartupLaunchMode::Manual => SurfaceStartupPlan {
             create_dashboard: true,
-            // Preserve Windows' main-thread precreation so enabling floating later from the
-            // dashboard remains possible. The no-background-WebView rule applies to autostart.
-            floating: if windows {
-                FloatingStartupAction::CreateHidden
-            } else {
-                FloatingStartupAction::None
-            },
+            // Never synchronously create a second WebView2 controller during Windows startup.
+            // Wry's current Windows controller creation pumps a nested message loop; creating
+            // the hidden floating controller here can deadlock the COM STA before Tauri's
+            // event loop starts. Floating remains lazy on manual launch.
+            floating: FloatingStartupAction::None,
         },
         StartupLaunchMode::Autostart => SurfaceStartupPlan {
             create_dashboard: false,
@@ -225,14 +224,10 @@ impl StatusPanelInteractionController {
 pub fn setup_desktop_surfaces(
     app: &tauri::App,
     mode: StartupLaunchMode,
-    settings: &AppSettingsSnapshot,
+    floating_enabled: bool,
 ) -> tauri::Result<()> {
     startup_trace::mark("rust setup start");
-    let plan = surface_startup_plan(
-        mode,
-        settings.display_surfaces.floating_window_enabled,
-        cfg!(target_os = "windows"),
-    );
+    let plan = surface_startup_plan(mode, floating_enabled);
 
     let status = execute_surface_startup_plan(
         plan,
@@ -250,10 +245,8 @@ pub fn setup_desktop_surfaces(
         },
         || show_floating_window(app.handle()).map(|_| ()),
         || {
-            startup_trace::mark("status tray create start");
-            let result = create_status_tray(app).map_err(|error| error.to_string());
-            startup_trace::mark("status tray create end");
-            result
+            startup_trace::mark("status tray create deferred");
+            schedule_status_tray_creation(app.handle().clone())
         },
     )
     .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?;
@@ -340,6 +333,35 @@ pub async fn show_floating_window_from_command(
     startup_trace::mark("floating window main dispatch end");
     rx.await
         .map_err(|_| "悬浮窗主线程操作在完成前被取消".to_string())?
+}
+
+pub async fn show_dashboard_window_from_command(
+    app: &tauri::AppHandle,
+) -> Result<bool, String> {
+    dispatch_surface_command(app, "主界面", show_dashboard_window).await
+}
+
+pub async fn show_status_panel_window_from_command(
+    app: &tauri::AppHandle,
+) -> Result<bool, String> {
+    dispatch_surface_command(app, "状态面板", show_status_panel_window).await
+}
+
+async fn dispatch_surface_command(
+    app: &tauri::AppHandle,
+    label: &'static str,
+    operation: fn(&tauri::AppHandle) -> Result<bool, String>,
+) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let dispatch = app.clone();
+    let target = app.clone();
+    dispatch
+        .run_on_main_thread(move || {
+            let _ = tx.send(operation(&target));
+        })
+        .map_err(|error| error.to_string())?;
+    rx.await
+        .map_err(|_| format!("{label}主线程操作在完成前被取消"))?
 }
 
 pub fn hide_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -626,55 +648,146 @@ fn schedule_status_panel_press_timeout(app: tauri::AppHandle, generation: u64) {
     });
 }
 
+fn schedule_dashboard_show(app: tauri::AppHandle) {
+    async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let dispatch = app.clone();
+        let dashboard = app.clone();
+        if let Err(error) = dispatch.run_on_main_thread(move || {
+            if let Err(error) = show_dashboard_window(&dashboard) {
+                startup_trace::mark(&format!("deferred dashboard show failed: {error}"));
+            }
+        }) {
+            startup_trace::mark(&format!("deferred dashboard dispatch failed: {error}"));
+        }
+    });
+}
+
+fn schedule_status_panel_toggle(app: tauri::AppHandle, tray_bounds: PhysicalBounds) {
+    async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let dispatch = app.clone();
+        let status_app = app.clone();
+        if let Err(error) = dispatch.run_on_main_thread(move || {
+            if let Err(error) = toggle_status_panel_at_tray(&status_app, tray_bounds) {
+                startup_trace::mark(&format!("deferred status panel toggle failed: {error}"));
+            }
+        }) {
+            startup_trace::mark(&format!("deferred status panel dispatch failed: {error}"));
+        }
+    });
+}
+
 pub fn set_status_tray_readout_native(
     app: &tauri::AppHandle,
     title: String,
     tooltip: String,
 ) -> Result<bool, String> {
-    let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
-        return Ok(false);
-    };
-
     if let Ok(mut live_title) = status_tray_live_title().lock() {
         *live_title = title.clone();
     }
     let update_version = update_tray_fallback_version().lock().ok().and_then(|version| version.clone());
     let title = status_tray_title(&title, update_version.as_deref());
     let tooltip = update_version.as_ref().map(|version| format!("{tooltip} · 有新版本 v{version}，打开主界面安装")).unwrap_or(tooltip);
-    tray.set_title(Some(title))
-        .map_err(|error| error.to_string())?;
-    tray.set_tooltip(Some(tooltip))
-        .map_err(|error| error.to_string())?;
-    Ok(true)
+    dispatch_status_tray_operation(app, "live readout", move |app| {
+        let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
+            return Ok(());
+        };
+        tray.set_title(Some(title))
+            .map_err(|error| error.to_string())?;
+        tray.set_tooltip(Some(tooltip))
+            .map_err(|error| error.to_string())
+    })
 }
 
 pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str) -> Result<bool, String> {
-    let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
-        return Ok(false);
-    };
     if let Ok(mut cached) = update_tray_fallback_version().lock() {
         *cached = Some(version.to_string());
     }
     let live_title = status_tray_live_title().lock().map(|title| title.clone()).unwrap_or_else(|_| "0.0/s".into());
-    tray.set_title(Some(status_tray_title(&live_title, Some(version)))).map_err(|error| error.to_string())?;
-    tray.set_icon(Some(status_tray_update_icon())).map_err(|error| error.to_string())?;
-    tray.set_tooltip(Some(format!("Codex Token Bar · 有新版本 v{version}，打开主界面安装")))
-        .map_err(|error| error.to_string())?;
-    let menu = status_tray_menu(app, Some(version)).map_err(|error| error.to_string())?;
-    tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
-    Ok(true)
+    let version = version.to_string();
+    dispatch_status_tray_operation(app, "update available", move |app| {
+        let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
+            return Ok(());
+        };
+        tray.set_title(Some(status_tray_title(&live_title, Some(&version)))).map_err(|error| error.to_string())?;
+        tray.set_icon(Some(status_tray_update_icon())).map_err(|error| error.to_string())?;
+        tray.set_tooltip(Some(format!("Codex Token Bar · 有新版本 v{version}，打开主界面安装")))
+            .map_err(|error| error.to_string())?;
+        let menu = status_tray_menu(app, Some(&version)).map_err(|error| error.to_string())?;
+        tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+    })
 }
 
 pub fn clear_update_available_tray_fallback(app: &tauri::AppHandle) -> Result<bool, String> {
-    let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else { return Ok(false); };
     if let Ok(mut cached) = update_tray_fallback_version().lock() { *cached = None; }
     let live_title = status_tray_live_title().lock().map(|title| title.clone()).unwrap_or_else(|_| "0.0/s".into());
-    tray.set_title(Some(live_title)).map_err(|error| error.to_string())?;
-    tray.set_icon(Some(status_tray_icon())).map_err(|error| error.to_string())?;
-    tray.set_tooltip(Some("Codex Token Bar")).map_err(|error| error.to_string())?;
-    let menu = status_tray_menu(app, None).map_err(|error| error.to_string())?;
-    tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
+    dispatch_status_tray_operation(app, "clear update", move |app| {
+        let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
+            return Ok(());
+        };
+        tray.set_title(Some(live_title)).map_err(|error| error.to_string())?;
+        tray.set_icon(Some(status_tray_icon())).map_err(|error| error.to_string())?;
+        tray.set_tooltip(Some("Codex Token Bar")).map_err(|error| error.to_string())?;
+        let menu = status_tray_menu(app, None).map_err(|error| error.to_string())?;
+        tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+    })
+}
+
+fn dispatch_status_tray_operation(
+    app: &tauri::AppHandle,
+    label: &'static str,
+    operation: impl FnOnce(&tauri::AppHandle) -> Result<(), String> + Send + 'static,
+) -> Result<bool, String> {
+    if app.tray_by_id(STATUS_TRAY_ID).is_none() {
+        return Ok(false);
+    }
+    let dispatch = app.clone();
+    let tray_app = app.clone();
+    dispatch
+        .run_on_main_thread(move || {
+            if let Err(error) = operation(&tray_app) {
+                startup_trace::mark(&format!("status tray {label} failed: {error}"));
+                eprintln!("Codex Token Bar: status tray {label} failed: {error}");
+            }
+        })
+        .map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+fn schedule_status_tray_creation(app: tauri::AppHandle) -> Result<(), String> {
+    async_runtime::spawn(async move {
+        // Ensure Builder::setup has returned before any native tray API is called.
+        // On Windows those APIs share the UI/COM thread with WebView2 creation.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let dispatch = app.clone();
+        let tray_app = app.clone();
+        if let Err(error) = dispatch.run_on_main_thread(move || {
+            startup_trace::mark("status tray create start");
+            let result = create_status_tray(&tray_app).map_err(|error| error.to_string());
+            match result {
+                Ok(()) => set_status_tray_error(None),
+                Err(error) => {
+                    startup_trace::mark(&format!("status tray create failed: {error}"));
+                    set_status_tray_error(Some(error.clone()));
+                    eprintln!("Codex Token Bar: status tray setup failed: {error}");
+                }
+            }
+            startup_trace::mark("status tray create end");
+        }) {
+            let error = error.to_string();
+            set_status_tray_error(Some(error.clone()));
+            startup_trace::mark(&format!("status tray create dispatch failed: {error}"));
+            eprintln!("Codex Token Bar: status tray setup dispatch failed: {error}");
+        }
+    });
+    Ok(())
+}
+
+fn set_status_tray_error(error: Option<String>) {
+    if let Ok(mut status) = surface_setup_status_cell().lock() {
+        status.status_tray_error = error;
+    }
 }
 
 fn update_tray_fallback_version() -> &'static Mutex<Option<String>> {
@@ -691,12 +804,12 @@ fn status_tray_title(live_title: &str, update_version: Option<&str>) -> String {
         .unwrap_or_else(|| live_title.to_string())
 }
 
-fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
+fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     if app.tray_by_id(STATUS_TRAY_ID).is_some() {
         return Ok(());
     }
 
-    let menu = status_tray_menu(app.handle(), None)?;
+    let menu = status_tray_menu(app, None)?;
 
     let mut builder = TrayIconBuilder::with_id(STATUS_TRAY_ID)
         .title("0.0/s")
@@ -706,7 +819,7 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             let event_id = event.id().as_ref();
             if event_id == STATUS_TRAY_SHOW_DASHBOARD_ID || event_id == STATUS_TRAY_UPDATE_ID {
-                let _ = show_dashboard_window(app);
+                schedule_dashboard_show(app.clone());
             } else if event_id == STATUS_TRAY_QUIT_ID {
                 app.exit(0);
             }
@@ -744,7 +857,10 @@ fn create_status_tray(app: &tauri::App) -> tauri::Result<()> {
                         .flatten()
                         .map(|monitor| monitor.scale_factor())
                         .unwrap_or(1.0);
-                    let _ = toggle_status_panel_at_tray(app, physical_tray_bounds(rect, scale_factor));
+                    schedule_status_panel_toggle(
+                        app.clone(),
+                        physical_tray_bounds(rect, scale_factor),
+                    );
                 }
                 TrayIconEvent::Leave { .. } => {
                     let _ = cancel_status_panel_press(app, None);
@@ -940,7 +1056,9 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/index.html".into()))
+    let page_presented = Arc::new(AtomicBool::new(false));
+    let page_presented_on_load = Arc::clone(&page_presented);
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("/index.html".into()))
         .title("Codex Token Bar")
         .icon(taskbar_window_icon())?
         .inner_size(DASHBOARD_WINDOW_WIDTH, DASHBOARD_WINDOW_HEIGHT)
@@ -948,9 +1066,11 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .resizable(true)
         .center()
         .visible(false)
-        .on_page_load(|window, payload| {
+        .on_page_load(move |window, payload| {
             if matches!(payload.event(), PageLoadEvent::Finished) {
+                page_presented_on_load.store(true, Ordering::Release);
                 startup_trace::mark("dashboard page load finished");
+                let _ = window.set_title("Codex Token Bar");
                 if let Err(error) = window.show() {
                     startup_trace::mark(&format!("dashboard page load show failed: {error}"));
                     return;
@@ -960,12 +1080,53 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
                 }
                 startup_trace::mark("dashboard window shown after page load");
             }
-        })
-        .build()?;
+        });
+    #[cfg(target_os = "windows")]
+    let webview_attempt = begin_windows_webview_creation("main");
+    #[cfg(target_os = "windows")]
+    let builder = apply_windows_webview_data_directory(builder, webview_attempt.as_ref());
+    let window_result = builder.build();
+    #[cfg(target_os = "windows")]
+    finish_windows_webview_creation("main", webview_attempt.as_ref(), window_result.is_ok());
+    let window = window_result?;
     let _ = window.set_icon(taskbar_window_icon());
     apply_windows_taskbar_icon(&window);
+    schedule_dashboard_visibility_watchdog(app.clone(), page_presented);
 
     Ok(())
+}
+
+fn schedule_dashboard_visibility_watchdog(
+    app: tauri::AppHandle,
+    page_presented: Arc<AtomicBool>,
+) {
+    async_runtime::spawn(async move {
+        tokio::time::sleep(DASHBOARD_VISIBILITY_WATCHDOG_DELAY).await;
+        if page_presented.load(Ordering::Acquire) {
+            return;
+        }
+        let dispatch = app.clone();
+        let dashboard = app.clone();
+        if let Err(error) = dispatch.run_on_main_thread(move || {
+            if page_presented.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let Some(window) = dashboard.get_webview_window("main") else {
+                return;
+            };
+            startup_trace::mark("dashboard visibility watchdog fired");
+            let _ = window.set_title("Codex Token Bar · 页面加载超时");
+            if let Err(error) = window.show() {
+                startup_trace::mark(&format!(
+                    "dashboard visibility watchdog show failed: {error}"
+                ));
+            }
+        }) {
+            startup_trace::mark(&format!(
+                "dashboard visibility watchdog dispatch failed: {error}"
+            ));
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -1093,14 +1254,18 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     .focused(false)
     .visible(false);
 
-    let window = if cfg!(target_os = "windows") {
+    #[cfg(target_os = "windows")]
+    let webview_attempt = begin_windows_webview_creation("floating");
+    #[cfg(target_os = "windows")]
+    let builder = apply_windows_webview_data_directory(builder, webview_attempt.as_ref());
+    let window_result = if cfg!(target_os = "windows") {
         builder
             .decorations(false)
             .always_on_top(true)
             .skip_taskbar(true)
             .shadow(false)
             .transparent(true)
-            .build()?
+            .build()
     } else {
         builder
             .decorations(false)
@@ -1109,8 +1274,15 @@ fn create_floating_window(app: &tauri::AppHandle) -> tauri::Result<()> {
             .skip_taskbar(true)
             .shadow(false)
             .transparent(true)
-            .build()?
+            .build()
     };
+    #[cfg(target_os = "windows")]
+    finish_windows_webview_creation(
+        "floating",
+        webview_attempt.as_ref(),
+        window_result.is_ok(),
+    );
+    let window = window_result?;
     enforce_floating_window_chrome(&window);
 
     Ok(())
@@ -1136,7 +1308,7 @@ fn create_status_panel_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "status",
         WebviewUrl::App("/index.html?surface=status".into()),
@@ -1149,10 +1321,77 @@ fn create_status_panel_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     .always_on_top(true)
     .skip_taskbar(true)
     .shadow(true)
-    .visible(false)
-    .build()?;
+    .visible(false);
+    #[cfg(target_os = "windows")]
+    let webview_attempt = begin_windows_webview_creation("status");
+    #[cfg(target_os = "windows")]
+    let builder = apply_windows_webview_data_directory(builder, webview_attempt.as_ref());
+    let window_result = builder.build();
+    #[cfg(target_os = "windows")]
+    finish_windows_webview_creation("status", webview_attempt.as_ref(), window_result.is_ok());
+    window_result?;
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn begin_windows_webview_creation(
+    label: &str,
+) -> Option<crate::core::webview_startup::WebviewStartupAttempt> {
+    match crate::core::webview_startup::begin() {
+        Ok(attempt) => {
+            startup_trace::mark(&format!(
+                "webview {label} profile {}",
+                attempt.profile_label()
+            ));
+            Some(attempt)
+        }
+        Err(error) => {
+            startup_trace::mark(&format!(
+                "webview {label} recovery sentinel unavailable: {error}"
+            ));
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_webview_data_directory<'a, R, M>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+    attempt: Option<&crate::core::webview_startup::WebviewStartupAttempt>,
+) -> WebviewWindowBuilder<'a, R, M>
+where
+    R: tauri::Runtime,
+    M: Manager<R>,
+{
+    match attempt.and_then(|attempt| attempt.data_directory()) {
+        // A recovery slot intentionally changes both the user-data directory and the GPU
+        // path. That covers the two recurrent WebView2 startup failures without deleting the
+        // original profile; all windows in the recovered process receive identical options.
+        Some(path) => builder
+            .data_directory(path)
+            .additional_browser_args("--disable-gpu"),
+        None => builder,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn finish_windows_webview_creation(
+    label: &str,
+    attempt: Option<&crate::core::webview_startup::WebviewStartupAttempt>,
+    succeeded: bool,
+) {
+    if !succeeded {
+        startup_trace::mark(&format!("webview {label} creation left recovery sentinel"));
+        return;
+    }
+    if let Some(attempt) = attempt {
+        if let Err(error) = crate::core::webview_startup::complete(attempt) {
+            startup_trace::mark(&format!(
+                "webview {label} recovery sentinel completion failed: {error}"
+            ));
+        }
+    }
 }
 
 fn set_floating_window_error(error: Option<String>) {
@@ -1174,32 +1413,32 @@ mod tests {
     #[test]
     fn startup_plan_keeps_manual_dashboard_and_autostart_background_only() {
         assert_eq!(
-            surface_startup_plan(StartupLaunchMode::Manual, true, true),
+            surface_startup_plan(StartupLaunchMode::Manual, true),
             SurfaceStartupPlan {
                 create_dashboard: true,
-                floating: FloatingStartupAction::CreateHidden,
+                floating: FloatingStartupAction::None,
             }
         );
         assert_eq!(
-            surface_startup_plan(StartupLaunchMode::Manual, false, true).floating,
-            FloatingStartupAction::CreateHidden
+            surface_startup_plan(StartupLaunchMode::Manual, false).floating,
+            FloatingStartupAction::None
         );
         assert_eq!(
-            surface_startup_plan(StartupLaunchMode::Autostart, true, true),
+            surface_startup_plan(StartupLaunchMode::Autostart, true),
             SurfaceStartupPlan {
                 create_dashboard: false,
                 floating: FloatingStartupAction::CreateAndShow,
             }
         );
         assert_eq!(
-            surface_startup_plan(StartupLaunchMode::Autostart, false, true),
+            surface_startup_plan(StartupLaunchMode::Autostart, false),
             SurfaceStartupPlan {
                 create_dashboard: false,
                 floating: FloatingStartupAction::None,
             }
         );
         assert_eq!(
-            surface_startup_plan(StartupLaunchMode::Autostart, true, false),
+            surface_startup_plan(StartupLaunchMode::Autostart, true),
             SurfaceStartupPlan {
                 create_dashboard: false,
                 floating: FloatingStartupAction::CreateAndShow,
@@ -1209,7 +1448,7 @@ mod tests {
 
     #[test]
     fn startup_executor_preserves_floating_tray_and_fatal_dashboard_errors() {
-        let autostart = surface_startup_plan(StartupLaunchMode::Autostart, true, true);
+        let autostart = surface_startup_plan(StartupLaunchMode::Autostart, true);
         let mut dashboard_calls = 0;
         let mut floating_show_calls = 0;
         let status = execute_surface_startup_plan(
@@ -1231,7 +1470,7 @@ mod tests {
         assert_eq!(status.floating_window_error.as_deref(), Some("floating create failed"));
         assert_eq!(status.status_tray_error.as_deref(), Some("tray create failed"));
 
-        let manual = surface_startup_plan(StartupLaunchMode::Manual, false, true);
+        let manual = surface_startup_plan(StartupLaunchMode::Manual, false);
         let error = execute_surface_startup_plan(
             manual,
             || Err("dashboard create failed".into()),

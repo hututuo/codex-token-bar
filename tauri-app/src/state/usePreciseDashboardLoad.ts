@@ -2,6 +2,10 @@ import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { CodexHomeSourceToken, DashboardSnapshot, UsageCacheStatus } from "../types/dashboard";
 import { loadPreciseDashboardSingleFlight } from "./preciseDashboardSingleFlight";
+import {
+  initialPreciseDashboardDeadlineMs,
+  preciseDashboardStartDelayMs,
+} from "./preciseDashboardSchedule";
 
 const PRECISE_DASHBOARD_UI_WAIT_MS = 30_000;
 
@@ -33,6 +37,7 @@ export function usePreciseDashboardLoad({
   onLoadStart,
 }: PreciseDashboardLoadOptions) {
   const preciseGeneration = useRef<number | null>(null);
+  const initialStartDeadlineMs = useRef<number | null>(null);
 
   useEffect(() => {
     if (!active || !dashboardReady || loading || preciseGeneration.current === generation) {
@@ -41,7 +46,16 @@ export function usePreciseDashboardLoad({
 
     let cancelled = false;
     let unsubscribePrecise: (() => void) | undefined;
-    preciseGeneration.current = generation;
+    const nowMs = window.performance.now();
+    initialStartDeadlineMs.current = initialPreciseDashboardDeadlineMs(
+      initialStartDeadlineMs.current,
+      nowMs,
+    );
+    const startDelayMs = preciseDashboardStartDelayMs(
+      preciseGeneration.current,
+      initialStartDeadlineMs.current,
+      nowMs,
+    );
 
     async function loadPreciseSnapshot() {
       onLoadStart?.();
@@ -73,10 +87,20 @@ export function usePreciseDashboardLoad({
       }
     }
 
-    void loadPreciseSnapshot();
+    const startTimer = window.setTimeout(() => {
+      if (!cancelled) {
+        // Do not claim the generation until the delayed work actually starts. An
+        // unrelated render can tear down this effect during the startup grace
+        // period; marking it earlier would make the replacement effect believe
+        // the exact scan had already run and permanently skip that generation.
+        preciseGeneration.current = generation;
+        void loadPreciseSnapshot();
+      }
+    }, startDelayMs);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(startTimer);
       unsubscribePrecise?.();
     };
   }, [

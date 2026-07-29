@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri_plugin_notification::NotificationExt;
@@ -1202,6 +1202,8 @@ pub struct AutoResumeRegistry {
     shutdown: Arc<AtomicBool>,
     tick_cursor: Arc<AtomicUsize>,
     capacity_cursor: Arc<AtomicUsize>,
+    settings_revision: Arc<AtomicU64>,
+    settings_update_gate: Arc<Mutex<()>>,
 }
 
 impl Default for AutoResumeRegistry {
@@ -1213,24 +1215,37 @@ impl Default for AutoResumeRegistry {
             shutdown: Arc::new(AtomicBool::new(false)),
             tick_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_cursor: Arc::new(AtomicUsize::new(0)),
+            settings_revision: Arc::new(AtomicU64::new(0)),
+            settings_update_gate: Arc::new(Mutex::new(())),
         }
     }
 }
 
 impl AutoResumeRegistry {
     pub fn initialize_and_start(&self, app: tauri::AppHandle) {
-        let settings = platform::read_app_settings()
-            .map(|value| value.auto_resume)
-            .unwrap_or_default();
-        self.update_settings(settings);
         if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
         self.shutdown.store(false, Ordering::Release);
         let registry = self.clone();
+        let startup_revision = self.settings_revision.load(Ordering::Acquire);
         let started = self.started.clone();
         tauri::async_runtime::spawn(async move {
             let _started_owner = BackgroundStartedOwner { started };
+            let initialize_registry = registry.clone();
+            if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+                let settings = platform::read_app_settings()
+                    .map(|value| value.auto_resume)
+                    .unwrap_or_default();
+                initialize_registry
+                    .apply_initial_settings_if_current(startup_revision, settings);
+            })
+            .await
+            {
+                eprintln!(
+                    "Codex Token Bar: auto-resume startup state initialization failed: {error}"
+                );
+            }
             let mut interval = tokio::time::interval(TICK_INTERVAL);
             loop {
                 interval.tick().await;
@@ -1251,6 +1266,25 @@ impl AutoResumeRegistry {
     }
 
     pub fn update_settings(&self, settings: AutoResumeSettingsSnapshot) {
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
+        let _update = lock(&self.settings_update_gate);
+        self.apply_settings(settings);
+    }
+
+    fn apply_initial_settings_if_current(
+        &self,
+        startup_revision: u64,
+        settings: AutoResumeSettingsSnapshot,
+    ) -> bool {
+        let _update = lock(&self.settings_update_gate);
+        if self.settings_revision.load(Ordering::Acquire) != startup_revision {
+            return false;
+        }
+        self.apply_settings(settings);
+        true
+    }
+
+    fn apply_settings(&self, settings: AutoResumeSettingsSnapshot) {
         let tasks = settings.resolved_tasks();
         let incoming_ids = tasks
             .iter()
@@ -2302,6 +2336,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1, 2, 0, 1, 2, 0]
         );
+    }
+
+    #[test]
+    fn delayed_startup_settings_cannot_overwrite_a_newer_user_save() {
+        let registry = AutoResumeRegistry::default();
+        let startup_revision = registry.settings_revision.load(Ordering::Acquire);
+        registry.update_settings(AutoResumeSettingsSnapshot {
+            selected_task_id: "newer-user-save".into(),
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert!(!registry.apply_initial_settings_if_current(
+            startup_revision,
+            AutoResumeSettingsSnapshot {
+                selected_task_id: "stale-startup-read".into(),
+                ..AutoResumeSettingsSnapshot::default()
+            },
+        ));
+        assert_eq!(
+            lock(&registry.state).settings.selected_task_id,
+            "newer-user-save"
+        );
+
+        let fresh = AutoResumeRegistry::default();
+        assert!(fresh.apply_initial_settings_if_current(
+            0,
+            AutoResumeSettingsSnapshot {
+                selected_task_id: "startup-read".into(),
+                ..AutoResumeSettingsSnapshot::default()
+            },
+        ));
+        assert_eq!(lock(&fresh.state).settings.selected_task_id, "startup-read");
     }
 
     #[test]

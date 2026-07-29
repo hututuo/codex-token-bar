@@ -23,7 +23,13 @@ pub fn quota_history_database_path() -> Option<PathBuf> {
 }
 
 pub fn startup_trace_log_path() -> Option<PathBuf> {
-    tauri_app_support_dir().map(|path| path.join("startup-trace.log"))
+    // Roaming AppData can be redirected to OneDrive or a network profile. Startup
+    // diagnostics must never add that dependency to the UI thread on Windows.
+    if cfg!(target_os = "windows") {
+        tauri_app_cache_dir().map(|path| path.join("startup-trace.log"))
+    } else {
+        tauri_app_support_dir().map(|path| path.join("startup-trace.log"))
+    }
 }
 
 pub fn performance_trace_log_path() -> Option<PathBuf> {
@@ -56,6 +62,10 @@ pub fn tauri_usage_cache_namespace() -> &'static str {
 
 pub fn tauri_cache_state_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("cache-state.json"))
+}
+
+pub(crate) fn webview_startup_recovery_dir() -> Option<PathBuf> {
+    tauri_app_cache_dir().map(|path| path.join("webview-startup-recovery"))
 }
 
 pub(crate) fn legacy_shared_quota_history_database_path() -> Option<PathBuf> {

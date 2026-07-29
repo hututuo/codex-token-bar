@@ -20,21 +20,21 @@ pub fn hide_floating_window(
 }
 
 #[tauri::command]
-pub fn show_dashboard_window(
+pub async fn show_dashboard_window(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     require_window_label(&window, "show_dashboard_window")?;
-    platform::show_dashboard_window(&app)
+    platform::show_dashboard_window_from_command(&app).await
 }
 
 #[tauri::command]
-pub fn show_status_panel_window(
+pub async fn show_status_panel_window(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<bool, String> {
     require_window_label(&window, "show_status_panel_window")?;
-    platform::show_status_panel_window(&app)
+    platform::show_status_panel_window_from_command(&app).await
 }
 
 #[tauri::command]

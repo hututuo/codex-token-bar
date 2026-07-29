@@ -53,6 +53,9 @@ test("fast and precise dashboard clients invoke production IPC with the exact so
 test("mounted main forwards exact tokens and never publishes a delayed snapshot from source A", async () => {
   await withMountedDashboard(async ({ React, container, load, render }) => {
     const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const { INITIAL_PRECISE_DASHBOARD_DELAY_MS } = await load(
+      "/src/state/preciseDashboardSchedule.ts",
+    );
     const sourceA = sourceEnvelope("physical-a", 1);
     const sourceB = sourceEnvelope("physical-b", 2);
     const delayedA = deferred();
@@ -96,6 +99,12 @@ test("mounted main forwards exact tokens and never publishes a delayed snapshot 
       await tick();
     });
     assert.notEqual(JSON.parse(container.textContent).generatedAt, "late-source-a");
+    await React.act(async () => {
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        INITIAL_PRECISE_DASHBOARD_DELAY_MS + 50,
+      ));
+    });
     await waitForAct(React, () => preciseTokens.length > 0);
     assert.equal(preciseTokens.at(-1).physicalHomeKey, "physical-b");
   });

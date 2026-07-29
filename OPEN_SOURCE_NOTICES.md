@@ -36,6 +36,25 @@ The combined work on this branch is distributed under GNU AGPL version 3.
 The complete corresponding source is the source tree containing this notice.
 The root `LICENSE` contains the full AGPL-3.0 text.
 
+## Wry Windows ARM64 WebView2 compatibility patch
+
+The Tauri application vendors and modifies the published `wry` crate:
+
+- Project: Wry
+- Upstream: https://github.com/tauri-apps/wry
+- Vendored version: 0.55.1
+- Upstream license: Apache License 2.0 OR MIT License
+- Vendored source: `tauri-app/src-tauri/vendor/wry`
+- Modified file: `tauri-app/src-tauri/vendor/wry/src/webview2/mod.rs`
+
+The modification replaces Wry's nested Windows message-pump wait with a
+COM-dispatching completion wait only on Windows ARM64. The issue and initial
+approach were documented in upstream issue `tauri-apps/wry#1665` and pull
+request `tauri-apps/wry#1666`; that pull request targeted an older Wry version
+and remains unmerged, so the project independently adapted and runtime-tested
+the narrow change against 0.55.1. Wry's original `LICENSE-APACHE`,
+`LICENSE-MIT`, and `LICENSE.spdx` files are preserved with the vendored source.
+
 ## Cockpit product-behavior reference
 
 The Codex instance-management and conversation-visibility work was informed by

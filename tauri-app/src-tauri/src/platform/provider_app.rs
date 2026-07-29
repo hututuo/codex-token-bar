@@ -907,8 +907,9 @@ fn platform_managed_process_command(pid: u32) -> Result<String, String> {
 
 #[cfg(windows)]
 fn platform_focus_managed_process(pid: u32) -> Result<(), String> {
+    use windows_sys::core::BOOL;
     use windows_sys::Win32::{
-        Foundation::{BOOL, HWND, LPARAM},
+        Foundation::{HWND, LPARAM},
         UI::WindowsAndMessaging::{
             EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
             ShowWindow, SW_RESTORE,

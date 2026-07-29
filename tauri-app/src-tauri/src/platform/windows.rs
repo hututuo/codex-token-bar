@@ -12,9 +12,13 @@ use super::startup::{
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\CodexTokenBarTauriSingleInstance";
 const SINGLE_INSTANCE_ACTIVATION_EVENT_NAME: &str =
     "Local\\CodexTokenBarTauriSingleInstanceActivation";
+const SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME: &str =
+    "Local\\CodexTokenBarTauriSingleInstanceActivationAck";
+const SINGLE_INSTANCE_ACTIVATION_ACK_TIMEOUT_MS: u32 = 1_000;
 
 static SINGLE_INSTANCE_MUTEX_HANDLE: OnceLock<usize> = OnceLock::new();
 static SINGLE_INSTANCE_ACTIVATION_EVENT_HANDLE: OnceLock<usize> = OnceLock::new();
+static SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_HANDLE: OnceLock<usize> = OnceLock::new();
 static ACTIVATION_LISTENER_STARTED: AtomicBool = AtomicBool::new(false);
 
 pub fn default_codex_home() -> PathBuf {
@@ -34,11 +38,16 @@ pub fn default_codex_home() -> PathBuf {
 pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchOutcome {
     use std::ptr::null;
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS},
-        System::Threading::{CreateEventW, CreateMutexW, SetEvent},
+        Foundation::{
+            CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
+        System::Threading::{
+            CreateEventW, CreateMutexW, ResetEvent, SetEvent, WaitForSingleObject,
+        },
     };
 
     let event_name = wide_null(SINGLE_INSTANCE_ACTIVATION_EVENT_NAME);
+    let ack_event_name = wide_null(SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME);
     let mutex_name = wide_null(SINGLE_INSTANCE_MUTEX_NAME);
     unsafe {
         // Create/open the auto-reset event before claiming the mutex. A secondary arriving in
@@ -51,10 +60,19 @@ pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchO
                 GetLastError()
             ));
         }
+        let ack_event = CreateEventW(null(), 0, 0, ack_event_name.as_ptr());
+        if ack_event.is_null() {
+            let error = GetLastError();
+            let _ = CloseHandle(event);
+            return SingleInstanceLaunchOutcome::FatalFailure(format!(
+                "创建单实例激活确认事件失败（Windows error {error}）"
+            ));
+        }
         let mutex = CreateMutexW(null(), 1, mutex_name.as_ptr());
         if mutex.is_null() {
             let error = GetLastError();
             let _ = CloseHandle(event);
+            let _ = CloseHandle(ack_event);
             return SingleInstanceLaunchOutcome::FatalFailure(format!(
                 "创建单实例互斥锁失败（Windows error {error}）"
             ));
@@ -62,19 +80,37 @@ pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchO
         let owns_primary_mutex = GetLastError() != ERROR_ALREADY_EXISTS;
 
         let outcome = resolve_single_instance_launch(owns_primary_mutex, mode, || {
+            if ResetEvent(ack_event) == 0 {
+                return Err(format!(
+                    "重置激活确认事件失败（Windows error {}）",
+                    GetLastError()
+                ));
+            }
+            // Signal after resetting the acknowledgement. This ordering avoids consuming a
+            // stale acknowledgement left by a primary that recovered after an earlier timeout.
             if SetEvent(event) == 0 {
-                Err(format!("Windows error {}", GetLastError()))
-            } else {
-                Ok(())
+                return Err(format!("发送激活事件失败（Windows error {}）", GetLastError()));
+            }
+            match WaitForSingleObject(ack_event, SINGLE_INSTANCE_ACTIVATION_ACK_TIMEOUT_MS) {
+                WAIT_OBJECT_0 => Ok(()),
+                WAIT_TIMEOUT => Err("已运行实例在 1 秒内没有确认激活，可能仍卡在启动阶段".into()),
+                code => Err(format!(
+                    "等待已运行实例确认激活失败（状态 {code}，Windows error {}）",
+                    GetLastError()
+                )),
             }
         });
         match outcome {
             SingleInstanceLaunchOutcome::ContinueAsPrimary => {
                 if SINGLE_INSTANCE_MUTEX_HANDLE.set(mutex as usize).is_err()
                     || SINGLE_INSTANCE_ACTIVATION_EVENT_HANDLE.set(event as usize).is_err()
+                    || SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_HANDLE
+                        .set(ack_event as usize)
+                        .is_err()
                 {
                     let _ = CloseHandle(mutex);
                     let _ = CloseHandle(event);
+                    let _ = CloseHandle(ack_event);
                     SingleInstanceLaunchOutcome::FatalFailure(
                         "单实例控制器已被重复初始化".into(),
                     )
@@ -85,6 +121,7 @@ pub fn prepare_single_instance(mode: StartupLaunchMode) -> SingleInstanceLaunchO
             secondary => {
                 let _ = CloseHandle(mutex);
                 let _ = CloseHandle(event);
+                let _ = CloseHandle(ack_event);
                 secondary
             }
         }
@@ -117,6 +154,9 @@ pub fn start_instance_activation_listener(app: tauri::AppHandle) {
     let Some(event) = SINGLE_INSTANCE_ACTIVATION_EVENT_HANDLE.get().copied() else {
         return;
     };
+    let Some(ack_event) = SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_HANDLE.get().copied() else {
+        return;
+    };
     super::startup::start_activation_listener_once(&ACTIVATION_LISTENER_STARTED, || {
         if let Err(error) = std::thread::Builder::new()
             .name("codex-token-bar-activation".into())
@@ -140,9 +180,14 @@ pub fn start_instance_activation_listener(app: tauri::AppHandle) {
                             let activation = app.clone();
                             dispatch
                                 .run_on_main_thread(move || {
-                                    if let Err(error) =
-                                        super::surfaces::show_dashboard_window(&activation)
-                                    {
+                                    let result =
+                                        super::surfaces::show_dashboard_window(&activation);
+                                    unsafe {
+                                        let _ = windows_sys::Win32::System::Threading::SetEvent(
+                                            ack_event as _,
+                                        );
+                                    }
+                                    if let Err(error) = result {
                                         report_activation_error(&format!(
                                             "显示主界面失败：{error}"
                                         ));
@@ -194,6 +239,10 @@ mod tests {
         assert_eq!(
             SINGLE_INSTANCE_ACTIVATION_EVENT_NAME,
             "Local\\CodexTokenBarTauriSingleInstanceActivation"
+        );
+        assert_eq!(
+            SINGLE_INSTANCE_ACTIVATION_ACK_EVENT_NAME,
+            "Local\\CodexTokenBarTauriSingleInstanceActivationAck"
         );
     }
 }

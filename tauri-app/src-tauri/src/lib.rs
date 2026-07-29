@@ -19,8 +19,9 @@ pub fn run() {
             return;
         }
     }
+    core::startup_trace::begin("primary process start");
 
-    tauri::Builder::default()
+    let run_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
@@ -33,25 +34,74 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .setup(move |app| {
-            let recovery_state =
-                app.state::<core::provider_repair::ProviderRecoveryState>();
-            commands::startup::initialize_provider_recovery(recovery_state.inner());
+            core::startup_trace::mark("tauri setup entered");
+            #[cfg(target_os = "windows")]
+            tauri::async_runtime::spawn_blocking(|| match tauri::webview_version() {
+                Ok(version) => core::startup_trace::mark(&format!(
+                    "webview2 runtime version {version}"
+                )),
+                Err(error) => core::startup_trace::mark(&format!(
+                    "webview2 runtime version unavailable: {error}"
+                )),
+            });
+            // Start listening before any WebView or filesystem initialization. A second launch
+            // can now distinguish a responsive primary from one stuck during startup.
+            platform::start_instance_activation_listener(app.handle().clone());
+
+            let recovery_state = app
+                .state::<core::provider_repair::ProviderRecoveryState>()
+                .inner()
+                .clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                commands::startup::initialize_provider_recovery(&recovery_state);
+            });
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
-            let settings = platform::read_app_settings().unwrap_or_default();
-            platform::setup_desktop_surfaces(app, launch_mode, &settings)?;
+            // The first visible surface must not wait for roaming AppData, recovery-candidate
+            // scanning, or task-state hydration. Manual launch needs only the dashboard; the
+            // persisted floating/tray preferences are applied after the event loop can run.
+            platform::setup_desktop_surfaces(app, launch_mode, false)?;
             app.state::<commands::update::UpdateMonitorRegistry>()
                 .initialize_and_start(app.handle().clone());
             app.state::<commands::auto_resume::AutoResumeRegistry>()
                 .initialize_and_start(app.handle().clone());
-            if let Err(error) = app
+            let deferred_app = app.handle().clone();
+            let deferred_live = app
                 .state::<commands::live::LiveRateMonitorRegistry>()
-                .sync_status_tray_interest(app.handle(), &settings.display_surfaces)
-            {
-                eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
-            }
-            platform::start_instance_activation_listener(app.handle().clone());
+                .inner()
+                .clone();
+            tauri::async_runtime::spawn(async move {
+                core::startup_trace::mark("deferred settings read scheduled");
+                let settings = tauri::async_runtime::spawn_blocking(platform::read_app_settings)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result)
+                    .unwrap_or_else(|error| {
+                        eprintln!(
+                            "Codex Token Bar: deferred settings read recovered with defaults: {error}"
+                        );
+                        models::AppSettingsSnapshot::default()
+                    });
+                core::startup_trace::mark("deferred settings read finished");
+                if launch_mode == platform::StartupLaunchMode::Autostart
+                    && settings.display_surfaces.floating_window_enabled
+                {
+                    if let Err(error) =
+                        platform::show_floating_window_from_command(&deferred_app).await
+                    {
+                        eprintln!(
+                            "Codex Token Bar: deferred floating window setup failed: {error}"
+                        );
+                    }
+                }
+                if let Err(error) = deferred_live
+                    .sync_status_tray_interest(&deferred_app, &settings.display_surfaces)
+                {
+                    eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
+                }
+            });
             core::thread_delete::start_supervisor();
+            core::startup_trace::mark("tauri setup returning");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -130,6 +180,10 @@ pub fn run() {
             commands::auto_resume::run_auto_resume_now,
             commands::auto_resume::cancel_auto_resume_run,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Codex Token Bar");
+        .run(tauri::generate_context!());
+    if let Err(error) = run_result {
+        platform::report_startup_failure(&format!(
+            "Codex Token Bar 运行时启动失败：{error}\n\n请检查 WebView2 Runtime、显卡驱动和应用数据目录权限。"
+        ));
+    }
 }

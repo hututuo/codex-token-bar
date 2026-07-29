@@ -15,6 +15,30 @@ static SEEN_ONCE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static STARTUP_TRACE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static PERFORMANCE_TRACE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+pub fn begin(label: &str) {
+    let start = START.get_or_init(Instant::now);
+    clear_once_marks();
+    let _write = STARTUP_TRACE_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(path) = app_paths::startup_trace_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{:>6}ms {label}", start.elapsed().as_millis());
+}
+
 pub fn mark(label: &str) {
     write_mark(label, false);
 }
@@ -55,8 +79,7 @@ pub fn mark_performance(label: impl AsRef<str>) {
 fn write_mark(label: &str, once: bool) {
     let start = START.get_or_init(Instant::now);
     let elapsed_ms = start.elapsed().as_millis();
-    let is_start = label == "rust setup start";
-    if elapsed_ms > TRACE_WINDOW_MS && !is_start {
+    if elapsed_ms > TRACE_WINDOW_MS {
         return;
     }
     if once && !remember_once(label) {
@@ -76,13 +99,7 @@ fn write_mark(label: &str, once: bool) {
     }
 
     let mut options = OpenOptions::new();
-    options.create(true).write(true);
-    if is_start {
-        clear_once_marks();
-        options.truncate(true);
-    } else {
-        options.append(true);
-    }
+    options.create(true).write(true).append(true);
 
     let Ok(mut file) = options.open(path) else {
         return;
@@ -165,6 +182,36 @@ mod tests {
             .filter(|label| label.starts_with("parallel-"))
             .collect::<HashSet<_>>();
         assert_eq!(actual, expected);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_begin_owns_truncation_before_setup_marks() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-startup-begin-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _environment = app_paths::app_path_test_env_guard(&[(
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.clone(),
+        )]);
+        fs::create_dir_all(&root).unwrap();
+
+        begin("first process");
+        mark("provider recovery start");
+        begin("second process");
+        mark("rust setup start");
+
+        let contents = fs::read_to_string(root.join("startup-trace.log")).unwrap();
+        assert!(!contents.contains("first process"));
+        assert!(!contents.contains("provider recovery start"));
+        assert!(contents.contains("second process"));
+        assert!(contents.contains("rust setup start"));
 
         fs::remove_dir_all(root).unwrap();
     }
