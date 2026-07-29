@@ -1,130 +1,229 @@
 #!/usr/bin/env python3
-"""Generate the Windows taskbar ICO for the Tauri app.
+"""Generate the Windows application ICO from the macOS artwork.
 
-The tray icon is intentionally drawn separately in Rust: the Windows taskbar
-needs a transparent, darker icon, while the notification area is more legible
-with a small white-backed icon.
+The notification-area icon is intentionally drawn separately in Rust because
+it needs to stay legible at tiny sizes. The executable, taskbar, shortcuts and
+installer should instead use the same glass squircle artwork as macOS.
+
+This script intentionally uses only the Python standard library so the checked
+in ICO can be reproduced on either the macOS or Windows build host.
 """
 
 from __future__ import annotations
 
+import argparse
 import math
 import struct
+import sys
 import zlib
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_PATH = PROJECT_ROOT / "tauri-app" / "src-tauri" / "icons" / "icon.png"
 ICO_PATH = PROJECT_ROOT / "tauri-app" / "src-tauri" / "icons" / "icon.ico"
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def clamp(value: float, low: int = 0, high: int = 255) -> int:
     return max(low, min(high, int(round(value))))
 
 
-def blend_pixel(buf: bytearray, width: int, x: int, y: int, color: tuple[int, int, int, int]) -> None:
-    if x < 0 or y < 0 or x >= width or y >= width:
-        return
-    r, g, b, a = color
-    if a <= 0:
-        return
-    idx = (y * width + x) * 4
-    dr, dg, db, da = buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]
-    sa = a / 255.0
-    da_f = da / 255.0
-    out_a = sa + da_f * (1.0 - sa)
-    if out_a <= 0:
-        return
-    buf[idx] = clamp((r * sa + dr * da_f * (1.0 - sa)) / out_a)
-    buf[idx + 1] = clamp((g * sa + dg * da_f * (1.0 - sa)) / out_a)
-    buf[idx + 2] = clamp((b * sa + db * da_f * (1.0 - sa)) / out_a)
-    buf[idx + 3] = clamp(out_a * 255)
+def paeth_predictor(left: int, up: int, upper_left: int) -> int:
+    prediction = left + up - upper_left
+    distance_left = abs(prediction - left)
+    distance_up = abs(prediction - up)
+    distance_upper_left = abs(prediction - upper_left)
+    if distance_left <= distance_up and distance_left <= distance_upper_left:
+        return left
+    if distance_up <= distance_upper_left:
+        return up
+    return upper_left
 
 
-def rounded_rect_contains(px: float, py: float, x0: float, y0: float, x1: float, y1: float, r: float) -> bool:
-    cx = min(max(px, x0 + r), x1 - r)
-    cy = min(max(py, y0 + r), y1 - r)
-    return (px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r
+def read_rgba_png(path: Path) -> tuple[int, int, bytes]:
+    encoded = path.read_bytes()
+    if not encoded.startswith(PNG_SIGNATURE):
+        raise ValueError(f"Not a PNG file: {path}")
+
+    offset = len(PNG_SIGNATURE)
+    width = height = None
+    compressed = bytearray()
+    saw_end = False
+    while offset < len(encoded):
+        if offset + 12 > len(encoded):
+            raise ValueError(f"Truncated PNG chunk in {path}")
+        length = struct.unpack_from(">I", encoded, offset)[0]
+        kind = encoded[offset + 4 : offset + 8]
+        payload_start = offset + 8
+        payload_end = payload_start + length
+        crc_end = payload_end + 4
+        if crc_end > len(encoded):
+            raise ValueError(f"Truncated {kind!r} PNG chunk in {path}")
+        payload = encoded[payload_start:payload_end]
+        expected_crc = struct.unpack_from(">I", encoded, payload_end)[0]
+        actual_crc = zlib.crc32(kind + payload) & 0xFFFFFFFF
+        if expected_crc != actual_crc:
+            raise ValueError(f"Invalid {kind!r} PNG checksum in {path}")
+
+        if kind == b"IHDR":
+            if length != 13 or width is not None:
+                raise ValueError(f"Invalid PNG header in {path}")
+            (
+                width,
+                height,
+                bit_depth,
+                color_type,
+                compression,
+                filtering,
+                interlace,
+            ) = struct.unpack(">IIBBBBB", payload)
+            if (
+                bit_depth != 8
+                or color_type != 6
+                or compression != 0
+                or filtering != 0
+                or interlace != 0
+            ):
+                raise ValueError(
+                    f"{path} must be a non-interlaced 8-bit RGBA PNG"
+                )
+        elif kind == b"IDAT":
+            compressed.extend(payload)
+        elif kind == b"IEND":
+            saw_end = True
+            break
+        offset = crc_end
+
+    if width is None or height is None or not compressed or not saw_end:
+        raise ValueError(f"Incomplete PNG structure in {path}")
+    if width != height:
+        raise ValueError(f"Icon artwork must be square, got {width}x{height}")
+
+    bytes_per_pixel = 4
+    stride = width * bytes_per_pixel
+    filtered = zlib.decompress(bytes(compressed))
+    expected_length = height * (stride + 1)
+    if len(filtered) != expected_length:
+        raise ValueError(
+            f"Unexpected PNG payload length in {path}: "
+            f"{len(filtered)} != {expected_length}"
+        )
+
+    rgba = bytearray(width * height * bytes_per_pixel)
+    source_offset = 0
+    previous = bytearray(stride)
+    for row_index in range(height):
+        filter_type = filtered[source_offset]
+        source_offset += 1
+        row = bytearray(filtered[source_offset : source_offset + stride])
+        source_offset += stride
+        for index in range(stride):
+            left = row[index - bytes_per_pixel] if index >= bytes_per_pixel else 0
+            up = previous[index]
+            upper_left = (
+                previous[index - bytes_per_pixel]
+                if index >= bytes_per_pixel
+                else 0
+            )
+            if filter_type == 1:
+                row[index] = (row[index] + left) & 0xFF
+            elif filter_type == 2:
+                row[index] = (row[index] + up) & 0xFF
+            elif filter_type == 3:
+                row[index] = (row[index] + ((left + up) // 2)) & 0xFF
+            elif filter_type == 4:
+                row[index] = (
+                    row[index] + paeth_predictor(left, up, upper_left)
+                ) & 0xFF
+            elif filter_type != 0:
+                raise ValueError(
+                    f"Unsupported PNG filter {filter_type} in row {row_index}"
+                )
+        row_start = row_index * stride
+        rgba[row_start : row_start + stride] = row
+        previous = row
+
+    corner_alpha = (
+        rgba[3],
+        rgba[(width - 1) * 4 + 3],
+        rgba[(height - 1) * stride + 3],
+        rgba[(height * width - 1) * 4 + 3],
+    )
+    if any(corner_alpha):
+        raise ValueError(
+            "Windows icon source must keep transparent corners; "
+            f"found alpha values {corner_alpha}"
+        )
+    if not any(rgba[index] for index in range(3, len(rgba), 4)):
+        raise ValueError("Windows icon source is fully transparent")
+    return width, height, bytes(rgba)
 
 
-def fill_rounded_rect(
-    buf: bytearray,
-    width: int,
-    x0: float,
-    y0: float,
-    x1: float,
-    y1: float,
-    radius: float,
-    color_at,
-) -> None:
-    left = max(0, int(math.floor(x0)))
-    top = max(0, int(math.floor(y0)))
-    right = min(width, int(math.ceil(x1)))
-    bottom = min(width, int(math.ceil(y1)))
-    for y in range(top, bottom):
-        for x in range(left, right):
-            px, py = x + 0.5, y + 0.5
-            if rounded_rect_contains(px, py, x0, y0, x1, y1, radius):
-                blend_pixel(buf, width, x, y, color_at((px - x0) / max(1.0, x1 - x0), (py - y0) / max(1.0, y1 - y0)))
+def sample_spans(source_size: int, target_size: int) -> list[list[tuple[int, float]]]:
+    scale = source_size / target_size
+    spans: list[list[tuple[int, float]]] = []
+    for target_index in range(target_size):
+        start = target_index * scale
+        end = (target_index + 1) * scale
+        first = int(math.floor(start))
+        last = min(source_size, int(math.ceil(end)))
+        spans.append(
+            [
+                (
+                    source_index,
+                    min(end, source_index + 1.0) - max(start, source_index),
+                )
+                for source_index in range(first, last)
+            ]
+        )
+    return spans
 
 
-def draw_circle(buf: bytearray, width: int, cx: float, cy: float, radius: float, color: tuple[int, int, int, int]) -> None:
-    left = max(0, int(math.floor(cx - radius)))
-    top = max(0, int(math.floor(cy - radius)))
-    right = min(width, int(math.ceil(cx + radius)))
-    bottom = min(width, int(math.ceil(cy + radius)))
-    rr = radius * radius
-    for y in range(top, bottom):
-        for x in range(left, right):
-            px, py = x + 0.5, y + 0.5
-            if (px - cx) * (px - cx) + (py - cy) * (py - cy) <= rr:
-                blend_pixel(buf, width, x, y, color)
+def resize_rgba(
+    source: bytes,
+    source_size: int,
+    target_size: int,
+) -> bytes:
+    """Area-resample straight RGBA while averaging colors in premultiplied form."""
 
+    spans = sample_spans(source_size, target_size)
+    pixel_area = (source_size / target_size) ** 2
+    target = bytearray(target_size * target_size * 4)
+    for target_y, y_span in enumerate(spans):
+        for target_x, x_span in enumerate(spans):
+            alpha_sum = 0.0
+            premultiplied_red = 0.0
+            premultiplied_green = 0.0
+            premultiplied_blue = 0.0
+            for source_y, y_weight in y_span:
+                row_offset = source_y * source_size * 4
+                for source_x, x_weight in x_span:
+                    weight = x_weight * y_weight
+                    source_offset = row_offset + source_x * 4
+                    alpha = source[source_offset + 3]
+                    weighted_alpha = alpha * weight
+                    alpha_sum += weighted_alpha
+                    premultiplied_red += source[source_offset] * weighted_alpha
+                    premultiplied_green += (
+                        source[source_offset + 1] * weighted_alpha
+                    )
+                    premultiplied_blue += (
+                        source[source_offset + 2] * weighted_alpha
+                    )
 
-def draw_line(buf: bytearray, width: int, p0: tuple[float, float], p1: tuple[float, float], stroke: float, color: tuple[int, int, int, int]) -> None:
-    x0, y0 = p0
-    x1, y1 = p1
-    distance = math.hypot(x1 - x0, y1 - y0)
-    steps = max(1, int(distance / max(1.0, stroke * 0.35)))
-    for i in range(steps + 1):
-        t = i / steps
-        draw_circle(buf, width, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, stroke / 2.0, color)
-
-
-def draw_polyline(buf: bytearray, width: int, points: list[tuple[float, float]], stroke: float, color: tuple[int, int, int, int]) -> None:
-    for start, end in zip(points, points[1:]):
-        draw_line(buf, width, start, end, stroke, color)
-
-
-def draw_arc(buf: bytearray, width: int, center: tuple[float, float], radius: float, start_deg: float, end_deg: float, stroke: float, color: tuple[int, int, int, int]) -> None:
-    steps = max(16, int(abs(end_deg - start_deg) / 3))
-    cx, cy = center
-    prev = None
-    for i in range(steps + 1):
-        angle = math.radians(start_deg + (end_deg - start_deg) * (i / steps))
-        point = (cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
-        if prev is not None:
-            draw_line(buf, width, prev, point, stroke, color)
-        prev = point
-
-
-def downsample(buf: bytearray, render_size: int, size: int, scale: int) -> bytes:
-    out = bytearray(size * size * 4)
-    for y in range(size):
-        for x in range(size):
-            total = [0, 0, 0, 0]
-            for yy in range(scale):
-                for xx in range(scale):
-                    idx = ((y * scale + yy) * render_size + (x * scale + xx)) * 4
-                    total[0] += buf[idx]
-                    total[1] += buf[idx + 1]
-                    total[2] += buf[idx + 2]
-                    total[3] += buf[idx + 3]
-            dst = (y * size + x) * 4
-            count = scale * scale
-            out[dst : dst + 4] = bytes(clamp(v / count) for v in total)
-    return bytes(out)
+            target_offset = (target_y * target_size + target_x) * 4
+            target[target_offset + 3] = clamp(alpha_sum / pixel_area)
+            if alpha_sum > 0:
+                target[target_offset] = clamp(premultiplied_red / alpha_sum)
+                target[target_offset + 1] = clamp(
+                    premultiplied_green / alpha_sum
+                )
+                target[target_offset + 2] = clamp(
+                    premultiplied_blue / alpha_sum
+                )
+    return bytes(target)
 
 
 def write_png(width: int, height: int, rgba: bytes) -> bytes:
@@ -137,94 +236,34 @@ def write_png(width: int, height: int, rgba: bytes) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
 
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
-
-
-def render_icon(size: int) -> bytes:
-    scale = 4 if size >= 32 else 5
-    width = size * scale
-    buf = bytearray(width * width * 4)
-    s = float(width)
-
-    def u(v: float) -> float:
-        return v * s
-
-    def panel_gradient(tx: float, ty: float) -> tuple[int, int, int, int]:
-        mix = (tx * 0.38 + ty * 0.62)
-        return (
-            clamp(254 - 12 * mix),
-            clamp(255 - 10 * mix),
-            clamp(255),
-            255,
+    return (
+        PNG_SIGNATURE
+        + chunk(
+            b"IHDR",
+            struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0),
         )
-
-    fill_rounded_rect(buf, width, u(0.055), u(0.08), u(0.945), u(0.94), u(0.19), panel_gradient)
-
-    # Subtle glass edge.
-    fill_rounded_rect(
-        buf,
-        width,
-        u(0.06),
-        u(0.085),
-        u(0.94),
-        u(0.935),
-        u(0.18),
-        lambda _tx, _ty: (255, 255, 255, 46),
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
     )
 
-    # Soft blue lower-right tint, kept inside the rounded card.
-    fill_rounded_rect(
-        buf,
-        width,
-        u(0.10),
-        u(0.12),
-        u(0.90),
-        u(0.90),
-        u(0.16),
-        lambda tx, ty: (160, 210, 255, clamp(3 + 8 * tx * ty)),
-    )
 
-    cols, rows = 7, 6
-    cell, gap = u(0.077), u(0.023)
-    grid_x, grid_y = u(0.21), u(0.31)
-    for row in range(rows):
-        for col in range(cols):
-            power = (col / max(1, cols - 1)) * 0.58 + (row / max(1, rows - 1)) * 0.42
-            color = (
-                clamp(236 - 38 * power),
-                clamp(246 - 30 * power),
-                255,
-                clamp(28 + 58 * power),
-            )
-            x0 = grid_x + col * (cell + gap)
-            y0 = grid_y + row * (cell + gap)
-            fill_rounded_rect(buf, width, x0, y0, x0 + cell, y0 + cell, u(0.017), lambda _tx, _ty, c=color: c)
-
-    navy = (24, 64, 124, 250)
-    draw_arc(buf, width, (u(0.24), u(0.21)), u(0.055), 52, 308, u(0.026), navy)
-    draw_line(buf, width, (u(0.324), u(0.165)), (u(0.388), u(0.255)), u(0.025), navy)
-    draw_line(buf, width, (u(0.388), u(0.165)), (u(0.324), u(0.255)), u(0.025), navy)
-
-    points = [
-        (u(0.16), u(0.74)),
-        (u(0.30), u(0.61)),
-        (u(0.40), u(0.66)),
-        (u(0.54), u(0.52)),
-        (u(0.64), u(0.58)),
-        (u(0.75), u(0.43)),
-        (u(0.86), u(0.35)),
+def build_ico(source_path: Path) -> bytes:
+    source_width, source_height, source = read_rgba_png(source_path)
+    if source_width != source_height:
+        raise ValueError(
+            f"Icon artwork must be square, got {source_width}x{source_height}"
+        )
+    pngs = [
+        (
+            size,
+            write_png(
+                size,
+                size,
+                resize_rgba(source, source_width, size),
+            ),
+        )
+        for size in ICON_SIZES
     ]
-    draw_polyline(buf, width, points, u(0.040), (255, 255, 255, 230))
-    draw_polyline(buf, width, points, u(0.024), (26, 190, 232, 255))
-    for point in points[1:]:
-        draw_circle(buf, width, point[0], point[1], u(0.030), (255, 255, 255, 245))
-        draw_circle(buf, width, point[0], point[1], u(0.019), (30, 187, 229, 255))
-
-    return downsample(buf, width, size, scale)
-
-
-def write_ico(path: Path) -> None:
-    pngs = [(size, write_png(size, size, render_icon(size))) for size in ICON_SIZES]
     header = struct.pack("<HHH", 0, 1, len(pngs))
     directory = bytearray()
     offset = len(header) + len(pngs) * 16
@@ -245,9 +284,46 @@ def write_ico(path: Path) -> None:
         )
         payload.extend(png)
         offset += len(png)
-    path.write_bytes(header + bytes(directory) + bytes(payload))
+    return header + bytes(directory) + bytes(payload)
+
+
+def update_ico(path: Path, encoded: bytes) -> bool:
+    if path.exists() and path.read_bytes() == encoded:
+        return False
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_bytes(encoded)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail when the checked-in ICO does not match the macOS artwork",
+    )
+    arguments = parser.parse_args()
+
+    encoded = build_ico(SOURCE_PATH)
+    if arguments.check:
+        if not ICO_PATH.exists() or ICO_PATH.read_bytes() != encoded:
+            print(
+                f"{ICO_PATH} is stale; run {Path(__file__).name}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Verified {ICO_PATH} matches {SOURCE_PATH}")
+        return 0
+
+    changed = update_ico(ICO_PATH, encoded)
+    action = "Wrote" if changed else "Already current"
+    print(f"{action} {ICO_PATH} from {SOURCE_PATH}")
+    return 0
 
 
 if __name__ == "__main__":
-    write_ico(ICO_PATH)
-    print(f"Wrote {ICO_PATH}")
+    raise SystemExit(main())
