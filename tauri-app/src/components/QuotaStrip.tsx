@@ -103,7 +103,21 @@ function ResetCreditItem({
           </span>
         </span>
         <em>第 {index + 1} 张</em>
-        <b aria-hidden="true">{expanded ? "⌃" : "⌄"}</b>
+        <svg
+          aria-hidden="true"
+          className="reset-credit-disclosure"
+          focusable="false"
+          viewBox="0 0 20 20"
+        >
+          <path
+            d={expanded ? "M4 12.5 10 6.5l6 6" : "M4 7.5l6 6 6-6"}
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.4"
+          />
+        </svg>
       </button>
       {expanded ? (
         <dl className="reset-credit-fields">

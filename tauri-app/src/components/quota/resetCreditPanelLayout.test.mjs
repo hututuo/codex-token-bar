@@ -19,3 +19,22 @@ test("quota read warning keeps a styled inline retry affordance", () => {
   assert.match(stylesSource, /\.quota-read-warning\s*{/);
   assert.match(stylesSource, /\.quota-warning-refresh\s*{/);
 });
+
+test("reset credit disclosure keeps the whole summary row clickable and uses a large vector chevron", () => {
+  assert.match(
+    quotaStripSource,
+    /className="reset-credit-summary-row"[\s\S]*?aria-expanded=\{expanded\}[\s\S]*?onClick=\{onToggle\}/,
+  );
+  assert.match(
+    quotaStripSource,
+    /className="reset-credit-disclosure"[\s\S]*?viewBox="0 0 20 20"/,
+  );
+  assert.match(
+    stylesSource,
+    /\.reset-credit-summary-row\s*{[\s\S]*?grid-template-columns:\s*30px minmax\(0, 1fr\) auto 28px;[\s\S]*?width:\s*100%;/,
+  );
+  assert.match(
+    stylesSource,
+    /\.reset-credit-disclosure\s*{[\s\S]*?width:\s*20px;[\s\S]*?height:\s*20px;/,
+  );
+});

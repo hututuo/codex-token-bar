@@ -149,6 +149,56 @@ final class AccountQuotaSegmentTests: XCTestCase {
         XCTAssertEqual(AccountQuotaSegmentLayout.singleSegmentWidth, 346)
     }
 
+    @MainActor
+    func testResetCreditDisclosureHeaderMakesTheWholeStripActionable() throws {
+        var pressCount = 0
+        let width: CGFloat = 520
+        let credit = AccountQuotaResetCredit(
+            id: "full-width-disclosure",
+            status: "available",
+            resetType: "codex_rate_limits",
+            grantedAt: Date(timeIntervalSince1970: 0),
+            expiresAt: Date().addingTimeInterval(6 * 60 * 60),
+            redeemStartedAt: nil,
+            redeemedAt: nil,
+            title: "One free rate limit reset",
+            descriptionText: "A reset credit used to verify the disclosure hit area.",
+            profileUserID: "@test",
+            profileImageURL: nil
+        )
+        let hostingView = NSHostingView(
+            rootView: AccountQuotaResetCreditDisclosureHeader(
+                index: 1,
+                credit: credit,
+                isExpanded: false,
+                onToggle: { pressCount += 1 }
+            )
+            .frame(width: width)
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: width, height: 52)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        for x in [CGFloat(4), width / 2, width - 4] {
+            try clickAccountQuotaHostedView(
+                window: window,
+                at: NSPoint(x: x, y: hostingView.bounds.midY)
+            )
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        XCTAssertEqual(pressCount, 3)
+    }
+
     func testWorstCaseSegmentCopyFitsNativeFontBudgetWithoutEllipsis() {
         let window = AccountQuotaWindow(
             label: "7d",
@@ -192,4 +242,37 @@ final class AccountQuotaSegmentTests: XCTestCase {
         XCTAssertEqual(hostingView.fittingSize.width, AccountQuotaSegmentLayout.twoSegmentWidth, accuracy: 0.5)
         XCTAssertEqual(hostingView.fittingSize.height, AccountQuotaSegmentLayout.controlHeight, accuracy: 0.5)
     }
+}
+
+@MainActor
+private func clickAccountQuotaHostedView(window: NSWindow, at location: NSPoint) throws {
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    let mouseDown = try XCTUnwrap(
+        NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: location,
+            modifierFlags: [],
+            timestamp: timestamp,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )
+    )
+    let mouseUp = try XCTUnwrap(
+        NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: location,
+            modifierFlags: [],
+            timestamp: timestamp + 0.01,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )
+    )
+    window.sendEvent(mouseDown)
+    window.sendEvent(mouseUp)
 }

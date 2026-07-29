@@ -1391,10 +1391,11 @@ button.quota-side-card:hover {
 
 .reset-credit-summary-row {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr) auto 12px;
+  grid-template-columns: 30px minmax(0, 1fr) auto 28px;
   gap: 8px;
   align-items: center;
   width: 100%;
+  min-height: 34px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -1447,14 +1448,14 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
-.reset-credit-summary-row > b {
-  display: grid;
-  place-items: center;
-  width: 12px;
-  height: 14px;
+.reset-credit-disclosure {
+  display: block;
+  justify-self: center;
+  width: 20px;
+  height: 20px;
+  overflow: visible;
   color: var(--muted);
-  font-size: 11px;
-  line-height: 1;
+  pointer-events: none;
 }
 
 .reset-credit-progress {

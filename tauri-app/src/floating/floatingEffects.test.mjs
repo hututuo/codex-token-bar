@@ -178,7 +178,7 @@ test("floating radar shows multiple sorted model IQ scores", () => {
 test("clickable disclosure arrows are right aligned and vertically centered", () => {
   assert.match(stylesSource, /\.floating-popup-buttons button span\s*{[\s\S]*?display: inline-grid;[\s\S]*?place-items: center;/);
   assert.match(stylesSource, /\.quota-reset-card b\s*{[\s\S]*?display: inline-grid;[\s\S]*?place-items: center;/);
-  assert.match(stylesSource, /\.reset-credit-summary-row > b\s*{[\s\S]*?display: grid;[\s\S]*?place-items: center;/);
+  assert.match(stylesSource, /\.reset-credit-disclosure\s*{[\s\S]*?justify-self: center;[\s\S]*?width: 20px;[\s\S]*?height: 20px;/);
   assert.match(stylesSource, /\.radar-detail-toggle b\s*{[\s\S]*?display: inline-grid;[\s\S]*?place-items: center;/);
 });
 

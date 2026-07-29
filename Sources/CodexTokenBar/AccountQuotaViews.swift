@@ -495,60 +495,17 @@ private struct AccountQuotaResetCreditRow: View {
     let credit: AccountQuotaResetCredit
     @State private var isExpanded = false
 
-    private var statusColor: Color {
-        credit.isAvailable ? AppTheme.accentBlue : .secondary
-    }
-
-    private var remainingProgress: CGFloat {
-        CGFloat(credit.remainingProgress(relativeTo: Date()) ?? (credit.isAvailable ? 1 : 0))
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
+            AccountQuotaResetCreditDisclosureHeader(
+                index: index,
+                credit: credit,
+                isExpanded: isExpanded
+            ) {
                 withAnimation(.easeInOut(duration: 0.16)) {
                     isExpanded.toggle()
                 }
-            } label: {
-                HStack(alignment: .center, spacing: 10) {
-                    AccountQuotaResetCreditAvatarView(credit: credit)
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 7) {
-                            Text(credit.compactRemainingTimeText)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(credit.isAvailable ? .primary : .secondary)
-                                .monospacedDigit()
-                                .lineLimit(1)
-
-                            Text("第 \(index) 张")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        GeometryReader { proxy in
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(AppTheme.raisedBackground)
-                                Capsule()
-                                    .fill(statusColor.opacity(credit.isAvailable ? 0.76 : 0.34))
-                                    .frame(width: max(0, proxy.size.width * remainingProgress))
-                            }
-                        }
-                        .frame(height: 7)
-                    }
-
-                    Spacer(minLength: 4)
-
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary.opacity(0.82))
-                        .frame(width: 18, height: 18)
-                }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
 
             if isExpanded {
                 SettingsCalloutSection {
@@ -558,21 +515,83 @@ private struct AccountQuotaResetCreditRow: View {
                     SettingsCalloutRow(title: "剩余时间", value: credit.remainingTimeText, systemImage: "hourglass", isEmphasized: credit.isAvailable)
                     SettingsCalloutRow(title: "卡片编号", value: credit.cardIdentifierText, systemImage: "number", isLast: true)
                 }
+                .padding(.horizontal, 11)
+                .padding(.bottom, 9)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.65), lineWidth: 1)
         )
-        .accessibilityElement(children: .combine)
+    }
+}
+
+struct AccountQuotaResetCreditDisclosureHeader: View {
+    let index: Int
+    let credit: AccountQuotaResetCredit
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    private var statusColor: Color {
+        credit.isAvailable ? AppTheme.accentBlue : .secondary
+    }
+
+    private var remainingProgress: CGFloat {
+        CGFloat(credit.remainingProgress(relativeTo: Date()) ?? (credit.isAvailable ? 1 : 0))
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(alignment: .center, spacing: 10) {
+                AccountQuotaResetCreditAvatarView(credit: credit)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 7) {
+                        Text(credit.compactRemainingTimeText)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(credit.isAvailable ? .primary : .secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+
+                        Text("第 \(index) 张")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(AppTheme.raisedBackground)
+                            Capsule()
+                                .fill(statusColor.opacity(credit.isAvailable ? 0.76 : 0.34))
+                                .frame(width: max(0, proxy.size.width * remainingProgress))
+                        }
+                    }
+                    .frame(height: 7)
+                }
+
+                Spacer(minLength: 4)
+
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary.opacity(0.82))
+                    .frame(width: 28, height: 30)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .accessibilityLabel("第 \(index) 张重置卡")
         .accessibilityValue("\(credit.remainingTimeText)，\(credit.profileUserText)")
-        .accessibilityHint(isExpanded ? "点击收起详情" : "点击展开详情")
+        .accessibilityHint(isExpanded ? "点击整行收起详情" : "点击整行展开详情")
     }
 }
 
