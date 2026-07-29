@@ -333,7 +333,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             }
             guard let turn = turns.first else { return nil }
             var observation = try Self.parseLatestTurnObservation(turn)
-            if observation.isServerCapacityFailure,
+            if observation.failureReason != nil,
                observation.clientUserMessageID == nil {
                 let fullResult = try channel.request(
                     method: "thread/turns/list",
@@ -470,7 +470,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             if Self.normalizedStatus(status) == "failed" {
                 let error = completed["error"] as? [String: Any]
                 let message = Self.nonemptyString(error?["message"]) ?? "Turn failed"
-                let errorCode = Self.codexErrorCode(error?["codexErrorInfo"])
+                let errorCode = Self.codexErrorDetails(error?["codexErrorInfo"]).code
                 if Self.normalizedErrorCode(errorCode) == "usagelimitexceeded"
                     || (errorCode == nil && Self.looksLikeQuotaLimit(message)) {
                     throw CodexAutoResumeAppServerError.quotaLimited(message)
@@ -602,21 +602,59 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             .map { Date(timeIntervalSince1970: $0.doubleValue) }
         let completedAt = (turn["completedAt"] as? NSNumber)
             .map { Date(timeIntervalSince1970: $0.doubleValue) }
+        let errorDetails = codexErrorDetails(error?["codexErrorInfo"])
         return AutoResumeLatestTurnObservation(
             turnID: turnID,
             status: status,
             startedAt: startedAt,
             completedAt: completedAt,
             errorMessage: nonemptyString(error?["message"]),
-            codexErrorCode: codexErrorCode(error?["codexErrorInfo"]),
+            codexErrorCode: errorDetails.code,
+            httpStatusCode: errorDetails.httpStatusCode,
             clientUserMessageID: clientUserMessageID
         )
     }
 
-    private static func codexErrorCode(_ value: Any?) -> String? {
-        if let value = nonemptyString(value) { return value }
+    private static func codexErrorDetails(
+        _ value: Any?
+    ) -> (code: String?, httpStatusCode: Int?) {
+        if let value = nonemptyString(value) {
+            return (value, nil)
+        }
+        guard let object = value as? [String: Any] else {
+            return (nil, nil)
+        }
+        let status = httpStatusCode(in: object)
+        for key in ["type", "kind", "code"] {
+            if let code = nonemptyString(object[key]) {
+                return (code, status)
+            }
+        }
+        let metadataKeys = Set([
+            "type", "kind", "code", "message", "details",
+            "httpStatusCode", "http_status_code", "statusCode", "status",
+        ])
+        let code = object.keys
+            .filter { !metadataKeys.contains($0) }
+            .sorted()
+            .first
+        return (code, status)
+    }
+
+    private static func httpStatusCode(in value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
         guard let object = value as? [String: Any] else { return nil }
-        return object.keys.sorted().first
+        for key in ["httpStatusCode", "http_status_code", "statusCode", "status"] {
+            if let number = object[key] as? NSNumber {
+                return number.intValue
+            }
+            if let text = nonemptyString(object[key]), let number = Int(text) {
+                return number
+            }
+        }
+        return object.values.lazy.compactMap(httpStatusCode(in:)).first
     }
 
     private static func normalizedErrorCode(_ value: String?) -> String? {

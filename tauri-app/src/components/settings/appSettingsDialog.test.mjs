@@ -149,7 +149,7 @@ test("auto resume settings preserve same-directory threads and save the selected
     await click(act, tabByName(container, "自动续跑"), window);
     const panel = activePanel(container);
     assert.match(panel.textContent, /一条任务保护一个 Codex 会话/);
-    assert.match(panel.textContent, /主动停止都不会被自动越过/);
+    assert.match(panel.textContent, /任务被中断.*可能包含主动停止/);
 
     const threadButtons = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
     assert.equal(threadButtons.length, 2, "same-directory threads must not be deduplicated");
@@ -267,7 +267,7 @@ test("auto resume selects a project first and exposes more than fifty recent con
   });
 });
 
-test("auto resume exposes interval, daily, quota and real run-now controls", async () => {
+test("auto resume exposes selectable interruption reasons, select-all, schedules, quota and run-now controls", async () => {
   await withMountedSettings(async ({ act, calls, container, window }) => {
     await click(act, tabByName(container, "自动续跑"), window);
     const panel = activePanel(container);
@@ -276,6 +276,14 @@ test("auto resume exposes interval, daily, quota and real run-now controls", asy
     assert.ok(panel.querySelector('select[aria-label="自动续跑间隔"]'));
     await click(act, buttonWithText(panel, "每天"), window);
     assert.ok(panel.querySelector('input[aria-label="自动续跑每日时间"]'));
+    assert.match(panel.textContent, /网络断开/);
+    assert.match(panel.textContent, /任务被中断/);
+    await click(act, buttonWithText(panel, "全选"), window);
+    assert.equal(
+      panel.querySelectorAll(".auto-resume-failure-grid label.is-active").length,
+      14,
+      "all 13 immediate reasons plus quota recovery should be selected",
+    );
     assert.ok(panel.querySelector('input[aria-label="额度低位阈值"]'));
     assert.ok(panel.querySelector('input[aria-label="额度恢复阈值"]'));
 
@@ -295,7 +303,7 @@ test("running auto resume replaces run-now with a real cancel action", async () 
     await click(act, tabByName(container, "自动续跑"), window);
     const panel = activePanel(container);
     assert.equal(buttonWithTextOrNull(panel, "立即测试 / 续跑"), null);
-    assert.equal(panel.querySelector('button[aria-label="容量不足时续跑：关"]')?.disabled, true);
+    assert.equal(panel.querySelector(".auto-resume-failure-grid input")?.disabled, true);
     await click(act, buttonWithText(panel, "停止本次续跑"), window);
     await flushPromises(act);
     assert.equal(calls.autoResumeCancels, 1);
@@ -580,6 +588,8 @@ function defaultAutoResumeSettings() {
     intervalMinutes: 60,
     dailyHour: 9,
     dailyMinute: 0,
+    failureRecoveryPolicyVersion: 1,
+    failureRecoveryReasons: [],
     capacityRecoveryEnabled: false,
     quotaResumeEnabled: true,
     quotaWindow: "either",

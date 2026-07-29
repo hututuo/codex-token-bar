@@ -109,6 +109,10 @@ pub struct AutoResumeSettingsSnapshot {
     #[serde(default)]
     pub daily_minute: u8,
     #[serde(default)]
+    pub failure_recovery_policy_version: u8,
+    #[serde(default)]
+    pub failure_recovery_reasons: Vec<String>,
+    #[serde(default)]
     pub capacity_recovery_enabled: bool,
     #[serde(default = "default_enabled")]
     pub quota_resume_enabled: bool,
@@ -141,6 +145,8 @@ impl Default for AutoResumeSettingsSnapshot {
             interval_minutes: default_auto_resume_interval_minutes(),
             daily_hour: default_auto_resume_daily_hour(),
             daily_minute: 0,
+            failure_recovery_policy_version: 0,
+            failure_recovery_reasons: Vec::new(),
             capacity_recovery_enabled: false,
             quota_resume_enabled: true,
             quota_window: default_auto_resume_quota_window(),
@@ -181,6 +187,10 @@ pub struct AutoResumeTaskSettingsSnapshot {
     #[serde(default)]
     pub daily_minute: u8,
     #[serde(default)]
+    pub failure_recovery_policy_version: u8,
+    #[serde(default)]
+    pub failure_recovery_reasons: Vec<String>,
+    #[serde(default)]
     pub capacity_recovery_enabled: bool,
     #[serde(default = "default_enabled")]
     pub quota_resume_enabled: bool,
@@ -213,6 +223,8 @@ impl Default for AutoResumeTaskSettingsSnapshot {
             interval_minutes: default_auto_resume_interval_minutes(),
             daily_hour: default_auto_resume_daily_hour(),
             daily_minute: 0,
+            failure_recovery_policy_version: 0,
+            failure_recovery_reasons: Vec::new(),
             capacity_recovery_enabled: false,
             quota_resume_enabled: true,
             quota_window: default_auto_resume_quota_window(),
@@ -240,6 +252,8 @@ impl AutoResumeTaskSettingsSnapshot {
             interval_minutes: self.interval_minutes,
             daily_hour: self.daily_hour,
             daily_minute: self.daily_minute,
+            failure_recovery_policy_version: self.failure_recovery_policy_version,
+            failure_recovery_reasons: self.failure_recovery_reasons.clone(),
             capacity_recovery_enabled: self.capacity_recovery_enabled,
             quota_resume_enabled: self.quota_resume_enabled,
             quota_window: self.quota_window.clone(),
@@ -275,6 +289,8 @@ impl AutoResumeSettingsSnapshot {
             interval_minutes: self.interval_minutes,
             daily_hour: self.daily_hour,
             daily_minute: self.daily_minute,
+            failure_recovery_policy_version: self.failure_recovery_policy_version,
+            failure_recovery_reasons: self.failure_recovery_reasons.clone(),
             capacity_recovery_enabled: self.capacity_recovery_enabled,
             quota_resume_enabled: self.quota_resume_enabled,
             quota_window: self.quota_window.clone(),

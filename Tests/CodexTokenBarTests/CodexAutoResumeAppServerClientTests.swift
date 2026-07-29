@@ -530,6 +530,42 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertFalse(observation.isRecoverableCapacityFailure)
     }
 
+    func testReadLatestTurnObservationParsesTaggedErrorCodeAndHTTPStatus() async throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [[
+                    "id": "network-turn",
+                    "status": "failed",
+                    "completedAt": 200,
+                    "error": [
+                        "message": "upstream unavailable",
+                        "codexErrorInfo": [
+                            "type": "httpConnectionFailed",
+                            "httpStatusCode": 503,
+                        ],
+                    ],
+                    "items": [[
+                        "type": "userMessage",
+                        "clientId": "desktop-user-message",
+                    ]],
+                ]],
+            ]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let value = try await client.readLatestTurnObservation(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            threadID: "thread-1"
+        )
+        let observation = try XCTUnwrap(value)
+
+        XCTAssertEqual(observation.codexErrorCode, "httpConnectionFailed")
+        XCTAssertEqual(observation.httpStatusCode, 503)
+        XCTAssertEqual(observation.failureReason, .serverError)
+    }
+
     func testCapacityObservationFallsBackToFullItemsToVerifyClientIdentity() async throws {
         let capacityTurn: [String: Any] = [
             "id": "capacity-retry-turn",

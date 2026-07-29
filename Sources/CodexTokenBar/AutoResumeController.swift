@@ -274,9 +274,42 @@ final class AutoResumeController: ObservableObject {
     }
 
     func setCapacityRecoveryEnabled(_ enabled: Bool) {
+        setFailureRecoveryReason(.capacity, enabled: enabled)
+    }
+
+    func setFailureRecoveryReason(_ reason: AutoResumeFailureReason, enabled: Bool) {
         var next = configuration
+        var selected = next.selectedFailureReasons
+        if enabled {
+            selected.insert(reason)
+        } else {
+            selected.remove(reason)
+        }
+        next.failureRecoveryPolicyVersion = 1
+        next.failureRecoveryReasons = AutoResumeFailureReason.allCases.filter(selected.contains)
+        next.capacityRecoveryEnabled = !next.failureRecoveryReasons.isEmpty
+        applyConfiguration(next, resetsCapacityMonitoring: true)
+    }
+
+    func setAllFailureRecoveryReasons(_ enabled: Bool) {
+        var next = configuration
+        next.failureRecoveryPolicyVersion = 1
+        next.failureRecoveryReasons = enabled ? AutoResumeFailureReason.allCases : []
         next.capacityRecoveryEnabled = enabled
         applyConfiguration(next, resetsCapacityMonitoring: true)
+    }
+
+    func setAllRecoveryConditions(_ enabled: Bool) {
+        var next = configuration
+        next.failureRecoveryPolicyVersion = 1
+        next.failureRecoveryReasons = enabled ? AutoResumeFailureReason.allCases : []
+        next.capacityRecoveryEnabled = enabled
+        next.quotaRecoveryEnabled = enabled
+        applyConfiguration(
+            next,
+            resetsQuotaArming: true,
+            resetsCapacityMonitoring: true
+        )
     }
 
     func setQuotaWindow(_ window: AutoResumeQuotaWindow) {
@@ -561,7 +594,7 @@ final class AutoResumeController: ObservableObject {
                     return
                 }
                 self.runtimeState.status = .waiting
-                self.runtimeState.statusMessage = "容量中断监控检查失败，15 秒后重试"
+                self.runtimeState.statusMessage = "失败中断监控检查失败，15 秒后重试"
                 self.runtimeState.lastError = error.localizedDescription
                 self.persistRuntimeState()
             }
@@ -581,7 +614,7 @@ final class AutoResumeController: ObservableObject {
         }
 
         let recoveredFromMonitorError = runtimeState.statusMessage
-            == "容量中断监控检查失败，15 秒后重试"
+            == "失败中断监控检查失败，15 秒后重试"
         if recoveredFromMonitorError {
             runtimeState.lastError = nil
             refreshWaitingStatus()
@@ -605,14 +638,15 @@ final class AutoResumeController: ObservableObject {
         }
         capacityMonitorHasLiveBaseline = true
         let alreadyObserved = runtimeState.lastCapacityObservedTurnID == observation.turnID
-        if observation.isGeneratedByCapacityRecovery,
-           observation.isServerCapacityFailure {
+        if observation.isGeneratedByAutomaticRecovery,
+           let failureReason = observation.failureReason {
             if !alreadyObserved {
                 runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
                 runtimeState.lastCapacityObservedTurnID = observation.turnID
                 runtimeState.capacityPendingFreshness = nil
                 runtimeState.status = .waiting
-                runtimeState.statusMessage = "自动发送的“继续”仍遇容量不足，本次不再重试"
+                runtimeState.statusMessage =
+                    "自动续跑的后续轮仍因“\(failureReason.label)”结束，本次不再重试"
                 runtimeState.lastError = observation.errorMessage
                 persistRuntimeState()
             } else if recoveredFromMonitorError {
@@ -636,10 +670,12 @@ final class AutoResumeController: ObservableObject {
         ) else {
             if monitorKeyChanged || recoveredFromMonitorError {
                 runtimeState.lastCapacityMonitorObservationKey = observation.monitorKey
-                if observation.isServerCapacityFailure,
+                if let reason = observation.failureReason,
+                   configuration.selectedFailureReasons.contains(reason),
                    observation.clientUserMessageID == nil {
                     runtimeState.status = .waiting
-                    runtimeState.statusMessage = "检测到容量错误，但无法确认消息来源，已安全停下"
+                    runtimeState.statusMessage =
+                        "检测到“\(reason.label)”，但无法确认原用户消息，已安全停下"
                 }
                 persistRuntimeState()
             }
@@ -653,7 +689,8 @@ final class AutoResumeController: ObservableObject {
             baseline: observation.freshness
         )
         runtimeState.status = .waiting
-        runtimeState.statusMessage = "检测到服务容量不足，准备发送一次“继续”"
+        let reasonLabel = observation.failureReason?.label ?? "所选失败"
+        runtimeState.statusMessage = "检测到“\(reasonLabel)”，准备续跑一次"
         runtimeState.lastError = observation.errorMessage
         persistRuntimeState()
         beginExecution(trigger: trigger, requiresAutomationEnabled: true)
@@ -1087,9 +1124,10 @@ final class AutoResumeController: ObservableObject {
         } else if let next = nextScheduledAt {
             runtimeState.statusMessage = "等待下次续跑：\(next.formatted(date: .abbreviated, time: .shortened))"
         } else if configuration.capacityRecoveryEnabled {
+            let reasonCount = configuration.failureRecoveryReasons.count
             runtimeState.statusMessage = configuration.quotaRecoveryEnabled
-                ? "容量中断监控已武装，同时观察额度恢复"
-                : "容量中断监控已武装，每 15 秒检查目标任务"
+                ? "已监控 \(reasonCount) 类失败中断，同时观察额度恢复"
+                : "已监控 \(reasonCount) 类失败中断，每 15 秒检查目标任务"
         } else {
             runtimeState.statusMessage = "正在等待额度进入低位"
         }

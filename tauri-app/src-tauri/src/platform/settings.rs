@@ -2373,6 +2373,8 @@ fn sanitize_auto_resume_settings(
                 interval_minutes: legacy.interval_minutes,
                 daily_hour: legacy.daily_hour,
                 daily_minute: legacy.daily_minute,
+                failure_recovery_policy_version: legacy.failure_recovery_policy_version,
+                failure_recovery_reasons: legacy.failure_recovery_reasons,
                 capacity_recovery_enabled: legacy.capacity_recovery_enabled,
                 quota_resume_enabled: legacy.quota_resume_enabled,
                 quota_window: legacy.quota_window,
@@ -2417,6 +2419,21 @@ fn sanitize_auto_resume_settings(
 }
 
 fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot) {
+    const FAILURE_REASONS: [&str; 13] = [
+        "capacity",
+        "network",
+        "rateLimit",
+        "serverError",
+        "timeout",
+        "retryLimit",
+        "contextWindow",
+        "sessionBudget",
+        "requestConflict",
+        "authentication",
+        "sandbox",
+        "interrupted",
+        "other",
+    ];
     settings.thread_id = settings.thread_id.trim().chars().take(128).collect();
     settings.thread_title = settings.thread_title.trim().chars().take(240).collect();
     settings.thread_cwd = settings.thread_cwd.trim().chars().take(2_048).collect();
@@ -2436,6 +2453,22 @@ fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot)
     };
     settings.daily_hour = settings.daily_hour.min(23);
     settings.daily_minute = settings.daily_minute.min(59);
+    let requested_reasons = if settings.failure_recovery_policy_version == 0 {
+        if settings.capacity_recovery_enabled {
+            vec!["capacity".to_string()]
+        } else {
+            Vec::new()
+        }
+    } else {
+        settings.failure_recovery_reasons.clone()
+    };
+    settings.failure_recovery_reasons = FAILURE_REASONS
+        .iter()
+        .filter(|reason| requested_reasons.iter().any(|value| value == **reason))
+        .map(|reason| (*reason).to_string())
+        .collect();
+    settings.failure_recovery_policy_version = 1;
+    settings.capacity_recovery_enabled = !settings.failure_recovery_reasons.is_empty();
     settings.quota_window = match settings.quota_window.as_str() {
         "fiveHour" => "fiveHour",
         "sevenDay" => "sevenDay",
@@ -2750,6 +2783,52 @@ mod tests {
         assert!(deleted.resolved_tasks().is_empty());
         assert!(deleted.thread_id.is_empty());
         assert!(!deleted.enabled);
+    }
+
+    #[test]
+    fn auto_resume_failure_policy_migrates_capacity_and_preserves_explicit_empty() {
+        let migrated = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            enabled: true,
+            thread_id: "legacy-capacity".into(),
+            capacity_recovery_enabled: true,
+            quota_resume_enabled: false,
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert_eq!(migrated.failure_recovery_policy_version, 1);
+        assert_eq!(migrated.failure_recovery_reasons, ["capacity"]);
+        assert!(migrated.capacity_recovery_enabled);
+
+        let explicit_empty = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            enabled: true,
+            thread_id: "new-policy".into(),
+            failure_recovery_policy_version: 1,
+            failure_recovery_reasons: Vec::new(),
+            capacity_recovery_enabled: true,
+            quota_resume_enabled: false,
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert!(explicit_empty.failure_recovery_reasons.is_empty());
+        assert!(!explicit_empty.capacity_recovery_enabled);
+        assert!(!explicit_empty.enabled);
+
+        let canonical = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            enabled: true,
+            thread_id: "canonical".into(),
+            failure_recovery_policy_version: 1,
+            failure_recovery_reasons: vec![
+                "interrupted".into(),
+                "network".into(),
+                "network".into(),
+                "unknown".into(),
+            ],
+            quota_resume_enabled: false,
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert_eq!(
+            canonical.failure_recovery_reasons,
+            ["network", "interrupted"]
+        );
+        assert!(canonical.capacity_recovery_enabled);
     }
 
     #[test]

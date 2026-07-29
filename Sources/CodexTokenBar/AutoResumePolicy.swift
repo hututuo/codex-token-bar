@@ -280,7 +280,10 @@ enum AutoResumePolicy {
         guard configuration.enabled,
               configuration.capacityRecoveryEnabled,
               let target = configuration.target,
-              observation.isRecoverableCapacityFailure,
+              let failureReason = observation.failureReason,
+              observation.isRecoverableFailure(
+                selectedReasons: configuration.selectedFailureReasons
+              ),
               state.lastCapacityObservedTurnID != observation.turnID else {
             return nil
         }
@@ -302,7 +305,7 @@ enum AutoResumePolicy {
         }
         return AutoResumeTrigger(
             kind: .capacityRecovery,
-            key: "capacity:\(target.id):\(observation.turnID)",
+            key: "failure:\(failureReason.rawValue):\(target.id):\(observation.turnID)",
             firedAt: now
         )
     }

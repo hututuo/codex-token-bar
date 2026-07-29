@@ -238,7 +238,7 @@ impl AutoResumeTaskRuntime {
         let safety_limits_changed = automatic_safety_limits_changed(&state.settings, &settings);
         let capacity_monitor_context_changed = state.settings.enabled != settings.enabled
             || target_changed
-            || state.settings.capacity_recovery_enabled != settings.capacity_recovery_enabled;
+            || state.settings.failure_recovery_reasons != settings.failure_recovery_reasons;
         let capacity_generation_changed = capacity_monitor_context_changed
             || state.settings.prompt != settings.prompt
             || safety_limits_changed;
@@ -438,16 +438,21 @@ impl AutoResumeTaskRuntime {
         state.persisted.capacity_monitor_initialized = true;
         let already_observed = state.persisted.last_capacity_observed_turn_id.as_deref()
             == Some(observation.turn_id.as_str());
-        if observation.is_generated_by_capacity_recovery()
-            && observation.is_server_capacity_failure()
+        if observation.is_generated_by_automatic_recovery()
+            && observation.failure_reason().is_some()
         {
             if !already_observed {
+                let reason = observation
+                    .failure_reason()
+                    .expect("failure reason checked above");
                 state.persisted.last_capacity_monitor_key = Some(monitor_key);
                 state.persisted.last_capacity_observed_turn_id =
                     Some(observation.turn_id.clone());
                 state.persisted.state = "waiting".into();
-                state.persisted.message =
-                    "自动启动的后续轮仍遇容量不足，本次不再重试".into();
+                state.persisted.message = format!(
+                    "自动续跑的后续轮仍因“{}”结束，本次不再重试",
+                    reason.label()
+                );
                 bump(&mut state.persisted);
                 let persisted = state.persisted.clone();
                 drop(state);
@@ -465,15 +470,23 @@ impl AutoResumeTaskRuntime {
             }
             return None;
         }
-        if !observation.is_recoverable_capacity_failure() {
+        if !observation.is_recoverable_failure(&state.settings.failure_recovery_reasons) {
             if monitor_key_changed {
                 state.persisted.last_capacity_monitor_key = Some(monitor_key);
-                if observation.is_server_capacity_failure()
-                    && observation.client_user_message_id.is_none()
-                {
-                    state.persisted.state = "waiting".into();
-                    state.persisted.message =
-                        "检测到容量错误，但无法确认消息来源，已安全停下".into();
+                if let Some(reason) = observation.failure_reason() {
+                    let selected_without_source = state
+                        .settings
+                        .failure_recovery_reasons
+                        .iter()
+                        .any(|value| value == reason.as_str())
+                        && observation.client_user_message_id.is_none();
+                    if selected_without_source {
+                        state.persisted.state = "waiting".into();
+                        state.persisted.message = format!(
+                            "检测到“{}”，但无法确认原用户消息，已安全停下",
+                            reason.label()
+                        );
+                    }
                 }
                 bump(&mut state.persisted);
                 let persisted = state.persisted.clone();
@@ -499,7 +512,10 @@ impl AutoResumeTaskRuntime {
 
         state.persisted.last_capacity_monitor_key = Some(monitor_key);
         state.persisted.state = "waiting".into();
-        state.persisted.message = "检测到服务容量不足，准备续跑一次".into();
+        let reason = observation
+            .failure_reason()
+            .expect("recoverable failure must have a reason");
+        state.persisted.message = format!("检测到“{}”，准备续跑一次", reason.label());
         bump(&mut state.persisted);
         let generation = state.persisted.capacity_generation;
         let thread_id = state.settings.thread_id.clone();
@@ -507,8 +523,8 @@ impl AutoResumeTaskRuntime {
         drop(state);
         let _ = self.persist_state(&persisted);
         Some(Trigger {
-            key: capacity_trigger_key(&thread_id, &observation.turn_id),
-            label: "容量中断续跑".into(),
+            key: failure_trigger_key(reason, &thread_id, &observation.turn_id),
+            label: format!("{}续跑", reason.label()),
             thread_id,
             kind: TriggerKind::CapacityRecovery,
             consumes_pending: false,
@@ -589,7 +605,7 @@ impl AutoResumeTaskRuntime {
                     let mut state = lock(&self.state);
                     state.persisted.state = "waiting".into();
                     state.persisted.message =
-                        "容量中断监控检查失败，15 秒后重试".into();
+                        "失败中断监控检查失败，15 秒后重试".into();
                     bump(&mut state.persisted);
                     state.persisted.clone()
                 };
@@ -903,7 +919,11 @@ impl AutoResumeTaskRuntime {
         }
 
         let thread_id = trigger.thread_id.clone();
-        let prompt = settings.prompt.clone();
+        let prompt = if trigger.kind == TriggerKind::CapacityRecovery {
+            "继续".to_string()
+        } else {
+            settings.prompt.clone()
+        };
         let client_message_id = claim.trigger_key().to_string();
         let freshness_not_before = trigger.freshness_not_before;
         let start_generation_guard = match trigger.kind {
@@ -1517,7 +1537,7 @@ fn quota_trigger_is_current(state: &RegistryState, trigger: &Trigger) -> bool {
 fn automatic_trigger_is_current(state: &RegistryState, trigger: &Trigger) -> bool {
     let capacity_current = trigger.kind != TriggerKind::CapacityRecovery
         || (state.settings.enabled
-            && state.settings.capacity_recovery_enabled
+            && !state.settings.failure_recovery_reasons.is_empty()
             && state.settings.thread_id == trigger.thread_id
             && trigger.capacity_generation == Some(state.persisted.capacity_generation));
     scheduled_trigger_is_current(state, trigger)
@@ -1619,7 +1639,8 @@ pub fn cancel_auto_resume_run(
 // - interval: interval:{线程}:{间隔分钟}:{floor(触发时刻纪元秒 / 间隔秒)}
 // - quota:    quota:{线程}:{5h|7d}:{重置纪元秒|unknown}（双窗口同时恢复取 5h；
 //             unknown 由共享 ledger 按低位周期分配 episode 序号）
-// - capacity: capacity:{线程}:{turnId}（Swift / Tauri 共用）
+// - failure: failure:{原因}:{线程}:{turnId}（Swift / Tauri 共用）
+// - capacity: 旧版兼容前缀，只用于识别旧版自动续跑生成的 turn
 // - manual:   manual: 前缀 + 各端自用唯一后缀（不参与跨端去重，只共享
 //             每日上限豁免）
 fn daily_trigger_key(thread_id: &str, day: &str, hour: u8, minute: u8) -> String {
@@ -1638,8 +1659,12 @@ fn quota_trigger_key(thread_id: &str, recovery_key: &str) -> String {
     format!("quota:{thread_id}:{recovery_key}")
 }
 
-fn capacity_trigger_key(thread_id: &str, turn_id: &str) -> String {
-    format!("capacity:{thread_id}:{turn_id}")
+fn failure_trigger_key(
+    reason: auto_resume::AutoResumeFailureReason,
+    thread_id: &str,
+    turn_id: &str,
+) -> String {
+    format!("failure:{}:{thread_id}:{turn_id}", reason.as_str())
 }
 
 fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
@@ -2911,8 +2936,12 @@ mod tests {
             "quota:thread-1:5h:1753602000"
         );
         assert_eq!(
-            capacity_trigger_key("thread-1", "turn-1"),
-            "capacity:thread-1:turn-1"
+            failure_trigger_key(
+                auto_resume::AutoResumeFailureReason::Capacity,
+                "thread-1",
+                "turn-1"
+            ),
+            "failure:capacity:thread-1:turn-1"
         );
         // manual 触发不参与跨端去重，仅约定 manual: 前缀共享每日上限豁免。
     }

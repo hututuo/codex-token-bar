@@ -60,7 +60,7 @@ final class AutoResumeStartGuard: @unchecked Sendable {
     private struct CapacitySignature: Equatable {
         let enabled: Bool
         let targetID: String?
-        let capacityRecoveryEnabled: Bool
+        let failureRecoveryReasons: [AutoResumeFailureReason]
         let prompt: String
         let cooldownMinutes: Int
         let maxRunsPerDay: Int
@@ -143,7 +143,7 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         case .capacityRecovery:
             guard configuration.enabled,
                   configuration.target?.id == targetID,
-                  configuration.capacityRecoveryEnabled else {
+                  !configuration.failureRecoveryReasons.isEmpty else {
                 return nil
             }
             source = .capacity
@@ -192,7 +192,7 @@ final class AutoResumeStartGuard: @unchecked Sendable {
             return configuration.quotaRecoveryEnabled
                 && token.generation == quotaGeneration
         case .capacity:
-            return configuration.capacityRecoveryEnabled
+            return !configuration.failureRecoveryReasons.isEmpty
                 && token.generation == capacityGeneration
         }
     }
@@ -233,7 +233,7 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         CapacitySignature(
             enabled: configuration.enabled,
             targetID: configuration.target?.id,
-            capacityRecoveryEnabled: configuration.capacityRecoveryEnabled,
+            failureRecoveryReasons: configuration.failureRecoveryReasons,
             prompt: configuration.prompt,
             cooldownMinutes: configuration.cooldownMinutes,
             maxRunsPerDay: configuration.maxRunsPerDay

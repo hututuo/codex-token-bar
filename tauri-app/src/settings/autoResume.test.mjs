@@ -90,6 +90,46 @@ test("auto resume sanitizes task collections, removes duplicates, and fails clos
   });
 });
 
+test("legacy capacity recovery migrates to a versioned capacity-only reason policy", async () => {
+  await withSsrModules(async (load) => {
+    const { sanitizeAutoResumeTaskSettings } = await load("/src/settings/autoResume.ts");
+    const legacy = sanitizeAutoResumeTaskSettings({
+      threadId: "legacy-thread",
+      capacityRecoveryEnabled: true,
+      quotaResumeEnabled: false,
+    });
+    assert.equal(legacy.failureRecoveryPolicyVersion, 1);
+    assert.deepEqual(legacy.failureRecoveryReasons, ["capacity"]);
+    assert.equal(legacy.capacityRecoveryEnabled, true);
+
+    const intentionallyEmpty = sanitizeAutoResumeTaskSettings({
+      threadId: "new-thread",
+      failureRecoveryPolicyVersion: 1,
+      failureRecoveryReasons: [],
+      capacityRecoveryEnabled: true,
+      quotaResumeEnabled: false,
+    });
+    assert.deepEqual(intentionallyEmpty.failureRecoveryReasons, []);
+    assert.equal(intentionallyEmpty.capacityRecoveryEnabled, false);
+  });
+});
+
+test("failure recovery reasons are canonical, deduplicated, and independently selectable", async () => {
+  await withSsrModules(async (load) => {
+    const { AUTO_RESUME_FAILURE_REASONS, sanitizeAutoResumeTaskSettings } =
+      await load("/src/settings/autoResume.ts");
+    const result = sanitizeAutoResumeTaskSettings({
+      threadId: "thread-a",
+      failureRecoveryPolicyVersion: 1,
+      failureRecoveryReasons: ["interrupted", "network", "network", "unknown"],
+      quotaResumeEnabled: false,
+    });
+    assert.deepEqual(result.failureRecoveryReasons, ["network", "interrupted"]);
+    assert.equal(result.capacityRecoveryEnabled, true);
+    assert.equal(AUTO_RESUME_FAILURE_REASONS.length, 13);
+  });
+});
+
 test("timestamp formatting accepts both seconds and milliseconds", async () => {
   await withSsrModules(async (load) => {
     const { formatAutoResumeTimestamp } = await load("/src/settings/autoResume.ts");

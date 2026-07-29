@@ -881,6 +881,61 @@ pub fn default_codex_home() -> PathBuf {
         .unwrap_or_else(|| crate::core::app_paths::home_dir().join(".codex"))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoResumeFailureReason {
+    Capacity,
+    Network,
+    RateLimit,
+    ServerError,
+    Timeout,
+    RetryLimit,
+    ContextWindow,
+    SessionBudget,
+    RequestConflict,
+    Authentication,
+    Sandbox,
+    Interrupted,
+    Other,
+}
+
+impl AutoResumeFailureReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Capacity => "capacity",
+            Self::Network => "network",
+            Self::RateLimit => "rateLimit",
+            Self::ServerError => "serverError",
+            Self::Timeout => "timeout",
+            Self::RetryLimit => "retryLimit",
+            Self::ContextWindow => "contextWindow",
+            Self::SessionBudget => "sessionBudget",
+            Self::RequestConflict => "requestConflict",
+            Self::Authentication => "authentication",
+            Self::Sandbox => "sandbox",
+            Self::Interrupted => "interrupted",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Capacity => "容量不足",
+            Self::Network => "网络断开",
+            Self::RateLimit => "请求限流",
+            Self::ServerError => "服务端错误",
+            Self::Timeout => "请求超时",
+            Self::RetryLimit => "重试次数耗尽",
+            Self::ContextWindow => "上下文超限",
+            Self::SessionBudget => "会话预算耗尽",
+            Self::RequestConflict => "请求状态冲突",
+            Self::Authentication => "登录或鉴权失败",
+            Self::Sandbox => "沙盒或权限错误",
+            Self::Interrupted => "任务被中断",
+            Self::Other => "其他失败",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutoResumeLatestTurnObservation {
     pub turn_id: String,
@@ -889,6 +944,7 @@ pub struct AutoResumeLatestTurnObservation {
     pub completed_at: Option<i64>,
     pub error_message: Option<String>,
     pub codex_error_code: Option<String>,
+    pub http_status_code: Option<u16>,
     pub client_user_message_id: Option<String>,
 }
 
@@ -905,43 +961,190 @@ impl AutoResumeLatestTurnObservation {
         )
     }
 
-    pub fn is_generated_by_capacity_recovery(&self) -> bool {
+    pub fn is_generated_by_automatic_recovery(&self) -> bool {
         self.client_user_message_id
             .as_deref()
-            .is_some_and(|value| value.starts_with("capacity:"))
+            .is_some_and(|value| {
+                value.starts_with("capacity:") || value.starts_with("failure:")
+            })
+    }
+
+    pub fn is_generated_by_capacity_recovery(&self) -> bool {
+        self.is_generated_by_automatic_recovery()
     }
 
     pub fn is_server_capacity_failure(&self) -> bool {
+        self.failure_reason() == Some(AutoResumeFailureReason::Capacity)
+    }
+
+    pub fn is_recoverable_capacity_failure(&self) -> bool {
+        self.is_server_capacity_failure()
+            && self.client_user_message_id.is_some()
+            && !self.is_generated_by_automatic_recovery()
+    }
+
+    pub fn is_quota_limit_failure(&self) -> bool {
         if normalized_identifier(&self.status) != "failed" {
             return false;
         }
         if self
             .codex_error_code
             .as_deref()
-            .is_some_and(|value| normalized_identifier(value) == "serveroverloaded")
+            .is_some_and(|value| normalized_identifier(value) == "usagelimitexceeded")
         {
             return true;
         }
-        let message = self.error_message.as_deref().unwrap_or("").to_lowercase();
-        [
-            "selected model is at capacity",
-            "server is overloaded",
-            "server overloaded",
-            "insufficient capacity",
-            "no available capacity",
-            "currently experiencing high demand",
-            "服务容量不足",
-            "服务器容量不足",
-        ]
-        .iter()
-        .any(|needle| message.contains(needle))
+        message_contains(
+            self.error_message.as_deref(),
+            &[
+                "usage limit",
+                "usage_limit",
+                "insufficient_quota",
+                "quota exceeded",
+                "额度耗尽",
+                "额度已用完",
+                "使用额度已达上限",
+            ],
+        )
     }
 
-    pub fn is_recoverable_capacity_failure(&self) -> bool {
-        self.is_server_capacity_failure()
-            && self.client_user_message_id.is_some()
-            && !self.is_generated_by_capacity_recovery()
+    pub fn failure_reason(&self) -> Option<AutoResumeFailureReason> {
+        let status = normalized_identifier(&self.status);
+        if status == "interrupted" {
+            return Some(AutoResumeFailureReason::Interrupted);
+        }
+        if status != "failed" || self.is_quota_limit_failure() {
+            return None;
+        }
+        let code = self
+            .codex_error_code
+            .as_deref()
+            .map(normalized_identifier)
+            .unwrap_or_default();
+        let structured = match code.as_str() {
+            "serveroverloaded" => Some(AutoResumeFailureReason::Capacity),
+            "contextwindowexceeded" => Some(AutoResumeFailureReason::ContextWindow),
+            "sessionbudgetexceeded" => Some(AutoResumeFailureReason::SessionBudget),
+            "httpconnectionfailed"
+            | "responsestreamconnectionfailed"
+            | "responsestreamdisconnected" => {
+                self.http_status_reason().or(Some(AutoResumeFailureReason::Network))
+            }
+            "responsetoomanyfailedattempts" => Some(AutoResumeFailureReason::RetryLimit),
+            "activeturnnotsteerable" | "badrequest" => {
+                Some(AutoResumeFailureReason::RequestConflict)
+            }
+            "unauthorized" => Some(AutoResumeFailureReason::Authentication),
+            "sandboxerror" => Some(AutoResumeFailureReason::Sandbox),
+            "internalservererror" => Some(AutoResumeFailureReason::ServerError),
+            "other" => Some(AutoResumeFailureReason::Other),
+            _ => None,
+        };
+        if structured.is_some() {
+            return structured;
+        }
+        if message_contains(
+            self.error_message.as_deref(),
+            &[
+                "selected model is at capacity",
+                "server is overloaded",
+                "server overloaded",
+                "insufficient capacity",
+                "no available capacity",
+                "currently experiencing high demand",
+                "服务容量不足",
+                "服务器容量不足",
+            ],
+        ) {
+            return Some(AutoResumeFailureReason::Capacity);
+        }
+        if let Some(reason) = self.http_status_reason() {
+            return Some(reason);
+        }
+        let message_rules: &[(AutoResumeFailureReason, &[&str])] = &[
+            (
+                AutoResumeFailureReason::RateLimit,
+                &["rate limit", "rate_limit", "too many requests", "请求过于频繁", "限流"],
+            ),
+            (
+                AutoResumeFailureReason::Timeout,
+                &["timed out", "timeout", "deadline exceeded", "请求超时", "连接超时"],
+            ),
+            (
+                AutoResumeFailureReason::Network,
+                &[
+                    "connection reset",
+                    "connection refused",
+                    "connection failed",
+                    "network error",
+                    "network unreachable",
+                    "dns",
+                    "stream disconnected",
+                    "stream connection",
+                    "网络连接",
+                    "网络中断",
+                    "连接断开",
+                ],
+            ),
+            (
+                AutoResumeFailureReason::ContextWindow,
+                &["context window", "context length", "上下文窗口", "上下文超限"],
+            ),
+            (
+                AutoResumeFailureReason::SessionBudget,
+                &["session budget", "会话预算", "本轮预算"],
+            ),
+            (
+                AutoResumeFailureReason::Authentication,
+                &["unauthorized", "authentication", "invalid api key", "鉴权", "未授权"],
+            ),
+            (
+                AutoResumeFailureReason::Sandbox,
+                &["sandbox", "permission denied", "沙盒", "权限不足"],
+            ),
+            (
+                AutoResumeFailureReason::RetryLimit,
+                &["too many failed attempts", "retry attempts", "重试次数"],
+            ),
+            (
+                AutoResumeFailureReason::RequestConflict,
+                &["bad request", "not steerable", "conflict", "请求冲突", "状态冲突"],
+            ),
+            (
+                AutoResumeFailureReason::ServerError,
+                &["internal server", "service unavailable", "server error", "服务端错误"],
+            ),
+        ];
+        for (reason, needles) in message_rules {
+            if message_contains(self.error_message.as_deref(), needles) {
+                return Some(*reason);
+            }
+        }
+        Some(AutoResumeFailureReason::Other)
     }
+
+    pub fn is_recoverable_failure(&self, selected_reasons: &[String]) -> bool {
+        self.failure_reason().is_some_and(|reason| {
+            selected_reasons.iter().any(|value| value == reason.as_str())
+                && self.client_user_message_id.is_some()
+                && !self.is_generated_by_automatic_recovery()
+        })
+    }
+
+    fn http_status_reason(&self) -> Option<AutoResumeFailureReason> {
+        match self.http_status_code? {
+            401 | 403 => Some(AutoResumeFailureReason::Authentication),
+            408 => Some(AutoResumeFailureReason::Timeout),
+            429 => Some(AutoResumeFailureReason::RateLimit),
+            500..=599 => Some(AutoResumeFailureReason::ServerError),
+            _ => None,
+        }
+    }
+}
+
+fn message_contains(message: Option<&str>, needles: &[&str]) -> bool {
+    let message = message.unwrap_or("").to_lowercase();
+    needles.iter().any(|needle| message.contains(needle))
 }
 
 pub fn read_latest_turn_observation(
@@ -956,7 +1159,7 @@ pub fn read_latest_turn_observation(
     else {
         return Ok(None);
     };
-    if observation.is_server_capacity_failure() && observation.client_user_message_id.is_none() {
+    if observation.failure_reason().is_some() && observation.client_user_message_id.is_none() {
         if let Some(full_turn) =
             request_latest_turn(&mut session, &mut next_request_id, thread_id, "full")?
         {
@@ -1015,11 +1218,9 @@ fn parse_latest_turn_observation(
         .to_string();
     let error = turn.get("error");
     let codex_error_info = error.and_then(|value| value.get("codexErrorInfo"));
-    let codex_error_code = match codex_error_info {
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
-        Some(Value::Object(value)) => value.keys().min().cloned(),
-        _ => None,
-    };
+    let (codex_error_code, http_status_code) = codex_error_info
+        .map(codex_error_details)
+        .unwrap_or((None, None));
     let client_user_message_id = turn
         .get("items")
         .and_then(Value::as_array)
@@ -1043,7 +1244,70 @@ fn parse_latest_turn_observation(
             .and_then(Value::as_str)
             .map(str::to_string),
         codex_error_code,
+        http_status_code,
         client_user_message_id,
+    })
+}
+
+fn codex_error_details(value: &Value) -> (Option<String>, Option<u16>) {
+    if let Some(code) = value.as_str().filter(|code| !code.trim().is_empty()) {
+        return (Some(code.to_string()), None);
+    }
+    let Some(object) = value.as_object() else {
+        return (None, None);
+    };
+    let http_status_code = http_status_code_from_value(value);
+    for key in ["type", "kind", "code"] {
+        if let Some(code) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|code| !code.trim().is_empty())
+        {
+            return (Some(code.to_string()), http_status_code);
+        }
+    }
+    let codex_error_code = object
+        .keys()
+        .filter(|key| !is_codex_error_metadata_key(key))
+        .min()
+        .cloned();
+    (codex_error_code, http_status_code)
+}
+
+fn is_codex_error_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "type"
+            | "kind"
+            | "code"
+            | "message"
+            | "details"
+            | "httpStatusCode"
+            | "http_status_code"
+            | "statusCode"
+            | "status"
+    )
+}
+
+fn http_status_code_from_value(value: &Value) -> Option<u16> {
+    let object = value.as_object()?;
+    for key in ["httpStatusCode", "http_status_code", "statusCode", "status"] {
+        if let Some(status) = object.get(key) {
+            if let Some(number) = status.as_u64().and_then(|value| u16::try_from(value).ok()) {
+                return Some(number);
+            }
+            if let Some(number) = status
+                .as_str()
+                .and_then(|value| value.parse::<u16>().ok())
+            {
+                return Some(number);
+            }
+        }
+    }
+    object.values().find_map(|value| {
+        value
+            .as_object()
+            .and_then(|_| http_status_code_from_value(value))
     })
 }
 
@@ -2284,6 +2548,7 @@ mod tests {
             completed_at: Some(110),
             error_message: Some("Selected model is at capacity".into()),
             codex_error_code: Some("serverOverloaded".into()),
+            http_status_code: None,
             client_user_message_id: Some("user-message-1".into()),
         };
         assert!(recoverable.is_server_capacity_failure());
@@ -2312,6 +2577,46 @@ mod tests {
     }
 
     #[test]
+    fn selected_failure_reasons_classify_network_http_status_and_interruption() {
+        let base = AutoResumeLatestTurnObservation {
+            turn_id: "turn-network".into(),
+            status: "failed".into(),
+            started_at: Some(100),
+            completed_at: Some(110),
+            error_message: Some("stream disconnected".into()),
+            codex_error_code: Some("ResponseStreamDisconnected".into()),
+            http_status_code: None,
+            client_user_message_id: Some("user-message-1".into()),
+        };
+        assert_eq!(base.failure_reason(), Some(AutoResumeFailureReason::Network));
+        assert!(base.is_recoverable_failure(&["network".into()]));
+        assert!(!base.is_recoverable_failure(&["capacity".into()]));
+
+        let mut limited = base.clone();
+        limited.codex_error_code = Some("HttpConnectionFailed".into());
+        limited.http_status_code = Some(429);
+        assert_eq!(
+            limited.failure_reason(),
+            Some(AutoResumeFailureReason::RateLimit)
+        );
+
+        let mut interrupted = base.clone();
+        interrupted.status = "interrupted".into();
+        interrupted.codex_error_code = None;
+        assert_eq!(
+            interrupted.failure_reason(),
+            Some(AutoResumeFailureReason::Interrupted)
+        );
+        assert!(interrupted.is_recoverable_failure(&["interrupted".into()]));
+
+        let mut generated = base;
+        generated.client_user_message_id =
+            Some("failure:network:thread-1:turn-network".into());
+        assert!(generated.is_generated_by_automatic_recovery());
+        assert!(!generated.is_recoverable_failure(&["network".into()]));
+    }
+
+    #[test]
     fn latest_turn_parser_reads_capacity_code_and_client_message_identity() {
         let parsed = parse_latest_turn_observation(&json!({
             "id": "turn-1",
@@ -2336,6 +2641,47 @@ mod tests {
             Some("message-owned-by-user")
         );
         assert!(parsed.is_recoverable_capacity_failure());
+
+        let parsed_status = parse_latest_turn_observation(&json!({
+            "id": "turn-2",
+            "status": "failed",
+            "error": {
+                "message": "request failed",
+                "codexErrorInfo": {
+                    "httpConnectionFailed": { "httpStatusCode": 503 }
+                }
+            },
+            "items": [{ "type": "userMessage", "clientId": "message-2" }]
+        }))
+        .unwrap();
+        assert_eq!(parsed_status.http_status_code, Some(503));
+        assert_eq!(
+            parsed_status.failure_reason(),
+            Some(AutoResumeFailureReason::ServerError)
+        );
+
+        let tagged = parse_latest_turn_observation(&json!({
+            "id": "turn-3",
+            "status": "failed",
+            "error": {
+                "message": "upstream unavailable",
+                "codexErrorInfo": {
+                    "type": "httpConnectionFailed",
+                    "httpStatusCode": 503
+                }
+            },
+            "items": [{ "type": "userMessage", "clientId": "message-3" }]
+        }))
+        .unwrap();
+        assert_eq!(
+            tagged.codex_error_code.as_deref(),
+            Some("httpConnectionFailed")
+        );
+        assert_eq!(tagged.http_status_code, Some(503));
+        assert_eq!(
+            tagged.failure_reason(),
+            Some(AutoResumeFailureReason::ServerError)
+        );
     }
 
     #[test]

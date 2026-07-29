@@ -425,7 +425,7 @@ final class AutoResumeControllerTests: XCTestCase {
         XCTAssertEqual(appServer.lastPrompt, "继续")
         XCTAssertEqual(
             appServer.lastClientMessageID,
-            "capacity:\(target.id):failed-capacity-turn"
+            "failure:capacity:\(target.id):failed-capacity-turn"
         )
         XCTAssertEqual(appServer.lastExpectedFreshness, observation.freshness)
         XCTAssertTrue(appServer.lastHadStartAuthorization)

@@ -459,7 +459,7 @@ struct HeaderView: View {
                                         )
                                     }
                                     .buttonStyle(.plain)
-                                    .help(autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理定时、额度恢复和容量中断续跑")
+                                    .help(autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理失败中断、定时和额度恢复续跑")
                                     .accessibilityLabel("自动续跑")
                                     .accessibilityValue(autoResumeEnabled ? "已开启" : "已关闭")
                                     .accessibilityHint("打开自动续跑设置")

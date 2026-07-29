@@ -1,4 +1,5 @@
 import type {
+  AutoResumeFailureReason,
   AutoResumeQuotaWindow,
   AutoResumeRuntimeStatus,
   AutoResumeScheduleMode,
@@ -7,6 +8,26 @@ import type {
 } from "../types/dashboard";
 
 export const AUTO_RESUME_INTERVAL_OPTIONS = [15, 30, 60, 120, 360, 720] as const;
+
+export const AUTO_RESUME_FAILURE_REASONS: readonly {
+  id: AutoResumeFailureReason;
+  label: string;
+  risky: boolean;
+}[] = [
+  { id: "capacity", label: "容量不足", risky: false },
+  { id: "network", label: "网络断开", risky: false },
+  { id: "rateLimit", label: "请求限流", risky: false },
+  { id: "serverError", label: "服务端错误", risky: false },
+  { id: "timeout", label: "请求超时", risky: false },
+  { id: "retryLimit", label: "重试次数耗尽", risky: false },
+  { id: "contextWindow", label: "上下文超限", risky: true },
+  { id: "sessionBudget", label: "会话预算耗尽", risky: true },
+  { id: "requestConflict", label: "请求状态冲突", risky: true },
+  { id: "authentication", label: "登录或鉴权失败", risky: true },
+  { id: "sandbox", label: "沙盒或权限错误", risky: true },
+  { id: "interrupted", label: "任务被中断", risky: true },
+  { id: "other", label: "其他失败", risky: true },
+] as const;
 
 export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
   taskCollectionVersion: 2,
@@ -21,6 +42,8 @@ export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
   intervalMinutes: 60,
   dailyHour: 9,
   dailyMinute: 0,
+  failureRecoveryPolicyVersion: 1,
+  failureRecoveryReasons: [],
   capacityRecoveryEnabled: false,
   quotaResumeEnabled: true,
   quotaWindow: "either",
@@ -96,7 +119,15 @@ export function sanitizeAutoResumeTaskSettings(
   const threadId = cleanText(source.threadId, 128);
   const lowThreshold = clampWholeNumber(source.quotaLowThresholdPercent, 0, 20, 5);
   const scheduleMode = sanitizeScheduleMode(source.scheduleMode);
-  const capacityRecoveryEnabled = source.capacityRecoveryEnabled === true;
+  const hasFailurePolicy = Number(source.failureRecoveryPolicyVersion) >= 1;
+  const requestedFailureReasons = hasFailurePolicy && Array.isArray(source.failureRecoveryReasons)
+    ? source.failureRecoveryReasons
+    : (source.capacityRecoveryEnabled === true ? ["capacity"] : []);
+  const requestedFailureReasonSet = new Set(requestedFailureReasons);
+  const failureRecoveryReasons = AUTO_RESUME_FAILURE_REASONS
+    .map(({ id }) => id)
+    .filter((reason) => requestedFailureReasonSet.has(reason));
+  const capacityRecoveryEnabled = failureRecoveryReasons.length > 0;
   const quotaResumeEnabled = source.quotaResumeEnabled !== false;
   const hasTrigger = scheduleMode !== "off" || capacityRecoveryEnabled || quotaResumeEnabled;
   return {
@@ -114,6 +145,8 @@ export function sanitizeAutoResumeTaskSettings(
       : DEFAULT_AUTO_RESUME_SETTINGS.intervalMinutes,
     dailyHour: clampWholeNumber(source.dailyHour, 0, 23, DEFAULT_AUTO_RESUME_SETTINGS.dailyHour),
     dailyMinute: clampWholeNumber(source.dailyMinute, 0, 59, DEFAULT_AUTO_RESUME_SETTINGS.dailyMinute),
+    failureRecoveryPolicyVersion: 1,
+    failureRecoveryReasons,
     capacityRecoveryEnabled,
     quotaResumeEnabled,
     quotaWindow: sanitizeQuotaWindow(source.quotaWindow),

@@ -19,6 +19,7 @@ import { floatingGradientBackground } from "../../floating/floatingSettings";
 import { floatingTextPaletteForGroup } from "../../floating/floatingTextPalette";
 import { QUOTA_REFRESH_CADENCE_OPTIONS } from "../../settings/quotaRefreshCadence";
 import {
+  AUTO_RESUME_FAILURE_REASONS,
   AUTO_RESUME_INTERVAL_OPTIONS,
   createAutoResumeTask,
   formatAutoResumeTimestamp,
@@ -74,7 +75,7 @@ const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "general", label: "常规", description: "启动与基础偏好" },
   { id: "session", label: "会话增强", description: "删除、导出、移动、输入与阅读体验" },
   { id: "instances", label: "Codex 实例", description: "多开、隔离、同步与回滚" },
-  { id: "automation", label: "自动续跑", description: "定时与额度恢复后继续" },
+  { id: "automation", label: "自动续跑", description: "按所选中断原因、定时或额度恢复继续" },
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
   { id: "floating", label: "悬浮窗", description: "尺寸、颜色与额度条" },
@@ -861,7 +862,7 @@ function AutomationSettings({
     const enabling = !task.enabled;
     if (enabling && !hasAutomaticTrigger(task)) {
       setExpandedTaskId(task.id);
-      setLocalError("请先开启容量中断、定时或额度恢复中的至少一项。");
+      setLocalError("请先选择至少一种失败原因、定时或额度恢复条件。");
       return;
     }
     const next = sanitizeAutoResumeSettings({
@@ -922,7 +923,7 @@ function AutomationSettings({
     <>
       <div className="auto-resume-safety-note" role="note">
         <strong>一条任务保护一个 Codex 会话</strong>
-        <span>每条任务独立配置并持久化；应用内串行执行。授权确认、需要人工输入和主动停止都不会被自动越过。</span>
+        <span>每条任务独立配置并持久化；应用内串行执行。授权确认和人工输入不会被自动批准或代填；“任务被中断”可能包含主动停止，只有勾选后才会续跑。</span>
       </div>
 
       <SettingsGroup title="创建监控任务" description="保留完整会话选择器；创建后默认暂停，可以先编辑再开启保护。">
@@ -1048,6 +1049,13 @@ function AutomationSettings({
             const expanded = expandedTaskId === task.id;
             const isTaskRunning = status?.isRunning === true
               || autoResumeStatus.runningTaskId === task.id;
+            const selectedFailureReasons = new Set(task.failureRecoveryReasons);
+            const allRecoveryConditionsSelected =
+              selectedFailureReasons.size === AUTO_RESUME_FAILURE_REASONS.length
+              && task.quotaResumeEnabled;
+            const hasRiskyFailureReason = AUTO_RESUME_FAILURE_REASONS.some(
+              ({ id, risky }) => risky && selectedFailureReasons.has(id),
+            );
             return (
               <article
                 className={`auto-resume-task-card${task.enabled ? " is-protected" : ""}${expanded ? " is-expanded" : ""}`}
@@ -1098,15 +1106,71 @@ function AutomationSettings({
                       <span>{status?.message || (task.enabled ? "正在等待触发条件" : "任务已暂停")}</span>
                     </div>
 
-                    <SettingRow title="容量不足时续跑" description="只识别 Codex 的 serverOverloaded；每个容量中断最多续跑一次。">
-                      <ToggleButton
-                        active={task.capacityRecoveryEnabled}
-                        disabled={isTaskRunning}
-                        label="容量不足时续跑"
-                        onClick={() => updateTask(task.id, { capacityRecoveryEnabled: !task.capacityRecoveryEnabled })}
-                      />
-                    </SettingRow>
-                    <div className="app-settings-note">每个容量中断最多续跑一次；自动启动的后续轮若仍容量不足，不会循环重试。额度耗尽、上下文超限、主动停止、审批和人工输入都不会触发。</div>
+                    <section className="auto-resume-failure-selector">
+                      <header>
+                        <span>
+                          <strong>失败 / 中断续跑条件</strong>
+                          <small>独立勾选要保护的原因；额度耗尽会等待额度恢复后再续跑。</small>
+                        </span>
+                        <button
+                          className="app-settings-action"
+                          disabled={isTaskRunning}
+                          onClick={() => updateTask(task.id, {
+                            failureRecoveryPolicyVersion: 1,
+                            failureRecoveryReasons: allRecoveryConditionsSelected
+                              ? []
+                              : AUTO_RESUME_FAILURE_REASONS.map(({ id }) => id),
+                            capacityRecoveryEnabled: !allRecoveryConditionsSelected,
+                            quotaResumeEnabled: !allRecoveryConditionsSelected,
+                          })}
+                          type="button"
+                        >
+                          {allRecoveryConditionsSelected ? "清空" : "全选"}
+                        </button>
+                      </header>
+                      <div className="auto-resume-failure-grid">
+                        {AUTO_RESUME_FAILURE_REASONS.map(({ id, label }) => {
+                          const selected = selectedFailureReasons.has(id);
+                          return (
+                            <label
+                              className={selected ? "is-active" : ""}
+                              key={id}
+                            >
+                              <input
+                                checked={selected}
+                                disabled={isTaskRunning}
+                                onChange={() => updateTask(task.id, {
+                                  failureRecoveryPolicyVersion: 1,
+                                  failureRecoveryReasons: selected
+                                    ? task.failureRecoveryReasons.filter((reason) => reason !== id)
+                                    : [...task.failureRecoveryReasons, id],
+                                })}
+                                type="checkbox"
+                              />
+                              <span>{label}</span>
+                            </label>
+                          );
+                        })}
+                        <label
+                          className={task.quotaResumeEnabled ? "is-active" : ""}
+                        >
+                          <input
+                            checked={task.quotaResumeEnabled}
+                            disabled={isTaskRunning}
+                            onChange={() => updateTask(task.id, {
+                              quotaResumeEnabled: !task.quotaResumeEnabled,
+                            })}
+                            type="checkbox"
+                          />
+                          <span>额度耗尽（恢复后）</span>
+                        </label>
+                      </div>
+                      <p className={hasRiskyFailureReason ? "is-warning" : ""}>
+                        {hasRiskyFailureReason
+                          ? "已选择的宽泛条件可能包含主动停止、审批清理或必须人工修复的问题；仍会遵守单次失败只续跑一次、冷却和每日上限。"
+                          : "自动续跑产生的后续轮不会再次触发失败续跑，避免形成自循环。"}
+                      </p>
+                    </section>
 
                     <div aria-label="自动续跑时间计划" className="auto-resume-mode-choice" role="radiogroup">
                       {([
@@ -1160,14 +1224,6 @@ function AutomationSettings({
                       </SettingRow>
                     ) : null}
 
-                    <SettingRow title="额度恢复后续跑" description="先在低位武装，再等额度真实恢复，避免边界附近反复触发。">
-                      <ToggleButton
-                        active={task.quotaResumeEnabled}
-                        disabled={isTaskRunning}
-                        label="额度恢复后续跑"
-                        onClick={() => updateTask(task.id, { quotaResumeEnabled: !task.quotaResumeEnabled })}
-                      />
-                    </SettingRow>
                     {task.quotaResumeEnabled ? (
                       <>
                         <SettingRow title="监测窗口" description="选择哪个额度窗口参与恢复判断。">
@@ -1670,7 +1726,9 @@ function hasAutomaticTrigger(task: AutoResumeTaskSettings): boolean {
 
 function autoResumeTriggerLabels(task: AutoResumeTaskSettings): string[] {
   const labels: string[] = [];
-  if (task.capacityRecoveryEnabled) labels.push("容量中断");
+  if (task.failureRecoveryReasons.length > 0) {
+    labels.push(`失败 ${task.failureRecoveryReasons.length}项`);
+  }
   if (task.scheduleMode !== "off") labels.push("定时");
   if (task.quotaResumeEnabled) labels.push("额度恢复");
   return labels.length > 0 ? labels : ["未设触发"];

@@ -66,6 +66,20 @@ export interface SessionEnhancementSettings {
 
 export type AutoResumeScheduleMode = "off" | "interval" | "daily";
 export type AutoResumeQuotaWindow = "fiveHour" | "sevenDay" | "either";
+export type AutoResumeFailureReason =
+  | "capacity"
+  | "network"
+  | "rateLimit"
+  | "serverError"
+  | "timeout"
+  | "retryLimit"
+  | "contextWindow"
+  | "sessionBudget"
+  | "requestConflict"
+  | "authentication"
+  | "sandbox"
+  | "interrupted"
+  | "other";
 
 export interface AutoResumeTaskConfiguration {
   enabled: boolean;
@@ -77,6 +91,8 @@ export interface AutoResumeTaskConfiguration {
   intervalMinutes: number;
   dailyHour: number;
   dailyMinute: number;
+  failureRecoveryPolicyVersion: number;
+  failureRecoveryReasons: AutoResumeFailureReason[];
   capacityRecoveryEnabled: boolean;
   quotaResumeEnabled: boolean;
   quotaWindow: AutoResumeQuotaWindow;

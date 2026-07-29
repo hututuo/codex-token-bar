@@ -59,7 +59,7 @@ struct AutoResumeSettingsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("一条任务，保护一个 Codex 会话")
                     .font(.system(size: 12.5, weight: .semibold))
-                Text("每条任务独立设置触发条件；应用内串行执行，并与跨平台版共用会话锁和触发记录。授权确认、人工输入和主动停止都不会被自动越过。")
+                Text("每条任务独立设置触发条件；应用内串行执行，并与跨平台版共用会话锁和触发记录。授权确认和人工输入不会被自动批准或代填；“任务被中断”可能包含主动停止，只有勾选后才会续跑。")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -263,18 +263,9 @@ struct AutoResumeSettingsView: View {
                 detail: task.runtimeState.statusMessage
             )
             Group {
-                toggleRow(
-                    "容量不足时续跑",
-                    systemImage: "bolt.horizontal.circle.fill",
-                    isOn: Binding(
-                        get: { configuration.capacityRecoveryEnabled },
-                        set: { taskController.setCapacityRecoveryEnabled($0) }
-                    )
-                )
-                taskInfoRow(
-                    "严格识别容量中断",
-                    systemImage: "checkmark.shield.fill",
-                    detail: "只处理 Codex 的 serverOverloaded；每个容量中断最多续跑一次。自动启动的后续轮若仍容量不足，不会循环重试。额度耗尽、上下文超限、主动停止、审批和人工输入都不会触发。"
+                failureReasonSelector(
+                    configuration: configuration,
+                    controller: taskController
                 )
                 pickerRow(
                     "定时方式",
@@ -317,14 +308,6 @@ struct AutoResumeSettingsView: View {
                         )
                     )
                 }
-                toggleRow(
-                    "额度恢复时续跑",
-                    systemImage: "battery.100percent.bolt",
-                    isOn: Binding(
-                        get: { configuration.quotaRecoveryEnabled },
-                        set: { taskController.setQuotaRecoveryEnabled($0) }
-                    )
-                )
                 if configuration.quotaRecoveryEnabled {
                     pickerRow(
                         "观察额度",
@@ -431,6 +414,107 @@ struct AutoResumeSettingsView: View {
         }
     }
 
+    private func failureReasonSelector(
+        configuration: AutoResumeConfiguration,
+        controller: AutoResumeController
+    ) -> some View {
+        let selected = configuration.selectedFailureReasons
+        let allSelected = selected.count == AutoResumeFailureReason.allCases.count
+            && configuration.quotaRecoveryEnabled
+        let hasRiskySelection = selected.contains(where: \.isRisky)
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("失败 / 中断续跑条件")
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Text("独立勾选要保护的原因；额度耗尽会等待额度恢复后再续跑。")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(allSelected ? "清空" : "全选") {
+                    controller.setAllRecoveryConditions(!allSelected)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 7),
+                    GridItem(.flexible(), spacing: 7),
+                ],
+                spacing: 7
+            ) {
+                ForEach(AutoResumeFailureReason.allCases, id: \.self) { reason in
+                    failureReasonButton(
+                        reason.label,
+                        selected: selected.contains(reason)
+                    ) {
+                        controller.setFailureRecoveryReason(
+                            reason,
+                            enabled: !selected.contains(reason)
+                        )
+                    }
+                }
+                failureReasonButton(
+                    "额度耗尽（恢复后）",
+                    selected: configuration.quotaRecoveryEnabled
+                ) {
+                    controller.setQuotaRecoveryEnabled(!configuration.quotaRecoveryEnabled)
+                }
+            }
+
+            Text(
+                hasRiskySelection
+                    ? "已选择的宽泛条件可能包含主动停止、审批清理或必须人工修复的问题；仍会遵守单次失败只续跑一次、冷却和每日上限。"
+                    : "自动续跑产生的后续轮不会再次触发失败续跑，避免形成自循环。"
+            )
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(hasRiskySelection ? AppTheme.accentAmber : .secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .autoResumeRowDivider()
+    }
+
+    private func failureReasonButton(
+        _ title: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? AppTheme.accentBlue : .secondary)
+                Text(title)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+            .background(
+                selected
+                    ? AppTheme.selectedControlBackground.opacity(0.7)
+                    : AppTheme.solidControlBackground,
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(selected ? AppTheme.accentBlue.opacity(0.35) : AppTheme.border)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(selected ? "已选择" : "未选择")
+    }
+
     private var projectPickerRow: some View {
         HStack(spacing: 9) {
             Image(systemName: "folder.fill").foregroundStyle(.secondary).frame(width: 16)
@@ -527,7 +611,7 @@ struct AutoResumeSettingsView: View {
         if composerStatusTitle.contains("已经") {
             return "点击“创建任务”会直接定位到已有任务，不会重复监控同一个会话。"
         }
-        return "默认开启额度恢复条件，但保护开关保持关闭；可以先修改容量中断、定时和安全限制。"
+        return "默认开启额度恢复条件，但保护开关保持关闭；可以逐项选择失败原因、定时和安全限制。"
     }
 
     private func createSelectedTask() {
@@ -556,7 +640,9 @@ struct AutoResumeSettingsView: View {
 
     private func triggerLabels(_ configuration: AutoResumeConfiguration) -> [String] {
         var labels: [String] = []
-        if configuration.capacityRecoveryEnabled { labels.append("容量中断") }
+        if !configuration.failureRecoveryReasons.isEmpty {
+            labels.append("失败 \(configuration.failureRecoveryReasons.count)项")
+        }
         if configuration.scheduleMode != .off { labels.append("定时") }
         if configuration.quotaRecoveryEnabled { labels.append("额度恢复") }
         return labels.isEmpty ? ["未设触发"] : labels
