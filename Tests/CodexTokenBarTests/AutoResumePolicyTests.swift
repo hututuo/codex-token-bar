@@ -176,6 +176,7 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertTrue(configuration.failureRecoveryReasons.isEmpty)
         XCTAssertEqual(configuration.quotaWindow, .lowestRemaining)
         XCTAssertTrue(configuration.notifyOnResult)
+        XCTAssertEqual(configuration.invisibleResumeEnabled, false)
 
         let legacyCapacityData = try JSONSerialization.data(withJSONObject: [
             "capacityRecoveryEnabled": true,
@@ -187,6 +188,28 @@ final class AutoResumePolicyTests: XCTestCase {
         )
         XCTAssertEqual(legacyCapacity.failureRecoveryReasons, [.serverOverloaded])
         XCTAssertTrue(legacyCapacity.capacityRecoveryEnabled)
+        XCTAssertEqual(legacyCapacity.invisibleResumeEnabled, true)
+
+        let explicitInvisibleData = try JSONSerialization.data(withJSONObject: [
+            "prompt": "按原计划继续",
+            "invisibleResumeEnabled": true,
+        ])
+        let explicitInvisible = try JSONDecoder().decode(
+            AutoResumeConfiguration.self,
+            from: explicitInvisibleData
+        )
+        XCTAssertEqual(explicitInvisible.prompt, "按原计划继续")
+        XCTAssertEqual(explicitInvisible.invisibleResumeEnabled, true)
+
+        let explicitVisibleContinueData = try JSONSerialization.data(withJSONObject: [
+            "prompt": "继续",
+            "invisibleResumeEnabled": false,
+        ])
+        let explicitVisibleContinue = try JSONDecoder().decode(
+            AutoResumeConfiguration.self,
+            from: explicitVisibleContinueData
+        )
+        XCTAssertEqual(explicitVisibleContinue.invisibleResumeEnabled, false)
 
         let legacyFailurePolicyData = try JSONSerialization.data(withJSONObject: [
             "failureRecoveryPolicyVersion": 1,

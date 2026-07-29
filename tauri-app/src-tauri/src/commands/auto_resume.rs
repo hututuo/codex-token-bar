@@ -919,11 +919,10 @@ impl AutoResumeTaskRuntime {
         }
 
         let thread_id = trigger.thread_id.clone();
-        let prompt = if trigger.kind == TriggerKind::CapacityRecovery {
-            "继续".to_string()
-        } else {
-            settings.prompt.clone()
-        };
+        let prompt = settings.prompt.clone();
+        let invisible_resume_enabled = settings
+            .invisible_resume_enabled
+            .unwrap_or_else(|| prompt.trim() == "继续");
         let client_message_id = claim.trigger_key().to_string();
         let freshness_not_before = trigger.freshness_not_before;
         let start_generation_guard = match trigger.kind {
@@ -956,6 +955,7 @@ impl AutoResumeTaskRuntime {
                 &run_home,
                 &thread_id,
                 &prompt,
+                invisible_resume_enabled,
                 &client_message_id,
                 freshness_not_before,
                 start_generation_guard,
@@ -2611,7 +2611,7 @@ mod tests {
     fn lowest_window_ignores_a_never_low_window_stuck_below_the_recovery_threshold() {
         let settings = enabled_settings();
         let mut state = PersistedAutoResumeState::default();
-        // 7d 长期 0.10：高于低位阈值（0.05）从未武装，但一直低于恢复阈值（0.20）。
+        // 7d 长期 0.10：高于“开始等待刷新”（0.05），因此未进入等待；同时一直低于“刷新后续跑”（0.20）。
         observe_quota_bundle(
             &settings,
             &mut state,

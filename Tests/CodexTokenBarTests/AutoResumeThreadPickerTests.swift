@@ -34,7 +34,7 @@ final class AutoResumeThreadPickerTests: XCTestCase {
             projectID: projectID,
             query: ""
         )
-        XCTAssertEqual(AutoResumeThreadPicker.visibleThreadLimit, 100)
+        XCTAssertEqual(AutoResumeThreadPicker.visibleThreadPageSize, 100)
         XCTAssertEqual(visible.count, 100)
         XCTAssertEqual(visible.prefix(3).map(\.displayTitle), [
             "完整会话标题 0",
@@ -72,5 +72,14 @@ final class AutoResumeThreadPickerTests: XCTestCase {
         )
         XCTAssertEqual(withOldSelection.count, 100)
         XCTAssertEqual(withOldSelection.last?.id, "thread-125")
+
+        let secondPage = AutoResumeThreadPicker.visibleThreads(
+            from: threads,
+            projectID: projectID,
+            query: "",
+            limit: AutoResumeThreadPicker.visibleThreadPageSize * 2
+        )
+        XCTAssertEqual(secondPage.count, 130)
+        XCTAssertEqual(secondPage.last?.id, "thread-129")
     }
 }

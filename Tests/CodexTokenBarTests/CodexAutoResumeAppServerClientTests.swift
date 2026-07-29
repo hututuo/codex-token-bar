@@ -115,6 +115,52 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(secondParams["cursor"] as? String, "page-2")
     }
 
+    func testListThreadsContinuesBeyondTheFormerTwentyPageLimit() async throws {
+        var events = [rpcResult(id: 1, result: [:])]
+        for page in 0..<23 {
+            events.append(rpcResult(id: page + 2, result: [
+                "data": [[
+                    "id": "thread-\(page)",
+                    "name": "Thread \(page)",
+                    "cwd": "/tmp/large-project",
+                    "updatedAt": page,
+                ]],
+                "nextCursor": page < 22 ? "page-\(page + 1)" : NSNull(),
+            ]))
+        }
+        let transport = AutoResumeScriptedTransport(events: events)
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let threads = try await client.listThreads(codexPath: "/fake/codex", dataSource: nil)
+
+        XCTAssertEqual(threads.count, 23)
+        XCTAssertEqual(threads.first?.id, "thread-22")
+        XCTAssertEqual(
+            transport.writes.filter { rpcMethod($0) == "thread/list" }.count,
+            23
+        )
+    }
+
+    func testListThreadsRejectsARepeatedCursorInsteadOfLoopingForever() async {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["data": [], "nextCursor": "same"]),
+            rpcResult(id: 3, result: ["data": [], "nextCursor": "same"]),
+        ])
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        do {
+            _ = try await client.listThreads(codexPath: "/fake/codex", dataSource: nil)
+            XCTFail("Expected repeated cursor rejection")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("重复游标"))
+        }
+        XCTAssertEqual(
+            transport.writes.filter { rpcMethod($0) == "thread/list" }.count,
+            2
+        )
+    }
+
     func testVisibilityRebuildScansActiveAndArchivedWithinPageCap() throws {
         var events = [rpcResult(id: 1, result: [:])]
         for page in 0..<23 {
@@ -290,6 +336,27 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(input.count, 1)
         XCTAssertEqual(input.first?["type"] as? String, "text")
         XCTAssertEqual(input.first?["text"] as? String, "先复核测试，再继续实现")
+    }
+
+    func testExplicitVisibleModeCanSendTheLiteralContinuePrompt() async throws {
+        let transport = AutoResumeScriptedTransport(events: successfulResumeEvents())
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        _ = try await client.resumeThread(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            target: thread(id: "thread-1"),
+            prompt: "继续",
+            invisibleResumeEnabled: false,
+            clientMessageID: "visible-continue",
+            expectedFreshness: nil,
+            startAuthorization: nil
+        )
+
+        let start = try XCTUnwrap(transport.writes.first { rpcMethod($0) == "turn/start" })
+        let params = try XCTUnwrap(start["params"] as? [String: Any])
+        let input = try XCTUnwrap(params["input"] as? [[String: Any]])
+        XCTAssertEqual(input.first?["text"] as? String, "继续")
     }
 
     func testInvalidParamsForEmptyInputFallsBackOnceToVisibleDefaultPrompt() async throws {

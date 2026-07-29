@@ -247,6 +247,12 @@ final class AutoResumeController: ObservableObject {
         applyConfiguration(next)
     }
 
+    func setInvisibleResumeEnabled(_ enabled: Bool) {
+        var next = configuration
+        next.invisibleResumeEnabled = enabled
+        applyConfiguration(next)
+    }
+
     func setScheduleMode(_ mode: AutoResumeScheduleMode) {
         var next = configuration
         next.scheduleMode = mode
@@ -857,9 +863,10 @@ final class AutoResumeController: ObservableObject {
         persistRuntimeState()
 
         let appServer = self.appServer
-        let prompt = trigger.kind == .capacityRecovery
-            ? AutoResumeConfiguration.defaultPrompt
-            : configuration.prompt
+        let prompt = configuration.prompt
+        let invisibleResumeEnabled =
+            configuration.invisibleResumeEnabled
+            ?? (configuration.prompt == AutoResumeConfiguration.defaultPrompt)
         let sharedCooldown = trigger.kind == .manual
             ? TimeInterval.zero
             : TimeInterval(configuration.cooldownMinutes * 60)
@@ -927,6 +934,7 @@ final class AutoResumeController: ObservableObject {
                         dataSource: dataSource,
                         target: target,
                         prompt: prompt,
+                        invisibleResumeEnabled: invisibleResumeEnabled,
                         clientMessageID: resolvedTriggerKey,
                         expectedFreshness: expectedFreshness,
                         startAuthorization: startAuthorization

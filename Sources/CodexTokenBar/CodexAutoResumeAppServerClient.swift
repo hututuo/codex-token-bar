@@ -23,6 +23,7 @@ protocol CodexAutoResumeAppServerServing: Sendable {
         dataSource: CodexDataSource?,
         target: AutoResumeThreadDescriptor,
         prompt: String,
+        invisibleResumeEnabled: Bool,
         clientMessageID: String,
         expectedFreshness: AutoResumeThreadFreshness?,
         startAuthorization: AutoResumeStartAuthorization?
@@ -42,6 +43,7 @@ extension CodexAutoResumeAppServerServing {
             dataSource: dataSource,
             target: target,
             prompt: prompt,
+            invisibleResumeEnabled: prompt == AutoResumeConfiguration.defaultPrompt,
             clientMessageID: clientMessageID,
             expectedFreshness: nil,
             startAuthorization: nil
@@ -61,9 +63,31 @@ extension CodexAutoResumeAppServerServing {
             dataSource: dataSource,
             target: target,
             prompt: prompt,
+            invisibleResumeEnabled: prompt == AutoResumeConfiguration.defaultPrompt,
             clientMessageID: clientMessageID,
             expectedFreshness: expectedFreshness,
             startAuthorization: nil
+        )
+    }
+
+    func resumeThread(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        target: AutoResumeThreadDescriptor,
+        prompt: String,
+        clientMessageID: String,
+        expectedFreshness: AutoResumeThreadFreshness?,
+        startAuthorization: AutoResumeStartAuthorization?
+    ) async throws -> AutoResumeRunResult {
+        try await resumeThread(
+            codexPath: codexPath,
+            dataSource: dataSource,
+            target: target,
+            prompt: prompt,
+            invisibleResumeEnabled: prompt == AutoResumeConfiguration.defaultPrompt,
+            clientMessageID: clientMessageID,
+            expectedFreshness: expectedFreshness,
+            startAuthorization: startAuthorization
         )
     }
 }
@@ -147,8 +171,8 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
 
             var threads: [AutoResumeThreadDescriptor] = []
             var cursor: String?
-            var pageCount = 0
-            repeat {
+            var seenCursors = Set<String>()
+            while true {
                 var params: [String: Any] = [
                     "archived": false,
                     "limit": 100,
@@ -166,9 +190,16 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                     throw CodexAutoResumeAppServerError.invalidResponse("thread/list 缺少 data")
                 }
                 threads.append(contentsOf: data.compactMap(Self.parseThread))
-                cursor = Self.nonemptyString(result["nextCursor"])
-                pageCount += 1
-            } while cursor != nil && pageCount < 20
+                guard let nextCursor = Self.nonemptyString(result["nextCursor"]) else {
+                    break
+                }
+                guard seenCursors.insert(nextCursor).inserted else {
+                    throw CodexAutoResumeAppServerError.invalidResponse(
+                        "thread/list 返回重复游标：\(nextCursor)"
+                    )
+                }
+                cursor = nextCursor
+            }
 
             return threads.sorted {
                 ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
@@ -359,12 +390,16 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         dataSource: CodexDataSource?,
         target: AutoResumeThreadDescriptor,
         prompt: String,
+        invisibleResumeEnabled: Bool,
         clientMessageID: String,
         expectedFreshness: AutoResumeThreadFreshness?,
         startAuthorization: AutoResumeStartAuthorization?
     ) async throws -> AutoResumeRunResult {
-        let prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
+        let configuredPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let visiblePrompt = invisibleResumeEnabled
+            ? AutoResumeConfiguration.defaultPrompt
+            : configuredPrompt
+        guard !visiblePrompt.isEmpty else {
             throw CodexAutoResumeAppServerError.invalidResponse("续跑提示词为空")
         }
         let clientMessageID = clientMessageID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -419,11 +454,9 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                 throw CodexAutoResumeAppServerError.activeTurn(activeTurnID)
             }
 
-            let prefersInvisibleContinuation =
-                prompt == AutoResumeConfiguration.defaultPrompt
-            let primaryInput: [[String: Any]] = prefersInvisibleContinuation
+            let primaryInput: [[String: Any]] = invisibleResumeEnabled
                 ? []
-                : [["type": "text", "text": prompt]]
+                : [["type": "text", "text": visiblePrompt]]
             let started: [String: Any]
             do {
                 started = try channel.request(
@@ -437,7 +470,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                     startAuthorization: startAuthorization
                 )
             } catch {
-                guard prefersInvisibleContinuation,
+                guard invisibleResumeEnabled,
                       !channel.hasBoundTurn,
                       Self.isEmptyInputCompatibilityRejection(error) else {
                     throw error
@@ -450,7 +483,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                     params: [
                         "clientUserMessageId": clientMessageID,
                         "threadId": target.id,
-                        "input": [["type": "text", "text": prompt]],
+                        "input": [["type": "text", "text": visiblePrompt]],
                     ],
                     timeout: requestTimeout,
                     startAuthorization: startAuthorization

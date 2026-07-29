@@ -53,7 +53,7 @@ struct AutoResumeProjectDescriptor: Equatable, Identifiable, Sendable {
 }
 
 enum AutoResumeThreadPicker {
-    static let visibleThreadLimit = 100
+    static let visibleThreadPageSize = 100
     static let missingProjectID = "__codex_token_bar_no_cwd__"
 
     static func projectID(for cwd: String) -> String {
@@ -106,20 +106,32 @@ enum AutoResumeThreadPicker {
             .sorted(by: threadSort)
     }
 
-    static func visibleThreads(
+    static func matchingThreads(
         from threads: [AutoResumeThreadDescriptor],
         projectID: String,
-        query: String,
-        selectedThreadID: String? = nil,
-        limit: Int = visibleThreadLimit
+        query: String
     ) -> [AutoResumeThreadDescriptor] {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matches = self.threads(from: threads, projectID: projectID).filter { thread in
+        return self.threads(from: threads, projectID: projectID).filter { thread in
             normalizedQuery.isEmpty
                 || thread.displayTitle.localizedCaseInsensitiveContains(normalizedQuery)
                 || thread.cwd.localizedCaseInsensitiveContains(normalizedQuery)
                 || thread.id.localizedCaseInsensitiveContains(normalizedQuery)
         }
+    }
+
+    static func visibleThreads(
+        from threads: [AutoResumeThreadDescriptor],
+        projectID: String,
+        query: String,
+        selectedThreadID: String? = nil,
+        limit: Int = visibleThreadPageSize
+    ) -> [AutoResumeThreadDescriptor] {
+        let matches = matchingThreads(
+            from: threads,
+            projectID: projectID,
+            query: query
+        )
         let boundedLimit = max(1, limit)
         var visible = Array(matches.prefix(boundedLimit))
         guard let selectedThreadID,
@@ -266,6 +278,9 @@ struct AutoResumeConfiguration: Codable, Equatable, Sendable {
     var enabled = false
     var target: AutoResumeThreadDescriptor?
     var prompt = defaultPrompt
+    // Optional keeps old persisted settings decodable. Normalization migrates
+    // the former implicit rule: exact “继续” meant app-server empty input.
+    var invisibleResumeEnabled: Bool?
     var scheduleMode: AutoResumeScheduleMode = .off
     var intervalMinutes = 60
     var dailyHour = 9
@@ -290,6 +305,8 @@ struct AutoResumeConfiguration: Codable, Equatable, Sendable {
         if copy.prompt.isEmpty {
             copy.prompt = Self.defaultPrompt
         }
+        copy.invisibleResumeEnabled = invisibleResumeEnabled
+            ?? (copy.prompt == Self.defaultPrompt)
         copy.intervalMinutes = Self.allowedIntervalMinutes.contains(intervalMinutes)
             ? intervalMinutes
             : 60
@@ -642,6 +659,7 @@ extension AutoResumeConfiguration {
         case enabled
         case target
         case prompt
+        case invisibleResumeEnabled
         case scheduleMode
         case intervalMinutes
         case dailyHour
@@ -664,6 +682,10 @@ extension AutoResumeConfiguration {
         value.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? value.enabled
         value.target = try container.decodeIfPresent(AutoResumeThreadDescriptor.self, forKey: .target)
         value.prompt = try container.decodeIfPresent(String.self, forKey: .prompt) ?? value.prompt
+        value.invisibleResumeEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .invisibleResumeEnabled
+        )
         value.scheduleMode = try container.decodeIfPresent(
             AutoResumeScheduleMode.self,
             forKey: .scheduleMode

@@ -26,10 +26,11 @@ import {
   sanitizeAutoResumeSettings,
 } from "../../settings/autoResume";
 import {
-  AUTO_RESUME_VISIBLE_THREAD_LIMIT,
+  AUTO_RESUME_THREAD_PAGE_SIZE,
   autoResumeProjectKey,
   autoResumeThreadsInProject,
   buildAutoResumeProjects,
+  matchingAutoResumeThreads,
   resolveAutoResumeProjectKey,
   visibleAutoResumeThreads,
 } from "../../settings/autoResumeThreadPicker";
@@ -733,6 +734,7 @@ function AutomationSettings({
     () => autoResumeProjectKey(autoResumeSettings.threadCwd),
   );
   const [composerThreadId, setComposerThreadId] = useState("");
+  const [visibleThreadLimit, setVisibleThreadLimit] = useState(AUTO_RESUME_THREAD_PAGE_SIZE);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(
     () => sanitizeAutoResumeSettings(autoResumeSettings).selectedTaskId || null,
   );
@@ -764,6 +766,10 @@ function AutomationSettings({
     ));
   }, [autoResumeSettings.threadCwd, autoResumeThreads, composerThreadId, projectOptions]);
 
+  useEffect(() => {
+    setVisibleThreadLimit(AUTO_RESUME_THREAD_PAGE_SIZE);
+  }, [selectedProjectKey, threadQuery]);
+
   const normalizedDraft = sanitizeAutoResumeSettings(draft);
   const dirty = JSON.stringify(normalizedDraft)
     !== JSON.stringify(sanitizeAutoResumeSettings(autoResumeSettings));
@@ -772,14 +778,19 @@ function AutomationSettings({
     () => autoResumeThreadsInProject(autoResumeThreads, selectedProjectKey),
     [autoResumeThreads, selectedProjectKey],
   );
+  const matchingThreads = useMemo(
+    () => matchingAutoResumeThreads(autoResumeThreads, selectedProjectKey, threadQuery),
+    [autoResumeThreads, selectedProjectKey, threadQuery],
+  );
   const filteredThreads = useMemo(
     () => visibleAutoResumeThreads(
       autoResumeThreads,
       selectedProjectKey,
       threadQuery,
       composerThreadId,
+      visibleThreadLimit,
     ),
-    [autoResumeThreads, composerThreadId, selectedProjectKey, threadQuery],
+    [autoResumeThreads, composerThreadId, selectedProjectKey, threadQuery, visibleThreadLimit],
   );
   const selectedThread = autoResumeThreads.find((thread) => thread.id === composerThreadId);
   const busy = autoResumeLoading || autoResumeSaving || autoResumeRunning || autoResumeStatus.isRunning;
@@ -991,10 +1002,24 @@ function AutomationSettings({
         </form>
         <div className="auto-resume-thread-summary" aria-live="polite">
           {selectedProject
-            ? `当前显示 ${filteredThreads.length} 条 · 项目共 ${projectThreads.length} 条 · 最多列出最近 ${AUTO_RESUME_VISIBLE_THREAD_LIMIT} 条`
+            ? `当前显示 ${filteredThreads.length} / ${matchingThreads.length} 条 · 项目共 ${projectThreads.length} 条${filteredThreads.length < matchingThreads.length ? " · 继续下滑自动加载" : ""}`
             : "请先选择项目文件夹"}
         </div>
-        <div aria-label="自动续跑目标会话" className="auto-resume-thread-list is-compact" role="listbox">
+        <div
+          aria-label="自动续跑目标会话"
+          className="auto-resume-thread-list is-compact"
+          onScroll={(event) => {
+            const list = event.currentTarget;
+            const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+            if (distanceToBottom <= 48 && filteredThreads.length < matchingThreads.length) {
+              setVisibleThreadLimit((current) => Math.min(
+                current + AUTO_RESUME_THREAD_PAGE_SIZE,
+                matchingThreads.length,
+              ));
+            }
+          }}
+          role="listbox"
+        >
           {filteredThreads.length > 0 ? filteredThreads.map((thread) => (
             <button
               aria-selected={composerThreadId === thread.id}
@@ -1017,6 +1042,14 @@ function AutomationSettings({
                 : (selectedProject ? "当前项目没有匹配的会话，请调整搜索或按回车刷新。" : "请先选择项目文件夹。")}
             </div>
           )}
+          {filteredThreads.length > 0 && filteredThreads.length < matchingThreads.length ? (
+            <div aria-live="polite" className="auto-resume-thread-progress">
+              继续下滑，加载后续 {Math.min(
+                AUTO_RESUME_THREAD_PAGE_SIZE,
+                matchingThreads.length - filteredThreads.length,
+              )} 条
+            </div>
+          ) : null}
         </div>
         <div className="auto-resume-selected" aria-live="polite">
           <strong>当前选择</strong>
@@ -1050,9 +1083,8 @@ function AutomationSettings({
             const isTaskRunning = status?.isRunning === true
               || autoResumeStatus.runningTaskId === task.id;
             const selectedFailureReasons = new Set(task.failureRecoveryReasons);
-            const allRecoveryConditionsSelected =
-              selectedFailureReasons.size === AUTO_RESUME_FAILURE_REASONS.length
-              && task.quotaResumeEnabled;
+            const allFailureReasonsSelected =
+              selectedFailureReasons.size === AUTO_RESUME_FAILURE_REASONS.length;
             const hasRiskyFailureReason = AUTO_RESUME_FAILURE_REASONS.some(
               ({ id, risky }) => risky && selectedFailureReasons.has(id),
             );
@@ -1063,9 +1095,9 @@ function AutomationSettings({
                 key={task.id}
               >
                 <header className="auto-resume-task-header">
-                  <span className="auto-resume-task-state-dot" aria-hidden="true" />
                   <button
-                    className="auto-resume-task-summary"
+                    aria-expanded={expanded}
+                    className="auto-resume-task-disclosure"
                     onClick={() => {
                       setExpandedTaskId(expanded ? null : task.id);
                       setDraft((current) => sanitizeAutoResumeSettings({
@@ -1075,13 +1107,19 @@ function AutomationSettings({
                     }}
                     type="button"
                   >
-                    <span>
-                      <strong>{task.threadTitle || "未命名会话"}</strong>
-                      <em>{displayAutoResumeTaskState(task, status)}</em>
+                    <span className="auto-resume-task-state-dot" aria-hidden="true" />
+                    <span className="auto-resume-task-summary">
+                      <span>
+                        <strong>{task.threadTitle || "未命名会话"}</strong>
+                        <em>{displayAutoResumeTaskState(task, status)}</em>
+                      </span>
+                      <small>{task.threadCwd || "未记录项目"} · ID {task.threadId.slice(-6)}</small>
+                      <span className="auto-resume-task-chips">
+                        {autoResumeTriggerLabels(task).map((label) => <i key={label}>{label}</i>)}
+                      </span>
                     </span>
-                    <small>{task.threadCwd || "未记录项目"} · ID {task.threadId.slice(-6)}</small>
-                    <span className="auto-resume-task-chips">
-                      {autoResumeTriggerLabels(task).map((label) => <i key={label}>{label}</i>)}
+                    <span className="auto-resume-task-chevron" aria-hidden="true">
+                      {expanded ? "▴" : "▾"}
                     </span>
                   </button>
                   <ToggleButton
@@ -1090,13 +1128,6 @@ function AutomationSettings({
                     label={`${task.threadTitle || "监控任务"}保护`}
                     onClick={() => void toggleProtection(task)}
                   />
-                  <button
-                    className="app-settings-action"
-                    onClick={() => setExpandedTaskId(expanded ? null : task.id)}
-                    type="button"
-                  >
-                    {expanded ? "收起" : "编辑"}
-                  </button>
                 </header>
 
                 {expanded ? (
@@ -1106,55 +1137,71 @@ function AutomationSettings({
                       <span>{status?.message || (task.enabled ? "正在等待触发条件" : "任务已暂停")}</span>
                     </div>
 
-                    <section className="auto-resume-failure-selector">
+                    <section className="auto-resume-trigger-section">
                       <header>
                         <span>
-                          <strong>失败 / 中断续跑条件</strong>
-                          <small>逐项匹配 Codex app-server 终态/错误码；额度耗尽会等待恢复。</small>
+                          <strong>定时续跑</strong>
+                          <small>按间隔或每天固定时间启动同一会话的下一轮。</small>
                         </span>
-                        <button
-                          className="app-settings-action"
-                          disabled={isTaskRunning}
-                          onClick={() => updateTask(task.id, {
-                            failureRecoveryPolicyVersion: 2,
-                            failureRecoveryReasons: allRecoveryConditionsSelected
-                              ? []
-                              : AUTO_RESUME_FAILURE_REASONS.map(({ id }) => id),
-                            capacityRecoveryEnabled: !allRecoveryConditionsSelected,
-                            quotaResumeEnabled: !allRecoveryConditionsSelected,
-                          })}
-                          type="button"
-                        >
-                          {allRecoveryConditionsSelected ? "清空" : "全选"}
-                        </button>
                       </header>
-                      <div className="auto-resume-failure-grid">
-                        {AUTO_RESUME_FAILURE_REASONS.map(({ id, label }) => {
-                          const selected = selectedFailureReasons.has(id);
-                          return (
-                            <label
-                              className={selected ? "is-active" : ""}
-                              key={id}
-                            >
-                              <input
-                                checked={selected}
-                                disabled={isTaskRunning}
-                                onChange={() => updateTask(task.id, {
-                                  failureRecoveryPolicyVersion: 2,
-                                  failureRecoveryReasons: selected
-                                    ? task.failureRecoveryReasons.filter((reason) => reason !== id)
-                                    : [...task.failureRecoveryReasons, id],
-                                })}
-                                type="checkbox"
-                              />
-                              <span title={`${label} · ${id}`}>{label}</span>
-                            </label>
-                          );
-                        })}
-                        <label
-                          className={task.quotaResumeEnabled ? "is-active" : ""}
-                        >
+                      <div aria-label="自动续跑时间计划" className="auto-resume-mode-choice" role="radiogroup">
+                        {([
+                          ["off", "关闭定时", "只保留其他触发"],
+                          ["interval", "按间隔", "固定分钟数后触发"],
+                          ["daily", "每天", "每天固定时间触发"],
+                        ] as const).map(([mode, label, description]) => (
+                          <button
+                            aria-checked={task.scheduleMode === mode}
+                            className={task.scheduleMode === mode ? "is-active" : ""}
+                            disabled={isTaskRunning}
+                            key={mode}
+                            onClick={() => updateTask(task.id, { scheduleMode: mode })}
+                            role="radio"
+                            type="button"
+                          >
+                            <strong>{label}</strong><span>{description}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {task.scheduleMode === "interval" ? (
+                        <SettingRow title="触发间隔" description="从上一次自动续跑完成后计算。">
+                          <select
+                            aria-label="自动续跑间隔"
+                            className="app-settings-select"
+                            disabled={isTaskRunning}
+                            onChange={(event) => updateTask(task.id, { intervalMinutes: Number(event.currentTarget.value) })}
+                            value={task.intervalMinutes}
+                          >
+                            {AUTO_RESUME_INTERVAL_OPTIONS.map((minutes) => (
+                              <option key={minutes} value={minutes}>{formatInterval(minutes)}</option>
+                            ))}
+                          </select>
+                        </SettingRow>
+                      ) : null}
+                      {task.scheduleMode === "daily" ? (
+                        <SettingRow title="每日时间" description="使用当前设备的本地时区。">
                           <input
+                            aria-label="自动续跑每日时间"
+                            className="app-settings-time"
+                            disabled={isTaskRunning}
+                            onChange={(event) => {
+                              const [dailyHour, dailyMinute] = event.currentTarget.value.split(":").map(Number);
+                              if (Number.isFinite(dailyHour) && Number.isFinite(dailyMinute)) {
+                                updateTask(task.id, { dailyHour, dailyMinute });
+                              }
+                            }}
+                            type="time"
+                            value={`${String(task.dailyHour).padStart(2, "0")}:${String(task.dailyMinute).padStart(2, "0")}`}
+                          />
+                        </SettingRow>
+                      ) : null}
+                    </section>
+
+                    <section className="auto-resume-trigger-section">
+                      <header>
+                        <label className="auto-resume-type-checkbox">
+                          <input
+                            aria-label="开启额度恢复续跑"
                             checked={task.quotaResumeEnabled}
                             disabled={isTaskRunning}
                             onChange={() => updateTask(task.id, {
@@ -1162,70 +1209,14 @@ function AutomationSettings({
                             })}
                             type="checkbox"
                           />
-                          <span title="usageLimitExceeded">额度耗尽（恢复后）</span>
+                          <span>
+                            <strong>额度恢复续跑</strong>
+                            <small>对应 usageLimitExceeded；只有勾选后才显示下面的额度选项。</small>
+                          </span>
                         </label>
-                      </div>
-                      <p className={hasRiskyFailureReason ? "is-warning" : ""}>
-                        {hasRiskyFailureReason
-                          ? "谨慎条件可能包含主动停止或必须人工修复的问题；仍只按 Codex 的结构化状态判断。"
-                          : "不按报错文案猜测；自动续跑产生的后续轮也不会再次触发失败续跑。"}
-                      </p>
-                    </section>
-
-                    <div aria-label="自动续跑时间计划" className="auto-resume-mode-choice" role="radiogroup">
-                      {([
-                        ["off", "关闭定时", "只保留其他触发"],
-                        ["interval", "按间隔", "固定分钟数后触发"],
-                        ["daily", "每天", "每天固定时间触发"],
-                      ] as const).map(([mode, label, description]) => (
-                        <button
-                          aria-checked={task.scheduleMode === mode}
-                          className={task.scheduleMode === mode ? "is-active" : ""}
-                          disabled={isTaskRunning}
-                          key={mode}
-                          onClick={() => updateTask(task.id, { scheduleMode: mode })}
-                          role="radio"
-                          type="button"
-                        >
-                          <strong>{label}</strong><span>{description}</span>
-                        </button>
-                      ))}
-                    </div>
-                    {task.scheduleMode === "interval" ? (
-                      <SettingRow title="触发间隔" description="从上一次自动续跑完成后计算。">
-                        <select
-                          aria-label="自动续跑间隔"
-                          className="app-settings-select"
-                          disabled={isTaskRunning}
-                          onChange={(event) => updateTask(task.id, { intervalMinutes: Number(event.currentTarget.value) })}
-                          value={task.intervalMinutes}
-                        >
-                          {AUTO_RESUME_INTERVAL_OPTIONS.map((minutes) => (
-                            <option key={minutes} value={minutes}>{formatInterval(minutes)}</option>
-                          ))}
-                        </select>
-                      </SettingRow>
-                    ) : null}
-                    {task.scheduleMode === "daily" ? (
-                      <SettingRow title="每日时间" description="使用当前设备的本地时区。">
-                        <input
-                          aria-label="自动续跑每日时间"
-                          className="app-settings-time"
-                          disabled={isTaskRunning}
-                          onChange={(event) => {
-                            const [dailyHour, dailyMinute] = event.currentTarget.value.split(":").map(Number);
-                            if (Number.isFinite(dailyHour) && Number.isFinite(dailyMinute)) {
-                              updateTask(task.id, { dailyHour, dailyMinute });
-                            }
-                          }}
-                          type="time"
-                          value={`${String(task.dailyHour).padStart(2, "0")}:${String(task.dailyMinute).padStart(2, "0")}`}
-                        />
-                      </SettingRow>
-                    ) : null}
-
-                    {task.quotaResumeEnabled ? (
-                      <>
+                      </header>
+                      {task.quotaResumeEnabled ? (
+                        <>
                         <SettingRow title="监测窗口" description="选择哪个额度窗口参与恢复判断。">
                           <select
                             aria-label="额度恢复监测窗口"
@@ -1241,50 +1232,138 @@ function AutomationSettings({
                             <option value="sevenDay">7d 窗口</option>
                           </select>
                         </SettingRow>
+                        <p className="auto-resume-threshold-explanation">
+                          额度先降到“开始等待刷新”值或以下，才记录本轮耗尽；之后恢复到“刷新后续跑”值或以上时续跑，避免额度本来充足时误触发。
+                        </p>
                         <div className="auto-resume-number-grid">
                           <label>
-                            <span><strong>低位阈值</strong><em>降到此值或以下</em></span>
-                            <span><input aria-label="额度低位阈值" disabled={isTaskRunning} max="20" min="0" onChange={(event) => updateTask(task.id, { quotaLowThresholdPercent: Number(event.currentTarget.value) })} type="number" value={task.quotaLowThresholdPercent} />%</span>
+                            <span><strong>开始等待刷新</strong><em>先降到此值或以下</em></span>
+                            <span><input aria-label="额度开始等待刷新值" disabled={isTaskRunning} max="20" min="0" onChange={(event) => updateTask(task.id, { quotaLowThresholdPercent: Number(event.currentTarget.value) })} type="number" value={task.quotaLowThresholdPercent} />%</span>
                           </label>
                           <label>
-                            <span><strong>恢复阈值</strong><em>恢复到此值或以上</em></span>
-                            <span><input aria-label="额度恢复阈值" disabled={isTaskRunning} max="100" min="1" onChange={(event) => updateTask(task.id, { quotaRecoveryThresholdPercent: Number(event.currentTarget.value) })} type="number" value={task.quotaRecoveryThresholdPercent} />%</span>
+                            <span><strong>刷新后续跑</strong><em>恢复到此值或以上</em></span>
+                            <span><input aria-label="额度刷新后续跑值" disabled={isTaskRunning} max="100" min="1" onChange={(event) => updateTask(task.id, { quotaRecoveryThresholdPercent: Number(event.currentTarget.value) })} type="number" value={task.quotaRecoveryThresholdPercent} />%</span>
                           </label>
                         </div>
-                      </>
-                    ) : null}
+                        </>
+                      ) : null}
+                    </section>
 
-                    <label className="auto-resume-prompt">
-                      <span>续跑提示词</span>
-                      <textarea
-                        aria-label="自动续跑提示词"
-                        disabled={isTaskRunning}
-                        maxLength={8_000}
-                        onChange={(event) => updateTask(task.id, { prompt: event.currentTarget.value })}
-                        rows={3}
-                        value={task.prompt}
-                      />
-                      <small>{task.prompt.length} / 8000 · 默认“继续”先用 app-server 空输入无痕续跑；旧版不支持时才发送可见的“继续”，自定义文字会直接显示</small>
-                    </label>
+                    <section className="auto-resume-trigger-section auto-resume-failure-selector">
+                      <header>
+                        <span>
+                          <strong>失败 / 中断续跑</strong>
+                          <small>逐项匹配 Codex app-server 终态/错误码；未勾选的原因不会自动重试。</small>
+                        </span>
+                        <button
+                          className="app-settings-action"
+                          disabled={isTaskRunning}
+                          onClick={() => updateTask(task.id, {
+                            failureRecoveryPolicyVersion: 2,
+                            failureRecoveryReasons: allFailureReasonsSelected
+                              ? []
+                              : AUTO_RESUME_FAILURE_REASONS.map(({ id }) => id),
+                            capacityRecoveryEnabled: !allFailureReasonsSelected,
+                          })}
+                          type="button"
+                        >
+                          {allFailureReasonsSelected ? "清空" : "全选"}
+                        </button>
+                      </header>
+                      <div className="auto-resume-failure-grid">
+                        {AUTO_RESUME_FAILURE_REASONS.map(({ id, label }) => {
+                          const selected = selectedFailureReasons.has(id);
+                          return (
+                            <label className={selected ? "is-active" : ""} key={id}>
+                              <input
+                                checked={selected}
+                                disabled={isTaskRunning}
+                                onChange={() => updateTask(task.id, {
+                                  failureRecoveryPolicyVersion: 2,
+                                  failureRecoveryReasons: selected
+                                    ? task.failureRecoveryReasons.filter((reason) => reason !== id)
+                                    : [...task.failureRecoveryReasons, id],
+                                })}
+                                type="checkbox"
+                              />
+                              <span title={`${label} · ${id}`}>{label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <p className={hasRiskyFailureReason ? "is-warning" : ""}>
+                        {hasRiskyFailureReason
+                          ? "谨慎条件可能包含主动停止或必须人工修复的问题；仍只按 Codex 的结构化状态判断。"
+                          : "不按报错文案猜测；自动续跑产生的后续轮也不会再次触发失败续跑。"}
+                      </p>
+                    </section>
 
-                    <div className="auto-resume-number-grid">
-                      <label>
-                        <span><strong>冷却时间</strong><em>两次自动续跑至少等待</em></span>
-                        <span><input aria-label="自动续跑冷却分钟" disabled={isTaskRunning} max="1440" min="1" onChange={(event) => updateTask(task.id, { cooldownMinutes: Number(event.currentTarget.value) })} type="number" value={task.cooldownMinutes} />分钟</span>
+                    <section className="auto-resume-trigger-section">
+                      <header>
+                        <span>
+                          <strong>续跑方式</strong>
+                          <small>选择 app-server 无痕空输入，或发送一条可见提示词。</small>
+                        </span>
+                      </header>
+                      <label className="auto-resume-type-checkbox is-body">
+                        <input
+                          aria-label="无痕续跑"
+                          checked={task.invisibleResumeEnabled}
+                          disabled={isTaskRunning}
+                          onChange={() => updateTask(task.id, {
+                            invisibleResumeEnabled: !task.invisibleResumeEnabled,
+                          })}
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>无痕续跑</strong>
+                          <small>通过 Codex app-server 的 turn/start + input: [] 启动同一 thread 的下一轮；旧版不接受空输入时才回退发送可见的“继续”。</small>
+                        </span>
                       </label>
-                      <label>
-                        <span><strong>每日上限</strong><em>Swift 与 Tauri 合计</em></span>
-                        <span><input aria-label="自动续跑每日上限" disabled={isTaskRunning} max="24" min="1" onChange={(event) => updateTask(task.id, { maxRunsPerDay: Number(event.currentTarget.value) })} type="number" value={task.maxRunsPerDay} />次</span>
+                      <label className={`auto-resume-prompt${task.invisibleResumeEnabled ? " is-disabled" : ""}`}>
+                        <span>续跑提示词</span>
+                        <textarea
+                          aria-label="自动续跑提示词"
+                          disabled={isTaskRunning || task.invisibleResumeEnabled}
+                          maxLength={8_000}
+                          onChange={(event) => updateTask(task.id, { prompt: event.currentTarget.value })}
+                          rows={3}
+                          value={task.prompt}
+                        />
+                        <small>
+                          {task.invisibleResumeEnabled
+                            ? "已启用无痕续跑，提示词不会发送；取消勾选后可编辑并作为可见消息发送。"
+                            : `${task.prompt.length} / 8000 · 这段文字会作为可见用户消息发送。`}
+                        </small>
                       </label>
-                    </div>
-                    <SettingRow title="结果通知" description="成功、等待或失败后显示系统通知。">
-                      <ToggleButton
-                        active={task.notifyOnResult}
-                        disabled={isTaskRunning}
-                        label="自动续跑结果通知"
-                        onClick={() => updateTask(task.id, { notifyOnResult: !task.notifyOnResult })}
-                      />
-                    </SettingRow>
+                    </section>
+
+                    <section className="auto-resume-trigger-section">
+                      <header>
+                        <span>
+                          <strong>保护限制</strong>
+                          <small>限制自动执行频率，并决定是否通知结果。</small>
+                        </span>
+                      </header>
+                      <div className="auto-resume-number-grid">
+                        <label>
+                          <span><strong>冷却时间</strong><em>两次自动续跑至少等待</em></span>
+                          <span><input aria-label="自动续跑冷却分钟" disabled={isTaskRunning} max="1440" min="1" onChange={(event) => updateTask(task.id, { cooldownMinutes: Number(event.currentTarget.value) })} type="number" value={task.cooldownMinutes} />分钟</span>
+                        </label>
+                        <label>
+                          <span><strong>每日上限</strong><em>Swift 与 Tauri 合计</em></span>
+                          <span><input aria-label="自动续跑每日上限" disabled={isTaskRunning} max="24" min="1" onChange={(event) => updateTask(task.id, { maxRunsPerDay: Number(event.currentTarget.value) })} type="number" value={task.maxRunsPerDay} />次</span>
+                        </label>
+                      </div>
+                      <SettingRow title="结果通知" description="成功、等待或失败后显示系统通知。">
+                        <ToggleButton
+                          active={task.notifyOnResult}
+                          disabled={isTaskRunning}
+                          label="自动续跑结果通知"
+                          onClick={() => updateTask(task.id, { notifyOnResult: !task.notifyOnResult })}
+                        />
+                      </SettingRow>
+                    </section>
 
                     <div className="auto-resume-task-actions">
                       {pendingDeleteId === task.id ? (
@@ -1676,7 +1755,7 @@ function validateAutoResumeTask(settings: AutoResumeTaskSettings, forRun: boolea
   }
   if (settings.quotaResumeEnabled
     && settings.quotaRecoveryThresholdPercent <= settings.quotaLowThresholdPercent) {
-    return "额度恢复阈值必须高于低位阈值。";
+    return "“刷新后续跑”数值必须高于“开始等待刷新”数值。";
   }
   if (!Number.isFinite(settings.cooldownMinutes) || settings.cooldownMinutes < 1) {
     return "冷却时间至少为 1 分钟。";

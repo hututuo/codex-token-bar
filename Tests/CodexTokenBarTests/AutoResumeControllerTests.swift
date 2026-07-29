@@ -356,7 +356,7 @@ final class AutoResumeControllerTests: XCTestCase {
         XCTAssertEqual(ledger.entries.values.first?.outcome, "skipped")
     }
 
-    func testCapacityFailureSendsExactlyOneContinueForTheObservedTurn() async throws {
+    func testCapacityFailureUsesTheConfiguredContinuationModeExactlyOnce() async throws {
         let suiteName = "AutoResumeControllerCapacityTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -422,7 +422,8 @@ final class AutoResumeControllerTests: XCTestCase {
             appServer.resumeCount == 1 && !controller.isRunning
         }
 
-        XCTAssertEqual(appServer.lastPrompt, "继续")
+        XCTAssertEqual(appServer.lastPrompt, "执行另一条定时指令")
+        XCTAssertEqual(appServer.lastInvisibleResumeEnabled, false)
         XCTAssertEqual(
             appServer.lastClientMessageID,
             "failure:capacity:\(target.id):failed-capacity-turn"
@@ -625,6 +626,7 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
     private var recordedResumeCount = 0
     private var recordedTargetID: String?
     private var recordedPrompt: String?
+    private var recordedInvisibleResumeEnabled: Bool?
     private var recordedClientMessageID: String?
     private var recordedExpectedFreshness: AutoResumeThreadFreshness?
     private var recordedHadStartAuthorization = false
@@ -642,6 +644,9 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
     var resumeCount: Int { lock.withLock { recordedResumeCount } }
     var lastTargetID: String? { lock.withLock { recordedTargetID } }
     var lastPrompt: String? { lock.withLock { recordedPrompt } }
+    var lastInvisibleResumeEnabled: Bool? {
+        lock.withLock { recordedInvisibleResumeEnabled }
+    }
     var lastClientMessageID: String? { lock.withLock { recordedClientMessageID } }
     var lastExpectedFreshness: AutoResumeThreadFreshness? {
         lock.withLock { recordedExpectedFreshness }
@@ -676,6 +681,7 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
         dataSource: CodexDataSource?,
         target: AutoResumeThreadDescriptor,
         prompt: String,
+        invisibleResumeEnabled: Bool,
         clientMessageID: String,
         expectedFreshness: AutoResumeThreadFreshness?,
         startAuthorization: AutoResumeStartAuthorization?
@@ -684,6 +690,7 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
             recordedResumeCount += 1
             recordedTargetID = target.id
             recordedPrompt = prompt
+            recordedInvisibleResumeEnabled = invisibleResumeEnabled
             recordedClientMessageID = clientMessageID
             recordedExpectedFreshness = expectedFreshness
             recordedHadStartAuthorization = startAuthorization != nil

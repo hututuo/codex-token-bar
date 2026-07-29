@@ -5,7 +5,7 @@ import { withSsrModules } from "../test/ssrHarness.mjs";
 test("auto resume picker groups by project and keeps at least the latest fifty titles", async () => {
   await withSsrModules(async (load) => {
     const {
-      AUTO_RESUME_VISIBLE_THREAD_LIMIT,
+      AUTO_RESUME_THREAD_PAGE_SIZE,
       autoResumeProjectKey,
       autoResumeThreadsInProject,
       buildAutoResumeProjects,
@@ -39,7 +39,7 @@ test("auto resume picker groups by project and keeps at least the latest fifty t
     const mainKey = autoResumeProjectKey("/Users/test/main-project/");
     assert.equal(autoResumeThreadsInProject(threads, mainKey).length, 125, "same-project threads are not deduplicated");
     const visible = visibleAutoResumeThreads(threads, mainKey, "");
-    assert.equal(AUTO_RESUME_VISIBLE_THREAD_LIMIT, 100);
+    assert.equal(AUTO_RESUME_THREAD_PAGE_SIZE, 100);
     assert.equal(visible.length, 100);
     assert.deepEqual(visible.slice(0, 3).map((thread) => thread.title), [
       "完整会话标题 0",
@@ -75,5 +75,15 @@ test("auto resume picker searches the whole selected project before applying its
     );
     assert.equal(withOldSelection.length, 100);
     assert.equal(withOldSelection.at(-1)?.id, "thread-125", "saved selection stays available beyond the recent window");
+
+    const secondPage = visibleAutoResumeThreads(
+      threads,
+      autoResumeProjectKey(cwd),
+      "",
+      "",
+      200,
+    );
+    assert.equal(secondPage.length, 130, "raising the disclosure window reveals older rows");
+    assert.equal(secondPage.at(-1)?.id, "thread-129");
   });
 });

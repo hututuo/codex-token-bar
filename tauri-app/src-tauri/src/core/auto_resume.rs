@@ -348,8 +348,13 @@ pub fn list_threads(codex_home: &Path) -> Result<Vec<AutoResumeThreadOption>, St
     session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
     let mut threads = Vec::new();
     let mut cursor: Option<String> = None;
-    for page in 0..20_i64 {
-        let id = page + 2;
+    let mut seen_cursors = HashSet::new();
+    let mut request_id = 2_i64;
+    loop {
+        let id = request_id;
+        request_id = request_id
+            .checked_add(1)
+            .ok_or_else(|| "Codex app-server 请求编号溢出".to_string())?;
         let mut params = json!({
             "limit": 100,
             "archived": false,
@@ -373,14 +378,20 @@ pub fn list_threads(codex_home: &Path) -> Result<Vec<AutoResumeThreadOption>, St
             .and_then(Value::as_array)
             .ok_or_else(|| "Codex thread/list 响应缺少 data".to_string())?;
         threads.extend(rows.iter().filter_map(parse_thread_option));
-        cursor = result
+        let next_cursor = result
             .get("nextCursor")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        if cursor.is_none() {
+        let Some(next_cursor) = next_cursor else {
             break;
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(format!(
+                "Codex thread/list 返回重复游标，已停止读取：{next_cursor}"
+            ));
         }
+        cursor = Some(next_cursor);
     }
     threads.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(threads)
@@ -528,13 +539,19 @@ pub fn run_turn(
     codex_home: &Path,
     thread_id: &str,
     prompt: &str,
+    invisible_resume_enabled: bool,
     client_message_id: &str,
     freshness_not_before: Option<i64>,
     start_generation_guard: Option<AutoResumeStartGenerationGuard>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<AutoResumeRunOutcome, String> {
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
+    let configured_prompt = prompt.trim();
+    let visible_prompt = if invisible_resume_enabled {
+        DEFAULT_AUTO_RESUME_PROMPT
+    } else {
+        configured_prompt
+    };
+    if visible_prompt.is_empty() {
         return Err("续跑提示词为空".into());
     }
     let mut session = AppServerSession::launch(codex_home)?;
@@ -564,12 +581,12 @@ pub fn run_turn(
         ));
     }
 
-    let prefers_invisible_continuation = prompt == DEFAULT_AUTO_RESUME_PROMPT;
+    let prefers_invisible_continuation = invisible_resume_enabled;
     let start_request = turn_start_request(
         PRIMARY_TURN_START_REQUEST_ID,
         thread_id,
         client_message_id,
-        turn_start_input(prompt, prefers_invisible_continuation),
+        turn_start_input(visible_prompt, prefers_invisible_continuation),
     );
     let started = if let Some(guard) = start_generation_guard.as_ref() {
         guard.run_if_current(|| session.send(start_request))?
@@ -650,7 +667,7 @@ pub fn run_turn(
                         FALLBACK_TURN_START_REQUEST_ID,
                         thread_id,
                         client_message_id,
-                        turn_start_input(prompt, false),
+                        turn_start_input(visible_prompt, false),
                     );
                     let fallback_started = if let Some(guard) = start_generation_guard.as_ref() {
                         guard.run_if_current(|| session.send(fallback_request))?
@@ -2778,6 +2795,7 @@ mod tests {
             &home,
             &thread_id,
             "继续",
+            true,
             &format!("freshness-test-{}", unique_id()),
             Some(unix_now().saturating_sub(24 * 60 * 60)),
             None,
@@ -2801,6 +2819,7 @@ mod tests {
             &home,
             &thread_id,
             &prompt,
+            prompt.trim() == DEFAULT_AUTO_RESUME_PROMPT,
             &format!("live-test-{}", unique_id()),
             None,
             None,

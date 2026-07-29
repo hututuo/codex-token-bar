@@ -1,6 +1,6 @@
 import type { AutoResumeThreadOption } from "../types/dashboard";
 
-export const AUTO_RESUME_VISIBLE_THREAD_LIMIT = 100;
+export const AUTO_RESUME_THREAD_PAGE_SIZE = 100;
 export const AUTO_RESUME_EMPTY_PROJECT_KEY = "__codex_token_bar_no_cwd__";
 
 export interface AutoResumeProjectOption {
@@ -67,19 +67,27 @@ export function autoResumeThreadsInProject(
     .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
 }
 
+export function matchingAutoResumeThreads(
+  threads: AutoResumeThreadOption[],
+  projectKey: string,
+  query: string,
+): AutoResumeThreadOption[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return autoResumeThreadsInProject(threads, projectKey).filter((thread) => (
+    normalizedQuery.length === 0
+      || [thread.title, thread.cwd, thread.id, thread.status, thread.source]
+        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
+  ));
+}
+
 export function visibleAutoResumeThreads(
   threads: AutoResumeThreadOption[],
   projectKey: string,
   query: string,
   selectedThreadID = "",
-  limit = AUTO_RESUME_VISIBLE_THREAD_LIMIT,
+  limit = AUTO_RESUME_THREAD_PAGE_SIZE,
 ): AutoResumeThreadOption[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const matches = autoResumeThreadsInProject(threads, projectKey).filter((thread) => (
-    normalizedQuery.length === 0
-      || [thread.title, thread.cwd, thread.id, thread.status, thread.source]
-        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery))
-  ));
+  const matches = matchingAutoResumeThreads(threads, projectKey, query);
   const boundedLimit = Math.max(1, limit);
   const visible = matches.slice(0, boundedLimit);
   if (!selectedThreadID || visible.some((thread) => thread.id === selectedThreadID)) return visible;

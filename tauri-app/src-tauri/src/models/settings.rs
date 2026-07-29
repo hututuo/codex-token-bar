@@ -100,6 +100,8 @@ pub struct AutoResumeSettingsSnapshot {
     pub thread_cwd: String,
     #[serde(default = "default_auto_resume_prompt")]
     pub prompt: String,
+    #[serde(default)]
+    pub invisible_resume_enabled: Option<bool>,
     #[serde(default = "default_auto_resume_schedule_mode")]
     pub schedule_mode: String,
     #[serde(default = "default_auto_resume_interval_minutes")]
@@ -141,6 +143,7 @@ impl Default for AutoResumeSettingsSnapshot {
             thread_title: String::new(),
             thread_cwd: String::new(),
             prompt: default_auto_resume_prompt(),
+            invisible_resume_enabled: Some(true),
             schedule_mode: default_auto_resume_schedule_mode(),
             interval_minutes: default_auto_resume_interval_minutes(),
             daily_hour: default_auto_resume_daily_hour(),
@@ -178,6 +181,8 @@ pub struct AutoResumeTaskSettingsSnapshot {
     pub thread_cwd: String,
     #[serde(default = "default_auto_resume_prompt")]
     pub prompt: String,
+    #[serde(default)]
+    pub invisible_resume_enabled: Option<bool>,
     #[serde(default = "default_auto_resume_schedule_mode")]
     pub schedule_mode: String,
     #[serde(default = "default_auto_resume_interval_minutes")]
@@ -219,6 +224,7 @@ impl Default for AutoResumeTaskSettingsSnapshot {
             thread_title: String::new(),
             thread_cwd: String::new(),
             prompt: default_auto_resume_prompt(),
+            invisible_resume_enabled: Some(true),
             schedule_mode: default_auto_resume_schedule_mode(),
             interval_minutes: default_auto_resume_interval_minutes(),
             daily_hour: default_auto_resume_daily_hour(),
@@ -248,6 +254,7 @@ impl AutoResumeTaskSettingsSnapshot {
             thread_title: self.thread_title.clone(),
             thread_cwd: self.thread_cwd.clone(),
             prompt: self.prompt.clone(),
+            invisible_resume_enabled: self.invisible_resume_enabled,
             schedule_mode: self.schedule_mode.clone(),
             interval_minutes: self.interval_minutes,
             daily_hour: self.daily_hour,
@@ -285,6 +292,7 @@ impl AutoResumeSettingsSnapshot {
             thread_title: self.thread_title.clone(),
             thread_cwd: self.thread_cwd.clone(),
             prompt: self.prompt.clone(),
+            invisible_resume_enabled: self.invisible_resume_enabled,
             schedule_mode: self.schedule_mode.clone(),
             interval_minutes: self.interval_minutes,
             daily_hour: self.daily_hour,

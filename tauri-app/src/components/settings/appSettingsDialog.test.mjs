@@ -219,10 +219,10 @@ test("deleting the final auto resume task persists an explicit empty collection"
   });
 });
 
-test("auto resume selects a project first and exposes more than fifty recent conversation titles", async () => {
+test("auto resume progressively reveals project history beyond the first hundred rows", async () => {
   const mainCwd = "/Users/test/main-project";
   const otherCwd = "/Users/test/other-project";
-  const mainThreads = Array.from({ length: 65 }, (_, index) => ({
+  const mainThreads = Array.from({ length: 230 }, (_, index) => ({
     id: `main-${index}`,
     title: `完整会话标题 ${index}：这是用于确认标题不会被单行省略的内容`,
     cwd: mainCwd,
@@ -237,12 +237,33 @@ test("auto resume selects a project first and exposes more than fifty recent con
     assert.ok(projectPicker);
     assert.equal(projectPicker.options.length, 2);
     assert.equal(projectPicker.value, mainCwd);
-    assert.match(panel.textContent, /项目共 65 条/);
+    assert.match(panel.textContent, /项目共 230 条/);
 
     let options = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
-    assert.equal(options.length, 65);
+    assert.equal(options.length, 100);
     assert.ok(options[0].textContent.includes("完整会话标题 0"));
-    assert.ok(options.at(-1).textContent.includes("完整会话标题 64"));
+    assert.ok(options.at(-1).textContent.includes("完整会话标题 99"));
+    assert.match(panel.textContent, /继续下滑自动加载/);
+
+    const list = panel.querySelector(".auto-resume-thread-list");
+    assert.ok(list);
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, value: 228 },
+      scrollHeight: { configurable: true, value: 1_000 },
+      scrollTop: { configurable: true, writable: true, value: 772 },
+    });
+    await act(async () => {
+      list.dispatchEvent(new window.Event("scroll", { bubbles: true }));
+    });
+    options = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
+    assert.equal(options.length, 200);
+
+    await act(async () => {
+      list.dispatchEvent(new window.Event("scroll", { bubbles: true }));
+    });
+    options = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
+    assert.equal(options.length, 230);
+    assert.ok(options.at(-1).textContent.includes("完整会话标题 229"));
 
     await setSelectValue(act, projectPicker, otherCwd, window);
     options = [...panel.querySelectorAll('.auto-resume-thread-list > button[role="option"]')];
@@ -282,11 +303,24 @@ test("auto resume exposes selectable interruption reasons, select-all, schedules
     await click(act, buttonWithText(panel, "全选"), window);
     assert.equal(
       panel.querySelectorAll(".auto-resume-failure-grid label.is-active").length,
-      15,
-      "all 14 exact terminal reasons plus quota recovery should be selected",
+      14,
+      "select-all is scoped to the 14 exact failed/interrupted reasons",
     );
-    assert.ok(panel.querySelector('input[aria-label="额度低位阈值"]'));
-    assert.ok(panel.querySelector('input[aria-label="额度恢复阈值"]'));
+    const quotaToggle = panel.querySelector('input[aria-label="开启额度恢复续跑"]');
+    assert.ok(quotaToggle?.checked);
+    assert.ok(panel.querySelector('input[aria-label="额度开始等待刷新值"]'));
+    assert.ok(panel.querySelector('input[aria-label="额度刷新后续跑值"]'));
+    await click(act, quotaToggle, window);
+    assert.equal(panel.querySelector('input[aria-label="额度开始等待刷新值"]'), null);
+    await click(act, panel.querySelector('input[aria-label="开启额度恢复续跑"]'), window);
+
+    const invisibleToggle = panel.querySelector('input[aria-label="无痕续跑"]');
+    const prompt = panel.querySelector('textarea[aria-label="自动续跑提示词"]');
+    assert.ok(invisibleToggle?.checked);
+    assert.equal(prompt?.disabled, true);
+    assert.match(panel.textContent, /turn\/start \+ input: \[\]/);
+    await click(act, invisibleToggle, window);
+    assert.equal(panel.querySelector('textarea[aria-label="自动续跑提示词"]')?.disabled, false);
 
     await click(act, buttonWithText(panel, "立即测试 / 续跑"), window);
     await flushPromises(act);
@@ -294,6 +328,27 @@ test("auto resume exposes selectable interruption reasons, select-all, schedules
     assert.equal(calls.autoResumeRuns, 1);
     assert.deepEqual(calls.autoResumeRunTaskIds, ["task-alpha"]);
     assert.deepEqual(calls.autoResumeOrder, ["save", "run"]);
+  }, {
+    autoResumeSettings: settingsWithTask(),
+  });
+});
+
+test("clicking the task summary row and its chevron toggles disclosure", async () => {
+  await withMountedSettings(async ({ act, container, window }) => {
+    await click(act, tabByName(container, "自动续跑"), window);
+    const panel = activePanel(container);
+    const disclosure = panel.querySelector("button.auto-resume-task-disclosure");
+    assert.ok(disclosure);
+    assert.equal(disclosure.getAttribute("aria-expanded"), "true");
+    assert.match(disclosure.textContent, /▴/);
+
+    await click(act, disclosure, window);
+    assert.equal(disclosure.getAttribute("aria-expanded"), "false");
+    assert.match(disclosure.textContent, /▾/);
+    assert.equal(panel.querySelector(".auto-resume-task-editor"), null);
+
+    await click(act, disclosure, window);
+    assert.ok(panel.querySelector(".auto-resume-task-editor"));
   }, {
     autoResumeSettings: settingsWithTask(),
   });
@@ -585,6 +640,7 @@ function defaultAutoResumeSettings() {
     threadTitle: "",
     threadCwd: "",
     prompt: "继续",
+    invisibleResumeEnabled: true,
     scheduleMode: "off",
     intervalMinutes: 60,
     dailyHour: 9,

@@ -42,6 +42,7 @@ export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
   threadTitle: "",
   threadCwd: "",
   prompt: "继续",
+  invisibleResumeEnabled: true,
   scheduleMode: "off",
   intervalMinutes: 60,
   dailyHour: 9,
@@ -138,6 +139,10 @@ export function sanitizeAutoResumeTaskSettings(
   const capacityRecoveryEnabled = failureRecoveryReasons.length > 0;
   const quotaResumeEnabled = source.quotaResumeEnabled !== false;
   const hasTrigger = scheduleMode !== "off" || capacityRecoveryEnabled || quotaResumeEnabled;
+  const prompt = cleanText(source.prompt, 8_000) || DEFAULT_AUTO_RESUME_SETTINGS.prompt;
+  const invisibleResumeEnabled = typeof source.invisibleResumeEnabled === "boolean"
+    ? source.invisibleResumeEnabled
+    : prompt === DEFAULT_AUTO_RESUME_SETTINGS.prompt;
   return {
     id: cleanText("id" in source ? source.id : "", 128) || stableLegacyTaskId(threadId),
     createdAt: clampTimestamp("createdAt" in source ? source.createdAt : 0),
@@ -146,7 +151,8 @@ export function sanitizeAutoResumeTaskSettings(
     threadId,
     threadTitle: cleanText(source.threadTitle, 240),
     threadCwd: cleanText(source.threadCwd, 2_048),
-    prompt: cleanText(source.prompt, 8_000) || DEFAULT_AUTO_RESUME_SETTINGS.prompt,
+    prompt,
+    invisibleResumeEnabled,
     scheduleMode,
     intervalMinutes: AUTO_RESUME_INTERVAL_OPTIONS.includes(source.intervalMinutes as typeof AUTO_RESUME_INTERVAL_OPTIONS[number])
       ? Number(source.intervalMinutes)

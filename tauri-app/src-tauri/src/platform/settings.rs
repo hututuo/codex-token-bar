@@ -2369,6 +2369,7 @@ fn sanitize_auto_resume_settings(
                 thread_title: legacy.thread_title,
                 thread_cwd: legacy.thread_cwd,
                 prompt: legacy.prompt,
+                invisible_resume_enabled: legacy.invisible_resume_enabled,
                 schedule_mode: legacy.schedule_mode,
                 interval_minutes: legacy.interval_minutes,
                 daily_hour: legacy.daily_hour,
@@ -2445,6 +2446,11 @@ fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot)
     if settings.prompt.is_empty() {
         settings.prompt = "继续".into();
     }
+    settings.invisible_resume_enabled = Some(
+        settings
+            .invisible_resume_enabled
+            .unwrap_or(settings.prompt == "继续"),
+    );
     settings.schedule_mode = match settings.schedule_mode.as_str() {
         "interval" => "interval",
         "daily" => "daily",
@@ -2744,6 +2750,35 @@ mod tests {
         assert_eq!(sanitized.quota_recovery_threshold_percent, 21);
         assert_eq!(sanitized.cooldown_minutes, 1);
         assert_eq!(sanitized.max_runs_per_day, 24);
+    }
+
+    #[test]
+    fn auto_resume_invisible_mode_migrates_legacy_prompt_without_overriding_explicit_choice() {
+        let legacy_custom = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            prompt: "按原计划继续".into(),
+            invisible_resume_enabled: None,
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert_eq!(legacy_custom.invisible_resume_enabled, Some(false));
+
+        let explicit_invisible = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            prompt: "按原计划继续".into(),
+            invisible_resume_enabled: Some(true),
+            ..AutoResumeSettingsSnapshot::default()
+        });
+        assert_eq!(explicit_invisible.invisible_resume_enabled, Some(true));
+        assert_eq!(explicit_invisible.prompt, "按原计划继续");
+
+        let explicit_visible_continue =
+            sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+                prompt: "继续".into(),
+                invisible_resume_enabled: Some(false),
+                ..AutoResumeSettingsSnapshot::default()
+            });
+        assert_eq!(
+            explicit_visible_continue.invisible_resume_enabled,
+            Some(false)
+        );
     }
 
     #[test]
