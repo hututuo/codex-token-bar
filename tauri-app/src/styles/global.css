@@ -3108,6 +3108,7 @@ button.quota-side-card:hover {
 }
 
 .app-settings-page {
+  min-width: 0;
   overflow: auto;
   padding: 17px 20px 22px;
   scrollbar-gutter: stable;
@@ -3121,6 +3122,7 @@ button.quota-side-card:hover {
 .app-settings-group {
   display: grid;
   gap: 8px;
+  min-width: 0;
   margin-bottom: 16px;
 }
 
@@ -3586,6 +3588,7 @@ button.quota-side-card:hover {
   grid-template-columns: 90px minmax(0, 1fr);
   gap: 5px 10px;
   align-items: center;
+  min-width: 0;
   padding: 10px 12px 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
 }
@@ -3598,8 +3601,9 @@ button.quota-side-card:hover {
 }
 
 .auto-resume-project-picker > select {
+  min-width: 0;
   width: 100%;
-  max-width: none;
+  max-width: 100%;
 }
 
 .auto-resume-project-picker > small {
@@ -3689,6 +3693,7 @@ button.quota-side-card:hover {
 
 .auto-resume-thread-list {
   display: grid;
+  min-width: 0;
   max-height: 320px;
   overflow-y: auto;
   border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);

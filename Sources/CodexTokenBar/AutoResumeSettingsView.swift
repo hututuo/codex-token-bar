@@ -4,6 +4,7 @@ struct AutoResumeSettingsView: View {
     @ObservedObject var controller: AutoResumeController
     @State private var threadSearchQuery = ""
     @State private var selectedProjectID = ""
+    private let menuPickerWidth: CGFloat = 240
 
     var body: some View {
         VStack(spacing: 18) {
@@ -362,8 +363,8 @@ struct AutoResumeSettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(minWidth: 190, alignment: .trailing)
-            .fixedSize(horizontal: true, vertical: false)
+            .frame(width: menuPickerWidth, alignment: .trailing)
+            .clipped()
             .disabled(projectDescriptors.isEmpty)
             .accessibilityLabel("自动续跑项目文件夹")
         }
@@ -531,8 +532,8 @@ struct AutoResumeSettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(minWidth: 170, alignment: .trailing)
-            .fixedSize(horizontal: true, vertical: false)
+            .frame(width: menuPickerWidth, alignment: .trailing)
+            .clipped()
             .accessibilityLabel(title)
         }
         .padding(.horizontal, 12)
