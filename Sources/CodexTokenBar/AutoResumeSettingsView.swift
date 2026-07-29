@@ -430,7 +430,7 @@ struct AutoResumeSettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("失败 / 中断续跑条件")
                         .font(.system(size: 11.5, weight: .semibold))
-                    Text("独立勾选要保护的原因；额度耗尽会等待额度恢复后再续跑。")
+                    Text("逐项匹配 Codex app-server 终态/错误码；额度耗尽会等待恢复。")
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -452,6 +452,7 @@ struct AutoResumeSettingsView: View {
                 ForEach(AutoResumeFailureReason.allCases, id: \.self) { reason in
                     failureReasonButton(
                         reason.label,
+                        protocolCode: reason.rawValue,
                         selected: selected.contains(reason)
                     ) {
                         controller.setFailureRecoveryReason(
@@ -462,6 +463,7 @@ struct AutoResumeSettingsView: View {
                 }
                 failureReasonButton(
                     "额度耗尽（恢复后）",
+                    protocolCode: "usageLimitExceeded",
                     selected: configuration.quotaRecoveryEnabled
                 ) {
                     controller.setQuotaRecoveryEnabled(!configuration.quotaRecoveryEnabled)
@@ -470,8 +472,8 @@ struct AutoResumeSettingsView: View {
 
             Text(
                 hasRiskySelection
-                    ? "已选择的宽泛条件可能包含主动停止、审批清理或必须人工修复的问题；仍会遵守单次失败只续跑一次、冷却和每日上限。"
-                    : "自动续跑产生的后续轮不会再次触发失败续跑，避免形成自循环。"
+                    ? "谨慎条件可能包含主动停止或必须人工修复的问题；仍只按 Codex 的结构化状态判断。"
+                    : "不按报错文案猜测；自动续跑产生的后续轮也不会再次触发失败续跑。"
             )
             .font(.system(size: 9, weight: .medium))
             .foregroundStyle(hasRiskySelection ? AppTheme.accentAmber : .secondary)
@@ -484,6 +486,7 @@ struct AutoResumeSettingsView: View {
 
     private func failureReasonButton(
         _ title: String,
+        protocolCode: String,
         selected: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -513,6 +516,7 @@ struct AutoResumeSettingsView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityValue(selected ? "已选择" : "未选择")
+        .help("\(title) · \(protocolCode)")
     }
 
     private var projectPickerRow: some View {

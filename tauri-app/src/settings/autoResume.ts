@@ -14,19 +14,23 @@ export const AUTO_RESUME_FAILURE_REASONS: readonly {
   label: string;
   risky: boolean;
 }[] = [
-  { id: "capacity", label: "容量不足", risky: false },
-  { id: "network", label: "网络断开", risky: false },
-  { id: "rateLimit", label: "请求限流", risky: false },
-  { id: "serverError", label: "服务端错误", risky: false },
-  { id: "timeout", label: "请求超时", risky: false },
-  { id: "retryLimit", label: "重试次数耗尽", risky: false },
-  { id: "contextWindow", label: "上下文超限", risky: true },
-  { id: "sessionBudget", label: "会话预算耗尽", risky: true },
-  { id: "requestConflict", label: "请求状态冲突", risky: true },
-  { id: "authentication", label: "登录或鉴权失败", risky: true },
-  { id: "sandbox", label: "沙盒或权限错误", risky: true },
+  // Exact Codex app-server terminal status / CodexErrorInfo values only.
+  // usageLimitExceeded is represented by the separate quota-recovery control.
+  // threadRollbackFailed and activeTurnNotSteerable do not fail a turn.
+  { id: "serverOverloaded", label: "服务容量不足", risky: false },
+  { id: "httpConnectionFailed", label: "HTTP 连接失败", risky: false },
+  { id: "responseStreamConnectionFailed", label: "响应流连接失败", risky: false },
+  { id: "responseStreamDisconnected", label: "响应流中途断开", risky: false },
+  { id: "responseTooManyFailedAttempts", label: "响应重试耗尽", risky: false },
+  { id: "internalServerError", label: "Codex 内部错误", risky: false },
   { id: "interrupted", label: "任务被中断", risky: true },
-  { id: "other", label: "其他失败", risky: true },
+  { id: "contextWindowExceeded", label: "上下文窗口超限", risky: true },
+  { id: "sessionBudgetExceeded", label: "会话预算耗尽", risky: true },
+  { id: "unauthorized", label: "未授权", risky: true },
+  { id: "badRequest", label: "错误请求", risky: true },
+  { id: "sandboxError", label: "沙盒错误", risky: true },
+  { id: "cyberPolicy", label: "安全策略拒绝", risky: true },
+  { id: "other", label: "其他未分类失败", risky: true },
 ] as const;
 
 export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
@@ -42,7 +46,7 @@ export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
   intervalMinutes: 60,
   dailyHour: 9,
   dailyMinute: 0,
-  failureRecoveryPolicyVersion: 1,
+  failureRecoveryPolicyVersion: 2,
   failureRecoveryReasons: [],
   capacityRecoveryEnabled: false,
   quotaResumeEnabled: true,
@@ -119,10 +123,14 @@ export function sanitizeAutoResumeTaskSettings(
   const threadId = cleanText(source.threadId, 128);
   const lowThreshold = clampWholeNumber(source.quotaLowThresholdPercent, 0, 20, 5);
   const scheduleMode = sanitizeScheduleMode(source.scheduleMode);
-  const hasFailurePolicy = Number(source.failureRecoveryPolicyVersion) >= 1;
-  const requestedFailureReasons = hasFailurePolicy && Array.isArray(source.failureRecoveryReasons)
+  const failurePolicyVersion = Number(source.failureRecoveryPolicyVersion);
+  const hasFailurePolicy = failurePolicyVersion >= 1;
+  const storedFailureReasons = hasFailurePolicy && Array.isArray(source.failureRecoveryReasons)
     ? source.failureRecoveryReasons
-    : (source.capacityRecoveryEnabled === true ? ["capacity"] : []);
+    : (source.capacityRecoveryEnabled === true ? ["serverOverloaded"] : []);
+  const requestedFailureReasons = failurePolicyVersion === 1
+    ? migrateLegacyFailureReasons(storedFailureReasons)
+    : storedFailureReasons;
   const requestedFailureReasonSet = new Set(requestedFailureReasons);
   const failureRecoveryReasons = AUTO_RESUME_FAILURE_REASONS
     .map(({ id }) => id)
@@ -145,7 +153,7 @@ export function sanitizeAutoResumeTaskSettings(
       : DEFAULT_AUTO_RESUME_SETTINGS.intervalMinutes,
     dailyHour: clampWholeNumber(source.dailyHour, 0, 23, DEFAULT_AUTO_RESUME_SETTINGS.dailyHour),
     dailyMinute: clampWholeNumber(source.dailyMinute, 0, 59, DEFAULT_AUTO_RESUME_SETTINGS.dailyMinute),
-    failureRecoveryPolicyVersion: 1,
+    failureRecoveryPolicyVersion: 2,
     failureRecoveryReasons,
     capacityRecoveryEnabled,
     quotaResumeEnabled,
@@ -225,4 +233,59 @@ function stableLegacyTaskId(threadId: string): string {
     hash = (hash * prime) & mask;
   }
   return `legacy-${hash.toString(16).padStart(16, "0")}`;
+}
+
+function migrateLegacyFailureReasons(reasons: readonly unknown[]): AutoResumeFailureReason[] {
+  const exactReasons = new Set(AUTO_RESUME_FAILURE_REASONS.map(({ id }) => id));
+  const migrated = new Set<AutoResumeFailureReason>();
+  for (const reason of reasons) {
+    if (typeof reason !== "string") continue;
+    if (exactReasons.has(reason as AutoResumeFailureReason)) {
+      migrated.add(reason as AutoResumeFailureReason);
+      continue;
+    }
+    switch (reason) {
+      case "capacity":
+        migrated.add("serverOverloaded");
+        break;
+      case "serverError":
+        migrated.add("internalServerError");
+        break;
+      case "retryLimit":
+        migrated.add("responseTooManyFailedAttempts");
+        break;
+      case "contextWindow":
+        migrated.add("contextWindowExceeded");
+        break;
+      case "sessionBudget":
+        migrated.add("sessionBudgetExceeded");
+        break;
+      case "requestConflict":
+        migrated.add("badRequest");
+        break;
+      case "authentication":
+        migrated.add("unauthorized");
+        break;
+      case "sandbox":
+        migrated.add("sandboxError");
+        break;
+      case "interrupted":
+        migrated.add("interrupted");
+        break;
+      case "other":
+        migrated.add("other");
+        break;
+      // These former buckets partitioned the same connection variants using
+      // HTTP status/message guesses. No equally narrow CodexErrorInfo exists;
+      // dropping them is safer than broadening any selection.
+      case "network":
+      case "rateLimit":
+      case "timeout":
+      default:
+        break;
+    }
+  }
+  return AUTO_RESUME_FAILURE_REASONS
+    .map(({ id }) => id)
+    .filter((reason) => migrated.has(reason));
 }

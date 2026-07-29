@@ -1110,13 +1110,13 @@ function AutomationSettings({
                       <header>
                         <span>
                           <strong>失败 / 中断续跑条件</strong>
-                          <small>独立勾选要保护的原因；额度耗尽会等待额度恢复后再续跑。</small>
+                          <small>逐项匹配 Codex app-server 终态/错误码；额度耗尽会等待恢复。</small>
                         </span>
                         <button
                           className="app-settings-action"
                           disabled={isTaskRunning}
                           onClick={() => updateTask(task.id, {
-                            failureRecoveryPolicyVersion: 1,
+                            failureRecoveryPolicyVersion: 2,
                             failureRecoveryReasons: allRecoveryConditionsSelected
                               ? []
                               : AUTO_RESUME_FAILURE_REASONS.map(({ id }) => id),
@@ -1140,14 +1140,14 @@ function AutomationSettings({
                                 checked={selected}
                                 disabled={isTaskRunning}
                                 onChange={() => updateTask(task.id, {
-                                  failureRecoveryPolicyVersion: 1,
+                                  failureRecoveryPolicyVersion: 2,
                                   failureRecoveryReasons: selected
                                     ? task.failureRecoveryReasons.filter((reason) => reason !== id)
                                     : [...task.failureRecoveryReasons, id],
                                 })}
                                 type="checkbox"
                               />
-                              <span>{label}</span>
+                              <span title={`${label} · ${id}`}>{label}</span>
                             </label>
                           );
                         })}
@@ -1162,13 +1162,13 @@ function AutomationSettings({
                             })}
                             type="checkbox"
                           />
-                          <span>额度耗尽（恢复后）</span>
+                          <span title="usageLimitExceeded">额度耗尽（恢复后）</span>
                         </label>
                       </div>
                       <p className={hasRiskyFailureReason ? "is-warning" : ""}>
                         {hasRiskyFailureReason
-                          ? "已选择的宽泛条件可能包含主动停止、审批清理或必须人工修复的问题；仍会遵守单次失败只续跑一次、冷却和每日上限。"
-                          : "自动续跑产生的后续轮不会再次触发失败续跑，避免形成自循环。"}
+                          ? "谨慎条件可能包含主动停止或必须人工修复的问题；仍只按 Codex 的结构化状态判断。"
+                          : "不按报错文案猜测；自动续跑产生的后续轮也不会再次触发失败续跑。"}
                       </p>
                     </section>
 

@@ -98,8 +98,8 @@ test("legacy capacity recovery migrates to a versioned capacity-only reason poli
       capacityRecoveryEnabled: true,
       quotaResumeEnabled: false,
     });
-    assert.equal(legacy.failureRecoveryPolicyVersion, 1);
-    assert.deepEqual(legacy.failureRecoveryReasons, ["capacity"]);
+    assert.equal(legacy.failureRecoveryPolicyVersion, 2);
+    assert.deepEqual(legacy.failureRecoveryReasons, ["serverOverloaded"]);
     assert.equal(legacy.capacityRecoveryEnabled, true);
 
     const intentionallyEmpty = sanitizeAutoResumeTaskSettings({
@@ -121,12 +121,41 @@ test("failure recovery reasons are canonical, deduplicated, and independently se
     const result = sanitizeAutoResumeTaskSettings({
       threadId: "thread-a",
       failureRecoveryPolicyVersion: 1,
-      failureRecoveryReasons: ["interrupted", "network", "network", "unknown"],
+      failureRecoveryReasons: [
+        "interrupted",
+        "network",
+        "network",
+        "rateLimit",
+        "timeout",
+        "serverError",
+        "unknown",
+      ],
       quotaResumeEnabled: false,
     });
-    assert.deepEqual(result.failureRecoveryReasons, ["network", "interrupted"]);
+    assert.deepEqual(result.failureRecoveryReasons, [
+      "internalServerError",
+      "interrupted",
+    ]);
     assert.equal(result.capacityRecoveryEnabled, true);
-    assert.equal(AUTO_RESUME_FAILURE_REASONS.length, 13);
+    assert.deepEqual(
+      AUTO_RESUME_FAILURE_REASONS.map(({ id }) => id),
+      [
+        "serverOverloaded",
+        "httpConnectionFailed",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseTooManyFailedAttempts",
+        "internalServerError",
+        "interrupted",
+        "contextWindowExceeded",
+        "sessionBudgetExceeded",
+        "unauthorized",
+        "badRequest",
+        "sandboxError",
+        "cyberPolicy",
+        "other",
+      ],
+    );
   });
 });
 

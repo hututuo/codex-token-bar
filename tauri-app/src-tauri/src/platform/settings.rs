@@ -2419,19 +2419,23 @@ fn sanitize_auto_resume_settings(
 }
 
 fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot) {
-    const FAILURE_REASONS: [&str; 13] = [
-        "capacity",
-        "network",
-        "rateLimit",
-        "serverError",
-        "timeout",
-        "retryLimit",
-        "contextWindow",
-        "sessionBudget",
-        "requestConflict",
-        "authentication",
-        "sandbox",
+    // Exact post-turn conditions: all CodexErrorInfo variants whose
+    // affects_turn_status() value is true, except UsageLimitExceeded (handled
+    // by quota recovery), plus the terminal TurnStatus::Interrupted.
+    const FAILURE_REASONS: [&str; 14] = [
+        "serverOverloaded",
+        "httpConnectionFailed",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseTooManyFailedAttempts",
+        "internalServerError",
         "interrupted",
+        "contextWindowExceeded",
+        "sessionBudgetExceeded",
+        "unauthorized",
+        "badRequest",
+        "sandboxError",
+        "cyberPolicy",
         "other",
     ];
     settings.thread_id = settings.thread_id.trim().chars().take(128).collect();
@@ -2455,10 +2459,34 @@ fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot)
     settings.daily_minute = settings.daily_minute.min(59);
     let requested_reasons = if settings.failure_recovery_policy_version == 0 {
         if settings.capacity_recovery_enabled {
-            vec!["capacity".to_string()]
+            vec!["serverOverloaded".to_string()]
         } else {
             Vec::new()
         }
+    } else if settings.failure_recovery_policy_version == 1 {
+        let mut migrated = Vec::new();
+        for reason in &settings.failure_recovery_reasons {
+            match reason.as_str() {
+                "capacity" => migrated.push("serverOverloaded".to_string()),
+                "serverError" => migrated.push("internalServerError".to_string()),
+                "retryLimit" => {
+                    migrated.push("responseTooManyFailedAttempts".to_string());
+                }
+                "contextWindow" => migrated.push("contextWindowExceeded".to_string()),
+                "sessionBudget" => migrated.push("sessionBudgetExceeded".to_string()),
+                "requestConflict" => migrated.push("badRequest".to_string()),
+                "authentication" => migrated.push("unauthorized".to_string()),
+                "sandbox" => migrated.push("sandboxError".to_string()),
+                "interrupted" => migrated.push("interrupted".to_string()),
+                "other" => migrated.push("other".to_string()),
+                exact if FAILURE_REASONS.contains(&exact) => migrated.push(exact.to_string()),
+                // These former buckets partitioned the same connection
+                // variants using HTTP status/message guesses. No equally
+                // narrow CodexErrorInfo exists, so do not broaden them.
+                "network" | "rateLimit" | "timeout" | _ => {}
+            }
+        }
+        migrated
     } else {
         settings.failure_recovery_reasons.clone()
     };
@@ -2467,7 +2495,7 @@ fn sanitize_auto_resume_legacy_fields(settings: &mut AutoResumeSettingsSnapshot)
         .filter(|reason| requested_reasons.iter().any(|value| value == **reason))
         .map(|reason| (*reason).to_string())
         .collect();
-    settings.failure_recovery_policy_version = 1;
+    settings.failure_recovery_policy_version = 2;
     settings.capacity_recovery_enabled = !settings.failure_recovery_reasons.is_empty();
     settings.quota_window = match settings.quota_window.as_str() {
         "fiveHour" => "fiveHour",
@@ -2794,8 +2822,8 @@ mod tests {
             quota_resume_enabled: false,
             ..AutoResumeSettingsSnapshot::default()
         });
-        assert_eq!(migrated.failure_recovery_policy_version, 1);
-        assert_eq!(migrated.failure_recovery_reasons, ["capacity"]);
+        assert_eq!(migrated.failure_recovery_policy_version, 2);
+        assert_eq!(migrated.failure_recovery_reasons, ["serverOverloaded"]);
         assert!(migrated.capacity_recovery_enabled);
 
         let explicit_empty = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
@@ -2819,6 +2847,8 @@ mod tests {
                 "interrupted".into(),
                 "network".into(),
                 "network".into(),
+                "rateLimit".into(),
+                "serverError".into(),
                 "unknown".into(),
             ],
             quota_resume_enabled: false,
@@ -2826,7 +2856,7 @@ mod tests {
         });
         assert_eq!(
             canonical.failure_recovery_reasons,
-            ["network", "interrupted"]
+            ["internalServerError", "interrupted"]
         );
         assert!(canonical.capacity_recovery_enabled);
     }

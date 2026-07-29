@@ -55,18 +55,20 @@ impl AutoResumeRunOutcome {
     }
 
     fn failed(message: impl Into<String>, turn_id: Option<String>) -> Self {
-        let message = message.into();
-        let quota_limited = looks_like_quota_limit(&message);
         Self {
-            status: if quota_limited {
-                "waitingQuota"
-            } else {
-                "failed"
-            }
-            .into(),
-            message,
+            status: "failed".into(),
+            message: message.into(),
             turn_id,
-            quota_limited,
+            quota_limited: false,
+        }
+    }
+
+    fn quota_limited(message: impl Into<String>, turn_id: Option<String>) -> Self {
+        Self {
+            status: "waitingQuota".into(),
+            message: message.into(),
+            turn_id,
+            quota_limited: true,
         }
     }
 
@@ -863,11 +865,20 @@ fn turn_completion_outcome(message: &Value, needs_attention: Option<&str>) -> Au
             AutoResumeRunOutcome::failed("Codex 已确认中断本次自动续跑", completed_turn_id)
         }
         _ => {
-            let detail = message
-                .pointer("/params/turn/error")
+            let error = message.pointer("/params/turn/error");
+            let detail = error
                 .map(compact_json)
                 .unwrap_or_else(|| "Codex 自动续跑失败".into());
-            AutoResumeRunOutcome::failed(detail, completed_turn_id)
+            let is_quota_limit = error
+                .and_then(|value| value.get("codexErrorInfo"))
+                .map(codex_error_details)
+                .and_then(|(code, _)| code)
+                .is_some_and(|code| normalized_identifier(&code) == "usagelimitexceeded");
+            if is_quota_limit {
+                AutoResumeRunOutcome::quota_limited(detail, completed_turn_id)
+            } else {
+                AutoResumeRunOutcome::failed(detail, completed_turn_id)
+            }
         }
     }
 }
@@ -883,55 +894,83 @@ pub fn default_codex_home() -> PathBuf {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutoResumeFailureReason {
-    Capacity,
-    Network,
-    RateLimit,
-    ServerError,
-    Timeout,
-    RetryLimit,
-    ContextWindow,
-    SessionBudget,
-    RequestConflict,
-    Authentication,
-    Sandbox,
+    // Keep this list aligned with CodexErrorInfo variants whose
+    // affects_turn_status() value is true. UsageLimitExceeded is handled by
+    // quota recovery. ThreadRollbackFailed and ActiveTurnNotSteerable do not
+    // fail a turn and cannot be observed by this post-turn monitor.
+    ServerOverloaded,
+    HttpConnectionFailed,
+    ResponseStreamConnectionFailed,
+    ResponseStreamDisconnected,
+    ResponseTooManyFailedAttempts,
+    InternalServerError,
     Interrupted,
+    ContextWindowExceeded,
+    SessionBudgetExceeded,
+    Unauthorized,
+    BadRequest,
+    SandboxError,
+    CyberPolicy,
     Other,
 }
 
 impl AutoResumeFailureReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Capacity => "capacity",
-            Self::Network => "network",
-            Self::RateLimit => "rateLimit",
-            Self::ServerError => "serverError",
-            Self::Timeout => "timeout",
-            Self::RetryLimit => "retryLimit",
-            Self::ContextWindow => "contextWindow",
-            Self::SessionBudget => "sessionBudget",
-            Self::RequestConflict => "requestConflict",
-            Self::Authentication => "authentication",
-            Self::Sandbox => "sandbox",
+            Self::ServerOverloaded => "serverOverloaded",
+            Self::HttpConnectionFailed => "httpConnectionFailed",
+            Self::ResponseStreamConnectionFailed => "responseStreamConnectionFailed",
+            Self::ResponseStreamDisconnected => "responseStreamDisconnected",
+            Self::ResponseTooManyFailedAttempts => "responseTooManyFailedAttempts",
+            Self::InternalServerError => "internalServerError",
             Self::Interrupted => "interrupted",
+            Self::ContextWindowExceeded => "contextWindowExceeded",
+            Self::SessionBudgetExceeded => "sessionBudgetExceeded",
+            Self::Unauthorized => "unauthorized",
+            Self::BadRequest => "badRequest",
+            Self::SandboxError => "sandboxError",
+            Self::CyberPolicy => "cyberPolicy",
             Self::Other => "other",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Capacity => "容量不足",
-            Self::Network => "网络断开",
-            Self::RateLimit => "请求限流",
-            Self::ServerError => "服务端错误",
-            Self::Timeout => "请求超时",
-            Self::RetryLimit => "重试次数耗尽",
-            Self::ContextWindow => "上下文超限",
-            Self::SessionBudget => "会话预算耗尽",
-            Self::RequestConflict => "请求状态冲突",
-            Self::Authentication => "登录或鉴权失败",
-            Self::Sandbox => "沙盒或权限错误",
+            Self::ServerOverloaded => "服务容量不足",
+            Self::HttpConnectionFailed => "HTTP 连接失败",
+            Self::ResponseStreamConnectionFailed => "响应流连接失败",
+            Self::ResponseStreamDisconnected => "响应流中途断开",
+            Self::ResponseTooManyFailedAttempts => "响应重试耗尽",
+            Self::InternalServerError => "Codex 内部错误",
             Self::Interrupted => "任务被中断",
-            Self::Other => "其他失败",
+            Self::ContextWindowExceeded => "上下文窗口超限",
+            Self::SessionBudgetExceeded => "会话预算耗尽",
+            Self::Unauthorized => "未授权",
+            Self::BadRequest => "错误请求",
+            Self::SandboxError => "沙盒错误",
+            Self::CyberPolicy => "安全策略拒绝",
+            Self::Other => "其他未分类失败",
+        }
+    }
+
+    /// Shared trigger-ledger keys predate the exact protocol taxonomy. Keep
+    /// their v1 components so an upgrade cannot claim the same failed turn a
+    /// second time solely because the visible reason id changed.
+    pub fn trigger_key_component(self) -> &'static str {
+        match self {
+            Self::ServerOverloaded => "capacity",
+            Self::HttpConnectionFailed
+            | Self::ResponseStreamConnectionFailed
+            | Self::ResponseStreamDisconnected => "network",
+            Self::ResponseTooManyFailedAttempts => "retryLimit",
+            Self::InternalServerError => "serverError",
+            Self::Interrupted => "interrupted",
+            Self::ContextWindowExceeded => "contextWindow",
+            Self::SessionBudgetExceeded => "sessionBudget",
+            Self::Unauthorized => "authentication",
+            Self::BadRequest => "requestConflict",
+            Self::SandboxError => "sandbox",
+            Self::CyberPolicy | Self::Other => "other",
         }
     }
 }
@@ -974,7 +1013,7 @@ impl AutoResumeLatestTurnObservation {
     }
 
     pub fn is_server_capacity_failure(&self) -> bool {
-        self.failure_reason() == Some(AutoResumeFailureReason::Capacity)
+        self.failure_reason() == Some(AutoResumeFailureReason::ServerOverloaded)
     }
 
     pub fn is_recoverable_capacity_failure(&self) -> bool {
@@ -987,25 +1026,9 @@ impl AutoResumeLatestTurnObservation {
         if normalized_identifier(&self.status) != "failed" {
             return false;
         }
-        if self
-            .codex_error_code
+        self.codex_error_code
             .as_deref()
             .is_some_and(|value| normalized_identifier(value) == "usagelimitexceeded")
-        {
-            return true;
-        }
-        message_contains(
-            self.error_message.as_deref(),
-            &[
-                "usage limit",
-                "usage_limit",
-                "insufficient_quota",
-                "quota exceeded",
-                "额度耗尽",
-                "额度已用完",
-                "使用额度已达上限",
-            ],
-        )
     }
 
     pub fn failure_reason(&self) -> Option<AutoResumeFailureReason> {
@@ -1022,105 +1045,31 @@ impl AutoResumeLatestTurnObservation {
             .map(normalized_identifier)
             .unwrap_or_default();
         let structured = match code.as_str() {
-            "serveroverloaded" => Some(AutoResumeFailureReason::Capacity),
-            "contextwindowexceeded" => Some(AutoResumeFailureReason::ContextWindow),
-            "sessionbudgetexceeded" => Some(AutoResumeFailureReason::SessionBudget),
-            "httpconnectionfailed"
-            | "responsestreamconnectionfailed"
-            | "responsestreamdisconnected" => {
-                self.http_status_reason().or(Some(AutoResumeFailureReason::Network))
+            "serveroverloaded" => Some(AutoResumeFailureReason::ServerOverloaded),
+            "httpconnectionfailed" => Some(AutoResumeFailureReason::HttpConnectionFailed),
+            "responsestreamconnectionfailed" => {
+                Some(AutoResumeFailureReason::ResponseStreamConnectionFailed)
             }
-            "responsetoomanyfailedattempts" => Some(AutoResumeFailureReason::RetryLimit),
-            "activeturnnotsteerable" | "badrequest" => {
-                Some(AutoResumeFailureReason::RequestConflict)
+            "responsestreamdisconnected" => {
+                Some(AutoResumeFailureReason::ResponseStreamDisconnected)
             }
-            "unauthorized" => Some(AutoResumeFailureReason::Authentication),
-            "sandboxerror" => Some(AutoResumeFailureReason::Sandbox),
-            "internalservererror" => Some(AutoResumeFailureReason::ServerError),
+            "responsetoomanyfailedattempts" => {
+                Some(AutoResumeFailureReason::ResponseTooManyFailedAttempts)
+            }
+            "internalservererror" => Some(AutoResumeFailureReason::InternalServerError),
+            "contextwindowexceeded" => Some(AutoResumeFailureReason::ContextWindowExceeded),
+            "sessionbudgetexceeded" => Some(AutoResumeFailureReason::SessionBudgetExceeded),
+            "unauthorized" => Some(AutoResumeFailureReason::Unauthorized),
+            "badrequest" => Some(AutoResumeFailureReason::BadRequest),
+            "sandboxerror" => Some(AutoResumeFailureReason::SandboxError),
+            "cyberpolicy" => Some(AutoResumeFailureReason::CyberPolicy),
             "other" => Some(AutoResumeFailureReason::Other),
+            // Codex explicitly marks both values as not affecting turn status.
+            // They are request/rollback errors, not terminal failed-turn causes.
+            "threadrollbackfailed" | "activeturnnotsteerable" => None,
             _ => None,
         };
-        if structured.is_some() {
-            return structured;
-        }
-        if message_contains(
-            self.error_message.as_deref(),
-            &[
-                "selected model is at capacity",
-                "server is overloaded",
-                "server overloaded",
-                "insufficient capacity",
-                "no available capacity",
-                "currently experiencing high demand",
-                "服务容量不足",
-                "服务器容量不足",
-            ],
-        ) {
-            return Some(AutoResumeFailureReason::Capacity);
-        }
-        if let Some(reason) = self.http_status_reason() {
-            return Some(reason);
-        }
-        let message_rules: &[(AutoResumeFailureReason, &[&str])] = &[
-            (
-                AutoResumeFailureReason::RateLimit,
-                &["rate limit", "rate_limit", "too many requests", "请求过于频繁", "限流"],
-            ),
-            (
-                AutoResumeFailureReason::Timeout,
-                &["timed out", "timeout", "deadline exceeded", "请求超时", "连接超时"],
-            ),
-            (
-                AutoResumeFailureReason::Network,
-                &[
-                    "connection reset",
-                    "connection refused",
-                    "connection failed",
-                    "network error",
-                    "network unreachable",
-                    "dns",
-                    "stream disconnected",
-                    "stream connection",
-                    "网络连接",
-                    "网络中断",
-                    "连接断开",
-                ],
-            ),
-            (
-                AutoResumeFailureReason::ContextWindow,
-                &["context window", "context length", "上下文窗口", "上下文超限"],
-            ),
-            (
-                AutoResumeFailureReason::SessionBudget,
-                &["session budget", "会话预算", "本轮预算"],
-            ),
-            (
-                AutoResumeFailureReason::Authentication,
-                &["unauthorized", "authentication", "invalid api key", "鉴权", "未授权"],
-            ),
-            (
-                AutoResumeFailureReason::Sandbox,
-                &["sandbox", "permission denied", "沙盒", "权限不足"],
-            ),
-            (
-                AutoResumeFailureReason::RetryLimit,
-                &["too many failed attempts", "retry attempts", "重试次数"],
-            ),
-            (
-                AutoResumeFailureReason::RequestConflict,
-                &["bad request", "not steerable", "conflict", "请求冲突", "状态冲突"],
-            ),
-            (
-                AutoResumeFailureReason::ServerError,
-                &["internal server", "service unavailable", "server error", "服务端错误"],
-            ),
-        ];
-        for (reason, needles) in message_rules {
-            if message_contains(self.error_message.as_deref(), needles) {
-                return Some(*reason);
-            }
-        }
-        Some(AutoResumeFailureReason::Other)
+        structured
     }
 
     pub fn is_recoverable_failure(&self, selected_reasons: &[String]) -> bool {
@@ -1130,21 +1079,6 @@ impl AutoResumeLatestTurnObservation {
                 && !self.is_generated_by_automatic_recovery()
         })
     }
-
-    fn http_status_reason(&self) -> Option<AutoResumeFailureReason> {
-        match self.http_status_code? {
-            401 | 403 => Some(AutoResumeFailureReason::Authentication),
-            408 => Some(AutoResumeFailureReason::Timeout),
-            429 => Some(AutoResumeFailureReason::RateLimit),
-            500..=599 => Some(AutoResumeFailureReason::ServerError),
-            _ => None,
-        }
-    }
-}
-
-fn message_contains(message: Option<&str>, needles: &[&str]) -> bool {
-    let message = message.unwrap_or("").to_lowercase();
-    needles.iter().any(|needle| message.contains(needle))
 }
 
 pub fn read_latest_turn_observation(
@@ -1835,14 +1769,6 @@ fn compact_json(value: &Value) -> String {
     truncate_chars(&value.to_string(), 1_000)
 }
 
-fn looks_like_quota_limit(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("usagelimitexceeded")
-        || normalized.contains("usage limit")
-        || normalized.contains("insufficient_quota")
-        || message.contains("额度") && (message.contains("耗尽") || message.contains("上限"))
-}
-
 fn stable_thread_key(value: &str) -> String {
     let mut hash = 14_695_981_039_346_656_037_u64;
     for byte in value.as_bytes() {
@@ -2445,14 +2371,41 @@ mod tests {
     }
 
     #[test]
-    fn quota_errors_are_classified_without_retrying_unknown_failures() {
-        assert!(looks_like_quota_limit("usageLimitExceeded"));
-        assert!(looks_like_quota_limit("额度已到上限"));
-        assert!(looks_like_quota_limit("insufficient_quota"));
-        assert!(!looks_like_quota_limit(
-            "temporary rate limit; retry shortly"
-        ));
-        assert!(!looks_like_quota_limit("working directory missing"));
+    fn quota_waiting_requires_structured_usage_limit_error() {
+        let structured = json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": "failed",
+                    "error": {
+                        "message": "usage limit reached",
+                        "codexErrorInfo": "usageLimitExceeded"
+                    }
+                }
+            }
+        });
+        let structured_outcome = turn_completion_outcome(&structured, None);
+        assert!(structured_outcome.quota_limited);
+        assert_eq!(structured_outcome.status, "waitingQuota");
+
+        let message_only = json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-2",
+                    "status": "failed",
+                    "error": {
+                        "message": "额度已到上限；insufficient_quota"
+                    }
+                }
+            }
+        });
+        let message_only_outcome = turn_completion_outcome(&message_only, None);
+        assert!(!message_only_outcome.quota_limited);
+        assert_eq!(message_only_outcome.status, "failed");
     }
 
     #[test]
@@ -2577,7 +2530,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_failure_reasons_classify_network_http_status_and_interruption() {
+    fn selected_failure_reasons_match_exact_codex_codes_and_interruption() {
         let base = AutoResumeLatestTurnObservation {
             turn_id: "turn-network".into(),
             status: "failed".into(),
@@ -2588,16 +2541,19 @@ mod tests {
             http_status_code: None,
             client_user_message_id: Some("user-message-1".into()),
         };
-        assert_eq!(base.failure_reason(), Some(AutoResumeFailureReason::Network));
-        assert!(base.is_recoverable_failure(&["network".into()]));
-        assert!(!base.is_recoverable_failure(&["capacity".into()]));
+        assert_eq!(
+            base.failure_reason(),
+            Some(AutoResumeFailureReason::ResponseStreamDisconnected)
+        );
+        assert!(base.is_recoverable_failure(&["responseStreamDisconnected".into()]));
+        assert!(!base.is_recoverable_failure(&["serverOverloaded".into()]));
 
         let mut limited = base.clone();
         limited.codex_error_code = Some("HttpConnectionFailed".into());
         limited.http_status_code = Some(429);
         assert_eq!(
             limited.failure_reason(),
-            Some(AutoResumeFailureReason::RateLimit)
+            Some(AutoResumeFailureReason::HttpConnectionFailed)
         );
 
         let mut interrupted = base.clone();
@@ -2613,7 +2569,93 @@ mod tests {
         generated.client_user_message_id =
             Some("failure:network:thread-1:turn-network".into());
         assert!(generated.is_generated_by_automatic_recovery());
-        assert!(!generated.is_recoverable_failure(&["network".into()]));
+        assert!(!generated.is_recoverable_failure(&["responseStreamDisconnected".into()]));
+    }
+
+    #[test]
+    fn failure_reason_contract_uses_only_terminal_status_and_structured_codex_errors() {
+        let cases = [
+            ("serverOverloaded", AutoResumeFailureReason::ServerOverloaded),
+            (
+                "httpConnectionFailed",
+                AutoResumeFailureReason::HttpConnectionFailed,
+            ),
+            (
+                "responseStreamConnectionFailed",
+                AutoResumeFailureReason::ResponseStreamConnectionFailed,
+            ),
+            (
+                "responseStreamDisconnected",
+                AutoResumeFailureReason::ResponseStreamDisconnected,
+            ),
+            (
+                "responseTooManyFailedAttempts",
+                AutoResumeFailureReason::ResponseTooManyFailedAttempts,
+            ),
+            (
+                "internalServerError",
+                AutoResumeFailureReason::InternalServerError,
+            ),
+            (
+                "contextWindowExceeded",
+                AutoResumeFailureReason::ContextWindowExceeded,
+            ),
+            (
+                "sessionBudgetExceeded",
+                AutoResumeFailureReason::SessionBudgetExceeded,
+            ),
+            ("unauthorized", AutoResumeFailureReason::Unauthorized),
+            ("badRequest", AutoResumeFailureReason::BadRequest),
+            ("sandboxError", AutoResumeFailureReason::SandboxError),
+            ("cyberPolicy", AutoResumeFailureReason::CyberPolicy),
+            ("other", AutoResumeFailureReason::Other),
+        ];
+        for (code, expected) in cases {
+            let observation = AutoResumeLatestTurnObservation {
+                turn_id: code.into(),
+                status: "failed".into(),
+                started_at: Some(100),
+                completed_at: Some(110),
+                error_message: Some("message must not affect classification".into()),
+                codex_error_code: Some(code.into()),
+                http_status_code: None,
+                client_user_message_id: Some("desktop-user-message".into()),
+            };
+            assert_eq!(observation.failure_reason(), Some(expected), "{code}");
+        }
+
+        for code in [
+            "usageLimitExceeded",
+            "threadRollbackFailed",
+            "activeTurnNotSteerable",
+            "futureUnknownFailure",
+        ] {
+            let observation = AutoResumeLatestTurnObservation {
+                turn_id: code.into(),
+                status: "failed".into(),
+                started_at: Some(100),
+                completed_at: Some(110),
+                error_message: Some(
+                    "Selected model is at capacity; timeout; rate limit".into(),
+                ),
+                codex_error_code: Some(code.into()),
+                http_status_code: Some(429),
+                client_user_message_id: Some("desktop-user-message".into()),
+            };
+            assert_eq!(observation.failure_reason(), None, "{code}");
+        }
+
+        let message_only = AutoResumeLatestTurnObservation {
+            turn_id: "message-only".into(),
+            status: "failed".into(),
+            started_at: Some(100),
+            completed_at: Some(110),
+            error_message: Some("Selected model is at capacity; timeout; rate limit".into()),
+            codex_error_code: None,
+            http_status_code: Some(429),
+            client_user_message_id: Some("desktop-user-message".into()),
+        };
+        assert_eq!(message_only.failure_reason(), None);
     }
 
     #[test]
@@ -2657,7 +2699,7 @@ mod tests {
         assert_eq!(parsed_status.http_status_code, Some(503));
         assert_eq!(
             parsed_status.failure_reason(),
-            Some(AutoResumeFailureReason::ServerError)
+            Some(AutoResumeFailureReason::HttpConnectionFailed)
         );
 
         let tagged = parse_latest_turn_observation(&json!({
@@ -2680,7 +2722,7 @@ mod tests {
         assert_eq!(tagged.http_status_code, Some(503));
         assert_eq!(
             tagged.failure_reason(),
-            Some(AutoResumeFailureReason::ServerError)
+            Some(AutoResumeFailureReason::HttpConnectionFailed)
         );
     }
 

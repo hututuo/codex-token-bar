@@ -563,7 +563,7 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
 
         XCTAssertEqual(observation.codexErrorCode, "httpConnectionFailed")
         XCTAssertEqual(observation.httpStatusCode, 503)
-        XCTAssertEqual(observation.failureReason, .serverError)
+        XCTAssertEqual(observation.failureReason, .httpConnectionFailed)
     }
 
     func testCapacityObservationFallsBackToFullItemsToVerifyClientIdentity() async throws {
@@ -842,7 +842,10 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
                 "turn": [
                     "id": "turn-1",
                     "status": "failed",
-                    "error": ["message": "usage limit reached; try again after reset"],
+                    "error": [
+                        "message": "usage limit reached; try again after reset",
+                        "codexErrorInfo": "usageLimitExceeded",
+                    ],
                 ],
             ])
         ))
@@ -862,6 +865,34 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
                 error as? CodexAutoResumeAppServerError,
                 .quotaLimited("usage limit reached; try again after reset")
             )
+        }
+    }
+
+    func testQuotaLikeMessageWithoutStructuredCodeIsNotClassifiedAsQuota() async {
+        let message = "usage limit reached; try again after reset"
+        let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
+            replaceCompletionWith: notification("turn/completed", params: [
+                "threadId": "thread-1",
+                "turn": [
+                    "id": "turn-1",
+                    "status": "failed",
+                    "error": ["message": message],
+                ],
+            ])
+        ))
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        do {
+            _ = try await client.resumeThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                target: thread(id: "thread-1"),
+                prompt: "继续",
+                clientMessageID: "quota-message-only-test"
+            )
+            XCTFail("Expected ordinary server failure")
+        } catch {
+            XCTAssertEqual(error as? CodexAutoResumeAppServerError, .serverError(message))
         }
     }
 

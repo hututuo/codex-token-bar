@@ -172,7 +172,7 @@ final class AutoResumePolicyTests: XCTestCase {
         XCTAssertEqual(configuration.maxRunsPerDay, 3)
         XCTAssertTrue(configuration.quotaRecoveryEnabled)
         XCTAssertFalse(configuration.capacityRecoveryEnabled)
-        XCTAssertEqual(configuration.failureRecoveryPolicyVersion, 1)
+        XCTAssertEqual(configuration.failureRecoveryPolicyVersion, 2)
         XCTAssertTrue(configuration.failureRecoveryReasons.isEmpty)
         XCTAssertEqual(configuration.quotaWindow, .lowestRemaining)
         XCTAssertTrue(configuration.notifyOnResult)
@@ -185,8 +185,31 @@ final class AutoResumePolicyTests: XCTestCase {
             AutoResumeConfiguration.self,
             from: legacyCapacityData
         )
-        XCTAssertEqual(legacyCapacity.failureRecoveryReasons, [.capacity])
+        XCTAssertEqual(legacyCapacity.failureRecoveryReasons, [.serverOverloaded])
         XCTAssertTrue(legacyCapacity.capacityRecoveryEnabled)
+
+        let legacyFailurePolicyData = try JSONSerialization.data(withJSONObject: [
+            "failureRecoveryPolicyVersion": 1,
+            "failureRecoveryReasons": [
+                "network", "serverError", "rateLimit", "timeout",
+                "contextWindow", "authentication", "other",
+            ],
+            "quotaRecoveryEnabled": false,
+        ])
+        let legacyFailurePolicy = try JSONDecoder().decode(
+            AutoResumeConfiguration.self,
+            from: legacyFailurePolicyData
+        )
+        XCTAssertEqual(legacyFailurePolicy.failureRecoveryPolicyVersion, 2)
+        XCTAssertEqual(
+            legacyFailurePolicy.failureRecoveryReasons,
+            [
+                .internalServerError,
+                .contextWindowExceeded,
+                .unauthorized,
+                .other,
+            ]
+        )
 
         let explicitEmptyData = try JSONSerialization.data(withJSONObject: [
             "failureRecoveryPolicyVersion": 1,
@@ -904,7 +927,10 @@ final class AutoResumePolicyTests: XCTestCase {
             now: now
         ))
         XCTAssertEqual(trigger.kind, .capacityRecovery)
-        XCTAssertEqual(trigger.key, "failure:capacity:\(target.id):capacity-turn")
+        XCTAssertEqual(
+            trigger.key,
+            "failure:capacity:\(target.id):capacity-turn"
+        )
 
         state.lastCapacityObservedTurnID = overload.turnID
         XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
@@ -947,8 +973,8 @@ final class AutoResumePolicyTests: XCTestCase {
 
     func testSelectedFailureReasonsClassifyStructuredNetworkAndInterruptedTurns() throws {
         var configuration = enabledConfiguration()
-        configuration.failureRecoveryPolicyVersion = 1
-        configuration.failureRecoveryReasons = [.network, .interrupted]
+        configuration.failureRecoveryPolicyVersion = 2
+        configuration.failureRecoveryReasons = [.responseStreamDisconnected, .interrupted]
         let now = date(2026, 7, 16, 10, 0)
         var state = AutoResumeRuntimeState.default
         state.capacityMonitorArmedAt = now.addingTimeInterval(-60)
@@ -967,7 +993,7 @@ final class AutoResumePolicyTests: XCTestCase {
             observation: network,
             now: now
         ))
-        XCTAssertEqual(network.failureReason, .network)
+        XCTAssertEqual(network.failureReason, .responseStreamDisconnected)
         XCTAssertEqual(
             networkTrigger.key,
             "failure:network:\(target.id):network-turn"
@@ -998,7 +1024,7 @@ final class AutoResumePolicyTests: XCTestCase {
             httpStatusCode: 429,
             clientUserMessageID: "desktop-user-message"
         )
-        XCTAssertEqual(limited.failureReason, .rateLimit)
+        XCTAssertEqual(limited.failureReason, .httpConnectionFailed)
         XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
             configuration: configuration,
             state: state,
@@ -1007,7 +1033,72 @@ final class AutoResumePolicyTests: XCTestCase {
         ))
     }
 
-    func testCapacityRecoveryTextFallbackIsStrictAndRecent() {
+    func testFailureReasonContractMatchesCodexTurnStatusAndStructuredErrorValues() {
+        let cases: [(String, AutoResumeFailureReason)] = [
+            ("serverOverloaded", .serverOverloaded),
+            ("httpConnectionFailed", .httpConnectionFailed),
+            ("responseStreamConnectionFailed", .responseStreamConnectionFailed),
+            ("responseStreamDisconnected", .responseStreamDisconnected),
+            ("responseTooManyFailedAttempts", .responseTooManyFailedAttempts),
+            ("internalServerError", .internalServerError),
+            ("contextWindowExceeded", .contextWindowExceeded),
+            ("sessionBudgetExceeded", .sessionBudgetExceeded),
+            ("unauthorized", .unauthorized),
+            ("badRequest", .badRequest),
+            ("sandboxError", .sandboxError),
+            ("cyberPolicy", .cyberPolicy),
+            ("other", .other),
+        ]
+        for (code, expected) in cases {
+            let observation = AutoResumeLatestTurnObservation(
+                turnID: code,
+                status: "failed",
+                completedAt: Date(),
+                errorMessage: "message must not affect classification",
+                codexErrorCode: code,
+                clientUserMessageID: "desktop-user-message"
+            )
+            XCTAssertEqual(observation.failureReason, expected, code)
+        }
+
+        let interrupted = AutoResumeLatestTurnObservation(
+            turnID: "interrupted",
+            status: "interrupted",
+            completedAt: Date(),
+            errorMessage: nil,
+            codexErrorCode: nil,
+            clientUserMessageID: "desktop-user-message"
+        )
+        XCTAssertEqual(interrupted.failureReason, .interrupted)
+
+        for code in [
+            "usageLimitExceeded",
+            "threadRollbackFailed",
+            "activeTurnNotSteerable",
+            "futureUnknownFailure",
+        ] {
+            let observation = AutoResumeLatestTurnObservation(
+                turnID: code,
+                status: "failed",
+                completedAt: Date(),
+                errorMessage: "Selected model is at capacity; timeout; rate limit",
+                codexErrorCode: code,
+                clientUserMessageID: "desktop-user-message"
+            )
+            XCTAssertNil(observation.failureReason, code)
+        }
+        let messageOnly = AutoResumeLatestTurnObservation(
+            turnID: "message-only",
+            status: "failed",
+            completedAt: Date(),
+            errorMessage: "Selected model is at capacity; timeout; rate limit",
+            codexErrorCode: nil,
+            clientUserMessageID: "desktop-user-message"
+        )
+        XCTAssertNil(messageOnly.failureReason)
+    }
+
+    func testFailureRecoveryRequiresStructuredCodexErrorInfoAndRecentTurn() {
         var configuration = enabledConfiguration()
         configuration.capacityRecoveryEnabled = true
         let now = date(2026, 7, 16, 10, 0)
@@ -1022,7 +1113,7 @@ final class AutoResumePolicyTests: XCTestCase {
             codexErrorCode: nil,
             clientUserMessageID: "desktop-user-message"
         )
-        XCTAssertNotNil(AutoResumePolicy.capacityRecoveryTrigger(
+        XCTAssertNil(AutoResumePolicy.capacityRecoveryTrigger(
             configuration: configuration,
             state: state,
             observation: fallback,
@@ -1179,7 +1270,10 @@ final class AutoResumePolicyTests: XCTestCase {
             ),
             now: capacityNow
         ))
-        XCTAssertEqual(capacity.key, "failure:capacity:thread-1:turn-9")
+        XCTAssertEqual(
+            capacity.key,
+            "failure:capacity:thread-1:turn-9"
+        )
     }
 
     private func enabledConfiguration() -> AutoResumeConfiguration {

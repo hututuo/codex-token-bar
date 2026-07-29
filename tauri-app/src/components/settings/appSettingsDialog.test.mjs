@@ -276,13 +276,14 @@ test("auto resume exposes selectable interruption reasons, select-all, schedules
     assert.ok(panel.querySelector('select[aria-label="自动续跑间隔"]'));
     await click(act, buttonWithText(panel, "每天"), window);
     assert.ok(panel.querySelector('input[aria-label="自动续跑每日时间"]'));
-    assert.match(panel.textContent, /网络断开/);
+    assert.match(panel.textContent, /HTTP 连接失败/);
+    assert.match(panel.textContent, /响应流中途断开/);
     assert.match(panel.textContent, /任务被中断/);
     await click(act, buttonWithText(panel, "全选"), window);
     assert.equal(
       panel.querySelectorAll(".auto-resume-failure-grid label.is-active").length,
-      14,
-      "all 13 immediate reasons plus quota recovery should be selected",
+      15,
+      "all 14 exact terminal reasons plus quota recovery should be selected",
     );
     assert.ok(panel.querySelector('input[aria-label="额度低位阈值"]'));
     assert.ok(panel.querySelector('input[aria-label="额度恢复阈值"]'));
@@ -588,7 +589,7 @@ function defaultAutoResumeSettings() {
     intervalMinutes: 60,
     dailyHour: 9,
     dailyMinute: 0,
-    failureRecoveryPolicyVersion: 1,
+    failureRecoveryPolicyVersion: 2,
     failureRecoveryReasons: [],
     capacityRecoveryEnabled: false,
     quotaResumeEnabled: true,

@@ -1664,7 +1664,10 @@ fn failure_trigger_key(
     thread_id: &str,
     turn_id: &str,
 ) -> String {
-    format!("failure:{}:{thread_id}:{turn_id}", reason.as_str())
+    format!(
+        "failure:{}:{thread_id}:{turn_id}",
+        reason.trigger_key_component()
+    )
 }
 
 fn due_trigger(state: &mut RegistryState, now: i64) -> Option<Trigger> {
@@ -2937,7 +2940,7 @@ mod tests {
         );
         assert_eq!(
             failure_trigger_key(
-                auto_resume::AutoResumeFailureReason::Capacity,
+                auto_resume::AutoResumeFailureReason::ServerOverloaded,
                 "thread-1",
                 "turn-1"
             ),

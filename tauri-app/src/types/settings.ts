@@ -67,18 +67,19 @@ export interface SessionEnhancementSettings {
 export type AutoResumeScheduleMode = "off" | "interval" | "daily";
 export type AutoResumeQuotaWindow = "fiveHour" | "sevenDay" | "either";
 export type AutoResumeFailureReason =
-  | "capacity"
-  | "network"
-  | "rateLimit"
-  | "serverError"
-  | "timeout"
-  | "retryLimit"
-  | "contextWindow"
-  | "sessionBudget"
-  | "requestConflict"
-  | "authentication"
-  | "sandbox"
+  | "serverOverloaded"
+  | "httpConnectionFailed"
+  | "responseStreamConnectionFailed"
+  | "responseStreamDisconnected"
+  | "responseTooManyFailedAttempts"
+  | "internalServerError"
   | "interrupted"
+  | "contextWindowExceeded"
+  | "sessionBudgetExceeded"
+  | "unauthorized"
+  | "badRequest"
+  | "sandboxError"
+  | "cyberPolicy"
   | "other";
 
 export interface AutoResumeTaskConfiguration {

@@ -274,7 +274,7 @@ final class AutoResumeController: ObservableObject {
     }
 
     func setCapacityRecoveryEnabled(_ enabled: Bool) {
-        setFailureRecoveryReason(.capacity, enabled: enabled)
+        setFailureRecoveryReason(.serverOverloaded, enabled: enabled)
     }
 
     func setFailureRecoveryReason(_ reason: AutoResumeFailureReason, enabled: Bool) {
@@ -285,7 +285,7 @@ final class AutoResumeController: ObservableObject {
         } else {
             selected.remove(reason)
         }
-        next.failureRecoveryPolicyVersion = 1
+        next.failureRecoveryPolicyVersion = 2
         next.failureRecoveryReasons = AutoResumeFailureReason.allCases.filter(selected.contains)
         next.capacityRecoveryEnabled = !next.failureRecoveryReasons.isEmpty
         applyConfiguration(next, resetsCapacityMonitoring: true)
@@ -293,7 +293,7 @@ final class AutoResumeController: ObservableObject {
 
     func setAllFailureRecoveryReasons(_ enabled: Bool) {
         var next = configuration
-        next.failureRecoveryPolicyVersion = 1
+        next.failureRecoveryPolicyVersion = 2
         next.failureRecoveryReasons = enabled ? AutoResumeFailureReason.allCases : []
         next.capacityRecoveryEnabled = enabled
         applyConfiguration(next, resetsCapacityMonitoring: true)
@@ -301,7 +301,7 @@ final class AutoResumeController: ObservableObject {
 
     func setAllRecoveryConditions(_ enabled: Bool) {
         var next = configuration
-        next.failureRecoveryPolicyVersion = 1
+        next.failureRecoveryPolicyVersion = 2
         next.failureRecoveryReasons = enabled ? AutoResumeFailureReason.allCases : []
         next.capacityRecoveryEnabled = enabled
         next.quotaRecoveryEnabled = enabled

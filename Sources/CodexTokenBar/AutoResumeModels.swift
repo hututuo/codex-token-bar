@@ -146,46 +146,116 @@ enum AutoResumeThreadPicker {
 }
 
 enum AutoResumeFailureReason: String, Codable, CaseIterable, Hashable, Sendable {
-    case capacity
-    case network
-    case rateLimit
-    case serverError
-    case timeout
-    case retryLimit
-    case contextWindow
-    case sessionBudget
-    case requestConflict
-    case authentication
-    case sandbox
+    // Keep this list aligned with Codex app-server's CodexErrorInfo variants
+    // whose affects_turn_status() value is true. UsageLimitExceeded is handled
+    // separately by quota recovery. ThreadRollbackFailed and
+    // ActiveTurnNotSteerable do not fail a turn and therefore cannot be
+    // observed by this post-turn monitor.
+    case serverOverloaded
+    case httpConnectionFailed
+    case responseStreamConnectionFailed
+    case responseStreamDisconnected
+    case responseTooManyFailedAttempts
+    case internalServerError
     case interrupted
+    case contextWindowExceeded
+    case sessionBudgetExceeded
+    case unauthorized
+    case badRequest
+    case sandboxError
+    case cyberPolicy
     case other
 
     var label: String {
         switch self {
-        case .capacity: return "容量不足"
-        case .network: return "网络断开"
-        case .rateLimit: return "请求限流"
-        case .serverError: return "服务端错误"
-        case .timeout: return "请求超时"
-        case .retryLimit: return "重试次数耗尽"
-        case .contextWindow: return "上下文超限"
-        case .sessionBudget: return "会话预算耗尽"
-        case .requestConflict: return "请求状态冲突"
-        case .authentication: return "登录或鉴权失败"
-        case .sandbox: return "沙盒或权限错误"
+        case .serverOverloaded: return "服务容量不足"
+        case .httpConnectionFailed: return "HTTP 连接失败"
+        case .responseStreamConnectionFailed: return "响应流连接失败"
+        case .responseStreamDisconnected: return "响应流中途断开"
+        case .responseTooManyFailedAttempts: return "响应重试耗尽"
+        case .internalServerError: return "Codex 内部错误"
         case .interrupted: return "任务被中断"
-        case .other: return "其他失败"
+        case .contextWindowExceeded: return "上下文窗口超限"
+        case .sessionBudgetExceeded: return "会话预算耗尽"
+        case .unauthorized: return "未授权"
+        case .badRequest: return "错误请求"
+        case .sandboxError: return "沙盒错误"
+        case .cyberPolicy: return "安全策略拒绝"
+        case .other: return "其他未分类失败"
         }
     }
 
     var isRisky: Bool {
         switch self {
-        case .contextWindow, .sessionBudget, .requestConflict, .authentication,
-             .sandbox, .interrupted, .other:
+        case .interrupted, .contextWindowExceeded, .sessionBudgetExceeded,
+             .unauthorized, .badRequest, .sandboxError, .cyberPolicy, .other:
             return true
-        case .capacity, .network, .rateLimit, .serverError, .timeout, .retryLimit:
+        case .serverOverloaded, .httpConnectionFailed,
+             .responseStreamConnectionFailed, .responseStreamDisconnected,
+             .responseTooManyFailedAttempts, .internalServerError:
             return false
         }
+    }
+
+    // Trigger keys are persisted in the shared cross-runtime ledger. Preserve
+    // the v1 key components so an upgrade cannot run the same failed turn a
+    // second time merely because the user-facing taxonomy became exact.
+    var triggerKeyComponent: String {
+        switch self {
+        case .serverOverloaded: return "capacity"
+        case .httpConnectionFailed, .responseStreamConnectionFailed,
+             .responseStreamDisconnected:
+            return "network"
+        case .responseTooManyFailedAttempts: return "retryLimit"
+        case .internalServerError: return "serverError"
+        case .interrupted: return "interrupted"
+        case .contextWindowExceeded: return "contextWindow"
+        case .sessionBudgetExceeded: return "sessionBudget"
+        case .unauthorized: return "authentication"
+        case .badRequest: return "requestConflict"
+        case .sandboxError: return "sandbox"
+        case .cyberPolicy, .other: return "other"
+        }
+    }
+
+    static func migratedLegacyReasons(_ rawReasons: [String]) -> [Self] {
+        var migrated = Set<Self>()
+        for rawReason in rawReasons {
+            if let exact = Self(rawValue: rawReason) {
+                migrated.insert(exact)
+                continue
+            }
+            switch rawReason {
+            case "capacity":
+                migrated.insert(.serverOverloaded)
+            case "serverError":
+                migrated.insert(.internalServerError)
+            case "retryLimit":
+                migrated.insert(.responseTooManyFailedAttempts)
+            case "contextWindow":
+                migrated.insert(.contextWindowExceeded)
+            case "sessionBudget":
+                migrated.insert(.sessionBudgetExceeded)
+            case "requestConflict":
+                migrated.insert(.badRequest)
+            case "authentication":
+                migrated.insert(.unauthorized)
+            case "sandbox":
+                migrated.insert(.sandboxError)
+            case "interrupted":
+                migrated.insert(.interrupted)
+            case "other":
+                migrated.insert(.other)
+            // These former buckets partitioned the same connection variants
+            // using HTTP status/message guesses. There is no equally narrow
+            // CodexErrorInfo value, so broadening any of them is unsafe.
+            case "network", "rateLimit", "timeout":
+                break
+            default:
+                break
+            }
+        }
+        return allCases.filter(migrated.contains)
     }
 }
 
@@ -227,12 +297,12 @@ struct AutoResumeConfiguration: Codable, Equatable, Sendable {
         copy.dailyMinute = min(max(dailyMinute, 0), 59)
         let requestedReasons: [AutoResumeFailureReason]
         if failureRecoveryPolicyVersion <= 0 {
-            requestedReasons = capacityRecoveryEnabled ? [.capacity] : []
+            requestedReasons = capacityRecoveryEnabled ? [.serverOverloaded] : []
         } else {
             requestedReasons = failureRecoveryReasons
         }
         let selected = Set(requestedReasons)
-        copy.failureRecoveryPolicyVersion = 1
+        copy.failureRecoveryPolicyVersion = 2
         copy.failureRecoveryReasons = AutoResumeFailureReason.allCases.filter(selected.contains)
         copy.capacityRecoveryEnabled = !copy.failureRecoveryReasons.isEmpty
         copy.quotaArmAtOrBelowPercent = min(max(quotaArmAtOrBelowPercent, 0), 99)
@@ -424,27 +494,17 @@ struct AutoResumeLatestTurnObservation: Equatable, Sendable {
     }
 
     var isServerCapacityFailure: Bool {
-        failureReason == .capacity
+        failureReason == .serverOverloaded
     }
 
     var isRecoverableCapacityFailure: Bool {
-        failureReason == .capacity
+        failureReason == .serverOverloaded
             && clientUserMessageID != nil
             && !isGeneratedByAutomaticRecovery
     }
 
     var isQuotaLimitFailure: Bool {
-        guard normalizedStatus == "failed" else { return false }
-        if normalizedErrorCode == "usagelimitexceeded" {
-            return true
-        }
-        return Self.messageContains(
-            errorMessage,
-            anyOf: [
-                "usage limit", "usage_limit", "insufficient_quota", "quota exceeded",
-                "额度耗尽", "额度已用完", "使用额度已达上限",
-            ]
-        )
+        normalizedStatus == "failed" && normalizedErrorCode == "usagelimitexceeded"
     }
 
     var failureReason: AutoResumeFailureReason? {
@@ -455,109 +515,39 @@ struct AutoResumeLatestTurnObservation: Equatable, Sendable {
 
         switch normalizedErrorCode {
         case "serveroverloaded":
-            return .capacity
+            return .serverOverloaded
         case "contextwindowexceeded":
-            return .contextWindow
+            return .contextWindowExceeded
         case "sessionbudgetexceeded":
-            return .sessionBudget
-        case "httpconnectionfailed", "responsestreamconnectionfailed",
-             "responsestreamdisconnected":
-            if let statusReason { return statusReason }
-            return .network
+            return .sessionBudgetExceeded
+        case "httpconnectionfailed":
+            return .httpConnectionFailed
+        case "responsestreamconnectionfailed":
+            return .responseStreamConnectionFailed
+        case "responsestreamdisconnected":
+            return .responseStreamDisconnected
         case "responsetoomanyfailedattempts":
-            return .retryLimit
-        case "activeturnnotsteerable", "badrequest":
-            return .requestConflict
-        case "unauthorized":
-            return .authentication
-        case "sandboxerror":
-            return .sandbox
+            return .responseTooManyFailedAttempts
         case "internalservererror":
-            return .serverError
+            return .internalServerError
+        case "unauthorized":
+            return .unauthorized
+        case "badrequest":
+            return .badRequest
+        case "sandboxerror":
+            return .sandboxError
+        case "cyberpolicy":
+            return .cyberPolicy
         case "other":
             return .other
+        // These are real CodexErrorInfo values, but Codex explicitly marks
+        // them as not affecting turn status. A post-turn failure monitor must
+        // not pretend it can trigger on them.
+        case "threadrollbackfailed", "activeturnnotsteerable":
+            return nil
         default:
-            break
+            return nil
         }
-
-        if Self.messageContains(
-            errorMessage,
-            anyOf: [
-                "selected model is at capacity", "server is overloaded", "server overloaded",
-                "insufficient capacity", "no available capacity",
-                "currently experiencing high demand", "服务容量不足", "服务器容量不足",
-            ]
-        ) {
-            return .capacity
-        }
-        if let statusReason { return statusReason }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: [
-                "rate limit", "rate_limit", "too many requests", "请求过于频繁", "限流",
-            ]
-        ) {
-            return .rateLimit
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["timed out", "timeout", "deadline exceeded", "请求超时", "连接超时"]
-        ) {
-            return .timeout
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: [
-                "connection reset", "connection refused", "connection failed",
-                "network error", "network unreachable", "dns", "stream disconnected",
-                "stream connection", "网络连接", "网络中断", "连接断开",
-            ]
-        ) {
-            return .network
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["context window", "context length", "上下文窗口", "上下文超限"]
-        ) {
-            return .contextWindow
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["session budget", "会话预算", "本轮预算"]
-        ) {
-            return .sessionBudget
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["unauthorized", "authentication", "invalid api key", "鉴权", "未授权"]
-        ) {
-            return .authentication
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["sandbox", "permission denied", "沙盒", "权限不足"]
-        ) {
-            return .sandbox
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["too many failed attempts", "retry attempts", "重试次数"]
-        ) {
-            return .retryLimit
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["bad request", "not steerable", "conflict", "请求冲突", "状态冲突"]
-        ) {
-            return .requestConflict
-        }
-        if Self.messageContains(
-            errorMessage,
-            anyOf: ["internal server", "service unavailable", "server error", "服务端错误"]
-        ) {
-            return .serverError
-        }
-        return .other
     }
 
     func isRecoverableFailure(selectedReasons: Set<AutoResumeFailureReason>) -> Bool {
@@ -569,22 +559,6 @@ struct AutoResumeLatestTurnObservation: Equatable, Sendable {
 
     private var normalizedErrorCode: String? {
         codexErrorCode?.lowercased().filter(\.isLetter)
-    }
-
-    private var statusReason: AutoResumeFailureReason? {
-        guard let httpStatusCode else { return nil }
-        switch httpStatusCode {
-        case 401, 403: return .authentication
-        case 408: return .timeout
-        case 429: return .rateLimit
-        case 500...599: return .serverError
-        default: return nil
-        }
-    }
-
-    private static func messageContains(_ message: String?, anyOf needles: [String]) -> Bool {
-        guard let message = message?.lowercased() else { return false }
-        return needles.contains { message.contains($0) }
     }
 
     private var normalizedStatus: String {
@@ -700,14 +674,25 @@ extension AutoResumeConfiguration {
         ) ?? value.intervalMinutes
         value.dailyHour = try container.decodeIfPresent(Int.self, forKey: .dailyHour) ?? value.dailyHour
         value.dailyMinute = try container.decodeIfPresent(Int.self, forKey: .dailyMinute) ?? value.dailyMinute
-        value.failureRecoveryPolicyVersion = try container.decodeIfPresent(
+        let storedFailurePolicyVersion = try container.decodeIfPresent(
             Int.self,
             forKey: .failureRecoveryPolicyVersion
         ) ?? 0
-        value.failureRecoveryReasons = try container.decodeIfPresent(
-            [AutoResumeFailureReason].self,
+        let storedFailureReasons = try container.decodeIfPresent(
+            [String].self,
             forKey: .failureRecoveryReasons
         ) ?? []
+        value.failureRecoveryPolicyVersion = storedFailurePolicyVersion
+        if storedFailurePolicyVersion == 1 {
+            value.failureRecoveryReasons = AutoResumeFailureReason.migratedLegacyReasons(
+                storedFailureReasons
+            )
+            value.failureRecoveryPolicyVersion = 2
+        } else {
+            value.failureRecoveryReasons = storedFailureReasons.compactMap(
+                AutoResumeFailureReason.init(rawValue:)
+            )
+        }
         value.capacityRecoveryEnabled = try container.decodeIfPresent(
             Bool.self,
             forKey: .capacityRecoveryEnabled

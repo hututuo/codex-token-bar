@@ -305,7 +305,7 @@ enum AutoResumePolicy {
         }
         return AutoResumeTrigger(
             kind: .capacityRecovery,
-            key: "failure:\(failureReason.rawValue):\(target.id):\(observation.turnID)",
+            key: "failure:\(failureReason.triggerKeyComponent):\(target.id):\(observation.turnID)",
             firedAt: now
         )
     }

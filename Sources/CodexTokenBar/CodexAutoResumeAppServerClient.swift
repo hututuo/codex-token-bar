@@ -471,8 +471,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                 let error = completed["error"] as? [String: Any]
                 let message = Self.nonemptyString(error?["message"]) ?? "Turn failed"
                 let errorCode = Self.codexErrorDetails(error?["codexErrorInfo"]).code
-                if Self.normalizedErrorCode(errorCode) == "usagelimitexceeded"
-                    || (errorCode == nil && Self.looksLikeQuotaLimit(message)) {
+                if Self.normalizedErrorCode(errorCode) == "usagelimitexceeded" {
                     throw CodexAutoResumeAppServerError.quotaLimited(message)
                 }
                 throw CodexAutoResumeAppServerError.serverError(message)
@@ -669,20 +668,6 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         guard let value = value as? String else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    fileprivate static func looksLikeQuotaLimit(_ message: String) -> Bool {
-        let normalized = message.lowercased()
-        return [
-            "usage limit",
-            "usage_limit",
-            "usage limit exceeded",
-            "insufficient_quota",
-            "quota exceeded",
-            "额度耗尽",
-            "额度已用完",
-            "使用额度已达上限",
-        ].contains { normalized.contains($0) }
     }
 
     private static func checkedVisibilityCount(
@@ -889,9 +874,6 @@ struct CodexAutoResumeRPCChannel {
                 if let error = message["error"] as? [String: Any] {
                     let detail = CodexAppServerClient.nonemptyString(error["message"])
                         ?? "RPC \(stage) failed"
-                    if CodexAppServerClient.looksLikeQuotaLimit(detail) {
-                        throw CodexAutoResumeAppServerError.quotaLimited(detail)
-                    }
                     let code = (error["code"] as? NSNumber)?.intValue
                     throw CodexAutoResumeAppServerError.rpcRejected(
                         code: code,
