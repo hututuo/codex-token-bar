@@ -13,7 +13,10 @@ enum CodexUnreadThreadReader {
         guard let unreadState = unreadStateValue(in: object) else {
             return .available([])
         }
-        let threadIDs = collectThreadIDs(from: unreadState)
+        let nativeThreadIDs = collectThreadIDs(from: unreadState)
+        let threadIDs = sidebarVisibleThreadIDs(in: object).map {
+            nativeThreadIDs.intersection($0)
+        } ?? nativeThreadIDs
         return .available(visibleUserThreadIDs(from: threadIDs, codexHome: codexHome))
     }
 
@@ -23,6 +26,45 @@ enum CodexUnreadThreadReader {
             return value
         }
         return object["unread-thread-ids-by-host-v1"]
+    }
+
+    /// Codex owns read/unread state in the desktop host rather than app-server.
+    /// Its native unread atom can retain threads that no longer appear in the
+    /// sidebar, so only an initialized and structurally complete sidebar
+    /// snapshot is authoritative. Older or partially migrated Codex versions
+    /// fail open to the existing SQLite/session visibility checks.
+    private static func sidebarVisibleThreadIDs(in object: [String: Any]) -> Set<String>? {
+        guard let persistedState = object["electron-persisted-atom-state"] as? [String: Any],
+              let preferences = persistedState["flat-project-sidebar-preferences-v1"] as? [String: Any],
+              preferences["initialized"] as? Bool == true,
+              let projectOrders = object["sidebar-project-thread-orders"] as? [String: Any],
+              let pinnedThreadIDs = threadIDArray(object["pinned-thread-ids"]),
+              let projectlessThreadIDs = threadIDArray(object["projectless-thread-ids"]) else {
+            return nil
+        }
+
+        var visibleThreadIDs = pinnedThreadIDs
+        visibleThreadIDs.formUnion(projectlessThreadIDs)
+        for value in projectOrders.values {
+            guard let order = value as? [String: Any],
+                  let threadIDs = threadIDArray(order["threadIds"]) else {
+                return nil
+            }
+            visibleThreadIDs.formUnion(threadIDs)
+        }
+        return visibleThreadIDs
+    }
+
+    private static func threadIDArray(_ value: Any?) -> Set<String>? {
+        guard let values = value as? [Any] else { return nil }
+        var threadIDs = Set<String>()
+        for value in values {
+            guard let threadID = value as? String else { return nil }
+            let trimmed = threadID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard looksLikeThreadID(trimmed) else { return nil }
+            threadIDs.insert(trimmed)
+        }
+        return threadIDs
     }
 
     private static func collectThreadIDs(from value: Any) -> Set<String> {

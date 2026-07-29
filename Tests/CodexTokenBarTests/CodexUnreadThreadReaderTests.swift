@@ -38,6 +38,90 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         XCTAssertEqual(threadIDs, [userID, vscodeID])
     }
 
+    func testInitializedSidebarStateFiltersGhostUnreadThreads() throws {
+        let codexHome = try makeCodexHome()
+        let orderedID = "019edaaa-6111-7222-8333-aaaaaaaaaaaa"
+        let pinnedID = "019edaaa-6222-7333-8444-bbbbbbbbbbbb"
+        let projectlessID = "019edaaa-6333-7444-8555-cccccccccccc"
+        let ghostID = "019edaaa-6444-7555-8666-dddddddddddd"
+
+        try writeUnreadState(
+            [orderedID, pinnedID, projectlessID, ghostID],
+            sidebarThreadIDs: [orderedID],
+            pinnedThreadIDs: [pinnedID],
+            projectlessThreadIDs: [projectlessID],
+            initialized: true,
+            to: codexHome
+        )
+        try seedVisibleStateDatabase(
+            at: codexHome,
+            threadIDs: [orderedID, pinnedID, projectlessID, ghostID]
+        )
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [orderedID, pinnedID, projectlessID]
+        )
+    }
+
+    func testInitializedEmptySidebarStateClearsGhostUnreadThreads() throws {
+        let codexHome = try makeCodexHome()
+        let ghostID = "019edaaa-6555-7666-8777-eeeeeeeeeeee"
+
+        try writeUnreadState(
+            [ghostID],
+            sidebarThreadIDs: [],
+            initialized: true,
+            to: codexHome
+        )
+        try seedVisibleStateDatabase(at: codexHome, threadIDs: [ghostID])
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            []
+        )
+    }
+
+    func testUninitializedSidebarStateFailsOpenToExistingVisibilityChecks() throws {
+        let codexHome = try makeCodexHome()
+        let unreadID = "019edaaa-6666-7777-8888-ffffffffffff"
+
+        try writeUnreadState(
+            [unreadID],
+            sidebarThreadIDs: [],
+            initialized: false,
+            to: codexHome
+        )
+        try seedVisibleStateDatabase(at: codexHome, threadIDs: [unreadID])
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [unreadID]
+        )
+    }
+
+    func testMalformedSidebarStateFailsOpenToExistingVisibilityChecks() throws {
+        let codexHome = try makeCodexHome()
+        let unreadID = "019edaaa-6777-7888-8999-aaaaaaaaaaaa"
+        let object: [String: Any] = [
+            "electron-persisted-atom-state": [
+                "unread-thread-ids-by-host-v1": ["local": [unreadID]],
+                "flat-project-sidebar-preferences-v1": ["initialized": true]
+            ],
+            "sidebar-project-thread-orders": [:],
+            "pinned-thread-ids": "malformed",
+            "projectless-thread-ids": []
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object)
+        try data.write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
+        try seedVisibleStateDatabase(at: codexHome, threadIDs: [unreadID])
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [unreadID]
+        )
+    }
+
     func testSessionVisibilityIndexOnlyParsesNewOrReplacedSessionMetas() throws {
         let codexHome = try makeCodexHome()
         let sessions = codexHome.appendingPathComponent("sessions/2026/07/15", isDirectory: true)
@@ -128,6 +212,37 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         try data.write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
     }
 
+    private func writeUnreadState(
+        _ ids: [String],
+        sidebarThreadIDs: [String],
+        pinnedThreadIDs: [String] = [],
+        projectlessThreadIDs: [String] = [],
+        initialized: Bool,
+        to codexHome: URL
+    ) throws {
+        let object: [String: Any] = [
+            "electron-persisted-atom-state": [
+                "unread-thread-ids-by-host-v1": [
+                    "local": ids
+                ],
+                "flat-project-sidebar-preferences-v1": [
+                    "initialized": initialized,
+                    "mode": "project"
+                ]
+            ],
+            "sidebar-project-thread-orders": [
+                "local-project": [
+                    "sortKey": "updated_at",
+                    "threadIds": sidebarThreadIDs
+                ]
+            ],
+            "pinned-thread-ids": pinnedThreadIDs,
+            "projectless-thread-ids": projectlessThreadIDs
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object)
+        try data.write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
+    }
+
     private func writeSessionMeta(id: String, threadSource: String, to url: URL) throws {
         let line = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"thread_source\":\"\(threadSource)\",\"source\":\"desktop\"}}\n"
         try line.write(to: url, atomically: true, encoding: .utf8)
@@ -170,5 +285,27 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
             """,
             bindings: [.text(userID), .text(subagentID), .text(archivedID), .text(vscodeID)]
         )
+    }
+
+    private func seedVisibleStateDatabase(at codexHome: URL, threadIDs: [String]) throws {
+        let driver = SQLiteDatabaseDriver(url: codexHome.appendingPathComponent("state_5.sqlite"))
+        try driver.execute("""
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            archived INTEGER,
+            thread_source TEXT,
+            source TEXT,
+            preview TEXT
+        );
+        """)
+        for threadID in threadIDs {
+            try driver.execute(
+                """
+                INSERT INTO threads (id, archived, thread_source, source, preview)
+                VALUES (?, 0, 'user', 'desktop', 'visible user thread');
+                """,
+                bindings: [.text(threadID)]
+            )
+        }
     }
 }

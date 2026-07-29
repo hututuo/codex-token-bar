@@ -31,7 +31,11 @@ pub(super) fn parse_unread_thread_ids(data: &[u8]) -> Result<HashSet<String>, St
     let Some(unread_state) = unread_state_value(&object) else {
         return Ok(HashSet::new());
     };
-    Ok(collect_thread_ids(unread_state))
+    let mut thread_ids = collect_thread_ids(unread_state);
+    if let Some(sidebar_visible_ids) = sidebar_visible_thread_ids(&object) {
+        thread_ids.retain(|thread_id| sidebar_visible_ids.contains(thread_id));
+    }
+    Ok(thread_ids)
 }
 
 pub(super) fn observed_session_metadata(
@@ -90,6 +94,40 @@ fn unread_state_value(object: &Value) -> Option<&Value> {
         .get("electron-persisted-atom-state")
         .and_then(|state| state.get("unread-thread-ids-by-host-v1"))
         .or_else(|| object.get("unread-thread-ids-by-host-v1"))
+}
+
+/// Codex desktop owns read/unread state outside app-server. Its native unread
+/// atom can retain threads that are no longer in the sidebar, so an initialized
+/// and structurally complete sidebar snapshot is used as the final visibility
+/// boundary. Missing, migrating, or malformed metadata fails open to the
+/// existing SQLite/session checks for compatibility.
+fn sidebar_visible_thread_ids(object: &Value) -> Option<HashSet<String>> {
+    let persisted_state = object.get("electron-persisted-atom-state")?;
+    let preferences = persisted_state.get("flat-project-sidebar-preferences-v1")?;
+    if preferences.get("initialized")?.as_bool()? != true {
+        return None;
+    }
+
+    let project_orders = object.get("sidebar-project-thread-orders")?.as_object()?;
+    let mut visible_ids = thread_id_array(object.get("pinned-thread-ids")?)?;
+    visible_ids.extend(thread_id_array(object.get("projectless-thread-ids")?)?);
+    for order in project_orders.values() {
+        let order = order.as_object()?;
+        visible_ids.extend(thread_id_array(order.get("threadIds")?)?);
+    }
+    Some(visible_ids)
+}
+
+fn thread_id_array(value: &Value) -> Option<HashSet<String>> {
+    let mut thread_ids = HashSet::new();
+    for value in value.as_array()? {
+        let thread_id = value.as_str()?.trim();
+        if !looks_like_thread_id(thread_id) {
+            return None;
+        }
+        thread_ids.insert(thread_id.to_string());
+    }
+    Some(thread_ids)
 }
 
 fn collect_thread_ids(value: &Value) -> HashSet<String> {

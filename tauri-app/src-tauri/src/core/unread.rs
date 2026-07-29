@@ -769,6 +769,111 @@ mod tests {
     }
 
     #[test]
+    fn initialized_sidebar_state_filters_ghost_unread_threads() {
+        let root = temp_root("sidebar-visible-filter");
+        fs::create_dir_all(&root).unwrap();
+        let ordered = "019eaaaa-1000-0000-0000-000000000001";
+        let pinned = "019eaaaa-1000-0000-0000-000000000002";
+        let projectless = "019eaaaa-1000-0000-0000-000000000003";
+        let ghost = "019eaaaa-1000-0000-0000-000000000004";
+        write_unread_state_with_sidebar(
+            &root,
+            &[ordered, pinned, projectless, ghost],
+            &[ordered],
+            &[pinned],
+            &[projectless],
+            true,
+        );
+        create_all_visible_state_database(&root, &[ordered, pinned, projectless, ghost]);
+
+        let expected = HashSet::from([
+            ordered.to_string(),
+            pinned.to_string(),
+            projectless.to_string(),
+        ]);
+        assert_eq!(read_unread_thread_ids(&root).unwrap(), expected);
+
+        let state = fs::read(root.join(".codex-global-state.json")).unwrap();
+        let observation = UnreadObservationBuilder::from_native_state(Some(&state))
+            .unwrap()
+            .finish(Some(&root.join("state_5.sqlite")))
+            .unwrap();
+        assert_eq!(observation.native_unread_count(), Some(3));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn initialized_empty_sidebar_state_clears_ghost_unread_without_sqlite() {
+        let root = temp_root("sidebar-empty-filter");
+        fs::create_dir_all(&root).unwrap();
+        let ghost = "019eaaaa-2000-0000-0000-000000000001";
+        write_unread_state_with_sidebar(&root, &[ghost], &[], &[], &[], true);
+
+        assert_eq!(
+            read_unread_thread_ids(&root).unwrap(),
+            HashSet::new()
+        );
+        let state = fs::read(root.join(".codex-global-state.json")).unwrap();
+        let observation = UnreadObservationBuilder::from_native_state(Some(&state))
+            .unwrap()
+            .finish(None)
+            .unwrap();
+        assert_eq!(observation.native_unread_count(), Some(0));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn uninitialized_sidebar_state_fails_open_to_existing_visibility_checks() {
+        let root = temp_root("sidebar-uninitialized");
+        fs::create_dir_all(&root).unwrap();
+        let unread = "019eaaaa-3000-0000-0000-000000000001";
+        write_unread_state_with_sidebar(&root, &[unread], &[], &[], &[], false);
+        create_all_visible_state_database(&root, &[unread]);
+
+        assert_eq!(
+            read_unread_thread_ids(&root).unwrap(),
+            HashSet::from([unread.to_string()])
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_sidebar_state_fails_open_to_existing_visibility_checks() {
+        let root = temp_root("sidebar-malformed");
+        fs::create_dir_all(&root).unwrap();
+        let unread = "019eaaaa-4000-0000-0000-000000000001";
+        fs::write(
+            root.join(".codex-global-state.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "electron-persisted-atom-state": {
+                    "unread-thread-ids-by-host-v1": {
+                        "localhost": [unread]
+                    },
+                    "flat-project-sidebar-preferences-v1": {
+                        "initialized": true
+                    }
+                },
+                "sidebar-project-thread-orders": {},
+                "pinned-thread-ids": "malformed",
+                "projectless-thread-ids": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        create_all_visible_state_database(&root, &[unread]);
+
+        assert_eq!(
+            read_unread_thread_ids(&root).unwrap(),
+            HashSet::from([unread.to_string()])
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn falls_back_to_session_meta_visibility_when_sqlite_is_missing() {
         let root = temp_root("session-fallback");
         let sessions = root.join("sessions");
@@ -1010,6 +1115,40 @@ mod tests {
         .unwrap();
     }
 
+    fn write_unread_state_with_sidebar(
+        root: &Path,
+        ids: &[&str],
+        ordered: &[&str],
+        pinned: &[&str],
+        projectless: &[&str],
+        initialized: bool,
+    ) {
+        fs::write(
+            root.join(".codex-global-state.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "electron-persisted-atom-state": {
+                    "unread-thread-ids-by-host-v1": {
+                        "localhost": ids
+                    },
+                    "flat-project-sidebar-preferences-v1": {
+                        "initialized": initialized,
+                        "mode": "project"
+                    }
+                },
+                "sidebar-project-thread-orders": {
+                    "local-project": {
+                        "sortKey": "updated_at",
+                        "threadIds": ordered
+                    }
+                },
+                "pinned-thread-ids": pinned,
+                "projectless-thread-ids": projectless
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     fn create_state_database(
         root: &Path,
         visible: &str,
@@ -1035,6 +1174,33 @@ mod tests {
         insert_thread(&connection, archived, 1, "user", "desktop", "archived");
         insert_thread(&connection, subagent, 0, "subagent", "desktop", "subagent");
         insert_thread(&connection, empty_preview, 0, "user", "desktop", "");
+    }
+
+    fn create_all_visible_state_database(root: &Path, thread_ids: &[&str]) {
+        let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    archived INTEGER,
+                    thread_source TEXT,
+                    source TEXT,
+                    preview TEXT
+                );
+                "#,
+            )
+            .unwrap();
+        for thread_id in thread_ids {
+            insert_thread(
+                &connection,
+                thread_id,
+                0,
+                "user",
+                "desktop",
+                "visible",
+            );
+        }
     }
 
     fn insert_thread(
