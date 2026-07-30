@@ -1,3 +1,4 @@
+use crate::core::coordination_fs::{CoordinationDirectory, CoordinationHome};
 use crate::core::cross_process_lock::CrossProcessFileLock;
 use crate::core::quota::codex_binary::find_codex_binary_with_report;
 use crate::core::process_tail::ProcessPipeTail;
@@ -5,6 +6,7 @@ use crate::models::{AutoResumeThreadOption, ConversationVisibilityRebuildResult}
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -172,11 +174,21 @@ fn ledger_version() -> u32 {
 }
 
 pub struct AutoResumeClaim {
-    codex_home: PathBuf,
+    requested_codex_home: PathBuf,
+    coordination_home: CoordinationHome,
+    ledger_directory: CoordinationDirectory,
     trigger_key: String,
     thread_id: String,
     owner_id: String,
-    _thread_lease: ThreadLease,
+    thread_lease: ThreadLease,
+}
+
+pub struct AutoResumeRunAuthorization {
+    requested_codex_home: PathBuf,
+    coordination_home: CoordinationHome,
+    ledger_directory: CoordinationDirectory,
+    thread_id: String,
+    thread_lease: ThreadLeaseAuthorization,
 }
 
 impl AutoResumeClaim {
@@ -186,13 +198,43 @@ impl AutoResumeClaim {
 
     pub fn complete(&self, outcome: &AutoResumeRunOutcome) -> Result<(), String> {
         update_ledger_claim(
-            &self.codex_home,
+            &self.ledger_directory,
             &self.trigger_key,
             &self.thread_id,
             &self.owner_id,
             &outcome.status,
             &outcome.message,
         )
+    }
+
+    pub fn run_authorization(&self) -> Result<AutoResumeRunAuthorization, String> {
+        let authorization = AutoResumeRunAuthorization {
+            requested_codex_home: self.requested_codex_home.clone(),
+            coordination_home: self.coordination_home.try_clone()?,
+            ledger_directory: self.ledger_directory.try_clone()?,
+            thread_id: self.thread_id.clone(),
+            thread_lease: self.thread_lease.authorization()?,
+        };
+        authorization.validate()?;
+        Ok(authorization)
+    }
+}
+
+impl AutoResumeRunAuthorization {
+    fn validate(&self) -> Result<(), String> {
+        self.coordination_home
+            .validate_requested_path(&self.requested_codex_home)?;
+        self.coordination_home.validate()?;
+        self.ledger_directory.verify_current()?;
+        let current_ledger = self.coordination_home.auto_resume_directory()?;
+        if !current_ledger.same_physical_directory(&self.ledger_directory) {
+            return Err("自动续跑 claim 的 ledger 已脱离固定物理协调根".into());
+        }
+        self.thread_lease.validate(&self.thread_id)
+    }
+
+    fn thread_id(&self) -> &str {
+        &self.thread_id
     }
 }
 
@@ -235,9 +277,10 @@ pub fn claim_trigger_with_repeat_after(
     automatic_limit: Option<AutoResumeAutomaticClaimLimit>,
     repeat_after_unix: Option<f64>,
 ) -> Result<AutoResumeClaimResult, String> {
-    let directory = support_directory(codex_home)?;
+    let coordination_home = CoordinationHome::open(codex_home)?;
+    let directory = coordination_home.auto_resume_directory()?;
     let owner_id = unique_id();
-    let thread_lease = match ThreadLease::acquire(&directory, thread_id, &owner_id)? {
+    let thread_lease = match ThreadLease::acquire(&coordination_home, thread_id, &owner_id)? {
         Some(lease) => lease,
         None => return Ok(AutoResumeClaimResult::Busy),
     };
@@ -246,8 +289,7 @@ pub fn claim_trigger_with_repeat_after(
     else {
         return Ok(AutoResumeClaimResult::Busy);
     };
-    let ledger_path = directory.join("trigger-ledger.json");
-    let mut ledger = read_ledger(&ledger_path)?;
+    let mut ledger = read_ledger(&directory)?;
     trim_ledger(&mut ledger);
     let repeatable_prefix = format!("{trigger_key}:episode:");
     let latest_repeatable_episode = ledger
@@ -323,13 +365,15 @@ pub fn claim_trigger_with_repeat_after(
         },
     );
     trim_ledger(&mut ledger);
-    write_ledger(&ledger_path, &ledger)?;
+    write_ledger(&directory, &ledger)?;
     Ok(AutoResumeClaimResult::Claimed(AutoResumeClaim {
-        codex_home: codex_home.to_path_buf(),
+        requested_codex_home: codex_home.to_path_buf(),
+        coordination_home,
+        ledger_directory: directory,
         trigger_key: resolved_trigger_key,
         thread_id: thread_id.into(),
         owner_id,
-        _thread_lease: thread_lease,
+        thread_lease,
     }))
 }
 
@@ -513,10 +557,22 @@ fn request_visibility_page(
     *next_request_id = next_request_id
         .checked_add(1)
         .ok_or_else(|| "Codex app-server 请求编号溢出".to_string())?;
+    let params = visibility_thread_list_params(archived, cursor);
+    session.send(json!({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "thread/list",
+        "params": params
+    }))?;
+    let response = session.wait_for_response(request_id, APP_SERVER_STARTUP_TIMEOUT, None)?;
+    response_result(&response).cloned()
+}
+
+fn visibility_thread_list_params(archived: bool, cursor: Option<&str>) -> Value {
     let mut params = json!({
         "limit": 100,
         "archived": archived,
-        "useStateDbOnly": false,
+        "useStateDbOnly": true,
         "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "unknown"],
         "sortKey": "updated_at",
         "sortDirection": "desc"
@@ -524,20 +580,11 @@ fn request_visibility_page(
     if let Some(cursor) = cursor {
         params["cursor"] = Value::String(cursor.to_string());
     }
-    session.send(json!({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "method": "thread/list",
-        "params": params
-    }))?;
-    let response =
-        session.wait_for_response(request_id, APP_SERVER_STARTUP_TIMEOUT, None)?;
-    response_result(&response).cloned()
+    params
 }
 
 pub fn run_turn(
-    codex_home: &Path,
-    thread_id: &str,
+    authorization: &AutoResumeRunAuthorization,
     prompt: &str,
     invisible_resume_enabled: bool,
     client_message_id: &str,
@@ -545,6 +592,8 @@ pub fn run_turn(
     start_generation_guard: Option<AutoResumeStartGenerationGuard>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<AutoResumeRunOutcome, String> {
+    authorization.validate()?;
+    let thread_id = authorization.thread_id();
     let configured_prompt = prompt.trim();
     let visible_prompt = if invisible_resume_enabled {
         DEFAULT_AUTO_RESUME_PROMPT
@@ -554,8 +603,9 @@ pub fn run_turn(
     if visible_prompt.is_empty() {
         return Err("续跑提示词为空".into());
     }
-    let mut session = AppServerSession::launch(codex_home)?;
+    let mut session = AppServerSession::launch_authorized(authorization)?;
     session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
+    authorization.validate()?;
     session.send(json!({
         "jsonrpc": "2.0",
         "id": 2,
@@ -581,6 +631,7 @@ pub fn run_turn(
         ));
     }
 
+    authorization.validate()?;
     let prefers_invisible_continuation = invisible_resume_enabled;
     let start_request = turn_start_request(
         PRIMARY_TURN_START_REQUEST_ID,
@@ -610,6 +661,20 @@ pub fn run_turn(
     let mut start_request_id = PRIMARY_TURN_START_REQUEST_ID;
     let mut visible_fallback_started = false;
     loop {
+        if let Err(error) = authorization.validate() {
+            if let Some(active_turn_id) = turn_id.as_deref() {
+                let _ = session.send(json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "turn/interrupt",
+                    "params": { "threadId": thread_id, "turnId": active_turn_id }
+                }));
+            }
+            return Ok(AutoResumeRunOutcome::failed(
+                format!("自动续跑授权在执行期间失效：{error}"),
+                turn_id,
+            ));
+        }
         let now = Instant::now();
         if !timed_out && now >= deadline {
             timed_out = true;
@@ -1364,14 +1429,33 @@ struct AppServerSession {
 
 impl AppServerSession {
     fn launch(codex_home: &Path) -> Result<Self, String> {
+        let mut command = Self::command()?;
+        command.env("CODEX_HOME", codex_home);
+        Self::spawn(command)
+    }
+
+    fn launch_authorized(authorization: &AutoResumeRunAuthorization) -> Result<Self, String> {
+        authorization.validate()?;
+        let mut command = Self::command()?;
+        authorization
+            .coordination_home
+            .configure_pinned_codex_home(&mut command)?;
+        authorization.validate()?;
+        Self::spawn(command)
+    }
+
+    fn command() -> Result<Command, String> {
         let codex = find_codex_binary_with_report()?.path;
         let mut command = Command::new(codex);
         for key in CHILD_ENV_REMOVE {
             command.env_remove(key);
         }
-        command.env("CODEX_HOME", codex_home);
         command.args(["app-server", "--listen", "stdio://"]);
         configure_hidden_child(&mut command);
+        Ok(command)
+    }
+
+    fn spawn(mut command: Command) -> Result<Self, String> {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1525,20 +1609,63 @@ impl Drop for AppServerSession {
 }
 
 struct ThreadLease {
-    directory: PathBuf,
+    coordination_home: CoordinationHome,
+    leases_directory: CoordinationDirectory,
+    lease_name: String,
+    directory: CoordinationDirectory,
+    thread_id: String,
     owner_id: String,
+    heartbeat_failure: Arc<RwLock<Option<String>>>,
     heartbeat_stop: Option<mpsc::Sender<()>>,
     heartbeat: Option<thread::JoinHandle<()>>,
 }
 
+struct ThreadLeaseAuthorization {
+    coordination_home: CoordinationHome,
+    leases_directory: CoordinationDirectory,
+    lease_name: String,
+    directory: CoordinationDirectory,
+    owner_id: String,
+    heartbeat_failure: Arc<RwLock<Option<String>>>,
+}
+
+pub(crate) struct SessionMutationThreadLeases {
+    _leases: Vec<ThreadLease>,
+}
+
+pub(crate) fn acquire_session_mutation_thread_leases(
+    coordination_home: &CoordinationHome,
+    thread_ids: &[String],
+) -> Result<SessionMutationThreadLeases, String> {
+    let owner_id = format!("session-mutation-{}", unique_id());
+    let mut ids: Vec<&str> = thread_ids.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut leases = Vec::with_capacity(ids.len());
+    for thread_id in ids {
+        match ThreadLease::acquire(coordination_home, thread_id, &owner_id)? {
+            Some(lease) => leases.push(lease),
+            None => {
+                return Err(format!(
+                    "会话 {thread_id} 正由自动续跑或另一个会话写操作占用，已拒绝危险操作"
+                ))
+            }
+        }
+    }
+    Ok(SessionMutationThreadLeases { _leases: leases })
+}
+
 impl ThreadLease {
-    fn acquire(root: &Path, thread_id: &str, owner_id: &str) -> Result<Option<Self>, String> {
-        let leases = root.join("leases");
-        fs::create_dir_all(&leases).map_err(|error| error.to_string())?;
-        let directory = leases.join(format!("thread-{}", stable_thread_key(thread_id)));
+    fn acquire(
+        coordination_home: &CoordinationHome,
+        thread_id: &str,
+        owner_id: &str,
+    ) -> Result<Option<Self>, String> {
+        let leases = coordination_home.thread_leases_directory()?;
+        let lease_name = format!("thread-{}", stable_thread_key(thread_id));
         for _ in 0..3 {
-            match fs::create_dir(&directory) {
-                Ok(()) => {
+            match leases.create_child_directory(&lease_name)? {
+                Some(directory) => {
                     let now = unix_now_f64();
                     let record = AutoResumeThreadLeaseRecord {
                         schema_version: LEDGER_VERSION,
@@ -1549,56 +1676,208 @@ impl ThreadLease {
                     };
                     let bytes =
                         serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
-                    if let Err(error) = crate::core::atomic_file::write_atomically(
-                        &directory.join("lease.json"),
-                        &bytes,
-                    ) {
-                        let _ = fs::remove_dir_all(&directory);
-                        return Err(error.to_string());
-                    }
-                    if let Err(error) = renew_thread_lease(&directory, owner_id) {
-                        let _ = fs::remove_dir_all(&directory);
+                    if let Err(error) = directory.write_atomic("lease.json", &bytes) {
+                        retire_lease_directory(&leases, &lease_name, &directory, ".failed");
                         return Err(error);
                     }
+                    if let Err(error) =
+                        renew_thread_lease(coordination_home, &directory, owner_id)
+                    {
+                        retire_lease_directory(&leases, &lease_name, &directory, ".failed");
+                        return Err(error);
+                    }
+                    let held_home = match coordination_home.try_clone() {
+                        Ok(home) => home,
+                        Err(error) => {
+                            retire_lease_directory(
+                                &leases,
+                                &lease_name,
+                                &directory,
+                                ".failed",
+                            );
+                            return Err(error);
+                        }
+                    };
+                    let heartbeat_home = match coordination_home.try_clone() {
+                        Ok(home) => home,
+                        Err(error) => {
+                            retire_lease_directory(
+                                &leases,
+                                &lease_name,
+                                &directory,
+                                ".failed",
+                            );
+                            return Err(error);
+                        }
+                    };
+                    let heartbeat_directory = match directory.try_clone() {
+                        Ok(directory) => directory,
+                        Err(error) => {
+                            retire_lease_directory(
+                                &leases,
+                                &lease_name,
+                                &directory,
+                                ".failed",
+                            );
+                            return Err(error);
+                        }
+                    };
                     let (heartbeat_stop, heartbeat_stopped) = mpsc::channel();
-                    let heartbeat_directory = directory.clone();
                     let heartbeat_owner = owner_id.to_string();
-                    let heartbeat = thread::spawn(move || loop {
-                        match heartbeat_stopped.recv_timeout(THREAD_LEASE_HEARTBEAT_INTERVAL) {
-                            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                            Err(mpsc::RecvTimeoutError::Timeout) => {
-                                match renew_thread_lease(
-                                    &heartbeat_directory,
-                                    &heartbeat_owner,
-                                ) {
-                                    Ok(true) | Err(_) => {}
-                                    Ok(false) => break,
+                    let heartbeat_failure = Arc::new(RwLock::new(None));
+                    let heartbeat_failure_reporter = heartbeat_failure.clone();
+                    let heartbeat = match thread::Builder::new()
+                        .name("codex-token-bar-thread-lease".into())
+                        .spawn(move || loop {
+                            match heartbeat_stopped.recv_timeout(THREAD_LEASE_HEARTBEAT_INTERVAL) {
+                                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    match renew_thread_lease(
+                                        &heartbeat_home,
+                                        &heartbeat_directory,
+                                        &heartbeat_owner,
+                                    ) {
+                                        Ok(true) => {}
+                                        Ok(false) => {
+                                            record_thread_lease_failure(
+                                                &heartbeat_failure_reporter,
+                                                "自动续跑线程租约所有权已丢失".into(),
+                                            );
+                                            break;
+                                        }
+                                        Err(error) => {
+                                            record_thread_lease_failure(
+                                                &heartbeat_failure_reporter,
+                                                format!("自动续跑线程租约心跳失败：{error}"),
+                                            );
+                                            break;
+                                        }
+                                    }
                                 }
                             }
+                        }) {
+                        Ok(heartbeat) => heartbeat,
+                        Err(error) => {
+                            retire_lease_directory(
+                                &leases,
+                                &lease_name,
+                                &directory,
+                                ".failed",
+                            );
+                            return Err(format!(
+                                "启动自动续跑租约心跳线程失败：{error}"
+                            ));
                         }
-                    });
+                    };
                     return Ok(Some(Self {
+                        coordination_home: held_home,
+                        leases_directory: leases,
+                        lease_name,
                         directory,
+                        thread_id: thread_id.into(),
                         owner_id: owner_id.into(),
+                        heartbeat_failure,
                         heartbeat_stop: Some(heartbeat_stop),
                         heartbeat: Some(heartbeat),
                     }));
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if thread_lease_expired(&directory) {
-                        let tombstone = leases.join(format!(".expired-{}", unique_id()));
-                        if fs::rename(&directory, &tombstone).is_ok() {
-                            let _ = fs::remove_dir_all(tombstone);
+                None => {
+                    let Some(existing) = leases.open_child_directory(&lease_name)? else {
+                        continue;
+                    };
+                    if thread_lease_expired(&existing) {
+                        let tombstone = format!(".expired-{}", unique_id());
+                        if leases
+                            .rename_child_directory(&lease_name, &tombstone, &existing)
+                            .is_ok()
+                        {
+                            cleanup_retired_lease(&leases, &tombstone);
                             continue;
                         }
                     }
                     return Ok(None);
                 }
-                Err(error) => return Err(error.to_string()),
             }
         }
         Ok(None)
     }
+
+    fn authorization(&self) -> Result<ThreadLeaseAuthorization, String> {
+        let authorization = ThreadLeaseAuthorization {
+            coordination_home: self.coordination_home.try_clone()?,
+            leases_directory: self.leases_directory.try_clone()?,
+            lease_name: self.lease_name.clone(),
+            directory: self.directory.try_clone()?,
+            owner_id: self.owner_id.clone(),
+            heartbeat_failure: self.heartbeat_failure.clone(),
+        };
+        authorization.validate(&self.thread_id)?;
+        Ok(authorization)
+    }
+}
+
+impl ThreadLeaseAuthorization {
+    fn validate(&self, expected_thread_id: &str) -> Result<(), String> {
+        fail_if_thread_lease_heartbeat_failed(&self.heartbeat_failure)?;
+        self.coordination_home.validate()?;
+        self.leases_directory.verify_current()?;
+        self.directory.verify_current()?;
+        let current = self
+            .leases_directory
+            .open_child_directory(&self.lease_name)?
+            .ok_or_else(|| "自动续跑线程租约目录已消失".to_string())?;
+        if !current.same_physical_directory(&self.directory) {
+            return Err("自动续跑线程租约目录的物理身份已变化".into());
+        }
+        let record_bytes = current
+            .read_optional("lease.json")?
+            .ok_or_else(|| "自动续跑线程租约记录已消失".to_string())?;
+        let record: AutoResumeThreadLeaseRecord = serde_json::from_slice(&record_bytes)
+            .map_err(|error| format!("自动续跑线程租约记录损坏：{error}"))?;
+        if record.schema_version != LEDGER_VERSION
+            || record.thread_id != expected_thread_id
+            || record.owner_id != self.owner_id
+        {
+            return Err("自动续跑线程租约记录不再授权当前 claim".into());
+        }
+        let heartbeat_name = thread_lease_heartbeat_name(&self.owner_id);
+        let heartbeat_bytes = current
+            .read_optional(&heartbeat_name)?
+            .ok_or_else(|| "自动续跑线程租约心跳已消失".to_string())?;
+        let heartbeat: AutoResumeThreadLeaseRecord = serde_json::from_slice(&heartbeat_bytes)
+            .map_err(|error| format!("自动续跑线程租约心跳损坏：{error}"))?;
+        if heartbeat.schema_version != LEDGER_VERSION
+            || heartbeat.thread_id != record.thread_id
+            || heartbeat.owner_id != record.owner_id
+            || heartbeat.acquired_at_unix != record.acquired_at_unix
+        {
+            return Err("自动续跑线程租约心跳不再授权当前 claim".into());
+        }
+        if heartbeat.expires_at_unix.max(record.expires_at_unix) <= unix_now_f64() {
+            return Err("自动续跑线程租约及心跳均已过期".into());
+        }
+        fail_if_thread_lease_heartbeat_failed(&self.heartbeat_failure)
+    }
+}
+
+fn record_thread_lease_failure(state: &Arc<RwLock<Option<String>>>, message: String) {
+    if let Ok(mut failure) = state.write() {
+        if failure.is_none() {
+            *failure = Some(message);
+        }
+    }
+}
+
+fn fail_if_thread_lease_heartbeat_failed(
+    state: &Arc<RwLock<Option<String>>>,
+) -> Result<(), String> {
+    let failure = state
+        .read()
+        .map_err(|_| "自动续跑线程租约心跳状态锁已损坏".to_string())?;
+    if let Some(message) = failure.as_ref() {
+        return Err(message.clone());
+    }
+    Ok(())
 }
 
 impl Drop for ThreadLease {
@@ -1609,8 +1888,20 @@ impl Drop for ThreadLease {
         if let Some(heartbeat) = self.heartbeat.take() {
             let _ = heartbeat.join();
         }
-        let record = fs::read(self.directory.join("lease.json"))
+        if self.coordination_home.validate().is_err() {
+            return;
+        }
+        let current = match self
+            .leases_directory
+            .open_child_directory(&self.lease_name)
+        {
+            Ok(Some(current)) if current.same_physical_directory(&self.directory) => current,
+            _ => return,
+        };
+        let record = current
+            .read_optional("lease.json")
             .ok()
+            .flatten()
             .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok());
         if record
             .as_ref()
@@ -1618,20 +1909,26 @@ impl Drop for ThreadLease {
         {
             return;
         }
-        let tombstone = self
-            .directory
-            .with_file_name(format!(".released-{}", unique_id()));
-        if fs::rename(&self.directory, &tombstone).is_ok() {
-            let _ = fs::remove_dir_all(tombstone);
+        let tombstone = format!(".released-{}", unique_id());
+        if self
+            .leases_directory
+            .rename_child_directory(&self.lease_name, &tombstone, &current)
+            .is_ok()
+        {
+            cleanup_retired_lease(&self.leases_directory, &tombstone);
         }
     }
 }
 
-fn renew_thread_lease(directory: &Path, owner_id: &str) -> Result<bool, String> {
-    let bytes = match fs::read(directory.join("lease.json")) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.to_string()),
+fn renew_thread_lease(
+    coordination_home: &CoordinationHome,
+    directory: &CoordinationDirectory,
+    owner_id: &str,
+) -> Result<bool, String> {
+    coordination_home.validate()?;
+    let bytes = match directory.read_optional("lease.json")? {
+        Some(bytes) => bytes,
+        None => return Ok(false),
     };
     let mut record = serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes)
         .map_err(|error| error.to_string())?;
@@ -1640,23 +1937,26 @@ fn renew_thread_lease(directory: &Path, owner_id: &str) -> Result<bool, String> 
     }
     record.expires_at_unix = unix_now_f64() + THREAD_LEASE_DURATION.as_secs_f64();
     let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
-    crate::core::atomic_file::write_atomically(
-        &thread_lease_heartbeat_path(directory, owner_id),
-        &bytes,
-    )
-        .map_err(|error| error.to_string())?;
+    directory.write_atomic(&thread_lease_heartbeat_name(owner_id), &bytes)?;
+    coordination_home.validate()?;
     Ok(true)
 }
 
-fn thread_lease_expired(directory: &Path) -> bool {
-    let record = fs::read(directory.join("lease.json"))
+fn thread_lease_expired(directory: &CoordinationDirectory) -> bool {
+    let record = directory
+        .read_optional("lease.json")
         .ok()
+        .flatten()
         .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok());
     let Some(record) = record else {
-        return directory_is_stale(directory, Duration::from_secs(60));
+        return directory
+            .modified_age()
+            .is_some_and(|age| age >= Duration::from_secs(60));
     };
-    let heartbeat = fs::read(thread_lease_heartbeat_path(directory, &record.owner_id))
+    let heartbeat = directory
+        .read_optional(&thread_lease_heartbeat_name(&record.owner_id))
         .ok()
+        .flatten()
         .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok())
         .filter(|heartbeat| {
             heartbeat.owner_id == record.owner_id
@@ -1670,37 +1970,59 @@ fn thread_lease_expired(directory: &Path) -> bool {
         <= unix_now_f64()
 }
 
-fn thread_lease_heartbeat_path(directory: &Path, owner_id: &str) -> PathBuf {
-    directory.join(format!("heartbeat-{}.json", stable_thread_key(owner_id)))
+fn thread_lease_heartbeat_name(owner_id: &str) -> String {
+    format!("heartbeat-{}.json", stable_thread_key(owner_id))
 }
 
-fn directory_is_stale(path: &Path, threshold: Duration) -> bool {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
+fn retire_lease_directory(
+    leases: &CoordinationDirectory,
+    lease_name: &str,
+    directory: &CoordinationDirectory,
+    reason: &str,
+) {
+    let tombstone = format!("{reason}-{}", unique_id());
+    if leases
+        .rename_child_directory(lease_name, &tombstone, directory)
+        .is_ok()
+    {
+        cleanup_retired_lease(leases, &tombstone);
+    }
+}
+
+fn cleanup_retired_lease(leases: &CoordinationDirectory, tombstone: &str) {
+    let Ok(Some(retired)) = leases.open_child_directory(tombstone) else {
+        return;
+    };
+    let record = retired
+        .read_optional("lease.json")
         .ok()
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age >= threshold)
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<AutoResumeThreadLeaseRecord>(&bytes).ok());
+    if let Some(record) = record {
+        let _ = retired.remove_file_if_exists(&thread_lease_heartbeat_name(&record.owner_id));
+    }
+    let _ = retired.remove_file_if_exists("lease.json");
+    let _ = leases.remove_empty_child_if_exists(tombstone);
 }
 
-fn support_directory(codex_home: &Path) -> Result<PathBuf, String> {
-    let directory = codex_home.join(".codex-token-bar-auto-resume").join("v1");
-    fs::create_dir_all(&directory)
-        .map_err(|error| format!("无法创建自动续跑状态目录 {}：{error}", directory.display()))?;
-    Ok(directory)
+#[cfg(test)]
+fn support_directory(codex_home: &Path) -> Result<CoordinationDirectory, String> {
+    CoordinationHome::open(codex_home)?.auto_resume_directory()
 }
 
 fn acquire_ledger_lock(
-    directory: &Path,
+    directory: &CoordinationDirectory,
     wait: Duration,
 ) -> Result<Option<CrossProcessFileLock>, String> {
-    let path = directory.join("trigger-ledger.flock");
     let deadline = Instant::now()
         .checked_add(wait)
         .unwrap_or_else(Instant::now);
     loop {
-        if let Some(lock) =
-            CrossProcessFileLock::try_acquire(&path, "自动续跑触发记录")?
-        {
+        if let Some(lock) = CrossProcessFileLock::try_acquire_in(
+            directory,
+            "trigger-ledger.flock",
+            "自动续跑触发记录",
+        )? {
             return Ok(Some(lock));
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1711,9 +2033,9 @@ fn acquire_ledger_lock(
     }
 }
 
-fn read_ledger(path: &Path) -> Result<AutoResumeLedger, String> {
-    match fs::read(path) {
-        Ok(bytes) => {
+fn read_ledger(directory: &CoordinationDirectory) -> Result<AutoResumeLedger, String> {
+    match directory.read_optional("trigger-ledger.json")? {
+        Some(bytes) => {
             let ledger: AutoResumeLedger = serde_json::from_slice(&bytes)
                 .map_err(|error| format!("自动续跑 ledger 损坏：{error}"))?;
             if ledger.schema_version != LEDGER_VERSION {
@@ -1721,33 +2043,31 @@ fn read_ledger(path: &Path) -> Result<AutoResumeLedger, String> {
             }
             Ok(ledger)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(AutoResumeLedger::default())
-        }
-        Err(error) => Err(error.to_string()),
+        None => Ok(AutoResumeLedger::default()),
     }
 }
 
-fn write_ledger(path: &Path, ledger: &AutoResumeLedger) -> Result<(), String> {
+fn write_ledger(
+    directory: &CoordinationDirectory,
+    ledger: &AutoResumeLedger,
+) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(ledger).map_err(|error| error.to_string())?;
-    crate::core::atomic_file::write_atomically(path, &bytes).map_err(|error| error.to_string())
+    directory.write_atomic("trigger-ledger.json", &bytes)
 }
 
 fn update_ledger_claim(
-    codex_home: &Path,
+    directory: &CoordinationDirectory,
     trigger_key: &str,
     thread_id: &str,
     owner_id: &str,
     status: &str,
     message: &str,
 ) -> Result<(), String> {
-    let directory = support_directory(codex_home)?;
     let Some(_lease) = acquire_ledger_lock(&directory, LEDGER_LOCK_WAIT)?
     else {
         return Err("自动续跑 ledger 正由另一个进程更新".into());
     };
-    let path = directory.join("trigger-ledger.json");
-    let mut ledger = read_ledger(&path)?;
+    let mut ledger = read_ledger(&directory)?;
     if let Some(claim) = ledger.entries.get_mut(trigger_key) {
         if claim.thread_id == thread_id && claim.owner_id == owner_id {
             claim.outcome = status.into();
@@ -1756,7 +2076,7 @@ fn update_ledger_claim(
         }
     }
     trim_ledger(&mut ledger);
-    write_ledger(&path, &ledger)
+    write_ledger(&directory, &ledger)
 }
 
 fn trim_ledger(ledger: &mut AutoResumeLedger) {
@@ -1917,6 +2237,19 @@ mod tests {
     }
 
     #[test]
+    fn visibility_rebuild_lists_threads_from_state_db_only() {
+        let first_page = visibility_thread_list_params(false, None);
+        assert_eq!(first_page.get("useStateDbOnly"), Some(&json!(true)));
+        assert_eq!(first_page.get("archived"), Some(&json!(false)));
+        assert!(first_page.get("cursor").is_none());
+
+        let archived_page = visibility_thread_list_params(true, Some("next-page"));
+        assert_eq!(archived_page.get("useStateDbOnly"), Some(&json!(true)));
+        assert_eq!(archived_page.get("archived"), Some(&json!(true)));
+        assert_eq!(archived_page.get("cursor"), Some(&json!("next-page")));
+    }
+
+    #[test]
     fn visibility_rebuild_rejects_cursor_cycles() {
         let mut requested = 0;
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -2067,6 +2400,167 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claim_completion_stays_on_pinned_ledger_after_home_alias_switch() {
+        use std::os::unix::fs::symlink;
+
+        let container =
+            std::env::temp_dir().join(format!("ctb-auto-resume-pinned-complete-{}", unique_id()));
+        let home_a = container.join("home-a");
+        let home_b = container.join("home-b");
+        let alias = container.join("current-home");
+        fs::create_dir_all(&home_a).unwrap();
+        fs::create_dir_all(&home_b).unwrap();
+        symlink(&home_a, &alias).unwrap();
+        let trigger_key = "manual:pinned-complete";
+        let AutoResumeClaimResult::Claimed(claim) =
+            claim_trigger(&alias, "thread-pinned", trigger_key, Duration::ZERO, None).unwrap()
+        else {
+            panic!("first physical Home should own the claim")
+        };
+
+        let replacement = container.join("replacement-home-link");
+        symlink(&home_b, &replacement).unwrap();
+        fs::rename(&replacement, &alias).unwrap();
+        claim
+            .complete(&AutoResumeRunOutcome::completed(Some("turn-a".into())))
+            .unwrap();
+
+        let ledger = read_ledger(&claim.ledger_directory).unwrap();
+        assert_eq!(ledger.entries[trigger_key].outcome, "succeeded");
+        assert!(ledger.entries[trigger_key].completed_at_unix.is_some());
+        assert!(
+            !home_b
+                .join(".codex-token-bar-auto-resume/v1/trigger-ledger.json")
+                .exists(),
+            "completion must not reopen the switched alias and write Home B"
+        );
+        drop(claim);
+        let _ = fs::remove_file(alias);
+        let _ = fs::remove_dir_all(container);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn run_authorization_rejects_home_alias_switch_before_any_app_server_launch() {
+        use std::os::unix::fs::symlink;
+
+        let container =
+            std::env::temp_dir().join(format!("ctb-auto-resume-home-drift-{}", unique_id()));
+        let home_a = container.join("home-a");
+        let home_b = container.join("home-b");
+        let alias = container.join("current-home");
+        fs::create_dir_all(&home_a).unwrap();
+        fs::create_dir_all(&home_b).unwrap();
+        symlink(&home_a, &alias).unwrap();
+        let AutoResumeClaimResult::Claimed(claim_a) = claim_trigger(
+            &alias,
+            "thread-shared",
+            "manual:home-drift",
+            Duration::ZERO,
+            None,
+        )
+        .unwrap()
+        else {
+            panic!("Home A should own the first claim")
+        };
+
+        let replacement = container.join("replacement-home-link");
+        symlink(&home_b, &replacement).unwrap();
+        fs::rename(&replacement, &alias).unwrap();
+        let error = claim_a
+            .run_authorization()
+            .err()
+            .expect("Home A claim must not authorize execution through Home B alias");
+        assert!(error.contains("不同物理目录"), "{error}");
+
+        let claim_b = claim_trigger(
+            &alias,
+            "thread-shared",
+            "manual:home-drift",
+            Duration::ZERO,
+            None,
+        )
+        .unwrap();
+        assert!(
+            matches!(claim_b, AutoResumeClaimResult::Claimed(_)),
+            "Home B may establish its own claim, but the stale Home A claim cannot execute"
+        );
+        drop(claim_b);
+        drop(claim_a);
+        let _ = fs::remove_file(alias);
+        let _ = fs::remove_dir_all(container);
+    }
+
+    #[test]
+    fn heartbeat_corruption_and_reported_failure_are_fatal_to_run_authorization() {
+        let root =
+            std::env::temp_dir().join(format!("ctb-auto-resume-fatal-heartbeat-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let AutoResumeClaimResult::Claimed(claim) = claim_trigger(
+            &root,
+            "thread-heartbeat-fatal",
+            "manual:heartbeat-fatal",
+            Duration::ZERO,
+            None,
+        )
+        .unwrap()
+        else {
+            panic!("claim should succeed")
+        };
+        let heartbeat_name = thread_lease_heartbeat_name(&claim.owner_id);
+        claim
+            .thread_lease
+            .directory
+            .write_atomic(&heartbeat_name, b"{broken-heartbeat")
+            .unwrap();
+        let error = claim
+            .run_authorization()
+            .err()
+            .expect("corrupt heartbeat must revoke execution authorization");
+        assert!(error.contains("心跳损坏"), "{error}");
+
+        record_thread_lease_failure(
+            &claim.thread_lease.heartbeat_failure,
+            "injected heartbeat writer failure".into(),
+        );
+        let error = claim
+            .run_authorization()
+            .err()
+            .expect("heartbeat writer failure must remain fatal");
+        assert!(error.contains("injected heartbeat writer failure"), "{error}");
+        drop(claim);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_turn_validates_claim_authorization_before_launching_app_server() {
+        let source = include_str!("auto_resume.rs");
+        let run_turn = source
+            .split("pub fn run_turn(")
+            .nth(1)
+            .expect("run_turn source");
+        let validation = run_turn
+            .find("authorization.validate()")
+            .expect("authorization validation");
+        let launch = run_turn
+            .find("AppServerSession::launch_authorized")
+            .expect("authorized app-server launch");
+        assert!(validation < launch);
+        let launch_authorized = source
+            .split("fn launch_authorized(")
+            .nth(1)
+            .expect("launch_authorized source");
+        let validation = launch_authorized
+            .find("authorization.validate()")
+            .expect("authorization validation in launch");
+        let spawn = launch_authorized
+            .find("Self::spawn(command)")
+            .expect("app-server spawn");
+        assert!(validation < spawn);
+    }
+
     #[test]
     fn missing_reset_claims_share_one_episode_and_future_episode_gets_new_key() {
         let root = std::env::temp_dir().join(format!("ctb-auto-resume-repeat-{}", unique_id()));
@@ -2091,8 +2585,8 @@ mod tests {
             .unwrap();
         drop(first);
 
-        let ledger_path = support_directory(&root).unwrap().join("trigger-ledger.json");
-        let ledger = read_ledger(&ledger_path).unwrap();
+        let ledger_directory = support_directory(&root).unwrap();
+        let ledger = read_ledger(&ledger_directory).unwrap();
         let first_boundary = ledger.entries[&first_key].completed_at_unix.unwrap();
         assert!(matches!(
             claim_trigger_with_repeat_after(
@@ -2124,7 +2618,7 @@ mod tests {
         assert_ne!(second_key, first_key);
         drop(second);
 
-        let ledger = read_ledger(&ledger_path).unwrap();
+        let ledger = read_ledger(&ledger_directory).unwrap();
         assert_eq!(ledger.entries.len(), 2);
         assert!(ledger.entries.contains_key(&first_key));
         assert!(ledger.entries.contains_key(&second_key));
@@ -2135,15 +2629,18 @@ mod tests {
     fn ledger_file_lock_excludes_concurrent_holder_and_releases() {
         let root = std::env::temp_dir().join(format!("ctb-ledger-lock-own-{}", unique_id()));
         fs::create_dir_all(&root).unwrap();
-        let lease = acquire_ledger_lock(&root, Duration::ZERO)
+        let directory = support_directory(&root).unwrap();
+        let lease = acquire_ledger_lock(&directory, Duration::ZERO)
             .unwrap()
             .expect("first acquire");
         assert!(
-            acquire_ledger_lock(&root, Duration::ZERO).unwrap().is_none(),
+            acquire_ledger_lock(&directory, Duration::ZERO)
+                .unwrap()
+                .is_none(),
             "持有中的内核锁必须挡住并发获取"
         );
         drop(lease);
-        assert!(acquire_ledger_lock(&root, Duration::ZERO)
+        assert!(acquire_ledger_lock(&directory, Duration::ZERO)
             .unwrap()
             .is_some());
         let _ = fs::remove_dir_all(root);
@@ -2177,9 +2674,7 @@ mod tests {
             panic!("second claim")
         };
         drop(second);
-        let ledger =
-            read_ledger(&support_directory(&root).unwrap().join("trigger-ledger.json"))
-                .unwrap();
+        let ledger = read_ledger(&support_directory(&root).unwrap()).unwrap();
         assert_eq!(ledger.entries.len(), 2);
         let _ = fs::remove_dir_all(root);
     }
@@ -2220,46 +2715,118 @@ mod tests {
     }
 
     #[test]
+    fn session_mutation_lease_conflicts_with_active_auto_resume_thread_lease() {
+        let root =
+            std::env::temp_dir().join(format!("ctb-auto-resume-session-mutation-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let coordination_home = CoordinationHome::open(&root).unwrap();
+        let auto_resume =
+            ThreadLease::acquire(
+                &coordination_home,
+                "thread-session-mutation",
+                "auto-resume-owner",
+            )
+                .unwrap()
+                .expect("auto resume owns thread");
+
+        let error = acquire_session_mutation_thread_leases(
+            &coordination_home,
+            &["thread-session-mutation".to_string()],
+        )
+        .err()
+        .expect("session mutation must not overlap");
+        assert!(error.contains("自动续跑"));
+
+        drop(auto_resume);
+        acquire_session_mutation_thread_leases(
+            &coordination_home,
+            &["thread-session-mutation".to_string()],
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_mutation_partial_thread_lease_failure_rolls_back_prior_leases() {
+        let root =
+            std::env::temp_dir().join(format!("ctb-auto-resume-partial-rollback-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let coordination_home = CoordinationHome::open(&root).unwrap();
+        let blocker = ThreadLease::acquire(&coordination_home, "thread-b", "auto-resume-owner")
+            .unwrap()
+            .expect("block the second sorted lease");
+
+        let error = acquire_session_mutation_thread_leases(
+            &coordination_home,
+            &["thread-a".to_string(), "thread-b".to_string()],
+        )
+        .err()
+        .expect("second lease must fail");
+        assert!(error.contains("thread-b"));
+        let rolled_back = ThreadLease::acquire(
+            &coordination_home,
+            "thread-a",
+            "rollback-verification-owner",
+        )
+        .unwrap()
+        .expect("the first lease must have been released on partial failure");
+
+        drop(rolled_back);
+        drop(blocker);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn thread_lease_heartbeat_renews_only_the_current_owner() {
         let root = std::env::temp_dir().join(format!("ctb-auto-resume-heartbeat-{}", unique_id()));
-        let support = support_directory(&root).unwrap();
-        let lease = ThreadLease::acquire(&support, "thread-heartbeat", "owner-current")
+        fs::create_dir_all(&root).unwrap();
+        let coordination_home = CoordinationHome::open(&root).unwrap();
+        let lease = ThreadLease::acquire(&coordination_home, "thread-heartbeat", "owner-current")
             .unwrap()
             .expect("first owner should acquire the lease");
-        let directory = support
-            .join("leases")
-            .join(format!("thread-{}", stable_thread_key("thread-heartbeat")));
+        let leases = coordination_home.thread_leases_directory().unwrap();
+        let lease_name = format!("thread-{}", stable_thread_key("thread-heartbeat"));
+        let directory = leases
+            .open_child_directory(&lease_name)
+            .unwrap()
+            .unwrap();
         let read_record = || {
             serde_json::from_slice::<AutoResumeThreadLeaseRecord>(
-                &fs::read(thread_lease_heartbeat_path(
-                    &directory,
-                    "owner-current",
-                ))
-                .unwrap(),
+                &directory
+                    .read_optional(&thread_lease_heartbeat_name("owner-current"))
+                    .unwrap()
+                    .unwrap(),
             )
             .unwrap()
         };
         let before = read_record();
         thread::sleep(Duration::from_millis(5));
-        assert!(renew_thread_lease(&directory, "owner-current").unwrap());
+        assert!(
+            renew_thread_lease(&coordination_home, &directory, "owner-current").unwrap()
+        );
         let after = read_record();
         assert!(after.expires_at_unix > before.expires_at_unix);
-        let mut base: AutoResumeThreadLeaseRecord =
-            serde_json::from_slice(&fs::read(directory.join("lease.json")).unwrap()).unwrap();
-        base.expires_at_unix = unix_now_f64() - 1.0;
-        crate::core::atomic_file::write_atomically(
-            &directory.join("lease.json"),
-            &serde_json::to_vec_pretty(&base).unwrap(),
+        let mut base: AutoResumeThreadLeaseRecord = serde_json::from_slice(
+            &directory.read_optional("lease.json").unwrap().unwrap(),
         )
         .unwrap();
+        base.expires_at_unix = unix_now_f64() - 1.0;
+        directory
+            .write_atomic("lease.json", &serde_json::to_vec_pretty(&base).unwrap())
+            .unwrap();
         assert!(!thread_lease_expired(&directory));
-        assert!(!renew_thread_lease(&directory, "owner-stale").unwrap());
+        assert!(
+            !renew_thread_lease(&coordination_home, &directory, "owner-stale").unwrap()
+        );
         let unchanged = read_record();
         assert_eq!(unchanged.owner_id, after.owner_id);
         assert_eq!(unchanged.expires_at_unix, after.expires_at_unix);
 
         drop(lease);
-        assert!(!directory.exists());
+        assert!(leases
+            .open_child_directory(&lease_name)
+            .unwrap()
+            .is_none());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2317,7 +2884,7 @@ mod tests {
                 message: None,
             },
         );
-        write_ledger(&directory.join("trigger-ledger.json"), &ledger).unwrap();
+        write_ledger(&directory, &ledger).unwrap();
 
         assert!(matches!(
             claim_trigger(
@@ -2791,17 +3358,27 @@ mod tests {
         let home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(default_codex_home);
+        let trigger_key = format!("manual:freshness-test-{}", unique_id());
+        let AutoResumeClaimResult::Claimed(claim) =
+            claim_trigger(&home, &thread_id, &trigger_key, Duration::ZERO, None)
+                .expect("live claim should succeed")
+        else {
+            panic!("live thread should be claimable")
+        };
+        let authorization = claim
+            .run_authorization()
+            .expect("live claim authorization should remain valid");
         let outcome = run_turn(
-            &home,
-            &thread_id,
+            &authorization,
             "继续",
             true,
-            &format!("freshness-test-{}", unique_id()),
+            &trigger_key,
             Some(unix_now().saturating_sub(24 * 60 * 60)),
             None,
             Arc::new(AtomicBool::new(false)),
         )
         .expect("live app-server freshness check should complete");
+        claim.complete(&outcome).unwrap();
         assert_eq!(outcome.status, "skipped", "{}", outcome.message);
         assert!(outcome.turn_id.is_none());
     }
@@ -2815,17 +3392,27 @@ mod tests {
         let home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(default_codex_home);
+        let trigger_key = format!("manual:live-test-{}", unique_id());
+        let AutoResumeClaimResult::Claimed(claim) =
+            claim_trigger(&home, &thread_id, &trigger_key, Duration::ZERO, None)
+                .expect("live claim should succeed")
+        else {
+            panic!("live thread should be claimable")
+        };
+        let authorization = claim
+            .run_authorization()
+            .expect("live claim authorization should remain valid");
         let outcome = run_turn(
-            &home,
-            &thread_id,
+            &authorization,
             &prompt,
             prompt.trim() == DEFAULT_AUTO_RESUME_PROMPT,
-            &format!("live-test-{}", unique_id()),
+            &trigger_key,
             None,
             None,
             Arc::new(AtomicBool::new(false)),
         )
         .expect("live app-server resume should complete");
+        claim.complete(&outcome).unwrap();
         assert_eq!(outcome.status, "succeeded", "{}", outcome.message);
         assert!(outcome.turn_id.is_some());
     }

@@ -7783,3 +7783,1269 @@ html:not(.floating-document):not(.status-document) .brand-mark {
     --cache-hit-tone: rgb(87 194 255);
   }
 }
+
+/* Session management is a full working surface, not another settings panel. */
+.toolbar-button--session-management {
+  color: var(--accent-strong);
+}
+
+.session-management-overlay {
+  position: fixed;
+  z-index: 86;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: color-mix(in srgb, var(--page) 44%, transparent);
+}
+
+.session-management-workspace {
+  display: flex;
+  width: min(1440px, calc(100vw - 24px));
+  height: calc(100vh - 24px);
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel-solid);
+  color: var(--text);
+}
+
+.session-management-workspace--boot {
+  display: grid;
+  place-items: center;
+}
+
+.session-management-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 15px;
+}
+
+.session-management-head > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.session-management-head strong {
+  font-size: 17px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-head span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-head-actions {
+  display: flex;
+  gap: 7px;
+}
+
+.session-management-head-actions button,
+.session-management-banner button,
+.session-management-actions button,
+.session-management-load-more,
+.session-management-load-older,
+.session-management-context-error button,
+.session-management-confirm-actions button,
+.session-management-recovery-card button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--control);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: var(--weight-medium);
+  padding: 0 10px;
+}
+
+.session-management-head-actions button:hover:not(:disabled),
+.session-management-banner button:hover:not(:disabled),
+.session-management-actions button:hover:not(:disabled),
+.session-management-load-more:hover:not(:disabled),
+.session-management-load-older:hover:not(:disabled),
+.session-management-context-error button:hover:not(:disabled),
+.session-management-confirm-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+}
+
+.session-management-head-actions button:focus-visible,
+.session-management-sidebar button:focus-visible,
+.session-management-thread-row:focus-visible,
+.session-management-detail-tabs button:focus-visible,
+.session-management-actions button:focus-visible,
+.session-management-related-group button:focus-visible,
+.session-management-confirm button:focus-visible,
+.session-management-confirm input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 54%, transparent);
+  outline-offset: 1px;
+}
+
+.session-management-head-actions button:disabled,
+.session-management-actions button:disabled,
+.session-management-load-more:disabled,
+.session-management-load-older:disabled,
+.session-management-confirm button:disabled,
+.session-management-recovery-card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.44;
+}
+
+.session-management-banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex: 0 0 auto;
+  margin: 7px 10px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+
+.session-management-banner > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.session-management-banner > div span {
+  color: var(--muted);
+}
+
+details.session-management-banner {
+  display: block;
+}
+
+.session-management-banner summary {
+  cursor: pointer;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-banner ul {
+  margin: 8px 0 0 19px;
+  padding: 0;
+}
+
+.session-management-banner--error {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+  background: color-mix(in srgb, var(--red) 8%, var(--panel));
+}
+
+.session-management-banner--warning {
+  border-color: color-mix(in srgb, var(--orange) 34%, var(--line));
+  background: color-mix(in srgb, var(--orange) 7%, var(--panel));
+}
+
+.session-management-banner--success {
+  border-color: color-mix(in srgb, var(--green) 32%, var(--line));
+  background: color-mix(in srgb, var(--green) 7%, var(--panel));
+}
+
+.session-management-layout {
+  display: grid;
+  grid-template-columns: 210px minmax(350px, 0.82fr) minmax(390px, 1.18fr);
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  margin-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.session-management-sidebar,
+.session-management-list-pane,
+.session-management-detail {
+  min-width: 0;
+  min-height: 0;
+}
+
+.session-management-sidebar {
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel));
+  padding: 10px 8px 14px;
+  scrollbar-gutter: stable;
+}
+
+.session-management-sidebar-section + .session-management-sidebar-section {
+  margin-top: 14px;
+}
+
+.session-management-sidebar-section h2 {
+  margin: 0 7px 5px;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+}
+
+.session-management-sidebar-section > div {
+  display: grid;
+  gap: 3px;
+}
+
+.session-management-sidebar button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 7px 8px;
+  text-align: left;
+}
+
+.session-management-sidebar button:hover {
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.session-management-sidebar button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+}
+
+.session-management-sidebar button > span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.session-management-sidebar button strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-sidebar button em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8.5px;
+  font-style: normal;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-sidebar button b {
+  min-width: 24px;
+  border-radius: 999px;
+  background: var(--control-strong);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-semibold);
+  padding: 2px 6px;
+  text-align: center;
+}
+
+.session-management-sidebar button.is-active b {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  color: var(--accent-strong);
+}
+
+.session-management-sidebar-empty {
+  margin: 6px 8px;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.session-management-list-pane {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  border-right: 1px solid var(--line);
+}
+
+.session-management-list-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 106px;
+  gap: 7px;
+  border-bottom: 1px solid var(--line);
+  padding: 9px;
+}
+
+.session-management-search {
+  min-width: 0;
+}
+
+.session-management-search input,
+.session-management-list-tools select,
+.session-management-large-filters select {
+  width: 100%;
+  min-width: 0;
+  height: 31px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  outline: none;
+  background: var(--control);
+  color: var(--text);
+  font-size: 10.5px;
+  padding: 0 8px;
+}
+
+.session-management-search input:focus,
+.session-management-list-tools select:focus,
+.session-management-large-filters select:focus {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+}
+
+.session-management-large-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 9px;
+}
+
+.session-management-large-filters label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.session-management-selection-bar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 9.5px;
+  padding: 5px 10px;
+}
+
+.session-management-selection-bar label {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.session-management-selection-bar input,
+.session-management-thread-row > input,
+.session-management-confirm input {
+  accent-color: var(--accent);
+}
+
+.session-management-selection-bar > div {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.session-management-selection-bar > div > span {
+  overflow: hidden;
+  color: var(--accent-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-selection-bar > div > button {
+  flex: 0 0 auto;
+  min-height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font: inherit;
+  font-weight: var(--weight-semibold);
+  padding: 2px 4px;
+}
+
+.session-management-selection-bar > div > button:hover,
+.session-management-selection-bar > div > button:focus-visible {
+  text-decoration: underline;
+}
+
+.session-management-thread-list {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel-inset);
+  scrollbar-gutter: stable;
+}
+
+.session-management-thread-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  min-width: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+  background: var(--panel);
+  cursor: pointer;
+  padding: 9px 10px;
+}
+
+.session-management-thread-row:hover {
+  background: color-mix(in srgb, var(--accent) 3%, var(--panel));
+}
+
+.session-management-thread-row.is-focused {
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 80%, transparent);
+}
+
+.session-management-thread-row > input {
+  width: 14px;
+  height: 14px;
+  margin: 2px 0 0;
+}
+
+.session-management-thread-row > input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.session-management-thread-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.session-management-thread-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+}
+
+.session-management-thread-title > strong {
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-thread-main p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.session-management-thread-meta,
+.session-management-thread-badges {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.session-management-thread-badges span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  padding: 2px 5px;
+}
+
+.session-management-thread-badges span.is-protected {
+  border-color: color-mix(in srgb, var(--orange) 34%, var(--line));
+  color: color-mix(in srgb, var(--orange) 74%, var(--text));
+}
+
+.session-management-status {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--control-strong);
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: var(--weight-semibold);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.session-management-status--active {
+  background: color-mix(in srgb, var(--green) 12%, var(--panel));
+  color: var(--green);
+}
+
+.session-management-status--archived {
+  background: color-mix(in srgb, var(--purple) 12%, var(--panel));
+  color: var(--purple);
+}
+
+.session-management-status--error {
+  background: color-mix(in srgb, var(--red) 10%, var(--panel));
+  color: var(--red);
+}
+
+.session-management-load-more {
+  display: block;
+  margin: 9px auto;
+}
+
+.session-management-list-end {
+  display: block;
+  color: var(--muted);
+  font-size: 9px;
+  padding: 10px;
+  text-align: center;
+}
+
+.session-management-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  padding: 7px 8px;
+}
+
+.session-management-actions button {
+  min-height: 29px;
+  padding-inline: 8px;
+}
+
+.session-management-actions button.is-danger,
+.session-management-confirm-actions button.is-danger {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+  color: var(--red);
+}
+
+.session-management-detail {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: var(--panel);
+}
+
+.session-management-detail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 11px 13px;
+}
+
+.session-management-detail-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-management-detail-head strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-detail-head span:not(.session-management-status) {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-detail-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px;
+}
+
+.session-management-detail-tabs button {
+  min-height: 27px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+  padding: 0 9px;
+}
+
+.session-management-detail-tabs button:hover {
+  background: var(--panel-soft);
+}
+
+.session-management-detail-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  color: var(--accent-strong);
+}
+
+.session-management-detail-scroll {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  scrollbar-gutter: stable;
+}
+
+.session-management-detail-empty,
+.session-management-loading,
+.session-management-empty {
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  min-height: 170px;
+  color: var(--muted);
+  padding: 20px;
+  text-align: center;
+}
+
+.session-management-detail-empty {
+  grid-row: 1 / -1;
+}
+
+.session-management-detail-empty strong,
+.session-management-loading strong,
+.session-management-empty strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-detail-empty span,
+.session-management-loading p,
+.session-management-empty span {
+  margin: 0;
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.session-management-loading > span {
+  width: 8px;
+  height: 8px;
+  justify-self: center;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.session-management-overview,
+.session-management-context,
+.session-management-lineage {
+  display: grid;
+  gap: 11px;
+  min-width: 0;
+}
+
+.session-management-definition-group {
+  display: grid;
+  gap: 5px;
+}
+
+.session-management-definition-group h2,
+.session-management-related-group h2 {
+  margin: 0 2px;
+  font-size: 10.5px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-definition-group dl {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.session-management-definition-group dl > div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 9px;
+}
+
+.session-management-definition-group dl > div + div {
+  border-top: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+}
+
+.session-management-definition-group dt,
+.session-management-definition-group dd {
+  margin: 0;
+  font-size: 9.5px;
+}
+
+.session-management-definition-group dt {
+  color: var(--muted);
+}
+
+.session-management-definition-group dd {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-definition-group button {
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 3px;
+}
+
+.session-management-detail-note,
+.session-management-recovery-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel));
+  padding: 9px 10px;
+}
+
+.session-management-detail-note strong,
+.session-management-recovery-card strong {
+  font-size: 10.5px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-detail-note span,
+.session-management-detail-note p,
+.session-management-detail-note li,
+.session-management-recovery-card span,
+.session-management-recovery-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.session-management-detail-note ul {
+  margin: 2px 0 0 17px;
+  padding: 0;
+}
+
+.session-management-detail-note--protected {
+  border-color: color-mix(in srgb, var(--orange) 30%, var(--line));
+  background: color-mix(in srgb, var(--orange) 6%, var(--panel));
+}
+
+.session-management-recovery-card header {
+  display: grid;
+  gap: 2px;
+}
+
+.session-management-recovery-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-management-context-source {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 8.5px;
+  padding: 6px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-context-warnings {
+  border: 1px solid color-mix(in srgb, var(--orange) 28%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--orange) 5%, var(--panel));
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  padding: 7px 9px;
+}
+
+.session-management-context-warnings summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-context-warnings ul {
+  margin: 6px 0 0 17px;
+  padding: 0;
+}
+
+.session-management-context-error {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  border: 1px solid color-mix(in srgb, var(--red) 30%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--red) 6%, var(--panel));
+  padding: 9px;
+}
+
+.session-management-context-error strong {
+  font-size: 10.5px;
+}
+
+.session-management-context-error span {
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.session-management-load-older {
+  justify-self: center;
+}
+
+.session-management-context-empty {
+  color: var(--muted);
+  font-size: 9.5px;
+  padding: 24px 12px;
+  text-align: center;
+}
+
+.session-management-message {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.session-management-message--user {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 72%, transparent);
+}
+
+.session-management-message--assistant {
+  border-left: 3px solid color-mix(in srgb, var(--green) 68%, transparent);
+}
+
+.session-management-message--tool {
+  border-left: 3px solid color-mix(in srgb, var(--purple) 64%, transparent);
+}
+
+.session-management-message header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+}
+
+.session-management-message header strong {
+  font-size: 9.5px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-message header span {
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.session-management-message pre {
+  overflow: visible;
+  margin: 0;
+  color: var(--text);
+  font: 10px/1.55 ui-monospace, "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+  padding: 8px 9px;
+  white-space: pre-wrap;
+}
+
+.session-management-related-group {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.session-management-related-group h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding: 7px 9px;
+}
+
+.session-management-related-group h2 span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.session-management-related-group > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  padding: 9px;
+}
+
+.session-management-related-group button {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 76%, transparent);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.session-management-related-group button:last-child {
+  border-bottom: 0;
+}
+
+.session-management-related-group button:hover {
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+}
+
+.session-management-related-group button > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.session-management-related-group button strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-related-group button em,
+.session-management-related-group button b,
+.session-management-lineage-note {
+  color: var(--muted);
+  font-size: 8.5px;
+  font-style: normal;
+  font-weight: var(--weight-regular);
+}
+
+.session-management-lineage-note {
+  margin: 0;
+  line-height: 1.45;
+  padding: 0 2px;
+}
+
+.session-management-confirm-overlay {
+  position: fixed;
+  z-index: 92;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--page) 55%, transparent);
+}
+
+.session-management-confirm {
+  display: grid;
+  gap: 11px;
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel-solid);
+  color: var(--text);
+  padding: 16px;
+}
+
+.session-management-confirm > header {
+  display: grid;
+  gap: 4px;
+}
+
+.session-management-confirm > header strong {
+  font-size: 15px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-confirm > header span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.session-management-delete-impact {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+}
+
+.session-management-delete-impact div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  background: var(--panel-soft);
+}
+
+.session-management-delete-impact dt {
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.session-management-delete-impact dd {
+  margin: 0;
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-delete-scope {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.session-management-delete-scope summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-size: 9.5px;
+  font-weight: var(--weight-medium);
+}
+
+.session-management-delete-scope ul {
+  display: grid;
+  gap: 1px;
+  max-height: 156px;
+  margin: 0;
+  overflow: auto;
+  padding: 0 8px 8px;
+  list-style: none;
+}
+
+.session-management-delete-scope li {
+  display: grid;
+  gap: 2px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  background: var(--panel);
+}
+
+.session-management-delete-scope li strong,
+.session-management-delete-scope li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-management-delete-scope li strong {
+  font-size: 9px;
+}
+
+.session-management-delete-scope li span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.session-management-delete-blocked {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--red) 34%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--red) 9%, var(--panel));
+  color: color-mix(in srgb, var(--red) 78%, var(--text));
+  padding: 8px 10px;
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.session-management-delete-options {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.session-management-delete-required {
+  padding: 9px 10px;
+}
+
+.session-management-delete-required.is-disabled {
+  opacity: 0.55;
+}
+
+.session-management-delete-required > span {
+  display: grid;
+  gap: 3px;
+}
+
+.session-management-delete-options label {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  cursor: pointer;
+  padding: 9px 10px;
+}
+
+.session-management-delete-options label + label {
+  border-top: 1px solid var(--line);
+}
+
+.session-management-delete-options label.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.session-management-delete-options label > span {
+  display: grid;
+  gap: 3px;
+}
+
+.session-management-delete-options strong {
+  font-size: 10.5px;
+  font-weight: var(--weight-semibold);
+}
+
+.session-management-delete-options em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.4;
+}
+
+.session-management-delete-acknowledgement {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.session-management-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+@media (max-width: 1080px) {
+  .session-management-layout {
+    grid-template-columns: 180px minmax(320px, 0.82fr) minmax(350px, 1.18fr);
+  }
+}
+
+@media (max-width: 860px) {
+  .session-management-layout {
+    grid-template-columns: minmax(300px, 0.9fr) minmax(330px, 1.1fr);
+    grid-template-rows: 104px minmax(0, 1fr);
+  }
+
+  .session-management-sidebar {
+    display: flex;
+    grid-column: 1 / -1;
+    gap: 12px;
+    overflow: auto hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 7px 8px;
+  }
+
+  .session-management-sidebar-section,
+  .session-management-sidebar-section + .session-management-sidebar-section {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+  }
+
+  .session-management-sidebar-section h2 {
+    margin: 0 3px;
+    writing-mode: vertical-rl;
+  }
+
+  .session-management-sidebar-section > div {
+    display: flex;
+  }
+
+  .session-management-sidebar button {
+    width: 116px;
+  }
+
+  .session-management-list-pane {
+    border-right: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 680px) {
+  .session-management-overlay {
+    padding: 6px;
+  }
+
+  .session-management-workspace {
+    width: calc(100vw - 12px);
+    height: calc(100vh - 12px);
+  }
+
+  .session-management-head {
+    padding: 9px 10px;
+  }
+
+  .session-management-head span {
+    max-width: 66vw;
+  }
+
+  .session-management-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: 94px minmax(260px, 0.92fr) minmax(300px, 1.08fr);
+    overflow: auto;
+  }
+
+  .session-management-sidebar {
+    grid-column: 1;
+  }
+
+  .session-management-list-pane {
+    min-height: 320px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .session-management-detail {
+    min-height: 340px;
+  }
+
+  .session-management-actions {
+    position: sticky;
+    bottom: 0;
+  }
+}

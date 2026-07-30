@@ -2353,6 +2353,11 @@ fn sanitize_display_surfaces(
 fn sanitize_session_enhancement_settings(
     mut settings: crate::models::SessionEnhancementSettingsSnapshot,
 ) -> crate::models::SessionEnhancementSettingsSnapshot {
+    // The legacy Codex-sidebar delete action bypassed the session manager's
+    // mandatory recovery package, closure revalidation, and shared operation
+    // lock. Keep the field only for backward-compatible settings decoding,
+    // but never publish or persist it as enabled.
+    settings.session_delete = false;
     settings.conversation_view_max_width = settings.conversation_view_max_width.clamp(320, 4_000);
     settings
 }
@@ -2735,17 +2740,22 @@ mod tests {
     #[test]
     fn session_enhancement_settings_keep_safe_defaults_and_clamp_width() {
         let defaults: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
-        assert!(defaults.session_enhancements.session_delete);
+        assert!(!defaults.session_enhancements.session_delete);
         assert!(defaults.session_enhancements.markdown_export);
         assert!(defaults.session_enhancements.project_move);
         assert!(defaults.session_enhancements.thread_scroll_restore);
 
         let sanitized = sanitize_session_enhancement_settings(
             crate::models::SessionEnhancementSettingsSnapshot {
+                session_delete: true,
                 paste_fix: true,
                 conversation_view_max_width: 99_999,
                 ..crate::models::SessionEnhancementSettingsSnapshot::default()
             },
+        );
+        assert!(
+            !sanitized.session_delete,
+            "persisted legacy opt-ins must migrate to fail-closed"
         );
         assert!(sanitized.paste_fix);
         assert_eq!(sanitized.conversation_view_max_width, 4_000);

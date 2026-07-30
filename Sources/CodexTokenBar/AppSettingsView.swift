@@ -35,7 +35,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: return "启动与基础行为"
-        case .sessionEnhancements: return "删除、导出、移动、输入与阅读体验"
+        case .sessionEnhancements: return "会话管理、导出、移动、输入与阅读体验"
         case .codexInstances: return "多开、隔离、同步与回滚"
         case .autoResume: return "按所选失败原因、定时或额度恢复继续任务"
         case .surfaces: return "主界面与辅助显示面"
@@ -128,6 +128,7 @@ struct AppSettingsView: View {
     let dataSourceOrigin: String
     let onChooseDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    let onOpenSessionManager: () -> Void
     let onThreadDeleteConnectionAction: () -> Void
     let onClose: () -> Void
 
@@ -318,6 +319,20 @@ struct AppSettingsView: View {
     private var sessionEnhancementSettings: some View {
         Group {
             settingsSection(
+                title: "完整会话管理",
+                subtitle: "按项目查看全部会话、上下文、官方归档、恢复包和容量清理"
+            ) {
+                settingsActionRow(
+                    "会话管理工作面",
+                    systemImage: "rectangle.stack.badge.gearshape",
+                    detail: "独立三栏页面；列表每次显示 100 个，但可持续加载到完整目录。",
+                    buttonTitle: "打开会话管理",
+                    buttonSystemImage: "arrow.up.right.square",
+                    action: onOpenSessionManager
+                )
+            }
+
+            settingsSection(
                 title: "Codex 页面连接",
                 subtitle: "通过仅限本机的调试端口加载增强；功能开关变化后会自动重连，无需重启 Codex"
             ) {
@@ -338,13 +353,16 @@ struct AppSettingsView: View {
             }
 
             settingsSection(
-                title: "会话管理",
-                subtitle: "在 Codex 侧栏为每个任务增加可靠的管理操作"
+                title: "Codex 侧栏增强",
+                subtitle: "保留非破坏性的快捷能力；永久删除统一进入完整会话管理"
             ) {
-                settingsToggle(
-                    "会话删除",
+                settingsActionRow(
+                    "侧栏直接删除已迁移",
                     systemImage: "trash",
-                    isOn: sessionDeleteBinding
+                    detail: CodexLegacySessionDeletePolicy.migrationMessage,
+                    buttonTitle: "打开会话管理",
+                    buttonSystemImage: "arrow.up.right.square",
+                    action: onOpenSessionManager
                 )
                 settingsToggle(
                     "Markdown 导出",
@@ -719,13 +737,6 @@ struct AppSettingsView: View {
         Binding(
             get: { updateSettingsStore.automaticChecksEnabled },
             set: { updateSettingsStore.setAutomaticChecksEnabled($0) }
-        )
-    }
-
-    private var sessionDeleteBinding: Binding<Bool> {
-        Binding(
-            get: { threadDeleteBridge.enhancementSettings.sessionDelete },
-            set: { threadDeleteBridge.setSessionDeleteEnabled($0) }
         )
     }
 

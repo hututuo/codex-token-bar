@@ -1,10 +1,8 @@
-use crate::core::process_tail::ProcessPipeTail;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -19,10 +17,9 @@ const PROBE_INTERVAL: Duration = Duration::from_secs(3);
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const REINJECT_INTERVAL: Duration = Duration::from_secs(5);
-const DELETE_TIMEOUT: Duration = Duration::from_secs(20);
-const PIPE_TAIL_LIMIT_BYTES: usize = 64 * 1024;
-const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const MARKDOWN_TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
+const LEGACY_DIRECT_DELETE_DISABLED_MESSAGE: &str =
+    "旧侧栏直接删除已停用；请在 Codex Token Bar 的“会话管理”中执行永久删除，系统会先为完整影响闭包创建并校验恢复包。";
 // 分块 ACK 等待页面把数据真实写入用户选择的文件（awaitPromise 背压），慢盘可能
 // 远超普通 CDP 回执，因此使用独立的宽超时；页面侧每收到一块会刷新自身超时。
 const MARKDOWN_CHUNK_ACK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -438,6 +435,8 @@ fn rendered_injection_script() -> Result<String, String> {
 fn rendered_injection_script_with_settings(
     settings: &crate::models::SessionEnhancementSettingsSnapshot,
 ) -> String {
+    let mut settings = settings.clone();
+    settings.session_delete = false;
     let delete_script = INJECTION_TEMPLATE
         .replace(
             "__CTB_OWNER_JSON__",
@@ -449,7 +448,7 @@ fn rendered_injection_script_with_settings(
         );
     format!(
         "window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = {};\n{}\n{}",
-        serde_json::to_string(settings).expect("session enhancement settings serialize"),
+        serde_json::to_string(&settings).expect("session enhancement settings serialize"),
         delete_script,
         SESSION_ENHANCEMENTS_TEMPLATE,
     )
@@ -639,8 +638,8 @@ fn publish_health_status(port: u16, health: &InjectionHealth) {
             true,
             Some(port),
             format!(
-                "Codex 会话增强已连接，已验证 {} 个会话、{} 个删除入口、{} 个管理入口",
-                health.eligible_rows, health.delete_buttons, health.more_buttons
+                "Codex 会话增强已连接，已验证 {} 个会话、{} 个侧栏管理入口；永久删除已迁移到 Token Bar 会话管理",
+                health.eligible_rows, health.more_buttons
             ),
         );
     } else if health.waiting_for_rows {
@@ -962,30 +961,22 @@ fn session_enhancement_result(
     port: u16,
 ) -> SessionEnhancementBindingResult {
     let result = (|| {
-        let settings = crate::platform::read_app_settings()?.session_enhancements;
         match request.action {
+            // Keep accepting the legacy renderer action long enough to return a
+            // deterministic migration message, but never resolve settings,
+            // target CODEX_HOME, or a Codex binary from this path. Permanent
+            // deletion is only available through session_management, where a
+            // verified recovery package and the shared operation lock are
+            // mandatory.
             SessionEnhancementBindingAction::Delete => {
-                if !settings.session_delete {
-                    return Err("会话删除未启用".into());
-                }
-                let codex_home = resolve_session_target_home(port)?.codex_home;
-                delete_thread(&codex_home, &request.thread_id).map(|message| {
-                    SessionEnhancementBindingResult {
-                        status: "deleted",
-                        message,
-                        filename: None,
-                        markdown_transfer: None,
-                        markdown_chunk_count: None,
-                        previous_cwd: None,
-                        target_cwd: None,
-                    }
-                })
+                Err(LEGACY_DIRECT_DELETE_DISABLED_MESSAGE.into())
             }
             SessionEnhancementBindingAction::ExportMarkdown => {
                 // 导出走 run_markdown_export 的流式路径；此分支只作为防御。
                 Err("内部错误：Markdown 导出未走流式路径".into())
             }
             SessionEnhancementBindingAction::MoveThreadWorkspace => {
+                let settings = crate::platform::read_app_settings()?.session_enhancements;
                 if !settings.project_move {
                     return Err("会话项目移动未启用".into());
                 }
@@ -1061,113 +1052,6 @@ fn resolve_session_target_home_with(
     Ok(binding)
 }
 
-fn delete_thread(codex_home: &std::path::Path, thread_id: &str) -> Result<String, String> {
-    if !is_uuid(thread_id) {
-        return Err("会话 ID 不是有效 UUID".into());
-    }
-    let codex = crate::core::quota::codex_binary::find_codex_binary_with_report()?.path;
-    run_delete_command(
-        &codex,
-        codex_home,
-        thread_id,
-        DELETE_TIMEOUT,
-    )
-}
-
-fn run_delete_command(
-    codex: &std::path::Path,
-    codex_home: &std::path::Path,
-    thread_id: &str,
-    timeout: Duration,
-) -> Result<String, String> {
-    let mut child = Command::new(codex)
-        .args(delete_command_args(thread_id))
-        .env("CODEX_HOME", codex_home)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("启动 Codex 删除命令失败：{error}"))?;
-    let stdout = ProcessPipeTail::spawn(
-        child.stdout.take(),
-        PIPE_TAIL_LIMIT_BYTES,
-        PIPE_DRAIN_GRACE,
-    );
-    let stderr = ProcessPipeTail::spawn(
-        child.stderr.take(),
-        PIPE_TAIL_LIMIT_BYTES,
-        PIPE_DRAIN_GRACE,
-    );
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err("Codex 删除命令超时".to_string());
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(format!("等待 Codex 删除命令失败：{error}"));
-            }
-        }
-    };
-    let stdout = stdout.finish();
-    let stderr = stderr.finish();
-    let status = status.map_err(|error| {
-        let detail = if stderr.trim().is_empty() {
-            stdout.trim()
-        } else {
-            stderr.trim()
-        };
-        if detail.is_empty() {
-            error
-        } else {
-            format!("{error}：{detail}")
-        }
-    })?;
-    if status.success() {
-        let message = stdout.trim();
-        return Ok(if message.is_empty() {
-            "会话已永久删除".into()
-        } else {
-            message.to_string()
-        });
-    }
-    let detail = if stderr.trim().is_empty() {
-        stdout
-    } else {
-        stderr
-    };
-    Err(format!("Codex 删除失败：{}", detail.trim()))
-}
-
-fn delete_command_args(thread_id: &str) -> [&str; 3] {
-    ["delete", "--force", thread_id]
-}
-
-fn is_uuid(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 36 {
-        return false;
-    }
-    for (index, byte) in bytes.iter().copied().enumerate() {
-        if matches!(index, 8 | 13 | 18 | 23) {
-            if byte != b'-' {
-                return false;
-            }
-        } else if !byte.is_ascii_hexdigit() {
-            return false;
-        }
-    }
-    true
-}
-
 fn status_store() -> &'static Mutex<ThreadDeleteBridgeStatus> {
     STATUS.get_or_init(|| {
         Mutex::new(ThreadDeleteBridgeStatus {
@@ -1195,11 +1079,15 @@ mod tests {
     #[test]
     fn injection_template_is_rendered_for_the_tauri_owner() {
         let script = rendered_injection_script_with_settings(
-            &crate::models::SessionEnhancementSettingsSnapshot::default(),
+            &crate::models::SessionEnhancementSettingsSnapshot {
+                session_delete: true,
+                ..crate::models::SessionEnhancementSettingsSnapshot::default()
+            },
         );
         assert!(script.contains("const owner = \"tauri\";"));
         assert!(script.contains("const bindingName = \"codexTokenBarDeleteTauri\";"));
         assert!(script.contains("__codexTokenBarSessionEnhancementsHealth"));
+        assert!(script.contains("\"sessionDelete\":false"));
         assert!(script.contains("\"markdownExport\":true"));
         assert!(!script.contains("__CTB_OWNER_JSON__"));
         assert!(!script.contains("__CTB_BINDING_JSON__"));
@@ -1234,12 +1122,16 @@ mod tests {
                 "readiness": "ready",
                 "sessionEnhancementsInstalled": true,
                 "eligibleRowCount": 2,
-                "buttonCount": 2
+                "buttonCount": 0
             },
             "sessionHealth": {
                 "runtimeVersion": 3,
                 "moreButtonCount": 2,
-                "settings": { "markdownExport": true, "projectMove": true }
+                "settings": {
+                    "sessionDelete": false,
+                    "markdownExport": true,
+                    "projectMove": true
+                }
             }
         });
         assert_eq!(
@@ -1248,7 +1140,7 @@ mod tests {
                 ready: true,
                 waiting_for_rows: false,
                 eligible_rows: 2,
-                delete_buttons: 2,
+                delete_buttons: 0,
                 more_buttons: 2,
             }
         );
@@ -1267,19 +1159,20 @@ mod tests {
     }
 
     #[test]
-    fn delete_request_accepts_only_uuid_thread_ids() {
-        assert!(is_uuid("019f5a7c-1234-7abc-8def-0123456789ab"));
-        assert!(is_uuid("019F5A7C-1234-7ABC-8DEF-0123456789AB"));
-        assert!(!is_uuid("thr_019f5a7c"));
-        assert!(!is_uuid("019f5a7c-1234-7abc-8def-0123456789ab;rm"));
-    }
-
-    #[test]
-    fn official_delete_command_uses_positional_arguments_without_a_shell() {
-        assert_eq!(
-            delete_command_args("019f5a7c-1234-7abc-8def-0123456789ab"),
-            ["delete", "--force", "019f5a7c-1234-7abc-8def-0123456789ab"]
-        );
+    fn legacy_sidebar_delete_fails_closed_before_settings_or_target_lookup() {
+        let request = SessionEnhancementBindingRequest {
+            id: "legacy-delete".into(),
+            owner: OWNER.into(),
+            action: SessionEnhancementBindingAction::Delete,
+            thread_id: "019f5a7c-1234-7abc-8def-0123456789ab".into(),
+            title: "旧入口".into(),
+            target_cwd: None,
+        };
+        // Port zero cannot resolve a Codex target. Receiving the migration
+        // error proves this branch returned before any target lookup.
+        let result = session_enhancement_result(&request, 0);
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.message, LEGACY_DIRECT_DELETE_DISABLED_MESSAGE);
     }
 
     fn target_binding(
@@ -1520,110 +1413,6 @@ mod tests {
         )
         .is_err());
         assert!(require_page_ack(&json!({}), "chunk").is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn delete_command_drains_large_stdout_and_stderr_before_exit() {
-        use std::os::unix::fs::PermissionsExt;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        struct TestDirectory(std::path::PathBuf);
-        impl Drop for TestDirectory {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let directory = TestDirectory(std::env::temp_dir().join(format!(
-            "codex-token-bar-thread-delete-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )));
-        std::fs::create_dir(&directory.0).unwrap();
-        let script = directory.0.join("fake-codex");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\n\
-             dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\000' x\n\
-             printf '\\nSTDOUT_DONE\\n'\n\
-             dd if=/dev/zero bs=1048576 count=1 2>/dev/null | tr '\\000' y >&2\n\
-             printf '\\nSTDERR_DONE\\n' >&2\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-        let output = run_delete_command(
-            &script,
-            &directory.0,
-            "019f5a7c-1234-7abc-8def-0123456789ab",
-            Duration::from_secs(5),
-        )
-        .unwrap();
-
-        assert!(output.ends_with("STDOUT_DONE"));
-        assert!(output.len() <= PIPE_TAIL_LIMIT_BYTES);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn delete_command_does_not_wait_forever_for_descendant_inherited_pipe() {
-        use std::os::unix::fs::PermissionsExt;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        struct TestDirectory(std::path::PathBuf);
-        impl Drop for TestDirectory {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let directory = TestDirectory(std::env::temp_dir().join(format!(
-            "codex-token-bar-thread-delete-descendant-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )));
-        std::fs::create_dir(&directory.0).unwrap();
-        // 后代永不退出（sleep 1000）并继承 stdout/stderr 写端：旧实现的
-        // reader 会永久阻塞；新实现 finish 必须仍然快速返回并回收 reader。
-        struct DescendantGuard(std::path::PathBuf);
-        impl Drop for DescendantGuard {
-            fn drop(&mut self) {
-                if let Ok(pid) = std::fs::read_to_string(&self.0) {
-                    let _ = Command::new("kill")
-                        .args(["-9", pid.trim()])
-                        .status();
-                }
-            }
-        }
-        let pid_file = directory.0.join("descendant.pid");
-        let _descendant_guard = DescendantGuard(pid_file.clone());
-        let script = directory.0.join("fake-codex");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nsleep 1000 &\necho $! > '{}'\nprintf 'PARENT_DONE\\n'\n",
-                pid_file.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-
-        let started_at = Instant::now();
-        let output = run_delete_command(
-            &script,
-            &directory.0,
-            "019f5a7c-1234-7abc-8def-0123456789ab",
-            Duration::from_secs(2),
-        )
-        .unwrap();
-
-        assert!(output.ends_with("PARENT_DONE"));
-        assert!(started_at.elapsed() < Duration::from_millis(1_500));
     }
 
     #[test]

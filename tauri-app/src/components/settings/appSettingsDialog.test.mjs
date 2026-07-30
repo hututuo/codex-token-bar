@@ -165,7 +165,8 @@ test("session enhancements expose real feature toggles, connection flow and attr
     await click(act, tabByName(container, "会话增强"), window);
     const panel = activePanel(container);
     for (const label of [
-      "会话删除",
+      "永久删除",
+      "仅在会话管理中",
       "Markdown 导出",
       "会话项目移动",
       "会话 ID 标识",
@@ -175,8 +176,16 @@ test("session enhancements expose real feature toggles, connection flow and attr
     ]) {
       assert.match(panel.textContent, new RegExp(label));
     }
+    assert.match(panel.textContent, /旧侧栏直接删除已停用/);
+    assert.equal(
+      panel.querySelector('button[aria-label^="会话删除："]'),
+      null,
+      "legacy direct-delete toggle must not remain configurable",
+    );
     assert.match(panel.textContent, /Codex\+\+ · AGPL-3\.0/);
     assert.match(panel.querySelector('a[href*="BigPizzaV3/CodexPlusPlus"]')?.textContent, /上游源码/);
+    await click(act, buttonWithText(panel, "打开会话管理"), window);
+    assert.equal(calls.sessionManagement, 1);
 
     await click(act, panel.querySelector('button[aria-label^="粘贴修复："]'), window);
     await flushPromises(act);
@@ -567,6 +576,7 @@ async function withMountedSettings(run, initialOverrides = {}) {
         autoResumeSaves: [],
         close: 0,
         providerRepair: 0,
+        sessionManagement: 0,
         threadDeleteReconnect: 0,
         sessionEnhancementSaves: [],
         statusMetricOrders: [],
@@ -608,6 +618,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     autoResumeSaves: [],
     close: 0,
     providerRepair: 0,
+    sessionManagement: 0,
     threadDeleteReconnect: 0,
     sessionEnhancementSaves: [],
     statusMetricOrders: [],
@@ -662,6 +673,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onFloatingTextToneChange: noop,
     onFloatingUnreadEffectChange: noop,
     onOpenProviderRepair: () => { callLog.providerRepair += 1; },
+    onOpenSessionManagement: () => { callLog.sessionManagement += 1; },
     onQuotaRefreshIntervalChange: async () => {},
     onRefreshAutoResume: async () => { callLog.autoResumeRefreshes += 1; },
     onReconnectThreadDelete: async () => { callLog.threadDeleteReconnect += 1; },
@@ -691,7 +703,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
 
 function defaultSessionEnhancements() {
   return {
-    sessionDelete: true,
+    sessionDelete: false,
     markdownExport: true,
     pasteFix: false,
     projectMove: true,

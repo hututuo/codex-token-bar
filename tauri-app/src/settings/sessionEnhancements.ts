@@ -1,7 +1,7 @@
 import type { SessionEnhancementSettings } from "../types/settings";
 
 export const DEFAULT_SESSION_ENHANCEMENTS: SessionEnhancementSettings = {
-  sessionDelete: true,
+  sessionDelete: false,
   markdownExport: true,
   pasteFix: false,
   projectMove: true,
@@ -16,7 +16,10 @@ export function sanitizeSessionEnhancements(
 ): SessionEnhancementSettings {
   const width = Number(value?.conversationViewMaxWidth);
   return {
-    sessionDelete: value?.sessionDelete !== false,
+    // Kept in the serialized shape for backward compatibility only. The old
+    // sidebar delete path is permanently disabled; safe deletion lives in the
+    // dedicated session manager.
+    sessionDelete: false,
     markdownExport: value?.markdownExport !== false,
     pasteFix: value?.pasteFix === true,
     projectMove: value?.projectMove !== false,

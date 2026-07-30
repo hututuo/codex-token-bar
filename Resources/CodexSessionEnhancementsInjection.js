@@ -22,7 +22,9 @@
   const previousRuntimeVersion = Number(window[stateKey]?.runtimeVersion) || 0;
 
   const normalizedSettings = {
-    sessionDelete: settings.sessionDelete !== false,
+    // Permanent deletion is available only through the dedicated Session
+    // Management transaction (frozen closure + verified recovery packages).
+    sessionDelete: false,
     markdownExport: settings.markdownExport === true,
     pasteFix: settings.pasteFix === true,
     projectMove: settings.projectMove === true,

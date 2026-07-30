@@ -155,6 +155,12 @@ pub fn codex_instance_sync_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "无法定位系统应用支持目录，不能创建实例同步事务".into())
 }
 
+pub fn session_recovery_archive_root() -> Result<PathBuf, String> {
+    tauri_app_support_dir()
+        .map(|path| path.join("session-recovery-archives"))
+        .ok_or_else(|| "无法定位系统应用支持目录，不能创建会话恢复包".into())
+}
+
 fn app_support_dir() -> Option<PathBuf> {
     app_support_base_dir().map(|path| path.join(APP_DIRECTORY_NAME))
 }

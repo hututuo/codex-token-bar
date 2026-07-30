@@ -6,6 +6,7 @@ mod live;
 mod platform;
 mod provider_repair;
 mod quota;
+mod session_management;
 mod settings;
 mod thread_activity;
 
@@ -35,6 +36,12 @@ pub use provider_repair::{
 pub use quota::{
     AccountQuotaBundle, QuotaAvailability, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit,
     QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
+};
+pub use session_management::{
+    SessionActionItemResult, SessionBatchActionResult, SessionContextMessage,
+    SessionContextPage, SessionDeleteConfirmation, SessionDeleteRolloutSnapshot,
+    SessionManagementCapabilities, SessionManagementCapability, SessionManagementCatalog,
+    SessionManagementThread,
 };
 pub use settings::{
     default_status_metric_label_style, AppSettingsSnapshot, AutoResumeSettingsSnapshot,

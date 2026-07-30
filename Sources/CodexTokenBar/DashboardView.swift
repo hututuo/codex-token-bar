@@ -63,6 +63,7 @@ struct DashboardView: View {
     @State private var showingUnreadEffectMenu = false
     @State private var showingContentSettingsMenu = false
     @State private var showingAppSettings = false
+    @State private var showingSessionManager = false
     @State private var appSettingsInitialCategory: AppSettingsCategory = .general
     @State private var exportAlert: DashboardExportAlertPresentation?
 
@@ -342,6 +343,14 @@ struct DashboardView: View {
                 dataSource: providerSyncStore.currentDataSource
             )
         }
+        .sheet(isPresented: $showingSessionManager) {
+            SessionManagementView(
+                dataSource: store.currentDataSource,
+                autoResumeManager: autoResumeController,
+                onClose: { showingSessionManager = false }
+            )
+            .frame(idealWidth: 1180, idealHeight: 760)
+        }
         .sheet(isPresented: $showingSetupGuide) {
             InterfaceScaledContainer(scale: requestedInterfaceScale, visualWidth: 560 * requestedInterfaceScale) {
                 SetupGuideView(
@@ -413,6 +422,12 @@ struct DashboardView: View {
                     showingAppSettings = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         showingProviderSync = true
+                    }
+                },
+                onOpenSessionManager: {
+                    showingAppSettings = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showingSessionManager = true
                     }
                 },
                 onThreadDeleteConnectionAction: {
@@ -503,6 +518,9 @@ struct DashboardView: View {
                 onOpenProviderSync: {
                     showingProviderSync = true
                     providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
+                },
+                onOpenSessionManagement: {
+                    showingSessionManager = true
                 },
                 onOpenSettings: {
                     openAppSettings(.general)

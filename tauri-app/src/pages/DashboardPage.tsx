@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
@@ -7,6 +7,7 @@ import type {
   AutoResumeRuntimeStatus,
   AutoResumeSettings,
   AutoResumeThreadOption,
+  CodexHomeSourceToken,
   CodexHomeStatus,
   DashboardSnapshot,
   DisplaySurfaceSettings,
@@ -32,6 +33,11 @@ import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 import type { CommandFailureDiagnostic } from "../api/client";
 import { buildLocalCommandNoticeLines } from "../state/localCommandNotice";
 import { desktopPlatform } from "../platform/desktop";
+
+const SessionManagementWorkspace = lazy(async () => {
+  const module = await import("./SessionManagementWorkspace");
+  return { default: module.SessionManagementWorkspace };
+});
 
 interface AppUpdateViewState {
   kind: "idle" | "checking" | "available" | "installing" | "error";
@@ -98,6 +104,7 @@ interface DashboardPageProps {
   providerRepairOpen: boolean;
   providerRepairSnapshot: ProviderRepairSnapshot;
   providerSourceKey: string;
+  sourceToken: CodexHomeSourceToken | null;
   runningThreads: RunningThreadSummary;
   radarRefreshGeneration: number;
   refreshing: boolean;
@@ -167,6 +174,7 @@ export function DashboardPage({
   providerRepairOpen,
   providerRepairSnapshot,
   providerSourceKey,
+  sourceToken,
   runningThreads,
   radarRefreshGeneration,
   refreshing,
@@ -181,10 +189,15 @@ export function DashboardPage({
   const [settingsCategory, setSettingsCategory] = useState<AppSettingsCategory>(
     initialSettingsRequest ?? "general",
   );
+  const [sessionManagementOpen, setSessionManagementOpen] = useState(false);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const openSettings = useCallback((category: AppSettingsCategory = "general") => {
     setSettingsCategory(category);
     setSettingsOpen(true);
+  }, []);
+  const openSessionManagement = useCallback(() => {
+    setSettingsOpen(false);
+    setSessionManagementOpen(true);
   }, []);
 
   useEffect(() => {
@@ -223,6 +236,7 @@ export function DashboardPage({
             void downloadDashboardPng(dashboard);
           }}
           onOpenProviderRepair={onProviderRepairOpen}
+          onOpenSessionManagement={openSessionManagement}
           onOpenSettings={openSettings}
           onRefresh={onRefresh}
           onToggleAutostart={onToggleAutostart}
@@ -311,6 +325,7 @@ export function DashboardPage({
         onFloatingTextToneChange={onFloatingTextToneChange}
         onFloatingUnreadEffectChange={onFloatingUnreadEffectChange}
         onOpenProviderRepair={onProviderRepairOpen}
+        onOpenSessionManagement={openSessionManagement}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
         onCancelAutoResume={onCancelAutoResume}
         onRefreshAutoResume={onRefreshAutoResume}
@@ -332,6 +347,32 @@ export function DashboardPage({
         sessionEnhancements={sessionEnhancements}
         threadDeleteBridgeStatus={threadDeleteBridgeStatus}
       />
+      {sessionManagementOpen && sourceToken !== null ? (
+        <Suspense
+          fallback={(
+            <div className="session-management-overlay">
+              <section
+                aria-label="会话管理"
+                aria-modal="true"
+                className="session-management-workspace session-management-workspace--boot"
+                role="dialog"
+              >
+                <div className="session-management-loading" aria-live="polite">
+                  <span aria-hidden="true" />
+                  <strong>正在打开会话管理</strong>
+                  <p>主界面保持可用，会话目录将在工作面内单独读取。</p>
+                </div>
+              </section>
+            </div>
+          )}
+        >
+          <SessionManagementWorkspace
+            onClose={() => setSessionManagementOpen(false)}
+            open
+            sourceToken={sourceToken}
+          />
+        </Suspense>
+      ) : null}
     </main>
   );
 }

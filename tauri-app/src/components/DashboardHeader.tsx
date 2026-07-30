@@ -27,6 +27,7 @@ interface DashboardHeaderProps {
   onExportCsv: () => void;
   onExportPng: () => void;
   onOpenProviderRepair: () => void;
+  onOpenSessionManagement: () => void;
   onOpenSettings: (category?: AppSettingsCategory) => void;
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
@@ -63,6 +64,7 @@ export function DashboardHeader({
   onExportCsv,
   onExportPng,
   onOpenProviderRepair,
+  onOpenSessionManagement,
   onOpenSettings,
   onRefresh,
   onToggleAutostart,
@@ -235,6 +237,14 @@ export function DashboardHeader({
               type="button"
             >
               会话消失修复
+            </button>
+            <button
+              className="toolbar-button toolbar-button--session-management"
+              onClick={onOpenSessionManagement}
+              title="按项目查看、归档和清理全部本地会话"
+              type="button"
+            >
+              会话管理
             </button>
             <button
               aria-label="会话增强"

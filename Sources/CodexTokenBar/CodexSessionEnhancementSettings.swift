@@ -2,6 +2,11 @@
 
 import Foundation
 
+enum CodexLegacySessionDeletePolicy {
+    static let migrationMessage =
+        "旧 Codex 侧栏直接删除已停用；请在 Codex Token Bar 的“会话管理”中核对完整影响范围并创建恢复包后删除。"
+}
+
 struct CodexSessionEnhancementSettings: Codable, Equatable, Sendable {
     static let storageKey = "CodexTokenBar.sessionEnhancements.v1"
 
@@ -15,7 +20,7 @@ struct CodexSessionEnhancementSettings: Codable, Equatable, Sendable {
     var threadScrollRestore: Bool
 
     static let `default` = CodexSessionEnhancementSettings(
-        sessionDelete: true,
+        sessionDelete: false,
         markdownExport: true,
         pasteFix: false,
         projectMove: true,
@@ -27,13 +32,15 @@ struct CodexSessionEnhancementSettings: Codable, Equatable, Sendable {
 
     var normalized: CodexSessionEnhancementSettings {
         var value = self
+        // 保留字段只为解码旧设置；侧栏 direct-delete 已永久退役，旧值 true
+        // 也必须在进入注入脚本和桥接服务前迁移为 false。
+        value.sessionDelete = false
         value.conversationViewMaxWidth = min(max(conversationViewMaxWidth, 320), 4_000)
         return value
     }
 
     var enabledFeatureCount: Int {
         [
-            sessionDelete,
             markdownExport,
             pasteFix,
             projectMove,
@@ -48,7 +55,11 @@ struct CodexSessionEnhancementSettings: Codable, Equatable, Sendable {
               let decoded = try? JSONDecoder().decode(Self.self, from: data) else {
             return .default
         }
-        return decoded.normalized
+        let migrated = decoded.normalized
+        if migrated != decoded {
+            migrated.save(defaults: defaults)
+        }
+        return migrated
     }
 
     func save(defaults: UserDefaults = .standard) {

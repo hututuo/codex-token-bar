@@ -211,10 +211,6 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
         }
     }
 
-    func setSessionDeleteEnabled(_ enabled: Bool) {
-        updateEnhancementSettings { $0.sessionDelete = enabled }
-    }
-
     func setMarkdownExportEnabled(_ enabled: Bool) {
         updateEnhancementSettings { $0.markdownExport = enabled }
     }
@@ -999,7 +995,6 @@ actor CodexThreadDeleteBridgeService {
     private static let bindingName = "codexTokenBarDeleteSwift"
 
     private let ports: [Int]
-    private let executor: any CodexThreadDeleteExecuting
     private let enhancementExecutor: any CodexSessionEnhancementExecuting
     private let session: URLSession
     private var enhancementSettings: CodexSessionEnhancementSettings
@@ -1009,13 +1004,11 @@ actor CodexThreadDeleteBridgeService {
 
     init(
         ports: [Int] = [9229, 9222],
-        executor: any CodexThreadDeleteExecuting = FoundationCodexThreadDeleteExecutor(),
         enhancementExecutor: any CodexSessionEnhancementExecuting = FoundationCodexSessionEnhancementExecutor(),
         enhancementSettings: CodexSessionEnhancementSettings = .default,
         session: URLSession = .shared
     ) {
         self.ports = ports
-        self.executor = executor
         self.enhancementExecutor = enhancementExecutor
         self.enhancementSettings = enhancementSettings.normalized
         self.session = session
@@ -1023,6 +1016,14 @@ actor CodexThreadDeleteBridgeService {
 
     func updateEnhancementSettings(_ settings: CodexSessionEnhancementSettings) {
         enhancementSettings = settings.normalized
+    }
+
+    nonisolated static var retiredDeleteBindingResult:
+        CodexThreadDeleteBindingResult {
+        CodexThreadDeleteBindingResult(
+            status: "failed",
+            message: CodexLegacySessionDeletePolicy.migrationMessage
+        )
     }
 
     func run(
@@ -1432,13 +1433,9 @@ actor CodexThreadDeleteBridgeService {
             try CodexThreadID.validate(request.threadID)
             switch request.action {
             case .delete:
-                // 与 Tauri 端一致：原生侧复查设置，被注入页面无法调用已关闭
-                // 的动作（页面按钮门禁只是 UX，不是安全边界）。
-                guard enhancementSettings.sessionDelete else {
-                    throw CodexThreadDeleteError.commandFailed("会话删除未启用")
-                }
-                let message = try await executor.delete(threadID: request.threadID)
-                return CodexThreadDeleteBindingResult(status: "deleted", message: message)
+                // 兼容旧页面仍可能发来的 delete binding，但原生桥永久
+                // fail closed；危险操作统一进入带闭包与恢复包门禁的会话管理。
+                return Self.retiredDeleteBindingResult
             case .exportMarkdown:
                 guard enhancementSettings.markdownExport else {
                     throw CodexThreadDeleteError.commandFailed("Markdown 导出未启用")
@@ -1958,53 +1955,11 @@ private final class CodexThreadDeletePipeCollector: @unchecked Sendable {
 }
 
 final class FoundationCodexThreadDeleteExecutor: CodexThreadDeleteExecuting, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "CodexTokenBar.ThreadDelete")
-    private let timeout: TimeInterval
-
-    init(timeout: TimeInterval = 20) {
-        self.timeout = timeout
-    }
+    init(timeout _: TimeInterval = 20) {}
 
     func delete(threadID: String) async throws -> String {
         try CodexThreadID.validate(threadID)
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async { [timeout] in
-                continuation.resume(with: Result {
-                    try Self.run(threadID: threadID, timeout: timeout)
-                })
-            }
-        }
-    }
-
-    static func commandArguments(threadID: String) -> [String] {
-        ["delete", "--force", threadID]
-    }
-
-    private static func run(threadID: String, timeout: TimeInterval) throws -> String {
-        try CodexMultiInstanceMutationGate.ensureNoActiveNonDefaultInstance()
-        var environment = ProcessInfo.processInfo.environment
-        if let dataSource = CodexDataSourceResolver().resolve() {
-            environment["CODEX_HOME"] = dataSource.codexHome.path
-        }
-        let result: CodexThreadDeleteSubprocessResult
-        do {
-            result = try CodexThreadDeleteSubprocess.run(
-                executableURL: URL(
-                    fileURLWithPath: try CodexBinaryLocator.findExecutable()
-                ),
-                arguments: commandArguments(threadID: threadID),
-                environment: environment,
-                timeout: timeout
-            )
-        } catch is CodexThreadDeleteSubprocessError {
-            throw CodexThreadDeleteError.timeout
-        }
-        guard result.terminationStatus == 0 else {
-            throw CodexThreadDeleteError.commandFailed(
-                result.stderr.isEmpty ? result.stdout : result.stderr
-            )
-        }
-        return result.stdout.isEmpty ? "会话已永久删除" : result.stdout
+        throw CodexThreadDeleteError.legacySessionDeleteRetired
     }
 }
 
@@ -2032,6 +1987,7 @@ enum CodexThreadDeleteError: LocalizedError {
     case injectionResourceMissing
     case invalidBindingPayload
     case invalidThreadID
+    case legacySessionDeleteRetired
     case timeout
 
     var errorDescription: String? {
@@ -2083,6 +2039,8 @@ enum CodexThreadDeleteError: LocalizedError {
             return "Codex 页面发来的删除请求格式不兼容"
         case .invalidThreadID:
             return "会话 ID 不是有效 UUID"
+        case .legacySessionDeleteRetired:
+            return CodexLegacySessionDeletePolicy.migrationMessage
         case .timeout:
             return "Codex 删除命令超时"
         }

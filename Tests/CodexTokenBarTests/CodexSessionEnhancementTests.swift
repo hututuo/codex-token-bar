@@ -25,8 +25,37 @@ final class CodexSessionEnhancementTests: XCTestCase {
         let loaded = CodexSessionEnhancementSettings.load(defaults: defaults)
 
         XCTAssertTrue(loaded.pasteFix)
+        XCTAssertFalse(loaded.sessionDelete)
         XCTAssertEqual(loaded.conversationViewMaxWidth, 4_000)
-        XCTAssertEqual(loaded.enabledFeatureCount, 5)
+        XCTAssertEqual(loaded.enabledFeatureCount, 4)
+    }
+
+    func testLegacyPersistedDeleteTrueIsMigratedAndSavedAsDisabled() throws {
+        let suite = "CodexSessionEnhancementMigrationTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var legacy = CodexSessionEnhancementSettings.default
+        legacy.sessionDelete = true
+        defaults.set(
+            try JSONEncoder().encode(legacy),
+            forKey: CodexSessionEnhancementSettings.storageKey
+        )
+
+        let loaded = CodexSessionEnhancementSettings.load(defaults: defaults)
+        let persistedData = try XCTUnwrap(
+            defaults.data(forKey: CodexSessionEnhancementSettings.storageKey)
+        )
+        let persisted = try JSONDecoder().decode(
+            CodexSessionEnhancementSettings.self,
+            from: persistedData
+        )
+
+        XCTAssertFalse(loaded.sessionDelete)
+        XCTAssertFalse(persisted.sessionDelete)
+        XCTAssertEqual(
+            CodexSessionEnhancementSettings.default.sessionDelete,
+            false
+        )
     }
 
     func testBindingRequestSupportsEverySessionEnhancementAction() throws {

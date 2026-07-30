@@ -42,7 +42,7 @@ impl Default for AppSettingsSnapshot {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEnhancementSettingsSnapshot {
-    #[serde(default = "default_enabled")]
+    #[serde(default)]
     pub session_delete: bool,
     #[serde(default = "default_enabled")]
     pub markdown_export: bool,
@@ -63,7 +63,7 @@ pub struct SessionEnhancementSettingsSnapshot {
 impl Default for SessionEnhancementSettingsSnapshot {
     fn default() -> Self {
         Self {
-            session_delete: true,
+            session_delete: false,
             markdown_export: true,
             paste_fix: false,
             project_move: true,

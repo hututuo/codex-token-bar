@@ -161,6 +161,332 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         )
     }
 
+    func testSessionManagementListUsesEverySupportedSourceKindAndBothArchives() async throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [["id": "active-thread"]],
+                "nextCursor": NSNull(),
+            ]),
+            rpcResult(id: 3, result: [
+                "data": [["id": "archived-thread"]],
+                "nextCursor": NSNull(),
+            ]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        let threads = try await client.listSessionManagementThreads(
+            codexPath: "/fake/codex",
+            dataSource: nil
+        )
+
+        XCTAssertEqual(Set(threads.map(\.id)), ["active-thread", "archived-thread"])
+        XCTAssertEqual(threads.first { $0.id == "active-thread" }?.archived, false)
+        XCTAssertEqual(threads.first { $0.id == "archived-thread" }?.archived, true)
+        let listWrites = transport.writes.filter { rpcMethod($0) == "thread/list" }
+        XCTAssertEqual(listWrites.count, 2)
+        let expectedKinds = [
+            "cli",
+            "vscode",
+            "exec",
+            "appServer",
+            "subAgent",
+            "subAgentReview",
+            "subAgentCompact",
+            "subAgentThreadSpawn",
+            "subAgentOther",
+            "unknown",
+        ]
+        for write in listWrites {
+            let params = try XCTUnwrap(write["params"] as? [String: Any])
+            XCTAssertEqual(params["sourceKinds"] as? [String], expectedKinds)
+            XCTAssertEqual(params["useStateDbOnly"] as? Bool, true)
+        }
+    }
+
+    func testSessionManagementListWaitsBeyondInteractiveRequestTimeout() async throws {
+        let transport = AutoResumeDelayedEventTransport(
+            events: [
+                rpcResult(id: 1, result: [:]),
+                rpcResult(id: 2, result: [
+                    "data": [["id": "active-thread"]],
+                    "nextCursor": NSNull(),
+                ]),
+                rpcResult(id: 3, result: [
+                    "data": [["id": "archived-thread"]],
+                    "nextCursor": NSNull(),
+                ]),
+            ],
+            delayedEventIndex: 1,
+            delay: 1.2
+        )
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        let threads = try await client.listSessionManagementThreads(
+            codexPath: "/fake/codex",
+            dataSource: nil
+        )
+
+        XCTAssertEqual(Set(threads.map(\.id)), ["active-thread", "archived-thread"])
+        XCTAssertEqual(
+            transport.writes.filter { rpcMethod($0) == "thread/list" }.count,
+            2
+        )
+    }
+
+    func testSessionManagementListRejectsRepeatedCursor() async {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: ["data": [], "nextCursor": "repeat"]),
+            rpcResult(id: 3, result: ["data": [], "nextCursor": "repeat"]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        do {
+            _ = try await client.listSessionManagementThreads(
+                codexPath: "/fake/codex",
+                dataSource: nil
+            )
+            XCTFail("Expected repeated cursor rejection")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("重复游标"))
+        }
+        XCTAssertEqual(
+            transport.writes.filter { rpcMethod($0) == "thread/list" }.count,
+            2
+        )
+    }
+
+    func testSessionManagementListRejectsMalformedRowWithoutDroppingIt() async throws {
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [
+                    ["id": "valid-thread"],
+                    ["preview": "missing id"],
+                ],
+                "nextCursor": NSNull(),
+            ]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        do {
+            _ = try await client.listSessionManagementThreads(
+                codexPath: "/fake/codex",
+                dataSource: nil
+            )
+            XCTFail("a malformed row must fail the complete catalog read")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("缺少有效 ID"))
+        }
+        let list = try XCTUnwrap(
+            transport.writes.first { rpcMethod($0) == "thread/list" }
+        )
+        let params = try XCTUnwrap(list["params"] as? [String: Any])
+        XCTAssertEqual(params["useStateDbOnly"] as? Bool, true)
+        XCTAssertEqual(params["archived"] as? Bool, false)
+    }
+
+    func testSessionManagementDescendantsUseAncestorAcrossAllArchivePages() async throws {
+        let ancestorThreadID = UUID().uuidString.lowercased()
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [[
+                    "id": "active-child",
+                    "parentThreadId": ancestorThreadID,
+                ]],
+                "nextCursor": "active-page-2",
+            ]),
+            rpcResult(id: 3, result: [
+                "data": [[
+                    "id": "active-grandchild",
+                    "parentThreadId": "active-child",
+                ]],
+                "nextCursor": NSNull(),
+            ]),
+            rpcResult(id: 4, result: [
+                "data": [[
+                    "id": "archived-child",
+                    "parentThreadId": ancestorThreadID,
+                ]],
+                "nextCursor": NSNull(),
+            ]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        let threads = try await client.listSessionManagementDescendants(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            ancestorThreadID: ancestorThreadID
+        )
+
+        XCTAssertEqual(
+            Set(threads.map(\.id)),
+            ["active-child", "active-grandchild", "archived-child"]
+        )
+        let writes = transport.writes.filter { rpcMethod($0) == "thread/list" }
+        XCTAssertEqual(writes.count, 3)
+        for write in writes {
+            let params = try XCTUnwrap(write["params"] as? [String: Any])
+            XCTAssertEqual(params["ancestorThreadId"] as? String, ancestorThreadID)
+            XCTAssertEqual(params["useStateDbOnly"] as? Bool, true)
+        }
+        XCTAssertEqual(
+            (writes[0]["params"] as? [String: Any])?["archived"] as? Bool,
+            false
+        )
+        XCTAssertEqual(
+            (writes[1]["params"] as? [String: Any])?["cursor"] as? String,
+            "active-page-2"
+        )
+        XCTAssertEqual(
+            (writes[2]["params"] as? [String: Any])?["archived"] as? Bool,
+            true
+        )
+    }
+
+    func testSessionManagementDescendantsRejectMalformedRowAndRemainReadOnly() async throws {
+        let ancestorThreadID = UUID().uuidString.lowercased()
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "data": [["parentThreadId": ancestorThreadID]],
+                "nextCursor": NSNull(),
+            ]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        do {
+            _ = try await client.listSessionManagementDescendants(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                ancestorThreadID: ancestorThreadID
+            )
+            XCTFail("a malformed descendant row must fail the closure read")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("缺少有效 ID"))
+        }
+        let list = try XCTUnwrap(
+            transport.writes.first { rpcMethod($0) == "thread/list" }
+        )
+        let params = try XCTUnwrap(list["params"] as? [String: Any])
+        XCTAssertEqual(params["ancestorThreadId"] as? String, ancestorThreadID)
+        XCTAssertEqual(params["useStateDbOnly"] as? Bool, true)
+        XCTAssertEqual(params["archived"] as? Bool, false)
+    }
+
+    func testSessionManagementListReportsProcessExitWithoutWaitingForTimeout() async {
+        let transport = AutoResumeScriptedTransport(
+            events: [rpcResult(id: 1, result: [:])],
+            endOfFileWhenExhausted: true
+        )
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 60,
+            turnTimeout: 1
+        )
+
+        do {
+            _ = try await client.listSessionManagementThreads(
+                codexPath: "/fake/codex",
+                dataSource: nil
+            )
+            XCTFail("Expected process exit")
+        } catch {
+            XCTAssertEqual(
+                error as? CodexAutoResumeAppServerError,
+                .processExited("thread/list")
+            )
+        }
+    }
+
+    func testSessionManagementArchiveFreshReadsAndRejectsIdleStatus() async {
+        let threadID = "11111111-1111-1111-1111-111111111111"
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "thread": ["id": threadID, "status": ["type": "idle"]],
+            ]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        do {
+            try await client.archiveSessionManagementThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                threadID: threadID
+            )
+            XCTFail("idle remains loaded and must not be archived")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("空闲"))
+        }
+
+        XCTAssertEqual(
+            transport.writes.compactMap(rpcMethod),
+            ["initialize", "initialized", "thread/read"]
+        )
+        let read = transport.writes.first { rpcMethod($0) == "thread/read" }
+        let params = read?["params"] as? [String: Any]
+        XCTAssertEqual(params?["threadId"] as? String, threadID)
+        XCTAssertEqual(params?["includeTurns"] as? Bool, false)
+    }
+
+    func testSessionManagementArchiveProceedsOnlyAfterFreshNotLoadedStatus() async throws {
+        let threadID = "22222222-2222-2222-2222-222222222222"
+        let transport = AutoResumeScriptedTransport(events: [
+            rpcResult(id: 1, result: [:]),
+            rpcResult(id: 2, result: [
+                "thread": ["id": threadID, "status": ["type": "notLoaded"]],
+            ]),
+            rpcResult(id: 3, result: [:]),
+        ])
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: 1,
+            turnTimeout: 1
+        )
+
+        try await client.archiveSessionManagementThread(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            threadID: threadID
+        )
+
+        XCTAssertEqual(
+            transport.writes.compactMap(rpcMethod),
+            ["initialize", "initialized", "thread/read", "thread/archive"]
+        )
+    }
+
     func testVisibilityRebuildScansActiveAndArchivedWithinPageCap() throws {
         var events = [rpcResult(id: 1, result: [:])]
         for page in 0..<23 {
@@ -194,7 +520,18 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         XCTAssertEqual(firstParams["useStateDbOnly"] as? Bool, false)
         XCTAssertEqual(
             firstParams["sourceKinds"] as? [String],
-            ["cli", "vscode", "exec", "appServer", "subAgent", "unknown"]
+            [
+                "cli",
+                "vscode",
+                "exec",
+                "appServer",
+                "subAgent",
+                "subAgentReview",
+                "subAgentCompact",
+                "subAgentThreadSpawn",
+                "subAgentOther",
+                "unknown",
+            ]
         )
         let archivedParams = try XCTUnwrap(lists.last?["params"] as? [String: Any])
         XCTAssertEqual(archivedParams["archived"] as? Bool, true)
@@ -1136,9 +1473,14 @@ private final class AutoResumeScriptedTransport: AccountQuotaProcessTransport, @
     private let lock = NSLock()
     private var session: AutoResumeScriptedSession?
     private let events: [Data]
+    private let endOfFileWhenExhausted: Bool
 
-    init(events: [Data]) {
+    init(
+        events: [Data],
+        endOfFileWhenExhausted: Bool = false
+    ) {
         self.events = events
+        self.endOfFileWhenExhausted = endOfFileWhenExhausted
     }
 
     var writes: [[String: Any]] {
@@ -1147,7 +1489,10 @@ private final class AutoResumeScriptedTransport: AccountQuotaProcessTransport, @
 
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
         lock.withLock {
-            let created = AutoResumeScriptedSession(events: events)
+            let created = AutoResumeScriptedSession(
+                events: events,
+                endOfFileWhenExhausted: endOfFileWhenExhausted
+            )
             session = created
             return created
         }
@@ -1163,9 +1508,14 @@ private final class AutoResumeScriptedSession: AccountQuotaProcessSession, @unch
     private var events: [Data]
     private var rawWrites: [[String: Any]] = []
     private var terminated = false
+    private let endOfFileWhenExhausted: Bool
 
-    init(events: [Data]) {
+    init(
+        events: [Data],
+        endOfFileWhenExhausted: Bool = false
+    ) {
         self.events = events
+        self.endOfFileWhenExhausted = endOfFileWhenExhausted
     }
 
     var writes: [[String: Any]] {
@@ -1186,7 +1536,7 @@ private final class AutoResumeScriptedSession: AccountQuotaProcessSession, @unch
             if !events.isEmpty {
                 return .line(events.removeFirst())
             }
-            return terminated ? .endOfFile : .idle
+            return terminated || endOfFileWhenExhausted ? .endOfFile : .idle
         }
     }
 
@@ -1201,6 +1551,115 @@ private final class AutoResumeScriptedSession: AccountQuotaProcessSession, @unch
             events.append(event)
             condition.broadcast()
         }
+    }
+
+    func shutdown() throws -> AccountQuotaProcessExit {
+        requestTermination()
+        return AccountQuotaProcessExit(status: 0, reason: .exit)
+    }
+}
+
+private final class AutoResumeDelayedEventTransport:
+    AccountQuotaProcessTransport,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let events: [Data]
+    private let delayedEventIndex: Int
+    private let delay: TimeInterval
+    private var session: AutoResumeDelayedEventSession?
+
+    init(
+        events: [Data],
+        delayedEventIndex: Int,
+        delay: TimeInterval
+    ) {
+        self.events = events
+        self.delayedEventIndex = delayedEventIndex
+        self.delay = delay
+    }
+
+    var writes: [[String: Any]] {
+        lock.withLock { session?.writes ?? [] }
+    }
+
+    func start(
+        codexPath: String,
+        dataSource: CodexDataSource?
+    ) throws -> any AccountQuotaProcessSession {
+        lock.withLock {
+            let created = AutoResumeDelayedEventSession(
+                events: events,
+                delayedEventIndex: delayedEventIndex,
+                delay: delay
+            )
+            session = created
+            return created
+        }
+    }
+}
+
+private final class AutoResumeDelayedEventSession:
+    AccountQuotaProcessSession,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let events: [Data]
+    private let delayedEventIndex: Int
+    private var remainingDelay: TimeInterval
+    private var eventIndex = 0
+    private var rawWrites: [[String: Any]] = []
+    private var terminated = false
+
+    init(
+        events: [Data],
+        delayedEventIndex: Int,
+        delay: TimeInterval
+    ) {
+        self.events = events
+        self.delayedEventIndex = delayedEventIndex
+        remainingDelay = delay
+    }
+
+    var writes: [[String: Any]] {
+        lock.withLock { rawWrites }
+    }
+
+    func writeStdin(_ data: Data) throws {
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let message = object as? [String: Any] else { return }
+        lock.withLock { rawWrites.append(message) }
+    }
+
+    func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent {
+        lock.lock()
+        if terminated {
+            lock.unlock()
+            return .endOfFile
+        }
+        guard eventIndex < events.count else {
+            lock.unlock()
+            return .idle
+        }
+        if eventIndex == delayedEventIndex, remainingDelay > 0 {
+            let delay = min(max(0, timeout), remainingDelay)
+            remainingDelay -= delay
+            lock.unlock()
+            if delay > 0 {
+                Thread.sleep(forTimeInterval: delay)
+            }
+            return .idle
+        }
+        let event = events[eventIndex]
+        eventIndex += 1
+        lock.unlock()
+        return .line(event)
+    }
+
+    func stderrTailText() -> String? { nil }
+
+    func requestTermination() {
+        lock.withLock { terminated = true }
     }
 
     func shutdown() throws -> AccountQuotaProcessExit {

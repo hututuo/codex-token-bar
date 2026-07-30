@@ -33,6 +33,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
                 .refresh,
                 .changeDirectory,
                 .providerRepair,
+                .sessionManagement,
                 .sessionEnhancements,
                 .autoResume,
             ]

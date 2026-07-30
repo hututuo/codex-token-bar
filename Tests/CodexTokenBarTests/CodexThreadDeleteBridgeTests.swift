@@ -58,13 +58,18 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
     }
 
     func testSharedInjectionTemplateRendersSwiftOwner() throws {
+        var legacySettings = CodexSessionEnhancementSettings.default
+        legacySettings.sessionDelete = true
         let script = try CodexThreadDeleteInjectionScript.render(
             owner: "swift",
-            bindingName: "codexTokenBarDeleteSwift"
+            bindingName: "codexTokenBarDeleteSwift",
+            settings: legacySettings
         )
 
         XCTAssertTrue(script.contains("const owner = \"swift\";"))
         XCTAssertTrue(script.contains("const bindingName = \"codexTokenBarDeleteSwift\";"))
+        XCTAssertTrue(script.contains(#""sessionDelete":false"#))
+        XCTAssertFalse(script.contains(#""sessionDelete":true"#))
         XCTAssertFalse(script.contains("__CTB_OWNER_JSON__"))
         XCTAssertFalse(script.contains("__CTB_BINDING_JSON__"))
     }
@@ -80,14 +85,35 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         XCTAssertEqual(request.title, "真实会话")
     }
 
-    func testDeleteCommandUsesOfficialForceArgumentsWithoutShell() throws {
+    func testLegacyDeleteExecutorAndBridgeFailClosedWithoutCLIPath() async throws {
         let threadID = "019f5a7c-1234-7abc-8def-0123456789ab"
         try CodexThreadID.validate(threadID)
 
-        XCTAssertEqual(
-            FoundationCodexThreadDeleteExecutor.commandArguments(threadID: threadID),
-            ["delete", "--force", threadID]
+        do {
+            _ = try await FoundationCodexThreadDeleteExecutor()
+                .delete(threadID: threadID)
+            XCTFail("retired sidebar delete must never execute")
+        } catch let error as CodexThreadDeleteError {
+            guard case .legacySessionDeleteRetired = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertTrue(error.localizedDescription.contains("会话管理"))
+        }
+        let bridgeResult =
+            CodexThreadDeleteBridgeService.retiredDeleteBindingResult
+        XCTAssertEqual(bridgeResult.status, "failed")
+        XCTAssertTrue(bridgeResult.message.contains("会话管理"))
+
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                "Sources/CodexTokenBar/CodexThreadDeleteBridge.swift"
         )
+        let sourceText = try String(contentsOf: source, encoding: .utf8)
+        XCTAssertFalse(sourceText.contains("--force"))
+        XCTAssertFalse(sourceText.contains("CodexBinaryLocator.findExecutable"))
         XCTAssertThrowsError(try CodexThreadID.validate("\(threadID); rm -rf /"))
     }
 
@@ -220,6 +246,17 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
                 readiness: "ready"
             )),
             .ready(buttonCount: 3)
+        )
+        XCTAssertEqual(
+            try CodexThreadDeleteInjectionVerification.verify(health(
+                candidateRows: 3,
+                eligibleRows: 3,
+                attachedRows: 0,
+                buttons: 0,
+                readiness: "ready",
+                deleteEnabled: false
+            )),
+            .ready(buttonCount: 0)
         )
         XCTAssertEqual(
             try CodexThreadDeleteInjectionVerification.verify(health(
@@ -595,6 +632,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         orphanButtons: Int = 0,
         readiness: String,
         bindingAvailable: Bool = true,
+        deleteEnabled: Bool = true,
         scanError: String? = nil
     ) -> CodexThreadDeleteInjectionHealth {
         CodexThreadDeleteInjectionHealth(
@@ -603,7 +641,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             bridgeRegistered: true,
             bindingMatches: true,
             bindingAvailable: bindingAvailable,
-            deleteEnabled: true,
+            deleteEnabled: deleteEnabled,
             sessionEnhancementsInstalled: true,
             sessionEnhancementError: nil,
             candidateRowCount: candidateRows,

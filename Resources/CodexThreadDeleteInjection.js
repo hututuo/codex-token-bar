@@ -74,7 +74,10 @@
   state.version = 2;
   state.runtimeVersion = runtimeVersion;
   state.enhancementSettings = {
-    sessionDelete: requestedSettings.sessionDelete !== false,
+    // The legacy sidebar delete affordance is permanently retired. Keep the
+    // field in the wire shape for old renderers, but never let a missing or
+    // persisted value recreate a bypass around Session Management.
+    sessionDelete: false,
     markdownExport: requestedSettings.markdownExport === true,
     pasteFix: requestedSettings.pasteFix === true,
     projectMove: requestedSettings.projectMove === true,

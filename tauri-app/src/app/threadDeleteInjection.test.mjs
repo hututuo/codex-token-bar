@@ -32,104 +32,154 @@ async function flush(window) {
   await new Promise((resolve) => window.setTimeout(resolve, 10));
 }
 
-test("injected delete control calls the native bridge and removes the row after success", async () => {
+const deleteSelector = '[data-codex-token-bar-thread-delete="true"]';
+
+function deleteHealth(window, owner = "tauri", binding = "codexTokenBarDeleteTauri") {
+  return window.__codexTokenBarThreadDeleteHealth(owner, binding);
+}
+
+function assertLegacyDeleteRetired(window, calls) {
+  assert.equal(window.__codexTokenBarThreadDeleteState.enhancementSettings.sessionDelete, false);
+  assert.equal(window.document.querySelectorAll(deleteSelector).length, 0);
+  assert.equal(calls.length, 0);
+}
+
+test("persisted sessionDelete=true is normalized to a retired, fail-closed sidebar", async () => {
   const window = new Window({ url: "app://codex/" });
-  const id = "019f5a7c-1234-7abc-8def-0123456789ab";
-  const row = sidebarRow(window.document, id, "需要删除的会话");
-  const calls = [];
-  window.confirm = () => true;
-  window.codexTokenBarDeleteTauri = (payloadText) => {
-    const payload = JSON.parse(payloadText);
-    calls.push(payload);
-    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
-      status: "deleted",
-      message: "会话已永久删除",
-    });
-  };
-
-  window.eval(renderedScript());
-  await flush(window);
-  const button = window.document.querySelector('[data-codex-token-bar-thread-delete="true"]');
-  assert.ok(button);
-  assert.equal(button.getAttribute("aria-label"), "永久删除会话：需要删除的会话");
-  button.click();
-  await flush(window);
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].threadId, id);
-  assert.equal(row.isConnected, false);
-  assert.match(window.document.body.textContent, /会话已永久删除/);
-});
-
-test("current local namespace is accepted but the native bridge receives a bare UUID", async () => {
-  const window = new Window({ url: "app://codex/" });
-  const id = "019f5a7c-1334-7abc-8def-0123456789ab";
-  const reference = `local:${id}`;
-  const row = sidebarRow(window.document, reference, "当前格式的会话");
-  const calls = [];
-  window.confirm = () => true;
-  window.codexTokenBarDeleteTauri = (payloadText) => {
-    const payload = JSON.parse(payloadText);
-    calls.push(payload);
-    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
-      status: "deleted",
-      message: "会话已永久删除",
-    });
-  };
-
-  window.eval(renderedScript());
-  const health = window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
+  const row = sidebarRow(
+    window.document,
+    "019f5a7c-1234-7abc-8def-0123456789ab",
+    "旧设置仍启用删除",
   );
+  const calls = [];
+  let confirmations = 0;
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = {
+    sessionDelete: true,
+    markdownExport: true,
+  };
+  window.confirm = () => {
+    confirmations += 1;
+    return true;
+  };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
+
+  window.eval(renderedScript());
+  await flush(window);
+  window.document.body.click();
+  await flush(window);
+
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(confirmations, 0);
+  assert.equal(row.isConnected, true);
+  assert.deepEqual(window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__, {
+    sessionDelete: true,
+    markdownExport: true,
+  });
+  const health = deleteHealth(window);
   assert.equal(health.readiness, "ready");
-  const button = window.document.querySelector('[data-codex-token-bar-thread-delete="true"]');
-  assert.ok(button);
-  assert.equal(
-    button.getAttribute("data-codex-token-bar-thread-delete-thread-id"),
-    reference,
-  );
-
-  button.click();
-  await flush(window);
-
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].threadId, id);
+  assert.equal(health.deleteEnabled, false);
+  assert.equal(health.candidateRowCount, 1);
+  assert.equal(health.eligibleRowCount, 1);
+  assert.equal(health.attachedRowCount, 0);
+  assert.equal(health.missingButtonCount, 1);
 });
 
-test("repeated Swift and Tauri injection keeps one button and can fall through to a live bridge", async () => {
+test("bare and local UUID rows remain diagnosable but never receive direct-delete controls", async () => {
   const window = new Window({ url: "app://codex/" });
-  const id = "019f5a7c-2234-7abc-8def-0123456789ab";
-  const row = sidebarRow(window.document, id, "双端共存");
-  window.confirm = () => true;
-  window.__CODEX_TOKEN_BAR_DELETE_BRIDGE_TIMEOUT_MS__ = 20;
-  window.codexTokenBarDeleteSwift = () => {};
+  sidebarRow(
+    window.document,
+    "019f5a7c-1334-7abc-8def-0123456789ab",
+    "裸 UUID",
+  );
+  sidebarRow(
+    window.document,
+    "local:019f5a7c-1434-7abc-8def-0123456789ab",
+    "本地命名空间 UUID",
+  );
+  const calls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
   window.codexTokenBarDeleteTauri = (payloadText) => {
-    const payload = JSON.parse(payloadText);
-    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, { status: "deleted" });
+    calls.push(JSON.parse(payloadText));
+  };
+
+  window.eval(renderedScript());
+  await flush(window);
+
+  assertLegacyDeleteRetired(window, calls);
+  const health = deleteHealth(window);
+  assert.equal(health.readiness, "ready");
+  assert.equal(health.candidateRowCount, 2);
+  assert.equal(health.eligibleRowCount, 2);
+  assert.equal(health.buttonCount, 0);
+  assert.equal(health.missingButtonCount, 2);
+});
+
+test("blank, malformed and absent thread ids cannot recreate the retired control", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const blank = sidebarRow(window.document, "", "空 ID");
+  const malformed = sidebarRow(window.document, "thread_placeholder", "伪造 ID");
+  const absent = window.document.createElement("a");
+  absent.textContent = "没有 thread id";
+  window.document.body.appendChild(absent);
+  const calls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
+
+  window.eval(renderedScript());
+  blank.setAttribute("data-app-action-sidebar-thread-id", "still-not-a-uuid");
+  malformed.replaceChildren(window.document.createTextNode("React 重绘后的伪造 ID"));
+  await flush(window);
+  absent.click();
+
+  assertLegacyDeleteRetired(window, calls);
+  const health = deleteHealth(window);
+  assert.equal(health.candidateRowCount, 2);
+  assert.equal(health.eligibleRowCount, 0);
+  assert.equal(health.readiness, "failed");
+});
+
+test("repeated Swift and Tauri injections cannot revive direct delete or fall through bridges", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const row = sidebarRow(
+    window.document,
+    "019f5a7c-2234-7abc-8def-0123456789ab",
+    "双端重复注入",
+  );
+  const tauriCalls = [];
+  const swiftCalls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    tauriCalls.push(JSON.parse(payloadText));
+  };
+  window.codexTokenBarDeleteSwift = (payloadText) => {
+    swiftCalls.push(JSON.parse(payloadText));
   };
 
   window.eval(renderedScript("tauri", "codexTokenBarDeleteTauri"));
   window.eval(renderedScript("swift", "codexTokenBarDeleteSwift"));
+  window.eval(renderedScript("tauri", "codexTokenBarDeleteTauri"));
+  row.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true }));
+  row.click();
   await flush(window);
 
-  assert.equal(window.document.querySelectorAll('[data-codex-token-bar-thread-delete="true"]').length, 1);
-  window.document.querySelector('[data-codex-token-bar-thread-delete="true"]').click();
-  await new Promise((resolve) => window.setTimeout(resolve, 60));
-  assert.equal(row.isConnected, false);
-});
-
-test("rows without a trusted thread id are not modified", async () => {
-  const window = new Window({ url: "app://codex/" });
-  const row = window.document.createElement("a");
-  row.textContent = "没有 thread id";
-  window.document.body.appendChild(row);
-  window.codexTokenBarDeleteTauri = () => {};
-
-  window.eval(renderedScript());
-  await flush(window);
-
-  assert.equal(window.document.querySelector('[data-codex-token-bar-thread-delete="true"]'), null);
+  assertLegacyDeleteRetired(window, tauriCalls);
+  assert.equal(swiftCalls.length, 0);
+  for (const [owner, binding] of [
+    ["tauri", "codexTokenBarDeleteTauri"],
+    ["swift", "codexTokenBarDeleteSwift"],
+  ]) {
+    const health = deleteHealth(window, owner, binding);
+    assert.equal(health.readiness, "ready");
+    assert.equal(health.deleteEnabled, false);
+    assert.equal(health.buttonCount, 0);
+  }
+  const wrongBinding = deleteHealth(window, "swift", "codexTokenBarDeleteTauri");
+  assert.equal(wrongBinding.bindingMatches, false);
+  assert.equal(wrongBinding.readiness, "failed");
 });
 
 test("health is JSON serializable and reports an empty sidebar as waiting", () => {
@@ -171,217 +221,154 @@ test("health is JSON serializable and reports an empty sidebar as waiting", () =
   assert.equal(copy.bridgeRegistered, true);
   assert.equal(copy.bindingMatches, true);
   assert.equal(copy.bindingAvailable, true);
-  assert.equal(copy.deleteEnabled, true);
+  assert.equal(copy.deleteEnabled, false);
   assert.equal(copy.sessionEnhancementsInstalled, false);
   assert.equal(copy.sessionEnhancementError, null);
 });
 
-test("health synchronously scans rows and verifies one button per eligible row", () => {
+test("health synchronously recognizes eligible rows without requiring retired buttons", () => {
   const window = new Window({ url: "app://codex/" });
-  window.codexTokenBarDeleteTauri = () => {};
+  const calls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
   sidebarRow(window.document, "019f5a7c-3234-7abc-8def-0123456789ab", "立即验收");
 
   window.eval(renderedScript());
-  const health = window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  );
+  const health = deleteHealth(window);
 
+  assertLegacyDeleteRetired(window, calls);
   assert.equal(health.readiness, "ready");
   assert.equal(health.eligibleRowCount, 1);
-  assert.equal(health.attachedRowCount, 1);
-  assert.equal(health.buttonCount, 1);
-  assert.equal(health.missingButtonCount, 0);
+  assert.equal(health.attachedRowCount, 0);
+  assert.equal(health.buttonCount, 0);
+  assert.equal(health.missingButtonCount, 1);
 });
 
-test("Swift and Tauri health remain independently addressable after repeated injection", () => {
+test("health rejects externally inserted legacy duplicate and orphan controls", () => {
   const window = new Window({ url: "app://codex/" });
-  window.codexTokenBarDeleteTauri = () => {};
-  window.codexTokenBarDeleteSwift = () => {};
-  sidebarRow(window.document, "019f5a7c-4234-7abc-8def-0123456789ab", "双端健康检查");
-
-  window.eval(renderedScript("tauri", "codexTokenBarDeleteTauri"));
-  window.eval(renderedScript("swift", "codexTokenBarDeleteSwift"));
-
-  assert.equal(window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  ).readiness, "ready");
-  assert.equal(window.__codexTokenBarThreadDeleteHealth(
-    "swift",
-    "codexTokenBarDeleteSwift",
-  ).readiness, "ready");
-  const wrongBinding = window.__codexTokenBarThreadDeleteHealth(
-    "swift",
-    "codexTokenBarDeleteTauri",
-  );
-  assert.equal(wrongBinding.bindingMatches, false);
-  assert.equal(wrongBinding.readiness, "failed");
-});
-
-test("blank thread ids, duplicate buttons, and orphan buttons fail health verification", () => {
-  const blankWindow = new Window({ url: "app://codex/" });
-  blankWindow.codexTokenBarDeleteTauri = () => {};
-  const blank = blankWindow.document.createElement("a");
-  blank.setAttribute("data-app-action-sidebar-thread-id", "");
-  blankWindow.document.body.appendChild(blank);
-  blankWindow.eval(renderedScript());
-  const blankHealth = blankWindow.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  );
-  assert.equal(blankHealth.candidateRowCount, 1);
-  assert.equal(blankHealth.eligibleRowCount, 0);
-  assert.equal(blankHealth.readiness, "failed");
-
-  const malformed = blankWindow.document.createElement("a");
-  malformed.setAttribute("data-app-action-sidebar-thread-id", "thread_placeholder");
-  blankWindow.document.body.appendChild(malformed);
-  const malformedHealth = blankWindow.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  );
-  assert.equal(malformedHealth.candidateRowCount, 2);
-  assert.equal(malformedHealth.eligibleRowCount, 0);
-  assert.equal(malformedHealth.readiness, "failed");
-  assert.equal(blankWindow.document.querySelector('[data-codex-token-bar-thread-delete="true"]'), null);
-
-  const duplicateWindow = new Window({ url: "app://codex/" });
-  duplicateWindow.codexTokenBarDeleteTauri = () => {};
+  const calls = [];
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
   const row = sidebarRow(
-    duplicateWindow.document,
+    window.document,
     "019f5a7c-5234-7abc-8def-0123456789ab",
-    "重复按钮",
+    "外部旧按钮",
   );
-  duplicateWindow.eval(renderedScript());
-  const duplicate = duplicateWindow.document.createElement("button");
-  duplicate.setAttribute("data-codex-token-bar-thread-delete", "true");
-  row.appendChild(duplicate);
-  const duplicateHealth = duplicateWindow.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  );
-  assert.equal(duplicateHealth.duplicateButtonCount, 1);
-  assert.equal(duplicateHealth.readiness, "failed");
-
-  const orphan = duplicateWindow.document.createElement("button");
-  orphan.setAttribute("data-codex-token-bar-thread-delete", "true");
-  duplicateWindow.document.body.appendChild(orphan);
-  const orphanHealth = duplicateWindow.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  );
-  assert.equal(orphanHealth.orphanButtonCount, 1);
-  assert.equal(orphanHealth.readiness, "failed");
-});
-
-test("a valid and malformed thread id mix never reports ready", () => {
-  const window = new Window({ url: "app://codex/" });
-  window.codexTokenBarDeleteTauri = () => {};
-  sidebarRow(window.document, "019f5a7c-a234-7abc-8def-0123456789ab", "有效会话");
-  sidebarRow(window.document, "thread_placeholder", "异常会话");
-
   window.eval(renderedScript());
-  const health = window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  );
 
-  assert.equal(health.candidateRowCount, 2);
-  assert.equal(health.eligibleRowCount, 1);
-  assert.equal(health.buttonCount, 1);
+  const duplicate = window.document.createElement("button");
+  duplicate.setAttribute("data-codex-token-bar-thread-delete", "true");
+  duplicate.setAttribute(
+    "data-codex-token-bar-thread-delete-thread-id",
+    "019f5a7c-5234-7abc-8def-0123456789ab",
+  );
+  row.appendChild(duplicate);
+  const orphan = window.document.createElement("button");
+  orphan.setAttribute("data-codex-token-bar-thread-delete", "true");
+  orphan.setAttribute(
+    "data-codex-token-bar-thread-delete-thread-id",
+    "019f5a7c-9999-7abc-8def-0123456789ab",
+  );
+  window.document.body.appendChild(orphan);
+  duplicate.click();
+  orphan.click();
+  const health = deleteHealth(window);
+
+  assert.equal(calls.length, 0);
+  assert.equal(health.deleteEnabled, false);
+  assert.equal(health.buttonCount, 2);
+  assert.equal(health.attachedRowCount, 1);
+  assert.equal(health.orphanButtonCount, 1);
   assert.equal(health.readiness, "failed");
 });
 
-test("observer adds a button when a sidebar row appears after injection", async () => {
+test("observer recognizes a late row without creating a retired button", async () => {
   const window = new Window({ url: "app://codex/" });
-  window.codexTokenBarDeleteTauri = () => {};
+  const calls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
   window.eval(renderedScript());
-  assert.equal(window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  ).readiness, "waitingForRows");
+  assert.equal(deleteHealth(window).readiness, "waitingForRows");
 
-  sidebarRow(window.document, "019f5a7c-6234-7abc-8def-0123456789ab", "稍后出现");
+  const row = sidebarRow(
+    window.document,
+    "019f5a7c-6234-7abc-8def-0123456789ab",
+    "稍后出现",
+  );
   await flush(window);
+  row.click();
 
-  assert.equal(window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  ).readiness, "ready");
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(deleteHealth(window).readiness, "ready");
 });
 
-test("React-style row reconciliation cannot remove the portal delete button", async () => {
+test("React-style reconciliation cannot recreate the retired portal button", async () => {
   const window = new Window({ url: "app://codex/" });
-  window.codexTokenBarDeleteTauri = () => {};
+  const calls = [];
   const id = "019f5a7c-6334-7abc-8def-0123456789ab";
   const row = sidebarRow(window.document, `local:${id}`, "会被重绘的行");
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
 
   window.eval(renderedScript());
-  const originalButton = window.document.querySelector(
-    '[data-codex-token-bar-thread-delete="true"]',
-  );
-  assert.ok(originalButton);
-  assert.equal(originalButton.parentElement?.id, "codex-token-bar-thread-delete-overlay");
-  assert.equal(row.contains(originalButton), false);
-
   const replacementLabel = window.document.createElement("span");
   replacementLabel.className = "truncate";
   replacementLabel.textContent = "React 重绘后的行";
   row.replaceChildren(replacementLabel);
+  row.remove();
+  window.document.body.appendChild(row);
   await flush(window);
+  row.click();
 
-  assert.equal(originalButton.isConnected, true);
-  assert.equal(
-    window.document.querySelectorAll('[data-codex-token-bar-thread-delete="true"]').length,
-    1,
-  );
-  assert.equal(window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  ).readiness, "ready");
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(deleteHealth(window).readiness, "ready");
 });
 
-test("a reused sidebar row always deletes its current thread id", async () => {
+test("a reused sidebar row cannot carry a delete affordance to a new thread id", async () => {
   const window = new Window({ url: "app://codex/" });
   const oldID = "019f5a7c-7234-7abc-8def-0123456789ab";
   const newID = "019f5a7c-8234-7abc-8def-0123456789ab";
   const row = sidebarRow(window.document, oldID, "被复用的行");
   const calls = [];
-  window.confirm = () => true;
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
   window.codexTokenBarDeleteTauri = (payloadText) => {
-    const payload = JSON.parse(payloadText);
-    calls.push(payload);
-    window.__codexTokenBarThreadDeleteResolve(payload.owner, payload.id, {
-      status: "deleted",
-      message: "会话已永久删除",
-    });
+    calls.push(JSON.parse(payloadText));
   };
 
   window.eval(renderedScript());
   row.setAttribute("data-app-action-sidebar-thread-id", newID);
   await flush(window);
-  const button = window.document.querySelector('[data-codex-token-bar-thread-delete="true"]');
-  assert.equal(
-    button.getAttribute("data-codex-token-bar-thread-delete-thread-id"),
-    newID,
-  );
-  assert.equal(window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
-  ).readiness, "ready");
+  row.click();
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(deleteHealth(window).readiness, "ready");
 
-  button.click();
+  row.setAttribute("data-app-action-sidebar-thread-id", "recycled-placeholder");
   await flush(window);
+  row.click();
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(deleteHealth(window).readiness, "failed");
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].threadId, newID);
+  row.setAttribute("data-app-action-sidebar-thread-id", oldID);
+  await flush(window);
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(deleteHealth(window).readiness, "ready");
 });
 
 test("an early-document injection installs its observer when the root appears", async () => {
   const window = new Window({ url: "app://codex/" });
   window.document.documentElement.remove();
-  window.codexTokenBarDeleteTauri = () => {};
+  const calls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
 
   window.eval(renderedScript());
   const html = window.document.createElement("html");
@@ -390,16 +377,78 @@ test("an early-document injection installs its observer when the root appears", 
   html.append(head, body);
   window.document.appendChild(html);
   window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
-  sidebarRow(window.document, "019f5a7c-9234-7abc-8def-0123456789ab", "早期文档");
-  await flush(window);
-
-  const health = window.__codexTokenBarThreadDeleteHealth(
-    "tauri",
-    "codexTokenBarDeleteTauri",
+  const row = sidebarRow(
+    window.document,
+    "019f5a7c-9234-7abc-8def-0123456789ab",
+    "早期文档",
   );
+  await flush(window);
+  row.click();
+
+  assertLegacyDeleteRetired(window, calls);
+  const health = deleteHealth(window);
   assert.equal(health.observerInstalled, true);
   assert.equal(health.styleInstalled, true);
   assert.equal(health.readiness, "ready");
+});
+
+test("upgrading a legacy injected runtime removes its stale direct-delete DOM", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const currentRuntimeVersion = Number(template.match(/const runtimeVersion = (\d+);/)[1]);
+  const row = sidebarRow(
+    window.document,
+    "019f5a7c-a234-7abc-8def-0123456789ab",
+    "旧运行时残留",
+  );
+  const legacyOverlay = window.document.createElement("div");
+  legacyOverlay.id = "codex-token-bar-thread-delete-overlay";
+  const legacyButton = window.document.createElement("button");
+  legacyButton.setAttribute("data-codex-token-bar-thread-delete", "true");
+  legacyButton.setAttribute(
+    "data-codex-token-bar-thread-delete-thread-id",
+    row.getAttribute("data-app-action-sidebar-thread-id"),
+  );
+  legacyOverlay.appendChild(legacyButton);
+  window.document.body.appendChild(legacyOverlay);
+  const legacyStyle = window.document.createElement("style");
+  legacyStyle.id = "codex-token-bar-thread-delete-style";
+  window.document.head.appendChild(legacyStyle);
+  let disconnected = 0;
+  window.__codexTokenBarThreadDeleteState = {
+    version: 2,
+    runtimeVersion: currentRuntimeVersion - 1,
+    bridges: new Map(),
+    markdownTransfers: new Map(),
+    observer: { disconnect: () => { disconnected += 1; } },
+    documentReadyListener: null,
+    scanQueued: false,
+    sequence: 0,
+    overlay: legacyOverlay,
+    buttonsByReference: new Map([
+      [row.getAttribute("data-app-action-sidebar-thread-id"), legacyButton],
+    ]),
+    hoveredThreadReference: null,
+    pointerMoveListener: null,
+    pointerLeaveListener: null,
+    scrollListener: null,
+    resizeListener: null,
+    enhancementSettings: { sessionDelete: true },
+  };
+  const calls = [];
+  window.__CODEX_TOKEN_BAR_SESSION_ENHANCEMENTS__ = { sessionDelete: true };
+  window.codexTokenBarDeleteTauri = (payloadText) => {
+    calls.push(JSON.parse(payloadText));
+  };
+
+  window.eval(renderedScript());
+  await flush(window);
+  row.click();
+
+  assert.equal(disconnected, 1);
+  assert.equal(legacyButton.isConnected, false);
+  assert.equal(legacyOverlay.isConnected, false);
+  assertLegacyDeleteRetired(window, calls);
+  assert.equal(deleteHealth(window).readiness, "ready");
 });
 
 function recordingSink() {

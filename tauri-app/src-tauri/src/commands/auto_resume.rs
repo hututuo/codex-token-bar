@@ -918,7 +918,6 @@ impl AutoResumeTaskRuntime {
             let _ = self.persist_state(&persisted);
         }
 
-        let thread_id = trigger.thread_id.clone();
         let prompt = settings.prompt.clone();
         let invisible_resume_enabled = settings
             .invisible_resume_enabled
@@ -949,31 +948,37 @@ impl AutoResumeTaskRuntime {
             TriggerKind::Manual => None,
         };
         let run_cancel = cancel.clone();
-        let run_home = home.clone();
-        let outcome = match tauri::async_runtime::spawn_blocking(move || {
-            auto_resume::run_turn(
-                &run_home,
-                &thread_id,
-                &prompt,
-                invisible_resume_enabled,
-                &client_message_id,
-                freshness_not_before,
-                start_generation_guard,
-                run_cancel,
-            )
-        })
-        .await
-        {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(error)) => auto_resume::AutoResumeRunOutcome {
-                status: "failed".into(),
-                message: error,
-                turn_id: None,
-                quota_limited: false,
+        let outcome = match claim.run_authorization() {
+            Ok(authorization) => match tauri::async_runtime::spawn_blocking(move || {
+                auto_resume::run_turn(
+                    &authorization,
+                    &prompt,
+                    invisible_resume_enabled,
+                    &client_message_id,
+                    freshness_not_before,
+                    start_generation_guard,
+                    run_cancel,
+                )
+            })
+            .await
+            {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(error)) => auto_resume::AutoResumeRunOutcome {
+                    status: "failed".into(),
+                    message: error,
+                    turn_id: None,
+                    quota_limited: false,
+                },
+                Err(error) => auto_resume::AutoResumeRunOutcome {
+                    status: "failed".into(),
+                    message: format!("自动续跑后台任务异常结束：{error}"),
+                    turn_id: None,
+                    quota_limited: false,
+                },
             },
             Err(error) => auto_resume::AutoResumeRunOutcome {
                 status: "failed".into(),
-                message: format!("自动续跑后台任务异常结束：{error}"),
+                message: format!("自动续跑 claim 授权失效：{error}"),
                 turn_id: None,
                 quota_limited: false,
             },

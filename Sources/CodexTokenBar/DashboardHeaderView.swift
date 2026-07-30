@@ -10,6 +10,7 @@ enum DashboardHeaderAction: Equatable {
     case refresh
     case changeDirectory
     case providerRepair
+    case sessionManagement
     case sessionEnhancements
     case autoResume
 }
@@ -27,6 +28,7 @@ enum DashboardHeaderPresentationMode: Equatable {
             .refresh,
             .changeDirectory,
             .providerRepair,
+            .sessionManagement,
             .sessionEnhancements,
             .autoResume,
         ]
@@ -153,6 +155,7 @@ struct HeaderView: View {
     let onMarkAllRead: () -> Void
     let onChangeDirectory: () -> Void
     let onOpenProviderSync: () -> Void
+    let onOpenSessionManagement: () -> Void
     let onOpenSettings: () -> Void
     let onOpenSessionEnhancements: () -> Void
     let onOpenAutoResume: () -> Void
@@ -429,6 +432,19 @@ struct HeaderView: View {
                             DashboardHeaderRailDivider(height: 20)
 
                             HStack(spacing: 2) {
+                                if actions.contains(.sessionManagement) {
+                                    Button(action: onOpenSessionManagement) {
+                                        DashboardHeaderCommandLabel(
+                                            title: "会话管理",
+                                            systemImage: "rectangle.stack.badge.gearshape",
+                                            color: AppTheme.accentBlue
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("按项目浏览上下文，管理官方归档、恢复包和容量清理")
+                                    .accessibilityLabel("会话管理")
+                                }
+
                                 if actions.contains(.sessionEnhancements) {
                                     Button(action: onOpenSessionEnhancements) {
                                         DashboardHeaderCommandLabel(

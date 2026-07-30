@@ -83,7 +83,7 @@ interface SettingsCategoryDefinition {
 
 const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "general", label: "常规", description: "启动与基础偏好" },
-  { id: "session", label: "会话增强", description: "删除、导出、移动、输入与阅读体验" },
+  { id: "session", label: "会话增强", description: "会话管理、导出、移动、输入与阅读体验" },
   { id: "instances", label: "Codex 实例", description: "多开、隔离、同步与回滚" },
   { id: "automation", label: "自动续跑", description: "按所选中断原因、定时或额度恢复继续" },
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
@@ -132,6 +132,7 @@ interface AppSettingsDialogProps {
   onFloatingTextToneChange: (textTone: number) => void;
   onFloatingUnreadEffectChange: (effect: FloatingUnreadEffect) => void;
   onOpenProviderRepair: () => void;
+  onOpenSessionManagement: () => void;
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
   onCancelAutoResume: () => Promise<void>;
   onRefreshAutoResume: () => Promise<void>;
@@ -181,6 +182,7 @@ export function AppSettingsDialog({
   onFloatingTextToneChange,
   onFloatingUnreadEffectChange,
   onOpenProviderRepair,
+  onOpenSessionManagement,
   onQuotaRefreshIntervalChange,
   onCancelAutoResume,
   onRefreshAutoResume,
@@ -373,6 +375,7 @@ export function AppSettingsDialog({
                       void onReconnectThreadDelete();
                     }
                   }}
+                  onOpenSessionManagement={onOpenSessionManagement}
                   onSaveSessionEnhancements={onSaveSessionEnhancements}
                   sessionConnectionTriggerRef={sessionConnectionTriggerRef}
                   sessionEnhancements={sessionEnhancements}
@@ -513,11 +516,13 @@ export function AppSettingsDialog({
 
 function SessionEnhancementSettingsPanel({
   onConnectionAction,
+  onOpenSessionManagement,
   onSaveSessionEnhancements,
   sessionConnectionTriggerRef,
   sessionEnhancements,
   threadDeleteBridgeStatus,
 }: Pick<AppSettingsDialogProps,
+  | "onOpenSessionManagement"
   | "onSaveSessionEnhancements"
   | "sessionEnhancements"
   | "threadDeleteBridgeStatus"
@@ -540,7 +545,7 @@ function SessionEnhancementSettingsPanel({
     }
   }
 
-  function toggle(key: "sessionDelete" | "markdownExport" | "pasteFix" | "projectMove" | "threadIDBadge" | "conversationView" | "threadScrollRestore") {
+  function toggle(key: "markdownExport" | "pasteFix" | "projectMove" | "threadIDBadge" | "conversationView" | "threadScrollRestore") {
     void save({ [key]: !settings[key] });
   }
 
@@ -561,8 +566,23 @@ function SessionEnhancementSettingsPanel({
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="会话管理" description="在 Codex 侧栏为每个任务增加可靠的管理操作。">
-        <SettingRow title="会话删除" description="使用官方 Codex 删除命令永久删除所选会话。">
-          <ToggleButton active={settings.sessionDelete} label="会话删除" onClick={() => toggle("sessionDelete")} />
+        <SettingRow
+          title="Token Bar 会话管理"
+          description="独立工作面：按项目查看上下文，分开管理官方归档、深度压缩恢复包和安全删除。"
+        >
+          <button
+            className="app-settings-action is-primary"
+            onClick={onOpenSessionManagement}
+            type="button"
+          >
+            打开会话管理
+          </button>
+        </SettingRow>
+        <SettingRow
+          title="永久删除"
+          description="旧侧栏直接删除已停用。请从会话管理进入；删除前会强制创建并校验完整影响闭包的恢复包。"
+        >
+          <span className="app-settings-status">仅在会话管理中</span>
         </SettingRow>
         <SettingRow title="Markdown 导出" description="从真实 rollout 生成可保存的 Markdown。">
           <ToggleButton active={settings.markdownExport} label="Markdown 导出" onClick={() => toggle("markdownExport")} />

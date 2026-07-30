@@ -50,6 +50,7 @@ export function DashboardApp() {
     reloadQuota,
     updateProviderRepair,
     providerSourceKey,
+    sourceToken,
     runningThreads,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
@@ -124,6 +125,7 @@ export function DashboardApp() {
         providerRepairOpen={providerRepairOpen}
         providerRepairSnapshot={readyState.repair}
         providerSourceKey={providerSourceKey}
+        sourceToken={sourceToken}
         runningThreads={runningThreads}
         onCodexHomeChange={updateCodexHome}
         onCodexHomeReset={restoreAutoCodexHome}

@@ -653,6 +653,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     restoreAutoCodexHome,
     updateProviderRepair,
     providerSourceKey,
+    sourceToken,
     runningThreads,
     selectedLiveThreadId,
     setSelectedLiveThreadId,

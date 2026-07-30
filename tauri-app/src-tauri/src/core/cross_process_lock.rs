@@ -1,3 +1,4 @@
+use crate::core::coordination_fs::CoordinationDirectory;
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -42,6 +43,31 @@ impl CrossProcessFileLock {
             Err(error) => Err(format!("获取{label}锁失败：{error}")),
         }
     }
+
+    pub(crate) fn acquire_in(
+        parent: &CoordinationDirectory,
+        name: &str,
+        label: &str,
+    ) -> Result<Self, String> {
+        Self::try_acquire_in(parent, name, label)?
+            .ok_or_else(|| format!("{label}正在由另一个 Token Bar 进程执行"))
+    }
+
+    pub(crate) fn try_acquire_in(
+        parent: &CoordinationDirectory,
+        name: &str,
+        label: &str,
+    ) -> Result<Option<Self>, String> {
+        let file = parent.open_lock_file(name, label)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                parent.verify_current()?;
+                Ok(Some(Self { file }))
+            }
+            Err(error) if is_lock_contention(&error) => Ok(None),
+            Err(error) => Err(format!("获取{label}锁失败：{error}")),
+        }
+    }
 }
 
 fn is_lock_contention(error: &io::Error) -> bool {
@@ -74,6 +100,7 @@ impl Drop for CrossProcessFileLock {
 #[cfg(test)]
 mod tests {
     use super::CrossProcessFileLock;
+    use crate::core::coordination_fs::CoordinationHome;
     use std::path::PathBuf;
 
     fn unique_test_root() -> PathBuf {
@@ -123,6 +150,68 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.contains("打开测试锁失败"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pinned_directory_allows_exactly_one_lock_holder() {
+        let root = unique_test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let home = CoordinationHome::open(&root).unwrap();
+        let directory = home.session_lock_directory().unwrap();
+        let first =
+            CrossProcessFileLock::acquire_in(&directory, "session-operation.lock", "测试").unwrap();
+        assert!(
+            CrossProcessFileLock::try_acquire_in(
+                &directory,
+                "session-operation.lock",
+                "测试"
+            )
+            .unwrap()
+            .is_none()
+        );
+        drop(first);
+        assert!(
+            CrossProcessFileLock::try_acquire_in(
+                &directory,
+                "session-operation.lock",
+                "测试"
+            )
+            .unwrap()
+            .is_some()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shared_open_reaches_lockfileex_for_arbitration() {
+        let root = unique_test_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let home = CoordinationHome::open(&root).unwrap();
+        let directory = home.session_lock_directory().unwrap();
+        let first =
+            CrossProcessFileLock::acquire_in(&directory, "windows-arbitration.lock", "测试").unwrap();
+        assert!(
+            CrossProcessFileLock::try_acquire_in(
+                &directory,
+                "windows-arbitration.lock",
+                "测试"
+            )
+            .unwrap()
+            .is_none(),
+            "the second handle must open successfully and contend in LockFileEx"
+        );
+        drop(first);
+        assert!(
+            CrossProcessFileLock::try_acquire_in(
+                &directory,
+                "windows-arbitration.lock",
+                "测试"
+            )
+            .unwrap()
+            .is_some()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

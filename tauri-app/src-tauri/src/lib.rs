@@ -180,6 +180,13 @@ pub fn run() {
             commands::auto_resume::read_auto_resume_status,
             commands::auto_resume::run_auto_resume_now,
             commands::auto_resume::cancel_auto_resume_run,
+            commands::session_management::list_session_management_catalog,
+            commands::session_management::read_session_context_page,
+            commands::session_management::archive_session_threads,
+            commands::session_management::unarchive_session_threads,
+            commands::session_management::prepare_session_delete_confirmation,
+            commands::session_management::delete_session_threads,
+            commands::session_management::create_session_recovery_archives,
         ])
         .run(tauri::generate_context!());
     if let Err(error) = run_result {

@@ -12,6 +12,7 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
       "开机自启：关",
       "更改目录",
       "会话消失修复",
+      "会话管理",
       "会话增强",
       "自动续跑",
       "设置",
@@ -25,6 +26,8 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
     assert.equal(calls.update, 1);
     await click(act, buttonByName(container, "设置"), window);
     assert.deepEqual(calls.settings, ["general"]);
+    await click(act, buttonByName(container, "会话管理"), window);
+    assert.equal(calls.sessionManagement, 1);
     await click(act, buttonByName(container, "会话增强"), window);
     await click(act, buttonByName(container, "自动续跑"), window);
     assert.deepEqual(calls.settings, ["general", "session", "automation"]);
@@ -70,7 +73,14 @@ async function withMountedHeader(run, initialOverrides = {}) {
       after.textContent = "after header";
       window.document.body.append(before, container, after);
       const root = createRoot(container);
-      const calls = { autostart: 0, csv: 0, png: 0, settings: [], update: 0 };
+      const calls = {
+        autostart: 0,
+        csv: 0,
+        png: 0,
+        sessionManagement: 0,
+        settings: [],
+        update: 0,
+      };
       let overrides = initialOverrides;
       const render = async (nextOverrides = {}) => {
         overrides = { ...overrides, ...nextOverrides };
@@ -106,6 +116,7 @@ function headerProps(calls, overrides) {
     onExportCsv: () => { calls.csv += 1; },
     onExportPng: () => { calls.png += 1; },
     onOpenProviderRepair: () => {},
+    onOpenSessionManagement: () => { calls.sessionManagement += 1; },
     onOpenSettings: (category) => { calls.settings.push(category); },
     onRefresh: async () => {},
     onToggleAutostart: () => { calls.autostart += 1; },

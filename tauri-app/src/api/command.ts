@@ -75,7 +75,7 @@ export async function callCommandOptional<T>(
 export async function callCommandStrict<T>(
   command: string,
   args?: Record<string, unknown>,
-  timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  timeoutMs: number | null = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<T> {
   if (!isTauriRuntimeAvailable()) {
     const error = new Error("当前不是 Tauri 桌面运行环境。");
@@ -90,7 +90,9 @@ export async function callCommandStrict<T>(
     (error) => recordCommandFailure(command, normalizeCommandError(error), attempt),
   );
   try {
-    const result = await withTimeout(invocation, timeoutMs);
+    const result = await (timeoutMs === null
+      ? invocation
+      : withTimeout(invocation, timeoutMs));
     clearCommandFailure(command, attempt);
     return result;
   } catch (error) {

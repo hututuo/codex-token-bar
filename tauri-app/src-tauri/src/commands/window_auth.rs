@@ -47,6 +47,13 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_auto_resume_status",
     "run_auto_resume_now",
     "cancel_auto_resume_run",
+    "list_session_management_catalog",
+    "read_session_context_page",
+    "archive_session_threads",
+    "unarchive_session_threads",
+    "prepare_session_delete_confirmation",
+    "delete_session_threads",
+    "create_session_recovery_archives",
     "read_app_update_state",
     "check_app_update",
     "install_app_update",
@@ -189,6 +196,23 @@ mod tests {
             assert!(allows_window_label("get_codex_home", label), "{label}");
         }
         for command in ["set_codex_home", "reset_codex_home"] {
+            assert!(allows_window_label(command, "main"), "{command}");
+            assert!(!allows_window_label(command, "floating"), "{command}");
+            assert!(!allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    #[test]
+    fn session_management_commands_are_main_window_only_and_complete() {
+        for command in [
+            "list_session_management_catalog",
+            "read_session_context_page",
+            "archive_session_threads",
+            "unarchive_session_threads",
+            "prepare_session_delete_confirmation",
+            "delete_session_threads",
+            "create_session_recovery_archives",
+        ] {
             assert!(allows_window_label(command, "main"), "{command}");
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");

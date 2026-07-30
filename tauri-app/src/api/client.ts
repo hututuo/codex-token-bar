@@ -74,4 +74,13 @@ export {
   updateCodexInstance,
 } from "./codexInstancesClient";
 
+export {
+  archiveSessionThreads,
+  createSessionRecoveryArchives,
+  deleteSessionThreads,
+  listSessionManagementCatalog,
+  readSessionContextPage,
+  unarchiveSessionThreads,
+} from "./sessionManagementClient";
+
 export { recordPerformanceEvent, recordStartupEvent } from "./startupClient";

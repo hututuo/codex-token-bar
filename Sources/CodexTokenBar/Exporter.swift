@@ -249,6 +249,7 @@ struct ExportSnapshotView: View {
                     onMarkAllRead: {},
                     onChangeDirectory: {},
                     onOpenProviderSync: {},
+                    onOpenSessionManagement: {},
                     onOpenSettings: {},
                     onOpenSessionEnhancements: {},
                     onOpenAutoResume: {},

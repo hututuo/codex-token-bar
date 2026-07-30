@@ -176,6 +176,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                 var params: [String: Any] = [
                     "archived": false,
                     "limit": 100,
+                    "useStateDbOnly": true,
                     "sortKey": "updated_at",
                     "sortDirection": "desc",
                     "sourceKinds": ["cli", "vscode", "exec", "appServer", "unknown"],
@@ -204,6 +205,238 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             return threads.sorted {
                 ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
             }
+        }
+    }
+
+    func listSessionManagementThreads(
+        codexPath: String,
+        dataSource: CodexDataSource?
+    ) async throws -> [SessionManagementAppServerThread] {
+        try await withSession(codexPath: codexPath, dataSource: dataSource) { session in
+            var channel = CodexAutoResumeRPCChannel(session: session)
+            try channel.initialize(timeout: requestTimeout)
+            var threads: [SessionManagementAppServerThread] = []
+            for archived in [false, true] {
+                var cursor: String?
+                var seenCursors = Set<String>()
+                repeat {
+                    var params: [String: Any] = [
+                        "archived": archived,
+                        "limit": 100,
+                        "useStateDbOnly": true,
+                        "sortKey": "updated_at",
+                        "sortDirection": "desc",
+                        "sourceKinds": [
+                            "cli",
+                            "vscode",
+                            "exec",
+                            "appServer",
+                            "subAgent",
+                            "subAgentReview",
+                            "subAgentCompact",
+                            "subAgentThreadSpawn",
+                            "subAgentOther",
+                            "unknown",
+                        ],
+                    ]
+                    if let cursor {
+                        params["cursor"] = cursor
+                    }
+                    let result = try channel.requestWithoutDeadline(
+                        method: "thread/list",
+                        params: params
+                    )
+                    guard let data = result["data"] as? [[String: Any]] else {
+                        throw CodexAutoResumeAppServerError.invalidResponse(
+                            "thread/list 缺少 data"
+                        )
+                    }
+                    let parsed = try data.map { row in
+                        guard let thread = Self.parseSessionManagementThread(
+                            row,
+                            archived: archived
+                        ) else {
+                            throw CodexAutoResumeAppServerError.invalidResponse(
+                                "thread/list 含缺少有效 ID 的会话行"
+                            )
+                        }
+                        return thread
+                    }
+                    threads.append(contentsOf: parsed)
+                    let nextCursor = Self.nonemptyString(result["nextCursor"])
+                    if let nextCursor {
+                        guard nextCursor != cursor,
+                              seenCursors.insert(nextCursor).inserted else {
+                            throw CodexAutoResumeAppServerError.invalidResponse(
+                                "thread/list 返回重复游标：\(nextCursor)"
+                            )
+                        }
+                    }
+                    cursor = nextCursor
+                } while cursor != nil
+            }
+            return threads
+        }
+    }
+
+    func listSessionManagementDescendants(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        ancestorThreadID: String
+    ) async throws -> [SessionManagementAppServerThread] {
+        try CodexThreadID.validate(ancestorThreadID)
+        return try await withSession(codexPath: codexPath, dataSource: dataSource) { session in
+            var channel = CodexAutoResumeRPCChannel(session: session)
+            try channel.initialize(timeout: requestTimeout)
+            var threads: [SessionManagementAppServerThread] = []
+            for archived in [false, true] {
+                var cursor: String?
+                var seenCursors = Set<String>()
+                repeat {
+                    var params: [String: Any] = [
+                        "ancestorThreadId": ancestorThreadID,
+                        "archived": archived,
+                        "limit": 100,
+                        "useStateDbOnly": true,
+                        "sortKey": "updated_at",
+                        "sortDirection": "desc",
+                        "sourceKinds": [
+                            "cli",
+                            "vscode",
+                            "exec",
+                            "appServer",
+                            "subAgent",
+                            "subAgentReview",
+                            "subAgentCompact",
+                            "subAgentThreadSpawn",
+                            "subAgentOther",
+                            "unknown",
+                        ],
+                    ]
+                    if let cursor {
+                        params["cursor"] = cursor
+                    }
+                    let result = try channel.requestWithoutDeadline(
+                        method: "thread/list",
+                        params: params
+                    )
+                    guard let data = result["data"] as? [[String: Any]] else {
+                        throw CodexAutoResumeAppServerError.invalidResponse(
+                            "thread/list ancestorThreadId 缺少 data"
+                        )
+                    }
+                    let parsed = try data.map { row in
+                        guard let thread = Self.parseSessionManagementThread(
+                            row,
+                            archived: archived
+                        ) else {
+                            throw CodexAutoResumeAppServerError.invalidResponse(
+                                "thread/list ancestorThreadId 含缺少有效 ID 的会话行"
+                            )
+                        }
+                        return thread
+                    }
+                    threads.append(contentsOf: parsed)
+                    let nextCursor = Self.nonemptyString(result["nextCursor"])
+                    if let nextCursor {
+                        guard nextCursor != cursor,
+                              seenCursors.insert(nextCursor).inserted else {
+                            throw CodexAutoResumeAppServerError.invalidResponse(
+                                "thread/list ancestorThreadId 返回重复游标：\(nextCursor)"
+                            )
+                        }
+                    }
+                    cursor = nextCursor
+                } while cursor != nil
+            }
+            return threads
+        }
+    }
+
+    func archiveSessionManagementThread(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String
+    ) async throws {
+        try await mutateSessionManagementThread(
+            codexPath: codexPath,
+            dataSource: dataSource,
+            threadID: threadID,
+            method: "thread/archive"
+        )
+    }
+
+    func unarchiveSessionManagementThread(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String
+    ) async throws {
+        try await mutateSessionManagementThread(
+            codexPath: codexPath,
+            dataSource: dataSource,
+            threadID: threadID,
+            method: "thread/unarchive"
+        )
+    }
+
+    func readSessionManagementThreadStatus(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String
+    ) async throws -> SessionManagementThreadStatus {
+        try CodexThreadID.validate(threadID)
+        return try await withSession(codexPath: codexPath, dataSource: dataSource) { session in
+            var channel = CodexAutoResumeRPCChannel(session: session)
+            try channel.initialize(timeout: requestTimeout)
+            let read = try channel.request(
+                method: "thread/read",
+                params: ["threadId": threadID, "includeTurns": false],
+                timeout: requestTimeout
+            )
+            guard let value = read["thread"] as? [String: Any],
+                  Self.nonemptyString(value["id"]) == threadID else {
+                throw CodexAutoResumeAppServerError.invalidResponse(
+                    "thread/read 未返回目标 thread"
+                )
+            }
+            return SessionManagementThreadStatus(
+                appServerValue: Self.statusString(value["status"])
+            )
+        }
+    }
+
+    private func mutateSessionManagementThread(
+        codexPath: String,
+        dataSource: CodexDataSource?,
+        threadID: String,
+        method: String
+    ) async throws {
+        try CodexThreadID.validate(threadID)
+        try await withSession(codexPath: codexPath, dataSource: dataSource) { session in
+            var channel = CodexAutoResumeRPCChannel(session: session)
+            try channel.initialize(timeout: requestTimeout)
+            let read = try channel.request(
+                method: "thread/read",
+                params: ["threadId": threadID, "includeTurns": false],
+                timeout: requestTimeout
+            )
+            guard let value = read["thread"] as? [String: Any],
+                  Self.nonemptyString(value["id"]) == threadID else {
+                throw CodexAutoResumeAppServerError.invalidResponse(
+                    "thread/read 未返回目标 thread"
+                )
+            }
+            let status = SessionManagementThreadStatus(
+                appServerValue: Self.statusString(value["status"])
+            )
+            guard status.permitsMutation else {
+                throw CodexAutoResumeAppServerError.activeTurn(status.label)
+            }
+            _ = try channel.request(
+                method: method,
+                params: ["threadId": threadID],
+                timeout: requestTimeout
+            )
         }
     }
 
@@ -250,6 +483,10 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                             "exec",
                             "appServer",
                             "subAgent",
+                            "subAgentReview",
+                            "subAgentCompact",
+                            "subAgentThreadSpawn",
+                            "subAgentOther",
                             "unknown",
                         ],
                     ]
@@ -588,6 +825,74 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         )
     }
 
+    private static func parseSessionManagementThread(
+        _ value: [String: Any],
+        archived: Bool
+    ) -> SessionManagementAppServerThread? {
+        guard let id = nonemptyString(value["id"]) else { return nil }
+        let preview = nonemptyString(value["preview"]) ?? ""
+        let title = nonemptyString(value["name"])
+            ?? preview.components(separatedBy: .newlines).first
+            ?? String(id.prefix(12))
+        return SessionManagementAppServerThread(
+            id: id,
+            title: title,
+            preview: preview,
+            cwd: nonemptyString(value["cwd"]) ?? "",
+            rolloutPath: nonemptyString(value["path"]) ?? "",
+            createdAt: sessionManagementDate(
+                value["createdAt"] ?? value["created_at"]
+            ),
+            updatedAt: sessionManagementDate(
+                value["updatedAt"] ?? value["updated_at"]
+            ),
+            archived: archived,
+            status: SessionManagementThreadStatus(
+                appServerValue: statusString(value["status"])
+            ),
+            source: sourceString(
+                value["source"] ?? value["threadSource"] ?? value["thread_source"]
+            ),
+            model: nonemptyString(value["model"]) ?? "",
+            sessionID: nonemptyString(value["sessionId"] ?? value["session_id"]),
+            forkedFromID: nonemptyString(
+                value["forkedFromId"] ?? value["forked_from_id"]
+            ),
+            parentThreadID: nonemptyString(
+                value["parentThreadId"] ?? value["parent_thread_id"]
+            )
+        )
+    }
+
+    private static func sessionManagementDate(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber {
+            let raw = number.doubleValue
+            return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1_000 : raw)
+        }
+        guard let text = nonemptyString(value) else { return nil }
+        if let raw = Double(text) {
+            return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1_000 : raw)
+        }
+        return ISO8601DateFormatter().date(from: text)
+    }
+
+    private static func statusString(_ value: Any?) -> String? {
+        if let string = nonemptyString(value) { return string }
+        guard let object = value as? [String: Any] else { return nil }
+        return nonemptyString(object["type"])
+            ?? nonemptyString(object["status"])
+            ?? object.keys.sorted().first
+    }
+
+    private static func sourceString(_ value: Any?) -> String {
+        if let string = nonemptyString(value) { return string }
+        guard let object = value as? [String: Any] else { return "" }
+        return nonemptyString(object["type"])
+            ?? nonemptyString(object["kind"])
+            ?? object.keys.sorted().first
+            ?? ""
+    }
+
     private static func threadFreshness(in thread: [String: Any]) -> AutoResumeThreadFreshness {
         let turns = thread["turns"] as? [[String: Any]]
         return AutoResumeThreadFreshness(
@@ -792,6 +1097,24 @@ struct CodexAutoResumeRPCChannel {
         return try waitForResponse(id: id, stage: method, timeout: timeout)
     }
 
+    /// Complete session-management catalog reads must not be cut off by the
+    /// short interactive RPC timeout. The caller still owns cancellation, and
+    /// process exit is surfaced immediately by `waitForResponseWithoutDeadline`.
+    mutating func requestWithoutDeadline(
+        method: String,
+        params: [String: Any]
+    ) throws -> [String: Any] {
+        let id = nextRequestID
+        nextRequestID += 1
+        try write([
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        ])
+        return try waitForResponseWithoutDeadline(id: id, stage: method)
+    }
+
     mutating func waitForTurnCompletion(
         threadID: String,
         turnID: String,
@@ -924,6 +1247,42 @@ struct CodexAutoResumeRPCChannel {
             throw CancellationError()
         }
         throw CodexAutoResumeAppServerError.timeout(stage)
+    }
+
+    private mutating func waitForResponseWithoutDeadline(
+        id: Int,
+        stage: String
+    ) throws -> [String: Any] {
+        while true {
+            try Task.checkCancellation()
+            switch try session.nextStdoutEvent(timeout: 0.1) {
+            case .idle:
+                continue
+            case .endOfFile:
+                throw CodexAutoResumeAppServerError.processExited(stage)
+            case .line(let line):
+                guard let message = try? JSONSerialization.jsonObject(with: line)
+                    as? [String: Any] else {
+                    continue
+                }
+                if try handleServerRequest(message) { continue }
+                observeNotification(message)
+                guard (message["id"] as? NSNumber)?.intValue == id else { continue }
+                if let error = message["error"] as? [String: Any] {
+                    let detail = CodexAppServerClient.nonemptyString(error["message"])
+                        ?? "RPC \(stage) failed"
+                    let code = (error["code"] as? NSNumber)?.intValue
+                    throw CodexAutoResumeAppServerError.rpcRejected(
+                        code: code,
+                        message: detail
+                    )
+                }
+                guard let result = message["result"] as? [String: Any] else {
+                    throw CodexAutoResumeAppServerError.invalidResponse("\(stage) 缺少 result")
+                }
+                return result
+            }
+        }
     }
 
     private mutating func handleServerRequest(_ message: [String: Any]) throws -> Bool {

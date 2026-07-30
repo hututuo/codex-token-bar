@@ -1316,7 +1316,7 @@ fn current_codex_home_source_token(
 }
 
 #[cfg(unix)]
-fn physical_home_key(path: &Path) -> Result<String, String> {
+pub(crate) fn physical_home_key(path: &Path) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
 
     let metadata = std::fs::metadata(path).map_err(|error| {
@@ -1326,7 +1326,7 @@ fn physical_home_key(path: &Path) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn physical_home_key(path: &Path) -> Result<String, String> {
+pub(crate) fn physical_home_key(path: &Path) -> Result<String, String> {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt;
 
@@ -1392,7 +1392,7 @@ fn windows_home_identity(file: &std::fs::File) -> std::io::Result<(u32, u64)> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn physical_home_key(path: &Path) -> Result<String, String> {
+pub(crate) fn physical_home_key(path: &Path) -> Result<String, String> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         format!("Codex Home physical identity unavailable for {}: {error}", path.display())
     })?;
@@ -1525,7 +1525,7 @@ where
     result
 }
 
-async fn run_source_bound_dashboard_read<T, Read>(
+pub(crate) async fn run_source_bound_dashboard_read<T, Read>(
     app: &AppHandle,
     expected: CodexHomeSourceToken,
     read: Read,

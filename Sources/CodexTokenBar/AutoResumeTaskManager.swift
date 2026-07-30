@@ -33,7 +33,7 @@ final class AutoResumeManagedTask: ObservableObject, Identifiable {
 
 @MainActor
 final class AutoResumeTaskManager: ObservableObject {
-    static let collectionStorageKey = "CodexTokenBar.autoResume.tasks.v2"
+    nonisolated static let collectionStorageKey = "CodexTokenBar.autoResume.tasks.v2"
 
     @Published private(set) var tasks: [AutoResumeManagedTask] = []
     @Published var selectedTaskID: String?
@@ -117,6 +117,21 @@ final class AutoResumeTaskManager: ObservableObject {
 
     var hasProtectedTasks: Bool {
         tasks.contains { $0.configuration.enabled }
+    }
+
+    var protectedThreadIDs: Set<String> {
+        Set(tasks.compactMap {
+            guard $0.configuration.enabled else { return nil }
+            return $0.configuration.target?.id
+        })
+    }
+
+    func acquireSessionManagementExecution(ownerID: String) -> Bool {
+        executionGate.acquire(ownerID: ownerID)
+    }
+
+    func releaseSessionManagementExecution(ownerID: String) {
+        executionGate.release(ownerID: ownerID)
     }
 
     var runningTask: AutoResumeManagedTask? {
