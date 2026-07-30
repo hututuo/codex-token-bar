@@ -757,14 +757,12 @@ fn replace_file_atomically_with_hook(
                 )
             };
             if replaced_ok == 0 {
-                let replace_error = std::io::Error::last_os_error();
-                let retry = crate::core::windows_path::retry_missing_replace_target(
-                    replace_error,
-                    || fs::rename(source, destination),
-                );
-                return retry.map_err(|error| {
-                    format!("原子替换 {} 失败：{}", destination.display(), error)
-                });
+                let error = std::io::Error::last_os_error();
+                return Err(format!(
+                    "原子替换 {} 失败：{}",
+                    destination.display(),
+                    error
+                ));
             }
             return Ok(());
         }
