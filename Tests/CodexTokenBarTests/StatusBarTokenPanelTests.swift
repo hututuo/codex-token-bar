@@ -4,7 +4,7 @@ import XCTest
 
 final class StatusBarTokenPanelTests: XCTestCase {
     @MainActor
-    func testHostedPopoverKeepsDenseFiveGroupSurfaceInsideStableFrame() {
+    func testHostedPopoverKeepsConfigurableSummaryInsideStableFrame() {
         let defaults = UserDefaults.standard
         let previousAuto = defaults.object(forKey: InterfaceScaleSettings.autoEnabledKey)
         let previousManual = defaults.object(forKey: InterfaceScaleSettings.manualMultiplierKey)
@@ -21,6 +21,7 @@ final class StatusBarTokenPanelTests: XCTestCase {
             quota: AccountQuotaStore(),
             radar: CodexRadarStore(),
             taskCompletionMonitor: TaskCompletionMonitor(),
+            configuration: .default,
             onOpenDashboard: {},
             onOpenSettings: {},
             onClose: {}
@@ -57,21 +58,27 @@ final class StatusBarTokenPanelTests: XCTestCase {
 
     func testClosedStatusItemRefreshUsesOneSecondCadence() {
         XCTAssertEqual(StatusBarRefreshCadence.statusItem, 1.0)
-        XCTAssertEqual(StatusBarPopoverMetrics.width, 360)
-        XCTAssertEqual(StatusBarPopoverMetrics.height, 378)
+        XCTAssertEqual(StatusBarPopoverMetrics.width, 390)
+        XCTAssertEqual(StatusBarPopoverMetrics.height, 440)
     }
 
-    func testClosedPopoverDetachesContentAndReattachesLatestPresentationOnOpen() {
-        let lifecycle = StatusBarPopoverContentLifecycle()
+    func testPopoverFrameScalesWithConfiguredInterfaceSize() {
+        XCTAssertEqual(StatusBarPopoverMetrics.size(scale: 0.9).width, 351, accuracy: 0.01)
+        XCTAssertEqual(StatusBarPopoverMetrics.size(scale: 1.0).height, 440, accuracy: 0.01)
+        XCTAssertEqual(StatusBarPopoverMetrics.size(scale: 1.18).width, 460.2, accuracy: 0.01)
+        XCTAssertEqual(StatusBarPopoverMetrics.size(scale: 1.38).height, 607.2, accuracy: 0.01)
+    }
 
-        XCTAssertFalse(lifecycle.isContentAttached)
-        XCTAssertTrue(lifecycle.prepareToPresent())
-        XCTAssertTrue(lifecycle.isContentAttached)
-        XCTAssertFalse(lifecycle.prepareToPresent())
-        XCTAssertTrue(lifecycle.didClose())
-        XCTAssertFalse(lifecycle.isContentAttached)
-        XCTAssertFalse(lifecycle.didClose())
-        XCTAssertTrue(lifecycle.prepareToPresent())
+    func testPopoverActivityLeaseChangesOnlyOnRealPresentationTransitions() {
+        var activity = StatusBarPopoverActivityState()
+
+        XCTAssertFalse(activity.isPresented)
+        XCTAssertTrue(activity.transition(to: true))
+        XCTAssertTrue(activity.isPresented)
+        XCTAssertFalse(activity.transition(to: true))
+        XCTAssertTrue(activity.transition(to: false))
+        XCTAssertFalse(activity.isPresented)
+        XCTAssertFalse(activity.transition(to: false))
     }
 
     func testStatusBarLifecycleKeepsTimerAndRootStableForSameOwnersAndTicks() {
@@ -87,10 +94,10 @@ final class StatusBarTokenPanelTests: XCTestCase {
 
         XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: true, startTimer: true))
         XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: false, startTimer: false))
-        let presentation = StatusBarTokenItemPresentation(title: "  42.4/s  ", accessibilityValue: "42.4")
+        let presentation = StatusBarTokenItemPresentation(title: "42.4/s", accessibilityValue: "42.4")
         XCTAssertEqual(
             lifecycle.changes(for: presentation),
-            .init(titleChanged: true, accessibilityChanged: true)
+            .init(titleChanged: true, accessibilityChanged: true, imageChanged: true)
         )
         for _ in 0..<100 {
             XCTAssertEqual(
@@ -152,11 +159,11 @@ final class StatusBarTokenPanelTests: XCTestCase {
 
     func testStatusItemPresentationUpdatesWhenOnlyUnreadAccessibilityChanges() {
         let previous = StatusBarTokenItemPresentation(
-            title: "    0.0/s    ",
+            title: "0.0/s",
             accessibilityValue: "实时速率 0.0 token 每秒"
         )
         let next = StatusBarTokenItemPresentation(
-            title: "    0.0/s    ",
+            title: "0.0/s",
             accessibilityValue: "实时速率 0.0 token 每秒；未读会话 1 个"
         )
 
@@ -168,7 +175,7 @@ final class StatusBarTokenPanelTests: XCTestCase {
 
     func testStatusItemPresentationSkipsAllWritesWhenVisibleAndAccessibilityTextAreStable() {
         let presentation = StatusBarTokenItemPresentation(
-            title: "    42.4/s    ",
+            title: "42.4/s",
             accessibilityValue: "实时速率 42.4 token 每秒"
         )
 
@@ -217,7 +224,7 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertEqual(presentation.todayRequests, snapshot.todayRequestsText)
     }
 
-    func testStatusBarAccessibilitySeparatesUsageFailureFromMetadataPending() throws {
+    func testStatusBarAccessibilitySeparatesUsageFailureFromMetadataPending() {
         let failedSnapshot = TokenDisplaySnapshot(
             title: "全会话实时",
             status: "等待输出",
@@ -246,14 +253,21 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertEqual(failedSnapshot.metadataOnlyStatusText, "用量读取失败")
         XCTAssertEqual(pendingSnapshot.metadataOnlyStatusText, "仅会话元数据")
 
-        let sourceURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CodexTokenBar/StatusBarTokenPanel.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        XCTAssertTrue(source.contains(#"if snapshot.metadataOnlyStatusText == "仅会话元数据""#))
-        XCTAssertFalse(source.contains("if !snapshot.hasPreciseTokenUsage {"))
+        let values = StatusBarMetricValues(
+            snapshot: failedSnapshot,
+            radar: CodexRadarPresentationState(),
+            unreadThreadCount: 0
+        )
+        let presentation = StatusBarMetricsPresentation.make(
+            values: values,
+            configuration: StatusBarMetricConfiguration(
+                orderedMetricIDs: [.today, .total, .requests],
+                selectedMetricIDs: [.today, .total, .requests],
+                showsIcon: true
+            )
+        )
+        XCTAssertEqual(presentation.text, "今— · 总— · 次—")
+        XCTAssertTrue(presentation.accessibilityValue.contains("暂不可用"))
     }
 
     private func restore(_ value: Any?, key: String, defaults: UserDefaults) {

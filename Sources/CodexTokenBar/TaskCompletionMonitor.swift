@@ -165,6 +165,7 @@ final class TaskCompletionMonitor: ObservableObject {
     @Published private(set) var detailText = "Codex 有未读会话时在悬浮窗显示小红点"
     @Published private(set) var lastCompletedTitle = ""
     @Published private(set) var unreadThreadCount = 0
+    @Published private(set) var unreadThreadCountAvailable = false
     @Published private(set) var runningThreadSummary = RunningThreadSummary.unavailable
 
     private let pollInterval: TimeInterval
@@ -217,6 +218,10 @@ final class TaskCompletionMonitor: ObservableObject {
         dataSource?.codexHome.standardizedFileURL.path
     }
 
+    var statusBarUnreadThreadCount: Int? {
+        unreadThreadCountAvailable ? unreadThreadCount : nil
+    }
+
     func start(dataSource: CodexDataSource?) {
         let oldSourceIdentity = self.dataSource?.stableIdentityKey
         let newSourceIdentity = dataSource?.stableIdentityKey
@@ -246,6 +251,7 @@ final class TaskCompletionMonitor: ObservableObject {
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
             setUnreadThreadCount(0)
+            unreadThreadCountAvailable = false
         } else if let oldPath, let newPath {
             var reboundStates: [String: TaskCompletionFileState] = [:]
             for (path, state) in fileStates {
@@ -391,6 +397,7 @@ final class TaskCompletionMonitor: ObservableObject {
     ) {
         applyRunningThreadResult(runningThreadResult)
         applyCodexUnreadRead(unreadThreadRead)
+        unreadThreadCountAvailable = hasCodexUnreadState || result != nil
 
         if hasCodexUnreadState, result == nil {
             prepareFallbackForOfficialAvailability(boundary: officialReadBoundary ?? now())

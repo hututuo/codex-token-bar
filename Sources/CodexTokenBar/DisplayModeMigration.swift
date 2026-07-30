@@ -11,6 +11,8 @@ enum DisplayModeMigration {
     private static let panelCloseRepairKey = "tokenDisplayModePanelCloseRepairV01"
     private static let colorDefaultMigrationKey = "floatingPanelColorDefaultMigrationV01"
     private static let contentDefaultsMigrationKey = "floatingPanelContentDefaultsMigrationV02"
+    private static let statusBarMetricsMigrationKey = "statusBarMetricsMigrationV01"
+    private static let statusBarPanelEnabledKey = "statusBarPanelEnabled"
     private static let legacyFloatingPanelGradientStartHex = "#E6F4FF"
     private static let legacyFloatingPanelGradientEndHex = "#D4E8FF"
 
@@ -62,18 +64,23 @@ enum DisplayModeMigration {
         applyFloatingPanelColorDefaultMigration(defaults: defaults)
         applyFloatingPanelContentDefaultsMigration(defaults: defaults)
 
-        guard !defaults.bool(forKey: pairMigrationKey) else { return }
-        mode = storedMode(defaults: defaults) ?? .floating
-        if mode == .statusBar {
-            floatingPanelEnabled = false
-            statusBarPanelEnabled = true
-        } else if mode == .off {
-            floatingPanelEnabled = false
-            statusBarPanelEnabled = false
-        } else {
-            floatingPanelEnabled = true
+        if !defaults.bool(forKey: pairMigrationKey) {
+            mode = storedMode(defaults: defaults) ?? .floating
+            if mode == .statusBar {
+                floatingPanelEnabled = false
+                statusBarPanelEnabled = true
+            } else if mode == .off {
+                floatingPanelEnabled = false
+                statusBarPanelEnabled = false
+            } else {
+                floatingPanelEnabled = true
+            }
+            defaults.set(true, forKey: pairMigrationKey)
         }
-        defaults.set(true, forKey: pairMigrationKey)
+        applyStatusBarMetricsDefaultsMigration(
+            statusBarPanelEnabled: &statusBarPanelEnabled,
+            defaults: defaults
+        )
     }
 
     private static func storedMode(defaults: UserDefaults) -> TokenDisplayMode? {
@@ -111,5 +118,64 @@ enum DisplayModeMigration {
         defaults.set(true, forKey: FloatingPanelContentVisibility.crowdRadarKey)
         defaults.set(FloatingPanelContentVisibility.defaultOrderRaw, forKey: FloatingPanelContentVisibility.orderKey)
         defaults.set(true, forKey: contentDefaultsMigrationKey)
+    }
+
+    private static func applyStatusBarMetricsDefaultsMigration(
+        statusBarPanelEnabled: inout Bool,
+        defaults: UserDefaults
+    ) {
+        guard !defaults.bool(forKey: statusBarMetricsMigrationKey) else { return }
+
+        setIfAbsent(statusBarPanelEnabled, forKey: statusBarPanelEnabledKey, defaults: defaults)
+        setIfAbsent(
+            StatusBarMetricConfiguration.currentVersion,
+            forKey: StatusBarMetricConfiguration.versionKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusBarMetricConfiguration.defaultOrderRaw,
+            forKey: StatusBarMetricConfiguration.orderKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusBarMetricConfiguration.defaultSelectionRaw,
+            forKey: StatusBarMetricConfiguration.selectionKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusBarMetricConfiguration.defaultShowsIcon,
+            forKey: StatusBarMetricConfiguration.showsIconKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusBarMetricConfiguration.defaultLabelStyle.rawValue,
+            forKey: StatusBarMetricConfiguration.labelStyleKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusSummaryConfiguration.currentVersion,
+            forKey: StatusSummaryConfiguration.versionKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusSummaryConfiguration.defaultOrderRaw,
+            forKey: StatusSummaryConfiguration.orderKey,
+            defaults: defaults
+        )
+        setIfAbsent(
+            StatusSummaryConfiguration.defaultSelectionRaw,
+            forKey: StatusSummaryConfiguration.selectionKey,
+            defaults: defaults
+        )
+        defaults.set(true, forKey: statusBarMetricsMigrationKey)
+    }
+
+    private static func setIfAbsent(
+        _ value: Any,
+        forKey key: String,
+        defaults: UserDefaults
+    ) {
+        guard defaults.object(forKey: key) == nil else { return }
+        defaults.set(value, forKey: key)
     }
 }

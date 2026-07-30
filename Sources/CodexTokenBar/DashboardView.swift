@@ -20,7 +20,15 @@ struct DashboardView: View {
         runtime.sourceTransitionCoordinator
     }
     @AppStorage("floatingPanelEnabled") private var floatingPanelEnabled = true
-    @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = false
+    @AppStorage("statusBarPanelEnabled") private var statusBarPanelEnabled = true
+    @AppStorage(StatusBarMetricConfiguration.versionKey) private var statusBarMetricConfigurationVersion = StatusBarMetricConfiguration.currentVersion
+    @AppStorage(StatusBarMetricConfiguration.orderKey) private var statusBarMetricOrderRaw = StatusBarMetricConfiguration.defaultOrderRaw
+    @AppStorage(StatusBarMetricConfiguration.selectionKey) private var statusBarMetricSelectionRaw = StatusBarMetricConfiguration.defaultSelectionRaw
+    @AppStorage(StatusBarMetricConfiguration.showsIconKey) private var statusBarMetricShowsIcon = StatusBarMetricConfiguration.defaultShowsIcon
+    @AppStorage(StatusBarMetricConfiguration.labelStyleKey) private var statusBarMetricLabelStyleRaw = StatusBarMetricConfiguration.defaultLabelStyle.rawValue
+    @AppStorage(StatusSummaryConfiguration.versionKey) private var statusSummaryConfigurationVersion = StatusSummaryConfiguration.currentVersion
+    @AppStorage(StatusSummaryConfiguration.orderKey) private var statusSummaryOrderRaw = StatusSummaryConfiguration.defaultOrderRaw
+    @AppStorage(StatusSummaryConfiguration.selectionKey) private var statusSummarySelectionRaw = StatusSummaryConfiguration.defaultSelectionRaw
     @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
@@ -267,6 +275,7 @@ struct DashboardView: View {
                 preciseTokenCountingEnabled: preciseTokenCountingEnabled
             )
             reportRuntimeConfiguration()
+            consumePendingSettingsRequest()
             if !setupGuideCompleted {
                 showingSetupGuide = true
             } else {
@@ -320,7 +329,11 @@ struct DashboardView: View {
             showingContentSettingsMenu = false
             showingInterfaceScaleMenu = false
         }
-        .onReceive(NotificationCenter.default.publisher(for: .dashboardShowSettings)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardShowSettings)) { notification in
+            let pendingCategory = AppSettingsRouteRequest.consume()
+            if let category = notification.object as? AppSettingsCategory ?? pendingCategory {
+                appSettingsInitialCategory = category
+            }
             showingAppSettings = true
         }
         .sheet(isPresented: $showingProviderSync) {
@@ -357,6 +370,13 @@ struct DashboardView: View {
                 selectedCategory: $appSettingsInitialCategory,
                 floatingPanelEnabled: $floatingPanelEnabled,
                 statusBarPanelEnabled: $statusBarPanelEnabled,
+                statusBarMetricShowsIcon: $statusBarMetricShowsIcon,
+                statusBarMetricOrderRaw: $statusBarMetricOrderRaw,
+                statusBarMetricSelectionRaw: $statusBarMetricSelectionRaw,
+                statusBarMetricLabelStyleRaw: $statusBarMetricLabelStyleRaw,
+                statusSummaryOrderRaw: $statusSummaryOrderRaw,
+                statusSummarySelectionRaw: $statusSummarySelectionRaw,
+                statusBarPreviewValues: statusBarMetricValues,
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
                 tokenRateFullScale: $tokenRateFullScale,
@@ -609,10 +629,60 @@ struct DashboardView: View {
         )
     }
 
+    private var statusBarMetricConfiguration: StatusBarMetricConfiguration {
+        StatusBarMetricConfiguration(
+            version: statusBarMetricConfigurationVersion,
+            orderRaw: statusBarMetricOrderRaw,
+            selectionRaw: statusBarMetricSelectionRaw,
+            showsIcon: statusBarMetricShowsIcon,
+            labelStyle: StatusBarMetricLabelStyle(rawValue: statusBarMetricLabelStyleRaw)
+                ?? StatusBarMetricConfiguration.defaultLabelStyle
+        )
+    }
+
+    private var statusBarMetricValues: StatusBarMetricValues {
+        let snapshot = TokenDisplaySnapshot.make(
+            store: store,
+            monitor: liveMonitor,
+            quota: quotaStore,
+            runningThreads: taskCompletionMonitor.runningThreadSummary
+        )
+        let radar = CodexRadarPresentationState(
+            snapshot: radarStore.snapshot,
+            status: radarStore.status,
+            diagnostics: radarStore.diagnostics,
+            staleDataDisplayed: radarStore.staleDataDisplayed,
+            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
+            crowdSnapshot: radarStore.crowdSnapshot
+        )
+        return StatusBarMetricValues(
+            snapshot: snapshot,
+            radar: radar,
+            rateAvailable: liveMonitor.monitoringEnabled && liveMonitor.currentDataSourceIdentity != nil,
+            unreadThreadCount: taskCompletionMonitor.statusBarUnreadThreadCount
+        )
+    }
+
+    private var statusSummaryConfiguration: StatusSummaryConfiguration {
+        StatusSummaryConfiguration(
+            version: statusSummaryConfigurationVersion,
+            orderRaw: statusSummaryOrderRaw,
+            selectionRaw: statusSummarySelectionRaw
+        )
+    }
+
     private var runtimeConfigurationSignature: String {
         [
             floatingPanelEnabled ? "1" : "0",
             statusBarPanelEnabled ? "1" : "0",
+            String(statusBarMetricConfigurationVersion),
+            statusBarMetricOrderRaw,
+            statusBarMetricSelectionRaw,
+            statusBarMetricShowsIcon ? "1" : "0",
+            statusBarMetricLabelStyleRaw,
+            String(statusSummaryConfigurationVersion),
+            statusSummaryOrderRaw,
+            statusSummarySelectionRaw,
             String(floatingPanelScale),
             floatingPanelContentOrderRaw,
             floatingPanelShowRateAndBar ? "1" : "0",
@@ -678,6 +748,12 @@ struct DashboardView: View {
         )
     }
 
+    private func consumePendingSettingsRequest() {
+        guard let category = AppSettingsRouteRequest.consume() else { return }
+        appSettingsInitialCategory = category
+        showingAppSettings = true
+    }
+
     private func synchronizeSourceTransition() {
         sourceTransitionCoordinator.transition(
             to: store.currentDataSource,
@@ -698,6 +774,8 @@ struct DashboardView: View {
             preciseTokenCountingEnabled: preciseTokenCountingEnabled,
             providerSyncVisible: showingProviderSync,
             radarDetailsVisible: showingCodexRadarDetails,
+            statusBarMetricConfiguration: statusBarMetricConfiguration,
+            statusSummaryConfiguration: statusSummaryConfiguration,
             for: runtimeConsumerID
         )
     }

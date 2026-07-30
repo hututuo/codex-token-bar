@@ -119,6 +119,32 @@ struct DashboardRuntimeConfiguration: Equatable {
     let preciseTokenCountingEnabled: Bool
     let providerSyncVisible: Bool
     let radarDetailsVisible: Bool
+    let statusBarMetricConfiguration: StatusBarMetricConfiguration
+    let statusSummaryConfiguration: StatusSummaryConfiguration
+
+    init(
+        floatingPanelEnabled: Bool,
+        statusBarPanelEnabled: Bool,
+        floatingPanelScale: FloatingTokenPanelScale,
+        floatingPanelVisibility: FloatingPanelContentVisibility,
+        floatingPanelLocked: Bool,
+        preciseTokenCountingEnabled: Bool,
+        providerSyncVisible: Bool,
+        radarDetailsVisible: Bool,
+        statusBarMetricConfiguration: StatusBarMetricConfiguration = .default,
+        statusSummaryConfiguration: StatusSummaryConfiguration = .default
+    ) {
+        self.floatingPanelEnabled = floatingPanelEnabled
+        self.statusBarPanelEnabled = statusBarPanelEnabled
+        self.floatingPanelScale = floatingPanelScale
+        self.floatingPanelVisibility = floatingPanelVisibility
+        self.floatingPanelLocked = floatingPanelLocked
+        self.preciseTokenCountingEnabled = preciseTokenCountingEnabled
+        self.providerSyncVisible = providerSyncVisible
+        self.radarDetailsVisible = radarDetailsVisible
+        self.statusBarMetricConfiguration = statusBarMetricConfiguration
+        self.statusSummaryConfiguration = statusSummaryConfiguration
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.floatingPanelEnabled == rhs.floatingPanelEnabled
@@ -129,6 +155,8 @@ struct DashboardRuntimeConfiguration: Equatable {
             && lhs.preciseTokenCountingEnabled == rhs.preciseTokenCountingEnabled
             && lhs.providerSyncVisible == rhs.providerSyncVisible
             && lhs.radarDetailsVisible == rhs.radarDetailsVisible
+            && lhs.statusBarMetricConfiguration == rhs.statusBarMetricConfiguration
+            && lhs.statusSummaryConfiguration == rhs.statusSummaryConfiguration
     }
 }
 
@@ -136,9 +164,24 @@ enum DashboardBackgroundOwnerActivity {
     static func shouldRunExpensiveOwners(
         dashboardVisible: Bool,
         floatingPanelEnabled: Bool,
-        statusBarPanelEnabled: Bool
+        statusBarPanelEnabled: Bool,
+        statusSummaryPresented: Bool = false
     ) -> Bool {
-        dashboardVisible || floatingPanelEnabled || statusBarPanelEnabled
+        dashboardVisible
+            || floatingPanelEnabled
+            || statusBarPanelEnabled
+            || statusSummaryPresented
+    }
+
+    static func onlyCompactSurfaceVisible(
+        dashboardVisible: Bool,
+        floatingPanelEnabled: Bool,
+        statusBarPanelEnabled: Bool,
+        statusSummaryPresented: Bool
+    ) -> Bool {
+        !dashboardVisible
+            && !statusSummaryPresented
+            && (floatingPanelEnabled || statusBarPanelEnabled)
     }
 }
 
@@ -180,6 +223,7 @@ final class DashboardRuntime: ObservableObject {
     private var isCorrectingFloatingPanelScale = false
     private var expensiveOwnersActive: Bool?
     private var autoResumeQuotaBackgroundEnabled = false
+    private(set) var statusBarSummaryPresented = false
     private var dashboardOpenAction: (() -> Void)?
     private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
@@ -200,8 +244,10 @@ final class DashboardRuntime: ObservableObject {
             self?.updateUsageRefreshCadence()
             self?.updateBackgroundOwnerActivity()
         },
-        keepsAppOwnerActive: {
-            $0.floatingPanelEnabled || $0.statusBarPanelEnabled
+        keepsAppOwnerActive: { [weak self] configuration in
+            configuration.floatingPanelEnabled
+                || configuration.statusBarPanelEnabled
+                || self?.statusBarSummaryPresented == true
         }
     )
 
@@ -303,6 +349,8 @@ final class DashboardRuntime: ObservableObject {
         preciseTokenCountingEnabled: Bool,
         providerSyncVisible: Bool,
         radarDetailsVisible: Bool,
+        statusBarMetricConfiguration: StatusBarMetricConfiguration = .default,
+        statusSummaryConfiguration: StatusSummaryConfiguration = .default,
         for id: UUID
     ) {
         sideEffects.reportConfiguration(
@@ -314,7 +362,9 @@ final class DashboardRuntime: ObservableObject {
                 floatingPanelLocked: floatingPanelLocked,
                 preciseTokenCountingEnabled: preciseTokenCountingEnabled,
                 providerSyncVisible: providerSyncVisible,
-                radarDetailsVisible: radarDetailsVisible
+                radarDetailsVisible: radarDetailsVisible,
+                statusBarMetricConfiguration: statusBarMetricConfiguration,
+                statusSummaryConfiguration: statusSummaryConfiguration
             ),
             for: id
         )
@@ -338,6 +388,22 @@ final class DashboardRuntime: ObservableObject {
         guard let configuration, configuration.statusBarPanelEnabled else { return }
         settings.set(false, forKey: "statusBarPanelEnabled")
         applyAppConfiguration(configuration.replacing(statusBarPanelEnabled: false))
+    }
+
+    func setStatusBarSummaryPresented(_ presented: Bool) {
+        guard configuration != nil, statusBarSummaryPresented != presented else { return }
+        statusBarSummaryPresented = presented
+        if presented {
+            sideEffects.setAppOwnerActive(true)
+        }
+        updateUsageRefreshCadence()
+        updateBackgroundOwnerActivity()
+        if !presented {
+            let keepsPersistentOwner = configuration.map {
+                $0.floatingPanelEnabled || $0.statusBarPanelEnabled
+            } ?? false
+            sideEffects.setAppOwnerActive(keepsPersistentOwner)
+        }
     }
 
     func setAutoResumeQuotaBackgroundEnabled(_ enabled: Bool) {
@@ -453,7 +519,8 @@ final class DashboardRuntime: ObservableObject {
             DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
                 dashboardVisible: hasVisibleDashboardWindow(),
                 floatingPanelEnabled: configuration.floatingPanelEnabled,
-                statusBarPanelEnabled: configuration.statusBarPanelEnabled
+                statusBarPanelEnabled: configuration.statusBarPanelEnabled,
+                statusSummaryPresented: statusBarSummaryPresented
             )
         )
     }
@@ -505,29 +572,40 @@ final class DashboardRuntime: ObservableObject {
         } else {
             floatingPanel.close()
         }
-        if configuration.statusBarPanelEnabled {
-            statusBarPanel.show(
-                store: usageStore,
-                monitor: liveMonitor,
-                quota: quotaStore,
-                radar: radarStore,
-                taskCompletionMonitor: taskCompletionMonitor,
-                onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() },
-                onOpenSettings: { [weak self] in
-                    self?.dashboardOpenAction?()
-                    NotificationCenter.default.post(name: .dashboardShowSettings, object: nil)
-                },
-                onClose: { [weak self] in self?.closeStatusBarPanel() }
-            )
-        } else {
-            statusBarPanel.close()
-        }
+        statusBarPanel.show(
+            store: usageStore,
+            monitor: liveMonitor,
+            quota: quotaStore,
+            radar: radarStore,
+            taskCompletionMonitor: taskCompletionMonitor,
+            metricsEnabled: configuration.statusBarPanelEnabled,
+            configuration: configuration.statusBarMetricConfiguration,
+            summaryConfiguration: configuration.statusSummaryConfiguration,
+            onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() },
+            onOpenSettings: { [weak self] in
+                guard let self else { return }
+                AppSettingsRouteRequest.request(
+                    .statusBar,
+                    defaults: self.settings,
+                    notificationCenter: self.notificationCenter
+                )
+                self.dashboardOpenAction?()
+            },
+            onClose: { [weak self] in self?.closeStatusBarPanel() },
+            onPopoverPresentationChanged: { [weak self] presented in
+                self?.setStatusBarSummaryPresented(presented)
+            }
+        )
     }
 
     private func updateUsageRefreshCadence() {
         guard let configuration else { return }
-        let compactVisible = configuration.floatingPanelEnabled || configuration.statusBarPanelEnabled
-        let onlyCompactSurfaceVisible = compactVisible && !hasVisibleDashboardWindow()
+        let onlyCompactSurfaceVisible = DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
+            dashboardVisible: hasVisibleDashboardWindow(),
+            floatingPanelEnabled: configuration.floatingPanelEnabled,
+            statusBarPanelEnabled: configuration.statusBarPanelEnabled,
+            statusSummaryPresented: statusBarSummaryPresented
+        )
         let decision = UsageRefreshCadencePolicy.decision(
             snapshot: liveMonitor.totalSnapshot,
             onlyCompactSurfaceVisible: onlyCompactSurfaceVisible
@@ -636,7 +714,9 @@ private extension DashboardRuntimeConfiguration {
             floatingPanelLocked: floatingPanelLocked ?? self.floatingPanelLocked,
             preciseTokenCountingEnabled: preciseTokenCountingEnabled,
             providerSyncVisible: providerSyncVisible,
-            radarDetailsVisible: radarDetailsVisible
+            radarDetailsVisible: radarDetailsVisible,
+            statusBarMetricConfiguration: statusBarMetricConfiguration,
+            statusSummaryConfiguration: statusSummaryConfiguration
         )
     }
 }

@@ -792,7 +792,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        for category in ["常规", "会话增强", "自动续跑", "显示面", "监控与额度", "悬浮窗", "内容与排序", "提醒与更新", "数据与维护"] {
+        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "悬浮窗内容", "提醒与更新", "数据与维护"] {
             XCTAssertTrue(appSettingsSource.contains("return \"\(category)\""), category)
         }
         XCTAssertTrue(appSettingsSource.contains("ForEach(AppSettingsCategory.allCases)"))

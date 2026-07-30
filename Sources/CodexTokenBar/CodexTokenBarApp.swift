@@ -122,14 +122,5 @@ struct CodexTokenBarApp: App {
             }
         }
 
-        MenuBarExtra("Codex Token Bar", systemImage: "bolt.circle.fill") {
-            DashboardMenuBarExtra(
-                loginItemStore: loginItemStore,
-                updateSettingsStore: updateSettingsStore,
-                updater: updaterController.updater,
-                threadDeleteBridge: threadDeleteBridge
-            )
-        }
-        .menuBarExtraStyle(.menu)
     }
 }

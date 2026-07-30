@@ -48,6 +48,45 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
             floatingPanelEnabled: false,
             statusBarPanelEnabled: true
         ))
+        XCTAssertTrue(DashboardBackgroundOwnerActivity.shouldRunExpensiveOwners(
+            dashboardVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: false,
+            statusSummaryPresented: true
+        ))
+    }
+
+    func testPresentedStatusSummaryUsesFullSurfaceCadence() {
+        let compactOnly = DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
+            dashboardVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: true,
+            statusSummaryPresented: false
+        )
+        let iconOnlySummary = DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
+            dashboardVisible: false,
+            floatingPanelEnabled: false,
+            statusBarPanelEnabled: false,
+            statusSummaryPresented: true
+        )
+
+        XCTAssertTrue(compactOnly)
+        XCTAssertFalse(iconOnlySummary)
+        XCTAssertFalse(DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
+            dashboardVisible: false,
+            floatingPanelEnabled: true,
+            statusBarPanelEnabled: false,
+            statusSummaryPresented: true
+        ))
+
+        var snapshot = LiveRateSnapshot()
+        snapshot.updatedAt = Date(timeIntervalSince1970: 2_000)
+        let decision = UsageRefreshCadencePolicy.decision(
+            snapshot: snapshot,
+            onlyCompactSurfaceVisible: iconOnlySummary,
+            now: snapshot.updatedAt
+        )
+        XCTAssertEqual(decision.interval, UsageRefreshCadencePolicy.visibleDashboardInterval)
     }
 
     @MainActor
@@ -72,6 +111,48 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         runtime.reportConfiguration(Self.configuration(floating: true, status: false), for: consumer)
 
         XCTAssertEqual(activity, [false, true])
+    }
+
+    @MainActor
+    func testIconOnlyStatusSummaryTemporarilyRestoresAndReleasesRuntimeOwners() {
+        let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: InterfaceScaleSettings.autoEnabledKey)
+        var activity: [Bool] = []
+        var starts = 0
+        var stops = 0
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            automaticInterfaceScaleProvider: { 1.0 },
+            startupAction: {},
+            surfaceApplyAction: { _ in },
+            sideEffectStartAction: { starts += 1 },
+            sideEffectStopAction: { stops += 1 },
+            backgroundOwnerActivityAction: { activity.append($0) }
+        )
+        let consumer = UUID()
+
+        runtime.acquireConsumer(consumer)
+        runtime.reportConfiguration(Self.configuration(floating: false, status: false), for: consumer)
+        runtime.releaseConsumer(consumer)
+        XCTAssertEqual(activity, [false])
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(stops, 1)
+
+        runtime.setStatusBarSummaryPresented(true)
+        runtime.setStatusBarSummaryPresented(true)
+        XCTAssertTrue(runtime.statusBarSummaryPresented)
+        XCTAssertEqual(activity, [false, true])
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(stops, 1)
+
+        runtime.setStatusBarSummaryPresented(false)
+        runtime.setStatusBarSummaryPresented(false)
+        XCTAssertFalse(runtime.statusBarSummaryPresented)
+        XCTAssertEqual(activity, [false, true, false])
+        XCTAssertEqual(starts, 2)
+        XCTAssertEqual(stops, 2)
     }
 
     @MainActor

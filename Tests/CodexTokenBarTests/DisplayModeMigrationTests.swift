@@ -39,6 +39,7 @@ final class DisplayModeMigrationTests: XCTestCase {
         let defaults = makeDefaults()
         defaults.set(TokenDisplayMode.statusBar.rawValue, forKey: "tokenDisplayMode")
         defaults.set(true, forKey: "displaySurfacePairMigrationV01")
+        defaults.set(true, forKey: "statusBarMetricsMigrationV01")
         var floatingEnabled = true
         var statusBarEnabled = false
 
@@ -50,6 +51,91 @@ final class DisplayModeMigrationTests: XCTestCase {
 
         XCTAssertTrue(floatingEnabled)
         XCTAssertFalse(statusBarEnabled)
+    }
+
+    func testViewDefaultsSeedsMissingStatusBarConfigurationWithoutChangingCurrentFlag() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "displaySurfacePairMigrationV01")
+        var floatingEnabled = true
+        var statusBarEnabled = true
+
+        DisplayModeMigration.applyViewDefaults(
+            floatingPanelEnabled: &floatingEnabled,
+            statusBarPanelEnabled: &statusBarEnabled,
+            defaults: defaults
+        )
+
+        XCTAssertTrue(statusBarEnabled)
+        XCTAssertTrue(defaults.bool(forKey: "statusBarPanelEnabled"))
+        XCTAssertEqual(
+            defaults.integer(forKey: StatusBarMetricConfiguration.versionKey),
+            StatusBarMetricConfiguration.currentVersion
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusBarMetricConfiguration.orderKey),
+            StatusBarMetricConfiguration.defaultOrderRaw
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusBarMetricConfiguration.selectionKey),
+            StatusBarMetricConfiguration.defaultSelectionRaw
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusBarMetricConfiguration.labelStyleKey),
+            StatusBarMetricConfiguration.defaultLabelStyle.rawValue
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusSummaryConfiguration.orderKey),
+            StatusSummaryConfiguration.defaultOrderRaw
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusSummaryConfiguration.selectionKey),
+            StatusSummaryConfiguration.defaultSelectionRaw
+        )
+
+    }
+
+    func testViewDefaultsPreservesExistingDisabledFlagAndCustomStatusBarConfiguration() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "displaySurfacePairMigrationV01")
+        defaults.set(false, forKey: "statusBarPanelEnabled")
+        defaults.set("unread,rate", forKey: StatusBarMetricConfiguration.orderKey)
+        defaults.set("unread", forKey: StatusBarMetricConfiguration.selectionKey)
+        defaults.set(false, forKey: StatusBarMetricConfiguration.showsIconKey)
+        defaults.set("hidden", forKey: StatusBarMetricConfiguration.labelStyleKey)
+        defaults.set("radar,overview", forKey: StatusSummaryConfiguration.orderKey)
+        defaults.set("radar", forKey: StatusSummaryConfiguration.selectionKey)
+        var floatingEnabled = true
+        var statusBarEnabled = false
+
+        DisplayModeMigration.applyViewDefaults(
+            floatingPanelEnabled: &floatingEnabled,
+            statusBarPanelEnabled: &statusBarEnabled,
+            defaults: defaults
+        )
+
+        XCTAssertFalse(statusBarEnabled)
+        XCTAssertFalse(defaults.bool(forKey: "statusBarPanelEnabled"))
+        XCTAssertEqual(
+            defaults.string(forKey: StatusBarMetricConfiguration.orderKey),
+            "unread,rate"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusBarMetricConfiguration.selectionKey),
+            "unread"
+        )
+        XCTAssertFalse(defaults.bool(forKey: StatusBarMetricConfiguration.showsIconKey))
+        XCTAssertEqual(
+            defaults.string(forKey: StatusBarMetricConfiguration.labelStyleKey),
+            "hidden"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusSummaryConfiguration.orderKey),
+            "radar,overview"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: StatusSummaryConfiguration.selectionKey),
+            "radar"
+        )
     }
 
     func testViewDefaultsMigratesLegacyFloatingPanelColorsToCurrentDefault() {

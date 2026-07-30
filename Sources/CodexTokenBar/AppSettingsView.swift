@@ -7,6 +7,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case codexInstances
     case autoResume
     case surfaces
+    case statusBar
     case monitoring
     case floatingPanel
     case content
@@ -22,9 +23,10 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .codexInstances: return "Codex 实例"
         case .autoResume: return "自动续跑"
         case .surfaces: return "显示面"
+        case .statusBar: return "状态栏"
         case .monitoring: return "监控与额度"
         case .floatingPanel: return "悬浮窗"
-        case .content: return "内容与排序"
+        case .content: return "悬浮窗内容"
         case .alertsAndUpdates: return "提醒与更新"
         case .dataAndMaintenance: return "数据与维护"
         }
@@ -37,6 +39,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .codexInstances: return "多开、隔离、同步与回滚"
         case .autoResume: return "按所选失败原因、定时或额度恢复继续任务"
         case .surfaces: return "主界面与辅助显示面"
+        case .statusBar: return "顶部指标、顺序与紧凑显示"
         case .monitoring: return "实时速率、统计与刷新"
         case .floatingPanel: return "位置、尺寸与视觉样式"
         case .content: return "悬浮窗信息和排列顺序"
@@ -52,12 +55,32 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .codexInstances: return "square.stack.3d.up"
         case .autoResume: return "play.circle"
         case .surfaces: return "rectangle.3.group"
+        case .statusBar: return "menubar.rectangle"
         case .monitoring: return "speedometer"
         case .floatingPanel: return "rectangle.on.rectangle"
         case .content: return "list.bullet.rectangle"
         case .alertsAndUpdates: return "bell.badge"
         case .dataAndMaintenance: return "wrench.and.screwdriver"
         }
+    }
+}
+
+enum AppSettingsRouteRequest {
+    static let pendingCategoryKey = "pendingAppSettingsCategoryV01"
+
+    static func request(
+        _ category: AppSettingsCategory,
+        defaults: UserDefaults = .standard,
+        notificationCenter: NotificationCenter = .default
+    ) {
+        defaults.set(category.rawValue, forKey: pendingCategoryKey)
+        notificationCenter.post(name: .dashboardShowSettings, object: category)
+    }
+
+    static func consume(defaults: UserDefaults = .standard) -> AppSettingsCategory? {
+        guard let rawValue = defaults.string(forKey: pendingCategoryKey) else { return nil }
+        defaults.removeObject(forKey: pendingCategoryKey)
+        return AppSettingsCategory(rawValue: rawValue)
     }
 }
 
@@ -69,6 +92,13 @@ struct AppSettingsView: View {
     @Binding var selectedCategory: AppSettingsCategory
     @Binding var floatingPanelEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
+    @Binding var statusBarMetricShowsIcon: Bool
+    @Binding var statusBarMetricOrderRaw: String
+    @Binding var statusBarMetricSelectionRaw: String
+    @Binding var statusBarMetricLabelStyleRaw: String
+    @Binding var statusSummaryOrderRaw: String
+    @Binding var statusSummarySelectionRaw: String
+    let statusBarPreviewValues: StatusBarMetricValues
     @Binding var liveRateMonitoringEnabled: Bool
     @Binding var preciseTokenCountingEnabled: Bool
     @Binding var tokenRateFullScale: Double
@@ -253,6 +283,8 @@ struct AppSettingsView: View {
                 AutoResumeSettingsView(controller: autoResumeController)
             case .surfaces:
                 surfaceSettings
+            case .statusBar:
+                statusBarSettings
             case .monitoring:
                 monitoringSettings
             case .floatingPanel:
@@ -380,9 +412,8 @@ struct AppSettingsView: View {
 
     private var surfaceSettings: some View {
         Group {
-            settingsSection(title: "辅助显示面", subtitle: "常用开关仍保留在主界面的实时速率卡") {
+            settingsSection(title: "辅助显示面", subtitle: "状态栏的内容与入口集中在独立设置页") {
                 settingsToggle("悬浮窗", systemImage: "rectangle.on.rectangle", isOn: $floatingPanelEnabled)
-                settingsToggle("状态栏", systemImage: "menubar.rectangle", isOn: $statusBarPanelEnabled)
             }
 
             settingsSection(title: "主界面缩放", subtitle: "自动适配窗口，也可以固定界面大小") {
@@ -395,6 +426,39 @@ struct AppSettingsView: View {
                     display: InterfaceScaleSettings.displayValue(interfaceScaleManualMultiplier),
                     disabled: interfaceScaleAutoEnabled
                 )
+            }
+        }
+    }
+
+    private var statusBarSettings: some View {
+        Group {
+            settingsSection(title: "实时预览", subtitle: "按当前数据展示，选择和顺序更改会立即反映") {
+                statusBarPreview
+            }
+
+            settingsSection(title: "显示方式", subtitle: "关闭实时指标后，同一个入口会切换为固定闪电图标") {
+                settingsToggle("显示实时指标", systemImage: "menubar.rectangle", isOn: $statusBarPanelEnabled)
+                settingsToggle("显示闪电图标", systemImage: "bolt.circle.fill", isOn: $statusBarMetricShowsIcon)
+                settingsPicker(
+                    "标签样式",
+                    systemImage: "textformat",
+                    selection: $statusBarMetricLabelStyleRaw,
+                    options: StatusBarMetricLabelStyle.allCases.map { ($0.rawValue, $0.title) }
+                )
+            }
+
+            settingsSection(title: "指标与顺序", subtitle: "选择要显示的指标，并用箭头调整从左到右的顺序") {
+                ForEach(orderedStatusBarMetrics) { metric in
+                    statusBarMetricRow(metric)
+                }
+                statusBarRestoreDefaultsRow
+            }
+
+            settingsSection(title: "摘要内容与排序", subtitle: "编排点击状态栏后弹出的摘要卡片") {
+                ForEach(orderedStatusSummarySections) { section in
+                    statusSummarySectionRow(section)
+                }
+                statusSummaryRestoreDefaultsRow
             }
         }
     }
@@ -475,6 +539,57 @@ struct AppSettingsView: View {
                 contentRow(group)
             }
         }
+    }
+
+    private var statusBarPreview: some View {
+        let previewConfiguration = statusBarPanelEnabled
+            ? statusBarMetricConfiguration
+            : StatusBarMetricConfiguration(
+                version: statusBarMetricConfiguration.version,
+                orderedMetricIDs: statusBarMetricConfiguration.orderedMetricIDs,
+                selectedMetricIDs: [],
+                showsIcon: true,
+                labelStyle: statusBarMetricConfiguration.labelStyle
+            )
+        let presentation = StatusBarMetricsPresentation.make(
+            values: statusBarPreviewValues,
+            configuration: previewConfiguration
+        )
+        let showsRecoveryIcon = previewConfiguration.showsIcon || presentation.text.isEmpty
+
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 5) {
+                if showsRecoveryIcon {
+                    Image(systemName: "bolt.circle.fill")
+                        .foregroundStyle(AppTheme.accentBlue)
+                }
+                if presentation.text.isEmpty {
+                    Text("仅保留恢复图标")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(presentation.text)
+                        .foregroundStyle(.primary)
+                }
+                Spacer(minLength: 10)
+                Text(statusBarPanelEnabled ? "实时指标" : "仅图标")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(statusBarPanelEnabled ? AppTheme.accentBlue : Color.secondary)
+            }
+            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+
+            if !statusBarMetricShowsIcon && presentation.text.isEmpty {
+                Text("没有可用文字时会自动保留图标，避免失去设置入口。")
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 54)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("状态栏实时预览")
+        .accessibilityValue(presentation.accessibilityValue)
     }
 
     private var alertsAndUpdateSettings: some View {
@@ -670,6 +785,31 @@ struct AppSettingsView: View {
 
     private var orderedGroups: [FloatingPanelContentGroup] {
         FloatingPanelContentVisibility.order(from: contentOrderRaw)
+    }
+
+    private var statusBarMetricConfiguration: StatusBarMetricConfiguration {
+        StatusBarMetricConfiguration(
+            orderRaw: statusBarMetricOrderRaw,
+            selectionRaw: statusBarMetricSelectionRaw,
+            showsIcon: statusBarMetricShowsIcon,
+            labelStyle: StatusBarMetricLabelStyle(rawValue: statusBarMetricLabelStyleRaw)
+                ?? StatusBarMetricConfiguration.defaultLabelStyle
+        )
+    }
+
+    private var orderedStatusBarMetrics: [StatusBarMetricID] {
+        statusBarMetricConfiguration.orderedMetricIDs
+    }
+
+    private var statusSummaryConfiguration: StatusSummaryConfiguration {
+        StatusSummaryConfiguration(
+            orderRaw: statusSummaryOrderRaw,
+            selectionRaw: statusSummarySelectionRaw
+        )
+    }
+
+    private var orderedStatusSummarySections: [StatusSummarySectionID] {
+        statusSummaryConfiguration.orderedSectionIDs
     }
 
     private func moveSidebarSelection(_ direction: MoveCommandDirection) {
@@ -888,6 +1028,121 @@ struct AppSettingsView: View {
         .settingsRowDivider()
     }
 
+    private func statusBarMetricRow(_ metric: StatusBarMetricID) -> some View {
+        let order = orderedStatusBarMetrics
+        let index = order.firstIndex(of: metric) ?? 0
+        return HStack(spacing: 9) {
+            Image(systemName: metric.systemImage)
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(metric.title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(metric.settingsSubtitle)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            Button { moveStatusBarMetric(metric, by: -1) } label: {
+                Image(systemName: "arrow.up")
+            }
+            .disabled(index == 0)
+            .accessibilityLabel("向左移动\(metric.title)")
+            Button { moveStatusBarMetric(metric, by: 1) } label: {
+                Image(systemName: "arrow.down")
+            }
+            .disabled(index == order.count - 1)
+            .accessibilityLabel("向右移动\(metric.title)")
+            Toggle("", isOn: statusBarMetricSelectionBinding(for: metric))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .accessibilityLabel("显示\(metric.title)")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .settingsRowDivider()
+    }
+
+    private var statusBarRestoreDefaultsRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "arrow.counterclockwise")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("默认组合")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("实时速率、5 小时额度、7 天额度、模型 IQ")
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            Button("恢复默认") {
+                statusBarMetricOrderRaw = StatusBarMetricConfiguration.defaultOrderRaw
+                statusBarMetricSelectionRaw = StatusBarMetricConfiguration.defaultSelectionRaw
+                statusBarMetricShowsIcon = StatusBarMetricConfiguration.defaultShowsIcon
+                statusBarMetricLabelStyleRaw = StatusBarMetricConfiguration.defaultLabelStyle.rawValue
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityHint("恢复默认指标、顺序和图标设置")
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+    }
+
+    private func statusSummarySectionRow(_ section: StatusSummarySectionID) -> some View {
+        let order = orderedStatusSummarySections
+        let index = order.firstIndex(of: section) ?? 0
+        return HStack(spacing: 9) {
+            Image(systemName: section.systemImage)
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+            Text(section.title)
+                .font(.system(size: 11.5, weight: .semibold))
+            Spacer(minLength: 10)
+            Button { moveStatusSummarySection(section, by: -1) } label: {
+                Image(systemName: "arrow.up")
+            }
+            .disabled(index == 0)
+            .accessibilityLabel("向上移动\(section.title)")
+            Button { moveStatusSummarySection(section, by: 1) } label: {
+                Image(systemName: "arrow.down")
+            }
+            .disabled(index == order.count - 1)
+            .accessibilityLabel("向下移动\(section.title)")
+            Toggle("", isOn: statusSummarySelectionBinding(for: section))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .accessibilityLabel("显示\(section.title)")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 40)
+        .settingsRowDivider()
+    }
+
+    private var statusSummaryRestoreDefaultsRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "arrow.counterclockwise")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text("恢复全部摘要卡片")
+                .font(.system(size: 11.5, weight: .semibold))
+            Spacer(minLength: 10)
+            Button("恢复默认") {
+                statusSummaryOrderRaw = StatusSummaryConfiguration.defaultOrderRaw
+                statusSummarySelectionRaw = StatusSummaryConfiguration.defaultSelectionRaw
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 40)
+    }
+
     private func visibilityBinding(for group: FloatingPanelContentGroup) -> Binding<Bool> {
         switch group {
         case .rateAndBar: return $showRateAndBar
@@ -908,6 +1163,68 @@ struct AppSettingsView: View {
         order.remove(at: index)
         order.insert(group, at: destination)
         contentOrderRaw = FloatingPanelContentVisibility.encodedOrder(order)
+    }
+
+    private func statusBarMetricSelectionBinding(for metric: StatusBarMetricID) -> Binding<Bool> {
+        Binding(
+            get: {
+                StatusBarMetricConfiguration.selection(from: statusBarMetricSelectionRaw).contains(metric)
+            },
+            set: { isSelected in
+                var selection = StatusBarMetricConfiguration.selection(from: statusBarMetricSelectionRaw)
+                if isSelected {
+                    selection.insert(metric)
+                } else {
+                    selection.remove(metric)
+                }
+                statusBarMetricSelectionRaw = StatusBarMetricConfiguration.encodedSelection(
+                    selection,
+                    orderedBy: orderedStatusBarMetrics
+                )
+            }
+        )
+    }
+
+    private func moveStatusBarMetric(_ metric: StatusBarMetricID, by delta: Int) {
+        var order = orderedStatusBarMetrics
+        guard let index = order.firstIndex(of: metric) else { return }
+        let destination = min(max(index + delta, 0), order.count - 1)
+        guard destination != index else { return }
+        order.remove(at: index)
+        order.insert(metric, at: destination)
+        statusBarMetricOrderRaw = StatusBarMetricConfiguration.encodedOrder(order)
+    }
+
+    private func statusSummarySelectionBinding(
+        for section: StatusSummarySectionID
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                StatusSummaryConfiguration.selection(from: statusSummarySelectionRaw).contains(section)
+            },
+            set: { isSelected in
+                var selection = StatusSummaryConfiguration.selection(from: statusSummarySelectionRaw)
+                if isSelected {
+                    selection.insert(section)
+                } else {
+                    selection.remove(section)
+                }
+                statusSummarySelectionRaw = StatusSummaryConfiguration.encodedSelection(
+                    selection,
+                    orderedBy: orderedStatusSummarySections
+                )
+            }
+        )
+    }
+
+    private func moveStatusSummarySection(_ section: StatusSummarySectionID, by delta: Int) {
+        var order = orderedStatusSummarySections
+        guard let index = order.firstIndex(of: section) else { return }
+        let destination = min(max(index + delta, 0), order.count - 1)
+        guard destination != index else { return }
+        order.remove(at: index)
+        order.insert(section, at: destination)
+        statusSummaryOrderRaw = StatusSummaryConfiguration.encodedOrder(order)
     }
 }
 
