@@ -5,22 +5,30 @@
     Inter, ui-sans-serif, system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --page: #eef3f8;
-  --panel: rgba(255, 255, 255, 0.84);
-  --panel-solid: #fbfdff;
-  --panel-soft: #e8eef6;
-  --panel-inset: #e7edf6;
-  --line: rgba(65, 76, 92, 0.12);
-  --line-strong: rgba(65, 76, 92, 0.18);
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --page: #f5f7fa;
+  --panel: #ffffff;
+  --panel-solid: #ffffff;
+  --panel-soft: #f4f6f9;
+  --panel-inset: #f8fafc;
+  --control: #f7f9fb;
+  --control-strong: #eef3f7;
+  --line: rgba(53, 65, 81, 0.10);
+  --line-strong: rgba(53, 65, 81, 0.16);
   --text: #20252d;
-  --muted: #7c8695;
+  --text-muted: #667180;
+  --muted: #667180;
   --accent: #1688f2;
   --accent-strong: #0a67d7;
   --accent-soft: #d8ebff;
   --green: #28b86e;
   --orange: #ff8a2d;
+  --red: #d64545;
   --purple: #bf59f0;
-  --heatmap-empty: #dfe5ec;
+  --heatmap-empty: #e8edf3;
   background: var(--page);
   color: var(--text);
 }
@@ -32,15 +40,19 @@
     --panel-solid: #12161c;
     --panel-soft: #161b23;
     --panel-inset: #0c0f14;
+    --control: #1b222c;
+    --control-strong: #232c38;
     --line: rgba(255, 255, 255, 0.08);
     --line-strong: rgba(255, 255, 255, 0.14);
     --text: #e8eef8;
+    --text-muted: #98a5b7;
     --muted: #98a5b7;
     --accent: #4aa3ff;
     --accent-strong: #7bbcff;
     --accent-soft: #17324f;
     --green: #42cf83;
     --orange: #ffa35b;
+    --red: #f26d6d;
     --purple: #d57bff;
     --heatmap-empty: #283241;
   }
@@ -94,10 +106,7 @@ button {
   position: relative;
   min-height: 100vh;
   padding: 8px 24px 44px;
-  background:
-    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.42), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 260px),
-    var(--page);
+  background: linear-gradient(180deg, #fbfcfd 0, var(--page) 260px), var(--page);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -126,13 +135,13 @@ button {
   background: linear-gradient(145deg, #ff9a31, #ff771f);
   color: white;
   font-size: 25px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .loading-text {
   color: var(--muted);
   font-size: 14px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
 }
 
 .dashboard {
@@ -180,14 +189,14 @@ button {
 .usage-cache-notice strong {
   flex: 0 0 auto;
   font-size: 12px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .usage-cache-notice span {
   min-width: 0;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .local-command-notice {
@@ -223,7 +232,7 @@ button {
 .local-command-notice-lines span {
   min-width: 0;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   overflow-wrap: anywhere;
 }
 
@@ -268,7 +277,7 @@ button {
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-soft) 82%, var(--panel));
+  background: var(--panel);
 }
 
 .header-primary-actions {
@@ -280,7 +289,7 @@ button {
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel));
+  background: var(--panel);
 }
 
 .header-action-group {
@@ -297,7 +306,7 @@ button {
   gap: 2px;
   padding: 4px 9px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--panel) 64%, transparent);
+  background: transparent;
 }
 
 .header-info-cell--identity {
@@ -325,7 +334,7 @@ button {
   overflow: hidden;
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   letter-spacing: 0;
   line-height: 1;
   text-overflow: ellipsis;
@@ -337,7 +346,7 @@ button {
   align-items: center;
   gap: 7px;
   font-size: 12px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
   line-height: 1.2;
 }
 
@@ -376,7 +385,7 @@ button {
 .header-data-mode {
   color: var(--green);
   font-size: 11px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .source-label,
@@ -395,7 +404,7 @@ button {
   overflow: hidden;
   max-width: 340px;
   font-size: 22px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1.05;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -420,7 +429,7 @@ button {
 .account-name-pencil {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1;
 }
 
@@ -435,7 +444,7 @@ button {
   background: var(--panel);
   color: var(--text);
   font-size: 22px;
-  font-weight: 520;
+  font-weight: var(--weight-regular);
   line-height: 1.1;
   outline: none;
   padding: 4px 12px;
@@ -456,7 +465,7 @@ button {
 .plan-badge,
 .path-pill {
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .platform-badge {
@@ -492,7 +501,7 @@ button {
   border-radius: 6px;
   background: transparent;
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   cursor: pointer;
 }
 
@@ -582,13 +591,13 @@ button {
 
 .thread-delete-confirmation-dialog h2 {
   font-size: 17px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .thread-delete-confirmation-dialog p {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 580;
+  font-weight: var(--weight-regular);
   line-height: 1.55;
 }
 
@@ -607,7 +616,7 @@ button {
   background: var(--panel-soft);
   color: var(--text);
   font-size: 12px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .thread-delete-confirmation-actions .thread-delete-confirmation-primary {
@@ -652,7 +661,7 @@ button {
   background: var(--panel-solid);
   color: var(--text);
   padding: 7px 10px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .codex-home-editor button {
@@ -661,7 +670,7 @@ button {
   background: var(--panel-soft);
   color: var(--text);
   padding: 7px 10px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
 }
 
 .codex-home-editor button:disabled,
@@ -725,14 +734,14 @@ button {
 .repair-panel-foot span {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
 }
 
 .repair-panel-head h2 {
   margin: 2px 0 4px;
   color: var(--text);
   font-size: 22px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .repair-panel-head p {
@@ -747,7 +756,7 @@ button {
   background: var(--panel-soft);
   color: var(--text);
   cursor: pointer;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   padding: 5px 12px;
 }
 
@@ -778,7 +787,7 @@ button {
   background: linear-gradient(145deg, #ff9a31, #ff771f);
   color: white;
   font-size: 16px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .setup-head span,
@@ -786,7 +795,7 @@ button {
 .setup-step-body p {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .setup-head h2 {
@@ -819,7 +828,7 @@ button {
   border-radius: 10px;
   background: color-mix(in srgb, var(--orange) 18%, var(--panel-solid));
   color: var(--text);
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .setup-step-index.is-ok {
@@ -858,7 +867,7 @@ button {
   padding: 7px 9px;
   color: var(--text);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -873,7 +882,7 @@ button {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .setup-path-row button,
@@ -895,7 +904,7 @@ button {
   background: var(--panel-solid);
   color: var(--text);
   padding: 7px 9px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .setup-toggle-row {
@@ -941,7 +950,7 @@ button {
   margin-right: auto;
   color: var(--orange);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .setup-actions button {
@@ -978,7 +987,7 @@ button {
   align-items: center;
   min-height: 52px;
   padding: 5px 8px;
-  background: var(--panel-inset);
+  background: var(--panel);
   font-size: 10px;
   line-height: 1.08;
 }
@@ -1020,14 +1029,14 @@ button {
 .quota-plan strong {
   color: var(--text);
   font-size: 10px;
-  font-weight: 570;
+  font-weight: var(--weight-regular);
   white-space: nowrap;
 }
 
 .quota-pace-title strong {
   color: var(--text);
   font-size: 10px;
-  font-weight: 570;
+  font-weight: var(--weight-regular);
   white-space: nowrap;
 }
 
@@ -1049,7 +1058,7 @@ button {
 .quota-reset-card small {
   color: color-mix(in srgb, var(--accent) 78%, var(--muted));
   font-size: 8.8px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   white-space: nowrap;
 }
 
@@ -1080,7 +1089,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 8.8px;
   font-style: normal;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1;
 }
 
@@ -1088,7 +1097,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--text);
   font-size: 10px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1155,14 +1164,14 @@ button.quota-side-card:hover {
 .quota-read-warning strong {
   flex: 0 0 auto;
   font-size: 9px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
 .quota-read-warning span {
   min-width: 0;
   font-size: 9px;
-  font-weight: 500;
+  font-weight: var(--weight-regular);
   line-height: 1.28;
   white-space: normal;
 }
@@ -1175,7 +1184,7 @@ button.quota-side-card:hover {
   color: color-mix(in srgb, var(--accent) 86%, var(--text));
   padding: 3px 8px;
   font-size: 9px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   line-height: 1;
 }
 
@@ -1210,14 +1219,14 @@ button.quota-side-card:hover {
   grid-column: 1;
   grid-row: 1;
   font-size: 9.2px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
 .quota-plan span,
 .quota-pace span {
   font-size: 8.8px;
-  font-weight: 510;
+  font-weight: var(--weight-regular);
   white-space: nowrap;
 }
 
@@ -1294,7 +1303,7 @@ button.quota-side-card:hover {
 .quota-bar-meta b,
 .quota-bar-meta em {
   font-style: normal;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .quota-track-pending {
@@ -1368,7 +1377,7 @@ button.quota-side-card:hover {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 .reset-credit-list {
@@ -1424,7 +1433,7 @@ button.quota-side-card:hover {
 .reset-credit-avatar b {
   color: color-mix(in srgb, var(--accent) 72%, var(--text));
   font-size: 12px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .reset-credit-summary-main {
@@ -1436,7 +1445,7 @@ button.quota-side-card:hover {
 .reset-credit-summary-main strong {
   color: var(--text);
   font-size: 13px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   line-height: 1;
 }
 
@@ -1444,7 +1453,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 11px;
   font-style: normal;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -1490,14 +1499,14 @@ button.quota-side-card:hover {
 .reset-credit-fields dt {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .reset-credit-fields dd {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1.25;
 }
 
@@ -1522,7 +1531,7 @@ button.quota-side-card:hover {
 
 .stats-cell strong {
   font-size: 19px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .stats-cell--savings strong {
@@ -1532,7 +1541,7 @@ button.quota-side-card:hover {
 .stats-cell span {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 .usage-precision-note {
@@ -1550,7 +1559,7 @@ button.quota-side-card:hover {
 .usage-precision-note strong {
   flex: 0 0 auto;
   font-size: 11px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   white-space: nowrap;
 }
 
@@ -1558,7 +1567,7 @@ button.quota-side-card:hover {
   min-width: 0;
   color: color-mix(in srgb, var(--muted) 82%, var(--text));
   font-size: 11px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
 }
 
@@ -1572,7 +1581,7 @@ button.quota-side-card:hover {
 .section-title-row h2 {
   margin: 0;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .live-card .section-title-row > div,
@@ -1587,7 +1596,7 @@ button.quota-side-card:hover {
 .chart-section .section-title-row span {
   overflow: hidden;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1608,7 +1617,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1;
   white-space: nowrap;
 }
@@ -1645,7 +1654,7 @@ button.quota-side-card:hover {
   border-radius: 8px;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   line-height: 1;
   transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
   white-space: nowrap;
@@ -1689,7 +1698,7 @@ button.quota-side-card:hover {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 11.5px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
   padding: 0 8px;
   white-space: nowrap;
 }
@@ -1724,7 +1733,7 @@ button.quota-side-card:hover {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 11.5px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   padding: 0 10px;
 }
 
@@ -1770,7 +1779,7 @@ button.quota-side-card:hover {
 .codex-radar-head h2 {
   margin: 0;
   font-size: 15px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .codex-radar-head span,
@@ -1778,7 +1787,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1794,20 +1803,20 @@ button.quota-side-card:hover {
 .codex-radar-source-credit span {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-source-credit strong {
   color: var(--text);
   font-size: 13px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
 }
 
 .codex-radar-source-credit em {
   color: var(--accent-strong);
   font-size: 11px;
   font-style: normal;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-head button {
@@ -1818,7 +1827,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   padding: 3px 9px;
 }
 
@@ -1836,7 +1845,7 @@ button.quota-side-card:hover {
   width: 10px;
   height: 12px;
   font-size: 10px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   line-height: 1;
 }
 
@@ -1856,7 +1865,7 @@ button.quota-side-card:hover {
   flex: 0 0 auto;
   color: #8a4a12;
   font-size: 11px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .codex-radar-diagnostics span {
@@ -1864,7 +1873,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1873,7 +1882,7 @@ button.quota-side-card:hover {
   margin: 0;
   color: #8a4a12;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .codex-crowd-radar-mode-row {
@@ -1890,14 +1899,14 @@ button.quota-side-card:hover {
 .codex-crowd-radar-mode-row > span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-fallback-note {
   margin: 0;
   color: #8a4a12;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-grid {
@@ -1953,13 +1962,13 @@ button.quota-side-card:hover {
 .codex-radar-detail-head strong {
   color: var(--text);
   font-size: 20px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-detail-head span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .codex-radar-detail-head button {
@@ -1970,7 +1979,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   padding: 0 11px;
 }
 
@@ -2001,7 +2010,7 @@ button.quota-side-card:hover {
   min-height: 360px;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .codex-radar-spinner {
@@ -2035,7 +2044,7 @@ button.quota-side-card:hover {
   margin: 0;
   color: var(--text);
   font-size: 15px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   line-height: 1.15;
 }
 
@@ -2075,7 +2084,7 @@ button.quota-side-card:hover {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-chart-toolbar {
@@ -2102,7 +2111,7 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, var(--panel-inset) 58%, transparent);
   color: var(--muted);
   font-size: 10px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1;
   padding: 0 8px;
 }
@@ -2136,7 +2145,7 @@ button.quota-side-card:hover {
   background: transparent;
   color: var(--muted);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .codex-radar-window-selector button.is-active {
@@ -2180,7 +2189,7 @@ button.quota-side-card:hover {
 .codex-radar-chart-axis-title {
   fill: var(--muted);
   font-size: 9px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-chart-axis-title {
@@ -2207,7 +2216,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -2215,7 +2224,7 @@ button.quota-side-card:hover {
   min-width: 0;
   color: var(--text);
   font-size: 12px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
   line-height: 1.28;
   overflow-wrap: anywhere;
 }
@@ -2225,7 +2234,7 @@ button.quota-side-card:hover {
   padding: 0 18px 14px;
   color: var(--accent-strong);
   font-size: 10.5px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
   text-decoration: none;
 }
 
@@ -2233,7 +2242,7 @@ button.quota-side-card:hover {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 520;
+  font-weight: var(--weight-regular);
   line-height: 1.45;
 }
 
@@ -2257,14 +2266,14 @@ button.quota-side-card:hover {
 .codex-radar-signal-list strong {
   color: var(--text);
   font-size: 12px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-signal-list p {
   margin: 0;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 520;
+  font-weight: var(--weight-regular);
   line-height: 1.42;
 }
 
@@ -2283,14 +2292,14 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-trend-summary b,
 .codex-radar-role-counts b {
   color: var(--text);
   font-size: 12px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-role-counts {
@@ -2320,11 +2329,11 @@ button.quota-side-card:hover {
 
 .codex-radar-table th {
   color: var(--muted);
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .codex-radar-table td {
-  font-weight: 540;
+  font-weight: var(--weight-regular);
 }
 
 .codex-radar-article-list {
@@ -2347,7 +2356,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--text);
   font-size: 12px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2356,7 +2365,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 520;
+  font-weight: var(--weight-regular);
   line-height: 1.36;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2381,7 +2390,7 @@ button.quota-side-card:hover {
   gap: 6px;
   color: var(--radar-accent, var(--muted));
   font-size: 11px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   line-height: 1;
 }
 
@@ -2395,7 +2404,7 @@ button.quota-side-card:hover {
   color: var(--radar-accent, var(--accent-strong));
   font-size: 9px;
   font-style: normal;
-  font-weight: 800;
+  font-weight: var(--weight-bold);
 }
 
 .codex-radar-block > strong,
@@ -2403,7 +2412,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--text);
   font-size: 14px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
   line-height: 1.08;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2418,7 +2427,7 @@ button.quota-side-card:hover {
 
 .radar-score-row strong {
   font-size: 19px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
   color: var(--radar-score-color, var(--text));
 }
 
@@ -2428,7 +2437,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 610;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2459,13 +2468,13 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 9px;
   font-style: normal;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .radar-mini-row b {
   color: var(--radar-mini-color, var(--text));
   font-size: 11px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .radar-quota-row {
@@ -2475,7 +2484,7 @@ button.quota-side-card:hover {
   min-width: 0;
   color: var(--muted);
   font-size: 10px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1.08;
 }
 
@@ -2507,7 +2516,7 @@ button.quota-side-card:hover {
   background: var(--panel);
   color: var(--muted);
   font-size: 13px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
 }
 
 .live-grid {
@@ -2542,7 +2551,7 @@ button.quota-side-card:hover {
   border-radius: inherit;
   color: rgba(45, 55, 72, 0.72);
   font-size: 13px;
-  font-weight: 750;
+  font-weight: var(--weight-semibold);
   background: rgba(245, 248, 252, 0.36);
   backdrop-filter: blur(1px);
   pointer-events: none;
@@ -2585,7 +2594,7 @@ button.quota-side-card:hover {
 .rate-readout strong {
   color: var(--text);
   font-size: 23px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   letter-spacing: 0;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -2595,7 +2604,7 @@ button.quota-side-card:hover {
 .rate-readout em {
   color: var(--muted);
   font-style: normal;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .rate-readout span {
@@ -2619,7 +2628,7 @@ button.quota-side-card:hover {
   gap: 8px;
   color: color-mix(in srgb, var(--muted) 88%, var(--text));
   font-size: 8.8px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .rate-track {
@@ -2678,13 +2687,13 @@ button.quota-side-card:hover {
 .live-rate-warning strong {
   color: color-mix(in srgb, var(--orange) 68%, var(--text));
   font-size: 11px;
-  font-weight: 750;
+  font-weight: var(--weight-semibold);
 }
 
 .live-rate-warning span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -2698,7 +2707,7 @@ button.quota-side-card:hover {
   color: white;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 730;
+  font-weight: var(--weight-semibold);
   padding: 0 12px;
 }
 
@@ -2730,7 +2739,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   padding: 0 12px;
 }
 
@@ -2749,7 +2758,7 @@ button.quota-side-card:hover {
   padding: 5px 9px;
   color: color-mix(in srgb, var(--muted) 84%, var(--text));
   font-size: 10.5px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
 }
 
@@ -2775,13 +2784,13 @@ button.quota-side-card:hover {
 .settings-panel--quick > div:first-child strong {
   color: var(--text);
   font-size: 12px;
-  font-weight: 750;
+  font-weight: var(--weight-semibold);
 }
 
 .settings-panel--quick > div:first-child span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
 }
 
@@ -2799,7 +2808,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 690;
+  font-weight: var(--weight-medium);
   padding: 0 8px;
 }
 
@@ -2849,14 +2858,14 @@ button.quota-side-card:hover {
 
 .app-settings-head strong {
   font-size: 17px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-head span,
 .app-settings-section-head span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 580;
+  font-weight: var(--weight-regular);
 }
 
 .app-settings-head > button {
@@ -2887,7 +2896,7 @@ button.quota-side-card:hover {
 
 .app-settings-section-head strong {
   font-size: 13px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-general-grid {
@@ -2908,7 +2917,7 @@ button.quota-side-card:hover {
   background: var(--panel-soft);
   color: var(--text);
   font-size: 11.5px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   padding: 0 10px;
 }
 
@@ -2980,13 +2989,13 @@ button.quota-side-card:hover {
 
 .app-settings-sidebar-title strong {
   font-size: 17px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-sidebar-title span {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .app-settings-tabs {
@@ -3040,13 +3049,13 @@ button.quota-side-card:hover {
 
 .app-settings-tabs strong {
   font-size: 12px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-tabs span {
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
 }
 
@@ -3080,13 +3089,13 @@ button.quota-side-card:hover {
 
 .app-settings-page-head > div strong {
   font-size: 15px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-page-head > div span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 570;
+  font-weight: var(--weight-regular);
 }
 
 .app-settings-page-head > button {
@@ -3098,7 +3107,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 10.5px;
-  font-weight: 690;
+  font-weight: var(--weight-medium);
   padding-inline: 10px;
 }
 
@@ -3139,13 +3148,13 @@ button.quota-side-card:hover {
 
 .app-settings-group > header strong {
   font-size: 13px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-group > header span {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .app-settings-group > div {
@@ -3185,7 +3194,7 @@ button.quota-side-card:hover {
 .app-setting-row > span strong,
 .app-setting-range > span strong {
   font-size: 11.5px;
-  font-weight: 710;
+  font-weight: var(--weight-semibold);
 }
 
 .app-setting-row > span em,
@@ -3193,7 +3202,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 9.5px;
   font-style: normal;
-  font-weight: 540;
+  font-weight: var(--weight-regular);
   line-height: 1.4;
 }
 
@@ -3237,7 +3246,7 @@ button.quota-side-card:hover {
 
 .app-settings-toggle strong {
   font-size: 10px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-toggle.is-active {
@@ -3283,7 +3292,7 @@ button.quota-side-card:hover {
 .app-setting-range output {
   color: var(--accent-strong);
   font-size: 10.5px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   text-align: right;
   white-space: nowrap;
 }
@@ -3291,7 +3300,7 @@ button.quota-side-card:hover {
 .app-settings-note {
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 540;
+  font-weight: var(--weight-regular);
   line-height: 1.45;
   padding: 10px 12px;
 }
@@ -3312,7 +3321,7 @@ button.quota-side-card:hover {
   min-height: 34px;
   color: var(--text);
   font-size: 10.5px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
 }
 
 .app-settings-color-grid input[type="color"],
@@ -3347,7 +3356,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 10.5px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   padding: 0 10px;
   text-decoration: none;
 }
@@ -3380,7 +3389,7 @@ button.quota-side-card:hover {
 .app-settings-preview-wrap > span {
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .app-settings-preview {
@@ -3396,13 +3405,13 @@ button.quota-side-card:hover {
 
 .app-settings-preview strong {
   font-size: 11px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-preview > span {
   color: var(--preview-secondary);
   font-size: 10.5px;
-  font-weight: 730;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-preview i {
@@ -3425,7 +3434,7 @@ button.quota-side-card:hover {
   grid-column: 1 / -1;
   color: var(--preview-muted);
   font-size: 9px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .app-settings-content-list {
@@ -3460,7 +3469,7 @@ button.quota-side-card:hover {
 
 .app-settings-content-row strong {
   font-size: 11px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-content-row em {
@@ -3511,7 +3520,7 @@ button.quota-side-card:hover {
 
 .app-settings-option-grid strong {
   font-size: 11px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .app-settings-option-grid span {
@@ -3535,7 +3544,7 @@ button.quota-side-card:hover {
 .app-settings-status {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -3563,13 +3572,13 @@ button.quota-side-card:hover {
 .auto-resume-safety-note strong {
   color: color-mix(in srgb, #a66a00 76%, var(--text));
   font-size: 10.5px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-safety-note span {
   color: color-mix(in srgb, var(--text) 72%, var(--muted));
   font-size: 9.5px;
-  font-weight: 570;
+  font-weight: var(--weight-regular);
   line-height: 1.45;
 }
 
@@ -3598,7 +3607,7 @@ button.quota-side-card:hover {
   grid-row: 1 / span 2;
   color: var(--text);
   font-size: 10.5px;
-  font-weight: 690;
+  font-weight: var(--weight-medium);
 }
 
 .auto-resume-project-picker > select {
@@ -3633,7 +3642,7 @@ button.quota-side-card:hover {
 .auto-resume-prompt > span {
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .auto-resume-thread-tools input,
@@ -3672,7 +3681,7 @@ button.quota-side-card:hover {
   color: var(--accent-strong);
   cursor: pointer;
   font-size: 15px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-search-control > button:hover,
@@ -3689,7 +3698,7 @@ button.quota-side-card:hover {
   padding: 0 12px 8px;
   color: var(--muted);
   font-size: 8.8px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .auto-resume-thread-list {
@@ -3744,7 +3753,7 @@ button.quota-side-card:hover {
   min-width: 0;
   overflow-wrap: anywhere;
   font-size: 10.8px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   line-height: 1.42;
 }
 
@@ -3753,7 +3762,7 @@ button.quota-side-card:hover {
   color: var(--accent-strong);
   font-size: 8.8px;
   font-style: normal;
-  font-weight: 670;
+  font-weight: var(--weight-medium);
 }
 
 .auto-resume-thread-list code,
@@ -3771,7 +3780,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 8.5px;
-  font-weight: 540;
+  font-weight: var(--weight-regular);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3780,7 +3789,7 @@ button.quota-side-card:hover {
   border-top: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
   color: var(--muted);
   font-size: 8.7px;
-  font-weight: 580;
+  font-weight: var(--weight-regular);
   padding: 9px 12px;
   text-align: center;
 }
@@ -3805,13 +3814,13 @@ button.quota-side-card:hover {
   align-self: start;
   color: var(--muted);
   font-size: 9px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .auto-resume-selected > span {
   overflow-wrap: anywhere;
   font-size: 10px;
-  font-weight: 690;
+  font-weight: var(--weight-medium);
 }
 
 .auto-resume-selected > .app-settings-action {
@@ -3871,7 +3880,7 @@ button.quota-side-card:hover {
 
 .auto-resume-mode-choice strong {
   font-size: 10.5px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-mode-choice span {
@@ -3977,7 +3986,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 9.4px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   padding: 6px 8px;
   text-align: left;
 }
@@ -4032,7 +4041,7 @@ button.quota-side-card:hover {
 
 .auto-resume-number-grid strong {
   font-size: 10.5px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-number-grid em {
@@ -4076,14 +4085,14 @@ button.quota-side-card:hover {
 .auto-resume-status-card header strong {
   color: var(--accent-strong);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-status-card header span,
 .auto-resume-actions > span {
   color: var(--muted);
   font-size: 8.7px;
-  font-weight: 580;
+  font-weight: var(--weight-regular);
 }
 
 .auto-resume-status-card p {
@@ -4119,7 +4128,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   margin: 0;
   font-size: 9px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4129,7 +4138,7 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, #d84a4a 8%, var(--panel));
   color: color-mix(in srgb, #d84a4a 72%, var(--text));
   font-size: 9.5px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1.4;
   padding: 9px 12px;
 }
@@ -4244,7 +4253,7 @@ button.quota-side-card:hover {
 .auto-resume-task-summary strong {
   overflow: hidden;
   font-size: 10.8px;
-  font-weight: 735;
+  font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4256,7 +4265,7 @@ button.quota-side-card:hover {
   color: var(--task-state);
   font-size: 8.2px;
   font-style: normal;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
   padding: 2px 6px;
 }
 
@@ -4264,7 +4273,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 8.4px;
-  font-weight: 540;
+  font-weight: var(--weight-regular);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4277,7 +4286,7 @@ button.quota-side-card:hover {
   border-radius: 6px;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-task-chips {
@@ -4292,7 +4301,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 7.9px;
   font-style: normal;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   padding: 2px 6px;
 }
 
@@ -4312,7 +4321,7 @@ button.quota-side-card:hover {
 .auto-resume-task-runtime strong {
   color: var(--task-state);
   font-size: 10px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
 }
 
 .auto-resume-task-runtime span {
@@ -4365,7 +4374,7 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
   color: var(--text);
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   line-height: 1.45;
   margin-bottom: 12px;
   padding: 9px 11px;
@@ -4421,7 +4430,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--text);
   font-size: 11px;
-  font-weight: 710;
+  font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4431,7 +4440,7 @@ button.quota-side-card:hover {
   color: var(--muted);
   font-size: 9px;
   font-style: normal;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .codex-instance-status {
@@ -4440,7 +4449,7 @@ button.quota-side-card:hover {
   align-items: center;
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -4484,7 +4493,7 @@ button.quota-side-card:hover {
   overflow: hidden;
   color: var(--muted);
   font-size: 8.7px;
-  font-weight: 540;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4492,7 +4501,7 @@ button.quota-side-card:hover {
 
 .codex-instance-details b {
   color: var(--accent-strong);
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .codex-instance-edit {
@@ -4515,7 +4524,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 10px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .codex-instance-mode button.is-active {
@@ -4538,7 +4547,7 @@ button.quota-side-card:hover {
   min-width: 0;
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .codex-instance-fields input[type="text"],
@@ -4570,7 +4579,7 @@ button.quota-side-card:hover {
   min-height: 31px;
   color: var(--text);
   font-size: 9.5px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .codex-instance-sync-summary {
@@ -4581,7 +4590,7 @@ button.quota-side-card:hover {
   padding: 10px 11px;
   color: var(--muted);
   font-size: 9.5px;
-  font-weight: 570;
+  font-weight: var(--weight-regular);
 }
 
 .codex-instance-sync-summary > div {
@@ -4607,7 +4616,7 @@ button.quota-side-card:hover {
 .codex-instance-preview strong {
   color: var(--text);
   font-size: 13px;
-  font-weight: 740;
+  font-weight: var(--weight-semibold);
 }
 
 .codex-instance-conflicts {
@@ -4620,7 +4629,7 @@ button.quota-side-card:hover {
 .codex-instance-conflicts > strong {
   margin-bottom: 3px;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
 }
 
 .codex-instance-conflicts > div {
@@ -4687,7 +4696,7 @@ button.quota-side-card:hover {
 .rate-scale-slider strong {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -4714,20 +4723,20 @@ button.quota-side-card:hover {
 .session-title span {
   color: var(--text);
   font-size: 11.5px;
-  font-weight: 640;
+  font-weight: var(--weight-medium);
 }
 
 .session-title em {
   color: var(--muted);
   font-size: 9.6px;
   font-style: normal;
-  font-weight: 580;
+  font-weight: var(--weight-regular);
 }
 
 .session-row > strong {
   color: var(--text);
   font-size: 11.5px;
-  font-weight: 660;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -4742,7 +4751,7 @@ button.quota-side-card:hover {
 .session-picker span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -4756,7 +4765,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 10.5px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .settings-panel {
@@ -4829,7 +4838,7 @@ button.quota-side-card:hover {
   color: color-mix(in srgb, var(--text) 82%, var(--muted));
   cursor: pointer;
   font-size: 10.6px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   padding: 2px 7px;
 }
 
@@ -4871,7 +4880,7 @@ button.quota-side-card:hover {
 .setting-segment > span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .setting-segment > div {
@@ -4888,7 +4897,7 @@ button.quota-side-card:hover {
   color: color-mix(in srgb, var(--text) 80%, var(--muted));
   cursor: pointer;
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 .setting-segment button.is-active {
@@ -4907,7 +4916,7 @@ button.quota-side-card:hover {
 .floating-palette > span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .floating-palette input[type="color"] {
@@ -4929,7 +4938,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   padding: 0 6px;
 }
 
@@ -4943,7 +4952,7 @@ button.quota-side-card:hover {
 .floating-content-settings > span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
   line-height: 22px;
 }
 
@@ -4970,7 +4979,7 @@ button.quota-side-card:hover {
   min-width: 0;
   color: var(--text);
   font-size: 9.6px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1.1;
 }
 
@@ -4997,14 +5006,14 @@ button.quota-side-card:hover {
 .floating-content-row label strong {
   color: var(--text);
   font-size: 10.6px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .floating-content-row label em {
   color: color-mix(in srgb, var(--text) 58%, var(--muted));
   font-size: 9.4px;
   font-style: normal;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
 }
 
 .floating-content-row > div {
@@ -5022,7 +5031,7 @@ button.quota-side-card:hover {
   color: color-mix(in srgb, var(--text) 76%, var(--muted));
   cursor: pointer;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: var(--weight-semibold);
   line-height: 1;
 }
 
@@ -5081,13 +5090,13 @@ button.quota-side-card:hover {
 .settings-callout-head strong {
   color: var(--text);
   font-size: 12.5px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .settings-callout-head span {
   color: color-mix(in srgb, var(--text) 64%, var(--muted));
   font-size: 10.8px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
   line-height: 1.35;
 }
 
@@ -5100,7 +5109,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 16px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 20px;
   padding: 0;
 }
@@ -5117,7 +5126,7 @@ button.quota-side-card:hover {
 .settings-callout-section > span {
   color: color-mix(in srgb, var(--text) 62%, var(--muted));
   font-size: 10.4px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   padding: 0 4px 4px;
 }
 
@@ -5140,7 +5149,7 @@ button.quota-side-card:hover {
 .settings-callout-row span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .settings-callout-row input[type="color"] {
@@ -5162,7 +5171,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   padding: 0 8px;
 }
 
@@ -5187,7 +5196,7 @@ button.quota-side-card:hover {
   color: color-mix(in srgb, var(--text) 74%, var(--muted));
   cursor: pointer;
   font-size: 11px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .settings-callout-options {
@@ -5216,14 +5225,14 @@ button.quota-side-card:hover {
 
 .settings-callout-options span {
   font-size: 11.8px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .settings-callout-options em {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .settings-callout-slider {
@@ -5264,7 +5273,7 @@ button.quota-side-card:hover {
   background: color-mix(in srgb, var(--panel) 58%, transparent);
   color: color-mix(in srgb, var(--text) 68%, var(--muted));
   font-size: 10.4px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   line-height: 1.25;
   padding: 5px 7px;
 }
@@ -5274,7 +5283,7 @@ button.quota-side-card:hover {
 .settings-panel label span {
   color: var(--muted);
   font-size: 10.5px;
-  font-weight: 590;
+  font-weight: var(--weight-regular);
 }
 
 .settings-note {
@@ -5284,7 +5293,7 @@ button.quota-side-card:hover {
 .setting-slider strong {
   color: color-mix(in srgb, var(--text) 72%, var(--muted));
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   text-align: right;
 }
 
@@ -5296,7 +5305,7 @@ button.quota-side-card:hover {
   color: var(--text);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   padding: 3px 10px;
 }
 
@@ -5372,7 +5381,7 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .segmented .active {
@@ -5411,7 +5420,7 @@ input[type="range"]::-moz-range-thumb {
   margin-top: 5px;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .heatmap-months span {
@@ -5468,7 +5477,7 @@ input[type="range"]::-moz-range-thumb {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .recent-chart-head {
@@ -5489,7 +5498,7 @@ input[type="range"]::-moz-range-thumb {
 .recent-chart-title h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
   letter-spacing: 0;
 }
 
@@ -5497,7 +5506,7 @@ input[type="range"]::-moz-range-thumb {
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5513,7 +5522,7 @@ input[type="range"]::-moz-range-thumb {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: var(--accent-strong) !important;
   font-size: 11px !important;
-  font-weight: 720 !important;
+  font-weight: var(--weight-semibold) !important;
 }
 
 .recent-chart-controls {
@@ -5538,7 +5547,7 @@ input[type="range"]::-moz-range-thumb {
 .quota-model-select span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .quota-model-select select {
@@ -5548,7 +5557,7 @@ input[type="range"]::-moz-range-thumb {
   background: transparent;
   color: var(--text);
   font-size: 12px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .recent-range-tabs,
@@ -5570,7 +5579,7 @@ input[type="range"]::-moz-range-thumb {
   background: transparent;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   cursor: pointer;
 }
 
@@ -5592,7 +5601,7 @@ input[type="range"]::-moz-range-thumb {
   gap: 12px;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .chart-legend {
@@ -5611,7 +5620,7 @@ input[type="range"]::-moz-range-thumb {
 
 .chart-legend-item strong {
   color: var(--text);
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .legend-dot {
@@ -5732,7 +5741,7 @@ input[type="range"]::-moz-range-thumb {
   background: color-mix(in srgb, var(--panel-solid) 86%, transparent);
   color: color-mix(in srgb, var(--text) 76%, var(--muted));
   font-size: 11px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -5804,7 +5813,7 @@ input[type="range"]::-moz-range-thumb {
 .chart-time-marker {
   fill: var(--muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .chart-time-marker--day {
@@ -5879,7 +5888,7 @@ input[type="range"]::-moz-range-thumb {
 .chart-hover-bubble em {
   font-size: 11px;
   font-style: normal;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
 }
 
 .chart-hover-bubble div span,
@@ -5930,13 +5939,13 @@ input[type="range"]::-moz-range-thumb {
 .quota-estimate-row > span {
   color: var(--muted);
   font-size: 10px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .quota-estimate-row strong {
   color: var(--accent-strong);
   font-size: 15px;
-  font-weight: 790;
+  font-weight: var(--weight-semibold);
 }
 
 .quota-estimate-row em,
@@ -5945,7 +5954,7 @@ input[type="range"]::-moz-range-thumb {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
 }
 
@@ -5967,11 +5976,11 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 7px;
   background: color-mix(in srgb, currentColor 9%, transparent);
   font-size: 10px;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .quota-estimate-chip b {
-  font-weight: 800;
+  font-weight: var(--weight-bold);
 }
 
 .quota-estimate-chip span {
@@ -5995,7 +6004,7 @@ input[type="range"]::-moz-range-thumb {
   color: var(--muted);
   cursor: pointer;
   font-size: 15px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
   line-height: 1;
 }
 
@@ -6044,7 +6053,7 @@ input[type="range"]::-moz-range-thumb {
   overflow: hidden;
   margin: 0 0 2px;
   font-size: 12px;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6054,7 +6063,7 @@ input[type="range"]::-moz-range-thumb {
   overflow: hidden;
   color: var(--text-subtle);
   font-size: 9px;
-  font-weight: 560;
+  font-weight: var(--weight-regular);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6063,7 +6072,7 @@ input[type="range"]::-moz-range-thumb {
   color: var(--cache-hit-tone, var(--text));
   font-style: normal;
   font-size: 13px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
 }
 
 .ranking-row em.cache-hit-tone--orange,
@@ -6107,7 +6116,7 @@ input[type="range"]::-moz-range-thumb {
   margin: 10px 0 0;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .repair-status--warn {
@@ -6150,7 +6159,7 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 8px;
   background: var(--panel-soft);
   color: var(--text);
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   min-height: 32px;
   cursor: pointer;
 }
@@ -6165,7 +6174,7 @@ input[type="range"]::-moz-range-thumb {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .repair-visibility {
@@ -6194,7 +6203,7 @@ input[type="range"]::-moz-range-thumb {
   margin: 3px 0 0;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .repair-visibility button {
@@ -6205,7 +6214,7 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 8px;
   background: var(--panel);
   color: var(--text);
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   cursor: pointer;
 }
 
@@ -6236,7 +6245,7 @@ input[type="range"]::-moz-range-thumb {
 .repair-backup-list p {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 620;
+  font-weight: var(--weight-medium);
 }
 
 .repair-backup-list {
@@ -6305,7 +6314,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 html:not(.floating-document):not(.status-document) body {
-  font-weight: 400;
+  font-weight: var(--weight-regular);
 }
 
 html:not(.floating-document):not(.status-document) :is(
@@ -6342,7 +6351,7 @@ html:not(.floating-document):not(.status-document) :is(
   .settings-label,
   .settings-panel label span
 ) {
-  font-weight: 400;
+  font-weight: var(--weight-regular);
 }
 
 html:not(.floating-document):not(.status-document) :is(
@@ -6356,7 +6365,7 @@ html:not(.floating-document):not(.status-document) :is(
   .codex-radar-head button,
   .settings-callout button
 ) {
-  font-weight: 500;
+  font-weight: var(--weight-regular);
 }
 
 html:not(.floating-document):not(.status-document) :is(
@@ -6368,7 +6377,7 @@ html:not(.floating-document):not(.status-document) :is(
   .ranking-section h2,
   .repair-card h2
 ) {
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 html:not(.floating-document):not(.status-document) :is(
@@ -6386,11 +6395,11 @@ html:not(.floating-document):not(.status-document) :is(
   .codex-radar-detail-head strong,
   .codex-radar-detail-section h3
 ) {
-  font-weight: 580;
+  font-weight: var(--weight-regular);
 }
 
 html:not(.floating-document):not(.status-document) .brand-mark {
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .floating-window-shell {
@@ -6490,7 +6499,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   width: calc(58px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(19px * var(--floating-scale));
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
   line-height: 0.98;
   transform: translate(calc(3px * var(--floating-scale)), calc(3px * var(--floating-scale)));
@@ -6503,13 +6512,13 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-quota,
 .floating-radar,
 .floating-usage-status {
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 .floating-rate-readout > span {
   color: var(--floating-secondary);
   font-size: calc(8.5px * var(--floating-scale));
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   transform: translateY(calc(3.5px * var(--floating-scale)));
 }
 
@@ -6554,7 +6563,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-primary);
   font-size: calc(10.3px * var(--floating-scale));
   font-style: normal;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1;
   overflow: visible;
   text-overflow: clip;
@@ -6606,7 +6615,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-primary);
   cursor: default;
   font-size: calc(15px * var(--floating-scale));
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1;
   padding: 0;
   -webkit-app-region: no-drag;
@@ -6616,7 +6625,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   gap: calc(5px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(9.9px * var(--floating-scale));
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   min-height: calc(13px * var(--floating-scale));
 }
 
@@ -6660,7 +6669,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-primary);
   font-size: calc(9.7px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   min-height: calc(13px * var(--floating-scale));
   text-align: center;
 }
@@ -6701,7 +6710,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   padding: 0 calc(1px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(13.1px * var(--floating-scale));
-  font-weight: 650;
+  font-weight: var(--weight-medium);
   line-height: 1;
   overflow: visible;
   text-align: center;
@@ -6772,7 +6781,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-crowd-radar-result span {
   color: var(--floating-primary);
-  font-weight: 600;
+  font-weight: var(--weight-medium);
 }
 
 .floating-crowd-radar-result em {
@@ -6837,7 +6846,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-primary);
   font-size: calc(8.8px * var(--floating-scale));
   font-style: normal;
-  font-weight: 680;
+  font-weight: var(--weight-medium);
   min-width: 0;
   text-overflow: clip;
   opacity: 0.88;
@@ -6847,14 +6856,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-muted);
   font-size: calc(8.9px * var(--floating-scale));
   font-style: normal;
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .floating-radar p {
   margin: 0;
   color: color-mix(in srgb, var(--floating-muted) 68%, var(--radar-secondary-color) 32%);
   font-size: calc(8.6px * var(--floating-scale));
-  font-weight: 650;
+  font-weight: var(--weight-medium);
 }
 
 .floating-radar-models {
@@ -6883,7 +6892,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   padding: 0 calc(3px * var(--floating-scale));
   overflow: hidden;
   font-size: calc(9.9px * var(--floating-scale));
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
   line-height: 1;
   isolation: isolate;
   text-align: center;
@@ -7083,12 +7092,12 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .status-panel-stats dt {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 670;
+  font-weight: var(--weight-medium);
 }
 
 .status-panel-head strong {
   font-size: 34px;
-  font-weight: 730;
+  font-weight: var(--weight-semibold);
   line-height: 0.92;
 }
 
@@ -7102,7 +7111,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--muted);
   font-size: 12px;
   font-style: normal;
-  font-weight: 720;
+  font-weight: var(--weight-semibold);
 }
 
 .status-panel-rate-unit button {
@@ -7137,7 +7146,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   overflow: hidden;
   color: color-mix(in srgb, var(--text) 84%, var(--accent));
   font-size: 12px;
-  font-weight: 730;
+  font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7166,7 +7175,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   margin: 2px 0 0;
   color: var(--text);
   font-size: 13px;
-  font-weight: 760;
+  font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7189,7 +7198,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   width: 100%;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 670;
+  font-weight: var(--weight-medium);
   text-align: center;
 }
 
@@ -7209,7 +7218,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--text);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 730;
+  font-weight: var(--weight-semibold);
   padding: 0 7px;
 }
 
