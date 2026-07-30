@@ -253,6 +253,12 @@ final class AutoResumeController: ObservableObject {
         applyConfiguration(next)
     }
 
+    func setAutoApprovalEnabled(_ enabled: Bool) {
+        var next = configuration
+        next.autoApprovalEnabled = enabled
+        applyConfiguration(next)
+    }
+
     func setScheduleMode(_ mode: AutoResumeScheduleMode) {
         var next = configuration
         next.scheduleMode = mode
@@ -867,6 +873,7 @@ final class AutoResumeController: ObservableObject {
         let invisibleResumeEnabled =
             configuration.invisibleResumeEnabled
             ?? (configuration.prompt == AutoResumeConfiguration.defaultPrompt)
+        let autoApprovalEnabled = configuration.autoApprovalEnabled
         let sharedCooldown = trigger.kind == .manual
             ? TimeInterval.zero
             : TimeInterval(configuration.cooldownMinutes * 60)
@@ -935,6 +942,7 @@ final class AutoResumeController: ObservableObject {
                         target: target,
                         prompt: prompt,
                         invisibleResumeEnabled: invisibleResumeEnabled,
+                        autoApprovalEnabled: autoApprovalEnabled,
                         clientMessageID: resolvedTriggerKey,
                         expectedFreshness: expectedFreshness,
                         startAuthorization: startAuthorization

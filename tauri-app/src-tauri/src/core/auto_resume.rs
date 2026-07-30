@@ -587,6 +587,7 @@ pub fn run_turn(
     authorization: &AutoResumeRunAuthorization,
     prompt: &str,
     invisible_resume_enabled: bool,
+    auto_approval_enabled: bool,
     client_message_id: &str,
     freshness_not_before: Option<i64>,
     start_generation_guard: Option<AutoResumeStartGenerationGuard>,
@@ -660,6 +661,7 @@ pub fn run_turn(
     let mut early_completions = Vec::new();
     let mut start_request_id = PRIMARY_TURN_START_REQUEST_ID;
     let mut visible_fallback_started = false;
+    let mut auto_approval_count = 0_usize;
     loop {
         if let Err(error) = authorization.validate() {
             if let Some(active_turn_id) = turn_id.as_deref() {
@@ -772,7 +774,7 @@ pub fn run_turn(
                 turn_id.as_deref(),
                 needs_attention.as_deref(),
             ) {
-                return Ok(outcome);
+                return Ok(with_auto_approval_audit(outcome, auto_approval_count));
             }
             continue;
         }
@@ -782,11 +784,58 @@ pub fn run_turn(
                 .get("method")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            let rejection_reason = if auto_approval_method_kind(method).is_some() {
+                match auto_approval_evaluation(
+                    &message,
+                    auto_approval_enabled,
+                    thread_id,
+                    turn_id.as_deref(),
+                    true,
+                ) {
+                    AutoApprovalEvaluation::Approve {
+                        response,
+                        requested_turn_id,
+                    } => {
+                        let approved = if let Some(guard) = start_generation_guard.as_ref() {
+                            guard.run_if_current(|| session.send(response))?
+                        } else {
+                            session.send(response)?;
+                            true
+                        };
+                        if approved {
+                            auto_approval_count = auto_approval_count.saturating_add(1);
+                            if turn_id.is_none() {
+                                turn_id = requested_turn_id;
+                            }
+                            if let Some(outcome) = take_early_completion(
+                                &mut early_completions,
+                                thread_id,
+                                turn_id.as_deref(),
+                                None,
+                            ) {
+                                return Ok(with_auto_approval_audit(
+                                    outcome,
+                                    auto_approval_count,
+                                ));
+                            }
+                            continue;
+                        }
+                        session.reject_server_request(&message)?;
+                        "自动续跑设置已变化，批准请求已拒绝".to_string()
+                    }
+                    AutoApprovalEvaluation::Reject { response, reason } => {
+                        session.send(response)?;
+                        reason
+                    }
+                }
+            } else {
+                session.reject_server_request(&message)?;
+                "该请求不是命令或文件变更批准，必须人工处理".to_string()
+            };
             needs_attention = Some(format!(
-                "Codex 请求人工处理（{method}），Token Bar 已拒绝自动批准"
+                "Codex 请求人工处理（{method}）：{rejection_reason}"
             ));
             stop_requested_at.get_or_insert_with(Instant::now);
-            session.reject_server_request(&message)?;
             let requested_turn_id = message
                 .pointer("/params/turnId")
                 .and_then(Value::as_str)
@@ -829,7 +878,7 @@ pub fn run_turn(
                 turn_id.as_deref(),
                 needs_attention.as_deref(),
             ) {
-                return Ok(outcome);
+                return Ok(with_auto_approval_audit(outcome, auto_approval_count));
             }
             continue;
         }
@@ -837,9 +886,9 @@ pub fn run_turn(
         if message.get("method").and_then(Value::as_str) == Some("turn/completed") {
             if let Some(expected_turn_id) = turn_id.as_deref() {
                 if is_matching_turn_completion(&message, thread_id, expected_turn_id) {
-                    return Ok(turn_completion_outcome(
-                        &message,
-                        needs_attention.as_deref(),
+                    return Ok(with_auto_approval_audit(
+                        turn_completion_outcome(&message, needs_attention.as_deref()),
+                        auto_approval_count,
                     ));
                 }
             } else if message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
@@ -963,6 +1012,19 @@ fn turn_completion_outcome(message: &Value, needs_attention: Option<&str>) -> Au
             }
         }
     }
+}
+
+fn with_auto_approval_audit(
+    mut outcome: AutoResumeRunOutcome,
+    auto_approval_count: usize,
+) -> AutoResumeRunOutcome {
+    if auto_approval_count > 0 {
+        outcome.message = format!(
+            "{}；本轮自动批准 {} 项普通操作",
+            outcome.message, auto_approval_count
+        );
+    }
+    outcome
 }
 
 pub fn default_codex_home() -> PathBuf {
@@ -1580,6 +1642,480 @@ impl AppServerSession {
             format!("；stderr：{}", truncate_chars(text.trim(), 500))
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum AutoApprovalMethodKind {
+    Command,
+    FileChange,
+    LegacyCommand,
+    LegacyFileChange,
+}
+
+impl AutoApprovalMethodKind {
+    fn approval_decision(self) -> &'static str {
+        match self {
+            Self::Command | Self::FileChange => "accept",
+            Self::LegacyCommand | Self::LegacyFileChange => "approved",
+        }
+    }
+
+    fn rejection_decision(self) -> &'static str {
+        match self {
+            Self::Command | Self::FileChange => "decline",
+            Self::LegacyCommand | Self::LegacyFileChange => "denied",
+        }
+    }
+}
+
+enum AutoApprovalEvaluation {
+    Approve {
+        response: Value,
+        requested_turn_id: Option<String>,
+    },
+    Reject {
+        response: Value,
+        reason: String,
+    },
+}
+
+fn auto_approval_method_kind(method: &str) -> Option<AutoApprovalMethodKind> {
+    match method.to_ascii_lowercase().as_str() {
+        "item/commandexecution/requestapproval" => Some(AutoApprovalMethodKind::Command),
+        "item/filechange/requestapproval" => Some(AutoApprovalMethodKind::FileChange),
+        "execcommandapproval" | "exec_command_approval" => {
+            Some(AutoApprovalMethodKind::LegacyCommand)
+        }
+        "applypatchapproval" | "apply_patch_approval" => {
+            Some(AutoApprovalMethodKind::LegacyFileChange)
+        }
+        _ => None,
+    }
+}
+
+fn auto_approval_evaluation(
+    request: &Value,
+    enabled: bool,
+    target_thread_id: &str,
+    bound_turn_id: Option<&str>,
+    turn_start_pending: bool,
+) -> AutoApprovalEvaluation {
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    let Some(kind) = auto_approval_method_kind(method) else {
+        return AutoApprovalEvaluation::Reject {
+            response: server_request_rejection(id, method),
+            reason: "不是受支持的批准请求".into(),
+        };
+    };
+    let reject = |reason: &str| AutoApprovalEvaluation::Reject {
+        response: json!({
+            "jsonrpc": "2.0",
+            "id": id.clone(),
+            "result": {"decision": kind.rejection_decision()}
+        }),
+        reason: reason.into(),
+    };
+    if !enabled {
+        return reject("当前会话未开启自动批准");
+    }
+    let Some(params) = request.get("params").and_then(Value::as_object) else {
+        return reject("批准请求缺少结构化 params");
+    };
+    let requested_thread_id = match kind {
+        AutoApprovalMethodKind::Command | AutoApprovalMethodKind::FileChange => {
+            params.get("threadId").and_then(Value::as_str)
+        }
+        AutoApprovalMethodKind::LegacyCommand | AutoApprovalMethodKind::LegacyFileChange => {
+            params.get("conversationId").and_then(Value::as_str)
+        }
+    };
+    if requested_thread_id != Some(target_thread_id) {
+        return reject("批准请求不属于当前会话");
+    }
+    let request_identity = match kind {
+        AutoApprovalMethodKind::Command | AutoApprovalMethodKind::FileChange => {
+            params.get("itemId").and_then(Value::as_str)
+        }
+        AutoApprovalMethodKind::LegacyCommand | AutoApprovalMethodKind::LegacyFileChange => {
+            params.get("callId").and_then(Value::as_str)
+        }
+    };
+    if request_identity
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return reject("批准请求缺少结构化请求 ID");
+    }
+
+    let mut requested_turn_id = None;
+    match kind {
+        AutoApprovalMethodKind::Command | AutoApprovalMethodKind::FileChange => {
+            let Some(request_turn_id) = params.get("turnId").and_then(Value::as_str) else {
+                return reject("批准请求缺少 turnId");
+            };
+            if let Some(bound_turn_id) = bound_turn_id {
+                if request_turn_id != bound_turn_id {
+                    return reject("批准请求不属于当前 turn");
+                }
+            } else if !turn_start_pending {
+                return reject("当前尚未启动可批准的 turn");
+            }
+            if params
+                .get("availableDecisions")
+                .and_then(Value::as_array)
+                .is_some_and(|available| !available.iter().any(accepts_single_request_decision))
+            {
+                return reject("Codex 未提供单次 accept 决策");
+            }
+            requested_turn_id = Some(request_turn_id.to_string());
+        }
+        AutoApprovalMethodKind::LegacyCommand | AutoApprovalMethodKind::LegacyFileChange => {
+            if !turn_start_pending && bound_turn_id.is_none() {
+                return reject("当前尚未启动可批准的 turn");
+            }
+        }
+    }
+
+    match kind {
+        AutoApprovalMethodKind::Command => {
+            if params
+                .get("additionalPermissions")
+                .is_some_and(|value| !value.is_null())
+            {
+                return reject("请求包含额外权限扩张，必须人工确认");
+            }
+            if [
+                "proposedExecpolicyAmendment",
+                "proposedNetworkPolicyAmendments",
+            ]
+            .iter()
+            .any(|field| params.get(*field).is_some_and(|value| !value.is_null()))
+            {
+                return reject("请求包含持续策略扩张，必须人工确认");
+            }
+            let commands = auto_approval_command_texts(params);
+            let has_network_context = params
+                .get("networkApprovalContext")
+                .and_then(Value::as_object)
+                .is_some_and(|value| !value.is_empty());
+            if commands.is_empty() && !has_network_context {
+                return reject("无法解析待批准命令");
+            }
+            if let Some(reason) = commands
+                .iter()
+                .find_map(|command| destructive_command_reason(command))
+            {
+                return reject(reason);
+            }
+        }
+        AutoApprovalMethodKind::LegacyCommand => {
+            let commands = auto_approval_command_texts(params);
+            if commands.is_empty() {
+                return reject("无法解析待批准命令");
+            }
+            if let Some(reason) = commands
+                .iter()
+                .find_map(|command| destructive_command_reason(command))
+            {
+                return reject(reason);
+            }
+        }
+        AutoApprovalMethodKind::FileChange => {
+            if params
+                .get("grantRoot")
+                .is_some_and(|value| !value.is_null())
+            {
+                return reject("文件变更请求扩大持续写入根目录，必须人工确认");
+            }
+        }
+        AutoApprovalMethodKind::LegacyFileChange => {
+            if params
+                .get("grantRoot")
+                .is_some_and(|value| !value.is_null())
+            {
+                return reject("文件变更请求扩大持续写入根目录，必须人工确认");
+            }
+            if !params
+                .get("fileChanges")
+                .and_then(Value::as_object)
+                .is_some_and(|changes| !changes.is_empty())
+            {
+                return reject("无法解析待批准文件变更");
+            }
+        }
+    }
+
+    AutoApprovalEvaluation::Approve {
+        response: json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"decision": kind.approval_decision()}
+        }),
+        requested_turn_id,
+    }
+}
+
+fn accepts_single_request_decision(value: &Value) -> bool {
+    if value
+        .as_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case("accept"))
+    {
+        return true;
+    }
+    value.as_object().is_some_and(|object| {
+        ["decision", "type", "value"].iter().any(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("accept"))
+        })
+    })
+}
+
+fn auto_approval_command_texts(params: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut commands = Vec::new();
+    if let Some(command) = params.get("command").and_then(Value::as_str) {
+        if !command.trim().is_empty() {
+            commands.push(command.trim().to_string());
+        }
+    } else if let Some(command) = params.get("command").and_then(Value::as_array) {
+        let joined = command
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !joined.trim().is_empty() {
+            commands.push(joined);
+        }
+    }
+    if let Some(actions) = params.get("commandActions").and_then(Value::as_array) {
+        for action in actions.iter().filter_map(Value::as_object) {
+            if let Some(command) = action.get("command").and_then(Value::as_str) {
+                if !command.trim().is_empty() {
+                    commands.push(command.trim().to_string());
+                }
+            } else if let Some(command) = action.get("command").and_then(Value::as_array) {
+                let joined = command
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !joined.trim().is_empty() {
+                    commands.push(joined);
+                }
+            }
+        }
+    }
+    if let Some(parsed) = params.get("parsedCmd").and_then(Value::as_array) {
+        for command in parsed
+            .iter()
+            .filter_map(Value::as_object)
+            .filter_map(|value| value.get("cmd"))
+            .filter_map(Value::as_str)
+        {
+            if !command.trim().is_empty() {
+                commands.push(command.trim().to_string());
+            }
+        }
+    }
+    commands
+}
+
+fn destructive_command_reason(command: &str) -> Option<&'static str> {
+    let lower = command.to_ascii_lowercase();
+    let tokens = command_tokens(&lower);
+    if tokens.is_empty() {
+        return Some("命令为空或无法解析");
+    }
+
+    if let Some(rm_index) = tokens
+        .iter()
+        .position(|token| executable_name(token) == "rm")
+    {
+        let tail = &tokens[rm_index + 1..];
+        let recursive = tail
+            .iter()
+            .any(|token| short_flag_contains(token, 'r') || token == "--recursive");
+        let force = tail
+            .iter()
+            .any(|token| short_flag_contains(token, 'f') || token == "--force");
+        let dangerous_root = tail.iter().any(|token| is_dangerous_filesystem_root(token));
+        if recursive && force {
+            return Some("已拦截 rm 的递归强制删除");
+        }
+        if recursive && dangerous_root {
+            return Some("已拦截对文件系统根目录的递归删除");
+        }
+    }
+
+    if let Some(index) = tokens.iter().position(|token| {
+        matches!(executable_name(token).as_str(), "remove-item" | "removeitem")
+    }) {
+        let tail = &tokens[index + 1..];
+        if tail.iter().any(|token| token == "-recurse")
+            && tail.iter().any(|token| token == "-force")
+        {
+            return Some("已拦截 PowerShell 的递归强制删除");
+        }
+    }
+
+    if let Some(index) = tokens
+        .iter()
+        .position(|token| matches!(executable_name(token).as_str(), "rd" | "rmdir"))
+    {
+        if tokens[index + 1..]
+            .iter()
+            .any(|token| token == "/s" || token.contains("/s"))
+        {
+            return Some("已拦截 Windows 目录递归删除");
+        }
+    }
+
+    if let Some(index) = tokens
+        .iter()
+        .position(|token| matches!(executable_name(token).as_str(), "del" | "erase"))
+    {
+        if tokens[index + 1..]
+            .iter()
+            .any(|token| token == "/s" || token.contains("/s"))
+        {
+            return Some("已拦截 Windows 文件递归删除");
+        }
+    }
+
+    if lower.contains("diskutil erasedisk")
+        || lower.contains("diskutil partitiondisk")
+        || lower.contains("diskutil zerodisk")
+        || tokens
+            .iter()
+            .any(|token| executable_name(token).starts_with("mkfs"))
+        || tokens
+            .iter()
+            .any(|token| matches!(executable_name(token).as_str(), "fdisk" | "parted" | "diskpart"))
+        || lower.contains("clear-disk")
+        || lower.contains("initialize-disk")
+        || lower.contains("remove-partition")
+        || lower.contains("format-volume")
+    {
+        return Some("已拦截磁盘格式化或分区命令");
+    }
+
+    if tokens
+        .iter()
+        .any(|token| executable_name(token) == "dd")
+        && (lower
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+            .contains("of=/dev/")
+            || lower.contains("physicaldrive"))
+    {
+        return Some("已拦截向原始设备写入的 dd 命令");
+    }
+
+    if let Some(format_index) = tokens
+        .iter()
+        .position(|token| executable_name(token) == "format")
+    {
+        if tokens[format_index + 1..]
+            .iter()
+            .any(|token| is_dangerous_filesystem_root(token))
+        {
+            return Some("已拦截 Windows 磁盘格式化命令");
+        }
+    }
+
+    if tokens
+        .iter()
+        .any(|token| executable_name(token) == "shred")
+        && tokens.iter().any(|token| token.starts_with("/dev/"))
+    {
+        return Some("已拦截原始设备擦除命令");
+    }
+
+    if let Some(git_index) = tokens
+        .iter()
+        .position(|token| executable_name(token) == "git")
+    {
+        let tail = &tokens[git_index + 1..];
+        if tail.first().is_some_and(|value| value == "reset")
+            && tail.iter().any(|value| value == "--hard")
+        {
+            return Some("已拦截 git reset --hard");
+        }
+        if tail.first().is_some_and(|value| value == "clean") {
+            let forced = tail
+                .iter()
+                .any(|value| short_flag_contains(value, 'f') || value == "--force");
+            let broad = tail.iter().any(|value| {
+                short_flag_contains(value, 'd')
+                    || short_flag_contains(value, 'x')
+                    || value == "--directories"
+            });
+            if forced && broad {
+                return Some("已拦截破坏性 git clean");
+            }
+        }
+        if tail.first().is_some_and(|value| value == "push")
+            && tail.iter().any(|value| value == "--force" || value == "-f")
+        {
+            return Some("已拦截 git 强制推送");
+        }
+    }
+
+    if lower.contains("drop database")
+        || lower.contains("drop schema")
+        || lower.contains("truncate table")
+        || lower.contains("flushall")
+        || lower.contains("dropdatabase()")
+    {
+        return Some("已拦截不可逆数据库清空命令");
+    }
+
+    if tokens
+        .iter()
+        .any(|token| executable_name(token) == "find")
+        && tokens.iter().any(|token| token == "-delete")
+    {
+        return Some("已拦截 find 的批量删除");
+    }
+
+    None
+}
+
+fn command_tokens(command: &str) -> Vec<String> {
+    command
+        .split(|character: char| {
+            character.is_whitespace() || matches!(character, ';' | '|' | '&' | '(' | ')' | '{' | '}')
+        })
+        .map(|token| token.trim_matches(['"', '\'', '`']).to_string())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn executable_name(token: &str) -> String {
+    let value = token.rsplit(['/', '\\']).next().unwrap_or(token);
+    value
+        .strip_suffix(".exe")
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn short_flag_contains(token: &str, character: char) -> bool {
+    token.starts_with('-') && !token.starts_with("--") && token[1..].contains(character)
+}
+
+fn is_dangerous_filesystem_root(token: &str) -> bool {
+    let normalized = token.trim_matches(['"', '\'', '`']);
+    if matches!(normalized, "/" | "~" | "$home" | "${home}") {
+        return true;
+    }
+    let bytes = normalized.as_bytes();
+    bytes.len() == 3
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn server_request_rejection(id: Value, method: &str) -> Value {
@@ -3329,6 +3865,141 @@ mod tests {
                 .get("error")
                 .is_some()
         );
+        assert!(auto_approval_method_kind("item/tool/requestUserInput").is_none());
+        assert!(auto_approval_method_kind("item/permissions/requestApproval").is_none());
+        assert!(auto_approval_method_kind("mcpServer/elicitation/request").is_none());
+    }
+
+    #[test]
+    fn auto_approval_accepts_only_safe_requests_for_the_exact_thread_and_turn() {
+        let safe = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "itemId": "item-safe",
+                "command": "cargo test --lib",
+                "availableDecisions": ["accept", "decline"]
+            }
+        });
+        let AutoApprovalEvaluation::Approve {
+            response,
+            requested_turn_id,
+        } = auto_approval_evaluation(&safe, true, "thread-a", Some("turn-a"), true)
+        else {
+            panic!("safe current-turn command should be approved")
+        };
+        assert_eq!(
+            response.pointer("/result/decision").and_then(Value::as_str),
+            Some("accept")
+        );
+        assert_eq!(requested_turn_id.as_deref(), Some("turn-a"));
+        assert_eq!(
+            with_auto_approval_audit(AutoResumeRunOutcome::completed(Some("turn-a".into())), 1)
+                .message,
+            "Codex 已完成本次自动续跑；本轮自动批准 1 项普通操作"
+        );
+
+        let wrong_thread = json!({
+            "id": 11,
+            "method": "item/fileChange/requestApproval",
+            "params": {
+                "threadId": "thread-b",
+                "turnId": "turn-a",
+                "itemId": "item-wrong-thread"
+            }
+        });
+        let AutoApprovalEvaluation::Reject { response, reason } =
+            auto_approval_evaluation(&wrong_thread, true, "thread-a", Some("turn-a"), true)
+        else {
+            panic!("cross-thread request must be rejected")
+        };
+        assert_eq!(
+            response.pointer("/result/decision").and_then(Value::as_str),
+            Some("decline")
+        );
+        assert!(reason.contains("当前会话"));
+    }
+
+    #[test]
+    fn auto_approval_rejects_destructive_commands_and_permission_expansion() {
+        let blocked = [
+            "rm --recursive --force ./build",
+            "powershell Remove-Item C:\\work -Recurse -Force",
+            "cmd /c rd /s /q C:\\work",
+            "diskutil eraseDisk APFS Empty disk4",
+            "dd if=/dev/zero of=/dev/disk4",
+            "powershell Clear-Disk -Number 3 -RemoveData",
+            "format C:\\",
+            "git reset --hard",
+            "git clean -fdx",
+            "git push --force origin main",
+            "psql -c 'DROP DATABASE production'",
+            "find . -delete",
+        ];
+        for command in blocked {
+            assert!(
+                destructive_command_reason(command).is_some(),
+                "{command} must be blocked"
+            );
+        }
+        assert_eq!(
+            destructive_command_reason("rm -f .build/debug.log && git push --force-with-lease"),
+            None
+        );
+
+        let expanded = json!({
+            "id": 12,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "itemId": "item-expanded",
+                "command": "cargo check",
+                "additionalPermissions": {"filesystem": {"read": ["/"]}}
+            }
+        });
+        assert!(matches!(
+            auto_approval_evaluation(&expanded, true, "thread-a", Some("turn-a"), true),
+            AutoApprovalEvaluation::Reject { .. }
+        ));
+
+        let grant_root = json!({
+            "id": 13,
+            "method": "item/fileChange/requestApproval",
+            "params": {
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "itemId": "item-file-grant",
+                "grantRoot": "/private/tmp/shared"
+            }
+        });
+        assert!(matches!(
+            auto_approval_evaluation(&grant_root, true, "thread-a", Some("turn-a"), true),
+            AutoApprovalEvaluation::Reject { .. }
+        ));
+
+        let missing_identity = json!({
+            "id": 14,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "command": "cargo check"
+            }
+        });
+        assert!(matches!(
+            auto_approval_evaluation(
+                &missing_identity,
+                true,
+                "thread-a",
+                Some("turn-a"),
+                true
+            ),
+            AutoApprovalEvaluation::Reject { .. }
+        ));
     }
 
     #[test]
@@ -3372,6 +4043,7 @@ mod tests {
             &authorization,
             "继续",
             true,
+            false,
             &trigger_key,
             Some(unix_now().saturating_sub(24 * 60 * 60)),
             None,
@@ -3406,6 +4078,7 @@ mod tests {
             &authorization,
             &prompt,
             prompt.trim() == DEFAULT_AUTO_RESUME_PROMPT,
+            false,
             &trigger_key,
             None,
             None,

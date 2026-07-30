@@ -43,6 +43,7 @@ export const DEFAULT_AUTO_RESUME_SETTINGS: AutoResumeSettings = {
   threadCwd: "",
   prompt: "继续",
   invisibleResumeEnabled: true,
+  autoApprovalEnabled: false,
   scheduleMode: "off",
   intervalMinutes: 60,
   dailyHour: 9,
@@ -153,6 +154,7 @@ export function sanitizeAutoResumeTaskSettings(
     threadCwd: cleanText(source.threadCwd, 2_048),
     prompt,
     invisibleResumeEnabled,
+    autoApprovalEnabled: source.autoApprovalEnabled === true,
     scheduleMode,
     intervalMinutes: AUTO_RESUME_INTERVAL_OPTIONS.includes(source.intervalMinutes as typeof AUTO_RESUME_INTERVAL_OPTIONS[number])
       ? Number(source.intervalMinutes)

@@ -24,6 +24,7 @@ protocol CodexAutoResumeAppServerServing: Sendable {
         target: AutoResumeThreadDescriptor,
         prompt: String,
         invisibleResumeEnabled: Bool,
+        autoApprovalEnabled: Bool,
         clientMessageID: String,
         expectedFreshness: AutoResumeThreadFreshness?,
         startAuthorization: AutoResumeStartAuthorization?
@@ -44,6 +45,7 @@ extension CodexAutoResumeAppServerServing {
             target: target,
             prompt: prompt,
             invisibleResumeEnabled: prompt == AutoResumeConfiguration.defaultPrompt,
+            autoApprovalEnabled: false,
             clientMessageID: clientMessageID,
             expectedFreshness: nil,
             startAuthorization: nil
@@ -64,6 +66,7 @@ extension CodexAutoResumeAppServerServing {
             target: target,
             prompt: prompt,
             invisibleResumeEnabled: prompt == AutoResumeConfiguration.defaultPrompt,
+            autoApprovalEnabled: false,
             clientMessageID: clientMessageID,
             expectedFreshness: expectedFreshness,
             startAuthorization: nil
@@ -85,6 +88,7 @@ extension CodexAutoResumeAppServerServing {
             target: target,
             prompt: prompt,
             invisibleResumeEnabled: prompt == AutoResumeConfiguration.defaultPrompt,
+            autoApprovalEnabled: false,
             clientMessageID: clientMessageID,
             expectedFreshness: expectedFreshness,
             startAuthorization: startAuthorization
@@ -628,6 +632,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         target: AutoResumeThreadDescriptor,
         prompt: String,
         invisibleResumeEnabled: Bool,
+        autoApprovalEnabled: Bool,
         clientMessageID: String,
         expectedFreshness: AutoResumeThreadFreshness?,
         startAuthorization: AutoResumeStartAuthorization?
@@ -645,7 +650,12 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
         }
 
         return try await withSession(codexPath: codexPath, dataSource: dataSource) { session in
-            var channel = CodexAutoResumeRPCChannel(session: session)
+            var channel = CodexAutoResumeRPCChannel(
+                session: session,
+                autoApprovalEnabled: autoApprovalEnabled,
+                approvalThreadID: target.id,
+                approvalAuthorization: startAuthorization
+            )
             try channel.initialize(timeout: requestTimeout)
             if let expectedFreshness {
                 let preflight = try channel.request(
@@ -730,7 +740,7 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
                   let turnID = Self.nonemptyString(turn["id"]) else {
                 throw CodexAutoResumeAppServerError.invalidResponse("turn/start 缺少 turn id")
             }
-            channel.bind(turnID: turnID)
+            try channel.bind(turnID: turnID)
             let completed = try channel.waitForTurnCompletion(
                 threadID: target.id,
                 turnID: turnID,
@@ -751,11 +761,18 @@ struct CodexAppServerClient: CodexAutoResumeAppServerServing, Sendable {
             }
             let message = Self.nonemptyString(completed["result"])
                 ?? Self.nonemptyString(completed["message"])
+            let auditedMessage: String?
+            if channel.approvedRequestCount > 0 {
+                let audit = "本轮自动批准 \(channel.approvedRequestCount) 项普通操作"
+                auditedMessage = message.map { "\($0)；\(audit)" } ?? audit
+            } else {
+                auditedMessage = message
+            }
             return AutoResumeRunResult(
                 threadID: target.id,
                 turnID: turnID,
                 status: status,
-                message: message
+                message: auditedMessage
             )
         }
     }
@@ -1033,10 +1050,23 @@ struct CodexAutoResumeRPCChannel {
     private var nextRequestID = 1
     private var boundThreadID: String?
     private var boundTurnID: String?
+    private var turnStartPending = false
     private var completedTurns: [CompletedTurnEnvelope] = []
+    private(set) var approvedRequestCount = 0
+    private let autoApprovalEnabled: Bool
+    private let approvalThreadID: String?
+    private let approvalAuthorization: AutoResumeStartAuthorization?
 
-    init(session: any AccountQuotaProcessSession) {
+    init(
+        session: any AccountQuotaProcessSession,
+        autoApprovalEnabled: Bool = false,
+        approvalThreadID: String? = nil,
+        approvalAuthorization: AutoResumeStartAuthorization? = nil
+    ) {
         self.session = session
+        self.autoApprovalEnabled = autoApprovalEnabled
+        self.approvalThreadID = approvalThreadID
+        self.approvalAuthorization = approvalAuthorization
     }
 
     mutating func initialize(
@@ -1065,7 +1095,12 @@ struct CodexAutoResumeRPCChannel {
         boundThreadID = threadID
     }
 
-    mutating func bind(turnID: String) {
+    mutating func bind(turnID: String) throws {
+        if let boundTurnID, boundTurnID != turnID {
+            throw CodexAutoResumeAppServerError.invalidResponse(
+                "turn/start 与批准请求返回了不同的 turn ID"
+            )
+        }
         boundTurnID = turnID
     }
 
@@ -1093,6 +1128,9 @@ struct CodexAutoResumeRPCChannel {
             }
         } else {
             try write(message)
+        }
+        if method == "turn/start" {
+            turnStartPending = true
         }
         return try waitForResponse(id: id, stage: method, timeout: timeout)
     }
@@ -1294,17 +1332,12 @@ struct CodexAutoResumeRPCChannel {
         }
 
         let normalized = method.lowercased()
-        let isNewApproval = normalized.contains("requestapproval")
-            && (normalized.contains("commandexecution") || normalized.contains("filechange"))
-        let isLegacyApproval = normalized.contains("execcommandapproval")
-            || normalized.contains("exec_command_approval")
-            || normalized.contains("applypatchapproval")
-            || normalized.contains("apply_patch_approval")
+        let isApproval = AutoResumeAutoApprovalPolicy.isApprovalMethod(method)
         let requiresErrorResponse = normalized.contains("permissions/request")
             || normalized.contains("requestuserinput")
             || normalized.contains("request_user_input")
             || normalized.contains("elicitation")
-        guard isNewApproval || isLegacyApproval || requiresErrorResponse || boundTurnID != nil else {
+        guard isApproval || requiresErrorResponse || boundTurnID != nil else {
             try write([
                 "jsonrpc": "2.0",
                 "id": id,
@@ -1313,7 +1346,58 @@ struct CodexAutoResumeRPCChannel {
             throw CodexAutoResumeAppServerError.requiresHuman(method)
         }
 
-        if requiresErrorResponse || (!isNewApproval && !isLegacyApproval) {
+        if isApproval {
+            let params = message["params"] as? [String: Any] ?? [:]
+            let evaluation: AutoResumeApprovalEvaluation
+            if autoApprovalEnabled, let targetThreadID = approvalThreadID {
+                evaluation = AutoResumeAutoApprovalPolicy.evaluate(
+                    method: method,
+                    params: params,
+                    targetThreadID: targetThreadID,
+                    boundTurnID: boundTurnID,
+                    turnStartPending: turnStartPending
+                )
+            } else {
+                let legacy = normalized.contains("execcommandapproval")
+                    || normalized.contains("exec_command_approval")
+                    || normalized.contains("applypatchapproval")
+                    || normalized.contains("apply_patch_approval")
+                evaluation = .reject(
+                    decision: legacy ? "denied" : "decline",
+                    reason: "当前会话未开启自动批准"
+                )
+            }
+            switch evaluation {
+            case .approve(let decision, let requestedTurnID):
+                let response: [String: Any] = [
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": ["decision": decision],
+                ]
+                if let approvalAuthorization {
+                    try approvalAuthorization.withValidatedStart {
+                        try write(response)
+                    }
+                } else {
+                    try write(response)
+                }
+                if boundTurnID == nil {
+                    boundTurnID = requestedTurnID
+                }
+                approvedRequestCount += 1
+                return true
+            case .reject(let decision, let reason):
+                try write([
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": ["decision": decision],
+                ])
+                try interruptBoundTurn()
+                throw CodexAutoResumeAppServerError.requiresHuman(
+                    autoApprovalEnabled ? "\(method)：\(reason)" : method
+                )
+            }
+        } else if requiresErrorResponse || boundTurnID != nil {
             try write([
                 "jsonrpc": "2.0",
                 "id": id,
@@ -1321,13 +1405,6 @@ struct CodexAutoResumeRPCChannel {
                     "code": -32000,
                     "message": "Auto resume requires human input",
                 ],
-            ])
-        } else {
-            let decision = isLegacyApproval ? "denied" : "decline"
-            try write([
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": ["decision": decision],
             ])
         }
         try interruptBoundTurn()
@@ -1347,7 +1424,8 @@ struct CodexAutoResumeRPCChannel {
                   let threadID = CodexAppServerClient.nonemptyString(params["threadId"]),
                   boundThreadID == nil || boundThreadID == threadID,
                   let turn = params["turn"] as? [String: Any],
-                  let id = Self.turnID(in: turn) {
+                  let id = Self.turnID(in: turn),
+                  boundTurnID == nil || boundTurnID == id {
             boundThreadID = threadID
             boundTurnID = id
         } else if method == "turn/completed",

@@ -685,6 +685,7 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
             target: thread(id: "thread-1"),
             prompt: "继续",
             invisibleResumeEnabled: false,
+            autoApprovalEnabled: false,
             clientMessageID: "visible-continue",
             expectedFreshness: nil,
             startAuthorization: nil
@@ -1222,12 +1223,97 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
         assertInterruptAndNoApproval(transport.writes)
     }
 
+    func testEnabledAutoApprovalAcceptsSafeCommandAndCompletes() async throws {
+        let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
+            beforeMatchingCompletion: [
+                serverRequest(
+                    id: 94,
+                    method: "item/commandExecution/requestApproval",
+                    params: [
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "itemId": "item-safe-command",
+                        "command": "swift test --filter AutoResumeAutoApprovalPolicyTests",
+                        "availableDecisions": ["accept", "decline"],
+                    ]
+                ),
+            ]
+        ))
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        let outcome = try await client.resumeThread(
+            codexPath: "/fake/codex",
+            dataSource: nil,
+            target: thread(id: "thread-1"),
+            prompt: "继续",
+            invisibleResumeEnabled: true,
+            autoApprovalEnabled: true,
+            clientMessageID: "safe-auto-approval",
+            expectedFreshness: nil,
+            startAuthorization: nil
+        )
+
+        XCTAssertEqual(outcome.status, "completed")
+        XCTAssertEqual(outcome.message, "done；本轮自动批准 1 项普通操作")
+        let response = transport.writes.first { rpcID($0) == 94 }
+        let result = response?["result"] as? [String: Any]
+        XCTAssertEqual(result?["decision"] as? String, "accept")
+        XCTAssertFalse(transport.writes.contains { rpcMethod($0) == "turn/interrupt" })
+    }
+
+    func testEnabledAutoApprovalRejectsRmRFAndInterrupts() async {
+        let method = "item/commandExecution/requestApproval"
+        let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
+            replaceCompletionWith: serverRequest(
+                id: 95,
+                method: method,
+                params: [
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "itemId": "item-rm-rf",
+                    "command": "rm -rf ./workspace",
+                ]
+            )
+        ))
+        let client = CodexAppServerClient(transport: transport, requestTimeout: 1, turnTimeout: 1)
+
+        do {
+            _ = try await client.resumeThread(
+                codexPath: "/fake/codex",
+                dataSource: nil,
+                target: thread(id: "thread-1"),
+                prompt: "继续",
+                invisibleResumeEnabled: true,
+                autoApprovalEnabled: true,
+                clientMessageID: "blocked-auto-approval",
+                expectedFreshness: nil,
+                startAuthorization: nil
+            )
+            XCTFail("Expected destructive approval to require a human")
+        } catch {
+            guard case .requiresHuman(let detail) = error as? CodexAutoResumeAppServerError else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertTrue(detail.contains(method))
+            XCTAssertTrue(detail.contains("递归强制删除"))
+        }
+
+        let response = transport.writes.first { rpcID($0) == 95 }
+        let result = response?["result"] as? [String: Any]
+        XCTAssertEqual(result?["decision"] as? String, "decline")
+        XCTAssertNotNil(transport.writes.first { rpcMethod($0) == "turn/interrupt" })
+    }
+
     func testUserInputReturnsJSONRPCErrorWithoutFabricatingAnswersAndInterrupts() async {
         let transport = AutoResumeScriptedTransport(events: successfulResumeEvents(
             replaceCompletionWith: serverRequest(id: 93, method: "item/tool/request_user_input")
         ))
 
-        await assertRequiresHuman(transport: transport, expectedMethod: "item/tool/request_user_input")
+        await assertRequiresHuman(
+            transport: transport,
+            expectedMethod: "item/tool/request_user_input",
+            autoApprovalEnabled: true
+        )
 
         let response = transport.writes.first { rpcID($0) == 93 }
         let error = response?["error"] as? [String: Any]
@@ -1431,6 +1517,7 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
     private func assertRequiresHuman(
         transport: AutoResumeScriptedTransport,
         expectedMethod: String,
+        autoApprovalEnabled: Bool = false,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
@@ -1441,7 +1528,11 @@ final class CodexAutoResumeAppServerClientTests: XCTestCase {
                 dataSource: nil,
                 target: thread(id: "thread-1"),
                 prompt: "继续",
-                clientMessageID: "trigger-1"
+                invisibleResumeEnabled: true,
+                autoApprovalEnabled: autoApprovalEnabled,
+                clientMessageID: "trigger-1",
+                expectedFreshness: nil,
+                startAuthorization: nil
             )
             XCTFail("Expected requiresHuman", file: file, line: line)
         } catch {
@@ -1715,8 +1806,12 @@ private func notification(_ method: String, params: [String: Any]) -> Data {
     jsonLine(["jsonrpc": "2.0", "method": method, "params": params])
 }
 
-private func serverRequest(id: Int, method: String) -> Data {
-    jsonLine(["jsonrpc": "2.0", "id": id, "method": method, "params": [:]])
+private func serverRequest(
+    id: Int,
+    method: String,
+    params: [String: Any] = [:]
+) -> Data {
+    jsonLine(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
 }
 
 private func jsonLine(_ object: [String: Any]) -> Data {

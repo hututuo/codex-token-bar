@@ -682,6 +682,7 @@ private final class RecordingAutoResumeAppServer: CodexAutoResumeAppServerServin
         target: AutoResumeThreadDescriptor,
         prompt: String,
         invisibleResumeEnabled: Bool,
+        autoApprovalEnabled: Bool,
         clientMessageID: String,
         expectedFreshness: AutoResumeThreadFreshness?,
         startAuthorization: AutoResumeStartAuthorization?

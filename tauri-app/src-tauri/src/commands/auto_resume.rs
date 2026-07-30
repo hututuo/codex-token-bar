@@ -236,12 +236,14 @@ impl AutoResumeTaskRuntime {
             || state.settings.quota_recovery_threshold_percent
                 != settings.quota_recovery_threshold_percent;
         let safety_limits_changed = automatic_safety_limits_changed(&state.settings, &settings);
+        let execution_policy_changed = state.settings.prompt != settings.prompt
+            || state.settings.invisible_resume_enabled != settings.invisible_resume_enabled
+            || state.settings.auto_approval_enabled != settings.auto_approval_enabled;
         let capacity_monitor_context_changed = state.settings.enabled != settings.enabled
             || target_changed
             || state.settings.failure_recovery_reasons != settings.failure_recovery_reasons;
-        let capacity_generation_changed = capacity_monitor_context_changed
-            || state.settings.prompt != settings.prompt
-            || safety_limits_changed;
+        let capacity_generation_changed =
+            capacity_monitor_context_changed || execution_policy_changed || safety_limits_changed;
         let quota_wait_disabled = state.settings.quota_resume_enabled
             && !settings.quota_resume_enabled
             && state.persisted.waiting_for_quota;
@@ -259,8 +261,10 @@ impl AutoResumeTaskRuntime {
             || state.settings.daily_minute != settings.daily_minute
             || target_changed
             || state.settings.enabled != settings.enabled;
-        let schedule_generation_changed = schedule_changed || safety_limits_changed;
-        let quota_generation_changed = quota_context_changed || safety_limits_changed;
+        let schedule_generation_changed =
+            schedule_changed || execution_policy_changed || safety_limits_changed;
+        let quota_generation_changed =
+            quota_context_changed || execution_policy_changed || safety_limits_changed;
         state.settings = settings;
         if schedule_generation_changed {
             state.persisted.schedule_generation =
@@ -922,6 +926,7 @@ impl AutoResumeTaskRuntime {
         let invisible_resume_enabled = settings
             .invisible_resume_enabled
             .unwrap_or_else(|| prompt.trim() == "继续");
+        let auto_approval_enabled = settings.auto_approval_enabled;
         let client_message_id = claim.trigger_key().to_string();
         let freshness_not_before = trigger.freshness_not_before;
         let start_generation_guard = match trigger.kind {
@@ -954,6 +959,7 @@ impl AutoResumeTaskRuntime {
                     &authorization,
                     &prompt,
                     invisible_resume_enabled,
+                    auto_approval_enabled,
                     &client_message_id,
                     freshness_not_before,
                     start_generation_guard,
@@ -2372,6 +2378,63 @@ mod tests {
             },
         ));
         assert_eq!(lock(&fresh.state).settings.selected_task_id, "startup-read");
+    }
+
+    #[test]
+    fn auto_approval_change_invalidates_every_automatic_generation() {
+        let runtime = AutoResumeTaskRuntime::new(
+            "task-auto-approval-generation".into(),
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let settings = AutoResumeSettingsSnapshot {
+            enabled: true,
+            thread_id: "thread-a".into(),
+            schedule_mode: "interval".into(),
+            failure_recovery_policy_version: 2,
+            failure_recovery_reasons: vec!["serverOverloaded".into()],
+            ..AutoResumeSettingsSnapshot::default()
+        };
+        runtime.initialize(settings.clone());
+        let schedule_before = *runtime
+            .schedule_generation
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let quota_before = *runtime
+            .quota_generation
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let capacity_before = *runtime
+            .capacity_generation
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        runtime.update_settings(AutoResumeSettingsSnapshot {
+            auto_approval_enabled: true,
+            ..settings
+        });
+
+        assert!(
+            *runtime
+                .schedule_generation
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                > schedule_before
+        );
+        assert!(
+            *runtime
+                .quota_generation
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                > quota_before
+        );
+        assert!(
+            *runtime
+                .capacity_generation
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                > capacity_before
+        );
     }
 
     #[test]

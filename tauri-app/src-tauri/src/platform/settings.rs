@@ -2404,6 +2404,7 @@ fn sanitize_auto_resume_settings(
                 thread_cwd: legacy.thread_cwd,
                 prompt: legacy.prompt,
                 invisible_resume_enabled: legacy.invisible_resume_enabled,
+                auto_approval_enabled: legacy.auto_approval_enabled,
                 schedule_mode: legacy.schedule_mode,
                 interval_minutes: legacy.interval_minutes,
                 daily_hour: legacy.daily_hour,
@@ -2826,12 +2827,14 @@ mod tests {
             enabled: true,
             thread_id: " legacy-thread ".into(),
             thread_title: " Legacy ".into(),
+            auto_approval_enabled: true,
             ..AutoResumeSettingsSnapshot::default()
         });
         let migrated = legacy.resolved_tasks();
         assert_eq!(migrated.len(), 1);
         assert!(migrated[0].id.starts_with("legacy-"));
         assert_eq!(migrated[0].thread_id, "legacy-thread");
+        assert!(migrated[0].auto_approval_enabled);
         assert_eq!(
             legacy.task_collection_version,
             AUTO_RESUME_TASK_COLLECTION_VERSION
@@ -2842,6 +2845,7 @@ mod tests {
             id: "task-a".into(),
             enabled: true,
             thread_id: "thread-a".into(),
+            auto_approval_enabled: true,
             quota_resume_enabled: false,
             capacity_recovery_enabled: false,
             schedule_mode: "off".into(),
@@ -2866,6 +2870,7 @@ mod tests {
         assert_eq!(sanitized.tasks.len(), 2);
         assert_eq!(sanitized.selected_task_id, "task-a");
         assert!(!sanitized.tasks[0].enabled);
+        assert!(sanitized.tasks[0].auto_approval_enabled);
         assert!(sanitized.tasks[1].enabled);
         assert_eq!(sanitized.thread_id, "thread-a");
 

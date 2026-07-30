@@ -407,6 +407,12 @@ test("auto resume exposes selectable interruption reasons, select-all, schedules
     await click(act, invisibleToggle, window);
     assert.equal(panel.querySelector('textarea[aria-label="自动续跑提示词"]')?.disabled, false);
 
+    const autoApprovalToggle = panel.querySelector('input[aria-label="自动批准普通操作"]');
+    assert.equal(autoApprovalToggle?.checked, false);
+    assert.match(panel.textContent, /rm -rf/);
+    await click(act, autoApprovalToggle, window);
+    assert.equal(panel.querySelector('input[aria-label="自动批准普通操作"]')?.checked, true);
+
     await click(act, buttonWithText(panel, "立即测试 / 续跑"), window);
     await flushPromises(act);
     assert.equal(calls.autoResumeSaves.length, 1, "run now should save dirty settings first");
@@ -741,6 +747,7 @@ function defaultAutoResumeSettings() {
     threadCwd: "",
     prompt: "继续",
     invisibleResumeEnabled: true,
+    autoApprovalEnabled: false,
     scheduleMode: "off",
     intervalMinutes: 60,
     dailyHour: 9,

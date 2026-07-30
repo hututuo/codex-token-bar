@@ -89,6 +89,7 @@ export interface AutoResumeTaskConfiguration {
   threadCwd: string;
   prompt: string;
   invisibleResumeEnabled: boolean;
+  autoApprovalEnabled: boolean;
   scheduleMode: AutoResumeScheduleMode;
   intervalMinutes: number;
   dailyHour: number;

@@ -150,6 +150,32 @@ final class AutoResumeStartGuardTests: XCTestCase {
         XCTAssertNil(gate.authorization(for: .capacityRecovery, targetID: "thread-1"))
     }
 
+    func testAutoApprovalChangeInvalidatesEveryAutomaticSource() throws {
+        var configuration = enabledConfiguration()
+        configuration.scheduleMode = .interval
+        configuration.capacityRecoveryEnabled = true
+        let gate = AutoResumeStartGuard(configuration: configuration)
+        let schedule = try XCTUnwrap(gate.authorization(
+            for: .interval,
+            targetID: "thread-1"
+        ))
+        let quota = try XCTUnwrap(gate.authorization(
+            for: .quotaRecovery,
+            targetID: "thread-1"
+        ))
+        let capacity = try XCTUnwrap(gate.authorization(
+            for: .capacityRecovery,
+            targetID: "thread-1"
+        ))
+
+        configuration.autoApprovalEnabled = true
+        gate.update(configuration: configuration)
+
+        XCTAssertFalse(schedule.isValid)
+        XCTAssertFalse(quota.isValid)
+        XCTAssertFalse(capacity.isValid)
+    }
+
     private func enabledConfiguration() -> AutoResumeConfiguration {
         var configuration = AutoResumeConfiguration.default
         configuration.enabled = true

@@ -63,7 +63,7 @@ struct AutoResumeSettingsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("一条任务，保护一个 Codex 会话")
                     .font(.system(size: 12.5, weight: .semibold))
-                Text("每条任务独立设置触发条件；应用内串行执行，并与跨平台版共用会话锁和触发记录。授权确认和人工输入不会被自动批准或代填；“任务被中断”可能包含主动停止，只有勾选后才会续跑。")
+                Text("每条任务独立设置触发条件；应用内串行执行，并与跨平台版共用会话锁和触发记录。只有显式开启“自动批准”时，当前 turn 的普通命令与文件变更才会逐条放行；破坏性操作、额外权限、人工输入和未知请求仍会拦截。“任务被中断”可能包含主动停止，只有勾选后才会续跑。")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -413,6 +413,21 @@ struct AutoResumeSettingsView: View {
                     )
                     .disabled(invisibleResumeEnabled)
                     .opacity(invisibleResumeEnabled ? 0.42 : 1)
+                }
+
+                editorGroup(
+                    title: "自动批准",
+                    subtitle: "只处理当前会话当前 turn 的结构化批准请求",
+                    systemImage: "checkmark.shield"
+                ) {
+                    checkboxRow(
+                        "自动批准普通操作",
+                        detail: "逐条放行普通命令与文件变更；rm -rf、磁盘擦除、破坏性 Git / 数据库命令、额外权限扩张和无法解析的请求仍会拦截并停止本轮。",
+                        isOn: Binding(
+                            get: { configuration.autoApprovalEnabled },
+                            set: { taskController.setAutoApprovalEnabled($0) }
+                        )
+                    )
                 }
 
                 editorGroup(

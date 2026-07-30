@@ -7,6 +7,7 @@ test("auto resume defaults off and sanitizes quota hysteresis and limits", async
     const { DEFAULT_AUTO_RESUME_SETTINGS, sanitizeAutoResumeSettings } = await load("/src/settings/autoResume.ts");
     assert.equal(DEFAULT_AUTO_RESUME_SETTINGS.enabled, false);
     assert.equal(DEFAULT_AUTO_RESUME_SETTINGS.invisibleResumeEnabled, true);
+    assert.equal(DEFAULT_AUTO_RESUME_SETTINGS.autoApprovalEnabled, false);
 
     const result = sanitizeAutoResumeSettings({
       enabled: true,
@@ -22,6 +23,7 @@ test("auto resume defaults off and sanitizes quota hysteresis and limits", async
     assert.equal(result.threadId, "thread-a");
     assert.equal(result.prompt, "继续工作");
     assert.equal(result.invisibleResumeEnabled, false, "legacy custom prompts remain visible");
+    assert.equal(result.autoApprovalEnabled, false, "legacy settings must fail closed");
     assert.equal(result.scheduleMode, "off");
     assert.equal(result.quotaLowThresholdPercent, 20);
     assert.equal(result.quotaRecoveryThresholdPercent, 21);
@@ -31,6 +33,21 @@ test("auto resume defaults off and sanitizes quota hysteresis and limits", async
     assert.equal(result.taskCollectionVersion, 2);
     assert.match(result.selectedTaskId, /^legacy-/);
     assert.equal(result.tasks[0].threadId, "thread-a");
+  });
+});
+
+test("auto approval is an explicit per-task opt-in", async () => {
+  await withSsrModules(async (load) => {
+    const { sanitizeAutoResumeTaskSettings } = await load("/src/settings/autoResume.ts");
+    const disabled = sanitizeAutoResumeTaskSettings({
+      threadId: "thread-a",
+    });
+    const enabled = sanitizeAutoResumeTaskSettings({
+      threadId: "thread-b",
+      autoApprovalEnabled: true,
+    });
+    assert.equal(disabled.autoApprovalEnabled, false);
+    assert.equal(enabled.autoApprovalEnabled, true);
   });
 });
 

@@ -281,6 +281,7 @@ struct AutoResumeConfiguration: Codable, Equatable, Sendable {
     // Optional keeps old persisted settings decodable. Normalization migrates
     // the former implicit rule: exact “继续” meant app-server empty input.
     var invisibleResumeEnabled: Bool?
+    var autoApprovalEnabled = false
     var scheduleMode: AutoResumeScheduleMode = .off
     var intervalMinutes = 60
     var dailyHour = 9
@@ -660,6 +661,7 @@ extension AutoResumeConfiguration {
         case target
         case prompt
         case invisibleResumeEnabled
+        case autoApprovalEnabled
         case scheduleMode
         case intervalMinutes
         case dailyHour
@@ -686,6 +688,10 @@ extension AutoResumeConfiguration {
             Bool.self,
             forKey: .invisibleResumeEnabled
         )
+        value.autoApprovalEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .autoApprovalEnabled
+        ) ?? value.autoApprovalEnabled
         value.scheduleMode = try container.decodeIfPresent(
             AutoResumeScheduleMode.self,
             forKey: .scheduleMode

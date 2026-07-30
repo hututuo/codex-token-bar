@@ -42,6 +42,9 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         let intervalMinutes: Int
         let dailyHour: Int
         let dailyMinute: Int
+        let prompt: String
+        let invisibleResumeEnabled: Bool
+        let autoApprovalEnabled: Bool
         let cooldownMinutes: Int
         let maxRunsPerDay: Int
     }
@@ -53,6 +56,9 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         let window: AutoResumeQuotaWindow
         let armAtOrBelowPercent: Int
         let resumeAtOrAbovePercent: Int
+        let prompt: String
+        let invisibleResumeEnabled: Bool
+        let autoApprovalEnabled: Bool
         let cooldownMinutes: Int
         let maxRunsPerDay: Int
     }
@@ -62,6 +68,8 @@ final class AutoResumeStartGuard: @unchecked Sendable {
         let targetID: String?
         let failureRecoveryReasons: [AutoResumeFailureReason]
         let prompt: String
+        let invisibleResumeEnabled: Bool
+        let autoApprovalEnabled: Bool
         let cooldownMinutes: Int
         let maxRunsPerDay: Int
     }
@@ -207,6 +215,9 @@ final class AutoResumeStartGuard: @unchecked Sendable {
             intervalMinutes: configuration.intervalMinutes,
             dailyHour: configuration.dailyHour,
             dailyMinute: configuration.dailyMinute,
+            prompt: configuration.prompt,
+            invisibleResumeEnabled: configuration.invisibleResumeEnabled ?? true,
+            autoApprovalEnabled: configuration.autoApprovalEnabled,
             cooldownMinutes: configuration.cooldownMinutes,
             maxRunsPerDay: configuration.maxRunsPerDay
         )
@@ -222,6 +233,9 @@ final class AutoResumeStartGuard: @unchecked Sendable {
             window: configuration.quotaWindow,
             armAtOrBelowPercent: configuration.quotaArmAtOrBelowPercent,
             resumeAtOrAbovePercent: configuration.quotaResumeAtOrAbovePercent,
+            prompt: configuration.prompt,
+            invisibleResumeEnabled: configuration.invisibleResumeEnabled ?? true,
+            autoApprovalEnabled: configuration.autoApprovalEnabled,
             cooldownMinutes: configuration.cooldownMinutes,
             maxRunsPerDay: configuration.maxRunsPerDay
         )
@@ -235,6 +249,8 @@ final class AutoResumeStartGuard: @unchecked Sendable {
             targetID: configuration.target?.id,
             failureRecoveryReasons: configuration.failureRecoveryReasons,
             prompt: configuration.prompt,
+            invisibleResumeEnabled: configuration.invisibleResumeEnabled ?? true,
+            autoApprovalEnabled: configuration.autoApprovalEnabled,
             cooldownMinutes: configuration.cooldownMinutes,
             maxRunsPerDay: configuration.maxRunsPerDay
         )

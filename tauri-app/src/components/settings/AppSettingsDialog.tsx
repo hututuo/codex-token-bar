@@ -1234,7 +1234,7 @@ function AutomationSettings({
     <>
       <div className="auto-resume-safety-note" role="note">
         <strong>一条任务保护一个 Codex 会话</strong>
-        <span>每条任务独立配置并持久化；应用内串行执行。授权确认和人工输入不会被自动批准或代填；“任务被中断”可能包含主动停止，只有勾选后才会续跑。</span>
+        <span>每条任务独立配置并持久化；应用内串行执行。只有显式开启“自动批准”时，当前 turn 的普通命令与文件变更才会逐条放行；破坏性操作、额外权限、人工输入和未知请求仍会拦截。“任务被中断”可能包含主动停止，只有勾选后才会续跑。</span>
       </div>
 
       <SettingsGroup title="创建监控任务" description="保留完整会话选择器；创建后默认暂停，可以先编辑再开启保护。">
@@ -1603,6 +1603,33 @@ function AutomationSettings({
                         {hasRiskyFailureReason
                           ? "谨慎条件可能包含主动停止或必须人工修复的问题；仍只按 Codex 的结构化状态判断。"
                           : "不按报错文案猜测；自动续跑产生的后续轮也不会再次触发失败续跑。"}
+                      </p>
+                    </section>
+
+                    <section className="auto-resume-trigger-section">
+                      <header>
+                        <span>
+                          <strong>自动批准</strong>
+                          <small>只处理当前会话当前 turn 的 Codex 结构化批准请求。</small>
+                        </span>
+                      </header>
+                      <label className="auto-resume-type-checkbox is-body">
+                        <input
+                          aria-label="自动批准普通操作"
+                          checked={task.autoApprovalEnabled}
+                          disabled={isTaskRunning}
+                          onChange={() => updateTask(task.id, {
+                            autoApprovalEnabled: !task.autoApprovalEnabled,
+                          })}
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>自动批准普通操作</strong>
+                          <small>普通命令与文件变更逐条放行；每一条都会重新做安全判断，不使用整会话永久批准。</small>
+                        </span>
+                      </label>
+                      <p className="is-warning">
+                        rm -rf、磁盘擦除、破坏性 Git / 数据库命令、额外权限扩张、跨会话或无法解析的请求仍会拦截并停止本轮。
                       </p>
                     </section>
 
