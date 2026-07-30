@@ -358,7 +358,7 @@ button {
 }
 
 .header-action-group--primary {
-  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  background: transparent;
 }
 
 .header-action-divider {
@@ -518,6 +518,9 @@ button {
 }
 
 .header-primary-actions .toolbar-button--accent {
+  inline-size: fit-content;
+  flex: 0 0 auto;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
   color: var(--accent-strong);
 }
 

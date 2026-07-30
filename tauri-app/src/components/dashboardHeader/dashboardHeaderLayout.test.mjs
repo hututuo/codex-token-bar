@@ -25,4 +25,8 @@ test("DashboardHeader CSS keeps information and primary actions on separate stab
   assert.match(css, /\.header-action-divider\s*\{[^}]*width:\s*1px/s);
   assert.match(css, /\.header-primary-actions \.toolbar-button\s*\{[^}]*border-radius:\s*6px/s);
   assert.doesNotMatch(css, /\.header-primary-actions \.toolbar-button\s*\{[^}]*border:\s*1px/s);
+  assert.match(css, /\.header-action-group--primary\s*\{[^}]*background:\s*transparent/s);
+  assert.match(css, /\.header-primary-actions \.toolbar-button--accent\s*\{[^}]*inline-size:\s*fit-content/s);
+  assert.match(css, /\.header-primary-actions \.toolbar-button--accent\s*\{[^}]*flex:\s*0 0 auto/s);
+  assert.match(css, /\.header-primary-actions \.toolbar-button--accent\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--accent\) 7%, var\(--panel\)\)/s);
 });
