@@ -11,6 +11,14 @@
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <description sparkle:format="markdown"># Codex Token Bar v0.8.3
 
+## 推荐直接下载
+
+- **Mac（Apple 芯片）**：[直接下载 DMG 安装包](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.dmg)
+- **Windows x64**：[直接下载安装程序](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-x64-setup.exe)
+- **Windows ARM64**：[直接下载安装程序](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-arm64-setup.exe)
+
+普通用户请选择上面的 DMG 或 EXE；`.app.zip`、`.sig` 和 `latest-windows.json` 主要供应用内自动更新与完整性校验使用。
+
 v0.8.3 是一次覆盖 Swift 原生版与跨平台版的统一更新，重点完善自动续跑、会话与 Provider 安全、精确历史、雷达实时口径、Windows 稳定性和双端界面一致性。
 
 ## 更新亮点
@@ -34,6 +42,14 @@ v0.8.3 是一次覆盖 Swift 原生版与跨平台版的统一更新，重点完
 ## English
 
 # Codex Token Bar v0.8.3
+
+## Recommended downloads
+
+- **Mac (Apple silicon)**: [Download the DMG installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.dmg)
+- **Windows x64**: [Download the installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-x64-setup.exe)
+- **Windows ARM64**: [Download the installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-arm64-setup.exe)
+
+Most users should choose the DMG or EXE above. The `.app.zip`, `.sig`, and `latest-windows.json` files are primarily updater and integrity-verification assets.
 
 v0.8.3 is a unified update for the native Swift and cross-platform editions, focused on auto-resume, safe session and provider operations, exact history, live Radar semantics, Windows stability, and UI parity.
 
