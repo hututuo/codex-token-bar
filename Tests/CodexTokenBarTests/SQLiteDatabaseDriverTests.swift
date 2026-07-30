@@ -178,6 +178,83 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(secondRead, ["one", "two"])
     }
 
+    func testReadRecoveryReopensAfterTransientExtendedIOError() throws {
+        var attempts = 0
+        var observedDelays: [TimeInterval] = []
+
+        let value: String = try SQLiteReadRecovery.run(
+            retryDelays: [0.01, 0.02],
+            sleep: { observedDelays.append($0) }
+        ) {
+            attempts += 1
+            if attempts == 1 {
+                throw SQLiteDatabaseError(
+                    operation: "Step SQLite query",
+                    code: SQLITE_IOERR | (1 << 8),
+                    message: "disk I/O error",
+                    path: "/tmp/state_5.sqlite"
+                )
+            }
+            if attempts == 2 {
+                throw SQLiteDatabaseError(
+                    operation: "Step SQLite query",
+                    code: SQLITE_BUSY,
+                    message: "database is busy",
+                    path: "/tmp/state_5.sqlite"
+                )
+            }
+            return "recovered"
+        }
+
+        XCTAssertEqual(value, "recovered")
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(observedDelays, [0.01, 0.02])
+    }
+
+    func testReadRecoveryDoesNotRetryPermanentSQLiteFailure() {
+        var attempts = 0
+
+        XCTAssertThrowsError(
+            try SQLiteReadRecovery.run(
+                retryDelays: [0.01, 0.02],
+                sleep: { _ in XCTFail("永久错误不得进入等待重试") }
+            ) { () -> String in
+                attempts += 1
+                throw SQLiteDatabaseError(
+                    operation: "Step SQLite query",
+                    code: SQLITE_CORRUPT,
+                    message: "database disk image is malformed",
+                    path: "/tmp/state_5.sqlite"
+                )
+            }
+        ) { error in
+            XCTAssertEqual((error as? SQLiteDatabaseError)?.code, SQLITE_CORRUPT)
+        }
+        XCTAssertEqual(attempts, 1)
+    }
+
+    func testReadRecoveryStopsAfterConfiguredRetryCount() {
+        var attempts = 0
+
+        XCTAssertThrowsError(
+            try SQLiteReadRecovery.run(
+                retryDelays: [0.01, 0.02],
+                sleep: { _ in }
+            ) { () -> String in
+                attempts += 1
+                throw SQLiteDatabaseError(
+                    operation: "Step SQLite query",
+                    code: SQLITE_IOERR,
+                    message: "disk I/O error",
+                    path: "/tmp/state_5.sqlite"
+                )
+            }
+        ) { error in
+            XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_IOERR)
+        }
+        XCTAssertEqual(attempts, 3)
+    }
+
     func testNoCreateWriteConnectionRefusesToCreateAMissingDatabase() throws {
         let url = try makeDatabaseURL()
         let driver = SQLiteDatabaseDriver(url: url, createsFileIfMissing: false)

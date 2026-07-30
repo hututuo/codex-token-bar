@@ -63,11 +63,48 @@ struct SQLiteDatabaseError: LocalizedError {
     let message: String
     let path: String?
 
+    var primaryCode: Int32 {
+        code & 0xFF
+    }
+
+    var isTransientReadFailure: Bool {
+        switch primaryCode {
+        case SQLITE_BUSY, SQLITE_LOCKED, SQLITE_IOERR, SQLITE_PROTOCOL:
+            return true
+        default:
+            return false
+        }
+    }
+
     var errorDescription: String? {
         if let path {
             return "\(operation) failed for \(path): \(message)"
         }
         return "\(operation) failed: \(message)"
+    }
+}
+
+enum SQLiteReadRecovery {
+    static let defaultRetryDelays: [TimeInterval] = [0.05, 0.20]
+
+    static func run<T>(
+        retryDelays: [TimeInterval] = defaultRetryDelays,
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        operation: () throws -> T
+    ) throws -> T {
+        var retryIndex = 0
+        while true {
+            do {
+                return try operation()
+            } catch let error as SQLiteDatabaseError {
+                guard error.isTransientReadFailure,
+                      retryIndex < retryDelays.count else {
+                    throw error
+                }
+                sleep(retryDelays[retryIndex])
+                retryIndex += 1
+            }
+        }
     }
 }
 

@@ -512,15 +512,22 @@ extension CodexUsageAnalyzer {
     }
 
     private func sqliteRows(db: String, sql: String) throws -> [[String]] {
-        let driver = SQLiteDatabaseDriver(
-            url: URL(fileURLWithPath: db),
-            readOnly: true,
-            busyTimeoutMilliseconds: 1_000,
-            enableWAL: false
-        )
-        return try driver.readRows(sql) { statement in
-            (0..<statement.columnCount).map { column in
-                statement.text(column) ?? ""
+        try SQLiteReadRecovery.run {
+            // Recreate the read-only connection for every retry. Codex owns this
+            // WAL database and may be checkpointing it while Token Bar discovers
+            // active rollout paths; reusing the failed handle can preserve a
+            // transient SQLITE_IOERR state and unnecessarily stale the whole
+            // precise-usage snapshot.
+            let driver = SQLiteDatabaseDriver(
+                url: URL(fileURLWithPath: db),
+                readOnly: true,
+                busyTimeoutMilliseconds: 1_000,
+                enableWAL: false
+            )
+            return try driver.readRows(sql) { statement in
+                (0..<statement.columnCount).map { column in
+                    statement.text(column) ?? ""
+                }
             }
         }
     }
