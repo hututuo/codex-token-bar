@@ -18,6 +18,8 @@ export type SessionCollectionId =
   | `project:${string}`;
 
 export type SessionSortId = "recent" | "size" | "leastRecent" | "tokens";
+export type SessionNavigationStage = "projects" | "sessions" | "detail";
+export type SessionNavigationAction = "chooseCollection" | "chooseThread" | "back";
 
 export interface SessionCollection {
   id: SessionCollectionId;
@@ -174,16 +176,29 @@ export function eligibilityForMutation(
           : thread.canDelete;
     (safe && allowed ? eligible : blocked).push(thread);
   }
+  const unsafeCount = blocked.filter((thread) => (
+    !isUnloadedSessionStatus(thread.status) || thread.protectionReasons.length > 0
+  )).length;
+  const notApplicableCount = blocked.length - unsafeCount;
+  const blockedReasons = [
+    unsafeCount > 0 ? `${unsafeCount} 个仍在运行、加载或受保护` : null,
+    notApplicableCount > 0 ? `${notApplicableCount} 个不适用于此操作` : null,
+  ].filter((reason): reason is string => reason !== null);
   const reason = blocked.length === 0
     ? null
-    : `${blocked.length} 个会话处于运行、加载、保护或当前操作不适用状态`;
+    : `已保留全部选择；${mutationLabel(mutation)}暂不可执行：${blockedReasons.join("，")}。`;
   return { eligible, blocked, reason };
 }
 
-export function canSelectForDangerousAction(thread: SessionManagementThread): boolean {
-  return isUnloadedSessionStatus(thread.status)
-    && thread.protectionReasons.length === 0
-    && (thread.canArchive || thread.canUnarchive || thread.canDelete || thread.archived);
+export function nextSessionNavigationStage(
+  current: SessionNavigationStage,
+  action: SessionNavigationAction,
+): SessionNavigationStage {
+  if (action === "chooseCollection") return "sessions";
+  if (action === "chooseThread") return "detail";
+  if (current === "detail") return "sessions";
+  if (current === "sessions") return "projects";
+  return "projects";
 }
 
 export function sessionDeletionImpact(
@@ -353,6 +368,19 @@ function collection(
   description: string,
 ): SessionCollection {
   return { id, label, count, description };
+}
+
+function mutationLabel(mutation: SessionManagementMutation): string {
+  switch (mutation) {
+  case "archive":
+    return "官方归档";
+  case "unarchive":
+    return "恢复到 Codex";
+  case "delete":
+    return "永久删除";
+  case "recoveryArchive":
+    return "创建恢复包";
+  }
 }
 
 function normalizedCwd(cwd: string): string {

@@ -1,5 +1,11 @@
 import Foundation
 
+enum SessionManagementSelectionPolicy {
+    static func canSelect(_ thread: SessionManagementThread) -> Bool {
+        !thread.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
 struct SessionManagementBatchDeletionFailure: Equatable, Sendable {
     let threadID: String
     let title: String
@@ -549,7 +555,7 @@ final class SessionManagementStore: ObservableObject {
     }
 
     func toggleAllVisibleChecked() {
-        let selectable = visibleThreads.filter(\.canDelete)
+        let selectable = visibleThreads.filter(SessionManagementSelectionPolicy.canSelect)
         let allSelected = !selectable.isEmpty
             && selectable.allSatisfy { checkedThreadIDs.contains($0.id) }
         if allSelected {

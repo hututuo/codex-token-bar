@@ -69,7 +69,7 @@ test("filter searches the complete metadata set, sorts large and least-recent se
 
 test("dangerous actions fail closed for active and protected sessions", async () => {
   await withSsrModules(async (load) => {
-    const { canSelectForDangerousAction, eligibilityForMutation } = await load(
+    const { eligibilityForMutation } = await load(
       "/src/sessionManagement/model.ts",
     );
     const unloaded = thread({ id: "unloaded", canDelete: true, status: "notLoaded" });
@@ -94,9 +94,20 @@ test("dangerous actions fail closed for active and protected sessions", async ()
       ["unloaded"],
       "an unloaded safe session can be packaged without first entering official archive",
     );
-    assert.equal(canSelectForDangerousAction(idle), false);
-    assert.equal(canSelectForDangerousAction(active), false);
-    assert.equal(canSelectForDangerousAction(pinned), false);
+    assert.match(eligibility.reason, /已保留全部选择/);
+    assert.match(eligibility.reason, /3 个仍在运行、加载或受保护/);
+  });
+});
+
+test("session navigation advances and returns one hierarchy level at a time", async () => {
+  await withSsrModules(async (load) => {
+    const { nextSessionNavigationStage } = await load("/src/sessionManagement/model.ts");
+
+    assert.equal(nextSessionNavigationStage("projects", "chooseCollection"), "sessions");
+    assert.equal(nextSessionNavigationStage("sessions", "chooseThread"), "detail");
+    assert.equal(nextSessionNavigationStage("detail", "back"), "sessions");
+    assert.equal(nextSessionNavigationStage("sessions", "back"), "projects");
+    assert.equal(nextSessionNavigationStage("projects", "back"), "projects");
   });
 });
 

@@ -212,6 +212,30 @@ final class SessionManagementPresentationTests: XCTestCase {
         XCTAssertTrue(SessionManagementLayout.usesCompactLayout(width: 919))
         XCTAssertFalse(SessionManagementLayout.usesCompactLayout(width: 920))
     }
+
+    func testSessionManagementNavigationIsAForwardAndBackDrillDown() {
+        XCTAssertNil(SessionManagementNavigationStage.projects.previous)
+        XCTAssertEqual(SessionManagementNavigationStage.sessions.previous, .projects)
+        XCTAssertEqual(SessionManagementNavigationStage.details.previous, .sessions)
+        XCTAssertEqual(
+            SessionManagementNavigationStage.allCases,
+            [.projects, .sessions, .details]
+        )
+    }
+
+    func testSelectionDoesNotDependOnDangerousMutationEligibility() {
+        var protected = makeSessionManagementThread(id: "protected")
+        protected.status = .active
+        protected.protectionReasons = ["自动续跑保护"]
+        protected.canArchive = false
+        protected.canUnarchive = false
+        protected.canDelete = false
+
+        XCTAssertTrue(SessionManagementSelectionPolicy.canSelect(protected))
+
+        let malformed = makeSessionManagementThread(id: "  ")
+        XCTAssertFalse(SessionManagementSelectionPolicy.canSelect(malformed))
+    }
 }
 
 final class SessionManagementBatchDeletionTests: XCTestCase {

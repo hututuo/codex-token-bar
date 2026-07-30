@@ -24,6 +24,10 @@ test("session management renders a real loading workspace before native metadata
     assert.match(html, /aria-label="会话管理"/);
     assert.match(html, /智能集合/);
     assert.match(html, /项目/);
+    assert.match(html, /aria-label="会话层级路径"/);
+    assert.match(html, /data-navigation-stage="projects"/);
+    assert.match(html, /返回项目/);
+    assert.match(html, /返回会话/);
     assert.match(html, /搜索全部会话元数据/);
     assert.match(html, /官方归档/);
     assert.match(html, /创建深度压缩恢复包/);

@@ -12,8 +12,8 @@ enum SessionManagementLayout {
     }
 }
 
-private enum SessionManagementCompactPane: String, CaseIterable, Identifiable {
-    case collections
+enum SessionManagementNavigationStage: String, CaseIterable, Identifiable {
+    case projects
     case sessions
     case details
 
@@ -21,9 +21,17 @@ private enum SessionManagementCompactPane: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .collections: return "项目"
+        case .projects: return "项目"
         case .sessions: return "会话"
         case .details: return "详情"
+        }
+    }
+
+    var previous: SessionManagementNavigationStage? {
+        switch self {
+        case .projects: return nil
+        case .sessions: return .projects
+        case .details: return .sessions
         }
     }
 }
@@ -44,7 +52,7 @@ struct SessionManagementView: View {
     @StateObject private var store: SessionManagementStore
     @ObservedObject private var autoResumeManager: AutoResumeTaskManager
     let onClose: () -> Void
-    @State private var compactPane: SessionManagementCompactPane = .sessions
+    @State private var navigationStage: SessionManagementNavigationStage = .projects
     @State private var officialConfirmation: SessionManagementOfficialConfirmation?
     @State private var showingDeleteOptions = false
     @State private var deleteAcknowledged = false
@@ -86,6 +94,11 @@ struct SessionManagementView: View {
         .frame(minWidth: 760, minHeight: 620)
         .background(AppTheme.panelBackground)
         .onAppear { store.refresh() }
+        .onChange(of: store.selectedThreadID) { selectedThreadID in
+            if selectedThreadID == nil, navigationStage == .details {
+                navigationStage = .sessions
+            }
+        }
         .onExitCommand {
             guard !store.isPerformingMutation else { return }
             onClose()
@@ -163,38 +176,161 @@ struct SessionManagementView: View {
     }
 
     private var wideBody: some View {
-        HSplitView {
-            sidebar
-                .frame(minWidth: 190, idealWidth: 218, maxWidth: 280)
-            threadList
-                .frame(minWidth: 310, idealWidth: 360, maxWidth: 480)
-            detail
-                .frame(minWidth: 390, maxWidth: .infinity)
+        VStack(spacing: 0) {
+            hierarchyBar(compact: false)
+            Rectangle()
+                .fill(AppTheme.border)
+                .frame(height: 1)
+            HSplitView {
+                sidebar
+                    .frame(minWidth: 190, idealWidth: 218, maxWidth: 280)
+                threadList
+                    .frame(minWidth: 310, idealWidth: 360, maxWidth: 480)
+                detail
+                    .frame(minWidth: 390, maxWidth: .infinity)
+            }
         }
     }
 
     private var compactBody: some View {
         VStack(spacing: 0) {
-            Picker("会话管理区域", selection: $compactPane) {
-                ForEach(SessionManagementCompactPane.allCases) { pane in
-                    Text(pane.title).tag(pane)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(10)
+            hierarchyBar(compact: true)
 
             Rectangle()
                 .fill(AppTheme.border)
                 .frame(height: 1)
 
-            switch compactPane {
-            case .collections:
+            switch navigationStage {
+            case .projects:
                 sidebar
             case .sessions:
                 threadList
             case .details:
                 detail
             }
+        }
+    }
+
+    private func hierarchyBar(compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            if compact, let previous = navigationStage.previous {
+                Button {
+                    navigationStage = previous
+                } label: {
+                    Label(
+                        previous == .projects ? "返回项目" : "返回会话",
+                        systemImage: "chevron.left"
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(AppTheme.accentBlue)
+
+                Rectangle()
+                    .fill(AppTheme.border)
+                    .frame(width: 1, height: 18)
+            }
+
+            if compact {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(navigationStage.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Text(navigationContext)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            } else {
+                hierarchyNode(
+                    title: "项目",
+                    subtitle: selectedScopeTitle,
+                    stage: .projects,
+                    enabled: true
+                )
+                hierarchyChevron
+                hierarchyNode(
+                    title: "会话",
+                    subtitle: "\(store.matchingThreads.count) 个结果",
+                    stage: .sessions,
+                    enabled: true
+                )
+                hierarchyChevron
+                hierarchyNode(
+                    title: "详情",
+                    subtitle: store.selectedThread?.displayTitle ?? "尚未选择",
+                    stage: .details,
+                    enabled: store.selectedThread != nil
+                )
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: compact ? 42 : 46)
+        .background(AppTheme.panelBackgroundAlt)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("会话管理路径")
+    }
+
+    private func hierarchyNode(
+        title: String,
+        subtitle: String,
+        stage: SessionManagementNavigationStage,
+        enabled: Bool
+    ) -> some View {
+        Button {
+            navigationStage = stage
+        } label: {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 10.5, weight: .semibold))
+                Text(subtitle)
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(
+                        navigationStage == stage
+                            ? AppTheme.selectedControlBackground
+                            : Color.clear
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .foregroundStyle(
+            navigationStage == stage ? AppTheme.accentBlue : Color.primary
+        )
+    }
+
+    private var hierarchyChevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 8.5, weight: .semibold))
+            .foregroundStyle(.tertiary)
+    }
+
+    private var selectedScopeTitle: String {
+        if let projectID = store.selectedProjectID,
+           let project = store.projects.first(where: { $0.id == projectID }) {
+            return project.displayName
+        }
+        return store.selectedCollection.title
+    }
+
+    private var navigationContext: String {
+        switch navigationStage {
+        case .projects:
+            return "先选择项目或智能集合"
+        case .sessions:
+            return selectedScopeTitle
+        case .details:
+            return store.selectedThread?.displayTitle ?? "尚未选择会话"
         }
     }
 
@@ -242,7 +378,7 @@ struct SessionManagementView: View {
             && store.selectedCollection == collection
         return Button {
             store.selectCollection(collection)
-            compactPane = .sessions
+            navigationStage = .sessions
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: collection.systemImage)
@@ -273,7 +409,7 @@ struct SessionManagementView: View {
         let selected = store.selectedProjectID == project.id
         return Button {
             store.selectProject(project.id)
-            compactPane = .sessions
+            navigationStage = .sessions
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "folder")
@@ -338,7 +474,7 @@ struct SessionManagementView: View {
                             .foregroundStyle(AppTheme.accentBlue)
                     }
                     Spacer()
-                    if !store.visibleThreads.filter(\.canDelete).isEmpty {
+                    if !store.visibleThreads.isEmpty {
                         Button("选择当前显示", action: store.toggleAllVisibleChecked)
                             .buttonStyle(.plain)
                             .font(.system(size: 10.5))
@@ -357,6 +493,20 @@ struct SessionManagementView: View {
                             store.isPerformingMutation
                                 || store.checkedThreads.contains(where: { !$0.canDelete })
                         )
+                        .help(
+                            store.checkedThreads.contains(where: { !$0.canDelete })
+                                ? "所选会话中包含当前只可查看的项目；取消这些选择后才能永久删除。"
+                                : "为所选会话建立恢复包后永久删除"
+                        )
+                    }
+                }
+                if !store.checkedThreadIDs.isEmpty {
+                    let blockedCount = store.checkedThreads.filter { !$0.canDelete }.count
+                    if blockedCount > 0 {
+                        Text("其中 \(blockedCount) 个会话当前只可查看；选择仍会保留，但删除操作保持关闭。")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(AppTheme.accentAmber)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
@@ -444,15 +594,18 @@ struct SessionManagementView: View {
             } label: {
                 Image(systemName: checked ? "checkmark.square.fill" : "square")
                     .foregroundStyle(checked ? AppTheme.accentBlue : Color.secondary)
-                    .frame(width: 18, height: 24)
+                    .frame(width: 30, height: 34)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!thread.canDelete || store.isPerformingMutation)
+            .disabled(
+                !SessionManagementSelectionPolicy.canSelect(thread)
+                    || store.isPerformingMutation
+            )
             .help(
                 thread.canDelete
-                    ? "选择会话进行批量清理"
-                    : (thread.protectionReasons.first ?? "当前状态不允许危险操作")
+                    ? "选择会话；每项操作会在执行前单独校验"
+                    : "选择会保留；当前会话只可查看，危险操作仍会保持关闭"
             )
             .accessibilityLabel(
                 checked
@@ -462,7 +615,7 @@ struct SessionManagementView: View {
 
             Button {
                 store.selectThread(thread.id)
-                compactPane = .details
+                navigationStage = .details
             } label: {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 6) {

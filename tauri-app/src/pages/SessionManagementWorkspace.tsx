@@ -20,17 +20,18 @@ import {
   SESSION_DISCLOSURE_PAGE_SIZE,
   buildSessionCollections,
   buildSessionProjects,
-  canSelectForDangerousAction,
   eligibilityForMutation,
   filterSessionThreads,
   formatSessionBytes,
   formatSessionTimestamp,
   mergeContextMessages,
+  nextSessionNavigationStage,
   projectLabel,
   relatedThreads,
   sessionDeletionImpact,
   type SessionCollectionId,
   type SessionDeletionImpact,
+  type SessionNavigationStage,
   type SessionSortId,
 } from "../sessionManagement/model";
 import type {
@@ -145,6 +146,7 @@ export function SessionManagementWorkspace({
   const [visibleLimit, setVisibleLimit] = useState(SESSION_DISCLOSURE_PAGE_SIZE);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(null);
+  const [navigationStage, setNavigationStage] = useState<SessionNavigationStage>("projects");
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   const [context, setContext] = useState<ContextState>(EMPTY_CONTEXT);
   const [mutation, setMutation] = useState<SessionManagementMutation | null>(null);
@@ -212,6 +214,7 @@ export function SessionManagementWorkspace({
     setCatalogError(null);
     setSelectedIds(new Set());
     setFocusedThreadId(null);
+    setNavigationStage("projects");
     setContext(EMPTY_CONTEXT);
     setMutationReport(null);
     setMutationError(null);
@@ -220,6 +223,7 @@ export function SessionManagementWorkspace({
   useEffect(() => {
     if (open) return;
     invalidateDeleteConfirmation();
+    setNavigationStage("projects");
   }, [invalidateDeleteConfirmation, open]);
 
   useEffect(() => {
@@ -282,9 +286,11 @@ export function SessionManagementWorkspace({
   );
   const focusedThread = threads.find((thread) => thread.id === focusedThreadId) ?? null;
   const focusedRelations = focusedThread ? relatedThreads(focusedThread, threads) : null;
-  const selectableVisibleThreads = visibleThreads.filter(canSelectForDangerousAction);
-  const allVisibleSelected = selectableVisibleThreads.length > 0
-    && selectableVisibleThreads.every((thread) => selectedIds.has(thread.id));
+  const allVisibleSelected = visibleThreads.length > 0
+    && visibleThreads.every((thread) => selectedIds.has(thread.id));
+  const activeCollectionLabel = projects.find((project) => project.id === collection)?.label
+    ?? collections.find((item) => item.id === collection)?.label
+    ?? "全部会话";
   const catalogWarnings = catalog?.warnings ?? [];
   const selectedBytes = selectedThreads.every((thread) => thread.fileBytes !== null)
     ? selectedThreads.reduce((sum, thread) => sum + (thread.fileBytes ?? 0), 0)
@@ -376,11 +382,23 @@ export function SessionManagementWorkspace({
     contextRequestGenerationRef.current += 1;
     setFocusedThreadId(thread.id);
     setDetailTab("overview");
+    setNavigationStage((current) => nextSessionNavigationStage(current, "chooseThread"));
     if (context.threadId !== thread.id) setContext(EMPTY_CONTEXT);
   }
 
+  function chooseCollection(nextCollection: SessionCollectionId) {
+    contextRequestGenerationRef.current += 1;
+    setCollection(nextCollection);
+    setFocusedThreadId(null);
+    setContext(EMPTY_CONTEXT);
+    setNavigationStage((current) => nextSessionNavigationStage(current, "chooseCollection"));
+  }
+
+  function navigateBack() {
+    setNavigationStage((current) => nextSessionNavigationStage(current, "back"));
+  }
+
   function toggleSelection(thread: SessionManagementThread) {
-    if (!canSelectForDangerousAction(thread)) return;
     invalidatePendingDeletePreparation();
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -395,9 +413,9 @@ export function SessionManagementWorkspace({
     setSelectedIds((current) => {
       const next = new Set(current);
       if (allVisibleSelected) {
-        for (const thread of selectableVisibleThreads) next.delete(thread.id);
+        for (const thread of visibleThreads) next.delete(thread.id);
       } else {
-        for (const thread of selectableVisibleThreads) next.add(thread.id);
+        for (const thread of visibleThreads) next.add(thread.id);
       }
       return next;
     });
@@ -627,8 +645,34 @@ export function SessionManagementWorkspace({
         ) : null}
         {mutationReport ? <MutationReport report={mutationReport} /> : null}
 
-        <div className="session-management-layout">
-          <aside className="session-management-sidebar">
+        <nav aria-label="会话层级路径" className="session-management-hierarchy">
+          <button
+            aria-current={navigationStage === "projects" ? "step" : undefined}
+            onClick={() => setNavigationStage("projects")}
+            type="button"
+          >
+            项目：{activeCollectionLabel}
+          </button>
+          <span aria-hidden="true">›</span>
+          <button
+            aria-current={navigationStage === "sessions" ? "step" : undefined}
+            disabled={navigationStage === "projects"}
+            onClick={() => setNavigationStage("sessions")}
+            type="button"
+          >
+            会话：{filteredThreads.length}
+          </button>
+          <span aria-hidden="true">›</span>
+          <span aria-current={navigationStage === "detail" ? "step" : undefined}>
+            详情：{focusedThread?.title || "未选择"}
+          </span>
+        </nav>
+
+        <div
+          className="session-management-layout"
+          data-navigation-stage={navigationStage}
+        >
+          <aside aria-label="项目与智能集合" className="session-management-sidebar">
             <SidebarSection title="智能集合">
               {collections.map((item) => (
                 <CollectionButton
@@ -637,7 +681,7 @@ export function SessionManagementWorkspace({
                   description={item.description}
                   key={item.id}
                   label={item.label}
-                  onClick={() => setCollection(item.id)}
+                  onClick={() => chooseCollection(item.id)}
                 />
               ))}
             </SidebarSection>
@@ -651,13 +695,17 @@ export function SessionManagementWorkspace({
                   description={project.cwd}
                   key={project.id}
                   label={project.label}
-                  onClick={() => setCollection(project.id)}
+                  onClick={() => chooseCollection(project.id)}
                 />
               ))}
             </SidebarSection>
           </aside>
 
           <section className="session-management-list-pane" aria-label="会话列表">
+            <div className="session-management-compact-back">
+              <button onClick={navigateBack} type="button">← 返回项目</button>
+              <span>{activeCollectionLabel} · {filteredThreads.length} 个会话</span>
+            </div>
             <div className="session-management-list-tools">
               <label className="session-management-search">
                 <span className="visually-hidden">搜索全部会话元数据</span>
@@ -712,9 +760,9 @@ export function SessionManagementWorkspace({
             <div className="session-management-selection-bar">
               <label>
                 <input
-                  aria-label="选择当前已显示且可安全操作的会话"
+                  aria-label="选择当前显示的全部会话"
                   checked={allVisibleSelected}
-                  disabled={selectableVisibleThreads.length === 0}
+                  disabled={visibleThreads.length === 0}
                   onChange={toggleVisibleSelection}
                   type="checkbox"
                 />
@@ -785,6 +833,10 @@ export function SessionManagementWorkspace({
           </section>
 
           <section className="session-management-detail" aria-label="会话详情">
+            <div className="session-management-compact-back">
+              <button onClick={navigateBack} type="button">← 返回会话</button>
+              <span>{focusedThread?.title || "会话详情"}</span>
+            </div>
             {focusedThread ? (
               <>
                 <DetailHeader thread={focusedThread} />
@@ -901,9 +953,6 @@ function ThreadRow({
   selected: boolean;
   thread: SessionManagementThread;
 }) {
-  const selectable = canSelectForDangerousAction(thread);
-  const protection = thread.protectionReasons.join("；")
-    || (selectable ? "" : "当前会话正在运行、加载或不可执行危险操作");
   return (
     <div
       aria-selected={focused}
@@ -921,10 +970,12 @@ function ThreadRow({
       <input
         aria-label={`选择 ${thread.title || thread.id}`}
         checked={selected}
-        disabled={!selectable}
         onChange={onToggle}
         onClick={(event) => event.stopPropagation()}
-        title={protection || undefined}
+        onKeyDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        title="选择不会执行操作；各项批量操作会独立检查当前会话是否适用"
         type="checkbox"
       />
       <div className="session-management-thread-main">

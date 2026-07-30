@@ -27,7 +27,7 @@ test("session management progressively discloses real catalog data and keeps dan
 
     await setInput(act, search, "", window);
     const activeRow = rowContaining(container, "Active protected");
-    assert.equal(activeRow.querySelector('input[type="checkbox"]').disabled, true);
+    assert.equal(activeRow.querySelector('input[type="checkbox"]').disabled, false);
 
     const safeRow = rowContaining(container, "Safe thread");
     assert.match(safeRow.textContent, /未加载/);
@@ -54,6 +54,59 @@ test("session management progressively discloses real catalog data and keeps dan
     await flushPromises(act);
     assert.deepEqual(calls.archive, [["safe-thread"]]);
     assert.match(container.textContent, /操作完成：成功 1，失败 0/);
+  });
+});
+
+test("project, session and detail form a drill-down path with explicit back navigation", async () => {
+  await withMountedWorkspace(async ({ act, container, window }) => {
+    await flushPromises(act);
+    const layout = container.querySelector(".session-management-layout");
+    assert.equal(layout?.dataset.navigationStage, "projects");
+    assert.match(container.querySelector(".session-management-hierarchy")?.textContent, /项目：全部会话.*会话：205.*详情：未选择/);
+
+    await click(act, collectionButton(container, "全部会话"), window);
+    assert.equal(layout?.dataset.navigationStage, "sessions");
+
+    await click(act, rowContaining(container, "Safe thread"), window);
+    assert.equal(layout?.dataset.navigationStage, "detail");
+    assert.match(container.querySelector(".session-management-hierarchy")?.textContent, /详情：Safe thread/);
+
+    await click(act, buttonWithText(container, "← 返回会话"), window);
+    assert.equal(layout?.dataset.navigationStage, "sessions");
+    await click(act, buttonWithText(container, "← 返回项目"), window);
+    assert.equal(layout?.dataset.navigationStage, "projects");
+  });
+});
+
+test("selection stays clickable and isolated from row focus while actions fail closed independently", async () => {
+  await withMountedWorkspace(async ({ act, container, window }) => {
+    await flushPromises(act);
+    await click(act, collectionButton(container, "全部会话"), window);
+    const layout = container.querySelector(".session-management-layout");
+    const activeRow = rowContaining(container, "Active protected");
+    const activeCheckbox = activeRow.querySelector('input[type="checkbox"]');
+    assert.equal(activeCheckbox.disabled, false);
+
+    await click(act, activeCheckbox, window);
+    assert.equal(activeCheckbox.checked, true);
+    assert.equal(activeRow.getAttribute("aria-selected"), "false");
+    assert.equal(layout?.dataset.navigationStage, "sessions");
+    assert.match(container.querySelector(".session-management-detail")?.textContent, /选择一个会话/);
+    const archive = buttonWithText(container, "官方归档");
+    assert.equal(archive.disabled, true);
+    assert.match(archive.title, /已保留全部选择.*仍在运行、加载或受保护/);
+
+    await keyDown(act, activeCheckbox, " ", window);
+    assert.equal(activeRow.getAttribute("aria-selected"), "false");
+    assert.equal(layout?.dataset.navigationStage, "sessions");
+
+    await click(act, activeCheckbox, window);
+    const selectAll = container.querySelector('input[aria-label="选择当前显示的全部会话"]');
+    await click(act, selectAll, window);
+    assert.equal(activeCheckbox.checked, true);
+    assert.match(container.textContent, /已选 100/);
+    assert.equal(archive.disabled, true);
+    assert.match(archive.title, /已保留全部选择/);
   });
 });
 
@@ -530,6 +583,13 @@ async function click(act, target, window) {
   ));
 }
 
+async function keyDown(act, target, key, window) {
+  assert.ok(target);
+  await act(async () => target.dispatchEvent(
+    new window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, key }),
+  ));
+}
+
 async function setInput(act, input, value, window) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   assert.ok(setter);
@@ -543,6 +603,13 @@ function buttonWithText(container, text) {
   const matches = [...container.querySelectorAll("button")]
     .filter((button) => button.textContent?.trim() === text);
   assert.equal(matches.length, 1, `expected one button named ${text}`);
+  return matches[0];
+}
+
+function collectionButton(container, text) {
+  const matches = [...container.querySelectorAll(".session-management-sidebar button")]
+    .filter((button) => button.querySelector("strong")?.textContent?.trim() === text);
+  assert.equal(matches.length, 1, `expected one collection button named ${text}`);
   return matches[0];
 }
 
