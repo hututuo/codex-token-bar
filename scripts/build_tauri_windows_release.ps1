@@ -193,7 +193,7 @@ try {
     try {
         $env:CARGO_TARGET_DIR = $CargoTestDir
         Invoke-Checked "cargo test" {
-            cargo test --locked --manifest-path (Join-Path $TauriDir "src-tauri\Cargo.toml")
+            cargo test --locked --manifest-path (Join-Path $TauriDir "src-tauri\Cargo.toml") -- --test-threads=1
         }
     } finally {
         if ($HadCargoTargetDir) {
