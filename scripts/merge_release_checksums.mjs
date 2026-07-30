@@ -147,15 +147,6 @@ function assertRegularFile(file, label) {
   if (info.isSymbolicLink() || !info.isFile()) fail(`${label} must be a regular file: ${file}`);
 }
 
-function fsyncFile(file) {
-  const descriptor = openSync(file, "r");
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 function fsyncParentDirectory(file) {
   if (process.platform === "win32") return;
   const descriptor = openSync(path.dirname(file), "r");
@@ -170,9 +161,17 @@ export function publishImmutableFile(output, content) {
   const tmp = `${output}.tmp-${process.pid}-${randomUUID()}`;
   let temporaryExists = false;
   try {
-    writeFileSync(tmp, content, { encoding: "utf8", flag: "wx", mode: 0o644 });
+    // Keep the exclusive-create descriptor through the write and durability
+    // barrier. Windows FlushFileBuffers needs write access, while reopening
+    // with r+ would fail on POSIX when a strict umask creates mode 0444.
+    const descriptor = openSync(tmp, "wx+", 0o644);
     temporaryExists = true;
-    fsyncFile(tmp);
+    try {
+      writeFileSync(descriptor, content, { encoding: "utf8" });
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
     try {
       // A same-directory hard link is an atomic no-replace publication:
       // EEXIST can never overwrite a manifest created after our earlier reads.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -255,7 +255,17 @@ test("CLI fails on a missing, tampered, or symlinked release asset", async () =>
     await unlink(path.join(releaseDir, "latest-windows.json"));
     await assertMergeFails(releaseDir, /Release asset latest-windows\.json not found/);
 
-    await symlink(target, path.join(releaseDir, "latest-windows.json"));
+    const linkedAsset = path.join(releaseDir, "latest-windows.json");
+    if (process.platform === "win32") {
+      // Directory junctions are unprivileged Windows reparse points, so this
+      // keeps the rejection test real without requiring Developer Mode or an
+      // elevated account merely to create a file symlink fixture.
+      const junctionTarget = path.join(releaseDir, "junction-target");
+      await mkdir(junctionTarget);
+      await symlink(junctionTarget, linkedAsset, "junction");
+    } else {
+      await symlink(target, linkedAsset);
+    }
     await assertMergeFails(releaseDir, /Release asset latest-windows\.json must be a regular file/);
   } finally {
     await rm(releaseDir, { recursive: true, force: true });
@@ -288,6 +298,19 @@ test("no-replace publication never overwrites a competing manifest and cleans st
     const entries = await import("node:fs/promises").then(({ readdir }) => readdir(releaseDir));
     assert.deepEqual(entries, ["SHA256SUMS.txt"]);
   } finally {
+    await rm(releaseDir, { recursive: true, force: true });
+  }
+});
+
+test("publication fsyncs through its create handle under a read-only umask", async () => {
+  const releaseDir = await mkdtemp(path.join(os.tmpdir(), "merge-sha256sums-umask-"));
+  const output = path.join(releaseDir, "SHA256SUMS.txt");
+  const previousUmask = process.umask(0o222);
+  try {
+    assert.equal(publishImmutableFile(output, "durable publication\n"), "written");
+    assert.equal(await readFile(output, "utf8"), "durable publication\n");
+  } finally {
+    process.umask(previousUmask);
     await rm(releaseDir, { recursive: true, force: true });
   }
 });
