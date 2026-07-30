@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -12,6 +12,10 @@ const script = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "check_release_security.sh",
 );
+const test = (name, fn) =>
+  nodeTest(name, {
+    skip: process.platform === "darwin" ? false : "requires macOS release security tooling",
+  }, fn);
 
 async function makeExecutable(file, body) {
   await writeFile(file, `#!/usr/bin/env bash\n${body}\n`);

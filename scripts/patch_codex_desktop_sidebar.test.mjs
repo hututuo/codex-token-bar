@@ -4,10 +4,14 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 
 const script = fileURLToPath(new URL("./patch_codex_desktop_sidebar.sh", import.meta.url));
+const test = (name, fn) =>
+  nodeTest(name, {
+    skip: process.platform === "darwin" ? false : "requires a macOS Codex .app fixture",
+  }, fn);
 
 function makeApp(
   root,

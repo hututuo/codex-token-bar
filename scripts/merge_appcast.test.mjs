@@ -12,6 +12,8 @@ const mergeScript = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "merge_appcast.py",
 );
+const pythonExecutable =
+  process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 function appcastItem(version, marker) {
   return [
@@ -52,7 +54,7 @@ async function runMerge({ version, generated, existing, outputExisting, env = {}
   delete baseEnv.ALLOW_APPCAST_REPUBLISH;
   try {
     await execFileAsync(
-      "python3",
+      pythonExecutable,
       [mergeScript, version, generatedPath, existingPath, outputPath],
       { env: { ...baseEnv, ...env } },
     );

@@ -11,6 +11,8 @@ const execFileAsync = promisify(execFile);
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const signatureScript = path.join(scriptsDir, "read_appcast_signature.py");
 const publishScript = path.join(scriptsDir, "publish_appcast.py");
+const pythonExecutable =
+  process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 function item(version, signature) {
   return [
@@ -41,7 +43,7 @@ test("signature reader selects the requested version without formatting assumpti
       item("1.1.0", "old-signature"),
     ]));
 
-    const result = await execFileAsync("python3", [signatureScript, file, "1.1.0"]);
+    const result = await execFileAsync(pythonExecutable, [signatureScript, file, "1.1.0"]);
 
     assert.equal(result.stdout.trim(), "old-signature");
   } finally {
@@ -56,7 +58,7 @@ test("signature reader rejects a missing release instead of using another item",
     await writeFile(file, appcast([item("1.2.0", "new-signature")]));
 
     await assert.rejects(
-      execFileAsync("python3", [signatureScript, file, "1.1.0"]),
+      execFileAsync(pythonExecutable, [signatureScript, file, "1.1.0"]),
       /exactly one item for version 1\.1\.0/,
     );
   } finally {
@@ -79,7 +81,7 @@ test("publisher atomically replaces an unchanged appcast snapshot", async () => 
     await writeFile(snapshot, oldValue);
     await writeFile(output, oldValue);
 
-    await execFileAsync("python3", [publishScript, staged, snapshot, output]);
+    await execFileAsync(pythonExecutable, [publishScript, staged, snapshot, output]);
 
     assert.equal(await readFile(output, "utf8"), newValue);
   } finally {
@@ -100,7 +102,7 @@ test("publisher preserves a competing appcast change", async () => {
     await writeFile(output, competing);
 
     await assert.rejects(
-      execFileAsync("python3", [publishScript, staged, snapshot, output]),
+      execFileAsync(pythonExecutable, [publishScript, staged, snapshot, output]),
       /destination changed after the existing-history snapshot/,
     );
     assert.equal(await readFile(output, "utf8"), competing);
@@ -122,7 +124,7 @@ test("publisher treats destination deletion after the snapshot as a conflict", a
     await unlink(output);
 
     await assert.rejects(
-      execFileAsync("python3", [publishScript, staged, snapshot, output]),
+      execFileAsync(pythonExecutable, [publishScript, staged, snapshot, output]),
       /destination changed after the existing-history snapshot/,
     );
     await assert.rejects(readFile(output));

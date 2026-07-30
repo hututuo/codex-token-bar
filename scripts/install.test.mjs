@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -17,6 +17,10 @@ const installScript = path.join(
 const version = "9.9.9";
 const assetName = "CodexTokenBar.app.zip";
 const checksumName = `SHA256SUMS-v${version}.txt`;
+const test = (name, fn) =>
+  nodeTest(name, {
+    skip: process.platform === "darwin" ? false : "requires macOS ditto/xattr install tooling",
+  }, fn);
 
 function sha256(data) {
   return createHash("sha256").update(data).digest("hex");
