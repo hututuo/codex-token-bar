@@ -105,6 +105,48 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let incrementallyParsedFiles: Int
     }
 
+    struct SessionCatalogCandidate: Equatable {
+        let file: URL
+        let archived: Bool
+    }
+
+    struct SessionCatalogMetadata: Equatable {
+        let threadID: String
+        let cwd: String
+        let sessionID: String?
+        let forkedFromID: String?
+        let parentThreadID: String?
+        let source: String
+    }
+
+    struct SessionCatalogEntry: Equatable {
+        let path: String
+        let archived: Bool
+        let metadata: SessionCatalogMetadata
+        let sizeBytes: Int64
+        let modifiedAt: Date
+        let createdAt: Date
+        let deviceID: UInt64
+        let inode: UInt64
+        let statusChangedSeconds: Int64
+        let statusChangedNanoseconds: Int64
+        let firstLineEndOffset: Int64
+        let firstLineSHA256: String
+        let lastSeenGeneration: String
+    }
+
+    struct SessionCatalogSynchronizationResult {
+        let entries: [SessionCatalogEntry]
+        let changedFiles: Int
+        let unchangedFiles: Int
+        let removedFiles: Int
+        let parsedFirstLines: Int
+    }
+
+    typealias SessionCatalogParser = (
+        _ file: URL
+    ) throws -> SessionCatalogMetadata
+
     typealias SessionParser = (
         _ file: URL,
         _ sessionID: String,
@@ -154,8 +196,45 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case rejected
     }
 
+    private struct SessionCatalogFileSignature: Equatable {
+        let sizeBytes: Int64
+        let modifiedSeconds: Int64
+        let modifiedNanoseconds: Int64
+        let createdSeconds: Int64
+        let createdNanoseconds: Int64
+        let deviceID: UInt64
+        let inode: UInt64
+        let statusChangedSeconds: Int64
+        let statusChangedNanoseconds: Int64
+
+        var modifiedAt: Date {
+            Date(
+                timeIntervalSince1970: TimeInterval(modifiedSeconds)
+                    + TimeInterval(modifiedNanoseconds) / 1_000_000_000
+            )
+        }
+
+        var createdAt: Date {
+            Date(
+                timeIntervalSince1970: TimeInterval(createdSeconds)
+                    + TimeInterval(createdNanoseconds) / 1_000_000_000
+            )
+        }
+    }
+
+    private struct IndexedSessionCatalogEntry {
+        let entry: SessionCatalogEntry
+        let signature: SessionCatalogFileSignature
+    }
+
+    private struct StagedSessionCatalogEntry {
+        let entry: SessionCatalogEntry
+        let signature: SessionCatalogFileSignature
+    }
+
     private static let schemaVersion = "3"
     private static let legacyAppendMigrationSchemaVersion = "2"
+    private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
@@ -163,6 +242,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let disabledCacheEnvironmentKey = "CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"
     private static let operationLocks = CodexUsageHistoryIndexOperationLockRegistry()
     private static let stagingTestState = CodexUsageHistoryStagingTestState()
+    private static let sessionCatalogPublishTestState =
+        CodexSessionCatalogPublishTestState()
     private static let ephemeralRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("CodexTokenBarSwift-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         .appendingPathComponent(indexNamespace, isDirectory: true)
@@ -171,8 +252,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private let fileManager: FileManager
     private let operationGate: CodexUsageHistoryIndexOperationGate
 
-    init(codexHome: URL, fileManager: FileManager = .default) throws {
+    convenience init(codexHome: URL, fileManager: FileManager = .default) throws {
         let databaseURL = Self.databaseURL(for: codexHome)
+        try self.init(databaseURL: databaseURL, fileManager: fileManager)
+    }
+
+    convenience init(
+        sessionCatalogTestingDatabaseURL databaseURL: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        try self.init(databaseURL: databaseURL, fileManager: fileManager)
+    }
+
+    private init(databaseURL: URL, fileManager: FileManager) throws {
         self.fileManager = fileManager
         operationGate = Self.operationGate(for: databaseURL)
         driver = SQLiteDatabaseDriver(
@@ -223,6 +315,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         stagingTestState.armFailure()
     }
 
+    static func failNextSessionCatalogPublishForTesting() {
+        sessionCatalogPublishTestState.armFailure()
+    }
+
     // 冷建 heavy 文件阈值（与 Rust PARALLEL_HEAVY_FILE_BYTES 同值）。
     // 测试可注入小阈值，用小文件驱动 heavy/light 双通道调度行为。
     var coldBuildHeavyFileThreshold: UInt64 = 512 * 1_024 * 1_024
@@ -235,6 +331,343 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try withExclusiveAccess {
             try synchronizeExclusively(files: files, sessionID: sessionID, parser: parser)
         }
+    }
+
+    func sessionCatalogEntries() throws -> [SessionCatalogEntry] {
+        try withExclusiveAccess {
+            try readSessionCatalogEntriesExclusively()
+                .map(\.entry)
+                .sorted { $0.path < $1.path }
+        }
+    }
+
+    func synchronizeSessionCatalog(
+        candidates: [SessionCatalogCandidate],
+        parser: @escaping SessionCatalogParser
+    ) throws -> SessionCatalogSynchronizationResult {
+        try withExclusiveAccess {
+            let generation = UUID().uuidString
+            let existing = Dictionary(
+                uniqueKeysWithValues: try readSessionCatalogEntriesExclusively()
+                    .map { ($0.entry.path, $0) }
+            )
+            var candidateByPath: [String: SessionCatalogCandidate] = [:]
+            for candidate in candidates {
+                let path = candidate.file.standardizedFileURL.path
+                candidateByPath[path] = SessionCatalogCandidate(
+                    file: URL(fileURLWithPath: path),
+                    archived: candidate.archived
+                )
+            }
+
+            var staged: [StagedSessionCatalogEntry] = []
+            var unchangedFiles = 0
+            var parsedFirstLines = 0
+            for path in candidateByPath.keys.sorted() {
+                guard let candidate = candidateByPath[path] else { continue }
+                let observed = try sessionCatalogFileSignature(for: candidate.file)
+                if let current = existing[path],
+                   current.signature == observed,
+                   current.entry.archived == candidate.archived {
+                    unchangedFiles += 1
+                    continue
+                }
+
+                let metadata = try parser(candidate.file)
+                parsedFirstLines += 1
+                let firstLine = try sessionCatalogFirstLineFingerprint(
+                    for: candidate.file
+                )
+                let committed = try sessionCatalogFileSignature(for: candidate.file)
+                guard committed == observed else {
+                    throw CodexUsageSourceChangedError(path: path)
+                }
+                staged.append(
+                    StagedSessionCatalogEntry(
+                        entry: SessionCatalogEntry(
+                            path: path,
+                            archived: candidate.archived,
+                            metadata: metadata,
+                            sizeBytes: committed.sizeBytes,
+                            modifiedAt: committed.modifiedAt,
+                            createdAt: committed.createdAt,
+                            deviceID: committed.deviceID,
+                            inode: committed.inode,
+                            statusChangedSeconds:
+                                committed.statusChangedSeconds,
+                            statusChangedNanoseconds:
+                                committed.statusChangedNanoseconds,
+                            firstLineEndOffset: firstLine.endOffset,
+                            firstLineSHA256: firstLine.sha256,
+                            lastSeenGeneration: generation
+                        ),
+                        signature: committed
+                    )
+                )
+            }
+
+            let removedPaths = Set(existing.keys).subtracting(candidateByPath.keys)
+            if staged.isEmpty, removedPaths.isEmpty {
+                return SessionCatalogSynchronizationResult(
+                    entries: existing.values
+                        .map(\.entry)
+                        .sorted { $0.path < $1.path },
+                    changedFiles: 0,
+                    unchangedFiles: unchangedFiles,
+                    removedFiles: 0,
+                    parsedFirstLines: 0
+                )
+            }
+            try driver.withConnection { connection in
+                try configure(connection)
+                try connection.transaction { transaction in
+                    let upsert = try transaction.prepare(
+                        """
+                        INSERT INTO session_catalog_entries (
+                            path, archived, thread_id, cwd, session_id,
+                            forked_from_id, parent_thread_id, source,
+                            size_bytes, modified_seconds, modified_nanoseconds,
+                            created_seconds, created_nanoseconds,
+                            device_id, inode, status_changed_seconds,
+                            status_changed_nanoseconds, first_line_end_offset,
+                            first_line_sha256, last_seen_generation
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        )
+                        ON CONFLICT(path) DO UPDATE SET
+                            archived = excluded.archived,
+                            thread_id = excluded.thread_id,
+                            cwd = excluded.cwd,
+                            session_id = excluded.session_id,
+                            forked_from_id = excluded.forked_from_id,
+                            parent_thread_id = excluded.parent_thread_id,
+                            source = excluded.source,
+                            size_bytes = excluded.size_bytes,
+                            modified_seconds = excluded.modified_seconds,
+                            modified_nanoseconds = excluded.modified_nanoseconds,
+                            created_seconds = excluded.created_seconds,
+                            created_nanoseconds = excluded.created_nanoseconds,
+                            device_id = excluded.device_id,
+                            inode = excluded.inode,
+                            status_changed_seconds = excluded.status_changed_seconds,
+                            status_changed_nanoseconds = excluded.status_changed_nanoseconds,
+                            first_line_end_offset = excluded.first_line_end_offset,
+                            first_line_sha256 = excluded.first_line_sha256,
+                            last_seen_generation = excluded.last_seen_generation;
+                        """
+                    )
+                    for stagedEntry in staged {
+                        let entry = stagedEntry.entry
+                        let signature = stagedEntry.signature
+                        _ = try upsert.execute([
+                            .text(entry.path),
+                            .int(entry.archived ? 1 : 0),
+                            .text(entry.metadata.threadID),
+                            .text(entry.metadata.cwd),
+                            .optionalText(entry.metadata.sessionID),
+                            .optionalText(entry.metadata.forkedFromID),
+                            .optionalText(entry.metadata.parentThreadID),
+                            .text(entry.metadata.source),
+                            .int64(signature.sizeBytes),
+                            .int64(signature.modifiedSeconds),
+                            .int64(signature.modifiedNanoseconds),
+                            .int64(signature.createdSeconds),
+                            .int64(signature.createdNanoseconds),
+                            .text(String(signature.deviceID)),
+                            .text(String(signature.inode)),
+                            .int64(signature.statusChangedSeconds),
+                            .int64(signature.statusChangedNanoseconds),
+                            .int64(entry.firstLineEndOffset),
+                            .text(entry.firstLineSHA256),
+                            .text(generation),
+                        ])
+                    }
+                    let remove = try transaction.prepare(
+                        "DELETE FROM session_catalog_entries WHERE path = ?;"
+                    )
+                    for path in removedPaths.sorted() {
+                        _ = try remove.execute([.text(path)])
+                    }
+                    if Self.sessionCatalogPublishTestState.consumeFailure() {
+                        throw SQLiteDatabaseError(
+                            operation:
+                                "Injected session catalog publication interruption",
+                            code: SQLITE_ABORT,
+                            message:
+                                "Testing interruption before session catalog publication",
+                            path: driver.url.path
+                        )
+                    }
+                    try transaction.execute(
+                        """
+                        INSERT INTO session_catalog_meta(key, value)
+                        VALUES ('published_generation', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [.text(generation)]
+                    )
+                }
+            }
+            let entries = try readSessionCatalogEntriesExclusively()
+                .map(\.entry)
+                .sorted { $0.path < $1.path }
+            return SessionCatalogSynchronizationResult(
+                entries: entries,
+                changedFiles: staged.count,
+                unchangedFiles: unchangedFiles,
+                removedFiles: removedPaths.count,
+                parsedFirstLines: parsedFirstLines
+            )
+        }
+    }
+
+    private func readSessionCatalogEntriesExclusively() throws
+        -> [IndexedSessionCatalogEntry] {
+        try driver.withConnection { connection in
+            try configure(connection)
+            return try connection.readRows(
+                """
+                SELECT
+                    path,
+                    archived,
+                    thread_id,
+                    cwd,
+                    session_id,
+                    forked_from_id,
+                    parent_thread_id,
+                    source,
+                    size_bytes,
+                    modified_seconds,
+                    modified_nanoseconds,
+                    created_seconds,
+                    created_nanoseconds,
+                    device_id,
+                    inode,
+                    status_changed_seconds,
+                    status_changed_nanoseconds,
+                    first_line_end_offset,
+                    first_line_sha256,
+                    last_seen_generation
+                FROM session_catalog_entries
+                ORDER BY path;
+                """
+            ) { row -> IndexedSessionCatalogEntry in
+                guard let path = row.text(0),
+                      let threadID = row.text(2),
+                      let cwd = row.text(3),
+                      let source = row.text(7),
+                      let sizeBytes = row.int64(8),
+                      let modifiedSeconds = row.int64(9),
+                      let modifiedNanoseconds = row.int64(10),
+                      let createdSeconds = row.int64(11),
+                      let createdNanoseconds = row.int64(12),
+                      let deviceIDText = row.text(13),
+                      let deviceID = UInt64(deviceIDText),
+                      let inodeText = row.text(14),
+                      let inode = UInt64(inodeText),
+                      let statusChangedSeconds = row.int64(15),
+                      let statusChangedNanoseconds = row.int64(16),
+                      let firstLineEndOffset = row.int64(17),
+                      let firstLineSHA256 = row.text(18),
+                      let lastSeenGeneration = row.text(19) else {
+                    throw SQLiteDatabaseError(
+                        operation: "Read session catalog entry",
+                        code: SQLITE_CORRUPT,
+                        message: "Session catalog row is incomplete",
+                        path: driver.url.path
+                    )
+                }
+                let signature = SessionCatalogFileSignature(
+                    sizeBytes: sizeBytes,
+                    modifiedSeconds: modifiedSeconds,
+                    modifiedNanoseconds: modifiedNanoseconds,
+                    createdSeconds: createdSeconds,
+                    createdNanoseconds: createdNanoseconds,
+                    deviceID: deviceID,
+                    inode: inode,
+                    statusChangedSeconds: statusChangedSeconds,
+                    statusChangedNanoseconds: statusChangedNanoseconds
+                )
+                return IndexedSessionCatalogEntry(
+                    entry: SessionCatalogEntry(
+                        path: path,
+                        archived: (row.int(1) ?? 0) != 0,
+                        metadata: SessionCatalogMetadata(
+                            threadID: threadID,
+                            cwd: cwd,
+                            sessionID: row.text(4),
+                            forkedFromID: row.text(5),
+                            parentThreadID: row.text(6),
+                            source: source
+                        ),
+                        sizeBytes: sizeBytes,
+                        modifiedAt: signature.modifiedAt,
+                        createdAt: signature.createdAt,
+                        deviceID: deviceID,
+                        inode: inode,
+                        statusChangedSeconds: statusChangedSeconds,
+                        statusChangedNanoseconds: statusChangedNanoseconds,
+                        firstLineEndOffset: firstLineEndOffset,
+                        firstLineSHA256: firstLineSHA256,
+                        lastSeenGeneration: lastSeenGeneration
+                    ),
+                    signature: signature
+                )
+            }
+        }
+    }
+
+    private func sessionCatalogFileSignature(
+        for file: URL
+    ) throws -> SessionCatalogFileSignature {
+        var value = stat()
+        guard Darwin.lstat(file.path, &value) == 0,
+              (value.st_mode & S_IFMT) == S_IFREG else {
+            throw CodexUsageSourceChangedError(path: file.path)
+        }
+        return SessionCatalogFileSignature(
+            sizeBytes: Int64(value.st_size),
+            modifiedSeconds: Int64(value.st_mtimespec.tv_sec),
+            modifiedNanoseconds: Int64(value.st_mtimespec.tv_nsec),
+            createdSeconds: Int64(value.st_birthtimespec.tv_sec),
+            createdNanoseconds: Int64(value.st_birthtimespec.tv_nsec),
+            deviceID: UInt64(value.st_dev),
+            inode: UInt64(value.st_ino),
+            statusChangedSeconds: Int64(value.st_ctimespec.tv_sec),
+            statusChangedNanoseconds: Int64(value.st_ctimespec.tv_nsec)
+        )
+    }
+
+    private func sessionCatalogFirstLineFingerprint(
+        for file: URL
+    ) throws -> (endOffset: Int64, sha256: String) {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        var endOffset: Int64 = 0
+        while let chunk = try handle.read(upToCount: 64 * 1_024),
+              !chunk.isEmpty {
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                let prefix = Data(chunk[..<newline])
+                hasher.update(data: prefix)
+                endOffset += Int64(prefix.count) + 1
+                return (
+                    endOffset,
+                    hasher.finalize()
+                        .map { String(format: "%02x", $0) }
+                        .joined()
+                )
+            }
+            hasher.update(data: chunk)
+            endOffset += Int64(chunk.count)
+        }
+        return (
+            endOffset,
+            hasher.finalize()
+                .map { String(format: "%02x", $0) }
+                .joined()
+        )
     }
 
     private func synchronizeExclusively(
@@ -596,7 +1029,73 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value;
                 """
             )
+            try prepareSessionCatalogSchema(connection)
         }
+    }
+
+    private func prepareSessionCatalogSchema(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_catalog_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+        let currentVersion = try connection.readRows(
+            """
+            SELECT value
+            FROM session_catalog_meta
+            WHERE key = 'schema_version'
+            LIMIT 1;
+            """
+        ) { row in
+            row.text(0)
+        }.first ?? nil
+        if let currentVersion,
+           currentVersion != Self.sessionCatalogSchemaVersion {
+            try connection.execute(
+                """
+                DROP TABLE IF EXISTS session_catalog_entries;
+                DELETE FROM session_catalog_meta;
+                """
+            )
+        }
+        try connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_catalog_entries (
+                path TEXT PRIMARY KEY,
+                archived INTEGER NOT NULL,
+                thread_id TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                session_id TEXT,
+                forked_from_id TEXT,
+                parent_thread_id TEXT,
+                source TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                modified_seconds INTEGER NOT NULL,
+                modified_nanoseconds INTEGER NOT NULL,
+                created_seconds INTEGER NOT NULL,
+                created_nanoseconds INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                inode TEXT NOT NULL,
+                status_changed_seconds INTEGER NOT NULL,
+                status_changed_nanoseconds INTEGER NOT NULL,
+                first_line_end_offset INTEGER NOT NULL,
+                first_line_sha256 TEXT NOT NULL,
+                last_seen_generation TEXT NOT NULL
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS session_catalog_thread_id
+                ON session_catalog_entries(thread_id, path);
+
+            INSERT INTO session_catalog_meta(key, value)
+            VALUES ('schema_version', '\(Self.sessionCatalogSchemaVersion)')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """
+        )
     }
 
     private func migrateV2SourcesForAppend(
@@ -1937,6 +2436,25 @@ private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
         defer { lock.unlock() }
         let value = shouldFailNextImport
         shouldFailNextImport = false
+        return value
+    }
+}
+
+private final class CodexSessionCatalogPublishTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFailNextPublish = false
+
+    func armFailure() {
+        lock.lock()
+        shouldFailNextPublish = true
+        lock.unlock()
+    }
+
+    func consumeFailure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = shouldFailNextPublish
+        shouldFailNextPublish = false
         return value
     }
 }

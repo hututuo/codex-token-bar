@@ -1462,20 +1462,21 @@ private extension FoundationSessionManagementBackend {
             try database.readRows(sql) { statement -> SessionManagementThread in
                 let id = statement.text(0) ?? ""
                 let rawRolloutPath = statement.text(1) ?? ""
-                let file = rolloutInspection(
-                    rawPath: rawRolloutPath,
-                    threadID: id,
-                    dataSource: dataSource,
-                    fileManager: fileManager
-                )
+                let expandedRolloutPath =
+                    (rawRolloutPath as NSString).expandingTildeInPath
+                let normalizedRolloutPath =
+                    (expandedRolloutPath as NSString).isAbsolutePath
+                    ? URL(fileURLWithPath: expandedRolloutPath)
+                        .standardizedFileURL.path
+                    : dataSource.codexHome
+                        .appendingPathComponent(expandedRolloutPath)
+                        .standardizedFileURL.path
                 let name = statement.text(20) ?? ""
                 let title = name.isEmpty ? (statement.text(2) ?? "") : name
                 let source = firstNonempty([
                     statement.text(19),
                     statement.text(15),
-                    file.metadata?.source,
                 ])
-                let parentThreadID = file.metadata?.parentThreadID
                 let agentRole = statement.text(18) ?? ""
                 return SessionManagementThread(
                     id: id,
@@ -1484,9 +1485,8 @@ private extension FoundationSessionManagementBackend {
                     firstUserMessage: statement.text(4) ?? "",
                     cwd: firstNonempty([
                         statement.text(5),
-                        file.metadata?.cwd,
                     ]),
-                    rolloutPath: file.url?.path ?? rawRolloutPath,
+                    rolloutPath: normalizedRolloutPath,
                     createdAt: preferredDate(
                         seconds: statement.double(6),
                         milliseconds: statement.double(7)
@@ -1502,17 +1502,17 @@ private extension FoundationSessionManagementBackend {
                     archived: (statement.int(12) ?? 0) != 0,
                     archivedAt: epochDate(statement.double(13)),
                     tokensUsed: statement.int64(14),
-                    fileBytes: file.identity?.size,
-                    fileModifiedAt: file.identity?.modifiedAt,
+                    fileBytes: nil,
+                    fileModifiedAt: nil,
                     status: .unknown,
                     source: source,
                     model: statement.text(16) ?? "",
                     gitBranch: statement.text(17) ?? "",
-                    sessionID: file.metadata?.sessionID,
-                    forkedFromID: file.metadata?.forkedFromID,
-                    parentThreadID: parentThreadID,
-                    isSubagent: parentThreadID != nil
-                        || !agentRole.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    sessionID: nil,
+                    forkedFromID: nil,
+                    parentThreadID: nil,
+                    isSubagent:
+                        !agentRole.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || source.lowercased().contains("subagent"),
                     spawnChildCount: 0,
                     forkChildCount: 0,
@@ -1522,7 +1522,7 @@ private extension FoundationSessionManagementBackend {
                     canArchive: false,
                     canUnarchive: false,
                     canDelete: false,
-                    rolloutIdentityVerified: file.metadata?.id == id
+                    rolloutIdentityVerified: false
                 )
             }
         }
@@ -1543,15 +1543,12 @@ private extension FoundationSessionManagementBackend {
         fileManager: FileManager
     ) -> LocalThreadResult {
         var warnings: [String] = []
-        var byID: [String: SessionManagementThread] = [:]
         var verificationComplete = true
+        var candidates: [CodexUsageHistoryIndex.SessionCatalogCandidate] = []
         let propertyKeys: [URLResourceKey] = [
             .isDirectoryKey,
             .isRegularFileKey,
             .isSymbolicLinkKey,
-            .fileSizeKey,
-            .creationDateKey,
-            .contentModificationDateKey,
         ]
         for (root, archived) in [
             (dataSource.sessionsRoot, false),
@@ -1629,79 +1626,130 @@ private extension FoundationSessionManagementBackend {
                     verificationComplete = false
                     continue
                 }
-                let metadata: SessionMetadata
-                do {
-                    metadata = try readSessionMetadata(from: trusted)
-                } catch {
-                    warnings.append(
-                        "只读扫描无法解析 \(trusted.path) 的首行：\(error.localizedDescription)"
+                candidates.append(
+                    CodexUsageHistoryIndex.SessionCatalogCandidate(
+                        file: trusted,
+                        archived: archived
                     )
-                    verificationComplete = false
-                    continue
-                }
-                guard !metadata.id.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                ).isEmpty else {
-                    warnings.append("只读扫描发现缺少会话 ID 的 rollout：\(trusted.path)")
-                    verificationComplete = false
-                    continue
-                }
-                guard let identity = fileIdentity(
-                    url: trusted,
-                    fileManager: fileManager
-                ) else {
-                    warnings.append("只读扫描无法确认普通文件身份：\(trusted.path)")
-                    verificationComplete = false
-                    continue
-                }
-                var thread = SessionManagementThread(
-                    id: metadata.id,
-                    title: "",
-                    preview: "",
-                    firstUserMessage: "",
-                    cwd: metadata.cwd,
-                    rolloutPath: trusted.path,
-                    createdAt: values.creationDate,
-                    updatedAt: values.contentModificationDate,
-                    recencyAt: values.contentModificationDate,
-                    archived: archived,
-                    archivedAt: archived ? values.contentModificationDate : nil,
-                    tokensUsed: nil,
-                    fileBytes: identity.size,
-                    fileModifiedAt: identity.modifiedAt,
-                    status: .unknown,
-                    source: metadata.source,
-                    model: "",
-                    gitBranch: "",
-                    sessionID: metadata.sessionID,
-                    forkedFromID: metadata.forkedFromID,
-                    parentThreadID: metadata.parentThreadID,
-                    isSubagent: metadata.parentThreadID != nil
-                        || metadata.source.lowercased().contains("subagent"),
-                    spawnChildCount: 0,
-                    forkChildCount: 0,
-                    similarityGroupID: nil,
-                    similarityReason: nil,
-                    protectionReasons: [],
-                    canArchive: false,
-                    canUnarchive: false,
-                    canDelete: false,
-                    rolloutIdentityVerified: true
                 )
-                if let existing = byID[metadata.id],
-                   existing.rolloutPath != thread.rolloutPath {
-                    warnings.append(
-                        "只读扫描发现重复会话 ID \(metadata.id)，危险操作将保持关闭：\(existing.rolloutPath)、\(thread.rolloutPath)"
-                    )
-                    verificationComplete = false
-                    if (thread.fileModifiedAt ?? .distantPast)
-                        < (existing.fileModifiedAt ?? .distantPast) {
-                        thread = existing
-                    }
-                    thread.rolloutIdentityVerified = false
-                }
-                byID[metadata.id] = thread
             }
+        }
+
+        let index: CodexUsageHistoryIndex
+        do {
+            index = try CodexUsageHistoryIndex(
+                codexHome: dataSource.codexHome,
+                fileManager: fileManager
+            )
+        } catch {
+            warnings.append(
+                "会话增量索引不可用；状态库记录仍可浏览，危险操作保持关闭：\(error.localizedDescription)"
+            )
+            return LocalThreadResult(
+                threads: [],
+                warnings: warnings,
+                verificationComplete: false
+            )
+        }
+
+        var indexedEntries: [CodexUsageHistoryIndex.SessionCatalogEntry] = []
+        var snapshotIsCurrent = false
+        if verificationComplete {
+            do {
+                let synchronized = try index.synchronizeSessionCatalog(
+                    candidates: candidates
+                ) { file in
+                    let metadata = try readSessionMetadata(from: file)
+                    return CodexUsageHistoryIndex.SessionCatalogMetadata(
+                        threadID: metadata.id,
+                        cwd: metadata.cwd,
+                        sessionID: metadata.sessionID,
+                        forkedFromID: metadata.forkedFromID,
+                        parentThreadID: metadata.parentThreadID,
+                        source: metadata.source
+                    )
+                }
+                indexedEntries = synchronized.entries
+                snapshotIsCurrent = true
+            } catch {
+                warnings.append(
+                    "会话增量索引更新失败；保留上一份完整目录并等待下次重试，危险操作保持关闭：\(error.localizedDescription)"
+                )
+                verificationComplete = false
+            }
+        } else {
+            warnings.append(
+                "本轮会话目录枚举不完整；保留上一份完整增量索引，危险操作保持关闭。"
+            )
+        }
+        if !snapshotIsCurrent {
+            do {
+                indexedEntries = try index.sessionCatalogEntries()
+            } catch {
+                warnings.append(
+                    "上一份会话增量索引读取失败：\(error.localizedDescription)"
+                )
+                indexedEntries = []
+            }
+        }
+
+        var byID: [String: SessionManagementThread] = [:]
+        for entry in indexedEntries {
+            let metadata = entry.metadata
+            guard !metadata.threadID.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty else {
+                warnings.append("会话增量索引发现缺少会话 ID 的 rollout：\(entry.path)")
+                verificationComplete = false
+                continue
+            }
+            var thread = SessionManagementThread(
+                id: metadata.threadID,
+                title: "",
+                preview: "",
+                firstUserMessage: "",
+                cwd: metadata.cwd,
+                rolloutPath: entry.path,
+                createdAt: entry.createdAt,
+                updatedAt: entry.modifiedAt,
+                recencyAt: entry.modifiedAt,
+                archived: entry.archived,
+                archivedAt: entry.archived ? entry.modifiedAt : nil,
+                tokensUsed: nil,
+                fileBytes: entry.sizeBytes,
+                fileModifiedAt: entry.modifiedAt,
+                status: .unknown,
+                source: metadata.source,
+                model: "",
+                gitBranch: "",
+                sessionID: metadata.sessionID,
+                forkedFromID: metadata.forkedFromID,
+                parentThreadID: metadata.parentThreadID,
+                isSubagent: metadata.parentThreadID != nil
+                    || metadata.source.lowercased().contains("subagent"),
+                spawnChildCount: 0,
+                forkChildCount: 0,
+                similarityGroupID: nil,
+                similarityReason: nil,
+                protectionReasons: [],
+                canArchive: false,
+                canUnarchive: false,
+                canDelete: false,
+                rolloutIdentityVerified: snapshotIsCurrent
+            )
+            if let existing = byID[metadata.threadID],
+                   existing.rolloutPath != thread.rolloutPath {
+                warnings.append(
+                    "会话增量索引发现重复会话 ID \(metadata.threadID)，危险操作将保持关闭：\(existing.rolloutPath)、\(thread.rolloutPath)"
+                )
+                verificationComplete = false
+                if (thread.fileModifiedAt ?? .distantPast)
+                    < (existing.fileModifiedAt ?? .distantPast) {
+                    thread = existing
+                }
+                thread.rolloutIdentityVerified = false
+            }
+            byID[metadata.threadID] = thread
         }
         return LocalThreadResult(
             threads: byID.values.sorted { $0.id < $1.id },

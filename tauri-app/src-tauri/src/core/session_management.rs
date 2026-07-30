@@ -2,6 +2,7 @@ use crate::core::coordination_fs::CoordinationHome;
 use crate::core::cross_process_lock::CrossProcessFileLock;
 use crate::core::process_tail::ProcessPipeTail;
 use crate::core::quota::codex_binary::find_codex_binary_with_report;
+use crate::core::usage::token_count_jsonl::{self, IndexedSessionMetadata};
 use crate::models::{
     SessionActionItemResult, SessionBatchActionResult, SessionContextMessage, SessionContextPage,
     SessionDeleteConfirmation, SessionDeleteRolloutSnapshot, SessionManagementCapabilities,
@@ -69,6 +70,10 @@ struct ThreadSupplement {
     session_id: Option<String>,
     forked_from_id: Option<String>,
     parent_thread_id: Option<String>,
+    rollout_catalog_indexed: bool,
+    rollout_identity_verified: bool,
+    file_bytes: Option<u64>,
+    file_modified_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -178,6 +183,13 @@ fn list_catalog_with_protocol(
         row.session_id = row.session_id.clone().or(scanned.session_id);
         row.forked_from_id = row.forked_from_id.clone().or(scanned.forked_from_id);
         row.parent_thread_id = row.parent_thread_id.clone().or(scanned.parent_thread_id);
+        if row.source.trim().is_empty() {
+            row.source = scanned.source;
+        }
+        row.rollout_catalog_indexed = scanned.rollout_catalog_indexed;
+        row.rollout_identity_verified = scanned.rollout_identity_verified;
+        row.file_bytes = scanned.file_bytes;
+        row.file_modified_at = scanned.file_modified_at;
         if scanned.archived {
             row.archived = true;
         }
@@ -223,12 +235,15 @@ fn list_catalog_with_protocol(
         }
         let rollout_identity_verified =
             enrich_from_session_meta(codex_home, &id, &mut supplemental, &mut warnings);
-        let (file_bytes, file_modified_at) = rollout_stat(
-            codex_home,
-            supplemental.rollout_path.as_deref(),
-            &id,
-            &mut warnings,
-        );
+        let (file_bytes, file_modified_at) = match supplemental.file_bytes {
+            Some(bytes) => (Some(bytes), supplemental.file_modified_at),
+            None => rollout_stat(
+                codex_home,
+                supplemental.rollout_path.as_deref(),
+                &id,
+                &mut warnings,
+            ),
+        };
 
         let status = if protocol.status.is_empty() {
             if protocol.archived || supplemental.archived {
@@ -2129,130 +2144,90 @@ fn read_state_supplements(codex_home: &Path) -> Result<HashMap<String, ThreadSup
 }
 
 fn scan_rollout_supplements(codex_home: &Path) -> RolloutScan {
+    scan_rollout_supplements_with_parser(codex_home, indexed_session_metadata_from_first_line)
+}
+
+fn indexed_session_metadata_from_first_line(
+    first_line: &[u8],
+) -> Result<IndexedSessionMetadata, String> {
+    let meta = read_session_meta_from_reader(first_line)?;
+    Ok(IndexedSessionMetadata {
+        thread_id: meta.id,
+        cwd: meta.cwd,
+        source: meta.source,
+        session_id: meta.session_id,
+        forked_from_id: meta.forked_from_id,
+        parent_thread_id: meta.parent_thread_id,
+    })
+}
+
+fn scan_rollout_supplements_with_parser<F>(codex_home: &Path, parser: F) -> RolloutScan
+where
+    F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
+{
     let mut result = HashMap::new();
     let mut ambiguous_ids = HashSet::new();
-    let mut warnings = Vec::new();
-    for (root, archived) in [
-        (codex_home.join("sessions"), false),
-        (codex_home.join("archived_sessions"), true),
-    ] {
-        if !root.is_dir() {
-            continue;
-        }
-        let mut pending = vec![root];
-        while let Some(directory) = pending.pop() {
-            let entries = match fs::read_dir(&directory) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    warnings.push(format!("只读扫描无法读取 {}：{error}", directory.display()));
-                    continue;
-                }
+    let snapshot = match token_count_jsonl::session_catalog_snapshot(codex_home, parser) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return RolloutScan {
+                supplements: result,
+                ambiguous_ids,
+                warnings: vec![format!("会话目录增量索引不可用：{error}")],
             };
-            for entry in entries {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        warnings.push(format!("只读扫描目录项失败：{error}"));
-                        continue;
-                    }
-                };
-                let file_type = match entry.file_type() {
-                    Ok(file_type) => file_type,
-                    Err(error) => {
-                        warnings.push(format!(
-                            "只读扫描无法读取 {} 的类型：{error}",
-                            entry.path().display()
-                        ));
-                        continue;
-                    }
-                };
-                if file_type.is_symlink() {
-                    warnings.push(format!(
-                        "只读扫描拒绝符号链接或重解析 rollout 路径：{}",
-                        entry.path().display()
-                    ));
-                    continue;
-                }
-                if file_type.is_dir() {
-                    pending.push(entry.path());
-                    continue;
-                }
-                if !file_type.is_file()
-                    || entry.path().extension().and_then(|value| value.to_str()) != Some("jsonl")
-                {
-                    continue;
-                }
-                let path = match trusted_rollout_path(codex_home, &entry.path()) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        warnings.push(format!(
-                            "只读扫描拒绝不可信 rollout {}：{error}",
-                            entry.path().display()
-                        ));
-                        continue;
-                    }
-                };
-                let meta = match read_session_meta(&path) {
-                    Ok(meta) if !meta.id.trim().is_empty() => meta,
-                    Ok(_) => {
-                        warnings.push(format!(
-                            "只读扫描发现缺少会话 ID 的 rollout：{}",
-                            path.display()
-                        ));
-                        continue;
-                    }
-                    Err(error) => {
-                        warnings.push(format!(
-                            "只读扫描无法解析 {} 的首行：{error}",
-                            path.display()
-                        ));
-                        continue;
-                    }
-                };
-                let metadata = fs::metadata(&path).ok();
-                let modified = metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.modified().ok())
-                    .and_then(system_time_unix);
-                let created = metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.created().ok())
-                    .and_then(system_time_unix);
-                let id = meta.id.clone();
-                let candidate = ThreadSupplement {
-                    rollout_path: Some(path),
-                    cwd: meta.cwd,
-                    created_at: created,
-                    updated_at: modified,
-                    recency_at: modified,
-                    archived,
-                    session_id: meta.session_id,
-                    forked_from_id: meta.forked_from_id,
-                    parent_thread_id: meta.parent_thread_id,
-                    ..ThreadSupplement::default()
-                };
-                match result
-                    .get(&id)
-                    .and_then(|row: &ThreadSupplement| row.rollout_path.as_ref())
-                {
-                    Some(existing) if candidate.rollout_path.as_ref() != Some(existing) => {
-                        ambiguous_ids.insert(id.clone());
-                        warnings.push(format!(
-                            "只读扫描发现会话 {id} 对应多个 rollout：{} 与 {}；危险操作已安全关闭",
-                            existing.display(),
-                            candidate
-                                .rollout_path
-                                .as_deref()
-                                .map(Path::display)
-                                .map(|value| value.to_string())
-                                .unwrap_or_else(|| "未知路径".into())
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        result.insert(id, candidate);
-                    }
-                }
+        }
+    };
+    let current_snapshot_verified = snapshot.warnings.is_empty();
+    let mut warnings = snapshot.warnings;
+    for entry in snapshot.entries {
+        let path = match trusted_rollout_path(codex_home, &entry.path) {
+            Ok(path) => path,
+            Err(error) => {
+                warnings.push(format!(
+                    "会话目录增量索引拒绝不可信 rollout {}：{error}",
+                    entry.path.display()
+                ));
+                continue;
+            }
+        };
+        let id = entry.metadata.thread_id.clone();
+        let candidate = ThreadSupplement {
+            rollout_path: Some(path),
+            cwd: entry.metadata.cwd,
+            created_at: entry.created_at,
+            updated_at: entry.modified_at,
+            recency_at: entry.modified_at,
+            archived: entry.archived,
+            source: entry.metadata.source,
+            session_id: entry.metadata.session_id,
+            forked_from_id: entry.metadata.forked_from_id,
+            parent_thread_id: entry.metadata.parent_thread_id,
+            rollout_catalog_indexed: true,
+            rollout_identity_verified: current_snapshot_verified,
+            file_bytes: Some(entry.size),
+            file_modified_at: entry.modified_at,
+            ..ThreadSupplement::default()
+        };
+        match result
+            .get(&id)
+            .and_then(|row: &ThreadSupplement| row.rollout_path.as_ref())
+        {
+            Some(existing) if candidate.rollout_path.as_ref() != Some(existing) => {
+                ambiguous_ids.insert(id.clone());
+                warnings.push(format!(
+                    "会话目录增量索引发现会话 {id} 对应多个 rollout：{} 与 {}；危险操作已安全关闭",
+                    existing.display(),
+                    candidate
+                        .rollout_path
+                        .as_deref()
+                        .map(Path::display)
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "未知路径".into())
+                ));
+            }
+            Some(_) => {}
+            None => {
+                result.insert(id, candidate);
             }
         }
     }
@@ -2284,6 +2259,9 @@ fn enrich_from_session_meta(
     supplement: &mut ThreadSupplement,
     warnings: &mut Vec<String>,
 ) -> bool {
+    if supplement.rollout_catalog_indexed {
+        return supplement.rollout_identity_verified;
+    }
     let path = supplement
         .rollout_path
         .as_deref()
@@ -2299,6 +2277,7 @@ fn enrich_from_session_meta(
     match read_session_meta(&path) {
         Ok(meta) if meta.id == thread_id => {
             supplement.cwd = first_non_empty(&supplement.cwd, &meta.cwd, "");
+            supplement.source = first_non_empty(&supplement.source, &meta.source, "");
             supplement.session_id = meta.session_id;
             supplement.forked_from_id = meta.forked_from_id;
             supplement.parent_thread_id = meta.parent_thread_id;
@@ -2324,6 +2303,7 @@ fn enrich_from_session_meta(
 struct SessionMeta {
     id: String,
     cwd: String,
+    source: String,
     session_id: Option<String>,
     forked_from_id: Option<String>,
     parent_thread_id: Option<String>,
@@ -2342,6 +2322,8 @@ struct SessionMetaPayload {
     id: String,
     #[serde(default)]
     cwd: String,
+    #[serde(default)]
+    source: Value,
     #[serde(default, alias = "sessionId")]
     session_id: Option<String>,
     #[serde(default, alias = "forkedFromId")]
@@ -2368,10 +2350,20 @@ fn read_session_meta_from_reader(reader: impl Read) -> Result<SessionMeta, Strin
     Ok(SessionMeta {
         id: payload.id,
         cwd: payload.cwd,
+        source: session_meta_source(&payload.source),
         session_id: payload.session_id,
         forked_from_id: payload.forked_from_id,
         parent_thread_id: payload.parent_thread_id,
     })
+}
+
+fn session_meta_source(value: &Value) -> String {
+    value
+        .as_str()
+        .or_else(|| value.get("type").and_then(Value::as_str))
+        .or_else(|| value.get("kind").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn rollout_stat(
@@ -4848,7 +4840,7 @@ fn sync_parent(_path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use rusqlite::params;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -4970,6 +4962,13 @@ mod tests {
                 self.active.clone()
             }
         }
+    }
+
+    fn counted_rollout_scan(codex_home: &Path, parse_count: &AtomicUsize) -> RolloutScan {
+        scan_rollout_supplements_with_parser(codex_home, |first_line| {
+            parse_count.fetch_add(1, Ordering::Relaxed);
+            indexed_session_metadata_from_first_line(first_line)
+        })
     }
 
     #[test]
@@ -5259,6 +5258,255 @@ mod tests {
     }
 
     #[test]
+    fn session_catalog_second_refresh_does_not_parse_unchanged_first_lines() {
+        let home = TestHome::new("catalog-warm-refresh");
+        let id = Uuid::new_v4().to_string();
+        fs::write(
+            home.session_path(&id),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/warm\",\"source\":{{\"type\":\"cli\"}},\"sessionId\":\"tree\",\"forkedFromId\":\"parent\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let parse_count = AtomicUsize::new(0);
+
+        let first = counted_rollout_scan(&home.root, &parse_count);
+        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        let index_path = home
+            .root
+            .join(".codex-token-bar-test-cache")
+            .join("exact-token-index.sqlite3");
+        let published_generation = rusqlite::Connection::open(&index_path)
+            .unwrap()
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'session_catalog_published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+
+        parse_count.store(0, Ordering::Relaxed);
+        let second = counted_rollout_scan(&home.root, &parse_count);
+        assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 0);
+        let second_generation = rusqlite::Connection::open(&index_path)
+            .unwrap()
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'session_catalog_published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(second_generation, published_generation);
+        let entry = second.supplements.get(&id).unwrap();
+        assert_eq!(entry.cwd, "/tmp/warm");
+        assert_eq!(entry.source, "cli");
+        assert_eq!(entry.session_id.as_deref(), Some("tree"));
+        assert_eq!(entry.forked_from_id.as_deref(), Some("parent"));
+    }
+
+    #[test]
+    fn session_catalog_only_parses_new_or_changed_metadata_and_reuses_append_metadata() {
+        let home = TestHome::new("catalog-incremental-refresh");
+        let first = Uuid::new_v4().to_string();
+        let second = Uuid::new_v4().to_string();
+        fs::write(
+            home.session_path(&first),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{first}\",\"cwd\":\"/tmp/first\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            home.session_path(&second),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{second}\",\"cwd\":\"/tmp/second\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let parse_count = AtomicUsize::new(0);
+        let initial = counted_rollout_scan(&home.root, &parse_count);
+        assert!(initial.warnings.is_empty(), "{:?}", initial.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 2);
+
+        let third = Uuid::new_v4().to_string();
+        fs::write(
+            home.session_path(&third),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{third}\",\"cwd\":\"/tmp/third\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        parse_count.store(0, Ordering::Relaxed);
+        let with_new_file = counted_rollout_scan(&home.root, &parse_count);
+        assert!(
+            with_new_file.warnings.is_empty(),
+            "{:?}",
+            with_new_file.warnings
+        );
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        assert_eq!(with_new_file.supplements.len(), 3);
+
+        let first_path = home.session_path(&first);
+        let original_bytes = fs::metadata(&first_path).unwrap().len();
+        let mut first_file = fs::OpenOptions::new().append(true).open(&first_path).unwrap();
+        writeln!(
+            first_file,
+            "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}"
+        )
+        .unwrap();
+        first_file.sync_all().unwrap();
+        parse_count.store(0, Ordering::Relaxed);
+        let appended = counted_rollout_scan(&home.root, &parse_count);
+        assert!(appended.warnings.is_empty(), "{:?}", appended.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 0);
+        assert_eq!(appended.supplements.get(&first).unwrap().cwd, "/tmp/first");
+        assert!(
+            appended.supplements.get(&first).unwrap().file_bytes.unwrap() > original_bytes
+        );
+    }
+
+    #[test]
+    fn session_catalog_tracks_archive_moves_and_deletions() {
+        let home = TestHome::new("catalog-move-delete");
+        let id = Uuid::new_v4().to_string();
+        let active = home.session_path(&id);
+        let archived = home.archived_path(&id);
+        fs::write(
+            &active,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/moved\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let parse_count = AtomicUsize::new(0);
+        let initial = counted_rollout_scan(&home.root, &parse_count);
+        assert!(!initial.supplements.get(&id).unwrap().archived);
+
+        fs::rename(&active, &archived).unwrap();
+        parse_count.store(0, Ordering::Relaxed);
+        let moved = counted_rollout_scan(&home.root, &parse_count);
+        assert!(moved.warnings.is_empty(), "{:?}", moved.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        let moved_entry = moved.supplements.get(&id).unwrap();
+        assert!(moved_entry.archived);
+        assert_eq!(
+            moved_entry.rollout_path.as_deref(),
+            Some(archived.canonicalize().unwrap().as_path())
+        );
+
+        fs::remove_file(&archived).unwrap();
+        parse_count.store(0, Ordering::Relaxed);
+        let deleted = counted_rollout_scan(&home.root, &parse_count);
+        assert!(deleted.warnings.is_empty(), "{:?}", deleted.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 0);
+        assert!(!deleted.supplements.contains_key(&id));
+    }
+
+    #[test]
+    fn session_catalog_reparses_truncation_and_physical_replacement() {
+        let home = TestHome::new("catalog-replace-truncate");
+        let id = Uuid::new_v4().to_string();
+        let path = home.session_path(&id);
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/original\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let parse_count = AtomicUsize::new(0);
+        assert!(counted_rollout_scan(&home.root, &parse_count)
+            .warnings
+            .is_empty());
+
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/truncated\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        parse_count.store(0, Ordering::Relaxed);
+        let truncated = counted_rollout_scan(&home.root, &parse_count);
+        assert!(truncated.warnings.is_empty(), "{:?}", truncated.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            truncated.supplements.get(&id).unwrap().cwd,
+            "/tmp/truncated"
+        );
+
+        let replacement = path.with_extension("replacement");
+        fs::write(
+            &replacement,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/replaced\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        parse_count.store(0, Ordering::Relaxed);
+        let replaced = counted_rollout_scan(&home.root, &parse_count);
+        assert!(replaced.warnings.is_empty(), "{:?}", replaced.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        assert_eq!(replaced.supplements.get(&id).unwrap().cwd, "/tmp/replaced");
+    }
+
+    #[test]
+    fn interrupted_session_catalog_publish_keeps_old_snapshot_and_retries() {
+        let home = TestHome::new("catalog-interrupted-publish");
+        let id = Uuid::new_v4().to_string();
+        let path = home.session_path(&id);
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/published\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let parse_count = AtomicUsize::new(0);
+        let published = counted_rollout_scan(&home.root, &parse_count);
+        assert!(published.warnings.is_empty(), "{:?}", published.warnings);
+
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/tmp/pending\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        token_count_jsonl::fail_next_session_catalog_publish_for_testing();
+        parse_count.store(0, Ordering::Relaxed);
+        let interrupted = counted_rollout_scan(&home.root, &parse_count);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        assert!(interrupted
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("上一份完整目录")));
+        assert_eq!(
+            interrupted.supplements.get(&id).unwrap().cwd,
+            "/tmp/published"
+        );
+        assert!(!interrupted
+            .supplements
+            .get(&id)
+            .unwrap()
+            .rollout_identity_verified);
+
+        parse_count.store(0, Ordering::Relaxed);
+        let retried = counted_rollout_scan(&home.root, &parse_count);
+        assert!(retried.warnings.is_empty(), "{:?}", retried.warnings);
+        assert_eq!(parse_count.load(Ordering::Relaxed), 1);
+        assert_eq!(retried.supplements.get(&id).unwrap().cwd, "/tmp/pending");
+        assert!(retried
+            .supplements
+            .get(&id)
+            .unwrap()
+            .rollout_identity_verified);
+    }
+
+    #[test]
     fn rollout_scan_marks_the_same_session_id_at_multiple_paths_ambiguous() {
         let home = TestHome::new("filesystem-scan-duplicate");
         let id = Uuid::new_v4().to_string();
@@ -5275,6 +5523,8 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("多个 rollout")));
+        let second_scan = scan_rollout_supplements(&home.root);
+        assert!(second_scan.ambiguous_ids.contains(&id));
         assert!(find_rollout_by_id(&home.root, &id)
             .unwrap_err()
             .contains("2 个 rollout"));

@@ -30,6 +30,7 @@ use exact_usage_index::ExactUsageIndex;
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
 static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+static SESSION_CATALOG_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 static USAGE_SUMMARY_SOURCE_SCAN_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, bool)>>> =
     OnceLock::new();
@@ -42,6 +43,32 @@ const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 16;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
 const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
+
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedSessionMetadata {
+    pub(crate) thread_id: String,
+    pub(crate) cwd: String,
+    pub(crate) source: String,
+    pub(crate) session_id: Option<String>,
+    pub(crate) forked_from_id: Option<String>,
+    pub(crate) parent_thread_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IndexedSessionCatalogEntry {
+    pub(crate) path: PathBuf,
+    pub(crate) archived: bool,
+    pub(crate) metadata: IndexedSessionMetadata,
+    pub(crate) size: u64,
+    pub(crate) modified_at: Option<i64>,
+    pub(crate) created_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct IndexedSessionCatalogSnapshot {
+    pub(crate) entries: Vec<IndexedSessionCatalogEntry>,
+    pub(crate) warnings: Vec<String>,
+}
 
 struct UsageSummaryRefreshOwner {
     key: PathBuf,
@@ -57,6 +84,35 @@ impl Drop for UsageSummaryRefreshOwner {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.remove(&self.key);
     }
+}
+
+pub(crate) fn session_catalog_snapshot<F>(
+    codex_home: &Path,
+    parser: F,
+) -> Result<IndexedSessionCatalogSnapshot, String>
+where
+    F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
+{
+    let build_gate = SESSION_CATALOG_BUILD_GATE.get_or_init(|| Mutex::new(()));
+    let _build_guard = build_gate
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    match index.refresh_session_catalog(codex_home, parser) {
+        Ok(()) => index.session_catalog_snapshot(),
+        Err(error) => {
+            let mut snapshot = index.session_catalog_snapshot()?;
+            snapshot.warnings.push(format!(
+                "会话目录增量索引刷新失败，继续使用上一份完整目录：{error}"
+            ));
+            Ok(snapshot)
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_session_catalog_publish_for_testing() {
+    exact_usage_index::fail_next_session_catalog_publish_for_testing();
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
