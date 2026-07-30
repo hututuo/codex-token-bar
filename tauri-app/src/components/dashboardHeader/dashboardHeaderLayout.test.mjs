@@ -18,6 +18,9 @@ test("DashboardHeader CSS keeps information and primary actions on separate stab
   assert.match(css, /\.header-context\s*\{[^}]*gap:\s*6px/s);
   assert.match(css, /\.header-info-cell\s*\{[^}]*display:\s*grid/s);
   assert.match(css, /\.header-info-main\s*\{[^}]*display:\s*inline-flex/s);
+  assert.match(css, /\.header-primary-actions\s*\{[^}]*width:\s*fit-content/s);
+  assert.match(css, /\.header-primary-actions\s*\{[^}]*max-width:\s*100%/s);
+  assert.match(css, /\.header-primary-actions\s*\{[^}]*justify-self:\s*center/s);
   assert.match(css, /\.header-primary-actions\s*\{[^}]*justify-content:\s*center/s);
   assert.doesNotMatch(toolbar + shared, /flex-wrap:\s*wrap/);
   assert.match(css, /\.header-context\s*\{[^}]*border:\s*1px solid var\(--line\)/s);
@@ -25,8 +28,9 @@ test("DashboardHeader CSS keeps information and primary actions on separate stab
   assert.match(css, /\.header-action-divider\s*\{[^}]*width:\s*1px/s);
   assert.match(css, /\.header-primary-actions \.toolbar-button\s*\{[^}]*border-radius:\s*6px/s);
   assert.doesNotMatch(css, /\.header-primary-actions \.toolbar-button\s*\{[^}]*border:\s*1px/s);
-  assert.match(css, /\.header-action-group--primary\s*\{[^}]*background:\s*transparent/s);
-  assert.match(css, /\.header-primary-actions \.toolbar-button--accent\s*\{[^}]*inline-size:\s*fit-content/s);
-  assert.match(css, /\.header-primary-actions \.toolbar-button--accent\s*\{[^}]*flex:\s*0 0 auto/s);
-  assert.match(css, /\.header-primary-actions \.toolbar-button--accent\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--accent\) 7%, var\(--panel\)\)/s);
+  assert.match(css, /\.header-action-group--primary\s*\{[^}]*background:\s*color-mix\(in srgb, var\(--accent\) 7%, var\(--panel\)\)/s);
+  const accentButtonStart = css.indexOf(".header-primary-actions .toolbar-button--accent {");
+  assert.notEqual(accentButtonStart, -1);
+  const accentButtonRule = css.slice(accentButtonStart, css.indexOf("}", accentButtonStart) + 1);
+  assert.doesNotMatch(accentButtonRule, /background:/);
 });

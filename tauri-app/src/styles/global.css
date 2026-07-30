@@ -282,7 +282,9 @@ button {
 
 .header-primary-actions {
   display: flex;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
+  justify-self: center;
   justify-content: center;
   gap: 6px;
   min-height: 35px;
@@ -358,7 +360,7 @@ button {
 }
 
 .header-action-group--primary {
-  background: transparent;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
 }
 
 .header-action-divider {
@@ -518,9 +520,6 @@ button {
 }
 
 .header-primary-actions .toolbar-button--accent {
-  inline-size: fit-content;
-  flex: 0 0 auto;
-  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
   color: var(--accent-strong);
 }
 
