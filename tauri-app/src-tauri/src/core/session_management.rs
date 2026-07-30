@@ -5823,7 +5823,12 @@ mod tests {
             &confirmation,
             &receipts,
             || {
-                fs::rename(&parent, &detached).map_err(|error| error.to_string())?;
+                fs::rename(&parent, &detached).map_err(|error| {
+                    format!(
+                        "parent rollout swap failed (raw_os_error={:?}): {error}",
+                        error.raw_os_error()
+                    )
+                })?;
                 fs::create_dir_all(&parent).map_err(|error| error.to_string())?;
                 fs::write(parent.join(file_name), &content).map_err(|error| error.to_string())
             },
@@ -5837,8 +5842,30 @@ mod tests {
         .expect("pre-launch rollout substitution must fail closed");
 
         assert_eq!(calls.get(), 0, "official CLI executor must not run");
+        #[cfg(windows)]
+        let swap_was_blocked_by_pinned_handle =
+            error.contains("raw_os_error=Some(5)") || error.contains("raw_os_error=Some(32)");
+        #[cfg(not(windows))]
+        let swap_was_blocked_by_pinned_handle = false;
+        if swap_was_blocked_by_pinned_handle {
+            assert!(
+                parent.exists(),
+                "blocked swap must keep the parent directory"
+            );
+            assert!(
+                rollout.exists(),
+                "blocked swap must keep the rollout in place"
+            );
+            assert!(
+                !detached.exists(),
+                "blocked swap must not create a detached directory"
+            );
+        }
         assert!(
-            error.contains("已变化") || error.contains("不同") || error.contains("物理身份"),
+            error.contains("已变化")
+                || error.contains("不同")
+                || error.contains("物理身份")
+                || swap_was_blocked_by_pinned_handle,
             "{error}"
         );
     }
@@ -5967,13 +5994,22 @@ mod tests {
 
     #[test]
     fn windows_recovery_directory_sync_propagates_flush_failure() {
+        use std::cell::Cell;
+
         let home = TestHome::new("windows-recovery-directory-sync-failure");
-        let directory = File::open(&home.root).unwrap();
+        let directory = open_recovery_directory(&home.root).unwrap();
+        let flush_calls = Cell::new(0_u8);
         let error = sync_windows_recovery_directory_with_controls(&directory, |_| {
+            flush_calls.set(flush_calls.get() + 1);
             Err(std::io::Error::from_raw_os_error(5))
         })
         .unwrap_err();
 
+        assert_eq!(
+            flush_calls.get(),
+            1,
+            "the injected flush must run exactly once"
+        );
         assert!(error.contains("持久化固定恢复包根目录失败"), "{error}");
         assert!(
             error.contains("5") || error.to_ascii_lowercase().contains("denied"),
