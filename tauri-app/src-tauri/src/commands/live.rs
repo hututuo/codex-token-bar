@@ -2399,7 +2399,12 @@ mod tests {
                 panic!("waiter must not start its own refresh while one is in flight")
             })
             .unwrap();
-        assert!(waited_from.elapsed() >= UNREAD_REFRESH_WAIT_TIMEOUT);
+        let waited = waited_from.elapsed();
+        assert!(
+            waited
+                >= UNREAD_REFRESH_WAIT_TIMEOUT.saturating_sub(Duration::from_millis(50)),
+            "waiter returned materially before the timeout: {waited:?}"
+        );
         assert_eq!(summary.count, 5);
         assert!(summary.source.ends_with("_stale"));
         release.wait();

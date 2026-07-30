@@ -142,10 +142,10 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos()
         ));
-        let _environment = app_paths::app_path_test_env_guard(&[(
-            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
-            root.clone(),
-        )]);
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", root.clone()),
+            ("CODEX_TOKEN_BAR_TAURI_CACHE_DIR", root.clone()),
+        ]);
         fs::create_dir_all(&root).unwrap();
 
         let worker_count = 8;
@@ -196,10 +196,10 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos()
         ));
-        let _environment = app_paths::app_path_test_env_guard(&[(
-            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
-            root.clone(),
-        )]);
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", root.clone()),
+            ("CODEX_TOKEN_BAR_TAURI_CACHE_DIR", root.clone()),
+        ]);
         fs::create_dir_all(&root).unwrap();
 
         begin("first process");

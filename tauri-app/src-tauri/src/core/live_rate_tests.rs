@@ -673,6 +673,7 @@ fn trace_only_log_rows_do_not_block_rollout_fallback() {
         "trace-only rows must not suppress the rollout source"
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -710,6 +711,7 @@ fn stale_stream_rows_do_not_block_current_rollout_fallback() {
         "stream rows outside the rolling window must not suppress current rollout output"
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
