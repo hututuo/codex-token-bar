@@ -29,8 +29,12 @@ const DASHBOARD_WINDOW_WIDTH: f64 = 1180.0;
 const DASHBOARD_WINDOW_HEIGHT: f64 = 860.0;
 const DASHBOARD_WINDOW_MIN_WIDTH: f64 = 960.0;
 const DASHBOARD_WINDOW_MIN_HEIGHT: f64 = 720.0;
-const STATUS_PANEL_WIDTH: f64 = 360.0;
-const STATUS_PANEL_HEIGHT: f64 = 282.0;
+const STATUS_PANEL_WIDTH: f64 = 390.0;
+const STATUS_PANEL_HEIGHT: f64 = 440.0;
+const STATUS_INDICATOR_MIN_WIDTH: f64 = 64.0;
+const STATUS_INDICATOR_MAX_WIDTH: f64 = 720.0;
+const STATUS_INDICATOR_HEIGHT: f64 = 40.0;
+const STATUS_INDICATOR_GAP: f64 = 8.0;
 const STATUS_TRAY_ID: &str = "codex-token-bar-status";
 const STATUS_TRAY_SHOW_DASHBOARD_ID: &str = "status-tray-show-dashboard";
 const STATUS_TRAY_UPDATE_ID: &str = "status-tray-update";
@@ -70,8 +74,139 @@ pub(crate) struct SurfaceSetupStatus {
 
 static SURFACE_SETUP_STATUS: OnceLock<Mutex<SurfaceSetupStatus>> = OnceLock::new();
 static STATUS_PANEL_INTERACTION: OnceLock<Mutex<StatusPanelInteractionController>> = OnceLock::new();
+static STATUS_INDICATOR_PRESENTATION: OnceLock<Mutex<StatusIndicatorPresentationController>> =
+    OnceLock::new();
+static STATUS_INDICATOR_WINDOW_CREATION_SCHEDULED: AtomicBool = AtomicBool::new(false);
 static UPDATE_TRAY_FALLBACK_VERSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-static STATUS_TRAY_LIVE_TITLE: OnceLock<Mutex<String>> = OnceLock::new();
+static STATUS_TRAY_LIVE_READOUT: OnceLock<Mutex<StatusTrayReadout>> = OnceLock::new();
+static STATUS_TRAY_APPLIED_READOUT: OnceLock<Mutex<Option<StatusTrayReadout>>> = OnceLock::new();
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StatusTrayReadout {
+    title: String,
+    tooltip: String,
+}
+
+impl Default for StatusTrayReadout {
+    fn default() -> Self {
+        Self { title: String::new(), tooltip: "Codex Token Bar".into() }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum StatusIndicatorMode {
+    #[default]
+    Hidden,
+    Collapsed,
+    Expanded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusIndicatorTransition {
+    None,
+    Hide,
+    Collapse,
+    Expand,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusIndicatorNativePresentation {
+    Hide,
+    Present(StatusIndicatorMode),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StatusIndicatorHostPlan {
+    create_owner: bool,
+    presentation: StatusIndicatorNativePresentation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StatusIndicatorPresentationController {
+    enabled: bool,
+    composed_owner_active: bool,
+    has_compact_content: bool,
+    compact_width: f64,
+    mode: StatusIndicatorMode,
+    tray_bounds: Option<PhysicalBounds>,
+}
+
+impl Default for StatusIndicatorPresentationController {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            composed_owner_active: false,
+            has_compact_content: false,
+            compact_width: 0.0,
+            mode: StatusIndicatorMode::Hidden,
+            tray_bounds: None,
+        }
+    }
+}
+
+impl StatusIndicatorPresentationController {
+    fn configure(&mut self, enabled: bool, composed_owner_active: bool) -> StatusIndicatorTransition {
+        self.enabled = enabled;
+        self.composed_owner_active = composed_owner_active;
+        if !enabled {
+            self.mode = StatusIndicatorMode::Hidden;
+            return StatusIndicatorTransition::Hide;
+        }
+        if self.mode == StatusIndicatorMode::Expanded {
+            return StatusIndicatorTransition::None;
+        }
+        if self.has_compact_content {
+            self.mode = StatusIndicatorMode::Collapsed;
+            StatusIndicatorTransition::Collapse
+        } else {
+            self.mode = StatusIndicatorMode::Hidden;
+            StatusIndicatorTransition::Hide
+        }
+    }
+
+    fn publish(&mut self, width: f64) -> StatusIndicatorTransition {
+        self.has_compact_content = width.is_finite() && width > 0.0;
+        self.compact_width = status_indicator_width(width);
+        if !self.enabled || self.mode == StatusIndicatorMode::Expanded {
+            return StatusIndicatorTransition::None;
+        }
+        if self.has_compact_content {
+            self.mode = StatusIndicatorMode::Collapsed;
+            StatusIndicatorTransition::Collapse
+        } else {
+            self.mode = StatusIndicatorMode::Hidden;
+            StatusIndicatorTransition::Hide
+        }
+    }
+
+    fn expand(&mut self, tray_bounds: Option<PhysicalBounds>) -> StatusIndicatorTransition {
+        if let Some(tray_bounds) = tray_bounds {
+            self.tray_bounds = Some(tray_bounds);
+        }
+        if !self.enabled {
+            return StatusIndicatorTransition::None;
+        }
+        self.mode = StatusIndicatorMode::Expanded;
+        StatusIndicatorTransition::Expand
+    }
+
+    fn collapse(&mut self) -> StatusIndicatorTransition {
+        if !self.enabled || !self.has_compact_content {
+            self.mode = StatusIndicatorMode::Hidden;
+            return StatusIndicatorTransition::Hide;
+        }
+        self.mode = StatusIndicatorMode::Collapsed;
+        StatusIndicatorTransition::Collapse
+    }
+
+    fn remember_tray_bounds(&mut self, tray_bounds: PhysicalBounds) {
+        self.tray_bounds = Some(tray_bounds);
+    }
+
+    fn detail_open(&self) -> bool {
+        self.enabled && self.mode == StatusIndicatorMode::Expanded
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StatusPanelInteractionController {
@@ -284,6 +419,63 @@ fn status_panel_interaction_cell() -> &'static Mutex<StatusPanelInteractionContr
     STATUS_PANEL_INTERACTION.get_or_init(|| Mutex::new(StatusPanelInteractionController::default()))
 }
 
+fn status_indicator_presentation_cell() -> &'static Mutex<StatusIndicatorPresentationController> {
+    STATUS_INDICATOR_PRESENTATION.get_or_init(|| Mutex::new(StatusIndicatorPresentationController::default()))
+}
+
+fn status_indicator_width(width: f64) -> f64 {
+    if width.is_finite() && width > 0.0 {
+        width.clamp(STATUS_INDICATOR_MIN_WIDTH, STATUS_INDICATOR_MAX_WIDTH)
+    } else {
+        0.0
+    }
+}
+
+fn status_indicator_enabled() -> bool {
+    status_indicator_presentation_cell().lock().map(|controller| controller.enabled).unwrap_or(false)
+}
+
+fn status_indicator_composed_owner_active() -> bool {
+    status_indicator_presentation_cell()
+        .lock()
+        .map(|controller| controller.composed_owner_active)
+        .unwrap_or(false)
+}
+
+fn compact_status_indicator_enabled() -> bool {
+    compact_status_indicator_supported(cfg!(target_os = "windows")) && status_indicator_enabled()
+}
+
+fn compact_status_indicator_supported(target_is_windows: bool) -> bool {
+    target_is_windows
+}
+
+fn status_indicator_native_presentation(
+    target_is_windows: bool,
+    enabled: bool,
+    mode: StatusIndicatorMode,
+) -> StatusIndicatorNativePresentation {
+    if !compact_status_indicator_supported(target_is_windows)
+        || !enabled
+        || mode == StatusIndicatorMode::Hidden
+    {
+        StatusIndicatorNativePresentation::Hide
+    } else {
+        StatusIndicatorNativePresentation::Present(mode)
+    }
+}
+
+fn status_indicator_host_plan(
+    target_is_windows: bool,
+    enabled: bool,
+    mode: StatusIndicatorMode,
+) -> StatusIndicatorHostPlan {
+    StatusIndicatorHostPlan {
+        create_owner: enabled,
+        presentation: status_indicator_native_presentation(target_is_windows, enabled, mode),
+    }
+}
+
 pub fn show_floating_window(app: &tauri::AppHandle) -> Result<bool, String> {
     startup_trace::mark("floating window show start");
     if app.get_webview_window("floating").is_none() {
@@ -427,18 +619,20 @@ fn show_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: Option<Physica
     let window = app
         .get_webview_window("status")
         .ok_or_else(|| "status panel is not available".to_string())?;
-    position_status_panel(app, &window, tray_bounds)?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
-    Ok(true)
+    let tray_bounds = tray_bounds.or_else(|| current_status_tray_bounds(app));
+    if compact_status_indicator_enabled() {
+        if let Ok(mut controller) = status_indicator_presentation_cell().lock() {
+            controller.expand(tray_bounds);
+        }
+    }
+    present_status_panel(app, &window, StatusIndicatorMode::Expanded, tray_bounds)
 }
 
 fn toggle_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: PhysicalBounds) -> Result<bool, String> {
-    let is_visible = app
-        .get_webview_window("status")
-        .map(|window| window.is_visible().map_err(|error| error.to_string()))
-        .transpose()?
-        .unwrap_or(false);
+    if let Ok(mut controller) = status_indicator_presentation_cell().lock() {
+        controller.remember_tray_bounds(tray_bounds);
+    }
+    let is_visible = status_panel_open_for_toggle(app)?;
     let release = status_panel_interaction_cell()
         .lock()
         .map(|mut controller| controller.finish_tray_press(is_visible))
@@ -450,6 +644,19 @@ fn toggle_status_panel_at_tray(app: &tauri::AppHandle, tray_bounds: PhysicalBoun
         || show_status_panel_at_tray(app, Some(tray_bounds)),
         || hide_status_panel_window(app),
     )
+}
+
+fn status_panel_open_for_toggle(app: &tauri::AppHandle) -> Result<bool, String> {
+    if compact_status_indicator_enabled() {
+        return status_indicator_presentation_cell()
+            .lock()
+            .map(|controller| controller.detail_open())
+            .map_err(|error| error.to_string());
+    }
+    app.get_webview_window("status")
+        .map(|window| window.is_visible().map_err(|error| error.to_string()))
+        .transpose()
+        .map(|visible| visible.unwrap_or(false))
 }
 
 fn perform_status_panel_release(
@@ -476,6 +683,8 @@ fn position_status_panel(
     app: &tauri::AppHandle,
     window: &WebviewWindow,
     tray_bounds: Option<PhysicalBounds>,
+    logical_size: (f64, f64),
+    mode: StatusIndicatorMode,
 ) -> Result<(), String> {
     let tray_monitor = tray_bounds.and_then(|tray| {
         app.monitor_from_point(tray.x + tray.width / 2.0, tray.y + tray.height / 2.0)
@@ -496,10 +705,17 @@ fn position_status_panel(
         height: work_area.size.height as f64,
     };
     let scale_factor = monitor.scale_factor();
-    let panel_size = LogicalSize::new(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT).to_physical::<f64>(scale_factor);
+    let panel_size = LogicalSize::new(logical_size.0, logical_size.1).to_physical::<f64>(scale_factor);
     let panel_size = (panel_size.width, panel_size.height);
+    let anchor = status_panel_anchor_for_monitor(&monitor);
     let position = if let Some(tray) = usable_tray_bounds {
-        status_panel_position(tray, work_bounds, panel_size, status_panel_anchor_for_monitor(&monitor))
+        if mode == StatusIndicatorMode::Collapsed && cfg!(target_os = "windows") {
+            status_indicator_position(tray, work_bounds, panel_size, anchor, STATUS_INDICATOR_GAP * scale_factor)
+        } else {
+            status_panel_position(tray, work_bounds, panel_size, anchor)
+        }
+    } else if cfg!(target_os = "windows") {
+        fallback_status_panel_position(work_bounds, panel_size, anchor)
     } else {
         safe_status_panel_position(work_bounds, panel_size)
     };
@@ -509,6 +725,33 @@ fn position_status_panel(
             position.1.round() as i32,
         ))
         .map_err(|error| error.to_string())
+}
+
+fn present_status_panel(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    mode: StatusIndicatorMode,
+    tray_bounds: Option<PhysicalBounds>,
+) -> Result<bool, String> {
+    let logical_size = match mode {
+        StatusIndicatorMode::Collapsed => {
+            let width = status_indicator_presentation_cell()
+                .lock()
+                .map(|controller| controller.compact_width)
+                .unwrap_or(STATUS_INDICATOR_MIN_WIDTH);
+            (width, STATUS_INDICATOR_HEIGHT)
+        }
+        StatusIndicatorMode::Expanded | StatusIndicatorMode::Hidden => (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT),
+    };
+    window.set_size(LogicalSize::new(logical_size.0, logical_size.1)).map_err(|error| error.to_string())?;
+    position_status_panel(app, window, tray_bounds, logical_size, mode)?;
+    window.show().map_err(|error| error.to_string())?;
+    if mode == StatusIndicatorMode::Expanded {
+        window.set_focus().map_err(|error| error.to_string())?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -558,6 +801,22 @@ fn status_panel_position(
     clamp_status_panel_position(desired, work, panel)
 }
 
+fn status_indicator_position(
+    tray: PhysicalBounds,
+    work: PhysicalBounds,
+    panel: (f64, f64),
+    anchor: StatusPanelAnchor,
+    gap: f64,
+) -> (f64, f64) {
+    let desired = match anchor {
+        StatusPanelAnchor::Below => (tray.x - panel.0 - gap, tray.y + tray.height),
+        StatusPanelAnchor::Above => (tray.x - panel.0 - gap, tray.y - panel.1),
+        StatusPanelAnchor::Left => (tray.x - panel.0, tray.y - panel.1 - gap),
+        StatusPanelAnchor::Right => (tray.x + tray.width, tray.y - panel.1 - gap),
+    };
+    clamp_status_panel_position(desired, work, panel)
+}
+
 fn safe_status_panel_position(work: PhysicalBounds, panel: (f64, f64)) -> (f64, f64) {
     clamp_status_panel_position(
         (
@@ -567,6 +826,19 @@ fn safe_status_panel_position(work: PhysicalBounds, panel: (f64, f64)) -> (f64, 
         work,
         panel,
     )
+}
+
+fn fallback_status_panel_position(work: PhysicalBounds, panel: (f64, f64), anchor: StatusPanelAnchor) -> (f64, f64) {
+    // Windows exposes no supported API for reserving an inline text slot inside the notification
+    // area. This is a standalone window; it never SetParents into or injects code into Explorer.
+    let right = work.x + work.width - panel.0;
+    let bottom = work.y + work.height - panel.1;
+    let desired = match anchor {
+        StatusPanelAnchor::Below => (right, work.y),
+        StatusPanelAnchor::Above | StatusPanelAnchor::Left => (right, bottom),
+        StatusPanelAnchor::Right => (work.x, bottom),
+    };
+    clamp_status_panel_position(desired, work, panel)
 }
 
 fn clamp_status_panel_position(desired: (f64, f64), work: PhysicalBounds, panel: (f64, f64)) -> (f64, f64) {
@@ -592,6 +864,20 @@ fn physical_tray_bounds(rect: tauri::Rect, scale_factor: f64) -> PhysicalBounds 
     }
 }
 
+fn current_status_tray_bounds(app: &tauri::AppHandle) -> Option<PhysicalBounds> {
+    let rect = app.tray_by_id(STATUS_TRAY_ID)?.rect().ok().flatten()?;
+    let scale_factor = match rect.position {
+        Position::Physical(position) => app
+            .monitor_from_point(position.x as f64, position.y as f64)
+            .ok()
+            .flatten()
+            .map(|monitor| monitor.scale_factor()),
+        Position::Logical(_) => app.primary_monitor().ok().flatten().map(|monitor| monitor.scale_factor()),
+    }
+    .unwrap_or(1.0);
+    Some(physical_tray_bounds(rect, scale_factor))
+}
+
 pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
     if let Ok(mut controller) = status_panel_interaction_cell().lock() {
         controller.cancel(None);
@@ -600,6 +886,35 @@ pub fn hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> 
 }
 
 fn hide_status_panel_window_without_cancelling_interaction(app: &tauri::AppHandle) -> Result<bool, String> {
+    if compact_status_indicator_enabled() {
+        return collapse_status_panel_window(app);
+    }
+    force_hide_status_panel_window(app)
+}
+
+fn collapse_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let (transition, tray_bounds) = status_indicator_presentation_cell()
+        .lock()
+        .map(|mut controller| {
+            let transition = controller.collapse();
+            (transition, controller.tray_bounds)
+        })
+        .map_err(|error| error.to_string())?;
+    if transition != StatusIndicatorTransition::Collapse {
+        return force_hide_status_panel_window(app);
+    }
+    let Some(window) = app.get_webview_window("status") else {
+        return Ok(false);
+    };
+    present_status_panel(
+        app,
+        &window,
+        StatusIndicatorMode::Collapsed,
+        tray_bounds.or_else(|| current_status_tray_bounds(app)),
+    )
+}
+
+fn force_hide_status_panel_window(app: &tauri::AppHandle) -> Result<bool, String> {
     let Some(window) = app.get_webview_window("status") else {
         return Ok(false);
     };
@@ -683,54 +998,176 @@ pub fn set_status_tray_readout_native(
     title: String,
     tooltip: String,
 ) -> Result<bool, String> {
-    if let Ok(mut live_title) = status_tray_live_title().lock() {
-        *live_title = title.clone();
+    if status_indicator_composed_owner_active() {
+        return Ok(true);
+    }
+    let readout = StatusTrayReadout { title, tooltip };
+    cache_status_tray_readout(readout.clone());
+    apply_status_tray_readout(app, readout)
+}
+
+pub fn set_status_indicator_enabled_native(
+    app: &tauri::AppHandle,
+    enabled: bool,
+    composed_owner_active: bool,
+) -> Result<(), String> {
+    let (transition, mode) = status_indicator_presentation_cell()
+        .lock()
+        .map(|mut controller| {
+            let transition = controller.configure(enabled, composed_owner_active);
+            (transition, controller.mode)
+        })
+        .map_err(|error| error.to_string())?;
+    let host_plan = status_indicator_host_plan(cfg!(target_os = "windows"), enabled, mode);
+    if host_plan.create_owner {
+        // The hidden status WebView remains the composed readout owner on every platform.
+        // Only Windows is allowed to present that owner as a compact taskbar-adjacent strip.
+        schedule_status_indicator_window_creation(app.clone())?;
+        let readout = cached_status_tray_readout();
+        let _ = apply_status_tray_readout(app, readout)?;
+    } else {
+        let _ = apply_status_tray_readout(app, StatusTrayReadout::default())?;
+    }
+    if transition != StatusIndicatorTransition::None {
+        dispatch_status_indicator_window_operation(app, "configuration", |app| {
+            reconcile_status_indicator_window(app)
+        })?;
+    }
+    Ok(())
+}
+
+pub async fn publish_status_indicator_readout_native(
+    app: &tauri::AppHandle,
+    title: String,
+    tooltip: String,
+    width: f64,
+) -> Result<bool, String> {
+    let readout = StatusTrayReadout { title, tooltip };
+    cache_status_tray_readout(readout.clone());
+    let transition = status_indicator_presentation_cell()
+        .lock()
+        .map(|mut controller| controller.publish(width))
+        .map_err(|error| error.to_string())?;
+    if !status_indicator_enabled() {
+        return Ok(false);
+    }
+    let tray_updated = apply_status_tray_readout_and_wait(app, readout).await?;
+    let window_updated = if cfg!(target_os = "windows") && transition != StatusIndicatorTransition::None {
+        dispatch_status_indicator_window_operation_and_wait(app, "compact readout", |app| {
+            reconcile_status_indicator_window(app)
+        })
+        .await?
+    } else {
+        false
+    };
+    Ok(tray_updated || window_updated)
+}
+
+fn apply_status_tray_readout(app: &tauri::AppHandle, readout: StatusTrayReadout) -> Result<bool, String> {
+    if app.tray_by_id(STATUS_TRAY_ID).is_none() {
+        return Ok(false);
     }
     let update_version = update_tray_fallback_version().lock().ok().and_then(|version| version.clone());
-    let title = status_tray_title(&title, update_version.as_deref());
-    let tooltip = update_version.as_ref().map(|version| format!("{tooltip} · 有新版本 v{version}，打开主界面安装")).unwrap_or(tooltip);
-    dispatch_status_tray_operation(app, "live readout", move |app| {
-        let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
-            return Ok(());
-        };
-        tray.set_title(Some(title))
-            .map_err(|error| error.to_string())?;
-        tray.set_tooltip(Some(tooltip))
-            .map_err(|error| error.to_string())
+    let readout = status_tray_readout_with_update(readout, update_version.as_deref());
+    let changed = status_tray_applied_readout()
+        .lock()
+        .map(|applied| applied.as_ref() != Some(&readout))
+        .unwrap_or(true);
+    if !changed {
+        return Ok(true);
+    }
+    dispatch_status_tray_operation(app, "status readout", move |app| {
+        apply_status_tray_readout_now(app, readout)
     })
+}
+
+async fn apply_status_tray_readout_and_wait(
+    app: &tauri::AppHandle,
+    readout: StatusTrayReadout,
+) -> Result<bool, String> {
+    if app.tray_by_id(STATUS_TRAY_ID).is_none() {
+        return Ok(false);
+    }
+    let update_version = update_tray_fallback_version()
+        .lock()
+        .ok()
+        .and_then(|version| version.clone());
+    let readout = status_tray_readout_with_update(readout, update_version.as_deref());
+    let changed = status_tray_applied_readout()
+        .lock()
+        .map(|applied| applied.as_ref() != Some(&readout))
+        .unwrap_or(true);
+    if !changed {
+        return Ok(true);
+    }
+    dispatch_status_tray_operation_and_wait(app, "status readout", move |app| {
+        apply_status_tray_readout_now(app, readout)
+    })
+    .await
+}
+
+fn apply_status_tray_readout_now(
+    app: &tauri::AppHandle,
+    readout: StatusTrayReadout,
+) -> Result<(), String> {
+    let tray = app
+        .tray_by_id(STATUS_TRAY_ID)
+        .ok_or_else(|| "status tray is not available".to_string())?;
+    if cfg!(target_os = "macos") {
+        tray.set_title(Some(readout.title.clone()))
+            .map_err(|error| error.to_string())?;
+    }
+    tray.set_tooltip(Some(readout.tooltip.clone()))
+        .map_err(|error| error.to_string())?;
+    if let Ok(mut applied) = status_tray_applied_readout().lock() {
+        *applied = Some(readout);
+    }
+    Ok(())
 }
 
 pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str) -> Result<bool, String> {
     if let Ok(mut cached) = update_tray_fallback_version().lock() {
         *cached = Some(version.to_string());
     }
-    let live_title = status_tray_live_title().lock().map(|title| title.clone()).unwrap_or_else(|_| "0.0/s".into());
+    let live_readout = visible_status_tray_readout();
     let version = version.to_string();
+    let readout = status_tray_readout_with_update(live_readout, Some(&version));
     dispatch_status_tray_operation(app, "update available", move |app| {
         let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
             return Ok(());
         };
-        tray.set_title(Some(status_tray_title(&live_title, Some(&version)))).map_err(|error| error.to_string())?;
+        if cfg!(target_os = "macos") {
+            tray.set_title(Some(readout.title.clone())).map_err(|error| error.to_string())?;
+        }
         tray.set_icon(Some(status_tray_update_icon())).map_err(|error| error.to_string())?;
-        tray.set_tooltip(Some(format!("Codex Token Bar · 有新版本 v{version}，打开主界面安装")))
-            .map_err(|error| error.to_string())?;
+        tray.set_tooltip(Some(readout.tooltip.clone())).map_err(|error| error.to_string())?;
         let menu = status_tray_menu(app, Some(&version)).map_err(|error| error.to_string())?;
-        tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+        tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
+        if let Ok(mut applied) = status_tray_applied_readout().lock() {
+            *applied = Some(readout);
+        }
+        Ok(())
     })
 }
 
 pub fn clear_update_available_tray_fallback(app: &tauri::AppHandle) -> Result<bool, String> {
     if let Ok(mut cached) = update_tray_fallback_version().lock() { *cached = None; }
-    let live_title = status_tray_live_title().lock().map(|title| title.clone()).unwrap_or_else(|_| "0.0/s".into());
+    let live_readout = visible_status_tray_readout();
     dispatch_status_tray_operation(app, "clear update", move |app| {
         let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
             return Ok(());
         };
-        tray.set_title(Some(live_title)).map_err(|error| error.to_string())?;
+        if cfg!(target_os = "macos") {
+            tray.set_title(Some(live_readout.title.clone())).map_err(|error| error.to_string())?;
+        }
         tray.set_icon(Some(status_tray_icon())).map_err(|error| error.to_string())?;
-        tray.set_tooltip(Some("Codex Token Bar")).map_err(|error| error.to_string())?;
+        tray.set_tooltip(Some(live_readout.tooltip.clone())).map_err(|error| error.to_string())?;
         let menu = status_tray_menu(app, None).map_err(|error| error.to_string())?;
-        tray.set_menu(Some(menu)).map_err(|error| error.to_string())
+        tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
+        if let Ok(mut applied) = status_tray_applied_readout().lock() {
+            *applied = Some(live_readout);
+        }
+        Ok(())
     })
 }
 
@@ -753,6 +1190,158 @@ fn dispatch_status_tray_operation(
         })
         .map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+async fn dispatch_status_tray_operation_and_wait(
+    app: &tauri::AppHandle,
+    label: &'static str,
+    operation: impl FnOnce(&tauri::AppHandle) -> Result<(), String> + Send + 'static,
+) -> Result<bool, String> {
+    if app.tray_by_id(STATUS_TRAY_ID).is_none() {
+        return Ok(false);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let dispatch = app.clone();
+    let tray_app = app.clone();
+    dispatch
+        .run_on_main_thread(move || {
+            let result = operation(&tray_app);
+            if let Err(error) = &result {
+                startup_trace::mark(&format!("status tray {label} failed: {error}"));
+                eprintln!("Codex Token Bar: status tray {label} failed: {error}");
+            }
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    await_status_operation_result(
+        rx,
+        format!("status tray {label} main-thread operation was cancelled"),
+    )
+    .await?;
+    Ok(true)
+}
+
+fn dispatch_status_indicator_window_operation(
+    app: &tauri::AppHandle,
+    label: &'static str,
+    operation: impl FnOnce(&tauri::AppHandle) -> Result<bool, String> + Send + 'static,
+) -> Result<bool, String> {
+    if app.get_webview_window("status").is_none() {
+        return Ok(false);
+    }
+    let dispatch = app.clone();
+    let status_app = app.clone();
+    dispatch
+        .run_on_main_thread(move || {
+            if let Err(error) = operation(&status_app) {
+                startup_trace::mark(&format!("status indicator {label} failed: {error}"));
+                eprintln!("Codex Token Bar: status indicator {label} failed: {error}");
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+async fn dispatch_status_indicator_window_operation_and_wait(
+    app: &tauri::AppHandle,
+    label: &'static str,
+    operation: impl FnOnce(&tauri::AppHandle) -> Result<bool, String> + Send + 'static,
+) -> Result<bool, String> {
+    if app.get_webview_window("status").is_none() {
+        return Ok(false);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let dispatch = app.clone();
+    let status_app = app.clone();
+    dispatch
+        .run_on_main_thread(move || {
+            let result = operation(&status_app);
+            if let Err(error) = &result {
+                startup_trace::mark(&format!("status indicator {label} failed: {error}"));
+                eprintln!("Codex Token Bar: status indicator {label} failed: {error}");
+            }
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+    await_status_operation_result(
+        rx,
+        format!("status indicator {label} main-thread operation was cancelled"),
+    )
+    .await
+}
+
+async fn await_status_operation_result<T>(
+    receiver: tokio::sync::oneshot::Receiver<Result<T, String>>,
+    cancellation_error: String,
+) -> Result<T, String> {
+    receiver.await.map_err(|_| cancellation_error)?
+}
+
+fn reconcile_status_indicator_window(app: &tauri::AppHandle) -> Result<bool, String> {
+    let (enabled, mode, tray_bounds) = status_indicator_presentation_cell()
+        .lock()
+        .map(|controller| (controller.enabled, controller.mode, controller.tray_bounds))
+        .map_err(|error| error.to_string())?;
+    let host_plan = status_indicator_host_plan(cfg!(target_os = "windows"), enabled, mode);
+    match host_plan.presentation {
+        StatusIndicatorNativePresentation::Hide => {
+            // macOS publishes the composed menu-bar text from this hidden owner. Never expose
+            // its collapsed 40 pt rendering; the tray click presents the full summary directly.
+            return force_hide_status_panel_window(app);
+        }
+        StatusIndicatorNativePresentation::Present(mode) => {
+            let Some(window) = app.get_webview_window("status") else {
+                return Ok(false);
+            };
+            return present_status_panel(
+                app,
+                &window,
+                mode,
+                tray_bounds.or_else(|| current_status_tray_bounds(app)),
+            );
+        }
+    }
+}
+
+fn schedule_status_indicator_window_creation(app: tauri::AppHandle) -> Result<(), String> {
+    if app.get_webview_window("status").is_some()
+        || STATUS_INDICATOR_WINDOW_CREATION_SCHEDULED.swap(true, Ordering::AcqRel)
+    {
+        return Ok(());
+    }
+    async_runtime::spawn(async move {
+        // Always defer the second WebView. Synchronous WebView2 creation from Builder::setup
+        // can deadlock the Windows COM STA before Tauri's event loop starts.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let dispatch = app.clone();
+        let status_app = app.clone();
+        if let Err(error) = dispatch.run_on_main_thread(move || {
+            STATUS_INDICATOR_WINDOW_CREATION_SCHEDULED.store(false, Ordering::Release);
+            if !status_indicator_enabled() || status_app.get_webview_window("status").is_some() {
+                return;
+            }
+            match create_status_panel_window(&status_app) {
+                Ok(()) => {
+                    set_status_panel_error(None);
+                    if let Err(error) = reconcile_status_indicator_window(&status_app) {
+                        set_status_panel_error(Some(error.clone()));
+                        eprintln!(
+                            "Codex Token Bar: deferred status indicator presentation failed: {error}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    let error = error.to_string();
+                    set_status_panel_error(Some(error.clone()));
+                    eprintln!("Codex Token Bar: deferred status indicator window setup failed: {error}");
+                }
+            }
+        }) {
+            STATUS_INDICATOR_WINDOW_CREATION_SCHEDULED.store(false, Ordering::Release);
+            set_status_panel_error(Some(error.to_string()));
+        }
+    });
+    Ok(())
 }
 
 fn schedule_status_tray_creation(app: tauri::AppHandle) -> Result<(), String> {
@@ -794,14 +1383,53 @@ fn update_tray_fallback_version() -> &'static Mutex<Option<String>> {
     UPDATE_TRAY_FALLBACK_VERSION.get_or_init(|| Mutex::new(None))
 }
 
-fn status_tray_live_title() -> &'static Mutex<String> {
-    STATUS_TRAY_LIVE_TITLE.get_or_init(|| Mutex::new("0.0/s".into()))
+fn status_tray_live_readout() -> &'static Mutex<StatusTrayReadout> {
+    STATUS_TRAY_LIVE_READOUT.get_or_init(|| Mutex::new(StatusTrayReadout::default()))
+}
+
+fn cache_status_tray_readout(readout: StatusTrayReadout) {
+    if let Ok(mut cached) = status_tray_live_readout().lock() {
+        *cached = readout;
+    }
+}
+
+fn cached_status_tray_readout() -> StatusTrayReadout {
+    status_tray_live_readout()
+        .lock()
+        .map(|readout| readout.clone())
+        .unwrap_or_default()
+}
+
+fn visible_status_tray_readout() -> StatusTrayReadout {
+    if status_indicator_composed_owner_active() && !status_indicator_enabled() {
+        StatusTrayReadout::default()
+    } else {
+        cached_status_tray_readout()
+    }
+}
+
+fn status_tray_applied_readout() -> &'static Mutex<Option<StatusTrayReadout>> {
+    STATUS_TRAY_APPLIED_READOUT.get_or_init(|| Mutex::new(None))
 }
 
 fn status_tray_title(live_title: &str, update_version: Option<&str>) -> String {
     update_version
-        .map(|version| format!("{live_title} ↑v{version}"))
+        .map(|version| if live_title.is_empty() { format!("↑v{version}") } else { format!("{live_title} ↑v{version}") })
         .unwrap_or_else(|| live_title.to_string())
+}
+
+fn status_tray_readout_with_update(readout: StatusTrayReadout, update_version: Option<&str>) -> StatusTrayReadout {
+    let title = status_tray_title(&readout.title, update_version);
+    let tooltip = update_version
+        .map(|version| {
+            if readout.tooltip.is_empty() {
+                format!("有新版本 v{version}，打开主界面安装")
+            } else {
+                format!("{} · 有新版本 v{version}，打开主界面安装", readout.tooltip)
+            }
+        })
+        .unwrap_or(readout.tooltip);
+    StatusTrayReadout { title, tooltip }
 }
 
 fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -809,11 +1437,19 @@ fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    let menu = status_tray_menu(app, None)?;
+    let update_version = update_tray_fallback_version()
+        .lock()
+        .ok()
+        .and_then(|version| version.clone());
+    let readout = status_tray_readout_with_update(
+        visible_status_tray_readout(),
+        update_version.as_deref(),
+    );
+    let menu = status_tray_menu(app, update_version.as_deref())?;
 
     let mut builder = TrayIconBuilder::with_id(STATUS_TRAY_ID)
-        .title("0.0/s")
-        .tooltip("Codex Token Bar")
+        .title(readout.title.clone())
+        .tooltip(readout.tooltip.clone())
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
@@ -832,10 +1468,7 @@ fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     button_state: MouseButtonState::Down,
                     ..
                 } => {
-                    let visible = app
-                        .get_webview_window("status")
-                        .and_then(|window| window.is_visible().ok())
-                        .unwrap_or(false);
+                    let visible = status_panel_open_for_toggle(app).unwrap_or(false);
                     let generation = status_panel_interaction_cell()
                         .lock()
                         .ok()
@@ -869,9 +1502,16 @@ fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             }
         });
 
-    builder = builder.icon(status_tray_icon());
+    builder = builder.icon(if update_version.is_some() {
+        status_tray_update_icon()
+    } else {
+        status_tray_icon()
+    });
 
     builder.build(app)?;
+    if let Ok(mut applied) = status_tray_applied_readout().lock() {
+        *applied = Some(readout);
+    }
 
     Ok(())
 }
@@ -1509,6 +2149,33 @@ mod tests {
         assert_eq!(published, vec![true]);
     }
 
+    #[test]
+    fn awaited_status_operation_propagates_setter_failure_and_cancellation() {
+        async_runtime::block_on(async {
+            let (error_tx, error_rx) =
+                tokio::sync::oneshot::channel::<Result<bool, String>>();
+            error_tx
+                .send(Err("setter failed".into()))
+                .expect("send setter failure");
+            assert_eq!(
+                await_status_operation_result(error_rx, "cancelled".into())
+                    .await
+                    .expect_err("inner setter failure must reach the caller"),
+                "setter failed"
+            );
+
+            let (cancel_tx, cancel_rx) =
+                tokio::sync::oneshot::channel::<Result<bool, String>>();
+            drop(cancel_tx);
+            assert_eq!(
+                await_status_operation_result(cancel_rx, "cancelled".into())
+                    .await
+                    .expect_err("cancelled main-thread work must reach the caller"),
+                "cancelled"
+            );
+        });
+    }
+
     fn bounds(x: f64, y: f64, width: f64, height: f64) -> PhysicalBounds {
         PhysicalBounds { x, y, width, height }
     }
@@ -1519,19 +2186,19 @@ mod tests {
         let panel = (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT);
         assert_eq!(
             status_panel_position(bounds(900.0, 0.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Below),
-            (732.0, 24.0)
+            (717.0, 24.0)
         );
         assert_eq!(
             status_panel_position(bounds(900.0, 1016.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Above),
-            (732.0, 734.0)
+            (717.0, 576.0)
         );
         assert_eq!(
             status_panel_position(bounds(0.0, 500.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Right),
-            (24.0, 371.0)
+            (24.0, 292.0)
         );
         assert_eq!(
             status_panel_position(bounds(1896.0, 500.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Left),
-            (1536.0, 371.0)
+            (1506.0, 292.0)
         );
     }
 
@@ -1545,8 +2212,133 @@ mod tests {
                 (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT),
                 StatusPanelAnchor::Below
             ),
-            (-360.0, -100.0)
+            (-390.0, -100.0)
         );
+    }
+
+    #[test]
+    fn compact_status_indicator_width_is_bounded_and_accepts_narrow_content() {
+        assert_eq!(status_indicator_width(0.0), 0.0);
+        assert_eq!(status_indicator_width(-1.0), 0.0);
+        assert_eq!(status_indicator_width(1.0), 64.0);
+        assert_eq!(status_indicator_width(88.0), 88.0);
+        assert_eq!(status_indicator_width(999.0), 720.0);
+        assert_eq!(status_indicator_width(f64::NAN), 0.0);
+    }
+
+    #[test]
+    fn compact_status_indicator_window_is_windows_only() {
+        assert!(compact_status_indicator_supported(true));
+        assert!(!compact_status_indicator_supported(false));
+        assert_eq!(
+            status_indicator_host_plan(false, true, StatusIndicatorMode::Collapsed),
+            StatusIndicatorHostPlan {
+                create_owner: true,
+                presentation: StatusIndicatorNativePresentation::Hide,
+            }
+        );
+        assert_eq!(
+            status_indicator_native_presentation(false, true, StatusIndicatorMode::Collapsed),
+            StatusIndicatorNativePresentation::Hide
+        );
+        assert_eq!(
+            status_indicator_native_presentation(false, true, StatusIndicatorMode::Expanded),
+            StatusIndicatorNativePresentation::Hide
+        );
+        assert_eq!(
+            status_indicator_native_presentation(true, true, StatusIndicatorMode::Collapsed),
+            StatusIndicatorNativePresentation::Present(StatusIndicatorMode::Collapsed)
+        );
+        assert_eq!(
+            status_indicator_native_presentation(true, false, StatusIndicatorMode::Collapsed),
+            StatusIndicatorNativePresentation::Hide
+        );
+        assert_eq!(
+            status_indicator_host_plan(true, false, StatusIndicatorMode::Collapsed),
+            StatusIndicatorHostPlan {
+                create_owner: false,
+                presentation: StatusIndicatorNativePresentation::Hide,
+            }
+        );
+    }
+
+    #[test]
+    fn status_indicator_state_machine_replays_cached_content_after_enable() {
+        let mut controller = StatusIndicatorPresentationController::default();
+        assert_eq!(controller.publish(80.0), StatusIndicatorTransition::None);
+        assert_eq!(controller.configure(true, true), StatusIndicatorTransition::Collapse);
+        assert_eq!(controller.publish(80.0), StatusIndicatorTransition::Collapse);
+        let tray = bounds(1800.0, 1040.0, 24.0, 24.0);
+        assert_eq!(controller.expand(Some(tray)), StatusIndicatorTransition::Expand);
+        assert!(controller.detail_open());
+        assert_eq!(controller.publish(96.0), StatusIndicatorTransition::None);
+        assert_eq!(controller.collapse(), StatusIndicatorTransition::Collapse);
+        assert_eq!(controller.configure(false, true), StatusIndicatorTransition::Hide);
+        assert!(controller.composed_owner_active);
+        assert_eq!(controller.mode, StatusIndicatorMode::Hidden);
+        assert_eq!(controller.publish(112.0), StatusIndicatorTransition::None);
+        assert_eq!(controller.configure(true, true), StatusIndicatorTransition::Collapse);
+        assert_eq!(controller.compact_width, 112.0);
+    }
+
+    #[test]
+    fn empty_metric_order_keeps_summary_available_without_compact_strip() {
+        let mut controller = StatusIndicatorPresentationController::default();
+        assert_eq!(controller.configure(true, true), StatusIndicatorTransition::Hide);
+        assert_eq!(controller.publish(0.0), StatusIndicatorTransition::Hide);
+        assert!(!controller.has_compact_content);
+        assert_eq!(controller.compact_width, 0.0);
+        let tray = bounds(1800.0, 1040.0, 24.0, 24.0);
+        assert_eq!(controller.expand(Some(tray)), StatusIndicatorTransition::Expand);
+        assert!(controller.detail_open());
+        assert_eq!(controller.collapse(), StatusIndicatorTransition::Hide);
+        assert_eq!(controller.mode, StatusIndicatorMode::Hidden);
+    }
+
+    #[test]
+    fn rapid_configuration_changes_converge_to_the_last_setting() {
+        let mut controller = StatusIndicatorPresentationController::default();
+        controller.publish(96.0);
+        for index in 0..20 {
+            let enabled = index % 2 == 1;
+            controller.configure(enabled, true);
+        }
+        assert!(controller.enabled);
+        assert_eq!(controller.mode, StatusIndicatorMode::Collapsed);
+        controller.configure(false, true);
+        controller.publish(0.0);
+        assert_eq!(controller.configure(true, true), StatusIndicatorTransition::Hide);
+        assert_eq!(controller.mode, StatusIndicatorMode::Hidden);
+    }
+
+    #[test]
+    fn collapsed_status_indicator_prefers_tray_left_and_clamps_to_work_area() {
+        let work = bounds(0.0, 0.0, 1920.0, 1040.0);
+        let panel = (120.0, 40.0);
+        assert_eq!(
+            status_indicator_position(bounds(1800.0, 1040.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Above, 8.0),
+            (1672.0, 1000.0)
+        );
+        assert_eq!(
+            status_indicator_position(bounds(1800.0, -24.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Below, 8.0),
+            (1672.0, 0.0)
+        );
+        assert_eq!(
+            status_indicator_position(bounds(-24.0, 900.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Right, 8.0),
+            (0.0, 852.0)
+        );
+        assert_eq!(
+            status_indicator_position(bounds(1920.0, 900.0, 24.0, 24.0), work, panel, StatusPanelAnchor::Left, 8.0),
+            (1800.0, 852.0)
+        );
+    }
+
+    #[test]
+    fn status_indicator_fallback_stays_taskbar_adjacent() {
+        let work = bounds(-1920.0, 0.0, 1920.0, 1040.0);
+        let panel = (80.0, 40.0);
+        assert_eq!(fallback_status_panel_position(work, panel, StatusPanelAnchor::Above), (-80.0, 1000.0));
+        assert_eq!(fallback_status_panel_position(work, panel, StatusPanelAnchor::Below), (-80.0, 0.0));
     }
 
     #[test]
@@ -1581,6 +2373,30 @@ mod tests {
         let live = "12.4/s · 42%";
         assert_eq!(status_tray_title(live, Some("0.8.0")), "12.4/s · 42% ↑v0.8.0");
         assert_eq!(status_tray_title(live, None), live);
+    }
+
+    #[test]
+    fn empty_composed_readout_is_data_not_a_disable_signal() {
+        let readout = StatusTrayReadout { title: String::new(), tooltip: String::new() };
+        assert_eq!(status_tray_readout_with_update(readout.clone(), None), readout);
+        assert_eq!(
+            status_tray_readout_with_update(readout, Some("0.9.0")),
+            StatusTrayReadout {
+                title: "↑v0.9.0".into(),
+                tooltip: "有新版本 v0.9.0，打开主界面安装".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn default_status_readout_is_neutral_instead_of_a_fake_zero() {
+        assert_eq!(
+            StatusTrayReadout::default(),
+            StatusTrayReadout {
+                title: String::new(),
+                tooltip: "Codex Token Bar".into(),
+            }
+        );
     }
 
     #[test]

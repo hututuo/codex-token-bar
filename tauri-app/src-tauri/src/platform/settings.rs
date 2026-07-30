@@ -117,7 +117,7 @@ pub fn save_display_surfaces(
     display_surfaces: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     mutate_app_settings(|settings| {
-        settings.display_surfaces = display_surfaces;
+        settings.display_surfaces = sanitize_display_surfaces(display_surfaces);
     })
 }
 
@@ -2315,9 +2315,38 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
         sanitize_quota_refresh_interval_ms(settings.quota_refresh_interval_ms);
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
+    settings.display_surfaces = sanitize_display_surfaces(settings.display_surfaces);
     settings.session_enhancements =
         sanitize_session_enhancement_settings(settings.session_enhancements);
     settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);
+    settings
+}
+
+fn sanitize_display_surfaces(
+    mut settings: DisplaySurfaceSettingsSnapshot,
+) -> DisplaySurfaceSettingsSnapshot {
+    let supported = crate::models::STATUS_METRIC_IDS
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let mut seen = std::collections::HashSet::new();
+    settings
+        .status_metric_order
+        .retain(|metric| supported.contains(metric.as_str()) && seen.insert(metric.clone()));
+
+    if !matches!(
+        settings.status_metric_label_style.as_str(),
+        "full" | "compact" | "hidden"
+    ) {
+        settings.status_metric_label_style = crate::models::default_status_metric_label_style();
+    }
+
+    let supported_sections = crate::models::STATUS_SUMMARY_SECTION_IDS
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let mut seen_sections = std::collections::HashSet::new();
+    settings.status_summary_order.retain(|section| {
+        supported_sections.contains(section.as_str()) && seen_sections.insert(section.clone())
+    });
     settings
 }
 
@@ -2917,6 +2946,11 @@ mod tests {
                     "showRadar": false,
                     "order": ["quota", "quota", "unknown", "rateAndBar"]
                 }
+            },
+            "displaySurfaces": {
+                "statusMetricOrder": ["iq", "iq", "unknown", "rate"],
+                "statusMetricLabelStyle": "wide",
+                "statusSummaryOrder": ["radar", "radar", "unknown", "quota"]
             }
         }"##;
 
@@ -2955,7 +2989,34 @@ mod tests {
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);
         assert!(sanitized.display_surfaces.status_tray_live_text_enabled);
+        assert_eq!(
+            sanitized.display_surfaces.status_metric_order,
+            ["iq", "rate"]
+        );
+        assert_eq!(
+            sanitized.display_surfaces.status_metric_label_style,
+            "compact"
+        );
+        assert_eq!(
+            sanitized.display_surfaces.status_summary_order,
+            ["radar", "quota"]
+        );
         assert!(!sanitized.setup_guide_completed);
+    }
+
+    #[test]
+    fn display_surfaces_preserve_an_explicit_empty_status_metric_order() {
+        let sanitized = sanitize_app_settings(AppSettingsSnapshot {
+            display_surfaces: DisplaySurfaceSettingsSnapshot {
+                status_metric_order: Vec::new(),
+                status_summary_order: Vec::new(),
+                ..DisplaySurfaceSettingsSnapshot::default()
+            },
+            ..AppSettingsSnapshot::default()
+        });
+
+        assert!(sanitized.display_surfaces.status_metric_order.is_empty());
+        assert!(sanitized.display_surfaces.status_summary_order.is_empty());
     }
 
     #[test]
@@ -3143,6 +3204,9 @@ mod tests {
                         floating_window_enabled: false,
                         live_rate_enabled: true,
                         status_tray_live_text_enabled: false,
+                        status_metric_order: vec!["unread".into(), "rate".into()],
+                        status_metric_label_style: "hidden".into(),
+                        status_summary_order: vec!["radar".into(), "overview".into()],
                     };
                 },
             )
@@ -3160,6 +3224,15 @@ mod tests {
         assert!(!saved.display_surfaces.floating_window_enabled);
         assert!(saved.display_surfaces.live_rate_enabled);
         assert!(!saved.display_surfaces.status_tray_live_text_enabled);
+        assert_eq!(
+            saved.display_surfaces.status_metric_order,
+            ["unread", "rate"]
+        );
+        assert_eq!(saved.display_surfaces.status_metric_label_style, "hidden");
+        assert_eq!(
+            saved.display_surfaces.status_summary_order,
+            ["radar", "overview"]
+        );
     }
 
     #[test]

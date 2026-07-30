@@ -152,15 +152,28 @@ impl LiveRateMonitorRegistry {
         app: &AppHandle,
         display: &DisplaySurfaceSettingsSnapshot,
     ) -> Result<(), String> {
-        let supported = native_tray_live_text_supported();
-        let generation = self.apply_status_tray_interest_with_writer_and_scheduler(
-            display,
-            supported,
-            |title, tooltip| platform::set_status_tray_readout_native(app, title, tooltip),
-            || self.schedule_native_tray_correction_retry(app.clone()),
+        let composed_owner_active = composed_status_owner_active(display);
+        platform::set_status_indicator_enabled_native(
+            app,
+            display.status_tray_live_text_enabled,
+            composed_owner_active,
         )?;
-        if let Some(generation) = generation {
-            self.spawn_stream_loop(app.clone(), generation);
+        // Empty metric selection still belongs to the composed owner and must never revive
+        // the legacy rate-only writer.
+        self.suspend_native_tray_writer_for_composed_status()?;
+        Ok(())
+    }
+
+    fn suspend_native_tray_writer_for_composed_status(&self) -> Result<(), String> {
+        let mut stream = self.stream.lock().map_err(|error| error.to_string())?;
+        stream.native_tray_revision = stream.native_tray_revision.saturating_add(1);
+        stream.native_tray_enabled = false;
+        stream.native_tray_source = None;
+        stream.native_tray_smoothed_rate = None;
+        stream.native_tray_settings_key = None;
+        stream.native_tray_desired_readout = None;
+        if active_subscription_count(&stream) == 0 {
+            stream.running = false;
         }
         Ok(())
     }
@@ -1191,8 +1204,8 @@ fn native_tray_settings(
     )
 }
 
-fn native_tray_live_text_supported() -> bool {
-    cfg!(target_os = "macos")
+fn composed_status_owner_active(_display: &DisplaySurfaceSettingsSnapshot) -> bool {
+    true
 }
 
 fn selected_subscription_for_source<'a>(
@@ -1263,6 +1276,18 @@ fn acknowledge_pinned_unread(
             validate_before_write,
         ),
     }
+}
+
+#[tauri::command]
+pub async fn publish_status_indicator_readout(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    title: String,
+    tooltip: String,
+    width: f64,
+) -> Result<bool, String> {
+    require_window_label(&window, "publish_status_indicator_readout")?;
+    platform::publish_status_indicator_readout_native(&app, title, tooltip, width).await
 }
 
 #[tauri::command]
@@ -1618,6 +1643,32 @@ mod tests {
             .unwrap();
         assert!(generation.is_some());
         assert!(registry.stream.lock().unwrap().native_tray_enabled);
+    }
+
+    #[test]
+    fn composed_status_suspends_legacy_rate_writer() {
+        let registry = LiveRateMonitorRegistry::default();
+        {
+            let mut stream = registry.stream.lock().unwrap();
+            stream.native_tray_enabled = true;
+            stream.running = true;
+            stream.native_tray_source = Some(live_source_for_test("source-a", 1).source_token);
+            stream.native_tray_smoothed_rate = Some(12.0);
+            stream.native_tray_desired_readout = Some(("12.0/s".into(), "12 tok/s".into()));
+        }
+        registry.suspend_native_tray_writer_for_composed_status().unwrap();
+        let stream = registry.stream.lock().unwrap();
+        assert!(!stream.native_tray_enabled);
+        assert!(!stream.running);
+        assert!(stream.native_tray_source.is_none());
+        assert!(stream.native_tray_desired_readout.is_none());
+    }
+
+    #[test]
+    fn empty_metric_order_keeps_composed_owner() {
+        let mut display = DisplaySurfaceSettingsSnapshot::default();
+        display.status_metric_order.clear();
+        assert!(composed_status_owner_active(&display));
     }
 
     #[test]

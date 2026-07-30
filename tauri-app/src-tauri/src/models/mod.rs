@@ -37,9 +37,10 @@ pub use quota::{
     QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
 };
 pub use settings::{
-    AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutoResumeTaskSettingsSnapshot,
-    DisplaySurfaceSettingsSnapshot, AUTO_RESUME_TASK_COLLECTION_VERSION,
+    default_status_metric_label_style, AppSettingsSnapshot, AutoResumeSettingsSnapshot,
+    AutoResumeTaskSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
+    AUTO_RESUME_TASK_COLLECTION_VERSION, STATUS_METRIC_IDS, STATUS_SUMMARY_SECTION_IDS,
 };
 pub use thread_activity::RunningThreadSummary;

@@ -144,6 +144,7 @@ pub fn run() {
             commands::live::read_live_rate_snapshot,
             commands::live::read_live_thread_options,
             commands::live::reset_live_rate_monitor,
+            commands::live::publish_status_indicator_readout,
             commands::live::claim_live_rate_owner_session,
             commands::live::start_live_rate_stream,
             commands::live::stop_live_rate_stream,

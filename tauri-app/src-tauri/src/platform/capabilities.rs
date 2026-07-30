@@ -128,7 +128,7 @@ fn status_tray_capability(
         DesktopPlatform::Macos => ready("状态栏", "macOS 状态栏调试实现可用，已接入独立弹出面板。"),
         DesktopPlatform::Windows => ready(
             "系统托盘",
-            "Windows 系统托盘图标已接入；弹出面板和实时数字后续用动态图标/面板方案单独实现。",
+            "Windows 系统托盘图标和摘要面板已接入；实时指标使用任务栏旁的独立紧凑条显示。",
         ),
         DesktopPlatform::Linux | DesktopPlatform::Other => {
             unavailable("系统托盘", "当前平台暂未接入托盘入口。")
@@ -146,9 +146,9 @@ fn status_tray_live_text_capability(
 
     match platform {
         DesktopPlatform::Macos => ready("状态栏实时数字", "macOS 菜单栏可直接显示短数字。"),
-        DesktopPlatform::Windows => pending(
-            "托盘实时数字",
-            "Windows 托盘不能直接放文字，后续需要动态图标或弹出面板方案。",
+        DesktopPlatform::Windows => ready(
+            "任务栏实时指标",
+            "Windows 托盘本身不承载文字；已使用不注入 Explorer 的任务栏邻接紧凑条。",
         ),
         DesktopPlatform::Linux | DesktopPlatform::Other => {
             unavailable("托盘实时数字", "当前平台暂未接入实时托盘文字。")
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_capabilities_enable_basic_floating_window_only() {
+    fn windows_capabilities_enable_status_summary_and_compact_indicator() {
         let capabilities =
             platform_capabilities_for(DesktopPlatform::Windows, SurfaceSetupStatus::default());
 
@@ -235,8 +235,12 @@ mod tests {
         assert_pending(&capabilities.floating_transparency);
         assert_pending(&capabilities.floating_drag);
         assert_ready(&capabilities.status_tray);
-        assert_pending(&capabilities.status_tray_live_text);
+        assert_ready(&capabilities.status_tray_live_text);
         assert_ready(&capabilities.autostart);
+        assert!(capabilities
+            .status_tray_live_text
+            .note
+            .contains("不注入 Explorer"));
     }
 
     #[test]

@@ -77,6 +77,8 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "dismiss_status_panel_on_blur",
 ];
 
+pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const FLOATING_WINDOW_LABEL: &str = "floating";
 const STATUS_WINDOW_LABEL: &str = "status";
@@ -96,6 +98,10 @@ pub(crate) fn require_window_label(
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     if MAIN_WINDOW_ONLY_COMMANDS.contains(&command) {
         return label == MAIN_WINDOW_LABEL;
+    }
+
+    if STATUS_WINDOW_ONLY_COMMANDS.contains(&command) {
+        return label == STATUS_WINDOW_LABEL;
     }
 
     if command == "save_floating_position" {
@@ -132,6 +138,16 @@ mod tests {
             assert!(allows_window_label(command, "main"), "{command}");
             assert!(allows_window_label(command, "floating"), "{command}");
             assert!(allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    #[test]
+    fn status_indicator_publication_is_status_surface_only() {
+        for command in STATUS_WINDOW_ONLY_COMMANDS {
+            assert!(!allows_window_label(command, "main"));
+            assert!(!allows_window_label(command, "floating"));
+            assert!(allows_window_label(command, "status"));
+            assert!(!allows_window_label(command, "unknown"));
         }
     }
 

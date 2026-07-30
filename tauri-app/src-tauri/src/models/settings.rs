@@ -275,9 +275,7 @@ impl AutoResumeTaskSettingsSnapshot {
 
 impl AutoResumeSettingsSnapshot {
     pub fn resolved_tasks(&self) -> Vec<AutoResumeTaskSettingsSnapshot> {
-        if self.task_collection_version >= AUTO_RESUME_TASK_COLLECTION_VERSION
-            || !self.tasks.is_empty()
-        {
+        if self.task_collection_version >= AUTO_RESUME_TASK_COLLECTION_VERSION || !self.tasks.is_empty() {
             return self.tasks.clone();
         }
         if self.thread_id.trim().is_empty() {
@@ -489,18 +487,7 @@ impl Default for FloatingContentVisibilitySnapshot {
 }
 
 fn default_floating_content_order() -> Vec<String> {
-    [
-        "rateAndBar",
-        "usageStatus",
-        "metrics",
-        "runningThreads",
-        "radar",
-        "crowdRadar",
-        "quota",
-    ]
-        .into_iter()
-        .map(String::from)
-        .collect()
+    ["rateAndBar", "usageStatus", "metrics", "runningThreads", "radar", "crowdRadar", "quota"].into_iter().map(String::from).collect()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -520,6 +507,12 @@ pub struct DisplaySurfaceSettingsSnapshot {
     pub live_rate_enabled: bool,
     #[serde(default = "default_enabled")]
     pub status_tray_live_text_enabled: bool,
+    #[serde(default = "default_status_metric_order")]
+    pub status_metric_order: Vec<String>,
+    #[serde(default = "default_status_metric_label_style")]
+    pub status_metric_label_style: String,
+    #[serde(default = "default_status_summary_order")]
+    pub status_summary_order: Vec<String>,
 }
 
 impl Default for DisplaySurfaceSettingsSnapshot {
@@ -528,8 +521,27 @@ impl Default for DisplaySurfaceSettingsSnapshot {
             floating_window_enabled: default_enabled(),
             live_rate_enabled: default_enabled(),
             status_tray_live_text_enabled: default_enabled(),
+            status_metric_order: default_status_metric_order(),
+            status_metric_label_style: default_status_metric_label_style(),
+            status_summary_order: default_status_summary_order(),
         }
     }
+}
+
+pub const STATUS_METRIC_IDS: [&str; 9] = ["rate", "fiveHour", "sevenDay", "iq", "today", "total", "requests", "running", "unread"];
+
+pub fn default_status_metric_order() -> Vec<String> {
+    ["rate", "fiveHour", "sevenDay", "iq"].into_iter().map(String::from).collect()
+}
+
+pub fn default_status_metric_label_style() -> String {
+    "compact".into()
+}
+
+pub const STATUS_SUMMARY_SECTION_IDS: [&str; 7] = ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"];
+
+pub fn default_status_summary_order() -> Vec<String> {
+    STATUS_SUMMARY_SECTION_IDS.into_iter().map(String::from).collect()
 }
 
 fn default_enabled() -> bool {

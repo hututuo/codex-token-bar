@@ -49,6 +49,7 @@ pub use settings::{
 };
 pub use surfaces::{
     dismiss_status_panel_on_blur, hide_floating_window, hide_status_panel_window,
+    publish_status_indicator_readout_native, set_status_indicator_enabled_native,
     set_status_tray_readout_native, setup_desktop_surfaces,
     show_dashboard_window_from_command, show_floating_window_from_command,
     show_status_panel_window_from_command,
