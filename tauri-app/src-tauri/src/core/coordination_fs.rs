@@ -1440,12 +1440,10 @@ mod tests {
         let error = fs::rename(&home, &moved)
             .err()
             .expect("pinned Home handle must deny rename sharing");
-        assert!(
-            matches!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Other
-            ),
-            "{error}"
+        assert_eq!(
+            error.raw_os_error(),
+            Some(32),
+            "the live pinned Home handle must block rename with ERROR_SHARING_VIOLATION: {error}"
         );
         drop(coordination);
         fs::rename(&home, &moved).unwrap();

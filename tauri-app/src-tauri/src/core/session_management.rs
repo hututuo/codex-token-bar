@@ -3506,6 +3506,30 @@ struct RecoveryDirectoryIdentity {
     file_id: u64,
 }
 
+#[cfg(any(test, windows))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowsRecoveryDirectoryOpenContract {
+    read: bool,
+    write: bool,
+    share_mode: u32,
+    custom_flags: u32,
+}
+
+#[cfg(any(test, windows))]
+fn windows_recovery_directory_open_contract() -> WindowsRecoveryDirectoryOpenContract {
+    WindowsRecoveryDirectoryOpenContract {
+        read: true,
+        // FlushFileBuffers requires a handle opened with write access. A
+        // read-only directory handle opens successfully but fails every
+        // durability barrier with ERROR_ACCESS_DENIED.
+        write: true,
+        // Other readers/writers may coexist, but omitting FILE_SHARE_DELETE
+        // pins this exact recovery-root generation against rename/removal.
+        share_mode: 0x0000_0001 | 0x0000_0002,
+        custom_flags: 0x0200_0000 | 0x0020_0000,
+    }
+}
+
 struct PinnedRecoveryRoot {
     path: PathBuf,
     directory: File,
@@ -3745,9 +3769,7 @@ impl PinnedRecoveryRoot {
     }
 
     fn sync(&self) -> Result<(), String> {
-        self.directory
-            .sync_all()
-            .map_err(|error| format!("持久化固定恢复包根目录失败：{error}"))
+        sync_recovery_directory(&self.directory)
     }
 }
 
@@ -3836,11 +3858,14 @@ fn open_recovery_directory(path: &Path) -> Result<File, String> {
 fn open_recovery_directory(path: &Path) -> Result<File, String> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    let directory = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+    let contract = windows_recovery_directory_open_contract();
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(contract.read)
+        .write(contract.write)
+        .share_mode(contract.share_mode)
+        .custom_flags(contract.custom_flags);
+    let directory = options
         .open(path)
         .map_err(|error| format!("固定 Windows 恢复包根目录失败：{error}"))?;
     let metadata = directory.metadata().map_err(|error| error.to_string())?;
@@ -3853,6 +3878,46 @@ fn open_recovery_directory(path: &Path) -> Result<File, String> {
 #[cfg(not(any(unix, windows)))]
 fn open_recovery_directory(path: &Path) -> Result<File, String> {
     File::open(path).map_err(|error| format!("固定恢复包根目录失败：{error}"))
+}
+
+#[cfg(unix)]
+fn sync_recovery_directory(directory: &File) -> Result<(), String> {
+    directory
+        .sync_all()
+        .map_err(|error| format!("持久化固定恢复包根目录失败：{error}"))
+}
+
+#[cfg(any(test, windows))]
+fn sync_windows_recovery_directory_with_controls(
+    directory: &File,
+    flush: impl FnOnce(&File) -> std::io::Result<()>,
+) -> Result<(), String> {
+    flush(directory).map_err(|error| format!("持久化固定恢复包根目录失败：{error}"))
+}
+
+#[cfg(windows)]
+fn sync_recovery_directory(directory: &File) -> Result<(), String> {
+    sync_windows_recovery_directory_with_controls(directory, flush_windows_recovery_directory)
+}
+
+#[cfg(windows)]
+fn flush_windows_recovery_directory(directory: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::FlushFileBuffers;
+
+    // SAFETY: `directory` owns this live handle for the entire call. The
+    // Windows open contract grants write access and directory semantics.
+    let flushed = unsafe { FlushFileBuffers(directory.as_raw_handle()) };
+    if flushed == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_recovery_directory(_directory: &File) -> Result<(), String> {
+    Err("当前平台无法确认恢复包目录持久性，已拒绝继续".into())
 }
 
 #[cfg(not(unix))]
@@ -5881,6 +5946,39 @@ mod tests {
                 .expect("symlink recovery root must fail closed")
                 .contains("符号链接"));
         }
+    }
+
+    #[test]
+    fn windows_recovery_directory_contract_is_flush_capable_and_rename_pinned() {
+        let contract = windows_recovery_directory_open_contract();
+        assert!(contract.read);
+        assert!(
+            contract.write,
+            "FlushFileBuffers requires write access on the directory handle"
+        );
+        assert_eq!(contract.share_mode, 0x0000_0001 | 0x0000_0002);
+        assert_eq!(
+            contract.share_mode & 0x0000_0004,
+            0,
+            "FILE_SHARE_DELETE would allow the pinned recovery root to move"
+        );
+        assert_eq!(contract.custom_flags, 0x0200_0000 | 0x0020_0000);
+    }
+
+    #[test]
+    fn windows_recovery_directory_sync_propagates_flush_failure() {
+        let home = TestHome::new("windows-recovery-directory-sync-failure");
+        let directory = File::open(&home.root).unwrap();
+        let error = sync_windows_recovery_directory_with_controls(&directory, |_| {
+            Err(std::io::Error::from_raw_os_error(5))
+        })
+        .unwrap_err();
+
+        assert!(error.contains("持久化固定恢复包根目录失败"), "{error}");
+        assert!(
+            error.contains("5") || error.to_ascii_lowercase().contains("denied"),
+            "{error}"
+        );
     }
 
     #[test]
