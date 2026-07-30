@@ -64,6 +64,18 @@ export function showDashboardWindow(): Promise<boolean> {
   return invokePlatformCommand("show_dashboard_window", false);
 }
 
+export function publishStatusIndicatorReadout(
+  title: string,
+  tooltip: string,
+  width: number,
+): Promise<boolean> {
+  return invokePlatformCommand("publish_status_indicator_readout", false, {
+    title,
+    tooltip,
+    width,
+  });
+}
+
 export function startLiveRateStream(
   options: LiveRateStreamStartOptions,
 ): Promise<LiveRateStreamLease | null> {

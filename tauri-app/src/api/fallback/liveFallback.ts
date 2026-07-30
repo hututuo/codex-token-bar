@@ -33,6 +33,7 @@ export const emptyUnreadSummary: UnreadSummary = {
 export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
   maxTokensPerSecond: 200,
+  liveRateAvailable: false,
   trendLabel: "",
   resetCreditLabel: "",
   resetCreditRateBarLabel: "",

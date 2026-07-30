@@ -248,19 +248,21 @@ test("hidden status panel starts inactive and verifies window visibility before 
 
   assert.equal(statusPanel.includes("useState(false)"), true);
   assert.equal(statusPanel.includes("appWindow.isVisible()"), true);
-  assert.equal(statusPanel.includes("document.hasFocus()"), true);
+  assert.equal(statusPanel.includes("document.hasFocus()"), false);
   assert.equal(
-    statusPanel.includes("setActive(statusPanelIsActive(Boolean(visible), lifecycle.hasFocus()))"),
+    statusPanel.includes("setActive(statusPanelIsActive(Boolean(visible)))"),
     true,
   );
+  assert.equal(statusPanel.includes("window.setInterval"), true);
 });
 
 test("status panel hides itself when focus leaves", async () => {
   const statusPanel = await readFile(new URL("../status/useStatusPanelWindowLifecycle.ts", import.meta.url), "utf8");
 
   assert.equal(statusPanel.includes("const dismissWhenBlurred = () => {"), true);
-  assert.equal(statusPanel.includes("setActive(false);"), true);
+  assert.equal(statusPanel.includes("setActive(false);"), false);
   assert.equal(statusPanel.includes("lifecycle.dismissOnBlur()"), true);
+  assert.equal(statusPanel.includes("void refreshActiveState();"), true);
   assert.equal(statusPanel.includes('window.addEventListener("blur", dismissWhenBlurred)'), true);
   assert.equal(statusPanel.includes('window.removeEventListener("blur", dismissWhenBlurred)'), true);
 });
@@ -281,12 +283,14 @@ test("status panel controls keep comfortable hit targets", async () => {
   assert.equal(actionButton.includes("min-height: 34px;"), true);
 });
 
-test("dashboard runtime no longer exposes a tray-title writer", async () => {
+test("status surface exposes only the composite indicator readout writer", async () => {
   await withSsrModules(async (load) => {
     const surfaceCommands = await load("/src/platform/surfaceCommands.ts");
     const { desktopPlatform } = await load("/src/platform/desktop.ts");
     assert.equal("setStatusTrayReadout" in surfaceCommands, false);
     assert.equal("setStatusTrayReadout" in desktopPlatform, false);
+    assert.equal("publishStatusIndicatorReadout" in surfaceCommands, true);
+    assert.equal("publishStatusIndicatorReadout" in desktopPlatform, true);
   });
 });
 

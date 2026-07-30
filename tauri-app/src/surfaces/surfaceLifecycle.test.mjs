@@ -42,11 +42,9 @@ test("floating feature disable and restore follows native visibility without dup
   assert.equal(state.active, true);
 });
 
-test("status panel remains active only while both visible and focused", () => {
-  assert.equal(statusPanelIsActive(false, false), false);
-  assert.equal(statusPanelIsActive(true, false), false);
-  assert.equal(statusPanelIsActive(false, true), false);
-  assert.equal(statusPanelIsActive(true, true), true);
+test("status panel remains active whenever it is visible regardless of focus", () => {
+  assert.equal(statusPanelIsActive(false), false);
+  assert.equal(statusPanelIsActive(true), true);
 });
 
 test("floating visibility subscribes before reading and ignores a stale initial read", async () => {

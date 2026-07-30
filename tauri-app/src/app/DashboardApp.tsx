@@ -118,6 +118,9 @@ export function DashboardApp() {
         onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}
+        onStatusMetricOrderChange={shellSettings.updateStatusMetricOrder}
+        onStatusMetricLabelStyleChange={shellSettings.updateStatusMetricLabelStyle}
+        onStatusSummaryOrderChange={shellSettings.updateStatusSummaryOrder}
         providerRepairOpen={providerRepairOpen}
         providerRepairSnapshot={readyState.repair}
         providerSourceKey={providerSourceKey}

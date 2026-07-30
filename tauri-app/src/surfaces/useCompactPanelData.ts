@@ -22,6 +22,8 @@ interface CompactPanelDataOptions {
   quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
+  runningEnabled?: boolean;
+  snapshotEnabled?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
 }
 
@@ -46,24 +48,26 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const quotaEnabled = options.quotaEnabled ?? true;
   const quotaInitialDelayMs = options.quotaInitialDelayMs ?? DEFAULT_QUOTA_INITIAL_DELAY_MS;
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
+  const runningEnabled = options.runningEnabled ?? true;
+  const snapshotEnabled = options.snapshotEnabled ?? true;
   const sourceToken = options.sourceToken ?? null;
   const sourceActive = active && sourceToken !== null;
 
   const rawSnapshot = useCompactPanelSnapshot({
-    active: sourceActive,
+    active: sourceActive && snapshotEnabled,
     liveRateEnabled,
     liveRateOwnerToken,
     sourceToken,
   });
   const quota = useCompactPanelQuota({
-    active: sourceActive,
+    active: sourceActive && quotaEnabled,
     enabled: quotaEnabled,
     initialDelayMs: quotaInitialDelayMs,
     intervalMs: quotaIntervalMs,
     sourceToken,
   });
   const runningThreads = useRunningThreadSummary({
-    active: sourceActive,
+    active: sourceActive && runningEnabled,
     sourceToken,
   });
 

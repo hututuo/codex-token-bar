@@ -36,6 +36,7 @@ test("compact panel keeps usage summary raw state when live rate is disabled", (
   const disabled = disabledFloatingLiveSnapshot(current);
 
   assert.equal(disabled.tokensPerSecond, 0);
+  assert.equal(disabled.liveRateAvailable, false);
   assert.equal(disabled.totalTokensLabel, "总 59.1亿");
   assert.equal(disabled.todayTokensLabel, "今 7965.0万");
   assert.equal(disabled.requestsLabel, "次 534");
@@ -67,6 +68,7 @@ test("compact panel summary labels are generated from raw summary instead of com
 
   const snapshot = floatingSnapshotForLiveRate(liveRate, trustedSummary);
 
+  assert.equal(snapshot.liveRateAvailable, true);
   assert.equal(compactTokens(trustedSummary.totalTokens), "59.1亿");
   assert.equal(snapshot.totalTokensLabel, "总 59.1亿");
   assert.equal(snapshot.todayTokensLabel, "今 7965.0万");
@@ -152,6 +154,7 @@ test("compact panel keeps failure marker separate from untrusted live-rate total
   );
 
   assert.equal(snapshot.liveRateStatusKind, "failure");
+  assert.equal(snapshot.liveRateAvailable, false);
   assert.equal(snapshot.liveRateStatusLabel, "实时速率降级");
   assert.equal(snapshot.totalTokensLabel, "总 待读取");
   assert.equal(snapshot.todayTokensLabel, "今 待读取");
@@ -180,6 +183,7 @@ test("compact panel treats live-rate summary warnings as preparation not failure
   );
 
   assert.equal(snapshot.liveRateStatusKind, "pending");
+  assert.equal(snapshot.liveRateAvailable, true);
   assert.equal(snapshot.liveRateStatusLabel, "统计重建中");
   assert.equal(floatingLiveRateStatusText(snapshot), "统计重建中");
 });
@@ -205,6 +209,7 @@ test("disabled compact live rate remains a clean non-error state", () => {
   const disabled = disabledFloatingLiveSnapshot(floatingSnapshotForLiveRate(liveRateSnapshot(), null));
 
   assert.equal(disabled.tokensPerSecond, 0);
+  assert.equal(disabled.liveRateAvailable, false);
   assert.equal(disabled.liveRateStatusKind, undefined);
   assert.equal(disabled.liveRateStatusLabel, undefined);
 });

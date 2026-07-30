@@ -29,6 +29,9 @@ import type {
   FloatingWindowSettings,
   PlatformCapabilities,
   SessionEnhancementSettings,
+  StatusMetricId,
+  StatusMetricLabelStyle,
+  StatusSummarySectionId,
 } from "../types/dashboard";
 import {
   DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
@@ -83,6 +86,9 @@ export interface DashboardShellSettingsState {
   toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
   toggleStatusTrayLiveText: () => void;
+  updateStatusMetricOrder: (order: StatusMetricId[]) => void;
+  updateStatusMetricLabelStyle: (style: StatusMetricLabelStyle) => void;
+  updateStatusSummaryOrder: (order: StatusSummarySectionId[]) => void;
   updateFloatingOpacity: (opacity: number) => void;
   updateFloatingScale: (scale: number) => void;
   updateTokenRateFullScale: (fullScale: number) => void;
@@ -154,6 +160,9 @@ export function useDashboardShellSettings({
     toggleLiveRate: toggleLiveRateSurface,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
+    updateStatusMetricOrder,
+    updateStatusMetricLabelStyle,
+    updateStatusSummaryOrder,
   } = useDisplaySurfaceSettings({
     onPersistenceError: reportDisplayPersistenceError,
     platform,
@@ -437,6 +446,9 @@ export function useDashboardShellSettings({
     toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
+    updateStatusMetricOrder,
+    updateStatusMetricLabelStyle,
+    updateStatusSummaryOrder,
     updateFloatingOpacity,
     updateFloatingScale,
     updateTokenRateFullScale,

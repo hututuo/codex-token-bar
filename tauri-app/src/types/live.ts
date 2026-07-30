@@ -33,6 +33,7 @@ export interface LiveRateStreamLease {
 export interface FloatingPanelSnapshot {
   tokensPerSecond: number;
   maxTokensPerSecond: number;
+  liveRateAvailable?: boolean;
   trendLabel: string;
   liveRateStatusKind?: "failure" | "pending";
   liveRateStatusLabel?: string;

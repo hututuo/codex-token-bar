@@ -17,6 +17,9 @@ import type {
   LiveThreadOption,
   PlatformCapabilities,
   SessionEnhancementSettings,
+  StatusMetricId,
+  StatusMetricLabelStyle,
+  StatusSummarySectionId,
   ProviderRepairSnapshot,
   RunningThreadSummary,
 } from "../types/dashboard";
@@ -88,6 +91,9 @@ interface DashboardPageProps {
   onToggleAutostart: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
+  onStatusMetricOrderChange: (order: StatusMetricId[]) => void;
+  onStatusMetricLabelStyleChange: (style: StatusMetricLabelStyle) => void;
+  onStatusSummaryOrderChange: (order: StatusSummarySectionId[]) => void;
   usageCacheInitializing: boolean;
   providerRepairOpen: boolean;
   providerRepairSnapshot: ProviderRepairSnapshot;
@@ -154,6 +160,9 @@ export function DashboardPage({
   onToggleAutostart,
   onToggleFloating,
   onToggleStatusTray,
+  onStatusMetricOrderChange,
+  onStatusMetricLabelStyleChange,
+  onStatusSummaryOrderChange,
   usageCacheInitializing,
   providerRepairOpen,
   providerRepairSnapshot,
@@ -167,8 +176,11 @@ export function DashboardPage({
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
-  const [settingsOpen, setSettingsOpen] = useState(consumePendingSettingsRequest);
-  const [settingsCategory, setSettingsCategory] = useState<AppSettingsCategory>("general");
+  const [initialSettingsRequest] = useState(consumePendingSettingsRequest);
+  const [settingsOpen, setSettingsOpen] = useState(initialSettingsRequest !== null);
+  const [settingsCategory, setSettingsCategory] = useState<AppSettingsCategory>(
+    initialSettingsRequest ?? "general",
+  );
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const openSettings = useCallback((category: AppSettingsCategory = "general") => {
     setSettingsCategory(category);
@@ -180,8 +192,7 @@ export function DashboardPage({
     let unlisten: (() => void) | null = null;
     void desktopPlatform.onOpenAppSettings(() => {
       if (!disposed) {
-        window.localStorage.removeItem("open-app-settings-requested");
-        openSettings("general");
+        openSettings(consumePendingSettingsRequest() ?? "general");
       }
     }).then((handler) => {
       if (disposed) handler();
@@ -312,6 +323,9 @@ export function DashboardPage({
         onToggleFloating={onToggleFloating}
         onToggleLiveRate={onToggleLiveRate}
         onToggleStatusTray={onToggleStatusTray}
+        onStatusMetricOrderChange={onStatusMetricOrderChange}
+        onStatusMetricLabelStyleChange={onStatusMetricLabelStyleChange}
+        onStatusSummaryOrderChange={onStatusSummaryOrderChange}
         open={settingsOpen}
         platform={platform}
         quotaRefreshIntervalMs={quotaRefreshIntervalMs}
@@ -322,10 +336,13 @@ export function DashboardPage({
   );
 }
 
-function consumePendingSettingsRequest(): boolean {
-  const pending = window.localStorage.getItem("open-app-settings-requested") === "1";
-  if (pending) window.localStorage.removeItem("open-app-settings-requested");
-  return pending;
+function consumePendingSettingsRequest(): AppSettingsCategory | null {
+  const pending = window.localStorage.getItem("open-app-settings-requested");
+  if (pending === null) {
+    return null;
+  }
+  window.localStorage.removeItem("open-app-settings-requested");
+  return pending === "status" ? "status" : "general";
 }
 
 function UsageCacheInitializationNotice() {

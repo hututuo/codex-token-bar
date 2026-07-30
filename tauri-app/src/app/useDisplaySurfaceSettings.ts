@@ -3,7 +3,7 @@ import { saveDisplaySurfaces } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 import {
   canUseFloatingWindow,
-  canUseStatusTrayLiveText,
+  canUseStatusTray,
   INACTIVE_DISPLAY_SURFACES,
   sanitizeDisplaySurfaces,
 } from "../settings/displaySettings";
@@ -14,6 +14,9 @@ import {
 import type {
   DisplaySurfaceSettings,
   PlatformCapabilities,
+  StatusMetricId,
+  StatusMetricLabelStyle,
+  StatusSummarySectionId,
 } from "../types/dashboard";
 import { useFloatingWindowSurface } from "./useFloatingWindowSurface";
 
@@ -29,6 +32,9 @@ export interface DisplaySurfaceSettingsState {
   toggleLiveRate: () => void;
   toggleFloatingWindow: () => Promise<void>;
   toggleStatusTrayLiveText: () => void;
+  updateStatusMetricOrder: (order: StatusMetricId[]) => void;
+  updateStatusMetricLabelStyle: (style: StatusMetricLabelStyle) => void;
+  updateStatusSummaryOrder: (order: StatusSummarySectionId[]) => void;
 }
 
 export function useDisplaySurfaceSettings({
@@ -63,7 +69,7 @@ export function useDisplaySurfaceSettings({
     );
   }
   const floatingAvailable = canUseFloatingWindow(platform);
-  const statusTrayLiveTextAvailable = canUseStatusTrayLiveText(platform);
+  const statusTrayAvailable = canUseStatusTray(platform);
 
   const updateDisplaySurfaces = useCallback((next: Partial<DisplaySurfaceSettings>) => {
     const sanitized = sanitizeDisplaySurfaces({ ...displaySurfacesRef.current, ...next });
@@ -119,7 +125,7 @@ export function useDisplaySurfaceSettings({
   });
 
   const toggleStatusTrayLiveText = useCallback(() => {
-    if (!statusTrayLiveTextAvailable) {
+    if (!statusTrayAvailable) {
       return;
     }
     updateDisplaySurfaces({
@@ -127,9 +133,23 @@ export function useDisplaySurfaceSettings({
     });
   }, [
     displaySurfaces.statusTrayLiveTextEnabled,
-    statusTrayLiveTextAvailable,
+    statusTrayAvailable,
     updateDisplaySurfaces,
   ]);
+
+  const updateStatusMetricOrder = useCallback((statusMetricOrder: StatusMetricId[]) => {
+    updateDisplaySurfaces({ statusMetricOrder });
+  }, [updateDisplaySurfaces]);
+
+  const updateStatusMetricLabelStyle = useCallback((
+    statusMetricLabelStyle: StatusMetricLabelStyle,
+  ) => {
+    updateDisplaySurfaces({ statusMetricLabelStyle });
+  }, [updateDisplaySurfaces]);
+
+  const updateStatusSummaryOrder = useCallback((statusSummaryOrder: StatusSummarySectionId[]) => {
+    updateDisplaySurfaces({ statusSummaryOrder });
+  }, [updateDisplaySurfaces]);
 
   const toggleLiveRate = useCallback(() => {
     updateDisplaySurfaces({
@@ -144,6 +164,9 @@ export function useDisplaySurfaceSettings({
     toggleLiveRate,
     toggleFloatingWindow,
     toggleStatusTrayLiveText,
+    updateStatusMetricOrder,
+    updateStatusMetricLabelStyle,
+    updateStatusSummaryOrder,
   };
 }
 
@@ -155,5 +178,10 @@ function sameDisplaySurfaces(
     left.floatingWindowEnabled === right.floatingWindowEnabled
     && left.liveRateEnabled === right.liveRateEnabled
     && left.statusTrayLiveTextEnabled === right.statusTrayLiveTextEnabled
+    && left.statusMetricOrder.length === right.statusMetricOrder.length
+    && left.statusMetricOrder.every((metric, index) => metric === right.statusMetricOrder[index])
+    && left.statusMetricLabelStyle === right.statusMetricLabelStyle
+    && left.statusSummaryOrder.length === right.statusSummaryOrder.length
+    && left.statusSummaryOrder.every((section, index) => section === right.statusSummaryOrder[index])
   );
 }

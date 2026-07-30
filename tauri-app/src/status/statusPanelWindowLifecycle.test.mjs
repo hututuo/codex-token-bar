@@ -4,7 +4,7 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("status lifecycle dismisses outside blur or Escape and becomes active after the next focused show", async () => {
+test("status lifecycle follows visibility when background ownership is disabled", async () => {
   const dom = new Window({ url: "http://localhost/?surface=status" });
   const restoreGlobals = installDomGlobals(dom);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -15,7 +15,6 @@ test("status lifecycle dismisses outside blur or Escape and becomes active after
     await withSsrModules(async (load) => {
       const { useStatusPanelWindowLifecycle } = await load("/src/status/useStatusPanelWindowLifecycle.ts");
       let visible = true;
-      let focused = true;
       let blurDismissals = 0;
       const dependencies = {
         dismissOnBlur() {
@@ -23,7 +22,6 @@ test("status lifecycle dismisses outside blur or Escape and becomes active after
           visible = false;
           return Promise.resolve(false);
         },
-        hasFocus: () => focused,
         isVisible: () => Promise.resolve(visible),
       };
       const container = dom.document.createElement("div");
@@ -31,7 +29,7 @@ test("status lifecycle dismisses outside blur or Escape and becomes active after
       const root = createRoot(container);
 
       function Probe() {
-        const active = useStatusPanelWindowLifecycle(dependencies);
+        const active = useStatusPanelWindowLifecycle(false, dependencies);
         return React.createElement("output", null, String(active));
       }
 
@@ -39,13 +37,11 @@ test("status lifecycle dismisses outside blur or Escape and becomes active after
         await React.act(async () => root.render(React.createElement(Probe)));
         await waitForAct(React, () => container.textContent === "true");
 
-        focused = false;
         await React.act(async () => dom.dispatchEvent(new dom.Event("blur")));
         assert.equal(container.textContent, "false");
         assert.equal(blurDismissals, 1, "ordinary outside blur crosses the blur-dismiss seam");
 
         visible = true;
-        focused = true;
         await React.act(async () => dom.dispatchEvent(new dom.Event("focus")));
         await waitForAct(React, () => container.textContent === "true");
         assert.equal(container.textContent, "true", "a tray show followed by focus reactivates StatusPanelApp");
@@ -64,6 +60,105 @@ test("status lifecycle dismisses outside blur or Escape and becomes active after
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     dom.close();
   }
+});
+
+test("status lifecycle stays active as a hidden composite readout owner", async () => {
+  const dom = new Window({ url: "http://localhost/?surface=status" });
+  const restoreGlobals = installDomGlobals(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { useStatusPanelWindowLifecycle } = await load("/src/status/useStatusPanelWindowLifecycle.ts");
+      const dependencies = {
+        dismissOnBlur: () => Promise.resolve(false),
+        isVisible: () => Promise.resolve(false),
+      };
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+      function Probe() {
+        return React.createElement(
+          "output",
+          null,
+          String(useStatusPanelWindowLifecycle(true, dependencies)),
+        );
+      }
+      try {
+        await React.act(async () => root.render(React.createElement(Probe)));
+        await waitForAct(React, () => container.textContent === "true");
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
+test("status lifecycle state exposes visibility separately from background ownership", async () => {
+  const dom = new Window({ url: "http://localhost/?surface=status" });
+  const restoreGlobals = installDomGlobals(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { useStatusPanelWindowLifecycleState } = await load(
+        "/src/status/useStatusPanelWindowLifecycle.ts",
+      );
+      const dependencies = {
+        dismissOnBlur: () => Promise.resolve(false),
+        isVisible: () => Promise.resolve(false),
+      };
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+      function Probe() {
+        const state = useStatusPanelWindowLifecycleState(true, dependencies);
+        return React.createElement(
+          "output",
+          null,
+          JSON.stringify(state),
+        );
+      }
+      try {
+        await React.act(async () => root.render(React.createElement(Probe)));
+        await waitForAct(
+          React,
+          () => container.textContent === '{"active":true,"visible":false}',
+        );
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
+test("compact status markup has no product-name fallback or redundant close button", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./StatusPanelApp.tsx", import.meta.url), "utf8");
+  const compactMarkup = await readFile(
+    new URL("./StatusPanelCompactIndicator.tsx", import.meta.url),
+    "utf8",
+  );
+  const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+
+  assert.equal(source.includes("<StatusPanelCompactIndicator"), true);
+  assert.equal(compactMarkup.includes("<strong>Codex Token Bar</strong>"), false);
+  assert.equal(compactMarkup.includes('aria-label="关闭状态栏详情"'), false);
+  assert.equal(compactMarkup.includes("onClick={onExpand}"), true);
+  assert.equal(compactMarkup.includes("onKeyDown={handleKeyDown}"), true);
+  assert.equal(compactMarkup.includes('role="button"'), true);
+  assert.equal(source.includes("desktopPlatform.showStatusPanelWindow()"), true);
+  assert.equal(styles.includes(".status-panel-card--compact > button"), false);
 });
 
 function installDomGlobals(dom) {

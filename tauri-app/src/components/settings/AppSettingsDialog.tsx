@@ -17,7 +17,12 @@ import {
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import { floatingGradientBackground } from "../../floating/floatingSettings";
 import { floatingTextPaletteForGroup } from "../../floating/floatingTextPalette";
+import {
+  DEFAULT_STATUS_METRIC_ORDER,
+  DEFAULT_STATUS_SUMMARY_ORDER,
+} from "../../settings/displaySettings";
 import { QUOTA_REFRESH_CADENCE_OPTIONS } from "../../settings/quotaRefreshCadence";
+import { buildStatusIndicatorPreview } from "../../status/statusIndicatorPresentation";
 import {
   AUTO_RESUME_FAILURE_REASONS,
   AUTO_RESUME_INTERVAL_OPTIONS,
@@ -49,6 +54,9 @@ import type {
   FloatingUnreadEffect,
   PlatformCapabilities,
   SessionEnhancementSettings,
+  StatusMetricId,
+  StatusMetricLabelStyle,
+  StatusSummarySectionId,
 } from "../../types/dashboard";
 import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
@@ -59,6 +67,7 @@ export type AppSettingsCategory =
   | "session"
   | "instances"
   | "surfaces"
+  | "status"
   | "monitoring"
   | "automation"
   | "floating"
@@ -78,9 +87,10 @@ const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "instances", label: "Codex 实例", description: "多开、隔离、同步与回滚" },
   { id: "automation", label: "自动续跑", description: "按所选中断原因、定时或额度恢复继续" },
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
+  { id: "status", label: "状态栏与托盘", description: "指标、顺序与紧缩预览" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
   { id: "floating", label: "悬浮窗", description: "尺寸、颜色与额度条" },
-  { id: "content", label: "内容与排序", description: "显示项目与排列顺序" },
+  { id: "content", label: "悬浮窗内容", description: "悬浮窗显示项目与排列顺序" },
   { id: "alerts", label: "提醒与更新", description: "未读提示与版本更新" },
   { id: "data", label: "数据与维护", description: "目录、修复与连接状态" },
 ];
@@ -134,6 +144,9 @@ interface AppSettingsDialogProps {
   onToggleFloating: () => void;
   onToggleLiveRate: () => void;
   onToggleStatusTray: () => void;
+  onStatusMetricOrderChange: (order: StatusMetricId[]) => void;
+  onStatusMetricLabelStyleChange: (style: StatusMetricLabelStyle) => void;
+  onStatusSummaryOrderChange: (order: StatusSummarySectionId[]) => void;
 }
 
 export function AppSettingsDialog({
@@ -180,6 +193,9 @@ export function AppSettingsDialog({
   onToggleFloating,
   onToggleLiveRate,
   onToggleStatusTray,
+  onStatusMetricOrderChange,
+  onStatusMetricLabelStyleChange,
+  onStatusSummaryOrderChange,
 }: AppSettingsDialogProps) {
   const [selectedCategory, setSelectedCategory] = useState<AppSettingsCategory>(initialCategory);
   const [sessionEnableConfirmationOpen, setSessionEnableConfirmationOpen] = useState(false);
@@ -367,7 +383,17 @@ export function AppSettingsDialog({
               {selectedCategory === "surfaces" ? (
                 <SurfaceSettings
                   displaySurfaces={displaySurfaces}
+                  onOpenStatusSettings={() => setSelectedCategory("status")}
                   onToggleFloating={onToggleFloating}
+                  platform={platform}
+                />
+              ) : null}
+              {selectedCategory === "status" ? (
+                <StatusIndicatorSettings
+                  displaySurfaces={displaySurfaces}
+                  onStatusMetricLabelStyleChange={onStatusMetricLabelStyleChange}
+                  onStatusMetricOrderChange={onStatusMetricOrderChange}
+                  onStatusSummaryOrderChange={onStatusSummaryOrderChange}
                   onToggleStatusTray={onToggleStatusTray}
                   platform={platform}
                 />
@@ -609,12 +635,13 @@ function GeneralSettings({
 
 function SurfaceSettings({
   displaySurfaces,
+  onOpenStatusSettings,
   onToggleFloating,
-  onToggleStatusTray,
   platform,
-}: Pick<AppSettingsDialogProps, "displaySurfaces" | "onToggleFloating" | "onToggleStatusTray" | "platform">) {
+}: Pick<AppSettingsDialogProps, "displaySurfaces" | "onToggleFloating" | "platform"> & {
+  onOpenStatusSettings: () => void;
+}) {
   const floatingAvailable = platform.floatingWindow.available;
-  const statusLiveTextAvailable = platform.statusTray.available && platform.statusTrayLiveText.available;
   return (
     <SettingsGroup title="可见位置" description="选择速率与额度信息出现在哪些显示面。">
       <SettingRow title="桌面悬浮窗" description={platform.floatingWindow.note}>
@@ -626,21 +653,274 @@ function SurfaceSettings({
         />
       </SettingRow>
       <SettingRow
-        title="状态栏实时数字"
-        description={statusLiveTextAvailable ? platform.statusTrayLiveText.note : platform.statusTray.note}
+        title="状态栏与系统托盘"
+        description={`当前${displaySurfaces.statusTrayLiveTextEnabled ? "已开启" : "已关闭"}；指标选择和顺序集中在专属页面。`}
       >
-        <ToggleButton
-          active={displaySurfaces.statusTrayLiveTextEnabled}
-          disabled={!statusLiveTextAvailable}
-          label="状态栏实时数字"
-          onClick={onToggleStatusTray}
-        />
+        <button className="app-settings-secondary-button" onClick={onOpenStatusSettings} type="button">
+          前往设置
+        </button>
       </SettingRow>
       <div className="app-settings-note">
         跨平台版会按当前系统能力开放显示面；主窗口缩放由系统窗口尺寸自动适配。
       </div>
     </SettingsGroup>
   );
+}
+
+const STATUS_METRIC_OPTIONS: ReadonlyArray<{
+  description: string;
+  id: StatusMetricId;
+  label: string;
+}> = [
+  { id: "rate", label: "实时速度", description: "当前 Token 生成速度；真实为零时仍显示。" },
+  { id: "fiveHour", label: "5 小时额度", description: "读取不到时保留“—”占位。" },
+  { id: "sevenDay", label: "7 天额度", description: "读取不到时保留“—”占位。" },
+  { id: "iq", label: "雷达 IQ", description: "读取不到时保留“—”占位。" },
+  { id: "today", label: "今日 Token", description: "今天累计处理的 Token。" },
+  { id: "total", label: "累计 Token", description: "本机历史累计 Token。" },
+  { id: "requests", label: "请求次数", description: "累计请求数量。" },
+  { id: "running", label: "运行任务", description: "没有运行任务时显示 0。" },
+  { id: "unread", label: "未读会话", description: "没有未读时显示 0。" },
+];
+
+const STATUS_SUMMARY_OPTIONS: ReadonlyArray<{
+  description: string;
+  id: StatusSummarySectionId;
+  label: string;
+}> = [
+  { id: "overview", label: "速度概览", description: "当前速度、趋势与速率条。" },
+  { id: "usage", label: "用量统计", description: "今日、累计与请求次数。" },
+  { id: "quota", label: "额度", description: "5 小时和 7 天额度。" },
+  { id: "running", label: "运行任务", description: "主任务与子 Agent 概览。" },
+  { id: "unread", label: "未读会话", description: "未读数量和标记已读入口。" },
+  { id: "radar", label: "雷达", description: "官方雷达动作、概率和 IQ。" },
+  { id: "crowdRadar", label: "众测雷达", description: "众测排行的紧凑摘要。" },
+];
+
+function StatusIndicatorSettings({
+  displaySurfaces,
+  onStatusMetricLabelStyleChange,
+  onStatusMetricOrderChange,
+  onStatusSummaryOrderChange,
+  onToggleStatusTray,
+  platform,
+}: Pick<
+  AppSettingsDialogProps,
+  | "displaySurfaces"
+  | "onStatusMetricLabelStyleChange"
+  | "onStatusMetricOrderChange"
+  | "onStatusSummaryOrderChange"
+  | "onToggleStatusTray"
+  | "platform"
+>) {
+  const order = displaySurfaces.statusMetricOrder;
+  const summaryOrder = displaySurfaces.statusSummaryOrder;
+  const preview = useMemo(
+    () => buildStatusIndicatorPreview(order, displaySurfaces.statusMetricLabelStyle),
+    [displaySurfaces.statusMetricLabelStyle, order],
+  );
+  const options = useMemo(() => {
+    const configured = order
+      .map((id) => STATUS_METRIC_OPTIONS.find((option) => option.id === id))
+      .filter((option): option is (typeof STATUS_METRIC_OPTIONS)[number] => option !== undefined);
+    const selected = new Set(order);
+    return [
+      ...configured,
+      ...STATUS_METRIC_OPTIONS.filter((option) => !selected.has(option.id)),
+    ];
+  }, [order]);
+  const summaryOptions = useMemo(() => {
+    const configured = summaryOrder
+      .map((id) => STATUS_SUMMARY_OPTIONS.find((option) => option.id === id))
+      .filter((option): option is (typeof STATUS_SUMMARY_OPTIONS)[number] => option !== undefined);
+    const selected = new Set(summaryOrder);
+    return [
+      ...configured,
+      ...STATUS_SUMMARY_OPTIONS.filter((option) => !selected.has(option.id)),
+    ];
+  }, [summaryOrder]);
+  const statusAvailable = platform.statusTray.available;
+  const platformDescription = platform.platform === "windows"
+    ? "Windows 系统托盘图标保留稳定入口；可选任务栏旁紧凑条按顺序显示所选指标，完整详情点开查看。"
+    : "macOS 会在菜单栏按顺序显示紧缩文字，点击后仍可查看完整详情。";
+
+  function setMetricEnabled(id: StatusMetricId, enabled: boolean) {
+    if (enabled) {
+      onStatusMetricOrderChange([...order, id]);
+    } else {
+      onStatusMetricOrderChange(order.filter((metric) => metric !== id));
+    }
+  }
+
+  function moveMetric(id: StatusMetricId, offset: -1 | 1) {
+    const index = order.indexOf(id);
+    const destination = index + offset;
+    if (index < 0 || destination < 0 || destination >= order.length) {
+      return;
+    }
+    const next = [...order];
+    [next[index], next[destination]] = [next[destination], next[index]];
+    onStatusMetricOrderChange(next);
+  }
+
+  function setSummaryEnabled(id: StatusSummarySectionId, enabled: boolean) {
+    if (enabled) {
+      onStatusSummaryOrderChange([...summaryOrder, id]);
+    } else {
+      onStatusSummaryOrderChange(summaryOrder.filter((section) => section !== id));
+    }
+  }
+
+  function moveSummary(id: StatusSummarySectionId, offset: -1 | 1) {
+    const index = summaryOrder.indexOf(id);
+    const destination = index + offset;
+    if (index < 0 || destination < 0 || destination >= summaryOrder.length) {
+      return;
+    }
+    const next = [...summaryOrder];
+    [next[index], next[destination]] = [next[destination], next[index]];
+    onStatusSummaryOrderChange(next);
+  }
+
+  return (
+    <>
+      <SettingsGroup title="显示方式" description="设置状态栏或系统托盘是否工作，并即时查看紧缩结果。">
+        <SettingRow title="状态栏与托盘指标" description={platformDescription}>
+          <ToggleButton
+            active={displaySurfaces.statusTrayLiveTextEnabled}
+            disabled={!statusAvailable}
+            label="状态栏与托盘指标"
+            onClick={onToggleStatusTray}
+          />
+        </SettingRow>
+        <SettingRow title="标签样式" description="完整标签便于辨认，紧缩标签节省空间，仅数值最窄。">
+          <div aria-label="状态栏标签样式" className="app-setting-choice" role="radiogroup">
+            {([
+              ["full", "完整"],
+              ["compact", "紧缩"],
+              ["hidden", "仅数值"],
+            ] as const).map(([style, label]) => (
+              <button
+                aria-checked={displaySurfaces.statusMetricLabelStyle === style}
+                className={displaySurfaces.statusMetricLabelStyle === style ? "is-active" : ""}
+                key={style}
+                onClick={() => onStatusMetricLabelStyleChange(style)}
+                role="radio"
+                type="button"
+              >{label}</button>
+            ))}
+          </div>
+        </SettingRow>
+        <div className="status-indicator-preview" aria-label="状态栏指标实时示例">
+          <span>{platform.platform === "windows" ? "Windows 紧凑条示例" : "macOS 菜单栏示例"}</span>
+          <strong>{preview.title || "仅显示应用图标"}</strong>
+          <em title={preview.tooltip}>{preview.tooltip}</em>
+        </div>
+        {!statusAvailable ? (
+          <div className="app-settings-note">{platform.statusTray.note}</div>
+        ) : null}
+      </SettingsGroup>
+
+      <SettingsGroup title="指标与顺序" description="勾选需要的指标；已选项目按这里的顺序显示。">
+        <div className="status-metric-list">
+          {options.map((option) => {
+            const selectedIndex = order.indexOf(option.id);
+            const enabled = selectedIndex >= 0;
+            return (
+              <div className="status-metric-row" key={option.id}>
+                <label>
+                  <input
+                    checked={enabled}
+                    onChange={(event) => setMetricEnabled(option.id, event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span><strong>{option.label}</strong><em>{option.description}</em></span>
+                </label>
+                <div className="status-metric-order-actions">
+                  <button
+                    aria-label={`${option.label}上移`}
+                    disabled={!enabled || selectedIndex === 0}
+                    onClick={() => moveMetric(option.id, -1)}
+                    type="button"
+                  >↑</button>
+                  <button
+                    aria-label={`${option.label}下移`}
+                    disabled={!enabled || selectedIndex === order.length - 1}
+                    onClick={() => moveMetric(option.id, 1)}
+                    type="button"
+                  >↓</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="app-settings-group-footer">
+          <span>已选指标始终保留：真实零显示 0，暂未读取或不可用显示“—”。</span>
+          <button
+            className="app-settings-secondary-button"
+            disabled={sameMetricOrder(order, DEFAULT_STATUS_METRIC_ORDER)}
+            onClick={() => onStatusMetricOrderChange([...DEFAULT_STATUS_METRIC_ORDER])}
+            type="button"
+          >恢复默认</button>
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title="摘要内容与排序" description="自由选择点击托盘或闪电后详情面板里的内容与顺序。">
+        <div className="status-metric-list status-summary-list">
+          {summaryOptions.map((option) => {
+            const selectedIndex = summaryOrder.indexOf(option.id);
+            const enabled = selectedIndex >= 0;
+            return (
+              <div className="status-metric-row" key={option.id}>
+                <label>
+                  <input
+                    checked={enabled}
+                    onChange={(event) => setSummaryEnabled(option.id, event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span><strong>{option.label}</strong><em>{option.description}</em></span>
+                </label>
+                <div className="status-metric-order-actions">
+                  <button
+                    aria-label={`${option.label}上移`}
+                    disabled={!enabled || selectedIndex === 0}
+                    onClick={() => moveSummary(option.id, -1)}
+                    type="button"
+                  >↑</button>
+                  <button
+                    aria-label={`${option.label}下移`}
+                    disabled={!enabled || selectedIndex === summaryOrder.length - 1}
+                    onClick={() => moveSummary(option.id, 1)}
+                    type="button"
+                  >↓</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="app-settings-group-footer">
+          <span>摘要使用独立顺序，不会改变悬浮窗内容。</span>
+          <button
+            className="app-settings-secondary-button"
+            disabled={sameSummaryOrder(summaryOrder, DEFAULT_STATUS_SUMMARY_ORDER)}
+            onClick={() => onStatusSummaryOrderChange([...DEFAULT_STATUS_SUMMARY_ORDER])}
+            type="button"
+          >恢复摘要默认</button>
+        </div>
+      </SettingsGroup>
+    </>
+  );
+}
+
+function sameMetricOrder(left: readonly StatusMetricId[], right: readonly StatusMetricId[]): boolean {
+  return left.length === right.length && left.every((metric, index) => metric === right[index]);
+}
+
+function sameSummaryOrder(
+  left: readonly StatusSummarySectionId[],
+  right: readonly StatusSummarySectionId[],
+): boolean {
+  return left.length === right.length && left.every((section, index) => section === right[index]);
 }
 
 function MonitoringSettings({

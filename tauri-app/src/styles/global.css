@@ -3381,6 +3381,129 @@ button.quota-side-card:hover {
   padding: 9px 12px;
 }
 
+.app-settings-secondary-button,
+.status-metric-order-actions button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  padding: 0 10px;
+}
+
+.app-settings-secondary-button:disabled,
+.status-metric-order-actions button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.status-indicator-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: center;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  padding: 11px 12px;
+}
+
+.status-indicator-preview > span,
+.status-indicator-preview > em {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: var(--weight-regular);
+}
+
+.status-indicator-preview > strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-indicator-preview > em {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-metric-list {
+  display: grid;
+}
+
+.status-metric-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 48px;
+  padding: 8px 12px;
+}
+
+.status-metric-row + .status-metric-row {
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+
+.status-metric-row > label {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.status-metric-row input {
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.status-metric-row label > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.status-metric-row label strong {
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+}
+
+.status-metric-row label em {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: var(--weight-regular);
+}
+
+.status-metric-order-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.status-metric-order-actions button {
+  width: 30px;
+  padding: 0;
+}
+
+.status-metric-list + .app-settings-group-footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.status-metric-list + .app-settings-group-footer > span {
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
 .app-settings-preview-wrap {
   display: grid;
   gap: 7px;
@@ -7222,6 +7345,216 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: 11px;
   font-weight: var(--weight-semibold);
   padding: 0 7px;
+}
+
+.status-panel-card--expanded {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-content: stretch;
+  gap: 9px;
+  padding: 11px;
+}
+
+.status-panel-card--expanded .status-panel-head {
+  align-items: center;
+}
+
+.status-panel-card--expanded .status-panel-head > div:first-child {
+  min-width: 0;
+}
+
+.status-panel-card--expanded .status-panel-head strong {
+  overflow: hidden;
+  max-width: 300px;
+  font-size: 13px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-panel-summary-scroll {
+  overflow: auto;
+  min-height: 0;
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+
+.status-panel-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.status-summary-card {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  min-height: 86px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel));
+}
+
+.status-summary-card--wide,
+.status-summary-card--overview {
+  grid-column: 1 / -1;
+}
+
+.status-summary-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.status-summary-card > header span,
+.status-summary-metrics dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+}
+
+.status-summary-card > header strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: var(--weight-semibold);
+}
+
+.status-summary-card > p {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+}
+
+.status-summary-card--overview {
+  min-height: 92px;
+}
+
+.status-summary-card--overview > header strong {
+  font-size: 20px;
+}
+
+.status-summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.status-summary-metrics--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.status-summary-metrics > div {
+  min-width: 0;
+}
+
+.status-summary-metrics dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-summary-card .status-panel-quota {
+  display: flex;
+  gap: 7px;
+}
+
+.status-summary-card > .floating-radar,
+.status-summary-card > .floating-crowd-radar {
+  min-height: 0;
+  border-top: 0;
+  padding: 0;
+}
+
+.status-summary-inline-action {
+  justify-self: start;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: var(--weight-semibold);
+  padding: 0 8px;
+}
+
+.status-panel-summary-empty {
+  grid-column: 1 / -1;
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  padding: 20px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.status-window-shell--compact {
+  padding: 4px;
+}
+
+.status-panel-card--compact {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  align-items: center;
+  gap: 0;
+  padding: 6px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.status-panel-card--compact:hover {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent));
+}
+
+.status-panel-card--compact:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: -2px;
+}
+
+.status-panel-card--compact:active {
+  transform: scale(0.985);
+}
+
+.status-indicator-compact-items {
+  display: flex;
+  overflow: visible;
+  align-items: center;
+  min-width: 0;
+  gap: 0;
+  white-space: nowrap;
+}
+
+.status-indicator-compact-items strong {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+}
+
+.status-indicator-compact-items strong + strong::before {
+  content: "·";
+  margin: 0 6px;
+  color: var(--muted);
+  font-weight: var(--weight-regular);
 }
 
 @media (max-width: 960px) {

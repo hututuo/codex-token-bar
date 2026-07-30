@@ -17,7 +17,10 @@ test("running thread polling is source-scoped and independent of live-rate enabl
   assert.match(hook, /sourceToken\.physicalHomeKey/);
   assert.match(hook, /if \(!disposed\)/);
   assert.match(hook, /current\.total === null/);
-  assert.match(compact, /useRunningThreadSummary\(\{\s*active: sourceActive,\s*sourceToken,/s);
+  assert.match(
+    compact,
+    /useRunningThreadSummary\(\{\s*active: sourceActive && runningEnabled,\s*sourceToken,/s,
+  );
   assert.match(dashboard, /useRunningThreadSummary\(\{\s*active: sourceToken !== null,\s*sourceToken,/s);
   assert.doesNotMatch(
     compact.slice(

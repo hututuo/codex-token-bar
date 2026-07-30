@@ -11,14 +11,15 @@ const SETTINGS_CATEGORIES = [
   "Codex 实例",
   "自动续跑",
   "显示面",
+  "状态栏与托盘",
   "监控与额度",
   "悬浮窗",
-  "内容与排序",
+  "悬浮窗内容",
   "提醒与更新",
   "数据与维护",
 ];
 
-test("global settings exposes ten categorized tabs and defaults to general", async () => {
+test("global settings exposes eleven categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
@@ -92,10 +93,70 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     assert.equal(tabName(selectedTab(container)), "常规");
     assert.equal(document.activeElement, generalTab);
 
-    await click(act, tabByName(container, "内容与排序"), window);
-    assert.equal(tabName(selectedTab(container)), "内容与排序");
+    await click(act, tabByName(container, "悬浮窗内容"), window);
+    assert.equal(tabName(selectedTab(container)), "悬浮窗内容");
     assert.match(activePanel(container).textContent, /速率|额度|雷达/);
     assert.match(activePanel(container).textContent, /运行线程/);
+  });
+});
+
+test("status indicator settings preview, select, reorder and restore through one callback", async () => {
+  await withMountedSettings(async ({ act, calls, container, render, window }) => {
+    await click(act, tabByName(container, "状态栏与托盘"), window);
+    let panel = activePanel(container);
+    assert.match(panel.textContent, /12\.4\/s · ⁵ʰ42% · ⁷ᵈ76% · IQ104/);
+    assert.match(panel.textContent, /指标与顺序/);
+    assert.match(panel.textContent, /真实为零时仍显示/);
+    await click(act, buttonWithText(panel, "仅数值"), window);
+    assert.equal(calls.statusMetricLabelStyles.at(-1), "hidden");
+
+    const todayRow = [...panel.querySelectorAll(".status-metric-row")]
+      .find((row) => row.textContent?.includes("今日 Token"));
+    assert.ok(todayRow);
+    await click(act, todayRow.querySelector('input[type="checkbox"]'), window);
+    assert.deepEqual(calls.statusMetricOrders.at(-1), [
+      "rate",
+      "fiveHour",
+      "sevenDay",
+      "iq",
+      "today",
+    ]);
+
+    await render({
+      displaySurfaces: {
+        floatingWindowEnabled: true,
+        liveRateEnabled: true,
+        statusTrayLiveTextEnabled: true,
+        statusMetricOrder: ["rate", "fiveHour", "sevenDay", "iq", "today"],
+        statusMetricLabelStyle: "compact",
+        statusSummaryOrder: ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"],
+      },
+    });
+    panel = activePanel(container);
+    await click(act, panel.querySelector('button[aria-label="5 小时额度下移"]'), window);
+    assert.deepEqual(calls.statusMetricOrders.at(-1), [
+      "rate",
+      "sevenDay",
+      "fiveHour",
+      "iq",
+      "today",
+    ]);
+
+    await click(act, buttonWithText(panel, "恢复默认"), window);
+    assert.deepEqual(calls.statusMetricOrders.at(-1), ["rate", "fiveHour", "sevenDay", "iq"]);
+
+    const crowdRadarRow = [...panel.querySelectorAll(".status-summary-list .status-metric-row")]
+      .find((row) => row.textContent?.includes("众测雷达"));
+    assert.ok(crowdRadarRow);
+    await click(act, crowdRadarRow.querySelector('input[type="checkbox"]'), window);
+    assert.deepEqual(calls.statusSummaryOrders.at(-1), [
+      "overview",
+      "usage",
+      "quota",
+      "running",
+      "unread",
+      "radar",
+    ]);
   });
 });
 
@@ -508,6 +569,9 @@ async function withMountedSettings(run, initialOverrides = {}) {
         providerRepair: 0,
         threadDeleteReconnect: 0,
         sessionEnhancementSaves: [],
+        statusMetricOrders: [],
+        statusMetricLabelStyles: [],
+        statusSummaryOrders: [],
         tokenRateFullScale: [],
         update: 0,
       };
@@ -546,6 +610,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     providerRepair: 0,
     threadDeleteReconnect: 0,
     sessionEnhancementSaves: [],
+    statusMetricOrders: [],
+    statusMetricLabelStyles: [],
+    statusSummaryOrders: [],
     tokenRateFullScale: [],
     update: 0,
   };
@@ -565,6 +632,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
       floatingWindowEnabled: true,
       liveRateEnabled: true,
       statusTrayLiveTextEnabled: true,
+      statusMetricOrder: ["rate", "fiveHour", "sevenDay", "iq"],
+      statusMetricLabelStyle: "compact",
+      statusSummaryOrder: ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"],
     },
     floatingSettings,
     liveRateEnabled: true,
@@ -612,6 +682,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onToggleFloating: noop,
     onToggleLiveRate: noop,
     onToggleStatusTray: noop,
+    onStatusMetricOrderChange: (order) => { callLog.statusMetricOrders.push(order); },
+    onStatusMetricLabelStyleChange: (style) => { callLog.statusMetricLabelStyles.push(style); },
+    onStatusSummaryOrderChange: (order) => { callLog.statusSummaryOrders.push(order); },
     ...overrides,
   };
 }

@@ -162,8 +162,33 @@ export interface FloatingWindowPosition {
   savedAt?: number | null;
 }
 
+export type StatusMetricId =
+  | "rate"
+  | "fiveHour"
+  | "sevenDay"
+  | "iq"
+  | "today"
+  | "total"
+  | "requests"
+  | "running"
+  | "unread";
+
+export type StatusMetricLabelStyle = "full" | "compact" | "hidden";
+
+export type StatusSummarySectionId =
+  | "overview"
+  | "usage"
+  | "quota"
+  | "running"
+  | "unread"
+  | "radar"
+  | "crowdRadar";
+
 export interface DisplaySurfaceSettings {
   floatingWindowEnabled: boolean;
   liveRateEnabled: boolean;
   statusTrayLiveTextEnabled: boolean;
+  statusMetricOrder: StatusMetricId[];
+  statusMetricLabelStyle: StatusMetricLabelStyle;
+  statusSummaryOrder: StatusSummarySectionId[];
 }

@@ -49,8 +49,8 @@ export function reduceFloatingSurfaceLifecycle(
   };
 }
 
-export function statusPanelIsActive(visible: boolean, focused: boolean): boolean {
-  return visible && focused;
+export function statusPanelIsActive(visible: boolean): boolean {
+  return visible;
 }
 
 export function observeFloatingSurfaceVisibility({

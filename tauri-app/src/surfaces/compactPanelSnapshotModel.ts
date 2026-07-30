@@ -7,6 +7,7 @@ import type {
 const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   tokensPerSecond: 0,
   maxTokensPerSecond: 200,
+  liveRateAvailable: false,
   trendLabel: "",
   resetCreditLabel: "",
   resetCreditRateBarLabel: "",
@@ -44,6 +45,7 @@ export function floatingSnapshotForLiveRate(
     ...baseFloatingPanelSnapshot,
     tokensPerSecond: liveRate.tokensPerSecond,
     maxTokensPerSecond: liveRate.maxTokensPerSecond,
+    liveRateAvailable: liveRateStatus?.kind !== "failure",
     liveRateStatusKind: liveRateStatus?.kind,
     liveRateStatusLabel: liveRateStatus?.label,
     unread: liveRate.unreadSummary.active,
@@ -59,6 +61,7 @@ export function disabledFloatingLiveSnapshot(
     ...snapshot,
     tokensPerSecond: 0,
     maxTokensPerSecond: baseFloatingPanelSnapshot.maxTokensPerSecond,
+    liveRateAvailable: false,
     liveRateStatusKind: undefined,
     liveRateStatusLabel: undefined,
   };

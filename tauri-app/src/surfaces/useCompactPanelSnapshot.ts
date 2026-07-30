@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
-import { readLiveRateSnapshotStrict } from "../api/liveClient";
+import {
+  readLiveRateSnapshotStrict,
+  readUnreadSummary,
+} from "../api/liveClient";
 import {
   changedLiveRateDisplayBucket,
   smoothLiveRateSnapshot,
@@ -53,6 +56,7 @@ interface CompactPanelSnapshotDependencies {
     | "stopLiveRateStream"
   >;
   readInitialLiveRate: typeof readLiveRateSnapshotStrict;
+  readInitialUnread?: typeof readUnreadSummary;
   readUsageSummary: (
     sourceToken: CodexHomeSourceToken,
   ) => Promise<UsageSummarySnapshot | null>;
@@ -61,6 +65,7 @@ interface CompactPanelSnapshotDependencies {
 const DEFAULT_SNAPSHOT_DEPENDENCIES: CompactPanelSnapshotDependencies = {
   platform: desktopPlatform,
   readInitialLiveRate: readLiveRateSnapshotStrict,
+  readInitialUnread: readUnreadSummary,
   readUsageSummary: (sourceToken) => readUsageSummarySnapshot(sourceToken),
 };
 
@@ -313,7 +318,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
   ]);
 
   useEffect(() => {
-    if (!active || !liveRateEnabled || sourceKey === null) {
+    if (!active || sourceToken === null || sourceKey === null) {
       return;
     }
 
@@ -321,12 +326,21 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     let unlisten: (() => void) | null = null;
     const requestSourceKey = sourceKey;
     const applyUnreadSummary = (summary: UnreadSummary) => {
+      if (cancelled || sourceKeyRef.current !== requestSourceKey) {
+        return;
+      }
       setRawSnapshot((current) => ({
         ...current,
         unread: summary.active,
         unreadSummary: summary,
       }));
     };
+
+    void dependencies.readInitialUnread?.(sourceToken)
+      .then(applyUnreadSummary)
+      .catch(() => {
+        // 保持 pending；缺失状态由状态栏统一显示为破折号。
+      });
 
     void dependencies.platform.onUnreadSummaryChanged((payload) => {
       if (
@@ -348,7 +362,7 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
       cancelled = true;
       unlisten?.();
     };
-  }, [active, dependencies, liveRateEnabled, sourceKey]);
+  }, [active, dependencies, sourceKey, sourceToken]);
 
   return rawSnapshot;
 }
