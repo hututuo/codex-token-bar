@@ -988,7 +988,12 @@ struct DashboardView: View {
                 quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
                 quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins,
                 currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,
-                currentSevenDayQuotaPresent: quotaStore.snapshot.sevenDay != nil
+                currentSevenDayQuotaPresent: quotaStore.snapshot.sevenDay != nil,
+                sharedAccountAttributionContext: sharedAccountAttributionEnabled
+                    ? sharedAccountAttributionResult.map(
+                        QuotaSelectionAttributionContext.init(result:)
+                    )
+                    : nil
             )
             // Live-rate publications invalidate DashboardView frequently. Keep an
             // unchanged historical chart out of those unrelated render passes.

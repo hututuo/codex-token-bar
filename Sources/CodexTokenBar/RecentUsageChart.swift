@@ -338,12 +338,86 @@ struct RecentChartPreparedData: Equatable {
     let observedCacheHitRates: [Double?]
     let fiveHourRemainingPercents: [Double?]
     let sevenDayRemainingPercents: [Double?]
+    let fiveHourQuotaObservations: [QuotaHistoryObservation]
+    let sevenDayQuotaObservations: [QuotaHistoryObservation]
+    let quotaObservationProvenanceAvailable: Bool
     let latestFiveHourRemaining: Double?
     let latestSevenDayRemaining: Double?
     let hasCacheCalls: Bool
     let hasFiveHourQuota: Bool
     let hasSevenDayQuota: Bool
     let markerIndices: [Int]
+
+    init(
+        range: RecentChartRange,
+        bins: [BinUsage],
+        bucketInterval: TimeInterval,
+        maxTokens: Int,
+        maxCalls: Int,
+        tokenTotal: Int,
+        callTotal: Int,
+        recentCacheBreakdown: TokenCacheBreakdown,
+        cacheBreakdowns: [TokenCacheBreakdown],
+        observedCacheHitRates: [Double?],
+        fiveHourRemainingPercents: [Double?],
+        sevenDayRemainingPercents: [Double?],
+        fiveHourQuotaObservations: [QuotaHistoryObservation] = [],
+        sevenDayQuotaObservations: [QuotaHistoryObservation] = [],
+        quotaObservationProvenanceAvailable: Bool = false,
+        latestFiveHourRemaining: Double?,
+        latestSevenDayRemaining: Double?,
+        hasCacheCalls: Bool,
+        hasFiveHourQuota: Bool,
+        hasSevenDayQuota: Bool,
+        markerIndices: [Int]
+    ) {
+        self.range = range
+        self.bins = bins
+        self.bucketInterval = bucketInterval
+        self.maxTokens = maxTokens
+        self.maxCalls = maxCalls
+        self.tokenTotal = tokenTotal
+        self.callTotal = callTotal
+        self.recentCacheBreakdown = recentCacheBreakdown
+        self.cacheBreakdowns = cacheBreakdowns
+        self.observedCacheHitRates = observedCacheHitRates
+        self.fiveHourRemainingPercents = fiveHourRemainingPercents
+        self.sevenDayRemainingPercents = sevenDayRemainingPercents
+        self.fiveHourQuotaObservations = Self.normalizedQuotaObservations(
+            fiveHourQuotaObservations
+        )
+        self.sevenDayQuotaObservations = Self.normalizedQuotaObservations(
+            sevenDayQuotaObservations
+        )
+        self.quotaObservationProvenanceAvailable = quotaObservationProvenanceAvailable
+        self.latestFiveHourRemaining = latestFiveHourRemaining
+        self.latestSevenDayRemaining = latestSevenDayRemaining
+        self.hasCacheCalls = hasCacheCalls
+        self.hasFiveHourQuota = hasFiveHourQuota
+        self.hasSevenDayQuota = hasSevenDayQuota
+        self.markerIndices = markerIndices
+    }
+
+    private static func normalizedQuotaObservations(
+        _ observations: [QuotaHistoryObservation]
+    ) -> [QuotaHistoryObservation] {
+        let ordered = observations.sorted { lhs, rhs in
+            if lhs.observedAt != rhs.observedAt {
+                return lhs.observedAt < rhs.observedAt
+            }
+            return lhs.remainingPercent < rhs.remainingPercent
+        }
+        var result: [QuotaHistoryObservation] = []
+        result.reserveCapacity(ordered.count)
+        for observation in ordered {
+            if result.last?.observedAt == observation.observedAt {
+                result[result.count - 1] = observation
+            } else {
+                result.append(observation)
+            }
+        }
+        return result
+    }
 
     static let empty = RecentChartPreparedData(
         range: .twentyFourHours,
@@ -358,6 +432,7 @@ struct RecentChartPreparedData: Equatable {
         observedCacheHitRates: [],
         fiveHourRemainingPercents: [],
         sevenDayRemainingPercents: [],
+        quotaObservationProvenanceAvailable: true,
         latestFiveHourRemaining: nil,
         latestSevenDayRemaining: nil,
         hasCacheCalls: false,
@@ -446,6 +521,143 @@ struct RecentChartQuotaEstimateVisibility: Equatable {
     }
 }
 
+struct RecentChartSelectionIndices: Equatable {
+    let startIndex: Int
+    let endIndex: Int?
+
+    var isFixed: Bool { endIndex != nil }
+}
+
+enum RecentChartAccessibilityCursorDirection {
+    case previous
+    case next
+}
+
+struct RecentChartAccessibilityCursorState: Equatable {
+    private(set) var index: Int?
+
+    func resolvedIndex(validCount: Int) -> Int? {
+        guard validCount > 0 else { return nil }
+        return min(max(index ?? validCount - 1, 0), validCount - 1)
+    }
+
+    @discardableResult
+    mutating func move(
+        _ direction: RecentChartAccessibilityCursorDirection,
+        validCount: Int
+    ) -> Int? {
+        guard let current = resolvedIndex(validCount: validCount) else {
+            index = nil
+            return nil
+        }
+        switch direction {
+        case .previous:
+            index = max(current - 1, 0)
+        case .next:
+            index = min(current + 1, validCount - 1)
+        }
+        return index
+    }
+
+    mutating func select(index: Int, validCount: Int) {
+        guard validCount > 0, (0..<validCount).contains(index) else { return }
+        self.index = index
+    }
+
+    mutating func clamp(validCount: Int) {
+        guard validCount > 0 else {
+            index = nil
+            return
+        }
+        if let index {
+            self.index = min(max(index, 0), validCount - 1)
+        }
+    }
+
+    mutating func reset() {
+        index = nil
+    }
+}
+
+struct RecentChartSelectionTimeAnchor: Equatable {
+    let startDate: Date
+    let endDate: Date?
+    let bucketInterval: TimeInterval
+    let bucketCount: Int?
+
+    init(startDate: Date, bucketInterval: TimeInterval) {
+        self.startDate = startDate
+        endDate = nil
+        self.bucketInterval = bucketInterval
+        bucketCount = nil
+    }
+
+    init(selection: QuotaConsumptionSelection, bucketInterval: TimeInterval) {
+        self.init(
+            startDate: selection.startDate,
+            endDate: selection.endDate,
+            bucketInterval: bucketInterval,
+            bucketCount: selection.bucketCount
+        )
+    }
+
+    init(
+        startDate: Date,
+        endDate: Date,
+        bucketInterval: TimeInterval,
+        bucketCount: Int
+    ) {
+        self.startDate = startDate
+        self.endDate = endDate
+        self.bucketInterval = bucketInterval
+        self.bucketCount = bucketCount
+    }
+
+    func relocatedIndices(
+        in bins: [BinUsage],
+        bucketInterval updatedBucketInterval: TimeInterval
+    ) -> RecentChartSelectionIndices? {
+        guard !bins.isEmpty,
+              bucketInterval.isFinite,
+              updatedBucketInterval.isFinite,
+              bucketInterval > 0,
+              Self.matches(bucketInterval, updatedBucketInterval),
+              let startIndex = Self.index(of: startDate, in: bins) else { return nil }
+
+        guard let endDate else {
+            return RecentChartSelectionIndices(startIndex: startIndex, endIndex: nil)
+        }
+
+        let endBucketStart = endDate.addingTimeInterval(-bucketInterval)
+        guard let endIndex = Self.index(of: endBucketStart, in: bins) else { return nil }
+        let lower = min(startIndex, endIndex)
+        let upper = max(startIndex, endIndex)
+        let selectedBins = bins[lower...upper]
+        guard let bucketCount,
+              upper - lower + 1 == bucketCount,
+              zip(selectedBins, selectedBins.dropFirst()).allSatisfy({ pair in
+                  Self.matches(
+                      pair.1.start.timeIntervalSince(pair.0.start),
+                      bucketInterval
+                  )
+              }) else { return nil }
+
+        return RecentChartSelectionIndices(startIndex: lower, endIndex: upper)
+    }
+
+    private static func index(of date: Date, in bins: [BinUsage]) -> Int? {
+        bins.firstIndex { matches($0.start.timeIntervalSince(date), 0) }
+    }
+
+    private static func matches(_ lhs: TimeInterval, _ rhs: TimeInterval) -> Bool {
+        abs(lhs - rhs) < 0.5
+    }
+}
+
+enum RecentChartSelectionInvalidationPresentation {
+    static let message = "历史数据已刷新，原选区时间已失效，请重新选择。"
+}
+
 struct RecentUsageChart: View, Equatable {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
@@ -455,6 +667,7 @@ struct RecentUsageChart: View, Equatable {
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
     let currentFiveHourQuotaPresent: Bool
     let currentSevenDayQuotaPresent: Bool
+    let sharedAccountAttributionContext: QuotaSelectionAttributionContext?
     private static let dataLineWidth: CGFloat = 1.55
     private static let hoverRingLineWidth: CGFloat = 1.55
     @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
@@ -466,6 +679,9 @@ struct RecentUsageChart: View, Equatable {
     @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
+    @State private var consumptionSelectionTimeAnchor: RecentChartSelectionTimeAnchor?
+    @State private var consumptionSelectionInvalidationMessage: String?
+    @State private var accessibilityCursorState = RecentChartAccessibilityCursorState()
     @State private var scrollPresentation: RecentChartScrollPresentation?
     @State var preparedData: RecentChartPreparedData
 
@@ -477,7 +693,8 @@ struct RecentUsageChart: View, Equatable {
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket],
         currentFiveHourQuotaPresent: Bool = true,
-        currentSevenDayQuotaPresent: Bool = true
+        currentSevenDayQuotaPresent: Bool = true,
+        sharedAccountAttributionContext: QuotaSelectionAttributionContext? = nil
     ) {
         self.bins = bins
         self.hourlyBins = hourlyBins
@@ -487,6 +704,7 @@ struct RecentUsageChart: View, Equatable {
         self.quotaHourlyBins = quotaHourlyBins
         self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
         self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
+        self.sharedAccountAttributionContext = sharedAccountAttributionContext
         _preparedData = State(initialValue: .empty)
     }
 
@@ -499,6 +717,7 @@ struct RecentUsageChart: View, Equatable {
             && lhs.quotaHourlyBins == rhs.quotaHourlyBins
             && lhs.currentFiveHourQuotaPresent == rhs.currentFiveHourQuotaPresent
             && lhs.currentSevenDayQuotaPresent == rhs.currentSevenDayQuotaPresent
+            && lhs.sharedAccountAttributionContext == rhs.sharedAccountAttributionContext
     }
 
     private var quotaSeriesVisibility: RecentChartQuotaSeriesVisibility {
@@ -603,7 +822,9 @@ struct RecentUsageChart: View, Equatable {
         }
     }
 
-    private var chartPlot: some View {
+    private func chartPlot(
+        consumptionSelection: QuotaConsumptionSelection?
+    ) -> some View {
         GeometryReader { proxy in
             let buttonWidth: CGFloat = 28
             let viewportWidth = max(proxy.size.width, 1)
@@ -631,7 +852,11 @@ struct RecentUsageChart: View, Equatable {
                         ScrollView(.horizontal, showsIndicators: contentWidth > viewportWidth + 1) {
                             HStack(spacing: 0) {
                                 ZStack(alignment: .topLeading) {
-                                    chartPlotCanvas(width: contentWidth, height: proxy.size.height)
+                                    chartPlotCanvas(
+                                        width: contentWidth,
+                                        height: proxy.size.height,
+                                        consumptionSelection: consumptionSelection
+                                    )
                                         .frame(width: contentWidth, height: proxy.size.height)
 
                                     RecentChartScrollOffsetReader { contentOffset in
@@ -661,7 +886,39 @@ struct RecentUsageChart: View, Equatable {
                         .mask(chartViewportMask)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("\(selectedRange.title) 曲线图")
-                        .accessibilityValue(accessibilitySummary)
+                        .accessibilityValue(chartInteractionAccessibilityValue)
+                        .accessibilityHint("调整时间点后，执行设置选区点；第一次设起点，第二次固定终点。")
+                        .accessibilityAdjustableAction { direction in
+                            switch direction {
+                            case .increment:
+                                moveAccessibilityCursor(.next)
+                            case .decrement:
+                                moveAccessibilityCursor(.previous)
+                            @unknown default:
+                                break
+                            }
+                        }
+                        .accessibilityAction(named: Text("设置选区点")) {
+                            selectAccessibilityCursor()
+                        }
+                        .accessibilityAction(named: Text("清除选区")) {
+                            clearConsumptionSelection()
+                        }
+                        .focusable()
+                        .onMoveCommand { direction in
+                            switch direction {
+                            case .left, .up:
+                                moveAccessibilityCursor(.previous)
+                            case .right, .down:
+                                moveAccessibilityCursor(.next)
+                            default:
+                                break
+                            }
+                        }
+                        .onKeyPress(.space) {
+                            selectAccessibilityCursor()
+                            return .handled
+                        }
 
                         RecentChartEdgeFadeOverlay(
                             state: presentation.edgeFadeState
@@ -701,20 +958,6 @@ struct RecentUsageChart: View, Equatable {
                         .offset(x: buttonWidth + 6)
                     }
 
-                    if let consumptionSelection = activeConsumptionSelection {
-                        RecentChartQuotaEstimateOverlay(
-                            selection: consumptionSelection,
-                            showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
-                            showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay,
-                            currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
-                            currentSevenDayQuotaPresent: currentSevenDayQuotaPresent,
-                            onClose: {
-                                consumptionSelectionState.reset()
-                            }
-                        )
-                        .position(x: 205, y: -40)
-                        .zIndex(12)
-                    }
                 }
                 .onAppear {
                     scrollChartToLatest(scrollProxy)
@@ -775,12 +1018,18 @@ struct RecentUsageChart: View, Equatable {
     }
 
     @ViewBuilder
-    private func chartPlotCanvas(width: CGFloat, height: CGFloat) -> some View {
+    private func chartPlotCanvas(
+        width: CGFloat,
+        height: CGFloat,
+        consumptionSelection: QuotaConsumptionSelection?
+    ) -> some View {
         let plot = CGRect(x: 0, y: 18, width: width, height: max(height - 42, 1))
         let chartBins = preparedData.bins
         let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
         let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
-        let consumptionSelection = activeConsumptionSelection
+            ?? accessibilityCursorState.index.flatMap {
+                chartBins.indices.contains($0) ? $0 : nil
+            }
         let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
 
         ZStack(alignment: .topLeading) {
@@ -943,7 +1192,7 @@ struct RecentUsageChart: View, Equatable {
                     guard let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
                           preparedData.bins.indices.contains(clickedIndex) else { return }
                     hoveredIndex = clickedIndex
-                    consumptionSelectionState.click(index: clickedIndex, validCount: preparedData.bins.count)
+                    updateConsumptionSelection(forClickedIndex: clickedIndex)
                 },
                 onExit: {
                     hoveredIndex = nil
@@ -958,6 +1207,7 @@ struct RecentUsageChart: View, Equatable {
                 range: preparedData.range,
                 plot: plot
             )
+            .allowsHitTesting(false)
         }
         .frame(width: width, height: height)
     }
@@ -1008,20 +1258,52 @@ struct RecentUsageChart: View, Equatable {
         scrollPresentation = updated
     }
 
+    @ViewBuilder
+    private func consumptionSelectionSummary(
+        selection consumptionSelection: QuotaConsumptionSelection?,
+        attribution: QuotaSelectionAttributionResult?
+    ) -> some View {
+        if let consumptionSelection {
+            RecentChartQuotaEstimateOverlay(
+                selection: consumptionSelection,
+                attribution: attribution,
+                isSelectionFixed: consumptionSelectionState.fixedEndIndex != nil,
+                showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
+                showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay,
+                currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
+                currentSevenDayQuotaPresent: currentSevenDayQuotaPresent,
+                onClose: clearConsumptionSelection
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let consumptionSelectionInvalidationMessage {
+            RecentChartSelectionInvalidationBanner(
+                message: consumptionSelectionInvalidationMessage
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     var body: some View {
+        let consumptionSelection = activeConsumptionSelection
+        let selectionAttribution = activeSelectionAttribution(
+            for: consumptionSelection
+        )
         VStack(alignment: .leading, spacing: 18) {
             chartHeader
-            chartPlot
+            chartPlot(consumptionSelection: consumptionSelection)
+            consumptionSelectionSummary(
+                selection: consumptionSelection,
+                attribution: selectionAttribution
+            )
         }
         .frame(maxWidth: 980)
         .onAppear(perform: refreshPreparedData)
         .onChange(of: preparationInput) { _, _ in
-            clampConsumptionSelection()
             refreshPreparedData()
         }
         .onChange(of: selectedRangeRaw) { _, _ in
-            hoveredIndex = nil
-            consumptionSelectionState.reset()
+            clearConsumptionSelection()
+            accessibilityCursorState.reset()
             refreshPreparedData()
         }
     }
@@ -1051,6 +1333,22 @@ struct RecentUsageChart: View, Equatable {
         return parts.joined(separator: "；")
     }
 
+    private var chartInteractionAccessibilityValue: String {
+        var value = accessibilitySummary
+        if let index = accessibilityCursorState.resolvedIndex(validCount: preparedData.bins.count),
+           let bin = preparedData.bins[safe: index] {
+            value += "；当前时间点 \(DateFormatter.monthDayHourMinute.string(from: bin.start))，Token \(bin.tokens.abbreviatedTokens)，调用 \(bin.calls) 次"
+        }
+        if consumptionSelectionState.fixedEndIndex != nil {
+            value += "；选区已固定"
+        } else if consumptionSelectionState.startIndex != nil {
+            value += "；已设置起点，等待终点"
+        } else {
+            value += "；尚未设置选区"
+        }
+        return value
+    }
+
     private func refreshPreparedData() {
         refreshPreparedData(range: selectedRange)
     }
@@ -1067,7 +1365,8 @@ struct RecentUsageChart: View, Equatable {
         )
         guard updatedData != preparedData else { return }
         preparedData = updatedData
-        clampConsumptionSelection()
+        accessibilityCursorState.clamp(validCount: updatedData.bins.count)
+        restoreConsumptionSelection(in: updatedData)
     }
 
     private var selectedQuotaEstimateModel: OfficialAPIPriceModel {
@@ -1097,8 +1396,103 @@ struct RecentUsageChart: View, Equatable {
         )
     }
 
-    private func clampConsumptionSelection() {
-        consumptionSelectionState.clamp(validCount: preparedData.bins.count)
+    private func activeSelectionAttribution(
+        for selection: QuotaConsumptionSelection?
+    ) -> QuotaSelectionAttributionResult? {
+        guard let selection,
+              let sharedAccountAttributionContext else { return nil }
+        return QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: sharedAccountAttributionContext
+        )
+    }
+
+    private func updateConsumptionSelection(forClickedIndex clickedIndex: Int) {
+        guard preparedData.bins.indices.contains(clickedIndex),
+              let clickedDate = preparedData.bins[safe: clickedIndex]?.start else { return }
+
+        consumptionSelectionInvalidationMessage = nil
+        accessibilityCursorState.select(
+            index: clickedIndex,
+            validCount: preparedData.bins.count
+        )
+        consumptionSelectionState.click(
+            index: clickedIndex,
+            validCount: preparedData.bins.count
+        )
+
+        if let startIndex = consumptionSelectionState.startIndex,
+           let fixedEndIndex = consumptionSelectionState.fixedEndIndex,
+           let selection = preparedData.quotaConsumptionSelection(
+               startIndex: startIndex,
+               endIndex: fixedEndIndex,
+               priceCard: .officialAPI(selectedQuotaEstimateModel)
+           ) {
+            consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
+                selection: selection,
+                bucketInterval: preparedData.bucketInterval
+            )
+        } else {
+            consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
+                startDate: clickedDate,
+                bucketInterval: preparedData.bucketInterval
+            )
+        }
+    }
+
+    private func restoreConsumptionSelection(in updatedData: RecentChartPreparedData) {
+        guard let anchor = consumptionSelectionTimeAnchor else {
+            consumptionSelectionState.clamp(validCount: updatedData.bins.count)
+            return
+        }
+        guard let relocated = anchor.relocatedIndices(
+            in: updatedData.bins,
+            bucketInterval: updatedData.bucketInterval
+        ) else {
+            hoveredIndex = nil
+            consumptionSelectionState.reset()
+            consumptionSelectionTimeAnchor = nil
+            consumptionSelectionInvalidationMessage = RecentChartSelectionInvalidationPresentation.message
+            return
+        }
+
+        var relocatedState = RecentChartConsumptionSelectionState()
+        relocatedState.click(
+            index: relocated.startIndex,
+            validCount: updatedData.bins.count
+        )
+        if let endIndex = relocated.endIndex {
+            relocatedState.click(index: endIndex, validCount: updatedData.bins.count)
+        }
+        hoveredIndex = nil
+        consumptionSelectionState = relocatedState
+        consumptionSelectionInvalidationMessage = nil
+    }
+
+    private func clearConsumptionSelection() {
+        hoveredIndex = nil
+        consumptionSelectionState.reset()
+        consumptionSelectionTimeAnchor = nil
+        consumptionSelectionInvalidationMessage = nil
+    }
+
+    private func moveAccessibilityCursor(
+        _ direction: RecentChartAccessibilityCursorDirection
+    ) {
+        guard let index = accessibilityCursorState.move(
+            direction,
+            validCount: preparedData.bins.count
+        ) else { return }
+        hoveredIndex = index
+    }
+
+    private func selectAccessibilityCursor() {
+        guard let index = accessibilityCursorState.resolvedIndex(
+            validCount: preparedData.bins.count
+        ) else { return }
+        accessibilityCursorState.select(index: index, validCount: preparedData.bins.count)
+        hoveredIndex = index
+        updateConsumptionSelection(forClickedIndex: index)
     }
 }
 

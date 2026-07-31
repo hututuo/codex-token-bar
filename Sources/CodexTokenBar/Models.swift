@@ -364,11 +364,34 @@ struct QuotaHistoryDailyBucket: Identifiable, Equatable {
     let sampleCount: Int
 }
 
+/// A persisted quota row, kept separate from chart-only carry/interpolation.
+struct QuotaHistoryObservation: Equatable, Sendable {
+    let observedAt: Date
+    let remainingPercent: Double
+    let resetsAt: Date?
+}
+
 struct QuotaHistoryRecentBucket: Identifiable, Equatable {
     var id: Date { start }
     let start: Date
     let fiveHourRemainingPercent: Double?
     let sevenDayRemainingPercent: Double?
+    let fiveHourObservations: [QuotaHistoryObservation]
+    let sevenDayObservations: [QuotaHistoryObservation]
+
+    init(
+        start: Date,
+        fiveHourRemainingPercent: Double?,
+        sevenDayRemainingPercent: Double?,
+        fiveHourObservations: [QuotaHistoryObservation] = [],
+        sevenDayObservations: [QuotaHistoryObservation] = []
+    ) {
+        self.start = start
+        self.fiveHourRemainingPercent = fiveHourRemainingPercent
+        self.sevenDayRemainingPercent = sevenDayRemainingPercent
+        self.fiveHourObservations = fiveHourObservations
+        self.sevenDayObservations = sevenDayObservations
+    }
 }
 
 struct QuotaHistorySnapshot: Equatable {

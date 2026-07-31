@@ -224,13 +224,40 @@ struct RecentChartQuotaEstimateModelSelector: View {
     }
 }
 
+struct RecentChartSelectionInvalidationBanner: View {
+    let message: String
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(AppTheme.accentAmber)
+            .padding(.horizontal, 12)
+            .frame(width: 460, alignment: .leading)
+            .frame(minHeight: 36, alignment: .leading)
+            .background(
+                AppTheme.accentAmber.opacity(0.09),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(AppTheme.accentAmber.opacity(0.30), lineWidth: 1)
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("图表选区已失效")
+            .accessibilityValue(message)
+    }
+}
+
 struct RecentChartQuotaEstimateOverlay: View {
     let selection: QuotaConsumptionSelection
+    let attribution: QuotaSelectionAttributionResult?
+    let isSelectionFixed: Bool
     let showsFiveHourQuota: Bool
     let showsSevenDayQuota: Bool
     let currentFiveHourQuotaPresent: Bool
     let currentSevenDayQuotaPresent: Bool
     let onClose: () -> Void
+    @State private var detailSnapshot: QuotaConsumptionSelectionDetailSnapshot?
 
     var body: some View {
         let presentation = QuotaConsumptionEstimatorOverlayPresentation(
@@ -241,75 +268,155 @@ struct RecentChartQuotaEstimateOverlay: View {
             currentSevenDayQuotaPresent: currentSevenDayQuotaPresent
         )
 
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(presentation.costTitle)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(presentation.costText)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(AppTheme.accentBlue)
-                    Text(presentation.durationText)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text(presentation.timeRangeText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text(presentation.cacheHitText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(AppTheme.accentCyan)
-                }
-
-                HStack(spacing: 7) {
-                    Text(presentation.estimateTitle)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    if showsFiveHourQuota {
-                        QuotaEstimateChip(presentation: presentation.fiveHourChip, color: .purple)
-                    }
-                    if showsSevenDayQuota {
-                        QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
-                    }
-                }
-
-                if presentation.showsBudgetRatio {
-                    HStack(spacing: 6) {
-                        Text(presentation.ratioTitle)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(presentation.costTitle)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
-                        Text(presentation.budgetRatioText)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(presentation.showsRatioWarning ? .orange : .primary)
-                        Text(presentation.ratioHelpText)
+                        Text(presentation.costText)
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(AppTheme.accentBlue)
+                        Text(presentation.durationText)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text(presentation.timeRangeText)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
-                        if let ratioWarningText = presentation.ratioWarningText {
-                            Text(ratioWarningText)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.orange)
+                        Text(presentation.cacheHitText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(AppTheme.accentCyan)
+                    }
+
+                    HStack(spacing: 7) {
+                        Text(presentation.estimateTitle)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        if showsFiveHourQuota {
+                            QuotaEstimateChip(presentation: presentation.fiveHourChip, color: .purple)
+                        }
+                        if showsSevenDayQuota {
+                            QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
                         }
                     }
 
-                    if let ratioWarningDetailText = presentation.ratioWarningDetailText {
-                        Text(ratioWarningDetailText)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary)
+                    if presentation.showsBudgetRatio {
+                        HStack(spacing: 6) {
+                            Text(presentation.ratioTitle)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Text(presentation.budgetRatioText)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(presentation.showsRatioWarning ? .orange : .primary)
+                            Text(presentation.ratioHelpText)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            if let ratioWarningText = presentation.ratioWarningText {
+                                Text(ratioWarningText)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+
+                        if let ratioWarningDetailText = presentation.ratioWarningDetailText {
+                            Text(ratioWarningDetailText)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(presentation.accessibilityLabel)
+                .accessibilityValue(presentation.accessibilityValue)
+
+                Spacer(minLength: 0)
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel(presentation.closeAccessibilityLabel)
+                .accessibilityRepresentation {
+                    RecentChartAccessibilityButtonRepresentation(
+                        presentation: RecentChartAccessibilityButtonPresentation(
+                            label: presentation.closeAccessibilityLabel,
+                            value: nil,
+                            isEnabled: true
+                        ),
+                        action: onClose
+                    )
                 }
             }
 
-            Spacer(minLength: 0)
+            HStack(spacing: 7) {
+                if let attribution {
+                    QuotaSelectionAttributionSummaryRow(result: attribution)
+                } else {
+                    Text("共享归因未开启")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
 
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
+                Spacer(minLength: 6)
+
+                if isSelectionFixed {
+                    Button(action: showDetails) {
+                        Label("查看详情", systemImage: "chevron.right")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .labelStyle(.titleAndIcon)
+                            .padding(.horizontal, 9)
+                            .frame(minHeight: 28)
+                            .background(AppTheme.accentBlue.opacity(0.10), in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .contentShape(Rectangle())
+                    .help("查看选区额度、token 与共享账号归因明细")
+                    .accessibilityLabel("查看选区额度归因详情")
+                    .accessibilityHint("打开详情卡片")
+                    .accessibilityRepresentation {
+                        RecentChartAccessibilityButtonRepresentation(
+                            presentation: RecentChartAccessibilityButtonPresentation(
+                                label: "查看选区额度归因详情",
+                                value: nil,
+                                isEnabled: true
+                            ),
+                            action: showDetails
+                        )
+                    }
+                    .popover(
+                        isPresented: Binding(
+                            get: { detailSnapshot != nil },
+                            set: { isPresented in
+                                if !isPresented { detailSnapshot = nil }
+                            }
+                        ),
+                        arrowEdge: .bottom
+                    ) {
+                        if let detailSnapshot {
+                            QuotaConsumptionSelectionDetailView(snapshot: detailSnapshot)
+                        }
+                    }
+                } else {
+                    Label("预览中", systemImage: "cursorarrow")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentAmber)
+                        .padding(.horizontal, 9)
+                        .frame(minHeight: 28)
+                        .background(AppTheme.accentAmber.opacity(0.09), in: Capsule())
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("选区预览中")
+                        .accessibilityHint("第二次点击图表固定终点")
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(presentation.closeAccessibilityLabel)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -319,9 +426,400 @@ struct RecentChartQuotaEstimateOverlay: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
+        .accessibilityElement(children: .contain)
+    }
+
+    private func showDetails() {
+        guard isSelectionFixed else { return }
+        detailSnapshot = QuotaConsumptionSelectionDetailSnapshot(
+            selection: selection,
+            attribution: attribution
+        )
+    }
+}
+
+private struct QuotaSelectionAttributionSummaryRow: View {
+    let result: QuotaSelectionAttributionResult
+
+    private var presentation: QuotaSelectionAttributionPresentation {
+        QuotaSelectionAttributionPresentation(result: result)
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            compactMetric(presentation.accountTitle, presentation.accountText, color: AppTheme.accentBlue)
+            Text("｜").foregroundStyle(.tertiary)
+            compactMetric(presentation.localTitle, presentation.localText, color: AppTheme.accentGreen)
+            Text("｜").foregroundStyle(.tertiary)
+            compactMetric(
+                presentation.differenceTitle,
+                presentation.differenceText,
+                color: result.state == .withinTolerance ? AppTheme.accentGreen : AppTheme.accentAmber
+            )
+        }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityLabel("选区共享账号归因")
         .accessibilityValue(presentation.accessibilityValue)
+    }
+
+    private func compactMetric(_ title: String, _ value: String, color: Color) -> some View {
+        HStack(spacing: 3) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .fontWeight(.bold)
+                .foregroundStyle(color)
+        }
+        .font(.system(size: 9.5, weight: .semibold))
+        .monospacedDigit()
+    }
+}
+
+struct QuotaConsumptionSelectionDetailSnapshot: Equatable {
+    let selection: QuotaConsumptionSelection
+    let attribution: QuotaSelectionAttributionResult?
+}
+
+struct QuotaConsumptionSelectionDetailView: View {
+    let snapshot: QuotaConsumptionSelectionDetailSnapshot
+    @Environment(\.dismiss) private var dismiss
+
+    private var selection: QuotaConsumptionSelection { snapshot.selection }
+    private var attributionPresentation: QuotaSelectionAttributionPresentation? {
+        snapshot.attribution.map(QuotaSelectionAttributionPresentation.init)
+    }
+    private var comparisonCoveragePresentation: QuotaConsumptionComparisonCoveragePresentation {
+        QuotaConsumptionComparisonCoveragePresentation(
+            basis: selection.sevenDay.quotaDropBasis,
+            usesConservativeBuckets: selection.sevenDay.comparisonUsesConservativeBuckets
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            detailHeader
+            Rectangle().fill(AppTheme.border).frame(height: 1)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 13) {
+                    metricRow
+                    formulaSection
+                    tokenSection
+                    attributionCoverageSection
+                    sourceSection
+                    caveatSection
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 650, height: 440)
+        .background(AppTheme.panelBackground)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("选区额度与共享账号归因详情")
+    }
+
+    private var detailHeader: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "chart.xyaxis.line")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 30, height: 30)
+                .background(AppTheme.accentBlue.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("选区额度估算详情")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("\(selection.quotaEstimatorTimeRangeText) · \(selection.quotaEstimatorDurationText)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let attribution = snapshot.attribution {
+                Text(attribution.tier.title)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .padding(.horizontal, 8)
+                    .frame(height: 23)
+                    .background(AppTheme.accentBlue.opacity(0.10), in: Capsule())
+            }
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭选区额度估算详情")
+            .accessibilityRepresentation {
+                RecentChartAccessibilityButtonRepresentation(
+                    presentation: RecentChartAccessibilityButtonPresentation(
+                        label: "关闭选区额度估算详情",
+                        value: nil,
+                        isEnabled: true
+                    ),
+                    action: { dismiss() }
+                )
+            }
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 62)
+    }
+
+    private var metricRow: some View {
+        HStack(spacing: 9) {
+            detailMetric(
+                title: attributionPresentation.map { "\($0.accountTitle) · 7d" }
+                    ?? sevenDayDropTitle,
+                value: attributionPresentation?.accountText
+                    ?? (selection.sevenDay.quotaDropBasis != .unavailable
+                        ? QuotaSelectionAttributionPresentation.percent(selection.sevenDay.quotaDropPercent)
+                        : "--"),
+                detail: fiveHourDropDetail,
+                color: AppTheme.accentBlue
+            )
+            detailMetric(
+                title: "本机折算",
+                value: snapshot.attribution?.localSharePercent
+                    .map(QuotaSelectionAttributionPresentation.percent) ?? "--",
+                detail: snapshot.attribution?.localComparableCostUSD
+                    .map(QuotaSelectionAttributionPresentation.money)
+                    ?? "等待 Radar 同口径",
+                color: AppTheme.accentGreen
+            )
+            detailMetric(
+                title: attributionPresentation?.differenceTitle ?? "差额",
+                value: attributionPresentation?.differenceText ?? "--",
+                detail: attributionPresentation?.stateText ?? "共享归因未开启",
+                color: snapshot.attribution?.state == .withinTolerance
+                    ? AppTheme.accentGreen
+                    : AppTheme.accentAmber
+            )
+        }
+    }
+
+    private var formulaSection: some View {
+        detailSection(title: "计算", systemImage: "function") {
+            VStack(alignment: .leading, spacing: 7) {
+                formulaRow("1", attributionPresentation?.localFormula
+                    ?? "本机占比 = 本机同基准金额 ÷ Radar 套餐 7 天总额 × 100")
+                formulaRow("2", attributionPresentation?.differenceFormula
+                    ?? fallbackDifferenceFormula)
+            }
+        }
+    }
+
+    private var tokenSection: some View {
+        detailSection(title: "完整选区本机 token", systemImage: "number") {
+            HStack(spacing: 0) {
+                compactValue("非缓存输入", selection.breakdown.uncachedInputTokens.abbreviatedTokens)
+                Divider().frame(height: 30)
+                compactValue("缓存输入", selection.breakdown.cachedInputTokens.abbreviatedTokens)
+                Divider().frame(height: 30)
+                compactValue("输出", selection.breakdown.outputTokens.abbreviatedTokens)
+                Divider().frame(height: 30)
+                compactValue("请求", "\(selection.breakdown.calls)")
+                Divider().frame(height: 30)
+                compactValue(
+                    "当前 API 等值",
+                    selection.breakdown.quotaEstimatorCostText(selection.priceCard)
+                )
+            }
+        }
+    }
+
+    private var attributionCoverageSection: some View {
+        let covered = selection.sevenDayAttributionBreakdown
+        return detailSection(
+            title: comparisonCoveragePresentation.sectionTitle,
+            systemImage: "scope"
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(comparisonRangeText)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 0) {
+                    compactValue("非缓存输入", covered.uncachedInputTokens.abbreviatedTokens)
+                    Divider().frame(height: 30)
+                    compactValue("缓存输入", covered.cachedInputTokens.abbreviatedTokens)
+                    Divider().frame(height: 30)
+                    compactValue("输出", covered.outputTokens.abbreviatedTokens)
+                    Divider().frame(height: 30)
+                    compactValue("请求", "\(covered.calls)")
+                    Divider().frame(height: 30)
+                    compactValue(
+                        "当前 API 等值",
+                        snapshot.attribution.map {
+                            QuotaSelectionAttributionPresentation.money(
+                                $0.localCurrentOfficialCostUSD
+                            )
+                        } ?? covered.quotaEstimatorCostText(selection.priceCard)
+                    )
+                }
+            }
+        }
+    }
+
+    private var sourceSection: some View {
+        detailSection(title: "基准与来源", systemImage: "dot.radiowaves.left.and.right") {
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: 14, alignment: .leading),
+                    count: 3
+                ),
+                alignment: .leading,
+                spacing: 10
+            ) {
+                sourceValue(
+                    "Radar 7 天总额",
+                    snapshot.attribution?.radarSevenDayTotalUSD
+                        .map(QuotaSelectionAttributionPresentation.money) ?? "--"
+                )
+                sourceValue("定价版本", snapshot.attribution?.priceRevision.title ?? "--")
+                sourceValue("价格模型", snapshot.attribution?.model.title ?? selection.priceCard.title)
+                sourceValue("Radar 基准日", snapshot.attribution?.radarPricingBasisDate ?? "--")
+                sourceValue("Radar 来源", snapshot.attribution?.radarSource ?? "--")
+                sourceValue("Radar 更新时间", snapshot.attribution?.radarUpdatedAt ?? "--")
+                sourceValue(
+                    comparisonCoveragePresentation.sourceTitle,
+                    comparisonRangeText
+                )
+            }
+        }
+    }
+
+    private var fiveHourDropDetail: String {
+        guard selection.fiveHour.quotaDropBasis != .unavailable else {
+            return "5h 同期下降 --"
+        }
+        let prefix = selection.fiveHour.quotaDropEstimated ? "暂算 " : ""
+        return "5h 同期\(prefix)下降 \(QuotaSelectionAttributionPresentation.percent(selection.fiveHour.quotaDropPercent))"
+    }
+
+    private var sevenDayDropTitle: String {
+        switch selection.sevenDay.quotaDropBasis {
+        case .observed: "账号实降 · 7d"
+        case .estimated: "账号暂降 · 7d"
+        case .unavailable: "账号下降 · 7d"
+        }
+    }
+
+    private var fallbackDifferenceFormula: String {
+        let accountTerm = switch selection.sevenDay.quotaDropBasis {
+        case .observed: "账号选区实降"
+        case .estimated: "账号选区暂算下降"
+        case .unavailable: "账号选区下降"
+        }
+        return "差额 = \(accountTerm) − 本机折算占比"
+    }
+
+    private var comparisonRangeText: String {
+        guard let start = selection.sevenDay.comparisonStartDate,
+              let end = selection.sevenDay.comparisonEndDate else { return "--" }
+        return "\(DateFormatter.monthDayHourMinute.string(from: start)) – \(DateFormatter.monthDayHourMinute.string(from: end))"
+    }
+
+    @ViewBuilder
+    private var caveatSection: some View {
+        let caveats = snapshot.attribution?.caveats ?? ["共享账号归因未开启；当前只展示本机选区统计与额度下降。"]
+        detailSection(
+            title: caveats.isEmpty ? "结论口径" : "限制与误差",
+            systemImage: caveats.isEmpty ? "checkmark.shield" : "exclamationmark.triangle"
+        ) {
+            VStack(alignment: .leading, spacing: 6) {
+                if caveats.isEmpty {
+                    Text("选区处于当前安全基线与额度观测覆盖内；正差超过 2 个百分点时才标记为疑似他人使用。")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(caveats, id: \.self) { caveat in
+                        Label(caveat, systemImage: "info.circle")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func detailMetric(title: String, value: String, detail: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(color)
+                .monospacedDigit()
+            Text(detail)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+        .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
+    }
+
+    private func detailSection<Content: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+            content()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.raisedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
+    }
+
+    private func formulaRow(_ index: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(index)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 18, height: 18)
+                .background(AppTheme.accentBlue.opacity(0.10), in: Circle())
+            Text(text)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func compactValue(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 11, weight: .bold))
+                .monospacedDigit()
+            Text(title)
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func sourceValue(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 8.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
