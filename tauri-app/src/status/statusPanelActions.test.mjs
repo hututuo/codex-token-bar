@@ -16,6 +16,11 @@ test("Status panel can acknowledge the same unread baseline as the main dashboar
     /useFloatingRadar\([\s\S]*?active && sourceReady && dataInterests\.radar,[\s\S]*?\)/,
   );
   assert.match(source, /FloatingRadarRow snapshot=\{radarSnapshot\}/);
+  assert.match(
+    source,
+    /useFloatingCrowdRadar\([\s\S]*?active && sourceReady && dataInterests\.crowdRadar,[\s\S]*?clearOnError: true[\s\S]*?\)/,
+  );
+  assert.match(source, /crowdRadar: crowdRadarSnapshot/);
   assert.match(source, /StatusPanelQuotaRow/);
   assert.match(source, /publishOpenAppSettings/);
   assert.match(source, />设置<\/button>/);

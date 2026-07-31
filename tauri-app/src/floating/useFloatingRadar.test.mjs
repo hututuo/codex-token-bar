@@ -86,6 +86,64 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
   }
 });
 
+test("status crowd Radar clears a last-good realtime ranking when refresh fails", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const intervals = new Map();
+  let nextIntervalId = 1;
+  window.setInterval = (callback) => {
+    const id = nextIntervalId;
+    nextIntervalId += 1;
+    intervals.set(id, callback);
+    return id;
+  };
+  window.clearInterval = (id) => intervals.delete(id);
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { useFloatingCrowdRadar } = await load("/src/floating/useFloatingRadar.ts");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      let reads = 0;
+      const readCrowdRadar = async () => {
+        reads += 1;
+        if (reads > 1) {
+          throw new Error("temporary Crowd Radar failure");
+        }
+        return { generatedAt: "live-crowd" };
+      };
+      function Probe() {
+        const snapshot = useFloatingCrowdRadar(true, {
+          clearOnError: true,
+          readCrowdRadar,
+        });
+        return React.createElement("output", null, snapshot?.generatedAt ?? "none");
+      }
+
+      try {
+        await React.act(async () => root.render(React.createElement(Probe)));
+        await waitFor(() => container.textContent === "live-crowd");
+        assert.equal(reads, 1);
+        assert.equal(intervals.size, 1);
+
+        const refresh = [...intervals.values()][0];
+        await React.act(async () => refresh());
+        await waitFor(() => reads === 2 && container.textContent === "none");
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 function installDomGlobals(window) {
   const values = {
     document: window.document,

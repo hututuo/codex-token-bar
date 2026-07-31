@@ -32,8 +32,8 @@ test("hidden status owner reads only data required by compact metrics", () => {
     snapshot: true,
     quota: true,
     running: true,
-    radar: true,
-    crowdRadar: false,
+    radar: false,
+    crowdRadar: true,
   });
 
   assert.deepEqual(buildStatusPanelDataInterests({

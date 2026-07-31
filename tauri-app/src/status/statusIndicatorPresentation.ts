@@ -1,10 +1,7 @@
 import {
-  compactRadarModelName,
-  rankedModelRows,
-  type CodexRadarModelIQComparisonRow,
-  type CodexRadarModelIQPoint,
-  type CodexRadarSnapshot,
-} from "../domain/codexRadar/model.ts";
+  rankedCodexCrowdRadarModels,
+  type CodexCrowdRadarSnapshot,
+} from "../api/codexCrowdRadarClient.ts";
 import type {
   FloatingPanelSnapshot,
   QuotaDiagnostic,
@@ -34,13 +31,12 @@ export interface StatusIndicatorPresentation {
 }
 
 export interface StatusIndicatorPresentationInput {
+  crowdRadar?: CodexCrowdRadarSnapshot | null;
   labelStyle: StatusMetricLabelStyle;
   metricStates: StatusMetricStates;
   order: readonly StatusMetricId[];
-  radar?: CodexRadarSnapshot | null;
   running?: RunningThreadSummary | null;
   snapshot: FloatingPanelSnapshot;
-  now?: Date;
 }
 
 export interface StatusMetricState {
@@ -118,13 +114,12 @@ export function statusSnapshotForQuotaDiagnostics(
 }
 
 export function buildStatusIndicatorPresentation({
+  crowdRadar = null,
   labelStyle,
   metricStates,
   order,
-  radar = null,
   running = null,
   snapshot,
-  now = new Date(),
 }: StatusIndicatorPresentationInput): StatusIndicatorPresentation {
   const visibleItems = order.flatMap((id) => {
     const item = statusIndicatorItem(
@@ -132,9 +127,8 @@ export function buildStatusIndicatorPresentation({
       labelStyle,
       metricStates,
       snapshot,
-      radar,
+      crowdRadar,
       running,
-      now,
     );
     return item === null ? [] : [item];
   });
@@ -169,7 +163,7 @@ export function buildStatusIndicatorPreview(
     rate: "速度 12.4 tok/s",
     fiveHour: "5 小时额度剩余 42%",
     sevenDay: "7 天额度剩余 76%",
-    iq: "今日模型榜：1 Sol·MAX；2 Luna·H",
+    iq: "今日众测实时榜：1 Sol·MAX；2 Luna·H",
     today: "今日 Token 84K",
     total: "累计 Token 1.2M",
     requests: "请求 42",
@@ -207,9 +201,8 @@ function statusIndicatorItem(
   labelStyle: StatusMetricLabelStyle,
   metricStates: StatusMetricStates,
   snapshot: FloatingPanelSnapshot,
-  radar: CodexRadarSnapshot | null,
+  crowdRadar: CodexCrowdRadarSnapshot | null,
   running: RunningThreadSummary | null,
-  now: Date,
 ): StatusIndicatorItem | null {
   switch (id) {
     case "rate": {
@@ -242,7 +235,7 @@ function statusIndicatorItem(
         labelStyle,
       );
     case "iq":
-      return rankingItem(statusModelRanking(radar, now));
+      return rankingItem(statusCrowdModelRanking(crowdRadar));
     case "today":
       return metricStateItem(id, "今日 Token", metricStates.today, labelStyle);
     case "total":
@@ -335,72 +328,29 @@ function rankingItem(labels: readonly string[]): StatusIndicatorItem {
     id: "iq",
     shortLabel: value,
     tooltipLabel: available
-      ? `今日模型榜：${compactRows.join("；")}`
-      : "今日模型榜暂不可用：1 —；2 —",
+      ? `今日众测实时榜：${compactRows.join("；")}`
+      : "今日众测实时榜暂不可用：1 —；2 —",
     value,
   };
 }
 
-function statusModelRanking(radar: CodexRadarSnapshot | null, now: Date): string[] {
-  if (radar === null || radar.staleDataDisplayed === true) {
+function statusCrowdModelRanking(crowdRadar: CodexCrowdRadarSnapshot | null): string[] {
+  if (
+    crowdRadar === null
+    || crowdRadar.realtimeAvailable !== true
+  ) {
     return [];
   }
-  const seen = new Set<string>();
-  const labels: string[] = [];
-  for (const row of rankedModelRows(radar.modelIq)) {
-    if (!modelPointIsUsableToday(row.point, radar.timezone, now)) {
-      continue;
+  return rankedCodexCrowdRadarModels(crowdRadar, 2).flatMap((row) => {
+    const family = row.model.match(/(?:^|-)(sol|luna|terra)(?:-|$)/iu)?.[1];
+    const familyLabel = family
+      ? family.charAt(0).toUpperCase() + family.slice(1).toLowerCase()
+      : compactModelIdentifier(row.model);
+    if (!familyLabel || /^(?:--|MODEL|模型)$/iu.test(familyLabel)) {
+      return [];
     }
-    const label = compactStatusModelLabel(row);
-    if (label === null) {
-      continue;
-    }
-    const key = `${statusModelIdentifier(row) ?? label}:${statusReasoningEffort(row) ?? ""}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    labels.push(label);
-    if (labels.length === 2) {
-      break;
-    }
-  }
-  return labels;
-}
-
-function compactStatusModelLabel(row: CodexRadarModelIQComparisonRow): string | null {
-  const model = statusModelIdentifier(row);
-  const compactName = compactRadarModelName([model, row.label].filter(Boolean).join(" "));
-  const family = compactName.match(/\b(Sol|Luna|Terra)\b/i)?.[1];
-  const familyLabel = family
-    ? family.charAt(0).toUpperCase() + family.slice(1).toLowerCase()
-    : model
-      ? compactModelIdentifier(model)
-      : compactName
-        .replace(/\b(ultra|max|x\s*high|xhigh|high|medium|low|minimal)\b/giu, "")
-        .trim();
-  if (!familyLabel || /^(?:--|MODEL|模型)$/iu.test(familyLabel)) {
-    return null;
-  }
-  return `${familyLabel}·${compactReasoningEffort(statusReasoningEffort(row))}`;
-}
-
-function statusModelIdentifier(row: CodexRadarModelIQComparisonRow): string | null {
-  return firstNonBlank(row.point.model, row.model);
-}
-
-function statusReasoningEffort(row: CodexRadarModelIQComparisonRow): string | null {
-  return firstNonBlank(row.point.reasoningEffort, row.reasoningEffort);
-}
-
-function firstNonBlank(...values: Array<string | null | undefined>): string | null {
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-  }
-  return null;
+    return [`${familyLabel}·${compactReasoningEffort(row.effort)}`];
+  });
 }
 
 function compactModelIdentifier(model: string | null | undefined): string {
@@ -419,60 +369,6 @@ function compactReasoningEffort(effort: string | null | undefined): string {
     minimal: "MIN",
   };
   return labels[effort?.trim().toLowerCase() ?? ""] ?? "—";
-}
-
-function modelPointIsUsableToday(
-  point: CodexRadarModelIQPoint,
-  timeZone: string | null | undefined,
-  now: Date,
-): boolean {
-  const hasSamples = typeof point.validTasks === "number" && Number.isFinite(point.validTasks)
-    ? point.validTasks > 0
-    : [point.tasks, point.passed]
-      .some((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
-  if (point.scoreAvailable === false || !Number.isFinite(point.score) || !hasSamples) {
-    return false;
-  }
-  const today = calendarDateKey(now, timeZone);
-  return today !== null && radarPointDateKey(point.date, timeZone) === today;
-}
-
-function radarPointDateKey(rawDate: string, timeZone: string | null | undefined): string | null {
-  const trimmed = rawDate.trim();
-  if (/^\d{4}-\d{2}-\d{2}(?:$|-(?:am|pm)$)/iu.test(trimmed)) {
-    return trimmed.slice(0, 10);
-  }
-  const parsed = new Date(trimmed);
-  if (!Number.isFinite(parsed.getTime())) {
-    return /^\d{4}-\d{2}-\d{2}/u.test(trimmed) ? trimmed.slice(0, 10) : null;
-  }
-  return calendarDateKey(parsed, timeZone);
-}
-
-function calendarDateKey(date: Date, timeZone: string | null | undefined): string | null {
-  if (!Number.isFinite(date.getTime())) {
-    return null;
-  }
-  const options: Intl.DateTimeFormatOptions = {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  };
-  const normalizedTimeZone = timeZone?.trim();
-  if (normalizedTimeZone) {
-    options.timeZone = normalizedTimeZone;
-  }
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat("en-US", options).formatToParts(date);
-  } catch {
-    delete options.timeZone;
-    parts = new Intl.DateTimeFormat("en-US", options).formatToParts(date);
-  }
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return values.year && values.month && values.day
-    ? `${values.year}-${values.month}-${values.day}`
-    : null;
 }
 
 function compactWidthLabel(item: StatusIndicatorItem): string {

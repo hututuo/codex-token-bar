@@ -702,7 +702,7 @@ const STATUS_METRIC_OPTIONS: ReadonlyArray<{
   { id: "rate", label: "实时速度", description: "当前 Token 生成速度；真实为零时仍显示。" },
   { id: "fiveHour", label: "5 小时额度", description: "官方未提供时隐藏；读取失败时保留“—”。" },
   { id: "sevenDay", label: "7 天额度", description: "读取不到时保留“—”占位。" },
-  { id: "iq", label: "今日模型榜", description: "两行显示当前第一、第二名模型及思考强度。" },
+  { id: "iq", label: "今日众测榜", description: "两行显示当天众测实时榜第一、第二名模型及思考强度。" },
   { id: "today", label: "今日 Token", description: "今天累计处理的 Token。" },
   { id: "total", label: "累计 Token", description: "本机历史累计 Token。" },
   { id: "requests", label: "请求次数", description: "累计请求数量。" },

@@ -117,7 +117,7 @@ test("status indicator settings preview, select, reorder and restore through one
     assert.match(preview.textContent, /12\.4\/s5H42%7D76%1 Sol·MAX2 Luna·H/);
     assert.match(panel.textContent, /指标与顺序/);
     assert.match(panel.textContent, /真实为零时仍显示/);
-    assert.match(panel.textContent, /今日模型榜/);
+    assert.match(panel.textContent, /今日众测榜/);
     assert.doesNotMatch(panel.textContent, /雷达 IQ/);
     await click(act, buttonWithText(panel, "仅数值"), window);
     assert.equal(calls.statusMetricLabelStyles.at(-1), "hidden");

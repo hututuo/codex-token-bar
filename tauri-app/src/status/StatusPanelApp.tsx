@@ -86,6 +86,7 @@ export function StatusPanelApp() {
   );
   const crowdRadarSnapshot = useFloatingCrowdRadar(
     active && sourceReady && dataInterests.crowdRadar,
+    { clearOnError: true },
   );
   const sourceTokenRef = useRef<CodexHomeSourceToken | null>(sourceToken);
   const lastPublishedReadoutRef = useRef("");
@@ -263,18 +264,18 @@ export function StatusPanelApp() {
     sourceReady,
   ]);
   const indicatorPresentation = useMemo(() => buildStatusIndicatorPresentation({
+    crowdRadar: crowdRadarSnapshot,
     labelStyle: displaySurfaces.statusMetricLabelStyle,
     metricStates,
     order: displaySurfaces.statusMetricOrder,
-    radar: radarSnapshot,
     running: runningThreads,
     snapshot: displaySnapshot,
   }), [
+    crowdRadarSnapshot,
     displaySnapshot,
     displaySurfaces.statusMetricLabelStyle,
     displaySurfaces.statusMetricOrder,
     metricStates,
-    radarSnapshot,
     runningThreads,
   ]);
 

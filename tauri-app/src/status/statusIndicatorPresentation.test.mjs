@@ -37,8 +37,6 @@ const BASE_SNAPSHOT = {
   },
 };
 
-const RADAR_NOW = new Date("2026-07-30T04:00:00Z");
-
 test("status presentation follows configured order and preserves a real zero rate", () => {
   const result = buildStatusIndicatorPresentation({
     labelStyle: "compact",
@@ -69,7 +67,6 @@ test("status presentation keeps selected unavailable and zero metrics visible", 
       liveRateEnabled: false,
     }),
     order: ["rate", "fiveHour", "sevenDay", "iq", "running", "unread"],
-    radar: null,
     running: {
       total: 0,
       mainThreads: 0,
@@ -114,11 +111,10 @@ test("status presentation replaces IQ score with a structured two-row model rank
     },
   };
   const result = buildStatusIndicatorPresentation({
+    crowdRadar: crowdRadarFixture(),
     labelStyle: "compact",
     metricStates: metricStatesFor(snapshot),
     order: ["iq", "running", "unread"],
-    now: RADAR_NOW,
-    radar: radarFixture(103.6),
     running: {
       total: 3,
       mainThreads: 2,
@@ -131,11 +127,11 @@ test("status presentation replaces IQ score with a structured two-row model rank
     snapshot,
   });
 
-  assert.equal(result.title, "1 Sol·MAX / 2 Luna·H · 跑3 · 未2");
+  assert.equal(result.title, "1 Sol·MAX / 2 Terra·U · 跑3 · 未2");
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["iq", "running", "unread"]);
-  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·MAX", "2 Luna·H"]);
-  assert.doesNotMatch(result.title, /IQ|103\.6/);
-  assert.match(result.tooltip, /今日模型榜：1 Sol·MAX；2 Luna·H/);
+  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·MAX", "2 Terra·U"]);
+  assert.doesNotMatch(result.title, /IQ/);
+  assert.match(result.tooltip, /今日众测实时榜：1 Sol·MAX；2 Terra·U/);
 });
 
 test("status model ranking compacts every supported reasoning effort", () => {
@@ -149,130 +145,108 @@ test("status model ranking compacts every supported reasoning effort", () => {
     ["minimal", "MIN"],
   ]);
   for (const [effort, compact] of expected) {
-    const radar = radarFixture(100);
-    radar.modelIq.latest.reasoningEffort = effort;
-    radar.modelIq.comparisons = {};
+    const crowdRadar = crowdRadarFixture();
+    crowdRadar.models = [{ ...crowdRadar.models[0], effort }];
+    crowdRadar.recentModels = crowdRadar.models;
     const result = buildStatusIndicatorPresentation({
+      crowdRadar,
       labelStyle: "compact",
       metricStates: metricStatesFor(BASE_SNAPSHOT),
-      now: RADAR_NOW,
       order: ["iq"],
-      radar,
       snapshot: BASE_SNAPSHOT,
     });
     assert.deepEqual(result.visibleItems[0].compactRows, [`1 Sol·${compact}`, "2 —"]);
   }
 });
 
-test("today model ranking excludes stale snapshots and prior-day scores", () => {
-  const stale = radarFixture(150);
-  stale.staleDataDisplayed = true;
-  const staleResult = buildStatusIndicatorPresentation({
+test("today crowd ranking rejects published fallback data and trusts the freshly read realtime table", () => {
+  const recentOnly = crowdRadarFixture();
+  recentOnly.realtimeAvailable = false;
+  const recentOnlyResult = buildStatusIndicatorPresentation({
+    crowdRadar: recentOnly,
     labelStyle: "compact",
     metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
     order: ["iq"],
-    radar: stale,
     snapshot: BASE_SNAPSHOT,
   });
-  assert.deepEqual(staleResult.visibleItems[0].compactRows, ["1 —", "2 —"]);
+  assert.deepEqual(recentOnlyResult.visibleItems[0].compactRows, ["1 —", "2 —"]);
 
-  const mixedDates = radarFixture(150);
-  mixedDates.modelIq.latest.date = "2026-07-29T23:00:00+08:00";
-  mixedDates.modelIq.comparisons.luna.latest.score = 95;
-  const currentOnly = buildStatusIndicatorPresentation({
+  const priorDay = crowdRadarFixture();
+  priorDay.generatedAt = "2026-07-29T03:30:00Z";
+  const priorDayResult = buildStatusIndicatorPresentation({
+    crowdRadar: priorDay,
     labelStyle: "compact",
     metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
     order: ["iq"],
-    radar: mixedDates,
     snapshot: BASE_SNAPSHOT,
   });
-  assert.deepEqual(currentOnly.visibleItems[0].compactRows, ["1 Luna·H", "2 —"]);
+  assert.deepEqual(priorDayResult.visibleItems[0].compactRows, ["1 Sol·MAX", "2 Terra·U"]);
 });
 
-test("today model ranking rejects zero-sample placeholders but preserves a measured zero score", () => {
-  const placeholder = radarFixture(150);
-  Object.assign(placeholder.modelIq.latest, {
-    passed: 0,
-    tasks: 0,
-    validTasks: 0,
-  });
-  const withoutPlaceholder = buildStatusIndicatorPresentation({
+test("status model ranking reads only today's live crowd radar", () => {
+  const crowdRadar = crowdRadarFixture();
+  const result = buildStatusIndicatorPresentation({
+    crowdRadar,
     labelStyle: "compact",
     metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
     order: ["iq"],
-    radar: placeholder,
     snapshot: BASE_SNAPSHOT,
   });
-  assert.deepEqual(withoutPlaceholder.visibleItems[0].compactRows, ["1 Luna·H", "2 —"]);
+  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·MAX", "2 Terra·U"]);
+});
 
-  const realZero = radarFixture(0);
-  realZero.modelIq.comparisons = {};
-  realZero.modelIq.latest.passed = 0;
-  realZero.modelIq.latest.tasks = 1;
-  delete realZero.modelIq.latest.validTasks;
-  const measuredZero = buildStatusIndicatorPresentation({
+test("today crowd ranking rejects zero-sample placeholders but preserves a measured zero result", () => {
+  const placeholder = crowdRadarFixture();
+  placeholder.models[0].scoreSamples = 0;
+  const withoutPlaceholder = buildStatusIndicatorPresentation({
+    crowdRadar: placeholder,
     labelStyle: "compact",
     metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
     order: ["iq"],
-    radar: realZero,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(withoutPlaceholder.visibleItems[0].compactRows, ["1 Terra·U", "2 —"]);
+
+  const realZero = crowdRadarFixture();
+  realZero.models = [{
+    ...realZero.models[0],
+    graded: 1,
+    passed: 0,
+    passRate: 0,
+    scorePassed: 0,
+    scoreSamples: 112,
+  }];
+  realZero.recentModels = realZero.models;
+  const measuredZero = buildStatusIndicatorPresentation({
+    crowdRadar: realZero,
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    order: ["iq"],
     snapshot: BASE_SNAPSHOT,
   });
   assert.deepEqual(measuredZero.visibleItems[0].compactRows, ["1 Sol·MAX", "2 —"]);
-
-  const explicitlyInvalid = radarFixture(200);
-  Object.assign(explicitlyInvalid.modelIq.latest, {
-    passed: 10,
-    tasks: 10,
-    validTasks: 0,
-  });
-  const withoutInvalidSamples = buildStatusIndicatorPresentation({
-    labelStyle: "compact",
-    metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
-    order: ["iq"],
-    radar: explicitlyInvalid,
-    snapshot: BASE_SNAPSHOT,
-  });
-  assert.deepEqual(withoutInvalidSamples.visibleItems[0].compactRows, ["1 Luna·H", "2 —"]);
 });
 
-test("today model ranking falls back to comparison identity and skips identity-free rows", () => {
-  const radar = radarFixture(150);
-  Object.assign(radar.modelIq.latest, {
-    model: null,
-    passed: 0,
-    tasks: 0,
-    validTasks: 0,
-  });
-  const comparison = radar.modelIq.comparisons.luna;
-  comparison.label = "Current contender";
-  comparison.model = "gpt-5.6-sol";
-  comparison.reasoningEffort = "ultra";
-  comparison.latest.model = null;
-  comparison.latest.reasoningEffort = null;
+test("today crowd ranking compacts non-family identifiers and skips identity-free rows", () => {
+  const crowdRadar = crowdRadarFixture();
+  crowdRadar.models = [{ ...crowdRadar.models[0], model: "gpt-5.6-orbit" }];
+  crowdRadar.recentModels = crowdRadar.models;
   const result = buildStatusIndicatorPresentation({
+    crowdRadar,
     labelStyle: "compact",
     metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
     order: ["iq"],
-    radar,
     snapshot: BASE_SNAPSHOT,
   });
-  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·U", "2 —"]);
+  assert.deepEqual(result.visibleItems[0].compactRows, ["1 5.6-orbit·MAX", "2 —"]);
 
-  comparison.model = "";
-  comparison.reasoningEffort = "";
-  comparison.label = "MODEL";
+  crowdRadar.models = [{ ...crowdRadar.models[0], model: "" }];
+  crowdRadar.recentModels = crowdRadar.models;
   const identityFree = buildStatusIndicatorPresentation({
+    crowdRadar,
     labelStyle: "compact",
     metricStates: metricStatesFor(BASE_SNAPSHOT),
-    now: RADAR_NOW,
     order: ["iq"],
-    radar,
     snapshot: BASE_SNAPSHOT,
   });
   assert.deepEqual(identityFree.visibleItems[0].compactRows, ["1 —", "2 —"]);
@@ -511,48 +485,6 @@ test("full and hidden label styles change only the short title, not tooltip deta
   assert.equal(full.tooltip, hidden.tooltip);
 });
 
-function radarFixture(score) {
-  const point = {
-    date: "2026-07-30",
-    score,
-    status: "ready",
-    passed: 10,
-    tasks: 10,
-    invalid: 0,
-    validTasks: 10,
-    totalTokens: 100,
-    inputTokens: 50,
-    cachedInputTokens: 0,
-    outputTokens: 50,
-    wallSeconds: 1,
-    wallTimeHuman: "1s",
-    model: "gpt-5.6-sol",
-    reasoningEffort: "max",
-  };
-  return {
-    staleDataDisplayed: false,
-    timezone: "Asia/Shanghai",
-    modelIq: {
-      latest: point,
-      recentDays: [point],
-      comparisons: {
-        luna: {
-          label: "GPT-5.6 Luna high",
-          model: "gpt-5.6-luna",
-          reasoningEffort: "high",
-          latest: {
-            ...point,
-            score: score - 5,
-            model: "gpt-5.6-luna",
-            reasoningEffort: "high",
-          },
-          recentDays: [],
-        },
-      },
-    },
-  };
-}
-
 function metricStatesFor(snapshot, overrides = {}) {
   return buildStatusMetricStates({
     liveRateEnabled: true,
@@ -560,4 +492,42 @@ function metricStatesFor(snapshot, overrides = {}) {
     snapshot,
     ...overrides,
   });
+}
+
+function crowdRadarFixture() {
+  const models = [
+    {
+      model: "gpt-5.6-sol",
+      effort: "max",
+      graded: 77,
+      passed: 53,
+      passRate: 53 / 77,
+      cells: 112,
+      scorePassed: 77,
+      scoreSamples: 112,
+      latestGradedAt: "2026-07-30T03:30:00Z",
+    },
+    {
+      model: "gpt-5.6-terra",
+      effort: "ultra",
+      graded: 72,
+      passed: 46,
+      passRate: 46 / 72,
+      cells: 112,
+      scorePassed: 72,
+      scoreSamples: 112,
+      latestGradedAt: "2026-07-30T03:29:00Z",
+    },
+  ];
+  return {
+    generatedAt: "2026-07-30T03:30:00Z",
+    taskCount: 112,
+    cellCount: 2352,
+    contributorCount: 7,
+    pendingGrades: 0,
+    errorGrades: 0,
+    models,
+    recentModels: models,
+    realtimeAvailable: true,
+  };
 }

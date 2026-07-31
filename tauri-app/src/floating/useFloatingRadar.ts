@@ -7,6 +7,12 @@ const FLOATING_RADAR_REFRESH_INTERVAL_MS = 600_000;
 
 type RadarReader = typeof readCodexRadarState;
 type RadarSubscriber = typeof subscribeCodexRadarState;
+type CrowdRadarReader = typeof readCodexCrowdRadarSnapshot;
+
+interface FloatingCrowdRadarOptions {
+  clearOnError?: boolean;
+  readCrowdRadar?: CrowdRadarReader;
+}
 
 export function useFloatingRadar(
   active: boolean,
@@ -51,17 +57,27 @@ export function useFloatingRadar(
   return snapshot;
 }
 
-export function useFloatingCrowdRadar(active: boolean): CodexCrowdRadarSnapshot | null {
+export function useFloatingCrowdRadar(
+  active: boolean,
+  {
+    clearOnError = false,
+    readCrowdRadar = readCodexCrowdRadarSnapshot,
+  }: FloatingCrowdRadarOptions = {},
+): CodexCrowdRadarSnapshot | null {
   const [snapshot, setSnapshot] = useState<CodexCrowdRadarSnapshot | null>(null);
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
-    const refresh = () => void readCodexCrowdRadarSnapshot()
+    const refresh = () => void readCrowdRadar()
       .then((next) => { if (!cancelled) setSnapshot(next); })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled && clearOnError) {
+          setSnapshot(null);
+        }
+      });
     refresh();
     const timer = window.setInterval(refresh, FLOATING_RADAR_REFRESH_INTERVAL_MS);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [active]);
+  }, [active, clearOnError, readCrowdRadar]);
   return snapshot;
 }

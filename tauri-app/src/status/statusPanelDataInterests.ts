@@ -66,8 +66,8 @@ export function buildStatusPanelDataInterests({
       || visibleSummaries.some((id) => id === "quota" || id === "overview"),
     running: compactMetrics.includes("running")
       || visibleSummaries.includes("running"),
-    radar: compactMetrics.includes("iq")
-      || visibleSummaries.includes("radar"),
-    crowdRadar: visibleSummaries.includes("crowdRadar"),
+    radar: visibleSummaries.includes("radar"),
+    crowdRadar: compactMetrics.includes("iq")
+      || visibleSummaries.includes("crowdRadar"),
   };
 }
