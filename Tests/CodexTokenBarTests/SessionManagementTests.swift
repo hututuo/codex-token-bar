@@ -213,6 +213,233 @@ final class SessionManagementPresentationTests: XCTestCase {
         XCTAssertFalse(SessionManagementLayout.usesCompactLayout(width: 920))
     }
 
+    func testCatalogLoadingBlocksContentButKeepsCloseAvailable() {
+        XCTAssertTrue(
+            SessionManagementInteractionPolicy.blocksContent(
+                isLoadingCatalog: true
+            )
+        )
+        XCTAssertFalse(
+            SessionManagementInteractionPolicy.blocksContent(
+                isLoadingCatalog: false
+            )
+        )
+        XCTAssertTrue(
+            SessionManagementInteractionPolicy.closeIsEnabled(
+                isLoadingCatalog: true,
+                isPerformingMutation: false
+            )
+        )
+        XCTAssertFalse(
+            SessionManagementInteractionPolicy.closeIsEnabled(
+                isLoadingCatalog: false,
+                isPerformingMutation: true
+            )
+        )
+    }
+
+    func testInactivityFilterSupportsDayMonthAndCustomThresholds() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let now = try XCTUnwrap(
+            calendar.date(
+                from: DateComponents(
+                    year: 2026,
+                    month: 3,
+                    day: 31,
+                    hour: 12
+                )
+            )
+        )
+        func date(year: Int, month: Int, day: Int) throws -> Date {
+            try XCTUnwrap(
+                calendar.date(
+                    from: DateComponents(
+                        year: year,
+                        month: month,
+                        day: day,
+                        hour: 12
+                    )
+                )
+            )
+        }
+        let catalog = SessionManagementCatalog(
+            threads: [
+                makeSessionManagementThread(
+                    id: "four-days",
+                    updatedAt: try date(year: 2026, month: 3, day: 27)
+                ),
+                makeSessionManagementThread(
+                    id: "six-days",
+                    updatedAt: try date(year: 2026, month: 3, day: 25)
+                ),
+                makeSessionManagementThread(
+                    id: "thirty-days",
+                    updatedAt: try date(year: 2026, month: 3, day: 1)
+                ),
+                makeSessionManagementThread(
+                    id: "one-month",
+                    updatedAt: try date(year: 2026, month: 2, day: 28)
+                ),
+                makeSessionManagementThread(
+                    id: "three-months",
+                    updatedAt: try date(year: 2025, month: 12, day: 31)
+                ),
+                makeSessionManagementThread(id: "unknown", updatedAt: nil),
+            ],
+            generatedAt: now,
+            codexHome: "/tmp/codex",
+            totalBytes: nil,
+            warnings: [],
+            capabilities: .readOnly
+        )
+        func ids(
+            _ filter: SessionManagementInactivityFilter,
+            customDays: Int? = nil
+        ) -> Set<String> {
+            Set(
+                SessionManagementPresentation.filteredThreads(
+                    in: catalog,
+                    collection: .all,
+                    projectID: nil,
+                    query: "",
+                    sort: .recent,
+                    inactivityFilter: filter,
+                    customInactiveDays: customDays,
+                    calendar: calendar,
+                    now: now
+                ).map(\.id)
+            )
+        }
+
+        XCTAssertEqual(
+            ids(.fiveDays),
+            ["six-days", "thirty-days", "one-month", "three-months"]
+        )
+        XCTAssertEqual(
+            ids(.tenDays),
+            ["thirty-days", "one-month", "three-months"]
+        )
+        XCTAssertEqual(
+            ids(.thirtyDays),
+            ["thirty-days", "one-month", "three-months"]
+        )
+        XCTAssertEqual(ids(.oneMonth), ["one-month", "three-months"])
+        XCTAssertEqual(ids(.threeMonths), ["three-months"])
+        XCTAssertEqual(
+            ids(.custom, customDays: 10),
+            ["thirty-days", "one-month", "three-months"]
+        )
+        XCTAssertTrue(ids(.custom, customDays: nil).isEmpty)
+        XCTAssertTrue(ids(.custom, customDays: 0).isEmpty)
+        XCTAssertTrue(ids(.any).contains("unknown"))
+    }
+
+    func testInactivityFilterComposesWithEverySmartCollection() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let recent = now.addingTimeInterval(-2 * 24 * 60 * 60)
+        let inactive = now.addingTimeInterval(-40 * 24 * 60 * 60)
+
+        let archivedRecent = makeSessionManagementThread(
+            id: "archived-recent",
+            updatedAt: recent,
+            archived: true
+        )
+        let archivedInactive = makeSessionManagementThread(
+            id: "archived-inactive",
+            updatedAt: inactive,
+            archived: true
+        )
+        var similarRecent = makeSessionManagementThread(
+            id: "similar-recent",
+            updatedAt: recent
+        )
+        similarRecent.similarityGroupID = "recent-group"
+        var similarInactive = makeSessionManagementThread(
+            id: "similar-inactive",
+            updatedAt: inactive
+        )
+        similarInactive.similarityGroupID = "inactive-group"
+
+        let catalog = SessionManagementCatalog(
+            threads: [
+                makeSessionManagementThread(id: "normal-recent", updatedAt: recent),
+                makeSessionManagementThread(id: "normal-inactive", updatedAt: inactive),
+                archivedRecent,
+                archivedInactive,
+                makeSessionManagementThread(
+                    id: "large-recent",
+                    updatedAt: recent,
+                    fileBytes: SessionManagementPresentation.largeThreadThreshold
+                ),
+                makeSessionManagementThread(
+                    id: "large-inactive",
+                    updatedAt: inactive,
+                    fileBytes: SessionManagementPresentation.largeThreadThreshold
+                ),
+                makeSessionManagementThread(
+                    id: "fork-recent",
+                    updatedAt: recent,
+                    forkedFromID: "root"
+                ),
+                makeSessionManagementThread(
+                    id: "fork-inactive",
+                    updatedAt: inactive,
+                    forkedFromID: "root"
+                ),
+                similarRecent,
+                similarInactive,
+                makeSessionManagementThread(
+                    id: "subagent-recent",
+                    updatedAt: recent,
+                    parentThreadID: "root",
+                    isSubagent: true
+                ),
+                makeSessionManagementThread(
+                    id: "subagent-inactive",
+                    updatedAt: inactive,
+                    parentThreadID: "root",
+                    isSubagent: true
+                ),
+            ],
+            generatedAt: now,
+            codexHome: "/tmp/codex",
+            totalBytes: nil,
+            warnings: [],
+            capabilities: .readOnly
+        )
+        func ids(_ collection: SessionManagementCollection) -> Set<String> {
+            Set(
+                SessionManagementPresentation.filteredThreads(
+                    in: catalog,
+                    collection: collection,
+                    projectID: nil,
+                    query: "",
+                    sort: .recent,
+                    inactivityFilter: .thirtyDays,
+                    now: now
+                ).map(\.id)
+            )
+        }
+
+        XCTAssertEqual(
+            ids(.all),
+            [
+                "normal-inactive",
+                "archived-inactive",
+                "large-inactive",
+                "fork-inactive",
+                "similar-inactive",
+            ]
+        )
+        XCTAssertTrue(ids(.recent).isEmpty)
+        XCTAssertEqual(ids(.officialArchive), ["archived-inactive"])
+        XCTAssertEqual(ids(.large), ["large-inactive"])
+        XCTAssertEqual(ids(.forks), ["fork-inactive"])
+        XCTAssertEqual(ids(.similar), ["similar-inactive"])
+        XCTAssertEqual(ids(.subagents), ["subagent-inactive"])
+    }
+
     func testSessionManagementNavigationIsAForwardAndBackDrillDown() {
         XCTAssertNil(SessionManagementNavigationStage.projects.previous)
         XCTAssertEqual(SessionManagementNavigationStage.sessions.previous, .projects)
@@ -236,6 +463,256 @@ final class SessionManagementPresentationTests: XCTestCase {
         let malformed = makeSessionManagementThread(id: "  ")
         XCTAssertFalse(SessionManagementSelectionPolicy.canSelect(malformed))
     }
+}
+
+@MainActor
+final class SessionManagementStoreLoadingTests: XCTestCase {
+    func testCustomInactiveDayInputAcceptsOnlyPositiveIntegers() {
+        let store = SessionManagementStore(dataSource: nil)
+
+        store.customInactiveDaysText = " 12 "
+        XCTAssertEqual(store.customInactiveDays, 12)
+        XCTAssertTrue(store.isCustomInactiveDaysValid)
+
+        store.inactivityFilter = .custom
+        store.customInactiveDaysText = "0"
+        XCTAssertNil(store.customInactiveDays)
+        XCTAssertFalse(store.isCustomInactiveDaysValid)
+
+        store.customInactiveDaysText = "not-a-number"
+        XCTAssertNil(store.customInactiveDays)
+        XCTAssertFalse(store.isCustomInactiveDaysValid)
+    }
+
+    func testSupersededRefreshCannotUnlockNewCatalogLoad() async {
+        let service = GatedSessionManagementService()
+        let dataSource = makeBatchDeletionDataSource("refresh-generation")
+        let store = SessionManagementStore(
+            dataSource: dataSource,
+            service: service
+        )
+
+        let firstRefresh = store.refresh()
+        let firstLoadStarted = await service.waitForLoadCount(1)
+        guard firstLoadStarted else {
+            XCTFail("The first catalog load never started")
+            return
+        }
+        XCTAssertTrue(store.isLoadingCatalog)
+
+        let secondRefresh = store.refresh()
+        let secondLoadStarted = await service.waitForLoadCount(2)
+        guard secondLoadStarted else {
+            XCTFail("The replacement catalog load never started")
+            return
+        }
+        XCTAssertTrue(store.isLoadingCatalog)
+
+        await service.completeLoad(
+            at: 0,
+            with: .empty(codexHome: dataSource.displayPath)
+        )
+        await firstRefresh?.value
+        XCTAssertTrue(
+            store.isLoadingCatalog,
+            "A cancelled older refresh must not unlock a newer load"
+        )
+
+        let now = Date()
+        let newest = SessionManagementCatalog(
+            threads: [
+                makeSessionManagementThread(
+                    id: "recent",
+                    updatedAt: now.addingTimeInterval(-24 * 60 * 60)
+                ),
+                makeSessionManagementThread(
+                    id: "inactive",
+                    updatedAt: now.addingTimeInterval(-40 * 24 * 60 * 60)
+                ),
+            ],
+            generatedAt: now,
+            codexHome: dataSource.displayPath,
+            totalBytes: 2,
+            warnings: [],
+            capabilities: .readOnly
+        )
+        await service.completeLoad(at: 1, with: newest)
+        await secondRefresh?.value
+
+        XCTAssertFalse(store.isLoadingCatalog)
+        XCTAssertEqual(store.catalog.threads.map(\.id), ["recent", "inactive"])
+        XCTAssertEqual(store.selectedThreadID, "recent")
+
+        store.inactivityFilter = .thirtyDays
+        XCTAssertEqual(store.matchingThreads.map(\.id), ["inactive"])
+        XCTAssertEqual(
+            store.selectedThreadID,
+            "inactive",
+            "Changing the inactivity filter must not leave excluded details selected"
+        )
+
+        store.inactivityFilter = .custom
+        store.customInactiveDaysText = "invalid"
+        XCTAssertTrue(store.matchingThreads.isEmpty)
+        XCTAssertNil(store.selectedThreadID)
+        XCTAssertTrue(store.contextMessages.isEmpty)
+
+        let loadCount = await service.loadCount()
+        XCTAssertEqual(
+            loadCount,
+            2,
+            "Changing local filters must not rescan the session catalog"
+        )
+    }
+
+    func testRefreshReconcilesSelectionAgainstActiveInactivityFilter() async {
+        let service = GatedSessionManagementService()
+        let dataSource = makeBatchDeletionDataSource("refresh-filter-selection")
+        let store = SessionManagementStore(dataSource: dataSource, service: service)
+        let now = Date()
+
+        let initialRefresh = store.refresh()
+        guard await service.waitForLoadCount(1) else {
+            XCTFail("The initial catalog load never started")
+            return
+        }
+        await service.completeLoad(
+            at: 0,
+            with: SessionManagementCatalog(
+                threads: [
+                    makeSessionManagementThread(
+                        id: "selected",
+                        updatedAt: now.addingTimeInterval(-35 * 24 * 60 * 60)
+                    ),
+                    makeSessionManagementThread(
+                        id: "fallback",
+                        updatedAt: now.addingTimeInterval(-40 * 24 * 60 * 60)
+                    ),
+                ],
+                generatedAt: now,
+                codexHome: dataSource.displayPath,
+                totalBytes: 2,
+                warnings: [],
+                capabilities: .readOnly
+            )
+        )
+        await initialRefresh?.value
+        store.inactivityFilter = .thirtyDays
+        XCTAssertEqual(store.selectedThreadID, "selected")
+
+        let replacementRefresh = store.refresh()
+        guard await service.waitForLoadCount(2) else {
+            XCTFail("The replacement catalog load never started")
+            return
+        }
+        await service.completeLoad(
+            at: 1,
+            with: SessionManagementCatalog(
+                threads: [
+                    makeSessionManagementThread(
+                        id: "selected",
+                        updatedAt: now.addingTimeInterval(-24 * 60 * 60)
+                    ),
+                    makeSessionManagementThread(
+                        id: "fallback",
+                        updatedAt: now.addingTimeInterval(-40 * 24 * 60 * 60)
+                    ),
+                ],
+                generatedAt: now,
+                codexHome: dataSource.displayPath,
+                totalBytes: 2,
+                warnings: [],
+                capabilities: .readOnly
+            )
+        )
+        await replacementRefresh?.value
+
+        XCTAssertEqual(store.matchingThreads.map(\.id), ["fallback"])
+        XCTAssertEqual(
+            store.selectedThreadID,
+            "fallback",
+            "Refreshing must not leave details selected for a row excluded by the active filter"
+        )
+    }
+
+    func testSupersededContextLoadCannotUnlockOrReplaceNewSelection() async {
+        let service = GatedSessionManagementService()
+        let dataSource = makeBatchDeletionDataSource("context-generation")
+        let store = SessionManagementStore(dataSource: dataSource, service: service)
+        let catalogRefresh = store.refresh()
+        guard await service.waitForLoadCount(1) else {
+            XCTFail("The catalog load never started")
+            return
+        }
+        let catalog = SessionManagementCatalog(
+            threads: [
+                makeSessionManagementThread(id: "first"),
+                makeSessionManagementThread(id: "second"),
+            ],
+            generatedAt: Date(),
+            codexHome: dataSource.displayPath,
+            totalBytes: 2,
+            warnings: [],
+            capabilities: .readOnly
+        )
+        await service.completeLoad(at: 0, with: catalog)
+        await catalogRefresh?.value
+        guard await service.waitForContextLoadCount(1) else {
+            XCTFail("The automatically selected context load never started")
+            return
+        }
+
+        let baselineTask = store.loadInitialContext()
+        guard await service.waitForContextLoadCount(2) else {
+            XCTFail("The baseline context load never started")
+            return
+        }
+        await service.completeContextLoad(
+            at: 1,
+            with: makeContextPage(threadID: "first", text: "baseline")
+        )
+        await baselineTask?.value
+        XCTAssertFalse(store.isLoadingContext)
+        XCTAssertEqual(store.contextMessages.map(\.text), ["baseline"])
+
+        let supersededTask = store.loadInitialContext()
+        guard await service.waitForContextLoadCount(3) else {
+            XCTFail("The superseded context load never started")
+            return
+        }
+        let currentTask = store.selectThread("second")
+        guard await service.waitForContextLoadCount(4) else {
+            XCTFail("The replacement context load never started")
+            return
+        }
+        XCTAssertTrue(store.isLoadingContext)
+
+        await service.completeContextLoad(
+            at: 2,
+            with: makeContextPage(threadID: "first", text: "stale")
+        )
+        await supersededTask?.value
+        XCTAssertTrue(
+            store.isLoadingContext,
+            "A cancelled older context load must not hide the replacement spinner"
+        )
+        XCTAssertTrue(store.contextMessages.isEmpty)
+
+        await service.completeContextLoad(
+            at: 3,
+            with: makeContextPage(threadID: "second", text: "current")
+        )
+        await currentTask?.value
+        XCTAssertFalse(store.isLoadingContext)
+        XCTAssertEqual(store.selectedThreadID, "second")
+        XCTAssertEqual(store.contextMessages.map(\.text), ["current"])
+
+        await service.completeContextLoad(
+            at: 0,
+            with: makeContextPage(threadID: "first", text: "obsolete-auto-load")
+        )
+    }
+
 }
 
 final class SessionManagementBatchDeletionTests: XCTestCase {
@@ -2019,6 +2496,118 @@ private actor SessionManagementOfficialDeleteMock: SessionManagementOfficialDele
     }
 }
 
+private actor GatedSessionManagementService: SessionManagementServicing {
+    private var catalogContinuations:
+        [CheckedContinuation<SessionManagementCatalog, Error>?] = []
+    private var contextContinuations:
+        [CheckedContinuation<SessionManagementContextPage, Error>?] = []
+
+    func loadCatalog(
+        dataSource _: CodexDataSource
+    ) async throws -> SessionManagementCatalog {
+        try await withCheckedThrowingContinuation { continuation in
+            catalogContinuations.append(continuation)
+        }
+    }
+
+    func waitForLoadCount(_ expectedCount: Int) async -> Bool {
+        for _ in 0..<1_000 {
+            if catalogContinuations.count >= expectedCount {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    func loadCount() -> Int {
+        catalogContinuations.count
+    }
+
+    func completeLoad(
+        at index: Int,
+        with catalog: SessionManagementCatalog
+    ) {
+        guard catalogContinuations.indices.contains(index),
+              let continuation = catalogContinuations[index] else {
+            return
+        }
+        catalogContinuations[index] = nil
+        continuation.resume(returning: catalog)
+    }
+
+    func prepareDeletionConfirmation(
+        selectedThreadIDs _: Set<String>,
+        dataSource _: CodexDataSource
+    ) async throws -> SessionManagementDeletionConfirmation {
+        throw SessionManagementTestError.unsupportedMockCall
+    }
+
+    func loadContextPage(
+        thread _: SessionManagementThread,
+        dataSource _: CodexDataSource,
+        beforeOffset _: Int64?,
+        pageSize _: Int
+    ) async throws -> SessionManagementContextPage {
+        try await withCheckedThrowingContinuation { continuation in
+            contextContinuations.append(continuation)
+        }
+    }
+
+    func waitForContextLoadCount(_ expectedCount: Int) async -> Bool {
+        for _ in 0..<1_000 {
+            if contextContinuations.count >= expectedCount {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
+    }
+
+    func completeContextLoad(
+        at index: Int,
+        with page: SessionManagementContextPage
+    ) {
+        guard contextContinuations.indices.contains(index),
+              let continuation = contextContinuations[index] else {
+            return
+        }
+        contextContinuations[index] = nil
+        continuation.resume(returning: page)
+    }
+
+    func archive(
+        threadID _: String,
+        dataSource _: CodexDataSource
+    ) async throws {
+        throw SessionManagementTestError.unsupportedMockCall
+    }
+
+    func unarchive(
+        threadID _: String,
+        dataSource _: CodexDataSource
+    ) async throws {
+        throw SessionManagementTestError.unsupportedMockCall
+    }
+
+    func delete(
+        rootID _: String,
+        expectation _: SessionManagementDeletionExpectation,
+        recoveryPackages _: [String: SessionManagementRecoveryPackageResult],
+        dataSource _: CodexDataSource
+    ) async throws -> String {
+        throw SessionManagementTestError.unsupportedMockCall
+    }
+
+    func createRecoveryPackage(
+        thread _: SessionManagementThread,
+        dataSource _: CodexDataSource,
+        expectedSnapshot _: SessionManagementRolloutSnapshot?
+    ) async throws -> SessionManagementRecoveryPackageResult {
+        throw SessionManagementTestError.unsupportedMockCall
+    }
+}
+
 private actor SessionManagementBatchDeletionServiceMock: SessionManagementServicing {
     private let failingThreadIDs: Set<String>
     private let failingRecoveryThreadIDs: Set<String>
@@ -2253,6 +2842,34 @@ private func makeSessionManagementThread(
         canUnarchive: false,
         canDelete: true,
         rolloutIdentityVerified: true
+    )
+}
+
+private func makeContextPage(
+    threadID: String,
+    text: String
+) -> SessionManagementContextPage {
+    SessionManagementContextPage(
+        threadID: threadID,
+        messages: [
+            SessionManagementContextMessage(
+                id: "\(threadID)-\(text)",
+                role: "assistant",
+                timestamp: nil,
+                text: text,
+                isTruncated: false,
+                byteOffset: 0
+            ),
+        ],
+        nextBeforeOffset: nil,
+        hasMoreBefore: false,
+        fileIdentity: SessionManagementFileIdentity(
+            deviceID: 1,
+            fileID: 1,
+            size: Int64(text.utf8.count),
+            modifiedAt: nil
+        ),
+        warnings: []
     )
 }
 

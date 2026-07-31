@@ -93,6 +93,76 @@ enum SessionManagementSort: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum SessionManagementInactivityFilter: String, CaseIterable, Identifiable, Sendable {
+    case any
+    case fiveDays
+    case tenDays
+    case thirtyDays
+    case oneMonth
+    case threeMonths
+    case custom
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .any: return "不限"
+        case .fiveDays: return "5 天以上"
+        case .tenDays: return "10 天以上"
+        case .thirtyDays: return "30 天以上"
+        case .oneMonth: return "1 个月以上"
+        case .threeMonths: return "3 个月以上"
+        case .custom: return "自定义"
+        }
+    }
+
+    var requiresCustomDays: Bool {
+        self == .custom
+    }
+
+    func matches(
+        lastUsedAt: Date?,
+        now: Date,
+        customDays: Int?,
+        calendar: Calendar
+    ) -> Bool {
+        guard self != .any else { return true }
+        guard let lastUsedAt,
+              let boundary = boundary(
+                  now: now,
+                  customDays: customDays,
+                  calendar: calendar
+              ) else {
+            return false
+        }
+        return lastUsedAt <= boundary
+    }
+
+    private func boundary(
+        now: Date,
+        customDays: Int?,
+        calendar: Calendar
+    ) -> Date? {
+        switch self {
+        case .any:
+            return nil
+        case .fiveDays:
+            return calendar.date(byAdding: .day, value: -5, to: now)
+        case .tenDays:
+            return calendar.date(byAdding: .day, value: -10, to: now)
+        case .thirtyDays:
+            return calendar.date(byAdding: .day, value: -30, to: now)
+        case .oneMonth:
+            return calendar.date(byAdding: .month, value: -1, to: now)
+        case .threeMonths:
+            return calendar.date(byAdding: .month, value: -3, to: now)
+        case .custom:
+            guard let customDays, customDays > 0 else { return nil }
+            return calendar.date(byAdding: .day, value: -customDays, to: now)
+        }
+    }
+}
+
 struct SessionManagementCapabilities: Equatable, Sendable {
     let canOfficialMutate: Bool
     let canCreateRecoveryPackage: Bool
@@ -394,6 +464,9 @@ enum SessionManagementPresentation {
         projectID: String?,
         query: String,
         sort: SessionManagementSort,
+        inactivityFilter: SessionManagementInactivityFilter = .any,
+        customInactiveDays: Int? = nil,
+        calendar: Calendar = .current,
         now: Date = Date()
     ) -> [SessionManagementThread] {
         let recentBoundary = now.addingTimeInterval(-7 * 24 * 60 * 60)
@@ -431,6 +504,14 @@ enum SessionManagementPresentation {
                     || $0.cwd.localizedCaseInsensitiveContains(needle)
                     || $0.id.localizedCaseInsensitiveContains(needle)
             }
+        }
+        rows = rows.filter {
+            inactivityFilter.matches(
+                lastUsedAt: $0.lastUsedAt,
+                now: now,
+                customDays: customInactiveDays,
+                calendar: calendar
+            )
         }
         return rows.sorted { left, right in
             switch sort {

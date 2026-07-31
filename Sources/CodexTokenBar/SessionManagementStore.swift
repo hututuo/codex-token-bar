@@ -356,16 +356,19 @@ final class SessionManagementStore: ObservableObject {
         didSet { visibleLimit = SessionManagementPresentation.visiblePageSize }
     }
     @Published var query = "" {
-        didSet { visibleLimit = SessionManagementPresentation.visiblePageSize }
+        didSet { resultFilterDidChange() }
     }
     @Published var sort: SessionManagementSort = .recent {
         didSet { visibleLimit = SessionManagementPresentation.visiblePageSize }
     }
-    @Published var minimumInactiveDays: Int? {
-        didSet { visibleLimit = SessionManagementPresentation.visiblePageSize }
+    @Published var inactivityFilter: SessionManagementInactivityFilter = .any {
+        didSet { resultFilterDidChange() }
+    }
+    @Published var customInactiveDaysText = "14" {
+        didSet { resultFilterDidChange() }
     }
     @Published var minimumBytes: Int64? = SessionManagementPresentation.largeThreadThreshold {
-        didSet { visibleLimit = SessionManagementPresentation.visiblePageSize }
+        didSet { resultFilterDidChange() }
     }
     @Published private(set) var visibleLimit = SessionManagementPresentation.visiblePageSize
     @Published var selectedThreadID: String?
@@ -379,7 +382,9 @@ final class SessionManagementStore: ObservableObject {
     private var contextBeforeOffset: Int64?
     private var contextIdentity: SessionManagementFileIdentity?
     private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
     private var contextTask: Task<Void, Never>?
+    private var contextGeneration = 0
 
     init(
         dataSource: CodexDataSource?,
@@ -407,23 +412,27 @@ final class SessionManagementStore: ObservableObject {
             collection: selectedCollection,
             projectID: selectedProjectID,
             query: query,
-            sort: sort
+            sort: sort,
+            inactivityFilter: inactivityFilter,
+            customInactiveDays: customInactiveDays
         )
         if selectedCollection == .large {
             if let minimumBytes {
                 rows = rows.filter { ($0.fileBytes ?? -1) >= minimumBytes }
             }
-            if let minimumInactiveDays {
-                let boundary = Date().addingTimeInterval(
-                    -Double(minimumInactiveDays) * 24 * 60 * 60
-                )
-                rows = rows.filter {
-                    guard let lastUsedAt = $0.lastUsedAt else { return false }
-                    return lastUsedAt <= boundary
-                }
-            }
         }
         return rows
+    }
+
+    var customInactiveDays: Int? {
+        let trimmed = customInactiveDaysText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed), value > 0 else { return nil }
+        return value
+    }
+
+    var isCustomInactiveDaysValid: Bool {
+        !inactivityFilter.requiresCustomDays || customInactiveDays != nil
     }
 
     var visibleThreads: [SessionManagementThread] {
@@ -481,22 +490,28 @@ final class SessionManagementStore: ObservableObject {
         }
     }
 
-    func refresh(preservingError: Bool = false) {
+    @discardableResult
+    func refresh(
+        preservingError: Bool = false
+    ) -> Task<Void, Never>? {
         refreshTask?.cancel()
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
         guard let dataSource else {
+            isLoadingCatalog = false
             errorMessage = "没有可用的 Codex 数据目录"
-            return
+            return nil
         }
         isLoadingCatalog = true
         if !preservingError {
             errorMessage = nil
         }
         statusMessage = "正在读取会话目录…"
-        refreshTask = Task { [weak self, service] in
+        let task = Task { [weak self, service] in
             do {
                 let catalog = try await service.loadCatalog(dataSource: dataSource)
                 try Task.checkCancellation()
-                guard let self else { return }
+                guard let self, self.refreshGeneration == generation else { return }
                 self.catalog = catalog
                 self.checkedThreadIDs.formIntersection(catalog.threads.map(\.id))
                 if let selectedThreadID = self.selectedThreadID,
@@ -506,18 +521,19 @@ final class SessionManagementStore: ObservableObject {
                 }
                 self.statusMessage = "已读取 \(catalog.threads.count) 个会话"
                 self.isLoadingCatalog = false
-                if self.selectedThreadID == nil,
-                   let first = self.visibleThreads.first {
-                    self.selectThread(first.id)
-                }
+                self.selectFirstVisibleIfNeeded()
             } catch is CancellationError {
-                self?.isLoadingCatalog = false
+                guard let self, self.refreshGeneration == generation else { return }
+                self.isLoadingCatalog = false
             } catch {
-                self?.errorMessage = error.localizedDescription
-                self?.statusMessage = "会话目录读取失败"
-                self?.isLoadingCatalog = false
+                guard let self, self.refreshGeneration == generation else { return }
+                self.errorMessage = error.localizedDescription
+                self.statusMessage = "会话目录读取失败"
+                self.isLoadingCatalog = false
             }
         }
+        refreshTask = task
+        return task
     }
 
     func selectCollection(_ collection: SessionManagementCollection) {
@@ -535,11 +551,12 @@ final class SessionManagementStore: ObservableObject {
         selectFirstVisibleIfNeeded()
     }
 
-    func selectThread(_ threadID: String) {
-        guard selectedThreadID != threadID else { return }
+    @discardableResult
+    func selectThread(_ threadID: String) -> Task<Void, Never>? {
+        guard selectedThreadID != threadID else { return nil }
         selectedThreadID = threadID
         clearContext()
-        loadInitialContext()
+        return loadInitialContext()
     }
 
     func toggleChecked(_ threadID: String) {
@@ -576,16 +593,18 @@ final class SessionManagementStore: ObservableObject {
         visibleLimit = SessionManagementPresentation.visiblePageSize
     }
 
-    func loadInitialContext() {
-        guard let thread = selectedThread else { return }
-        loadContext(thread: thread, beforeOffset: nil, prepend: false)
+    @discardableResult
+    func loadInitialContext() -> Task<Void, Never>? {
+        guard let thread = selectedThread else { return nil }
+        return loadContext(thread: thread, beforeOffset: nil, prepend: false)
     }
 
-    func loadOlderContext() {
+    @discardableResult
+    func loadOlderContext() -> Task<Void, Never>? {
         guard contextHasMoreBefore,
               let thread = selectedThread,
-              let contextBeforeOffset else { return }
-        loadContext(
+              let contextBeforeOffset else { return nil }
+        return loadContext(
             thread: thread,
             beforeOffset: contextBeforeOffset,
             prepend: true
@@ -750,11 +769,16 @@ final class SessionManagementStore: ObservableObject {
         thread: SessionManagementThread,
         beforeOffset: Int64?,
         prepend: Bool
-    ) {
+    ) -> Task<Void, Never>? {
         contextTask?.cancel()
-        guard let dataSource else { return }
+        contextGeneration &+= 1
+        let generation = contextGeneration
+        guard let dataSource else {
+            isLoadingContext = false
+            return nil
+        }
         isLoadingContext = true
-        contextTask = Task { [weak self, service] in
+        let task = Task { [weak self, service] in
             do {
                 let page = try await service.loadContextPage(
                     thread: thread,
@@ -763,7 +787,9 @@ final class SessionManagementStore: ObservableObject {
                     pageSize: 30
                 )
                 try Task.checkCancellation()
-                guard let self, self.selectedThreadID == thread.id else { return }
+                guard let self,
+                      self.contextGeneration == generation,
+                      self.selectedThreadID == thread.id else { return }
                 if prepend, let identity = self.contextIdentity, identity != page.fileIdentity {
                     self.contextMessages = page.messages
                     self.contextWarnings = page.warnings
@@ -780,13 +806,20 @@ final class SessionManagementStore: ObservableObject {
                 self.contextHasMoreBefore = page.hasMoreBefore
                 self.isLoadingContext = false
             } catch is CancellationError {
-                self?.isLoadingContext = false
+                guard let self,
+                      self.contextGeneration == generation,
+                      self.selectedThreadID == thread.id else { return }
+                self.isLoadingContext = false
             } catch {
-                guard let self, self.selectedThreadID == thread.id else { return }
+                guard let self,
+                      self.contextGeneration == generation,
+                      self.selectedThreadID == thread.id else { return }
                 self.contextWarnings = [error.localizedDescription]
                 self.isLoadingContext = false
             }
         }
+        contextTask = task
+        return task
     }
 
     private func performMutation(
@@ -845,8 +878,14 @@ final class SessionManagementStore: ObservableObject {
         }
     }
 
+    private func resultFilterDidChange() {
+        visibleLimit = SessionManagementPresentation.visiblePageSize
+        selectFirstVisibleIfNeeded()
+    }
+
     private func clearContext() {
         contextTask?.cancel()
+        contextGeneration &+= 1
         contextMessages = []
         contextWarnings = []
         contextHasMoreBefore = false

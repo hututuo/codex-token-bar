@@ -12,6 +12,19 @@ enum SessionManagementLayout {
     }
 }
 
+enum SessionManagementInteractionPolicy {
+    static func blocksContent(isLoadingCatalog: Bool) -> Bool {
+        isLoadingCatalog
+    }
+
+    static func closeIsEnabled(
+        isLoadingCatalog _: Bool,
+        isPerformingMutation: Bool
+    ) -> Bool {
+        !isPerformingMutation
+    }
+}
+
 enum SessionManagementNavigationStage: String, CaseIterable, Identifiable {
     case projects
     case sessions
@@ -82,12 +95,24 @@ struct SessionManagementView: View {
             Rectangle()
                 .fill(AppTheme.border)
                 .frame(height: 1)
-            globalStatusBanner
-            GeometryReader { proxy in
-                if SessionManagementLayout.usesCompactLayout(width: proxy.size.width) {
-                    compactBody
-                } else {
-                    wideBody
+
+            ZStack {
+                VStack(spacing: 0) {
+                    globalStatusBanner
+                    GeometryReader { proxy in
+                        if SessionManagementLayout.usesCompactLayout(width: proxy.size.width) {
+                            compactBody
+                        } else {
+                            wideBody
+                        }
+                    }
+                }
+                .disabled(catalogContentIsBlocked)
+                .allowsHitTesting(!catalogContentIsBlocked)
+                .accessibilityHidden(catalogContentIsBlocked)
+
+                if catalogContentIsBlocked {
+                    catalogLoadingOverlay
                 }
             }
         }
@@ -148,7 +173,7 @@ struct SessionManagementView: View {
 
             Spacer(minLength: 8)
 
-            if store.isLoadingCatalog || store.isPerformingMutation {
+            if store.isPerformingMutation {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -168,11 +193,48 @@ struct SessionManagementView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(store.isPerformingMutation)
-            .help(store.isPerformingMutation ? "操作完成前不能关闭" : "关闭会话管理")
+            .disabled(
+                !SessionManagementInteractionPolicy.closeIsEnabled(
+                    isLoadingCatalog: store.isLoadingCatalog,
+                    isPerformingMutation: store.isPerformingMutation
+                )
+            )
+            .help(
+                store.isPerformingMutation
+                    ? "操作完成前不能关闭"
+                    : "关闭会话管理"
+            )
         }
         .padding(.horizontal, 18)
         .frame(height: 66)
+    }
+
+    private var catalogContentIsBlocked: Bool {
+        SessionManagementInteractionPolicy.blocksContent(
+            isLoadingCatalog: store.isLoadingCatalog
+        )
+    }
+
+    private var catalogLoadingOverlay: some View {
+        ZStack {
+            AppTheme.panelBackground.opacity(0.96)
+
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("正在读取会话")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("加载完成前仅可关闭窗口")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .allowsHitTesting(true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("正在读取会话，加载完成前仅可关闭窗口")
+        .accessibilityIdentifier("session-management-catalog-loading")
     }
 
     private var wideBody: some View {
@@ -455,9 +517,7 @@ struct SessionManagementView: View {
                     .frame(width: 112)
                 }
 
-                if store.selectedCollection == .large {
-                    largeFilters
-                }
+                threadFilters
 
                 HStack(spacing: 8) {
                     Text("\(store.matchingThreads.count) 个结果")
@@ -553,20 +613,55 @@ struct SessionManagementView: View {
         .background(AppTheme.panelBackground)
     }
 
-    private var largeFilters: some View {
-        HStack(spacing: 8) {
-            Picker("未使用", selection: $store.minimumInactiveDays) {
-                Text("不限时间").tag(Int?.none)
-                Text("≥ 7 天").tag(Int?.some(7))
-                Text("≥ 30 天").tag(Int?.some(30))
-                Text("≥ 90 天").tag(Int?.some(90))
+    private var threadFilters: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("未使用")
+                    .foregroundStyle(.secondary)
+
+                Picker("多久没用", selection: $store.inactivityFilter) {
+                    ForEach(SessionManagementInactivityFilter.allCases) { filter in
+                        Text(filter.label).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 112)
+
+                if store.inactivityFilter.requiresCustomDays {
+                    TextField("天数", text: $store.customInactiveDaysText)
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 48)
+                        .accessibilityLabel("自定义未使用天数")
+                    Text("天以上")
+                        .foregroundStyle(.secondary)
+                    if !store.isCustomInactiveDaysValid {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(AppTheme.accentAmber)
+                            .help("请输入大于 0 的整数天数")
+                            .accessibilityLabel("请输入大于 0 的整数天数")
+                    }
+                }
+
+                Spacer(minLength: 0)
             }
-            Picker("最小容量", selection: $store.minimumBytes) {
-                Text("≥ 100 MB").tag(Int64?.some(100 * 1024 * 1024))
-                Text("≥ 500 MB").tag(Int64?.some(500 * 1024 * 1024))
-                Text("≥ 1 GB").tag(Int64?.some(1024 * 1024 * 1024))
+
+            if store.selectedCollection == .large {
+                HStack(spacing: 8) {
+                    Text("容量")
+                        .foregroundStyle(.secondary)
+                    Picker("最小容量", selection: $store.minimumBytes) {
+                        Text("100 MB 以上").tag(Int64?.some(100 * 1024 * 1024))
+                        Text("500 MB 以上").tag(Int64?.some(500 * 1024 * 1024))
+                        Text("1 GB 以上").tag(Int64?.some(1024 * 1024 * 1024))
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 116)
+                    Spacer(minLength: 0)
+                }
             }
-            Spacer()
         }
         .font(.system(size: 10.5))
     }
