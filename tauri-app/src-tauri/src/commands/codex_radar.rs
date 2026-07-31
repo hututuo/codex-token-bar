@@ -6,11 +6,18 @@ use std::time::Duration;
 use tauri::async_runtime;
 
 const CODEX_RADAR_FULL_ENDPOINT: &str = "https://codexradar.com/api/v1/current";
-const CODEX_CROWD_RADAR_TABLE_ENDPOINT: &str = "https://api.codexradar.com/api/v1/table";
+const CODEX_CROWD_RADAR_TABLE_ENDPOINT: &str =
+    "https://codexradar.com/api/intelligence-efficiency";
+const CODEX_CROWD_RADAR_TABLE_LEGACY_ENDPOINT: &str =
+    "https://api.codexradar.com/api/v1/table";
 const CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT: &str =
+    "https://codexradar.com/data/intelligence-efficiency.json";
+const CODEX_CROWD_RADAR_LEADERBOARD_LEGACY_ENDPOINT: &str =
     "https://api.codexradar.com/api/v1/leaderboard";
 const CODEX_RADAR_TIMEOUT: Duration = Duration::from_secs(20);
 const CODEX_CROWD_RADAR_TIMEOUT: Duration = Duration::from_secs(18);
+const CODEX_CROWD_RADAR_PRIMARY_TIMEOUT: Duration = Duration::from_secs(12);
+const CODEX_CROWD_RADAR_LEGACY_TIMEOUT: Duration = Duration::from_secs(6);
 const CODEX_CROWD_RADAR_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const KEY_CIPHER: [u8; 57] = [
     94, 228, 121, 185, 168, 72, 126, 255, 5, 110, 24, 99, 74, 39, 157, 134, 100, 135, 125, 94,
@@ -70,16 +77,36 @@ fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
         .no_gzip()
         .build()
         .map_err(|error| format!("Crowd Radar client failed: {error}"))?;
+    let table_sources = [
+        (
+            "site",
+            CODEX_CROWD_RADAR_TABLE_ENDPOINT,
+            CODEX_CROWD_RADAR_PRIMARY_TIMEOUT,
+        ),
+        (
+            "legacy-api",
+            CODEX_CROWD_RADAR_TABLE_LEGACY_ENDPOINT,
+            CODEX_CROWD_RADAR_LEGACY_TIMEOUT,
+        ),
+    ];
+    let leaderboard_sources = [
+        (
+            "published",
+            CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT,
+            CODEX_CROWD_RADAR_PRIMARY_TIMEOUT,
+        ),
+        (
+            "legacy-api",
+            CODEX_CROWD_RADAR_LEADERBOARD_LEGACY_ENDPOINT,
+            CODEX_CROWD_RADAR_LEGACY_TIMEOUT,
+        ),
+    ];
     let (table, leaderboard) = std::thread::scope(|scope| {
         let table_request = scope.spawn(|| {
-            fetch_public_json(&client, CODEX_CROWD_RADAR_TABLE_ENDPOINT, "table")
+            fetch_public_json_from_sources(&client, "table", &table_sources)
         });
         let leaderboard_request = scope.spawn(|| {
-            fetch_public_json(
-                &client,
-                CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT,
-                "leaderboard",
-            )
+            fetch_public_json_from_sources(&client, "leaderboard", &leaderboard_sources)
         });
         (
             table_request
@@ -93,13 +120,33 @@ fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
     combine_crowd_radar_payload(table, leaderboard)
 }
 
+fn fetch_public_json_from_sources(
+    client: &reqwest::blocking::Client,
+    label: &str,
+    sources: &[(&str, &str, Duration)],
+) -> Result<Value, String> {
+    let mut errors = Vec::new();
+    for (source, endpoint, timeout) in sources {
+        match fetch_public_json(client, endpoint, &format!("{label}/{source}"), *timeout) {
+            Ok(value) => return Ok(value),
+            Err(error) => errors.push(error),
+        }
+    }
+    Err(format!(
+        "Crowd Radar {label} sources failed: {}",
+        errors.join("; ")
+    ))
+}
+
 fn fetch_public_json(
     client: &reqwest::blocking::Client,
     endpoint: &str,
     label: &str,
+    timeout: Duration,
 ) -> Result<Value, String> {
     let response = client
         .get(endpoint)
+        .timeout(timeout)
         .headers(public_json_headers())
         .send()
         .map_err(|error| format!("Crowd Radar {label} fetch failed: {error}"))?;
@@ -196,6 +243,27 @@ mod tests {
     use super::*;
     use reqwest::header::AUTHORIZATION;
 
+    fn spawn_http_response(status: &str, body: &str) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let status = status.to_owned();
+        let body = body.to_owned();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).expect("response");
+        });
+        (format!("http://{address}"), server)
+    }
+
     #[test]
     fn full_detail_endpoint_uses_authenticated_api_path() {
         assert_eq!(
@@ -228,6 +296,51 @@ mod tests {
             headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn crowd_radar_prefers_responsive_site_sources_and_keeps_legacy_api_fallbacks() {
+        assert_eq!(
+            CODEX_CROWD_RADAR_TABLE_ENDPOINT,
+            "https://codexradar.com/api/intelligence-efficiency"
+        );
+        assert_eq!(
+            CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT,
+            "https://codexradar.com/data/intelligence-efficiency.json"
+        );
+        assert_eq!(
+            CODEX_CROWD_RADAR_TABLE_LEGACY_ENDPOINT,
+            "https://api.codexradar.com/api/v1/table"
+        );
+        assert_eq!(
+            CODEX_CROWD_RADAR_LEADERBOARD_LEGACY_ENDPOINT,
+            "https://api.codexradar.com/api/v1/leaderboard"
+        );
+    }
+
+    #[test]
+    fn crowd_radar_source_chain_uses_the_next_source_after_failure() {
+        let (primary_url, primary_server) = spawn_http_response("503 Service Unavailable", "{}");
+        let (fallback_url, fallback_server) =
+            spawn_http_response("200 OK", r#"{"points":[{"model":"gpt-5.6-sol"}]}"#);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_gzip()
+            .build()
+            .expect("client");
+        let sources = [
+            ("primary", primary_url.as_str(), Duration::from_secs(2)),
+            ("fallback", fallback_url.as_str(), Duration::from_secs(2)),
+        ];
+
+        let payload = fetch_public_json_from_sources(&client, "leaderboard", &sources)
+            .expect("fallback source");
+        assert_eq!(
+            payload.pointer("/points/0/model").and_then(Value::as_str),
+            Some("gpt-5.6-sol")
+        );
+        primary_server.join().expect("primary server");
+        fallback_server.join().expect("fallback server");
     }
 
     #[test]
@@ -264,8 +377,13 @@ mod tests {
             .no_gzip()
             .build()
             .expect("client");
-        let error = fetch_public_json(&client, &format!("http://{address}/table"), "table")
-            .expect_err("chunked 无 content-length 的超限响应必须在流式阶段被拒绝");
+        let error = fetch_public_json(
+            &client,
+            &format!("http://{address}/table"),
+            "table",
+            Duration::from_secs(30),
+        )
+        .expect_err("chunked 无 content-length 的超限响应必须在流式阶段被拒绝");
         assert!(error.contains("payload is too large"), "{error}");
         let _ = server.join();
     }
@@ -306,11 +424,18 @@ mod tests {
         let models = payload
             .pointer("/leaderboard/models")
             .and_then(Value::as_array)
-            .expect("leaderboard models");
+            .or_else(|| payload.pointer("/leaderboard/points").and_then(Value::as_array))
+            .expect("leaderboard models or published points");
         assert!(models.len() >= 3);
         assert!(models.iter().any(|model| {
-            model.get("pass_rate").and_then(Value::as_f64).is_some()
-                && model.get("graded").and_then(Value::as_i64).unwrap_or_default() > 0
+            let has_score = model.get("pass_rate").and_then(Value::as_f64).is_some()
+                || model.get("iq").and_then(Value::as_f64).is_some();
+            let samples = model
+                .get("graded")
+                .or_else(|| model.get("valid_tasks"))
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            has_score && samples > 0
         }));
     }
 }

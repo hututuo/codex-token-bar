@@ -264,6 +264,40 @@ test("crowd radar table remains usable without leaderboard and accepts string ta
   assert.equal(snapshot.recentModels[0].scoreSamples, 5);
 });
 
+test("crowd radar accepts the published intelligence-efficiency points fallback", () => {
+  const snapshot = normalizeCodexCrowdRadarPayload({
+    table: null,
+    tableError: "live table unavailable",
+    leaderboard: {
+      source_updated_at: "2026-07-31T23:47:20+08:00",
+      points: [{
+        model: "gpt-5.6-sol",
+        effort: "low",
+        iq: 70.9821,
+        passed: 53,
+        valid_tasks: 112,
+        latest_graded_at: "2026-07-31T14:54:08+00:00",
+      }],
+    },
+  });
+
+  assert.equal(snapshot.generatedAt, "2026-07-31T23:47:20+08:00");
+  assert.equal(snapshot.taskCount, 112);
+  assert.equal(snapshot.realtimeAvailable, false);
+  assert.deepEqual(snapshot.models[0], {
+    model: "gpt-5.6-sol",
+    effort: "low",
+    graded: 112,
+    passed: 53,
+    passRate: 70.9821 / 150,
+    cells: 112,
+    scorePassed: 53,
+    scoreSamples: 112,
+    latestGradedAt: "2026-07-31T14:54:08+00:00",
+  });
+  assert.deepEqual(snapshot.recentModels, snapshot.models);
+});
+
 test("crowd radar tie order ignores cumulative graded totals", () => {
   const snapshot = {
     generatedAt: "",

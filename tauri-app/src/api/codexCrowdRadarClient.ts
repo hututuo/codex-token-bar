@@ -53,7 +53,7 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
   const leaderboard = findPayload(
     valueFor(nativePayload, ["leaderboard"]) ?? raw,
     [
-      "models", "rankings", "modelStats", "modelSummaries", "rows",
+      "models", "points", "rankings", "modelStats", "modelSummaries", "rows",
       "contributors", "volunteers", "contributorRows", "contributorCount", "volunteerCount",
       "pendingGrades", "pending", "pendingCount", "queuedGrades",
       "errorGrades", "errors", "errorCount", "failedGrades",
@@ -81,10 +81,16 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
       "generatedAt",
       "updatedAt",
       "monitoredAt",
-    ]) || firstString(leaderboard, ["generatedAt", "updatedAt", "monitoredAt"]),
+      "sourceUpdatedAt",
+    ]) || firstString(leaderboard, [
+      "generatedAt",
+      "updatedAt",
+      "monitoredAt",
+      "sourceUpdatedAt",
+    ]),
     taskCount: firstCollectionCount(table, ["tasks", "taskRows", "taskList", "taskCount"])
       ?? firstCollectionCount(leaderboard, ["tasks", "taskRows", "taskList", "taskCount"])
-      ?? 0,
+      ?? Math.max(0, ...leaderboardModels.map((model) => model.cells)),
     cellCount: firstCollectionCount(table, ["cells", "cellMap", "cellRows", "cellCount"]) ?? 0,
     contributorCount: firstCollectionCount(leaderboard, [
       "contributors",
@@ -92,6 +98,13 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
       "contributorRows",
       "contributorCount",
       "volunteerCount",
+      "onlineVolunteers",
+    ]) ?? firstCollectionCount(table, [
+      "contributors",
+      "volunteers",
+      "contributorCount",
+      "volunteerCount",
+      "onlineVolunteers",
     ]) ?? 0,
     pendingGrades: firstInteger(leaderboard, [
       "pendingGrades",
@@ -141,6 +154,7 @@ export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {
 function parseModels(leaderboard: Record<string, unknown> | null): CodexCrowdRadarModel[] {
   const container = valueFor(leaderboard, [
     "models",
+    "points",
     "rankings",
     "modelStats",
     "modelSummaries",
@@ -178,6 +192,7 @@ function parseModel(value: unknown, fallbackKey: string): CodexCrowdRadarModel |
     "sampleCount",
     "samples",
     "attempts",
+    "validTasks",
   ]) ?? derivedVotes;
   const passed = firstInteger(row, [
     "passed",
@@ -203,6 +218,7 @@ function parseModel(value: unknown, fallbackKey: string): CodexCrowdRadarModel |
     "coveredCells",
     "taskCount",
     "coveredTasks",
+    "validTasks",
   ]) ?? Object.keys(taskStats ?? {}).length;
   const scorePassed = firstInteger(row, [
     "cellsPassed",
