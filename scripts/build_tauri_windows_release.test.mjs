@@ -12,6 +12,13 @@ const windowsScript = path.join(scriptsDir, "build_tauri_windows_release.ps1");
 const windowsSelfTest = path.join(scriptsDir, "build_tauri_windows_release.selftest.ps1");
 const macReleaseScript = path.join(scriptsDir, "build_release.sh");
 const windowsIconGenerator = path.join(scriptsDir, "generate_tauri_windows_icons.py");
+const windowsIconDirectory = path.join(projectRoot, "tauri-app", "src-tauri", "icons");
+const windowsIconPngs = [
+  ["icon.png", 1024],
+  ["32x32.png", 32],
+  ["128x128.png", 128],
+  ["128x128@2x.png", 256],
+];
 const windowsIcon = path.join(projectRoot, "tauri-app", "src-tauri", "icons", "icon.ico");
 
 function readIcoFrames(encoded) {
@@ -66,19 +73,56 @@ function readGeneratedPng(encoded) {
     assert.equal(pixels[row * stride], 0);
   }
   const alphaAt = (x, y) => pixels[y * stride + 1 + x * 4 + 3];
+  const rgbaAt = (x, y) => {
+    const offset = y * stride + 1 + x * 4;
+    return [...pixels.subarray(offset, offset + 4)];
+  };
   const alpha = [];
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       alpha.push(alphaAt(x, y));
     }
   }
-  return { width, height, alphaAt, alpha };
+  return { width, height, alphaAt, rgbaAt, alpha };
 }
 
-test("Windows application icon reuses the transparent macOS glass artwork at every shell size", async () => {
+function assertFullBleedRoundedIcon(png) {
+  const middle = Math.floor(png.width / 2);
+  assert.equal(png.alphaAt(0, 0), 0);
+  assert.equal(png.alphaAt(png.width - 1, 0), 0);
+  assert.equal(png.alphaAt(0, png.height - 1), 0);
+  assert.equal(png.alphaAt(png.width - 1, png.height - 1), 0);
+  assert.ok(png.alphaAt(middle, 0) > 240);
+  assert.ok(png.alphaAt(middle, png.height - 1) > 240);
+  assert.ok(png.alphaAt(0, middle) > 240);
+  assert.ok(png.alphaAt(png.width - 1, middle) > 240);
+  assert.ok(png.alphaAt(middle, middle) > 240);
+  const [bottomRed, , bottomBlue, bottomAlpha] = png.rgbaAt(middle, png.height - 1);
+  assert.ok(bottomAlpha > 240);
+  assert.ok(bottomRed < 225);
+  assert.ok(bottomBlue - bottomRed > 20);
+  const transparentPixels = png.alpha.filter(value => value === 0).length;
+  assert.ok(transparentPixels > 0);
+  assert.ok(transparentPixels < png.width * png.height * 0.08);
+  assert.ok(png.alpha.some(value => value > 0 && value < 255));
+}
+
+test("Windows application icon is transparent, full-bleed and reproducible at every shell size", async () => {
   const generator = await readFile(windowsIconGenerator, "utf8");
-  assert.match(generator, /SOURCE_PATH\s*=.*"icons".*"icon\.png"/);
+  assert.match(generator, /SOURCE_PATH\s*=.*"Assets".*"AppIcon\.png"/);
+  assert.match(generator, /MASTER_SIZE\s*=\s*1024/);
+  for (const cropConstant of ["LEFT", "TOP", "WIDTH", "HEIGHT"]) {
+    assert.match(generator, new RegExp(`SOURCE_CROP_${cropConstant}\\s*=`));
+  }
+  assert.match(generator, /apply_squircle_mask/);
   assert.doesNotMatch(generator, /def render_icon/);
+
+  for (const [filename, expectedSize] of windowsIconPngs) {
+    const png = readGeneratedPng(await readFile(path.join(windowsIconDirectory, filename)));
+    assert.equal(png.width, expectedSize);
+    assert.equal(png.height, expectedSize);
+    assertFullBleedRoundedIcon(png);
+  }
 
   const frames = readIcoFrames(await readFile(windowsIcon));
   assert.deepEqual(
@@ -91,13 +135,7 @@ test("Windows application icon reuses the transparent macOS glass artwork at eve
     const png = readGeneratedPng(frame.payload);
     assert.equal(png.width, frame.width);
     assert.equal(png.height, frame.height);
-    assert.equal(png.alphaAt(0, 0), 0);
-    assert.equal(png.alphaAt(frame.width - 1, 0), 0);
-    assert.equal(png.alphaAt(0, frame.height - 1), 0);
-    assert.equal(png.alphaAt(frame.width - 1, frame.height - 1), 0);
-    assert.ok(png.alphaAt(Math.floor(frame.width / 2), Math.floor(frame.height / 2)) > 240);
-    assert.ok(png.alpha.filter(value => value === 0).length > frame.width * frame.height * 0.15);
-    assert.ok(png.alpha.some(value => value > 0 && value < 255));
+    assertFullBleedRoundedIcon(png);
   }
 });
 
