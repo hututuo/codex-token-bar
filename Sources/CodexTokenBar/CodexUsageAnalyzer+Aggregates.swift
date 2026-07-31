@@ -24,13 +24,19 @@ extension CodexUsageAnalyzer {
     }
 
     func recentBins(from events: [TokenEvent]) -> [BinUsage] {
-        let end = Date()
+        recentBins(from: events, now: Date())
+    }
+
+    func recentBins(from events: [TokenEvent], now: Date) -> [BinUsage] {
         let interval: TimeInterval = 5 * 60
         let binCount = 30 * 24 * 12
-        guard let start = calendar.date(byAdding: .minute, value: -((binCount - 1) * 5), to: end) else { return [] }
+        let currentBinStart = Date(
+            timeIntervalSince1970: floor(now.timeIntervalSince1970 / interval) * interval
+        )
+        let start = currentBinStart.addingTimeInterval(-Double(binCount - 1) * interval)
         var grouped: [Date: (tokens: Int, calls: Int)] = [:]
 
-        for event in events where event.timestamp >= start && event.timestamp <= end {
+        for event in events where event.timestamp >= start && event.timestamp <= now {
             let offset = floor(event.timestamp.timeIntervalSince(start) / interval)
             let bin = start.addingTimeInterval(offset * interval)
             let current = grouped[bin] ?? (0, 0)

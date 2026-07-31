@@ -19,6 +19,21 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         self.dataSource = dataSource
     }
 
+    /// Clears a durable exact-index attribution safety marker only after the
+    /// caller has committed the corresponding synthetic cutover. Epoch and
+    /// generation matching make stale acknowledgements harmless.
+    @discardableResult
+    func acknowledgeAttributionSafety(
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) throws -> Bool {
+        let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+        return try historyIndex.acknowledgeAttributionSafety(
+            provenanceEpoch: provenanceEpoch,
+            throughGeneration: throughGeneration
+        )
+    }
+
     func load() throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.load", metadata: [
             "source": dataSource.displayPath
@@ -131,7 +146,13 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         guard !sessionFiles.isEmpty else {
             return nil
         }
-        let signature = sessionTreeSignature(for: sessionFiles)
+        let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+        let attributionState = try historyIndex.attributionState()
+        let signature = sessionTreeSignature(
+            for: sessionFiles,
+            attributionProvenanceEpoch: attributionState.provenanceEpoch,
+            attributionGeneration: attributionState.generation
+        )
         return Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature)
     }
 
@@ -155,40 +176,78 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             trace?.end("missing-token-jsonl-files")
             throw NSError(domain: "CodexTokenBar", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath) has no token JSONL files"])
         }
+        let preciseCoverageAt = Date()
+        let historyIndex: CodexUsageHistoryIndex
+        let initialAttributionState: CodexUsageHistoryIndex.AttributionState
+        do {
+            historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+            initialAttributionState = try historyIndex.attributionState()
+        } catch {
+            throw CodexUsageHistoryIndexError(operation: "读取归因代次", underlying: error)
+        }
         trace?.mark("signature.begin")
-        let signature = sessionTreeSignature(for: sessionFiles)
+        let signature = sessionTreeSignature(
+            for: sessionFiles,
+            attributionProvenanceEpoch: initialAttributionState.provenanceEpoch,
+            attributionGeneration: initialAttributionState.generation
+        )
         trace?.mark("signature.end", metadata: [
             "files": String(signature.files.count),
-            "hasStateDB": signature.stateDatabase == nil ? "0" : "1"
+            "hasStateDB": signature.stateDatabase == nil ? "0" : "1",
+            "attributionGeneration": String(signature.attributionGeneration)
         ])
-        if let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature) {
+        if !initialAttributionState.currentScanUnsafeCauseDetected,
+           let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature),
+           cached.cacheUsage.attributionEventsComplete {
             trace?.end("snapshot-cache-hit", metadata: [
                 "tokens": String(cached.stats.totalTokens),
                 "calls": String(cached.stats.totalCalls)
             ])
+            let stableCacheUsage = TokenCacheUsage(
+                total: cached.cacheUsage.total,
+                daily: cached.cacheUsage.daily,
+                hourly: cached.cacheUsage.hourly,
+                recentBins: cached.cacheUsage.recentBins,
+                sessions: cached.cacheUsage.sessions,
+                turns: cached.cacheUsage.turns,
+                attributionEvents: cached.cacheUsage.attributionEvents,
+                attributionEventsComplete: true,
+                attributionProvenanceEpoch: cached.cacheUsage.attributionProvenanceEpoch,
+                attributionGeneration: initialAttributionState.generation,
+                attributionUnsafeSinceGeneration:
+                    initialAttributionState.unsafeSinceGeneration,
+                attributionCurrentScanUnsafeCauseDetected:
+                    initialAttributionState.currentScanUnsafeCauseDetected,
+                // Unsafe provenance is durable index state, not a one-refresh
+                // pulse. Keep emitting it on cache hits until the segment
+                // cutover has been durably acknowledged.
+                attributionSourceMutationDetected:
+                    initialAttributionState.requiresSyntheticCutover
+            )
             return DashboardSnapshot(
                 stats: cached.stats,
                 dailyUsage: cached.dailyUsage,
                 recentBins: cached.recentBins,
                 hourlyUsage: cached.hourlyUsage,
                 pluginUsage: cached.pluginUsage,
-                cacheUsage: cached.cacheUsage,
+                cacheUsage: stableCacheUsage,
+                preciseTimeSeriesGeneratedAt: preciseCoverageAt,
                 generatedAt: Date()
             )
         }
         trace?.mark("snapshot-cache-miss")
 
-        let aggregationNow = Date()
+        let aggregationNow = preciseCoverageAt
         var aggregation = UsageAggregationBuilder(calendar: calendar, now: aggregationNow)
         trace?.mark("threadMetadata.begin")
         let metadata = loadThreadMetadata()
         trace?.mark("threadMetadata.end", metadata: ["plugins": String(metadata.plugins.count)])
 
         trace?.mark("parseSessions.begin")
-        let historyIndex: CodexUsageHistoryIndex
+        let synchronization: CodexUsageHistoryIndex.SynchronizationResult
+        let durableAttributionEvents: [TokenCacheAttributionEvent]
         do {
-            historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
-            let synchronization = try historyIndex.synchronize(
+            synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
                 sessionID: sessionID(from:)
             ) { [self] file, sessionID, request, insertFingerprint, emit in
@@ -213,6 +272,17 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 Self.sessionEventCache.recordIncrementalSessionParseForTesting()
             }
 
+            if let attributionStart = aggregation.attributionCoverageStart,
+               let attributionEnd = aggregation.attributionCoverageEnd {
+                durableAttributionEvents = try historyIndex.attributionSourceBuckets(
+                    provenanceEpoch: synchronization.provenanceEpoch,
+                    from: attributionStart,
+                    before: attributionEnd
+                )
+            } else {
+                durableAttributionEvents = []
+            }
+
             var currentSessionID: String?
             var turnIndexInSession = 0
             try historyIndex.forEachStoredEvent { stored in
@@ -225,6 +295,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 aggregation.consume(
                     stored.event,
                     stableID: stored.stableID,
+                    attributionSourceID: String(stored.sourceID),
                     turnIndexInSession: turnIndexInSession
                 )
             }
@@ -259,7 +330,20 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
         let cacheUsage = hydratingTurnExcerpts(
-            in: aggregation.cacheUsage(recentBins: recentBins, threadInfo: threadInfo),
+            in: aggregation.cacheUsage(
+                recentBins: recentBins,
+                threadInfo: threadInfo,
+                attributionProvenanceEpoch: synchronization.provenanceEpoch,
+                attributionGeneration: synchronization.attributionGeneration,
+                attributionUnsafeSinceGeneration:
+                    synchronization.attributionUnsafeSinceGeneration,
+                attributionCurrentScanUnsafeCauseDetected:
+                    synchronization.rewrittenFiles > 0
+                        || synchronization.lineageAmbiguityDetected,
+                attributionSourceMutationDetected:
+                    synchronization.attributionSourceMutationDetected,
+                durableAttributionEvents: durableAttributionEvents
+            ),
             from: historyIndex
         )
         trace?.mark("cacheUsage.end", metadata: [
@@ -301,11 +385,20 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             hourlyUsage: hourlyUsage,
             pluginUsage: metadata.plugins,
             cacheUsage: cacheUsage,
+            preciseTimeSeriesGeneratedAt: preciseCoverageAt,
             generatedAt: Date()
         )
         Self.sessionEventCache.recordSnapshotBuildForTesting()
         trace?.mark("storeSnapshot.begin")
-        Self.sessionEventCache.storeSnapshot(snapshot, for: dataSource.codexHome.path, signature: signature)
+        let synchronizedSignature = signature.withAttributionState(
+            provenanceEpoch: synchronization.provenanceEpoch,
+            generation: synchronization.attributionGeneration
+        )
+        Self.sessionEventCache.storeSnapshot(
+            snapshot,
+            for: dataSource.codexHome.path,
+            signature: synchronizedSignature
+        )
         trace?.mark("storeSnapshot.end")
         trace?.end("ok", metadata: [
             "tokens": String(totalTokens),

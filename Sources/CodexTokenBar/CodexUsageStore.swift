@@ -1,6 +1,51 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
+
+enum PreciseTimeSeriesContinuityLossReason: String, Codable, Equatable, Sendable {
+    case observationGap
+    case observerTakeover
+    case storageRecovery
+}
+
+struct PreciseTimeSeriesContinuityLossRecord: Codable, Equatable, Sendable {
+    let id: UUID
+    let detectedAt: Date
+    let reason: PreciseTimeSeriesContinuityLossReason?
+
+    init(
+        id: UUID,
+        detectedAt: Date,
+        reason: PreciseTimeSeriesContinuityLossReason? = nil
+    ) {
+        self.id = id
+        self.detectedAt = detectedAt
+        self.reason = reason
+    }
+}
+
+enum SharedAccountUsageSafetyRecoveryState: Equatable, Sendable {
+    case idle
+    case required
+    case rebuilding
+    case awaitingFreshBaseline
+    case failed
+}
+
+private final class SharedAccountContinuityObserverToken: @unchecked Sendable {
+    private let center: DistributedNotificationCenter
+    private let token: NSObjectProtocol
+
+    init(center: DistributedNotificationCenter, token: NSObjectProtocol) {
+        self.center = center
+        self.token = token
+    }
+
+    deinit {
+        center.removeObserver(token)
+    }
+}
 
 @MainActor
 final class CodexUsageStore: ObservableObject {
@@ -9,6 +54,16 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
     @Published private(set) var isPreparingUsageCache = false
+    @Published private(set) var preciseTimeSeriesFresh = false
+    @Published private(set) var preciseTimeSeriesContinuityLostAt: Date? = nil
+    @Published private(set) var preciseTimeSeriesContinuityLossID: UUID? = nil
+    @Published private(set) var preciseTimeSeriesContinuityLossReason:
+        PreciseTimeSeriesContinuityLossReason? = nil
+    @Published private(set) var preciseContinuityPersistenceHealthy = true
+    @Published private(set) var preciseObservationSessionID = UUID()
+    @Published private(set) var preciseSessionMutationMonitoringHealthy = false
+    @Published private(set) var sharedAccountSafetyRecoveryState:
+        SharedAccountUsageSafetyRecoveryState = .idle
     @Published private(set) var dataSourceLabel: String = "查找 Codex 目录..."
     @Published private(set) var dataSourceOrigin: String = "自动"
     @Published private(set) var dataSourceIdentity: String?
@@ -33,6 +88,24 @@ final class CodexUsageStore: ObservableObject {
     private var onlyCompactSurfaceVisible = false
     private var activeRefreshCompactOnly = false
     private var pendingFullRefresh = false
+    private var attributionSafetyAckTask: Task<Void, Never>?
+    private var pendingAttributionSafetyAckKey: String?
+    private let continuityDefaults: UserDefaults
+    private let continuityStorageKey: String
+    private let legacyContinuityStorageKey: String?
+    private let continuitySafetyDatabase: SharedAccountUsageSafetyDatabase?
+    private var continuityObserver: SharedAccountContinuityObserverToken?
+    private let sessionMutationMonitor = CodexSessionMutationMonitor()
+    private var sessionMutationMonitoringActive = false
+
+    nonisolated static let preciseContinuityStorageKey = "preciseTimeSeriesContinuityLossesV02"
+    nonisolated static let legacyPreciseContinuityStorageKey = "preciseTimeSeriesContinuityLossesV01"
+
+    nonisolated static var sharedAccountSafetyMigrationStorageKeys: [String] {
+        UserDefaultsSharedAccountUsageHighWatermarkStore.allMigrationStorageKeys
+            + UserDefaultsSharedAccountUsageSegmentStore.allMigrationStorageKeys
+            + [preciseContinuityStorageKey, legacyPreciseContinuityStorageKey]
+    }
 
     var currentDataSource: CodexDataSource? {
         dataSource
@@ -41,15 +114,45 @@ final class CodexUsageStore: ObservableObject {
     init(
         resolver: CodexDataSourceResolving = CodexDataSourceResolver(),
         snapshotLoader: DashboardSnapshotLoading = CodexDashboardSnapshotLoader(),
-        autoStart: Bool = true
+        autoStart: Bool = true,
+        continuityDefaults: UserDefaults = .standard,
+        continuityStorageKey: String = preciseContinuityStorageKey,
+        legacyContinuityStorageKey: String? = legacyPreciseContinuityStorageKey,
+        continuitySafetyDatabase: SharedAccountUsageSafetyDatabase? = nil
     ) {
         self.resolver = resolver
         self.snapshotLoader = snapshotLoader
+        self.continuityDefaults = continuityDefaults
+        self.continuityStorageKey = continuityStorageKey
+        self.legacyContinuityStorageKey = legacyContinuityStorageKey
+        self.continuitySafetyDatabase = continuitySafetyDatabase
         dataSource = resolver.resolve()
         dataSourceIdentity = dataSource?.stableIdentityKey
         dataSourceBindingKey = Self.bindingKey(for: dataSource)
+        if continuitySafetyDatabase != nil {
+            let center = DistributedNotificationCenter.default()
+            let token = center.addObserver(
+                forName: SharedAccountUsageSafetyDatabase.didChangeNotification,
+                object: SharedAccountUsageSafetyDatabase.RecordKind.preciseContinuity.rawValue,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.reloadPreciseTimeSeriesContinuityLoss()
+                }
+            }
+            continuityObserver = SharedAccountContinuityObserverToken(
+                center: center,
+                token: token
+            )
+        }
+        loadContinuityLoss(for: dataSource)
+        if continuitySafetyDatabase?.recoveryRequired == true {
+            sharedAccountSafetyRecoveryState = .required
+        }
         updateDataSourceLabels()
         if autoStart {
+            sessionMutationMonitoringActive = true
+            configureSessionMutationMonitor()
             refreshInitialSnapshot()
             scheduleInitialPreciseRefresh()
             scheduleTimer()
@@ -57,7 +160,130 @@ final class CodexUsageStore: ObservableObject {
     }
 
     func refresh() {
-        refresh(includePreciseScan: true)
+        // An open continuity loss gets one normal-cadence full recovery attempt
+        // even when only compact surfaces are visible. Failure callbacks do not
+        // call this method, so retries remain bounded by the regular timer or a
+        // manual refresh instead of forming a tight self-triggered loop.
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil
+        )
+    }
+
+    /// Attribution compares local usage with a point-in-time quota snapshot.
+    /// This path bypasses the compact-summary optimization so the time series
+    /// can explicitly catch up to a newer quota observation.
+    func refreshPreciseTimeSeriesForAttribution() {
+        refresh(includePreciseScan: true, forceFullTimeSeries: true)
+    }
+
+    /// Refresh the process-local view from the crash-durable continuity ledger.
+    /// Shared-account attribution calls this while holding its cross-process
+    /// safety lock so a gap recorded by another Token Bar process cannot remain
+    /// an indefinitely stale `nil` in this process.
+    func reloadPreciseTimeSeriesContinuityLoss() {
+        loadContinuityLoss(for: dataSource)
+    }
+
+    /// User-invoked recovery for a damaged shared-account safety ledger. The
+    /// database performs quarantine + atomic replacement; this store then
+    /// rotates every observation boundary and starts a fresh precise scan. The
+    /// caller should also request a fresh quota snapshot.
+    @discardableResult
+    func rebuildSharedAccountSafetyBaseline() async -> Bool {
+        guard let continuitySafetyDatabase,
+              let dataSource,
+              continuitySafetyDatabase.recoveryRequired,
+              sharedAccountSafetyRecoveryState != .rebuilding else {
+            return false
+        }
+        sharedAccountSafetyRecoveryState = .rebuilding
+        let loss = PreciseTimeSeriesContinuityLossRecord(
+            id: UUID(),
+            detectedAt: Date(),
+            reason: .storageRecovery
+        )
+        guard let payload = try? JSONEncoder().encode([
+            Self.continuityIdentifier(for: dataSource): loss,
+        ]) else {
+            sharedAccountSafetyRecoveryState = .failed
+            return false
+        }
+        let defaults = continuityDefaults
+        let keys = Set(
+            Self.sharedAccountSafetyMigrationStorageKeys
+                + [continuityStorageKey, legacyContinuityStorageKey]
+                    .compactMap { $0 }
+        ).sorted()
+        // Yield once so SwiftUI can present the rebuilding state. The recovery
+        // itself only renames the old SQLite family and builds a tiny empty
+        // generation; keeping UserDefaults access on its owning actor avoids a
+        // cross-actor preferences race.
+        await Task.yield()
+        let recovery = continuitySafetyDatabase.rebuildEmptySafetyBaseline(
+            preciseContinuityPayload: payload,
+            defaults: defaults,
+            retiredUserDefaultsKeys: keys
+        )
+        guard recovery != nil,
+              continuitySafetyDatabase.persistenceHealthy,
+              continuitySafetyDatabase.isObserverOwner else {
+            preciseContinuityPersistenceHealthy = false
+            sharedAccountSafetyRecoveryState = .failed
+            return false
+        }
+
+        preciseObservationSessionID = UUID()
+        preciseTimeSeriesFresh = false
+        loadContinuityLoss(for: dataSource)
+        guard preciseContinuityPersistenceHealthy,
+              preciseTimeSeriesContinuityLossID == loss.id else {
+            sharedAccountSafetyRecoveryState = .failed
+            return false
+        }
+        sharedAccountSafetyRecoveryState = .awaitingFreshBaseline
+        sessionMutationMonitoringActive = backgroundActivityEnabled
+        configureSessionMutationMonitor()
+        restartWithForcedPreciseRefresh()
+        return true
+    }
+
+    func acknowledgeAttributionSafetyAfterDurableCutover(
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) {
+        guard let dataSource,
+              snapshot.cacheUsage.attributionProvenanceEpoch == provenanceEpoch,
+              snapshot.cacheUsage.attributionGeneration == throughGeneration,
+              snapshot.cacheUsage.attributionUnsafeSinceGeneration != nil,
+              !snapshot.cacheUsage.attributionCurrentScanUnsafeCauseDetected else {
+            return
+        }
+        let sourceID = refreshSourceID(for: dataSource)
+        let bindingKey = Self.bindingKey(for: dataSource)
+        let key = "\(bindingKey)\u{1f}\(provenanceEpoch)\u{1f}\(throughGeneration)"
+        guard pendingAttributionSafetyAckKey != key else { return }
+        attributionSafetyAckTask?.cancel()
+        pendingAttributionSafetyAckKey = key
+        attributionSafetyAckTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let acknowledged = (try? await self.snapshotLoader.acknowledgeAttributionSafety(
+                dataSource: dataSource,
+                provenanceEpoch: provenanceEpoch,
+                throughGeneration: throughGeneration
+            )) ?? false
+            guard !Task.isCancelled,
+                  self.pendingAttributionSafetyAckKey == key,
+                  self.dataSourceBindingKey == bindingKey,
+                  self.dataSource?.stableIdentityKey == sourceID else {
+                return
+            }
+            self.pendingAttributionSafetyAckKey = nil
+            self.attributionSafetyAckTask = nil
+            if acknowledged {
+                self.refreshPreciseTimeSeriesForAttribution()
+            }
+        }
     }
 
     // 决策口径：仅紧凑 surface（状态栏/悬浮窗）可见时，周期刷新走轻量
@@ -79,15 +305,32 @@ final class CodexUsageStore: ObservableObject {
         let nextPath = nextDataSource?.codexHome.standardizedFileURL.path
         let identityChanged = previousIdentity != nextIdentity
         let bindingChanged = previousPath != nextPath
+        if identityChanged || bindingChanged {
+            // Switching away from a Home creates an interval that this process
+            // cannot observe for that Home. Rotate before binding the watcher
+            // to the next root so returning A -> B -> A cannot reuse A's old
+            // ready attribution segment across the unobserved interval.
+            preciseObservationSessionID = UUID()
+        }
         dataSource = nextDataSource
         dataSourceIdentity = nextIdentity
         dataSourceBindingKey = Self.bindingKey(for: nextDataSource)
+        if identityChanged {
+            loadContinuityLoss(for: nextDataSource)
+        }
         updateDataSourceLabels()
 
         guard identityChanged || bindingChanged else { return false }
 
+        if sessionMutationMonitoringActive {
+            configureSessionMutationMonitor()
+        }
+
         refreshTask?.cancel()
         refreshTask = nil
+        attributionSafetyAckTask?.cancel()
+        attributionSafetyAckTask = nil
+        pendingAttributionSafetyAckKey = nil
         refreshGeneration += 1
         sourceBindingGeneration += 1
         activeRefreshSourceID = nil
@@ -95,6 +338,7 @@ final class CodexUsageStore: ObservableObject {
         pendingFullRefresh = false
         isRefreshing = false
         isPreparingUsageCache = false
+        preciseTimeSeriesFresh = false
         guard identityChanged else { return true }
 
         sourceIdentityGeneration += 1
@@ -116,21 +360,37 @@ final class CodexUsageStore: ObservableObject {
         refresh(includePreciseScan: false)
     }
 
-    private func refresh(includePreciseScan: Bool) {
+    private func refresh(
+        includePreciseScan: Bool,
+        forceFullTimeSeries: Bool = false
+    ) {
+        let observerTakeover = continuitySafetyDatabase?.attemptObserverTakeover() ?? false
+        let effectiveIncludePreciseScan = (includePreciseScan || observerTakeover)
+            && (continuitySafetyDatabase?.isObserverOwner ?? true)
+        let effectiveForceFullTimeSeries = forceFullTimeSeries || observerTakeover
         let resolvedDataSource = resolver.resolve()
         let requestedSourceID = resolvedDataSource.map { refreshSourceID(for: $0) }
         let trace = RefreshPerformanceProbe.begin("usageStore.refresh", metadata: [
-            "includePreciseScan": includePreciseScan ? "1" : "0",
+            "includePreciseScan": effectiveIncludePreciseScan ? "1" : "0",
+            "forceFullTimeSeries": effectiveForceFullTimeSeries ? "1" : "0",
+            "observerTakeover": observerTakeover ? "1" : "0",
             "alreadyRefreshing": isRefreshing ? "1" : "0",
             "source": resolvedDataSource?.displayPath ?? "nil"
         ])
         let requestedBindingKey = Self.bindingKey(for: resolvedDataSource)
         if isRefreshing,
            requestedSourceID == activeRefreshSourceID,
-           requestedBindingKey == dataSourceBindingKey {
-            if includePreciseScan,
-               !onlyCompactSurfaceVisible,
-               activeRefreshCompactOnly {
+           requestedBindingKey == dataSourceBindingKey,
+           !observerTakeover {
+            if sessionMutationMonitoringActive,
+               backgroundActivityEnabled,
+               (continuitySafetyDatabase?.isObserverOwner ?? true),
+               !preciseSessionMutationMonitoringHealthy {
+                configureSessionMutationMonitor()
+            }
+            if effectiveIncludePreciseScan,
+               activeRefreshCompactOnly,
+               (effectiveForceFullTimeSeries || !onlyCompactSurfaceVisible) {
                 pendingFullRefresh = true
             }
             trace?.end("skipped-refresh-in-flight")
@@ -156,6 +416,7 @@ final class CodexUsageStore: ObservableObject {
             pendingFullRefresh = false
             snapshot = .empty
             snapshotSourceID = nil
+            preciseTimeSeriesFresh = false
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
             isPreparingUsageCache = false
@@ -164,14 +425,29 @@ final class CodexUsageStore: ObservableObject {
             return
         }
 
+        if observerTakeover {
+            prepareAfterObserverTakeover(for: dataSource)
+        } else if sessionMutationMonitoringActive,
+                  backgroundActivityEnabled,
+                  (continuitySafetyDatabase?.isObserverOwner ?? true),
+                  !preciseSessionMutationMonitoringHealthy {
+            // FSEvents setup can fail transiently while a selected Home is
+            // being created, remounted, or restored. Retry on the normal/manual
+            // refresh cadence; do not require an app restart or rebuild the
+            // unrelated safety database.
+            configureSessionMutationMonitor()
+        }
+
         let sourceID = refreshSourceID(for: dataSource)
         if let snapshotSourceID, snapshotSourceID != sourceID {
             snapshot = .empty
             self.snapshotSourceID = nil
+            preciseTimeSeriesFresh = false
         }
         let isFirstLoad = !didFinishInitialLoad
-        let needsCacheInitialization = includePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
-        activeRefreshCompactOnly = includePreciseScan
+        let needsCacheInitialization = effectiveIncludePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
+        activeRefreshCompactOnly = effectiveIncludePreciseScan
+            && !effectiveForceFullTimeSeries
             && !isFirstLoad
             && onlyCompactSurfaceVisible
             && snapshot.hasPreciseTokenUsage
@@ -182,6 +458,9 @@ final class CodexUsageStore: ObservableObject {
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
         isPreparingUsageCache = needsCacheInitialization
+        if effectiveIncludePreciseScan {
+            preciseTimeSeriesFresh = false
+        }
         if isFirstLoad {
             isInitialLoading = true
             status = needsCacheInitialization
@@ -201,8 +480,8 @@ final class CodexUsageStore: ObservableObject {
                     "source": source.displayPath,
                     "origin": source.originLabel
                 ])
-                if isFirstLoad || !includePreciseScan {
-                    if includePreciseScan {
+                if isFirstLoad || !effectiveIncludePreciseScan {
+                    if effectiveIncludePreciseScan {
                         trace?.mark("fastSnapshot.begin")
                         if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
                             guard self.isCurrentRefresh(
@@ -246,9 +525,10 @@ final class CodexUsageStore: ObservableObject {
                     }
                 }
 
-                if includePreciseScan {
+                if effectiveIncludePreciseScan {
                     var compactSummaryApplied = false
                     if !isFirstLoad,
+                       !effectiveForceFullTimeSeries,
                        self.onlyCompactSurfaceVisible,
                        self.snapshot.hasPreciseTokenUsage,
                        self.snapshotSourceID == sourceID {
@@ -270,6 +550,7 @@ final class CodexUsageStore: ObservableObject {
                                 Self.applyingCompactSummary(summary, to: self.snapshot),
                                 sourceID: sourceID
                             )
+                            self.preciseTimeSeriesFresh = false
                             self.didRunPreciseScan = true
                             self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: summary.generatedAt))"
                             trace?.mark("compactSummary.end", metadata: [
@@ -293,6 +574,8 @@ final class CodexUsageStore: ObservableObject {
                         }
                         if loaded.hasPreciseTokenUsage {
                             self.publish(loaded, sourceID: sourceID)
+                            self.preciseTimeSeriesFresh = loaded.preciseTimeSeriesGeneratedAt != nil
+                                && loaded.cacheUsage.attributionEventsComplete
                             self.didRunPreciseScan = true
                             UsageCacheLifecycle.markCurrentCachePrepared()
                             self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
@@ -302,6 +585,8 @@ final class CodexUsageStore: ObservableObject {
                                 "threads": String(loaded.stats.totalThreads)
                             ])
                         } else {
+                            self.preciseTimeSeriesFresh = false
+                            self.markPreciseTimeSeriesContinuityLoss(for: source)
                             if !self.snapshot.hasPreciseTokenUsage {
                                 self.publish(loaded, sourceID: sourceID)
                                 self.status = self.metadataOnlyStatus(origin: source.originLabel)
@@ -330,6 +615,10 @@ final class CodexUsageStore: ObservableObject {
                     self.snapshot = .empty
                     self.snapshotSourceID = nil
                 }
+                self.preciseTimeSeriesFresh = false
+                if includePreciseScan, let currentSource = self.dataSource {
+                    self.markPreciseTimeSeriesContinuityLoss(for: currentSource)
+                }
                 self.status = retainedTrustedSnapshot
                     ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
                     : "读取失败：\(error.localizedDescription)"
@@ -351,7 +640,7 @@ final class CodexUsageStore: ObservableObject {
                 self.isInitialLoading = false
                 self.isPreparingUsageCache = false
                 if shouldRunPendingFullRefresh {
-                    self.refresh(includePreciseScan: true)
+                    self.refresh(includePreciseScan: true, forceFullTimeSeries: true)
                 }
             }
         }
@@ -375,6 +664,347 @@ final class CodexUsageStore: ObservableObject {
     private func publish(_ snapshot: DashboardSnapshot, sourceID: String) {
         self.snapshot = snapshot
         snapshotSourceID = sourceID
+    }
+
+    private func prepareAfterObserverTakeover(for source: CodexDataSource) {
+        // The previous owner may have observed a short-lived local JSONL that
+        // disappeared before this process acquired the lock. A new observation
+        // ID invalidates every old ready segment; the durable gap and forced
+        // full scan establish the only safe path back to attribution.
+        preciseObservationSessionID = UUID()
+        sessionMutationMonitoringActive = backgroundActivityEnabled
+        configureSessionMutationMonitor()
+        markPreciseTimeSeriesContinuityLoss(
+            for: source,
+            reason: .observerTakeover
+        )
+        preciseTimeSeriesFresh = false
+    }
+
+    private func restartWithForcedPreciseRefresh() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        refreshGeneration += 1
+        activeRefreshSourceID = nil
+        activeRefreshCompactOnly = false
+        pendingFullRefresh = false
+        isRefreshing = false
+        isPreparingUsageCache = false
+        refresh(includePreciseScan: true, forceFullTimeSeries: true)
+    }
+
+    /// Clear a persisted continuity loss only after the attribution segment
+    /// store has durably replaced the unknown interval with a pending baseline.
+    func acknowledgePreciseTimeSeriesContinuityLoss(id: UUID) {
+        guard let dataSource,
+              preciseTimeSeriesContinuityLossID == id else { return }
+        let acknowledgedReason = preciseTimeSeriesContinuityLossReason
+        if continuitySafetyDatabase != nil {
+            let removed = mutateContinuityLosses { values -> Bool in
+                let identifier = Self.continuityIdentifier(for: dataSource)
+                guard values[identifier]?.id == id else { return false }
+                values.removeValue(forKey: identifier)
+                return true
+            }
+            if removed == true {
+                preciseTimeSeriesContinuityLostAt = nil
+                preciseTimeSeriesContinuityLossID = nil
+                preciseTimeSeriesContinuityLossReason = nil
+                if acknowledgedReason == .storageRecovery {
+                    sharedAccountSafetyRecoveryState = .idle
+                }
+            }
+            return
+        }
+        guard var values = continuityLosses() else { return }
+        values.removeValue(forKey: Self.continuityIdentifier(for: dataSource))
+        if persistContinuityLosses(values) {
+            preciseTimeSeriesContinuityLostAt = nil
+            preciseTimeSeriesContinuityLossID = nil
+            preciseTimeSeriesContinuityLossReason = nil
+            if acknowledgedReason == .storageRecovery {
+                sharedAccountSafetyRecoveryState = .idle
+            }
+        }
+    }
+
+    private func markPreciseTimeSeriesContinuityLoss(
+        for source: CodexDataSource,
+        detectedAt: Date = Date(),
+        reason: PreciseTimeSeriesContinuityLossReason = .observationGap
+    ) {
+        // This timestamp identifies the latest failed exact-read generation;
+        // segment bounds are derived from the later successful recovery scan.
+        // Updating it on another failure lets that distinct unknown interval
+        // replace an in-flight cutover instead of being silently acknowledged.
+        let loss = PreciseTimeSeriesContinuityLossRecord(
+            id: UUID(),
+            detectedAt: detectedAt,
+            reason: reason
+        )
+        let identifier = Self.continuityIdentifier(for: source)
+        if let continuitySafetyDatabase {
+            let safetyLock = continuitySafetyDatabase.acquireCrossProcessLock(
+                waitingUpTo: 2
+            )
+            defer { safetyLock?.release() }
+            // Lock contention is an availability concern, never permission to
+            // drop a safety event. SQLite's atomic mutation remains durable and
+            // emits a distributed invalidation even if another process holds
+            // the wider attribution-computation lock longer than the UI wait.
+            let persisted = mutateContinuityLosses { values -> Bool in
+                values[identifier] = loss
+                return true
+            }
+            if persisted == true,
+               dataSource?.stableIdentityKey == source.stableIdentityKey {
+                preciseTimeSeriesContinuityLostAt = loss.detectedAt
+                preciseTimeSeriesContinuityLossID = loss.id
+                preciseTimeSeriesContinuityLossReason = loss.reason
+            } else if persisted == nil {
+                // The durable write failed. Keep the unknown interval visible
+                // in memory and fail attribution closed for this process.
+                preciseTimeSeriesContinuityLostAt = loss.detectedAt
+                preciseTimeSeriesContinuityLossID = loss.id
+                preciseTimeSeriesContinuityLossReason = loss.reason
+            }
+            return
+        }
+        guard var values = continuityLosses() else {
+            preciseTimeSeriesContinuityLostAt = loss.detectedAt
+            preciseTimeSeriesContinuityLossID = loss.id
+            preciseTimeSeriesContinuityLossReason = loss.reason
+            return
+        }
+        values[identifier] = loss
+        if persistContinuityLosses(values),
+           dataSource?.stableIdentityKey == source.stableIdentityKey {
+            preciseTimeSeriesContinuityLostAt = loss.detectedAt
+            preciseTimeSeriesContinuityLossID = loss.id
+            preciseTimeSeriesContinuityLossReason = loss.reason
+        }
+    }
+
+    private func loadContinuityLoss(for source: CodexDataSource?) {
+        guard migrateLegacyContinuityLossesIfNeeded() else {
+            preciseTimeSeriesContinuityLostAt = nil
+            preciseTimeSeriesContinuityLossID = nil
+            preciseTimeSeriesContinuityLossReason = nil
+            return
+        }
+        guard let source,
+              let loss = continuityLosses()?[Self.continuityIdentifier(for: source)] else {
+            preciseTimeSeriesContinuityLostAt = nil
+            preciseTimeSeriesContinuityLossID = nil
+            preciseTimeSeriesContinuityLossReason = nil
+            return
+        }
+        preciseTimeSeriesContinuityLostAt = loss.detectedAt
+        preciseTimeSeriesContinuityLossID = loss.id
+        preciseTimeSeriesContinuityLossReason = loss.reason
+        if loss.reason == .storageRecovery,
+           sharedAccountSafetyRecoveryState != .rebuilding {
+            sharedAccountSafetyRecoveryState = .awaitingFreshBaseline
+        }
+    }
+
+    private func migrateLegacyContinuityLossesIfNeeded() -> Bool {
+        if let continuitySafetyDatabase {
+            if continuitySafetyDatabase.load(.preciseContinuity) != nil {
+                guard retireContinuityDefaultsMigrationSources() else {
+                    continuitySafetyDatabase.reportRecoveryRequired()
+                    preciseContinuityPersistenceHealthy = false
+                    return false
+                }
+                preciseContinuityPersistenceHealthy = true
+                return true
+            }
+            guard continuitySafetyDatabase.persistenceHealthy else {
+                preciseContinuityPersistenceHealthy = false
+                return false
+            }
+            let migrationData: Data
+            if let currentData = continuityDefaults.data(forKey: continuityStorageKey) {
+                guard (try? JSONDecoder().decode(
+                    [String: PreciseTimeSeriesContinuityLossRecord].self,
+                    from: currentData
+                )) != nil else {
+                    continuitySafetyDatabase.reportRecoveryRequired()
+                    preciseContinuityPersistenceHealthy = false
+                    return false
+                }
+                migrationData = currentData
+            } else if let legacyContinuityStorageKey,
+                      let legacyData = continuityDefaults.data(forKey: legacyContinuityStorageKey) {
+                guard let legacy = try? JSONDecoder().decode([String: Date].self, from: legacyData),
+                      let migratedData = try? JSONEncoder().encode(
+                    legacy.mapValues {
+                        PreciseTimeSeriesContinuityLossRecord(id: UUID(), detectedAt: $0)
+                    }
+                ) else {
+                    continuitySafetyDatabase.reportRecoveryRequired()
+                    preciseContinuityPersistenceHealthy = false
+                    return false
+                }
+                migrationData = migratedData
+            } else {
+                guard let emptyData = try? JSONEncoder().encode(
+                    [String: PreciseTimeSeriesContinuityLossRecord]()
+                ) else {
+                    continuitySafetyDatabase.reportRecoveryRequired()
+                    preciseContinuityPersistenceHealthy = false
+                    return false
+                }
+                migrationData = emptyData
+            }
+            let installed = continuitySafetyDatabase.mutate(.preciseContinuity) { existing in
+                let authoritative = existing ?? migrationData
+                return (authoritative, authoritative)
+            }
+            guard let installed,
+                  continuitySafetyDatabase.load(.preciseContinuity) == installed,
+                  retireContinuityDefaultsMigrationSources() else {
+                continuitySafetyDatabase.reportRecoveryRequired()
+                preciseContinuityPersistenceHealthy = false
+                return false
+            }
+            preciseContinuityPersistenceHealthy = true
+            return true
+        }
+
+        guard continuityDefaults.data(forKey: continuityStorageKey) == nil,
+              let legacyContinuityStorageKey,
+              let legacyData = continuityDefaults.data(forKey: legacyContinuityStorageKey) else {
+            return true
+        }
+        guard let legacy = try? JSONDecoder().decode([String: Date].self, from: legacyData) else {
+            preciseContinuityPersistenceHealthy = false
+            return false
+        }
+        let migrated = legacy.mapValues {
+            PreciseTimeSeriesContinuityLossRecord(id: UUID(), detectedAt: $0)
+        }
+        guard persistContinuityLosses(migrated) else { return false }
+        continuityDefaults.removeObject(forKey: legacyContinuityStorageKey)
+        guard continuityDefaults.data(forKey: legacyContinuityStorageKey) == nil else {
+            preciseContinuityPersistenceHealthy = false
+            return false
+        }
+        return true
+    }
+
+    private func retireContinuityDefaultsMigrationSources() -> Bool {
+        let keys = [continuityStorageKey, legacyContinuityStorageKey]
+            .compactMap { $0 }
+        for key in keys where continuityDefaults.object(forKey: key) != nil {
+            continuityDefaults.removeObject(forKey: key)
+            guard continuityDefaults.object(forKey: key) == nil else {
+                continuitySafetyDatabase?.reportRecoveryRequired()
+                return false
+            }
+        }
+        return true
+    }
+
+    private func continuityLosses() -> [String: PreciseTimeSeriesContinuityLossRecord]? {
+        if let continuitySafetyDatabase {
+            guard let data = continuitySafetyDatabase.load(.preciseContinuity) else {
+                preciseContinuityPersistenceHealthy = continuitySafetyDatabase.persistenceHealthy
+                return continuitySafetyDatabase.persistenceHealthy ? [:] : nil
+            }
+            guard let values = try? JSONDecoder().decode(
+                [String: PreciseTimeSeriesContinuityLossRecord].self,
+                from: data
+            ) else {
+                continuitySafetyDatabase.reportCorruptPayload(.preciseContinuity)
+                preciseContinuityPersistenceHealthy = false
+                return nil
+            }
+            preciseContinuityPersistenceHealthy = true
+            return values
+        }
+        guard let data = continuityDefaults.data(forKey: continuityStorageKey) else {
+            preciseContinuityPersistenceHealthy = true
+            return [:]
+        }
+        guard let values = try? JSONDecoder().decode(
+            [String: PreciseTimeSeriesContinuityLossRecord].self,
+            from: data
+        ) else {
+            preciseContinuityPersistenceHealthy = false
+            return nil
+        }
+        preciseContinuityPersistenceHealthy = true
+        return values
+    }
+
+    @discardableResult
+    private func persistContinuityLosses(
+        _ values: [String: PreciseTimeSeriesContinuityLossRecord]
+    ) -> Bool {
+        if let continuitySafetyDatabase {
+            guard let data = try? JSONEncoder().encode(values) else {
+                preciseContinuityPersistenceHealthy = false
+                return false
+            }
+            let succeeded = continuitySafetyDatabase.store(data, as: .preciseContinuity)
+            preciseContinuityPersistenceHealthy = succeeded
+                && continuitySafetyDatabase.persistenceHealthy
+            return preciseContinuityPersistenceHealthy
+        }
+        if values.isEmpty {
+            continuityDefaults.removeObject(forKey: continuityStorageKey)
+            let succeeded = continuityDefaults.data(forKey: continuityStorageKey) == nil
+            preciseContinuityPersistenceHealthy = succeeded
+            return succeeded
+        }
+        guard let data = try? JSONEncoder().encode(values) else {
+            preciseContinuityPersistenceHealthy = false
+            return false
+        }
+        continuityDefaults.set(data, forKey: continuityStorageKey)
+        guard continuityDefaults.data(forKey: continuityStorageKey) == data,
+              let decoded = try? JSONDecoder().decode(
+                [String: PreciseTimeSeriesContinuityLossRecord].self,
+                from: data
+              ),
+              decoded == values else {
+            preciseContinuityPersistenceHealthy = false
+            return false
+        }
+        preciseContinuityPersistenceHealthy = true
+        return true
+    }
+
+    private func mutateContinuityLosses<Result>(
+        _ body: (inout [String: PreciseTimeSeriesContinuityLossRecord]) throws -> Result
+    ) -> Result? {
+        guard let continuitySafetyDatabase else { return nil }
+        let result = continuitySafetyDatabase.mutate(.preciseContinuity) { data in
+            var values: [String: PreciseTimeSeriesContinuityLossRecord]
+            if let data {
+                guard let decoded = try? JSONDecoder().decode(
+                    [String: PreciseTimeSeriesContinuityLossRecord].self,
+                    from: data
+                ) else {
+                    throw SharedAccountUsageSafetyStorageError.corruptPayload
+                }
+                values = decoded
+            } else {
+                values = [:]
+            }
+            let result = try body(&values)
+            return (try JSONEncoder().encode(values), result)
+        }
+        preciseContinuityPersistenceHealthy = result != nil
+            && continuitySafetyDatabase.persistenceHealthy
+        return result
+    }
+
+    nonisolated static func continuityIdentifier(for source: CodexDataSource) -> String {
+        SHA256.hash(data: Data(source.stableIdentityKey.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     // 轻量 summary 只覆盖紧凑 surface 消费的字段（累计 token、今日 token/
@@ -422,6 +1052,7 @@ final class CodexUsageStore: ObservableObject {
             pluginUsage: previous.pluginUsage,
             cacheUsage: previous.cacheUsage,
             usagePrecision: previous.usagePrecision,
+            preciseTimeSeriesGeneratedAt: previous.preciseTimeSeriesGeneratedAt,
             generatedAt: summary.generatedAt
         )
     }
@@ -483,9 +1114,21 @@ final class CodexUsageStore: ObservableObject {
         guard backgroundActivityEnabled != enabled else { return }
         backgroundActivityEnabled = enabled
         if enabled {
+            // A monitoring pause can hide a short-lived local session. Rotate
+            // the observer session before the first resumed scan so attribution
+            // establishes one new synthetic baseline for the uncovered gap.
+            preciseObservationSessionID = UUID()
+            sessionMutationMonitoringActive = true
+            configureSessionMutationMonitor()
             scheduleTimer()
             refresh()
         } else {
+            sessionMutationMonitoringActive = false
+            sessionMutationMonitor.stop()
+            preciseSessionMutationMonitoringHealthy = false
+            attributionSafetyAckTask?.cancel()
+            attributionSafetyAckTask = nil
+            pendingAttributionSafetyAckKey = nil
             timer?.invalidate()
             timer = nil
             initialPreciseTask?.cancel()
@@ -498,6 +1141,36 @@ final class CodexUsageStore: ObservableObject {
             pendingFullRefresh = false
             isRefreshing = false
             isPreparingUsageCache = false
+        }
+    }
+
+    private func configureSessionMutationMonitor() {
+        guard sessionMutationMonitoringActive,
+              backgroundActivityEnabled,
+              (continuitySafetyDatabase?.isObserverOwner ?? true),
+              let dataSource else {
+            sessionMutationMonitor.stop()
+            preciseSessionMutationMonitoringHealthy = false
+            return
+        }
+        let home = dataSource.codexHome.standardizedFileURL
+        preciseSessionMutationMonitoringHealthy = sessionMutationMonitor.start(
+            // Exact discovery may include state_5 rollout_path values outside
+            // sessions/archived_sessions. Watching the canonical Home catches
+            // new parent folders as well as short-lived external JSONLs.
+            roots: [home]
+        ) { [weak self] detectedAt in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.backgroundActivityEnabled,
+                      let source = self.dataSource else { return }
+                self.reloadPreciseTimeSeriesContinuityLoss()
+                guard self.preciseTimeSeriesContinuityLossID == nil else { return }
+                self.markPreciseTimeSeriesContinuityLoss(
+                    for: source,
+                    detectedAt: detectedAt
+                )
+            }
         }
     }
 

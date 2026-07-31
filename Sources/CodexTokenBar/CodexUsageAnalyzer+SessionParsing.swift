@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 enum CodexUsageDiscoveryError: LocalizedError {
@@ -360,7 +361,16 @@ extension CodexUsageAnalyzer {
             hourly: cacheUsage.hourly,
             recentBins: cacheUsage.recentBins,
             sessions: cacheUsage.sessions,
-            turns: hydratedTurns
+            turns: hydratedTurns,
+            attributionEvents: cacheUsage.attributionEvents,
+            attributionEventsComplete: cacheUsage.attributionEventsComplete,
+            attributionProvenanceEpoch: cacheUsage.attributionProvenanceEpoch,
+            attributionGeneration: cacheUsage.attributionGeneration,
+            attributionUnsafeSinceGeneration:
+                cacheUsage.attributionUnsafeSinceGeneration,
+            attributionCurrentScanUnsafeCauseDetected:
+                cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+            attributionSourceMutationDetected: cacheUsage.attributionSourceMutationDetected
         )
     }
 
@@ -444,6 +454,8 @@ extension CodexUsageAnalyzer {
 
     func sessionTreeSignature(
         for files: [URL],
+        attributionProvenanceEpoch: String,
+        attributionGeneration: Int64,
         now: Date = Date(),
         timeZone: TimeZone = .current
     ) -> SessionTreeSignature {
@@ -453,7 +465,9 @@ extension CodexUsageAnalyzer {
             files: files
                 .compactMap(sessionCacheKey(for:))
                 .sorted { $0.path < $1.path },
-            stateDatabase: sessionCacheKey(for: dataSource.stateDatabase)
+            stateDatabase: sessionCacheKey(for: dataSource.stateDatabase),
+            attributionProvenanceEpoch: attributionProvenanceEpoch,
+            attributionGeneration: attributionGeneration
         )
     }
 
@@ -768,10 +782,16 @@ extension CodexUsageAnalyzer {
             ?? attributes[.size] as? UInt64
             ?? 0
         let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        var status = stat()
+        let hasStatus = lstat(file.path, &status) == 0
         return SessionCacheKey(
             path: file.resolvingSymlinksInPath().path,
             size: size,
-            modifiedAt: modifiedAt
+            modifiedAt: modifiedAt,
+            deviceID: hasStatus ? UInt64(status.st_dev) : nil,
+            inode: hasStatus ? UInt64(status.st_ino) : nil,
+            statusChangedSeconds: hasStatus ? Int64(status.st_ctimespec.tv_sec) : nil,
+            statusChangedNanoseconds: hasStatus ? Int64(status.st_ctimespec.tv_nsec) : nil
         )
     }
 

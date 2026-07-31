@@ -22,6 +22,7 @@ extension CodexUsageAnalyzer {
         private var cacheDailyByDate: [Date: TokenCacheAccumulator] = [:]
         private var cacheHourlyByStart: [Date: TokenCacheAccumulator] = [:]
         private var cacheRecentByStart: [Date: TokenCacheAccumulator] = [:]
+        private var attributionBySourceBucket: [AttributionSourceBucketKey: TokenCacheAccumulator] = [:]
         private var cacheBySession: [String: TokenCacheAccumulator] = [:]
         private var sessionLastUpdated: [String: Date] = [:]
         private var sessionIDsWithEvents = Set<String>()
@@ -34,10 +35,13 @@ extension CodexUsageAnalyzer {
             self.now = now
             let today = calendar.startOfDay(for: now)
             dailyStart = calendar.date(byAdding: .day, value: -(Self.dayCount - 1), to: today)
-            recentStart = calendar.date(
-                byAdding: .minute,
-                value: -((Self.recentBinCount - 1) * 5),
-                to: now
+            let currentRecentBinStart = Date(
+                timeIntervalSince1970: floor(
+                    now.timeIntervalSince1970 / Self.recentBinInterval
+                ) * Self.recentBinInterval
+            )
+            recentStart = currentRecentBinStart.addingTimeInterval(
+                -Double(Self.recentBinCount - 1) * Self.recentBinInterval
             )
             let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
             hourlyStart = calendar.date(
@@ -67,6 +71,16 @@ extension CodexUsageAnalyzer {
             firstUsageAt
         }
 
+        var attributionCoverageStart: Date? {
+            recentStart
+        }
+
+        var attributionCoverageEnd: Date? {
+            recentStart?.addingTimeInterval(
+                Double(Self.recentBinCount) * Self.recentBinInterval
+            )
+        }
+
         var peakSessionTokens: Int {
             cacheBySession.values.map(\.totalTokens).max() ?? 0
         }
@@ -89,6 +103,7 @@ extension CodexUsageAnalyzer {
                 consume(
                     event,
                     stableID: "\(event.sessionID)-\(Int(event.timestamp.timeIntervalSince1970))-\(globalEventOffset + localIndex)",
+                    attributionSourceID: event.sessionID,
                     turnIndexInSession: turnIndex
                 )
             }
@@ -97,6 +112,7 @@ extension CodexUsageAnalyzer {
         mutating func consume(
             _ event: TokenEvent,
             stableID: String,
+            attributionSourceID: String? = nil,
             turnIndexInSession: Int
         ) {
             sessionIDsWithEvents.insert(event.sessionID)
@@ -137,10 +153,17 @@ extension CodexUsageAnalyzer {
                 let recentEnd = recentStart.addingTimeInterval(
                     Double(Self.recentBinCount) * Self.recentBinInterval
                 )
-                if event.timestamp >= recentStart, event.timestamp <= recentEnd {
+                if event.timestamp >= recentStart,
+                   event.timestamp <= now,
+                   event.timestamp < recentEnd {
                     let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
                     let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
                     cacheRecentByStart[start, default: TokenCacheAccumulator()].add(event)
+                    let sourceID = attributionSourceID ?? event.sessionID
+                    attributionBySourceBucket[
+                        AttributionSourceBucketKey(sourceID: sourceID, start: start),
+                        default: TokenCacheAccumulator()
+                    ].add(event)
                 }
             }
 
@@ -207,7 +230,13 @@ extension CodexUsageAnalyzer {
 
         func cacheUsage(
             recentBins: [BinUsage],
-            threadInfo: [String: ThreadInfo]
+            threadInfo: [String: ThreadInfo],
+            attributionProvenanceEpoch: String = "test-provenance",
+            attributionGeneration: Int64? = nil,
+            attributionUnsafeSinceGeneration: Int64? = nil,
+            attributionCurrentScanUnsafeCauseDetected: Bool = false,
+            attributionSourceMutationDetected: Bool = false,
+            durableAttributionEvents: [TokenCacheAttributionEvent]? = nil
         ) -> TokenCacheUsage {
             let daily = cacheDailyByDate
                 .map { date, accumulator in
@@ -266,14 +295,39 @@ extension CodexUsageAnalyzer {
                     }
                     return lhs.id < rhs.id
                 }
+            let attributionEvents = durableAttributionEvents ?? attributionBySourceBucket.map { key, accumulator in
+                TokenCacheAttributionEvent.sourceBucket(
+                    provenanceEpoch: attributionProvenanceEpoch,
+                    sourceID: key.sourceID,
+                    start: key.start,
+                    breakdown: accumulator.breakdown
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.start != rhs.start { return lhs.start < rhs.start }
+                return lhs.id < rhs.id
+            }
             return TokenCacheUsage(
                 total: total.breakdown,
                 daily: daily,
                 hourly: hourly,
                 recentBins: recent,
                 sessions: sessions,
-                turns: turns
+                turns: turns,
+                attributionEvents: attributionEvents,
+                attributionEventsComplete: true,
+                attributionProvenanceEpoch: attributionProvenanceEpoch,
+                attributionGeneration: attributionGeneration,
+                attributionUnsafeSinceGeneration: attributionUnsafeSinceGeneration,
+                attributionCurrentScanUnsafeCauseDetected:
+                    attributionCurrentScanUnsafeCauseDetected,
+                attributionSourceMutationDetected: attributionSourceMutationDetected
             )
+        }
+
+        private struct AttributionSourceBucketKey: Hashable {
+            let sourceID: String
+            let start: Date
         }
     }
 }

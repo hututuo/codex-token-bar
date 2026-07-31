@@ -161,6 +161,8 @@ struct HeaderView: View {
     let onOpenAutoResume: () -> Void
     let threadDeleteStatus: CodexThreadDeleteBridgeStatus
     let autoResumeEnabled: Bool
+    var sharedAccountAttribution: SharedAccountUsageAttributionResult? = nil
+    var onShowSharedAccountAttribution: () -> Void = {}
     @Binding var showingInterfaceScaleMenu: Bool
     @Binding var interfaceScaleAutoEnabled: Bool
     @Binding var interfaceScaleManualMultiplier: Double
@@ -511,7 +513,9 @@ struct HeaderView: View {
 
                 AccountQuotaStrip(
                     snapshot: quotaSnapshot,
-                    showingResetCreditDetails: $showingResetCreditDetails
+                    sharedAccountAttribution: sharedAccountAttribution,
+                    showingResetCreditDetails: $showingResetCreditDetails,
+                    onShowSharedAccountAttribution: onShowSharedAccountAttribution
                 )
             }
         }
@@ -632,7 +636,7 @@ struct StatStrip: View {
     var isPreparingUsageCache = false
     var cacheStatus = ""
 
-    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
+    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
 
     private var stats: DashboardStats {
         snapshot.stats
@@ -655,7 +659,7 @@ struct StatStrip: View {
     }
 
     private var savingsPresentation: SubscriptionSavingsPresentation {
-        let priceModel = OfficialAPIPriceModel(rawValue: quotaEstimateModelRaw) ?? .gpt55
+        let priceModel = OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw)
         let estimate = snapshot.hasPreciseTokenUsage
             ? SubscriptionSavingsEstimator.estimate(
                 breakdown: stats.lifetimeTokenBreakdown,

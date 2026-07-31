@@ -981,13 +981,13 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.hoverAccessibilityPrompt, "点击图表可估算额度")
 
         let option = RecentChartQuotaEstimateAffordancePresentation.modelOption(
-            for: .gpt54Mini,
-            selectedModel: .gpt55
+            for: .gpt56Luna,
+            selectedModel: .gpt56Sol
         )
 
         XCTAssertEqual(option.groupLabel, "官方 API")
-        XCTAssertEqual(option.shortTitle, "mini")
-        XCTAssertEqual(option.accessibilityLabel, "官方 API 定价 GPT-5.4 mini")
+        XCTAssertEqual(option.shortTitle, "Luna")
+        XCTAssertEqual(option.accessibilityLabel, "官方 API 定价 GPT-5.6 Luna")
         XCTAssertEqual(option.accessibilityValue, "未选择")
     }
 

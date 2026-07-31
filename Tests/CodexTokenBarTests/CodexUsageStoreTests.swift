@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import XCTest
 @testable import CodexTokenBar
@@ -7,13 +8,388 @@ final class CodexUsageStoreTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+        UserDefaults.standard.removeObject(forKey: CodexUsageStore.preciseContinuityStorageKey)
+        UserDefaults.standard.removeObject(forKey: CodexUsageStore.legacyPreciseContinuityStorageKey)
     }
 
     override func tearDownWithError() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
         unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        UserDefaults.standard.removeObject(forKey: CodexUsageStore.preciseContinuityStorageKey)
+        UserDefaults.standard.removeObject(forKey: CodexUsageStore.legacyPreciseContinuityStorageKey)
         try super.tearDownWithError()
+    }
+
+    func testObservationSessionRotatesOnlyWhenMonitoringResumes() {
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: nil),
+            autoStart: false
+        )
+        let initial = store.preciseObservationSessionID
+
+        store.setBackgroundActivityEnabled(false)
+        XCTAssertEqual(store.preciseObservationSessionID, initial)
+        store.setBackgroundActivityEnabled(true)
+        let resumed = store.preciseObservationSessionID
+        XCTAssertNotEqual(resumed, initial)
+        store.setBackgroundActivityEnabled(true)
+        XCTAssertEqual(store.preciseObservationSessionID, resumed)
+    }
+
+    func testObservationSessionRotatesAcrossHomeSwitchAndReturn() {
+        let sourceA = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/observer-home-a/.codex"),
+            origin: .userSelected
+        )
+        let sourceB = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/observer-home-b/.codex"),
+            origin: .userSelected
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: sourceA),
+            autoStart: false
+        )
+        let observationA = store.preciseObservationSessionID
+
+        XCTAssertTrue(store.setDataSource(sourceB))
+        let observationB = store.preciseObservationSessionID
+        XCTAssertNotEqual(observationB, observationA)
+
+        XCTAssertFalse(store.setDataSource(sourceB))
+        XCTAssertEqual(store.preciseObservationSessionID, observationB)
+
+        XCTAssertTrue(store.setDataSource(sourceA))
+        XCTAssertNotEqual(store.preciseObservationSessionID, observationB)
+        XCTAssertNotEqual(store.preciseObservationSessionID, observationA)
+    }
+
+    func testSessionMutationPolicyIgnoresAppendButCutsOverOnDestructiveOrDroppedEvents() {
+        XCTAssertFalse(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified)
+            )
+        )
+        XCTAssertFalse(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated)
+            )
+        )
+        for flag in [
+            kFSEventStreamEventFlagItemRemoved,
+            kFSEventStreamEventFlagItemRenamed,
+            kFSEventStreamEventFlagMustScanSubDirs,
+            kFSEventStreamEventFlagUserDropped,
+            kFSEventStreamEventFlagKernelDropped,
+            kFSEventStreamEventFlagRootChanged,
+        ] {
+            XCTAssertTrue(
+                CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                    flags: FSEventStreamEventFlags(flag)
+                )
+            )
+        }
+        let home = "/tmp/codex-token-bar-tests/canonical-home"
+        XCTAssertTrue(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                path: "\(home)/active-rollouts/2026/07/rollout.jsonl",
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved),
+                watchedRoots: [home]
+            )
+        )
+        XCTAssertTrue(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                path: "\(home)/custom/location/rollout.JSONL",
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed),
+                watchedRoots: [home]
+            )
+        )
+        XCTAssertFalse(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                path: "\(home)/active-rollouts/notes.txt",
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved),
+                watchedRoots: [home]
+            )
+        )
+        XCTAssertTrue(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                path: "\(home)/active-rollouts/2026/07",
+                flags: FSEventStreamEventFlags(
+                    kFSEventStreamEventFlagItemRenamed
+                        | kFSEventStreamEventFlagItemIsDir
+                ),
+                watchedRoots: [home]
+            ),
+            "renaming a directory may remove an entire JSONL subtree"
+        )
+        XCTAssertFalse(
+            CodexSessionMutationEventPolicy.requiresContinuityCutover(
+                path: "/tmp/outside-home/rollout.jsonl",
+                flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved),
+                watchedRoots: [home]
+            )
+        )
+    }
+
+    func testSessionMutationMonitorObservesAnActiveRolloutOutsideSessionsRemovedBetweenPolls() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexSessionMutationMonitorTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let activeRolloutRoot = root
+            .appendingPathComponent("active-rollouts", isDirectory: true)
+            .appendingPathComponent("2026/07", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: activeRolloutRoot,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let probe = SessionMutationEventProbe()
+        let monitor = CodexSessionMutationMonitor()
+        XCTAssertTrue(monitor.start(roots: [root]) { _ in
+            probe.markObserved()
+        })
+        defer { monitor.stop() }
+        let shortLived = activeRolloutRoot.appendingPathComponent("short-lived.jsonl")
+        try Data("event\n".utf8).write(to: shortLived)
+        // Still far shorter than the usage polling cadence, but long enough
+        // for macOS to publish the create before the destructive file event.
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try FileManager.default.removeItem(at: shortLived)
+
+        await waitUntil("session deletion FSEvent") {
+            probe.wasObserved
+        }
+    }
+
+    func testSessionMutationMonitorObservesAnActiveRolloutRenameOutsideSessions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexSessionMutationRenameMonitorTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let activeRolloutRoot = root
+            .appendingPathComponent("active-rollouts", isDirectory: true)
+            .appendingPathComponent("2026/07", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: activeRolloutRoot,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = activeRolloutRoot.appendingPathComponent("active.jsonl")
+        let destination = activeRolloutRoot.appendingPathComponent("renamed.jsonl")
+        try Data("event\n".utf8).write(to: source)
+        let probe = SessionMutationEventProbe()
+        let monitor = CodexSessionMutationMonitor()
+        XCTAssertTrue(monitor.start(roots: [root]) { _ in
+            probe.markObserved()
+        })
+        defer { monitor.stop() }
+
+        try FileManager.default.moveItem(at: source, to: destination)
+        await waitUntil("active rollout rename FSEvent") {
+            probe.wasObserved
+        }
+    }
+
+    func testNonOwnerProcessNeverRunsPreciseOrCompactExactMutation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreNonOwnerTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("safety.sqlite")
+        let ownerDatabase = SharedAccountUsageSafetyDatabase(
+            url: databaseURL,
+            claimsObserverOwnership: true
+        )
+        let nonOwnerDatabase = SharedAccountUsageSafetyDatabase(
+            url: databaseURL,
+            claimsObserverOwnership: true
+        )
+        XCTAssertTrue(ownerDatabase.isObserverOwner)
+        XCTAssertFalse(nonOwnerDatabase.isObserverOwner)
+        let source = CodexDataSource(
+            codexHome: directory.appendingPathComponent("home", isDirectory: true),
+            origin: .defaultHome
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(makeSnapshot(totalTokens: 321, dayTokens: 12))],
+            preciseResults: [.failure(UsageStoreTestError())]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuitySafetyDatabase: nonOwnerDatabase
+        )
+
+        store.refresh()
+        await waitUntil("non-owner fast-only refresh") {
+            store.snapshot.stats.totalTokens == 321 && !store.isRefreshing
+        }
+
+        XCTAssertNil(store.preciseTimeSeriesContinuityLossID)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 321)
+    }
+
+    func testNonOwnerRetriesTakeoverDuringInflightRefreshAndForcesSafeRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreObserverTakeoverTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let home = directory.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("safety.sqlite")
+        var ownerDatabase: SharedAccountUsageSafetyDatabase? = SharedAccountUsageSafetyDatabase(
+            url: databaseURL,
+            claimsObserverOwnership: true
+        )
+        let takeoverDatabase = SharedAccountUsageSafetyDatabase(
+            url: databaseURL,
+            claimsObserverOwnership: true
+        )
+        XCTAssertTrue(ownerDatabase?.isObserverOwner == true)
+        XCTAssertFalse(takeoverDatabase.isObserverOwner)
+
+        let source = CodexDataSource(codexHome: home, origin: .defaultHome)
+        let coverageAt = Date(timeIntervalSince1970: 3_000)
+        let loader = ObserverTakeoverProbeLoader(
+            preciseSnapshot: makeSnapshot(
+                totalTokens: 777,
+                dayTokens: 77,
+                preciseTimeSeriesGeneratedAt: coverageAt
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuitySafetyDatabase: takeoverDatabase
+        )
+        let initialObservationSessionID = store.preciseObservationSessionID
+
+        // As non-owner this begins a fast-only read and remains in flight.
+        store.refresh()
+        await waitUntil("non-owner fast read in flight") {
+            await loader.fastLoadCount == 1 && store.isRefreshing
+        }
+        ownerDatabase = nil
+
+        // A normal retry now acquires ownership. It must not disappear through
+        // the in-flight early-return path: the old read is cancelled and a
+        // synthetic gap + watcher + full precise scan are established.
+        store.refresh()
+        await waitUntil("observer takeover precise recovery") {
+            takeoverDatabase.isObserverOwner
+                && store.snapshot.stats.totalTokens == 777
+                && !store.isRefreshing
+        }
+
+        XCTAssertNotEqual(store.preciseObservationSessionID, initialObservationSessionID)
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLossReason, .observerTakeover)
+        XCTAssertNotNil(store.preciseTimeSeriesContinuityLossID)
+        XCTAssertTrue(store.preciseSessionMutationMonitoringHealthy)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        let preciseLoadCount = await loader.preciseLoadCount
+        XCTAssertEqual(preciseLoadCount, 1)
+    }
+
+    func testDurableCutoverAcknowledgementUsesObservedGenerationThenForcesSafeScan() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/attribution-ack/.codex"),
+            origin: .defaultHome
+        )
+        let unsafe = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 2_000),
+            attributionProvenanceEpoch: "unsafe-epoch",
+            attributionGeneration: 12,
+            attributionUnsafeSinceGeneration: 9,
+            attributionSourceMutationDetected: true
+        )
+        let safe = makeSnapshot(
+            totalTokens: 1_200,
+            dayTokens: 120,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 2_300),
+            attributionProvenanceEpoch: "unsafe-epoch",
+            attributionGeneration: 14,
+            attributionUnsafeSinceGeneration: nil,
+            attributionSourceMutationDetected: false
+        )
+        let loader = AttributionSafetyAckProbeLoader(
+            preciseResults: [unsafe, safe]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("unsafe attribution snapshot") {
+            store.snapshot.cacheUsage.attributionUnsafeSinceGeneration == 9
+                && !store.isRefreshing
+        }
+        store.acknowledgeAttributionSafetyAfterDurableCutover(
+            provenanceEpoch: "unsafe-epoch",
+            throughGeneration: 12
+        )
+        await waitUntil("post-ack safe precise scan") {
+            store.snapshot.cacheUsage.attributionGeneration == 14
+                && store.snapshot.cacheUsage.attributionUnsafeSinceGeneration == nil
+                && !store.isRefreshing
+        }
+
+        let calls = await loader.acknowledgements
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.epoch, "unsafe-epoch")
+        XCTAssertEqual(calls.first?.generation, 12)
+    }
+
+    func testPersistentAttributionAmbiguityDoesNotAcknowledgeOrForceRefreshLoop() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/attribution-persistent-ambiguity/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let ambiguous = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 2_000),
+            attributionProvenanceEpoch: "ambiguous-epoch",
+            attributionGeneration: 12,
+            attributionUnsafeSinceGeneration: 9,
+            attributionCurrentScanUnsafeCauseDetected: true,
+            attributionSourceMutationDetected: true
+        )
+        let loader = AttributionSafetyAckProbeLoader(preciseResults: [ambiguous])
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("persistent attribution ambiguity") {
+            store.snapshot.cacheUsage.attributionCurrentScanUnsafeCauseDetected
+                && !store.isRefreshing
+        }
+        store.acknowledgeAttributionSafetyAfterDurableCutover(
+            provenanceEpoch: "ambiguous-epoch",
+            throughGeneration: 12
+        )
+        for _ in 0..<10 { await Task.yield() }
+
+        let acknowledgements = await loader.acknowledgements
+        let preciseLoadCount = await loader.preciseLoadCount
+        XCTAssertEqual(acknowledgements.count, 0)
+        XCTAssertEqual(preciseLoadCount, 1)
+        XCTAssertEqual(store.snapshot.cacheUsage.attributionGeneration, 12)
     }
 
     func testVisibleDashboardRefreshesFasterThanCompactOnlySurfaces() throws {
@@ -479,6 +855,462 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(display.standaloneUsageStatus, "用量已陈旧")
     }
 
+    func testExactReadFailurePersistsContinuityLossUntilSafeCutoverAcknowledgesIt() async {
+        let suiteName = "CodexUsageStoreContinuityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "continuity-loss-test"
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/continuity/.codex"),
+            origin: .defaultHome
+        )
+        let firstCoverage = Date(timeIntervalSince1970: 1_800)
+        let recoveredCoverage = Date(timeIntervalSince1970: 2_100)
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: [
+                .success(makeSnapshot(
+                    totalTokens: 1_000,
+                    dayTokens: 100,
+                    preciseTimeSeriesGeneratedAt: firstCoverage
+                )),
+                .failure(UsageStoreTestError()),
+                .success(makeSnapshot(
+                    totalTokens: 1_200,
+                    dayTokens: 120,
+                    preciseTimeSeriesGeneratedAt: recoveredCoverage
+                )),
+            ]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey
+        )
+
+        store.refresh()
+        await waitUntil("continuity initial precise read") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == firstCoverage && !store.isRefreshing
+        }
+        XCTAssertNil(store.preciseTimeSeriesContinuityLostAt)
+
+        store.refresh()
+        await waitUntil("continuity exact read failure") {
+            store.preciseTimeSeriesContinuityLostAt != nil && !store.isRefreshing
+        }
+        let loss = store.preciseTimeSeriesContinuityLostAt
+        let lossID = store.preciseTimeSeriesContinuityLossID
+        XCTAssertTrue(store.preciseContinuityPersistenceHealthy)
+
+        let reloaded = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey
+        )
+        XCTAssertEqual(reloaded.preciseTimeSeriesContinuityLostAt, loss)
+        XCTAssertEqual(reloaded.preciseTimeSeriesContinuityLossID, lossID)
+
+        store.refresh()
+        await waitUntil("continuity exact read recovery") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == recoveredCoverage && !store.isRefreshing
+        }
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLostAt, loss)
+
+        store.acknowledgePreciseTimeSeriesContinuityLoss(id: try! XCTUnwrap(lossID))
+        XCTAssertNil(store.preciseTimeSeriesContinuityLostAt)
+        XCTAssertNil(store.preciseTimeSeriesContinuityLossID)
+        XCTAssertNil(
+            CodexUsageStore(
+                resolver: StaticCodexDataSourceResolver(source: source),
+                snapshotLoader: loader,
+                autoStart: false,
+                continuityDefaults: defaults,
+                continuityStorageKey: storageKey
+            ).preciseTimeSeriesContinuityLostAt
+        )
+    }
+
+    func testProductionSafetyDatabaseMigratesAndAtomicallyAcknowledgesContinuityLoss() throws {
+        let suiteName = "CodexUsageStoreSafetyContinuityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreSafetyContinuityTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let databaseURL = directory.appendingPathComponent("safety.sqlite")
+        let database = SharedAccountUsageSafetyDatabase(url: databaseURL)
+        let storageKey = "continuity-safety-migration-test"
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/safety-continuity/.codex"),
+            origin: .defaultHome
+        )
+        let loss = PreciseTimeSeriesContinuityLossRecord(
+            id: UUID(),
+            detectedAt: Date(timeIntervalSince1970: 2_400)
+        )
+        defaults.set(
+            try JSONEncoder().encode([
+                CodexUsageStore.continuityIdentifier(for: source): loss,
+            ]),
+            forKey: storageKey
+        )
+
+        let migrated = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: nil,
+            continuitySafetyDatabase: database
+        )
+        XCTAssertEqual(migrated.preciseTimeSeriesContinuityLossID, loss.id)
+        XCTAssertEqual(migrated.preciseTimeSeriesContinuityLostAt, loss.detectedAt)
+        XCTAssertTrue(migrated.preciseContinuityPersistenceHealthy)
+
+        defaults.removePersistentDomain(forName: suiteName)
+        let reloaded = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: nil,
+            continuitySafetyDatabase: SharedAccountUsageSafetyDatabase(url: databaseURL)
+        )
+        XCTAssertEqual(reloaded.preciseTimeSeriesContinuityLossID, loss.id)
+
+        reloaded.acknowledgePreciseTimeSeriesContinuityLoss(id: loss.id)
+        XCTAssertNil(reloaded.preciseTimeSeriesContinuityLossID)
+        XCTAssertNil(
+            CodexUsageStore(
+                resolver: StaticCodexDataSourceResolver(source: source),
+                snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+                autoStart: false,
+                continuityDefaults: defaults,
+                continuityStorageKey: storageKey,
+                legacyContinuityStorageKey: nil,
+                continuitySafetyDatabase: SharedAccountUsageSafetyDatabase(url: databaseURL)
+            ).preciseTimeSeriesContinuityLossID
+        )
+    }
+
+    func testCorruptProductionContinuityPayloadFailsClosedWithoutDeletion() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreSafetyContinuityCorruptionTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("safety.sqlite")
+        let database = SharedAccountUsageSafetyDatabase(url: databaseURL)
+        // The database accepts only JSON objects at its generic boundary; this
+        // object is syntactically durable but invalid for the typed continuity
+        // schema, which exercises the typed fail-closed path without bypassing
+        // the storage contract.
+        let corrupt = Data(#"{"unexpected":true}"#.utf8)
+        XCTAssertTrue(database.store(corrupt, as: .preciseContinuity))
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/corrupt-safety-continuity/.codex"),
+            origin: .defaultHome
+        )
+
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuitySafetyDatabase: database
+        )
+
+        XCTAssertFalse(store.preciseContinuityPersistenceHealthy)
+        XCTAssertFalse(database.persistenceHealthy)
+        XCTAssertNil(database.load(.preciseContinuity))
+        XCTAssertEqual(
+            SharedAccountUsageSafetyDatabase(url: databaseURL)
+                .load(.preciseContinuity),
+            corrupt,
+            "typed corruption must fail closed without deleting the evidence"
+        )
+    }
+
+    func testCorruptContinuityMigrationOffersExplicitSafetyRecovery() throws {
+        let suiteName = "CodexUsageStoreCorruptMigrationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreCorruptMigrationTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let storageKey = "corrupt-continuity-migration"
+        defaults.set(Data(#"{"unexpected":true}"#.utf8), forKey: storageKey)
+        let database = SharedAccountUsageSafetyDatabase(
+            url: directory.appendingPathComponent("safety.sqlite")
+        )
+        let source = CodexDataSource(
+            codexHome: directory.appendingPathComponent("home", isDirectory: true),
+            origin: .defaultHome
+        )
+
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(
+                fastResults: [],
+                preciseResults: []
+            ),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: nil,
+            continuitySafetyDatabase: database
+        )
+
+        XCTAssertFalse(store.preciseContinuityPersistenceHealthy)
+        XCTAssertTrue(database.recoveryRequired)
+        XCTAssertEqual(store.sharedAccountSafetyRecoveryState, .required)
+        XCTAssertNotNil(defaults.object(forKey: storageKey))
+    }
+
+    func testFailedSessionWatcherSetupRetriesOnNormalRefresh() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreWatcherRetryTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let home = directory.appendingPathComponent("home", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = CodexDataSource(codexHome: home, origin: .defaultHome)
+        let database = SharedAccountUsageSafetyDatabase(
+            url: directory.appendingPathComponent("safety.sqlite"),
+            claimsObserverOwnership: true
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(
+                fastResults: [],
+                preciseResults: []
+            ),
+            autoStart: false,
+            continuitySafetyDatabase: database
+        )
+
+        store.setBackgroundActivityEnabled(false)
+        store.setBackgroundActivityEnabled(true)
+        XCTAssertFalse(store.preciseSessionMutationMonitoringHealthy)
+
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        store.refresh()
+        XCTAssertTrue(store.preciseSessionMutationMonitoringHealthy)
+        store.setBackgroundActivityEnabled(false)
+    }
+
+    func testUserRecoveryRebuildsEmptyGenerationThenForcesFreshPreciseObservation() async throws {
+        let suiteName = "CodexUsageStoreSafetyRecoveryTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreSafetyRecoveryTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let home = directory.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let database = SharedAccountUsageSafetyDatabase(
+            url: directory.appendingPathComponent("safety.sqlite"),
+            claimsObserverOwnership: true
+        )
+        database.reportCorruptPayload(.segments)
+        for key in CodexUsageStore.sharedAccountSafetyMigrationStorageKeys {
+            defaults.set(Data("{}".utf8), forKey: key)
+        }
+        let coverageAt = Date(timeIntervalSince1970: 3_300)
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [],
+            preciseResults: [.success(makeSnapshot(
+                totalTokens: 900,
+                dayTokens: 90,
+                preciseTimeSeriesGeneratedAt: coverageAt
+            ))]
+        )
+        let source = CodexDataSource(codexHome: home, origin: .defaultHome)
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuitySafetyDatabase: database
+        )
+        XCTAssertEqual(store.sharedAccountSafetyRecoveryState, .required)
+
+        let recoveryStarted = await store.rebuildSharedAccountSafetyBaseline()
+        XCTAssertTrue(recoveryStarted)
+        await waitUntil("fresh precise scan after safety recovery") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == coverageAt
+                && !store.isRefreshing
+        }
+
+        XCTAssertTrue(database.persistenceHealthy)
+        XCTAssertEqual(store.sharedAccountSafetyRecoveryState, .awaitingFreshBaseline)
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLossReason, .storageRecovery)
+        XCTAssertNotNil(store.preciseTimeSeriesContinuityLossID)
+        XCTAssertTrue(store.preciseSessionMutationMonitoringHealthy)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        for key in CodexUsageStore.sharedAccountSafetyMigrationStorageKeys {
+            XCTAssertNil(defaults.object(forKey: key))
+        }
+    }
+
+    func testRunningProcessReloadsContinuityGapRecordedByAnotherProcess() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CodexUsageStoreCrossProcessContinuityTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = SharedAccountUsageSafetyDatabase(
+            url: directory.appendingPathComponent("safety.sqlite")
+        )
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/cross-process-continuity/.codex"),
+            origin: .defaultHome
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuitySafetyDatabase: database
+        )
+        XCTAssertNil(store.preciseTimeSeriesContinuityLossID)
+
+        let externallyRecorded = PreciseTimeSeriesContinuityLossRecord(
+            id: UUID(),
+            detectedAt: Date(timeIntervalSince1970: 2_700)
+        )
+        XCTAssertTrue(
+            database.store(
+                try JSONEncoder().encode([
+                    CodexUsageStore.continuityIdentifier(for: source): externallyRecorded,
+                ]),
+                as: .preciseContinuity
+            )
+        )
+
+        store.reloadPreciseTimeSeriesContinuityLoss()
+
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLossID, externallyRecorded.id)
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLostAt, externallyRecorded.detectedAt)
+        XCTAssertTrue(store.preciseContinuityPersistenceHealthy)
+    }
+
+    func testCorruptContinuityStoreFailsClosedInsteadOfDiscardingTheGap() {
+        let suiteName = "CodexUsageStoreContinuityCorruptionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "corrupt-continuity-loss-test"
+        defaults.set(Data([0xff, 0x00]), forKey: storageKey)
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/corrupt-continuity/.codex"),
+            origin: .defaultHome
+        )
+
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey
+        )
+
+        XCTAssertFalse(store.preciseContinuityPersistenceHealthy)
+        XCTAssertNotNil(defaults.data(forKey: storageKey))
+    }
+
+    func testLegacyContinuityTimestampMigratesToAStableUUIDGeneration() throws {
+        let suiteName = "CodexUsageStoreContinuityMigrationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "continuity-v2-test"
+        let legacyKey = "continuity-v1-test"
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/continuity-migration/.codex"),
+            origin: .defaultHome
+        )
+        let detectedAt = Date(timeIntervalSince1970: 2_000)
+        defaults.set(
+            try JSONEncoder().encode([
+                CodexUsageStore.continuityIdentifier(for: source): detectedAt,
+            ]),
+            forKey: legacyKey
+        )
+
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: legacyKey
+        )
+
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLostAt, detectedAt)
+        XCTAssertNotNil(store.preciseTimeSeriesContinuityLossID)
+        XCTAssertTrue(store.preciseContinuityPersistenceHealthy)
+        XCTAssertNotNil(defaults.data(forKey: storageKey))
+        XCTAssertNil(defaults.data(forKey: legacyKey))
+
+        let migratedID = try XCTUnwrap(store.preciseTimeSeriesContinuityLossID)
+        store.acknowledgePreciseTimeSeriesContinuityLoss(id: migratedID)
+        let restarted = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: legacyKey
+        )
+        XCTAssertNil(restarted.preciseTimeSeriesContinuityLossID)
+        XCTAssertNil(restarted.preciseTimeSeriesContinuityLostAt)
+    }
+
+    func testCorruptLegacyContinuityStoreFailsClosedDuringMigration() {
+        let suiteName = "CodexUsageStoreLegacyContinuityCorruptionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let storageKey = "continuity-v2-corrupt-legacy-test"
+        let legacyKey = "continuity-v1-corrupt-test"
+        defaults.set(Data([0xff, 0x00]), forKey: legacyKey)
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/continuity-corrupt-migration/.codex"),
+            origin: .defaultHome
+        )
+
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: SequentialDashboardSnapshotLoader(fastResults: [], preciseResults: []),
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: legacyKey
+        )
+
+        XCTAssertFalse(store.preciseContinuityPersistenceHealthy)
+        XCTAssertNotNil(defaults.data(forKey: legacyKey))
+        XCTAssertNil(defaults.data(forKey: storageKey))
+    }
+
     func testFailureAfterSourceSwitchDoesNotRetainPreviousSourceSnapshot() async {
         let sourceA = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/failure-source-a/.codex"),
@@ -628,6 +1460,7 @@ final class CodexUsageStoreTests: XCTestCase {
         let oldBindingKey = store.dataSourceBindingKey
         let identityGeneration = store.sourceIdentityGeneration
         let oldBindingGeneration = store.sourceBindingGeneration
+        let oldObservationSessionID = store.preciseObservationSessionID
 
         try FileManager.default.moveItem(at: oldHome, to: newHome)
         let sourceAtNewPath = CodexDataSource(codexHome: newHome, origin: .userSelected)
@@ -640,6 +1473,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertNotEqual(store.dataSourceBindingKey, oldBindingKey)
         XCTAssertEqual(store.sourceIdentityGeneration, identityGeneration)
         XCTAssertEqual(store.sourceBindingGeneration, oldBindingGeneration + 1)
+        XCTAssertNotEqual(store.preciseObservationSessionID, oldObservationSessionID)
         XCTAssertTrue(store.isRefreshing)
         await waitUntil("new-path usage request") {
             await loader.hasPendingPreciseRequest(for: sourceAtNewPath)
@@ -665,14 +1499,24 @@ final class CodexUsageStoreTests: XCTestCase {
     }
 
     func testCompactOnlySurfaceRefreshUsesLightSummaryInsteadOfFullRebuild() async {
+        let firstPreciseCoverageAt = Date(timeIntervalSince1970: 1_800)
+        let secondPreciseCoverageAt = Date(timeIntervalSince1970: 2_100)
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-summary/.codex"),
             origin: .defaultHome
         )
         let loader = CompactSummaryProbeLoader(
             preciseResults: [
-                makeSnapshot(totalTokens: 1_000, dayTokens: 100),
-                makeSnapshot(totalTokens: 2_000, dayTokens: 150),
+                makeSnapshot(
+                    totalTokens: 1_000,
+                    dayTokens: 100,
+                    preciseTimeSeriesGeneratedAt: firstPreciseCoverageAt
+                ),
+                makeSnapshot(
+                    totalTokens: 2_000,
+                    dayTokens: 150,
+                    preciseTimeSeriesGeneratedAt: secondPreciseCoverageAt
+                ),
             ],
             summary: CodexUsageAnalyzer.CompactUsageSummary(
                 totalTokens: 1_500,
@@ -692,6 +1536,8 @@ final class CodexUsageStoreTests: XCTestCase {
         await waitUntil("initial precise load") {
             store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
         }
+        XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
 
         // 仅紧凑 surface 可见：周期刷新走轻量 summary，不再全量重建。
         store.setOnlyCompactSurfaceVisible(true)
@@ -712,6 +1558,8 @@ final class CodexUsageStoreTests: XCTestCase {
         // 重字段（时间序列）保留上次全量构建结果：旧日条目仍在、bins 未动。
         XCTAssertEqual(store.snapshot.dailyUsage.count, 2)
         XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)
+        XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
 
         // 仪表盘展开：立即触发一次全量刷新补齐重字段。
         store.setOnlyCompactSurfaceVisible(false)
@@ -722,6 +1570,8 @@ final class CodexUsageStoreTests: XCTestCase {
         preciseCount = await loader.preciseLoadCount
         XCTAssertEqual(summaryCount, 1)
         XCTAssertEqual(preciseCount, 2)
+        XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, secondPreciseCoverageAt)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
     }
 
     func testFirstLoadTakesTheFullPathEvenWhenOnlyCompactSurfaceIsVisible() async {
@@ -753,6 +1603,121 @@ final class CodexUsageStoreTests: XCTestCase {
         let preciseCount = await loader.preciseLoadCount
         XCTAssertEqual(summaryCount, 0)
         XCTAssertEqual(preciseCount, 1)
+    }
+
+    func testAttributionCoverageRefreshBypassesCompactSummaryOptimization() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/attribution-coverage/.codex"),
+            origin: .defaultHome
+        )
+        let firstCoverage = Date(timeIntervalSince1970: 1_800)
+        let secondCoverage = Date(timeIntervalSince1970: 2_100)
+        let loader = CompactSummaryProbeLoader(
+            preciseResults: [
+                makeSnapshot(
+                    totalTokens: 1_000,
+                    dayTokens: 100,
+                    preciseTimeSeriesGeneratedAt: firstCoverage
+                ),
+                makeSnapshot(
+                    totalTokens: 2_000,
+                    dayTokens: 200,
+                    preciseTimeSeriesGeneratedAt: secondCoverage
+                ),
+            ],
+            summary: CodexUsageAnalyzer.CompactUsageSummary(
+                totalTokens: 1_500,
+                todayTokens: 150,
+                todayCalls: 5,
+                generatedAt: Date()
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("initial attribution coverage") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == firstCoverage && !store.isRefreshing
+        }
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refreshPreciseTimeSeriesForAttribution()
+        await waitUntil("forced attribution coverage") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == secondCoverage && !store.isRefreshing
+        }
+
+        let compactSummaryCount = await loader.compactSummaryCount
+        let preciseLoadCount = await loader.preciseLoadCount
+        XCTAssertEqual(compactSummaryCount, 0)
+        XCTAssertEqual(preciseLoadCount, 2)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+    }
+
+    func testCompactOnlyNormalTickUsesOneFullAttemptToRecoverAnOpenContinuityGap() async {
+        let suiteName = "CodexUsageStoreCompactContinuityRecoveryTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-continuity-recovery/.codex"),
+            origin: .defaultHome
+        )
+        let firstCoverage = Date(timeIntervalSince1970: 1_800)
+        let recoveredCoverage = Date(timeIntervalSince1970: 2_100)
+        let loader = ContinuityRecoveryProbeLoader(
+            preciseResults: [
+                .success(makeSnapshot(
+                    totalTokens: 1_000,
+                    dayTokens: 100,
+                    preciseTimeSeriesGeneratedAt: firstCoverage
+                )),
+                .failure(UsageStoreTestError()),
+                .success(makeSnapshot(
+                    totalTokens: 1_200,
+                    dayTokens: 120,
+                    preciseTimeSeriesGeneratedAt: recoveredCoverage
+                )),
+            ],
+            summary: CodexUsageAnalyzer.CompactUsageSummary(
+                totalTokens: 9_999,
+                todayTokens: 999,
+                todayCalls: 9,
+                generatedAt: Date()
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: "compact-continuity-recovery-test",
+            legacyContinuityStorageKey: nil
+        )
+
+        store.refresh()
+        await waitUntil("compact continuity initial exact") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == firstCoverage && !store.isRefreshing
+        }
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refreshPreciseTimeSeriesForAttribution()
+        await waitUntil("compact continuity failed exact") {
+            store.preciseTimeSeriesContinuityLossID != nil && !store.isRefreshing
+        }
+
+        store.refresh()
+        await waitUntil("compact continuity normal-tick recovery") {
+            store.snapshot.preciseTimeSeriesGeneratedAt == recoveredCoverage && !store.isRefreshing
+        }
+
+        let preciseLoadCount = await loader.preciseLoadCount
+        let compactSummaryCount = await loader.compactSummaryCount
+        XCTAssertEqual(preciseLoadCount, 3)
+        XCTAssertEqual(compactSummaryCount, 0)
+        XCTAssertNotNil(
+            store.preciseTimeSeriesContinuityLossID,
+            "the gap remains until the attribution segment finishes its safe cutover"
+        )
     }
 
     func testExpandingDashboardQueuesFullRefreshBehindInFlightCompactSummary() async {
@@ -805,7 +1770,13 @@ final class CodexUsageStoreTests: XCTestCase {
         totalTokens: Int,
         dayTokens: Int,
         usagePrecision: DashboardUsagePrecision = .precise,
-        generatedAt: Date = Date(timeIntervalSince1970: 1_800)
+        preciseTimeSeriesGeneratedAt: Date? = nil,
+        generatedAt: Date = Date(timeIntervalSince1970: 1_800),
+        attributionProvenanceEpoch: String? = nil,
+        attributionGeneration: Int64? = nil,
+        attributionUnsafeSinceGeneration: Int64? = nil,
+        attributionCurrentScanUnsafeCauseDetected: Bool = false,
+        attributionSourceMutationDetected: Bool = false
     ) -> DashboardSnapshot {
         return DashboardSnapshot(
             stats: DashboardStats(
@@ -824,8 +1795,25 @@ final class CodexUsageStoreTests: XCTestCase {
             recentBins: [BinUsage(start: generatedAt, tokens: dayTokens, calls: 3)],
             hourlyUsage: [BinUsage(start: generatedAt, tokens: dayTokens, calls: 3)],
             pluginUsage: [],
-            cacheUsage: .empty,
+            cacheUsage: TokenCacheUsage(
+                total: .empty,
+                daily: [],
+                hourly: [],
+                recentBins: [],
+                sessions: [],
+                turns: [],
+                attributionEvents: [],
+                attributionEventsComplete: usagePrecision == .precise,
+                attributionProvenanceEpoch: attributionProvenanceEpoch
+                    ?? (usagePrecision == .precise ? "usage-store-test-provenance" : nil),
+                attributionGeneration: attributionGeneration,
+                attributionUnsafeSinceGeneration: attributionUnsafeSinceGeneration,
+                attributionCurrentScanUnsafeCauseDetected:
+                    attributionCurrentScanUnsafeCauseDetected,
+                attributionSourceMutationDetected: attributionSourceMutationDetected
+            ),
             usagePrecision: usagePrecision,
+            preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
             generatedAt: generatedAt
         )
     }
@@ -841,6 +1829,23 @@ final class CodexUsageStoreTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
         XCTFail("Timed out waiting for \(label)")
+    }
+}
+
+private final class SessionMutationEventProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observed = false
+
+    var wasObserved: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return observed
+    }
+
+    func markObserved() {
+        lock.lock()
+        observed = true
+        lock.unlock()
     }
 }
 
@@ -905,6 +1910,98 @@ private actor CompactSummaryProbeLoader: DashboardSnapshotLoading {
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         compactSummaryCount += 1
         return summary
+    }
+}
+
+private actor ContinuityRecoveryProbeLoader: DashboardSnapshotLoading {
+    private var preciseResults: [Result<DashboardSnapshot, Error>]
+    private let summary: CodexUsageAnalyzer.CompactUsageSummary
+    private(set) var preciseLoadCount = 0
+    private(set) var compactSummaryCount = 0
+
+    init(
+        preciseResults: [Result<DashboardSnapshot, Error>],
+        summary: CodexUsageAnalyzer.CompactUsageSummary
+    ) {
+        self.preciseResults = preciseResults
+        self.summary = summary
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        preciseLoadCount += 1
+        guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
+        return try preciseResults.removeFirst().get()
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        compactSummaryCount += 1
+        return summary
+    }
+}
+
+private actor AttributionSafetyAckProbeLoader: DashboardSnapshotLoading {
+    struct Acknowledgement: Equatable, Sendable {
+        let epoch: String
+        let generation: Int64
+    }
+
+    private var preciseResults: [DashboardSnapshot]
+    private(set) var acknowledgements: [Acknowledgement] = []
+    private(set) var preciseLoadCount = 0
+
+    init(preciseResults: [DashboardSnapshot]) {
+        self.preciseResults = preciseResults
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        preciseLoadCount += 1
+        guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
+        return preciseResults.removeFirst()
+    }
+
+    func acknowledgeAttributionSafety(
+        dataSource: CodexDataSource,
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) async throws -> Bool {
+        acknowledgements.append(Acknowledgement(
+            epoch: provenanceEpoch,
+            generation: throughGeneration
+        ))
+        return true
+    }
+}
+
+private actor ObserverTakeoverProbeLoader: DashboardSnapshotLoading {
+    private let preciseSnapshot: DashboardSnapshot
+    private(set) var fastLoadCount = 0
+    private(set) var preciseLoadCount = 0
+
+    init(preciseSnapshot: DashboardSnapshot) {
+        self.preciseSnapshot = preciseSnapshot
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        fastLoadCount += 1
+        if fastLoadCount == 1 {
+            try await Task.sleep(nanoseconds: 10_000_000_000)
+        }
+        return .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        preciseLoadCount += 1
+        return preciseSnapshot
     }
 }
 

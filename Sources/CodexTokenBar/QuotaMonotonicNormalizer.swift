@@ -55,7 +55,14 @@ enum QuotaMonotonicNormalizer {
     }
 
     private static func sameAccount(_ lhs: AccountQuotaSnapshot, _ rhs: AccountQuotaSnapshot) -> Bool {
-        identityParts(lhs) == identityParts(rhs)
+        switch (lhs.historyIdentity, rhs.historyIdentity) {
+        case let (lhsIdentity?, rhsIdentity?):
+            return lhsIdentity == rhsIdentity
+        case (nil, nil):
+            return identityParts(lhs) == identityParts(rhs)
+        case (_?, nil), (nil, _?):
+            return false
+        }
     }
 
     private static func identityParts(_ snapshot: AccountQuotaSnapshot) -> [String] {

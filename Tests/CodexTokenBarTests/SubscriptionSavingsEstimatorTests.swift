@@ -25,7 +25,7 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
             breakdown: breakdown,
             firstUsageAt: first,
             planLabel: "Pro",
-            priceModel: .gpt55,
+            priceModel: .gpt56Sol,
             now: now,
             calendar: utcCalendar
         ))
@@ -65,13 +65,13 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
             breakdown: breakdown,
             firstUsageAt: Date(timeIntervalSince1970: 1_700_000_000),
             planLabel: "Enterprise",
-            priceModel: .gpt54,
+            priceModel: .gpt56Terra,
             now: Date(timeIntervalSince1970: 1_700_100_000),
             calendar: utcCalendar
         ))
         let presentation = SubscriptionSavingsPresentation(estimate: estimate)
 
-        XCTAssertEqual(presentation.valueText, "$2.50")
+        XCTAssertEqual(presentation.valueText, "$2.00")
         XCTAssertEqual(presentation.labelText, "API 等值（估）")
         XCTAssertTrue(presentation.helpText.contains("暂不计算净节省"))
     }

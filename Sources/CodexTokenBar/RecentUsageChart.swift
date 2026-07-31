@@ -463,7 +463,7 @@ struct RecentUsageChart: View, Equatable {
     @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
     @AppStorage("recentChartShowFiveHourQuota") private var showFiveHourQuota = true
     @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
-    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt55.rawValue
+    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State private var scrollPresentation: RecentChartScrollPresentation?
@@ -1071,7 +1071,7 @@ struct RecentUsageChart: View, Equatable {
     }
 
     private var selectedQuotaEstimateModel: OfficialAPIPriceModel {
-        OfficialAPIPriceModel(rawValue: quotaEstimateModelRaw) ?? .gpt55
+        OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw)
     }
 
     private var selectedQuotaEstimateModelBinding: Binding<OfficialAPIPriceModel> {

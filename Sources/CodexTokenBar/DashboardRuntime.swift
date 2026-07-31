@@ -267,7 +267,9 @@ final class DashboardRuntime: ObservableObject {
     }
 
     init(
-        usageStore: CodexUsageStore = CodexUsageStore(),
+        usageStore: CodexUsageStore = CodexUsageStore(
+            continuitySafetyDatabase: .shared
+        ),
         quotaStore: AccountQuotaStore = AccountQuotaStore(),
         quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(),
         radarStore: CodexRadarStore = CodexRadarStore(),

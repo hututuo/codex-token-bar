@@ -3,6 +3,7 @@ import SQLite3
 
 enum SQLiteBinding {
     case null
+    case blob(Data)
     case text(String)
     case int(Int)
     case int64(Int64)
@@ -35,6 +36,14 @@ struct SQLiteStatement {
             return nil
         }
         return String(cString: value)
+    }
+
+    func data(_ column: Int32) -> Data? {
+        guard sqlite3_column_type(raw, column) != SQLITE_NULL else { return nil }
+        let count = Int(sqlite3_column_bytes(raw, column))
+        guard count > 0 else { return Data() }
+        guard let bytes = sqlite3_column_blob(raw, column) else { return nil }
+        return Data(bytes: bytes, count: count)
     }
 
     func int(_ column: Int32) -> Int? {
@@ -477,6 +486,20 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             switch binding {
             case .null:
                 status = sqlite3_bind_null(statement, index)
+            case .blob(let value):
+                if value.isEmpty {
+                    status = sqlite3_bind_zeroblob(statement, index, 0)
+                } else {
+                    status = value.withUnsafeBytes { bytes in
+                        sqlite3_bind_blob(
+                            statement,
+                            index,
+                            bytes.baseAddress,
+                            Int32(bytes.count),
+                            sqliteTransient
+                        )
+                    }
+                }
             case .text(let value):
                 status = sqlite3_bind_text(statement, index, value, -1, sqliteTransient)
             case .int(let value):

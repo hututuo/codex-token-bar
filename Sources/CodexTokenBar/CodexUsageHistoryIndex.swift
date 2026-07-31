@@ -103,6 +103,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let unchangedFiles: Int
         let indexedEvents: Int
         let incrementallyParsedFiles: Int
+        let rewrittenFiles: Int
+        let removedFiles: Int
+        let provenanceEpoch: String
+        let attributionGeneration: Int64
+        let attributionUnsafeSinceGeneration: Int64?
+        let lineageAmbiguityDetected: Bool
+        let attributionUnsafe: Bool
+
+        var attributionSourceMutationDetected: Bool {
+            attributionUnsafe
+        }
+    }
+
+    struct AttributionState: Equatable {
+        let provenanceEpoch: String
+        let generation: Int64
+        let unsafeProvenanceEpoch: String?
+        /// Monotonic generation of the latest distinct unsafe episode in this
+        /// sticky provenance epoch. A persistent cause keeps the same token;
+        /// a later false-to-true episode advances it so old recovery baselines
+        /// cannot survive an ABA sequence.
+        let unsafeSinceGeneration: Int64?
+        /// Whether the most recent complete source-tree synchronization still
+        /// observed a rewrite or unresolved lineage ambiguity. Sticky unsafe
+        /// state may outlive this flag until its durable cutover is acknowledged.
+        let currentScanUnsafeCauseDetected: Bool
+
+        var requiresSyntheticCutover: Bool {
+            unsafeProvenanceEpoch == provenanceEpoch
+                && unsafeSinceGeneration != nil
+        }
     }
 
     struct SessionCatalogCandidate: Equatable {
@@ -192,6 +223,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
     }
 
+    private struct AttributionLineage {
+        let key: String
+        let canonicalSessionID: String?
+    }
+
+    private struct LineageReplacement {
+        let sourceID: Int64
+    }
+
     private enum AppendCheckpointError: Error {
         case rejected
     }
@@ -234,6 +274,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private static let schemaVersion = "3"
     private static let legacyAppendMigrationSchemaVersion = "2"
+    /// Bump whenever event parsing or source-bucket identity semantics change.
+    /// Existing attribution ledgers then fail closed instead of reconciling
+    /// contributions produced by incompatible parsers.
+    private static let attributionProvenanceRevision = "source-bucket-v2-incremental-parser-v1"
     private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
@@ -291,11 +335,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     static func withExclusiveAccess<T>(
         codexHome: URL,
         _ body: () throws -> T
-    ) rethrows -> T {
+    ) throws -> T {
         try operationGate(for: databaseURL(for: codexHome)).withLock(body)
     }
 
-    func withExclusiveAccess<T>(_ body: () throws -> T) rethrows -> T {
+    func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
         try operationGate.withLock(body)
     }
 
@@ -330,6 +374,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ) throws -> SynchronizationResult {
         try withExclusiveAccess {
             try synchronizeExclusively(files: files, sessionID: sessionID, parser: parser)
+        }
+    }
+
+    func attributionState() throws -> AttributionState {
+        try withExclusiveAccess {
+            try driver.withConnection { connection in
+                try configure(connection)
+                return try currentAttributionState(connection: connection)
+            }
+        }
+    }
+
+    @discardableResult
+    func acknowledgeAttributionSafety(
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) throws -> Bool {
+        try withExclusiveAccess {
+            try driver.withConnection { connection in
+                try configure(connection)
+                return try connection.transaction { transaction in
+                    let state = try currentAttributionState(connection: transaction)
+                    guard state.provenanceEpoch == provenanceEpoch,
+                          state.requiresSyntheticCutover,
+                          !state.currentScanUnsafeCauseDetected,
+                          let unsafeSinceGeneration = state.unsafeSinceGeneration,
+                          throughGeneration >= unsafeSinceGeneration,
+                          throughGeneration >= state.generation else {
+                        return false
+                    }
+                    try transaction.execute(
+                        """
+                        DELETE FROM schema_meta
+                        WHERE key IN (
+                            'attribution_unsafe_epoch',
+                            'attribution_unsafe_generation'
+                        );
+                        """
+                    )
+                    _ = try bumpAttributionGeneration(connection: transaction)
+                    return true
+                }
+            }
         }
     }
 
@@ -680,7 +767,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var unchangedFiles = 0
         var indexedEvents = 0
         var incrementallyParsedFiles = 0
+        var rewrittenFiles = 0
+        var removedFiles = 0
         var fullRebuildJobs: [FullRebuildJob] = []
+        let canonicalLineageCounts = Dictionary(
+            grouping: files.compactMap { file in
+                canonicalSessionID(sessionID(file.resolvingSymlinksInPath()))
+            },
+            by: { $0 }
+        )
+        var lineageAmbiguityDetected = canonicalLineageCounts.values.contains {
+            $0.count > 1
+        }
 
         try driver.withConnection { connection in
             try configure(connection)
@@ -717,6 +815,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         indexedEvents += appended.eventCount
                         incrementallyParsedFiles += 1
                     } else {
+                        if existing != nil {
+                            rewrittenFiles += 1
+                        }
                         fullRebuildJobs.append(
                             FullRebuildJob(
                                 file: canonicalFile,
@@ -741,23 +842,89 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 path: driver.url.path
             )
         }
-        try driver.withConnection { connection in
+        var lineageReplacements: [String: LineageReplacement] = [:]
+        var lineagesRequiringMaximumMerge = Set<String>()
+        let finalAttributionState = try driver.withConnection { connection in
             try configure(connection)
+            for staged in stagedRebuilds {
+                let resolution = try lineageReplacement(
+                    for: staged,
+                    generation: generation,
+                    connection: connection
+                )
+                if let replacement = resolution.replacement {
+                    lineageReplacements[staged.job.file.path] = replacement
+                }
+                if resolution.preserveExistingLedger {
+                    lineagesRequiringMaximumMerge.insert(staged.job.file.path)
+                }
+                lineageAmbiguityDetected = lineageAmbiguityDetected
+                    || resolution.ambiguous
+            }
+            // Publish a new provenance epoch before any non-append replacement
+            // or unprovable lineage replacement becomes visible. The rotation
+            // transaction first copies the durable ledger, so interruption can
+            // overestimate local usage but cannot silently reconcile ambiguity.
+            let currentScanUnsafeCauseDetected = rewrittenFiles > 0
+                || lineageAmbiguityDetected
+            let preRotationAttributionState = try currentAttributionState(
+                connection: connection
+            )
+            let unsafeEpisodeBegan = currentScanUnsafeCauseDetected
+                && !preRotationAttributionState.currentScanUnsafeCauseDetected
+            if currentScanUnsafeCauseDetected
+                && !preRotationAttributionState.requiresSyntheticCutover {
+                _ = try rotateAttributionProvenance(
+                    markUnsafe: true,
+                    connection: connection
+                )
+            }
             for staged in stagedRebuilds {
                 try importStagedFullRebuild(
                     staged,
                     generation: generation,
+                    replacementSourceID: lineageReplacements[staged.job.file.path]?.sourceID,
+                    preserveExistingAttributionLedger:
+                        lineagesRequiringMaximumMerge.contains(staged.job.file.path),
                     connection: connection
                 )
                 changedFiles += 1
                 indexedEvents += staged.eventCount
                 removeStagingDatabase(at: staged.databaseURL)
             }
-            try connection.transaction { transaction in
+            return try connection.transaction { transaction in
+                try transaction.execute(
+                    """
+                    INSERT INTO schema_meta(key, value)
+                    VALUES ('attribution_current_scan_unsafe_cause', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """,
+                    bindings: [.text(currentScanUnsafeCauseDetected ? "1" : "0")]
+                )
+                removedFiles = try transaction.readRows(
+                    "SELECT COUNT(*) FROM sources WHERE last_seen_generation <> ?;",
+                    bindings: [.text(generation)]
+                ) { row in row.int(0) ?? 0 }.first ?? 0
                 try transaction.execute(
                     "DELETE FROM sources WHERE last_seen_generation <> ?;",
                     bindings: [.text(generation)]
                 )
+                let current = try currentAttributionState(connection: transaction)
+                try transaction.execute(
+                    "DELETE FROM attribution_source_buckets WHERE provenance_epoch <> ?;",
+                    bindings: [.text(current.provenanceEpoch)]
+                )
+                let nextGeneration = try bumpAttributionGeneration(
+                    connection: transaction
+                )
+                if unsafeEpisodeBegan {
+                    try markAttributionUnsafe(
+                        provenanceEpoch: current.provenanceEpoch,
+                        sinceGeneration: nextGeneration,
+                        connection: transaction
+                    )
+                }
+                return try currentAttributionState(connection: transaction)
             }
         }
         removeStagingDirectory()
@@ -766,7 +933,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             changedFiles: changedFiles,
             unchangedFiles: unchangedFiles,
             indexedEvents: indexedEvents,
-            incrementallyParsedFiles: incrementallyParsedFiles
+            incrementallyParsedFiles: incrementallyParsedFiles,
+            rewrittenFiles: rewrittenFiles,
+            removedFiles: removedFiles,
+            provenanceEpoch: finalAttributionState.provenanceEpoch,
+            attributionGeneration: finalAttributionState.generation,
+            attributionUnsafeSinceGeneration:
+                finalAttributionState.unsafeSinceGeneration,
+            lineageAmbiguityDetected: lineageAmbiguityDetected,
+            attributionUnsafe: finalAttributionState.requiresSyntheticCutover
         )
     }
 
@@ -774,6 +949,78 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let totalTokens: Int
         let todayTokens: Int
         let todayCalls: Int
+    }
+
+    func attributionSourceBuckets(
+        provenanceEpoch: String,
+        from start: Date,
+        before end: Date
+    ) throws -> [TokenCacheAttributionEvent] {
+        try withExclusiveAccess {
+            try driver.withConnection { connection in
+                try configure(connection)
+                return try connection.transaction { transaction in
+                    let current = try currentAttributionState(connection: transaction)
+                    guard current.provenanceEpoch == provenanceEpoch else {
+                        throw SQLiteDatabaseError(
+                            operation: "Read exact usage attribution ledger",
+                            code: SQLITE_ABORT,
+                            message: "Requested provenance epoch was superseded",
+                            path: driver.url.path
+                        )
+                    }
+                    return try transaction.readRows(
+                        """
+                        SELECT
+                            source_lineage,
+                            bucket_start,
+                            input_tokens,
+                            cached_input_tokens,
+                            output_tokens,
+                            reasoning_output_tokens,
+                            total_tokens,
+                            calls
+                        FROM attribution_source_buckets
+                        WHERE provenance_epoch = ?
+                          AND bucket_start >= ?
+                          AND bucket_start < ?
+                        ORDER BY bucket_start, source_lineage;
+                        """,
+                        bindings: [
+                            .text(provenanceEpoch),
+                            .int64(Int64(start.timeIntervalSince1970.rounded())),
+                            .int64(Int64(end.timeIntervalSince1970.rounded())),
+                        ]
+                    ) { row -> TokenCacheAttributionEvent? in
+                        guard let sourceLineage = row.text(0),
+                              let bucketStart = row.int64(1),
+                              let inputTokens = row.int(2),
+                              let cachedInputTokens = row.int(3),
+                              let outputTokens = row.int(4),
+                              let reasoningOutputTokens = row.int(5),
+                              let totalTokens = row.int(6),
+                              let calls = row.int(7) else {
+                            return nil
+                        }
+                        let start = Date(timeIntervalSince1970: TimeInterval(bucketStart))
+                        return TokenCacheAttributionEvent.sourceBucket(
+                            provenanceEpoch: provenanceEpoch,
+                            sourceID: sourceLineage,
+                            start: start,
+                            breakdown: TokenCacheBreakdown(
+                                inputTokens: inputTokens,
+                                cachedInputTokens: cachedInputTokens,
+                                outputTokens: outputTokens,
+                                reasoningOutputTokens: reasoningOutputTokens,
+                                totalTokens: totalTokens,
+                                calls: calls
+                            )
+                        )
+                    }
+                    .compactMap { $0 }
+                }
+            }
+        }
     }
 
     // 决策口径：紧凑 surface 刷新只跑三条 SUM SQL（累计 token、今日 token、
@@ -945,14 +1192,63 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) { row in
                 row.text(0)
             }.first ?? nil
+            let destructiveRebuildRequired = currentVersion != nil
+                && currentVersion != Self.schemaVersion
+                && currentVersion != Self.legacyAppendMigrationSchemaVersion
 
-            if currentVersion != nil,
-               currentVersion != Self.schemaVersion,
-               currentVersion != Self.legacyAppendMigrationSchemaVersion {
+            // Capture all attribution evidence before any destructive schema
+            // rebuild. A future/unknown schema version and a tombstoned ledger
+            // can otherwise lose their only evidence before safety is decided.
+            let storedProvenanceRevision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'provenance_revision' LIMIT 1;"
+            ) { row in row.text(0) }.first ?? nil
+            let priorAttributionLedgerExists = try connection.readRows(
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'attribution_source_buckets';
+                """
+            ) { row in (row.int(0) ?? 0) > 0 }.first ?? false
+            let priorAttributionLedgerRowCount: Int
+            if priorAttributionLedgerExists {
+                priorAttributionLedgerRowCount = try connection.readRows(
+                    "SELECT COUNT(*) FROM attribution_source_buckets;"
+                ) { row in row.int(0) ?? 0 }.first ?? 0
+            } else {
+                priorAttributionLedgerRowCount = 0
+            }
+            let priorSourcesExist = try connection.readRows(
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'sources';
+                """
+            ) { row in (row.int(0) ?? 0) > 0 }.first ?? false
+            let priorSourceCount: Int
+            if priorSourcesExist {
+                priorSourceCount = try connection.readRows(
+                    "SELECT COUNT(*) FROM sources;"
+                ) { row in row.int(0) ?? 0 }.first ?? 0
+            } else {
+                priorSourceCount = 0
+            }
+            let priorAttributionUnsafe = try connection.readRows(
+                """
+                SELECT COUNT(*)
+                FROM schema_meta
+                WHERE key IN (
+                    'attribution_unsafe_epoch',
+                    'attribution_unsafe_generation'
+                );
+                """
+            ) { row in (row.int(0) ?? 0) > 0 }.first ?? false
+
+            if destructiveRebuildRequired {
                 try connection.execute(
                     """
                     DROP TABLE IF EXISTS source_chunks;
                     DROP TABLE IF EXISTS source_fingerprints;
+                    DROP TABLE IF EXISTS attribution_source_buckets;
                     DROP TABLE IF EXISTS events;
                     DROP TABLE IF EXISTS sources;
                     DELETE FROM schema_meta;
@@ -1005,8 +1301,99 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON events(source_id, timestamp, source_offset);
                 CREATE INDEX IF NOT EXISTS sources_session
                     ON sources(session_id, source_id);
+
+                CREATE TABLE IF NOT EXISTS attribution_source_buckets (
+                    provenance_epoch TEXT NOT NULL,
+                    source_lineage TEXT NOT NULL,
+                    bucket_start INTEGER NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    calls INTEGER NOT NULL,
+                    PRIMARY KEY(provenance_epoch, source_lineage, bucket_start)
+                ) WITHOUT ROWID;
+
+                CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
+                    ON attribution_source_buckets(provenance_epoch, bucket_start);
                 """
             )
+            try connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_meta(key, value)
+                VALUES ('provenance_epoch', ?);
+                """,
+                bindings: [.text(UUID().uuidString)]
+            )
+            try connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_meta(key, value)
+                SELECT 'source_id_sequence', CAST(COALESCE(MAX(source_id), 0) AS TEXT)
+                FROM sources;
+
+                INSERT OR IGNORE INTO schema_meta(key, value)
+                VALUES ('attribution_generation', '0');
+
+                INSERT OR IGNORE INTO schema_meta(key, value)
+                SELECT
+                    'attribution_current_scan_unsafe_cause',
+                    CASE WHEN EXISTS(
+                        SELECT 1 FROM schema_meta
+                        WHERE key IN (
+                            'attribution_unsafe_epoch',
+                            'attribution_unsafe_generation'
+                        )
+                    ) THEN '1' ELSE '0' END;
+                """
+            )
+            if destructiveRebuildRequired
+                || storedProvenanceRevision != Self.attributionProvenanceRevision {
+                try connection.transaction { transaction in
+                    try transaction.execute(
+                        "DROP TABLE IF EXISTS attribution_source_buckets;"
+                    )
+                    try createAttributionLedgerSchema(connection: transaction)
+                    try transaction.execute(
+                        """
+                        DELETE FROM schema_meta
+                        WHERE key IN (
+                            'attribution_unsafe_epoch',
+                            'attribution_unsafe_generation'
+                        );
+                        """
+                    )
+                    let migratedEpoch = UUID().uuidString
+                    try transaction.execute(
+                        "UPDATE schema_meta SET value = ? WHERE key = 'provenance_epoch';",
+                        bindings: [.text(migratedEpoch)]
+                    )
+                    try backfillAttributionLedger(connection: transaction)
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('provenance_revision', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [.text(Self.attributionProvenanceRevision)]
+                    )
+                    let generation = try bumpAttributionGeneration(connection: transaction)
+                    let sourceCount = try transaction.readRows(
+                        "SELECT COUNT(*) FROM sources;"
+                    ) { row in row.int(0) ?? 0 }.first ?? 0
+                    if sourceCount > 0
+                        || priorSourceCount > 0
+                        || priorAttributionLedgerRowCount > 0
+                        || storedProvenanceRevision != nil
+                        || priorAttributionUnsafe {
+                        try markAttributionUnsafe(
+                            provenanceEpoch: migratedEpoch,
+                            sinceGeneration: generation,
+                            connection: transaction
+                        )
+                    }
+                }
+            }
             try migrateV2SourcesForAppend(connection)
             try connection.execute(
                 """
@@ -1031,6 +1418,343 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
             try prepareSessionCatalogSchema(connection)
         }
+    }
+
+    private func createAttributionLedgerSchema(
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS attribution_source_buckets (
+                provenance_epoch TEXT NOT NULL,
+                source_lineage TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                reasoning_output_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                PRIMARY KEY(provenance_epoch, source_lineage, bucket_start)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
+                ON attribution_source_buckets(provenance_epoch, bucket_start);
+            """
+        )
+    }
+
+    private func currentAttributionState(
+        connection: SQLiteDatabaseConnection
+    ) throws -> AttributionState {
+        let row = try connection.readRows(
+            """
+            SELECT
+                (SELECT value FROM schema_meta WHERE key = 'provenance_epoch'),
+                (SELECT value FROM schema_meta WHERE key = 'attribution_generation'),
+                (SELECT value FROM schema_meta WHERE key = 'attribution_unsafe_epoch'),
+                (SELECT value FROM schema_meta WHERE key = 'attribution_unsafe_generation'),
+                (SELECT value FROM schema_meta
+                    WHERE key = 'attribution_current_scan_unsafe_cause');
+            """
+        ) { statement in
+            (
+                epoch: statement.text(0),
+                generation: statement.text(1).flatMap(Int64.init),
+                unsafeEpoch: statement.text(2),
+                unsafeGeneration: statement.text(3).flatMap(Int64.init),
+                currentScanUnsafeCause: statement.text(4).flatMap(Int.init)
+            )
+        }.first
+        guard let row,
+              let provenanceEpoch = row.epoch,
+              !provenanceEpoch.isEmpty,
+              let generation = row.generation,
+              generation >= 0,
+              let currentScanUnsafeCause = row.currentScanUnsafeCause,
+              currentScanUnsafeCause == 0 || currentScanUnsafeCause == 1,
+              (row.unsafeEpoch == nil) == (row.unsafeGeneration == nil),
+              row.unsafeGeneration.map({ $0 >= 0 && $0 <= generation }) ?? true else {
+            throw SQLiteDatabaseError(
+                operation: "Read exact usage attribution state",
+                code: SQLITE_CORRUPT,
+                message: "Missing or invalid attribution state",
+                path: driver.url.path
+            )
+        }
+        return AttributionState(
+            provenanceEpoch: provenanceEpoch,
+            generation: generation,
+            unsafeProvenanceEpoch: row.unsafeEpoch,
+            unsafeSinceGeneration: row.unsafeGeneration,
+            currentScanUnsafeCauseDetected: currentScanUnsafeCause == 1
+        )
+    }
+
+    @discardableResult
+    private func bumpAttributionGeneration(
+        connection: SQLiteDatabaseConnection
+    ) throws -> Int64 {
+        let current = try currentAttributionState(connection: connection).generation
+        guard current < Int64.max else {
+            throw SQLiteDatabaseError(
+                operation: "Advance exact usage attribution generation",
+                code: SQLITE_FULL,
+                message: "Attribution generation exhausted",
+                path: driver.url.path
+            )
+        }
+        let next = current + 1
+        try connection.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'attribution_generation';",
+            bindings: [.text(String(next))]
+        )
+        return next
+    }
+
+    private func markAttributionUnsafe(
+        provenanceEpoch: String,
+        sinceGeneration: Int64,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            INSERT INTO schema_meta(key, value)
+            VALUES
+                ('attribution_unsafe_epoch', ?),
+                ('attribution_unsafe_generation', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [
+                .text(provenanceEpoch),
+                .text(String(sinceGeneration)),
+            ]
+        )
+    }
+
+    private func rotateAttributionProvenance(
+        markUnsafe: Bool,
+        connection: SQLiteDatabaseConnection
+    ) throws -> AttributionState {
+        try connection.transaction { transaction in
+            let current = try currentAttributionState(connection: transaction)
+            let nextEpoch = UUID().uuidString
+            try transaction.execute(
+                "UPDATE schema_meta SET value = ? WHERE key = 'provenance_epoch';",
+                bindings: [.text(nextEpoch)]
+            )
+            try transaction.execute(
+                """
+                INSERT INTO attribution_source_buckets(
+                    provenance_epoch,
+                    source_lineage,
+                    bucket_start,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    total_tokens,
+                    calls
+                )
+                SELECT
+                    ?,
+                    source_lineage,
+                    bucket_start,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    total_tokens,
+                    calls
+                FROM attribution_source_buckets
+                WHERE provenance_epoch = ?;
+                """,
+                bindings: [
+                    .text(nextEpoch),
+                    .text(current.provenanceEpoch),
+                ]
+            )
+            let generation = try bumpAttributionGeneration(connection: transaction)
+            if markUnsafe {
+                try markAttributionUnsafe(
+                    provenanceEpoch: nextEpoch,
+                    sinceGeneration: generation,
+                    connection: transaction
+                )
+            }
+            return AttributionState(
+                provenanceEpoch: nextEpoch,
+                generation: generation,
+                unsafeProvenanceEpoch: markUnsafe ? nextEpoch : nil,
+                unsafeSinceGeneration: markUnsafe ? generation : nil,
+                currentScanUnsafeCauseDetected:
+                    current.currentScanUnsafeCauseDetected
+            )
+        }
+    }
+
+    private func backfillAttributionLedger(
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        let state = try currentAttributionState(connection: connection)
+        let sources = try connection.readRows(
+            "SELECT source_id, session_id FROM sources ORDER BY source_id;"
+        ) { row in
+            (sourceID: row.int64(0), sessionID: row.text(1))
+        }
+        var publishedLineages = Set<String>()
+        for source in sources {
+            guard let sourceID = source.sourceID,
+                  let sessionID = source.sessionID else {
+                continue
+            }
+            let lineage = attributionLineage(
+                sessionID: sessionID,
+                sourceID: sourceID
+            )
+            guard publishedLineages.insert(lineage.key).inserted else {
+                continue
+            }
+            try publishAttributionLedger(
+                lineage: lineage,
+                sourceID: sourceID,
+                provenanceEpoch: state.provenanceEpoch,
+                affectedBuckets: nil,
+                replacing: true,
+                connection: connection
+            )
+        }
+    }
+
+    private func canonicalSessionID(_ rawValue: String) -> String? {
+        guard let uuid = UUID(uuidString: rawValue) else { return nil }
+        return uuid.uuidString.lowercased()
+    }
+
+    private func attributionLineage(
+        sessionID: String,
+        sourceID: Int64
+    ) -> AttributionLineage {
+        if let canonicalSessionID = canonicalSessionID(sessionID) {
+            return AttributionLineage(
+                key: "session:\(canonicalSessionID)",
+                canonicalSessionID: canonicalSessionID
+            )
+        }
+        return AttributionLineage(
+            key: "source:\(sourceID)",
+            canonicalSessionID: nil
+        )
+    }
+
+    private func publishAttributionLedger(
+        lineage: AttributionLineage,
+        sourceID: Int64,
+        provenanceEpoch: String,
+        affectedBuckets: ClosedRange<Int64>?,
+        replacing: Bool,
+        preservingExistingMaximum: Bool = false,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        if replacing {
+            try connection.execute(
+                """
+                DELETE FROM attribution_source_buckets
+                WHERE provenance_epoch = ? AND source_lineage = ?;
+                """,
+                bindings: [
+                    .text(provenanceEpoch),
+                    .text(lineage.key),
+                ]
+            )
+        }
+
+        var sourcePredicate: String
+        var bindings: [SQLiteBinding] = []
+        if let canonicalSessionID = lineage.canonicalSessionID {
+            sourcePredicate = "lower(s.session_id) = ?"
+            bindings.append(.text(canonicalSessionID))
+        } else {
+            sourcePredicate = "e.source_id = ?"
+            bindings.append(.int64(sourceID))
+        }
+        var bucketPredicate = ""
+        if let affectedBuckets {
+            bucketPredicate = """
+                AND CAST(e.timestamp / 300 AS INTEGER) * 300 BETWEEN ? AND ?
+                """
+            bindings.append(.int64(affectedBuckets.lowerBound))
+            bindings.append(.int64(affectedBuckets.upperBound))
+        }
+        bindings.append(.text(provenanceEpoch))
+        bindings.append(.text(lineage.key))
+        let conflictUpdate = if preservingExistingMaximum {
+            """
+            input_tokens = MAX(attribution_source_buckets.input_tokens, excluded.input_tokens),
+            cached_input_tokens = MAX(attribution_source_buckets.cached_input_tokens, excluded.cached_input_tokens),
+            output_tokens = MAX(attribution_source_buckets.output_tokens, excluded.output_tokens),
+            reasoning_output_tokens = MAX(attribution_source_buckets.reasoning_output_tokens, excluded.reasoning_output_tokens),
+            total_tokens = MAX(attribution_source_buckets.total_tokens, excluded.total_tokens),
+            calls = MAX(attribution_source_buckets.calls, excluded.calls)
+            """
+        } else {
+            """
+            input_tokens = excluded.input_tokens,
+            cached_input_tokens = excluded.cached_input_tokens,
+            output_tokens = excluded.output_tokens,
+            reasoning_output_tokens = excluded.reasoning_output_tokens,
+            total_tokens = excluded.total_tokens,
+            calls = excluded.calls
+            """
+        }
+
+        try connection.execute(
+            """
+            WITH per_source AS (
+                SELECT
+                    e.source_id,
+                    CAST(e.timestamp / 300 AS INTEGER) * 300 AS bucket_start,
+                    SUM(e.input_tokens) AS input_tokens,
+                    SUM(e.cached_input_tokens) AS cached_input_tokens,
+                    SUM(e.output_tokens) AS output_tokens,
+                    SUM(e.reasoning_output_tokens) AS reasoning_output_tokens,
+                    SUM(e.tokens) AS total_tokens,
+                    COUNT(*) AS calls
+                FROM events e
+                JOIN sources s ON s.source_id = e.source_id
+                WHERE \(sourcePredicate)
+                \(bucketPredicate)
+                GROUP BY e.source_id, CAST(e.timestamp / 300 AS INTEGER)
+            )
+            INSERT INTO attribution_source_buckets(
+                provenance_epoch,
+                source_lineage,
+                bucket_start,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                reasoning_output_tokens,
+                total_tokens,
+                calls
+            )
+            SELECT
+                ?,
+                ?,
+                bucket_start,
+                MAX(input_tokens),
+                MAX(cached_input_tokens),
+                MAX(output_tokens),
+                MAX(reasoning_output_tokens),
+                MAX(total_tokens),
+                MAX(calls)
+            FROM per_source
+            GROUP BY bucket_start
+            ON CONFLICT(provenance_epoch, source_lineage, bucket_start)
+            DO UPDATE SET
+                \(conflictUpdate);
+            """,
+            bindings: bindings
+        )
     }
 
     private func prepareSessionCatalogSchema(
@@ -1335,6 +2059,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         do {
             return try connection.transaction { transaction in
+                var firstAffectedAttributionBucket: Int64?
+                var lastAffectedAttributionBucket: Int64?
                 let persistentFingerprintStatement = try transaction.prepare(
                     "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
                 )
@@ -1375,6 +2101,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     },
                     { indexedEvent in
                         let event = indexedEvent.event
+                        let bucketStart = try attributionBucketStart(for: event.timestamp)
+                        firstAffectedAttributionBucket = min(
+                            firstAffectedAttributionBucket ?? bucketStart,
+                            bucketStart
+                        )
+                        lastAffectedAttributionBucket = max(
+                            lastAffectedAttributionBucket ?? bucketStart,
+                            bucketStart
+                        )
                         let userPromptOffset: SQLiteBinding = if let offset = indexedEvent.userPromptOffset {
                             .int64(try sqliteInt64(offset))
                         } else {
@@ -1431,6 +2166,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     auditChunkIndex: nextAuditChunk,
                     connection: transaction
                 )
+                if let firstAffectedAttributionBucket,
+                   let lastAffectedAttributionBucket {
+                    let state = try currentAttributionState(connection: transaction)
+                    try publishAttributionLedger(
+                        lineage: attributionLineage(
+                            sessionID: sessionID,
+                            sourceID: existing.id
+                        ),
+                        sourceID: existing.id,
+                        provenanceEpoch: state.provenanceEpoch,
+                        affectedBuckets:
+                            firstAffectedAttributionBucket...lastAffectedAttributionBucket,
+                        replacing: false,
+                        connection: transaction
+                    )
+                    _ = try bumpAttributionGeneration(connection: transaction)
+                }
                 return result
             }
         } catch AppendCheckpointError.rejected {
@@ -2070,9 +2822,150 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return nil
     }
 
+    private func lineageReplacement(
+        for staged: StagedFullRebuild,
+        generation: String,
+        connection: SQLiteDatabaseConnection
+    ) throws -> (
+        replacement: LineageReplacement?,
+        ambiguous: Bool,
+        preserveExistingLedger: Bool
+    ) {
+        guard try indexedSource(
+            path: staged.job.file.path,
+            connection: connection
+        ) == nil,
+              let canonicalSessionID = canonicalSessionID(staged.job.sessionID) else {
+            return (nil, false, false)
+        }
+        let candidates = try connection.readRows(
+            """
+            SELECT source_id
+            FROM sources
+            WHERE lower(session_id) = ?
+              AND path <> ?
+              AND last_seen_generation <> ?
+            ORDER BY source_id;
+            """,
+            bindings: [
+                .text(canonicalSessionID),
+                .text(staged.job.file.path),
+                .text(generation),
+            ]
+        ) { row in row.int64(0) }.compactMap { $0 }
+        if candidates.count == 1, let sourceID = candidates.first {
+            let contentMatches = try stagedContentMatchesSource(
+                staged,
+                sourceID: sourceID,
+                connection: connection
+            )
+            return (
+                LineageReplacement(sourceID: sourceID),
+                !contentMatches,
+                false
+            )
+        }
+        guard candidates.isEmpty else {
+            return (nil, true, false)
+        }
+
+        // A canonical lineage ledger can survive source cleanup by design. If
+        // the UUID later reappears without the retained source chunks, exact
+        // identity cannot be proved. Keep the old bucket values as a
+        // conservative floor, merge the new import component-wise by MAX, and
+        // force a sticky synthetic cutover instead of silently replacing the
+        // tombstone with a potentially smaller history.
+        let attributionState = try currentAttributionState(connection: connection)
+        let liveLineageSourceCount = try connection.readRows(
+            "SELECT COUNT(*) FROM sources WHERE lower(session_id) = ?;",
+            bindings: [.text(canonicalSessionID)]
+        ) { row in row.int(0) ?? 0 }.first ?? 0
+        let lineageKey = "session:\(canonicalSessionID)"
+        let retainedLedgerCount = try connection.readRows(
+            """
+            SELECT COUNT(*)
+            FROM attribution_source_buckets
+            WHERE provenance_epoch = ? AND source_lineage = ?;
+            """,
+            bindings: [
+                .text(attributionState.provenanceEpoch),
+                .text(lineageKey),
+            ]
+        ) { row in row.int(0) ?? 0 }.first ?? 0
+        let tombstonedLineage = liveLineageSourceCount == 0
+            && retainedLedgerCount > 0
+        return (
+            nil,
+            tombstonedLineage,
+            tombstonedLineage
+        )
+    }
+
+    private func stagedContentMatchesSource(
+        _ staged: StagedFullRebuild,
+        sourceID: Int64,
+        connection: SQLiteDatabaseConnection
+    ) throws -> Bool {
+        let storedSize = try connection.readRows(
+            "SELECT size_bytes FROM sources WHERE source_id = ? LIMIT 1;",
+            bindings: [.int64(sourceID)]
+        ) { row in row.int64(0) }.compactMap { $0 }.first
+        let stagedSize = try sqliteInt64(staged.committedSignature.size)
+        guard storedSize == stagedSize else {
+            return false
+        }
+        let storedChunks = try connection.readRows(
+            """
+            SELECT chunk_index, byte_count, sha256
+            FROM source_chunks
+            WHERE source_id = ?
+            ORDER BY chunk_index;
+            """,
+            bindings: [.int64(sourceID)]
+        ) { row -> CodexUsageAnalyzer.IndexedChunkHash? in
+            guard let rawIndex = row.int64(0),
+                  rawIndex >= 0,
+                  let rawByteCount = row.int64(1),
+                  rawByteCount >= 0,
+                  let sha256 = row.text(2) else {
+                return nil
+            }
+            return CodexUsageAnalyzer.IndexedChunkHash(
+                index: UInt64(rawIndex),
+                byteCount: UInt64(rawByteCount),
+                sha256: sha256
+            )
+        }.compactMap { $0 }
+        let stage = SQLiteDatabaseDriver(
+            url: staged.databaseURL,
+            readOnly: true,
+            busyTimeoutMilliseconds: 1_000,
+            fileManager: fileManager
+        )
+        let stagedChunks = try stage.readRows(
+            "SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index;"
+        ) { row -> CodexUsageAnalyzer.IndexedChunkHash? in
+            guard let rawIndex = row.int64(0),
+                  rawIndex >= 0,
+                  let rawByteCount = row.int64(1),
+                  rawByteCount >= 0,
+                  let sha256 = row.text(2) else {
+                return nil
+            }
+            return CodexUsageAnalyzer.IndexedChunkHash(
+                index: UInt64(rawIndex),
+                byteCount: UInt64(rawByteCount),
+                sha256: sha256
+            )
+        }.compactMap { $0 }
+        return storedChunks == stagedChunks
+    }
+
     private func importStagedFullRebuild(
         _ staged: StagedFullRebuild,
         generation: String,
+        replacementSourceID: Int64?,
+        preserveExistingAttributionLedger: Bool,
         connection: SQLiteDatabaseConnection
     ) throws {
         let stage = SQLiteDatabaseDriver(
@@ -2082,37 +2975,69 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         try connection.transaction { transaction in
-            try transaction.execute(
-                """
-                INSERT INTO sources(
-                    path,
-                    session_id,
-                    size_bytes,
-                    modified_at,
-                    content_probe,
-                    device_id,
-                    inode,
-                    status_changed_seconds,
-                    status_changed_nanoseconds,
-                    last_seen_generation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    session_id = excluded.session_id,
-                    last_seen_generation = excluded.last_seen_generation;
-                """,
-                bindings: [
-                    .text(staged.job.file.path),
-                    .text(staged.job.sessionID),
-                    .int64(try sqliteInt64(staged.committedSignature.size)),
-                    .double(staged.committedSignature.modifiedAt),
-                    .text(staged.committedSignature.contentProbe),
-                    .text(String(staged.committedSignature.deviceID)),
-                    .text(String(staged.committedSignature.inode)),
-                    .int64(staged.committedSignature.statusChangedSeconds),
-                    .int64(staged.committedSignature.statusChangedNanoseconds),
-                    .text(generation)
-                ]
-            )
+            if let existing = try indexedSource(
+                path: staged.job.file.path,
+                connection: transaction
+            ) {
+                try transaction.execute(
+                    """
+                    UPDATE sources
+                    SET session_id = ?, last_seen_generation = ?
+                    WHERE source_id = ?;
+                    """,
+                    bindings: [
+                        .text(staged.job.sessionID),
+                        .text(generation),
+                        .int64(existing.id),
+                    ]
+                )
+            } else if let replacementSourceID {
+                try transaction.execute(
+                    """
+                    UPDATE sources
+                    SET path = ?, session_id = ?, last_seen_generation = ?
+                    WHERE source_id = ?;
+                    """,
+                    bindings: [
+                        .text(staged.job.file.path),
+                        .text(staged.job.sessionID),
+                        .text(generation),
+                        .int64(replacementSourceID),
+                    ]
+                )
+            } else {
+                let sourceID = try allocateSourceID(connection: transaction)
+                try transaction.execute(
+                    """
+                    INSERT INTO sources(
+                        source_id,
+                        path,
+                        session_id,
+                        size_bytes,
+                        modified_at,
+                        content_probe,
+                        device_id,
+                        inode,
+                        status_changed_seconds,
+                        status_changed_nanoseconds,
+                        last_seen_generation
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    bindings: [
+                        .int64(sourceID),
+                        .text(staged.job.file.path),
+                        .text(staged.job.sessionID),
+                        .int64(try sqliteInt64(staged.committedSignature.size)),
+                        .double(staged.committedSignature.modifiedAt),
+                        .text(staged.committedSignature.contentProbe),
+                        .text(String(staged.committedSignature.deviceID)),
+                        .text(String(staged.committedSignature.inode)),
+                        .int64(staged.committedSignature.statusChangedSeconds),
+                        .int64(staged.committedSignature.statusChangedNanoseconds),
+                        .text(generation)
+                    ]
+                )
+            }
             guard let source = try indexedSource(
                 path: staged.job.file.path,
                 connection: transaction
@@ -2241,7 +3166,46 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 auditChunkIndex: 0,
                 connection: transaction
             )
+            let attributionState = try currentAttributionState(connection: transaction)
+            try publishAttributionLedger(
+                lineage: attributionLineage(
+                    sessionID: staged.job.sessionID,
+                    sourceID: source.id
+                ),
+                sourceID: source.id,
+                provenanceEpoch: attributionState.provenanceEpoch,
+                affectedBuckets: nil,
+                replacing: !preserveExistingAttributionLedger,
+                preservingExistingMaximum: preserveExistingAttributionLedger,
+                connection: transaction
+            )
+            _ = try bumpAttributionGeneration(connection: transaction)
         }
+    }
+
+    /// SQLite may reuse the highest deleted INTEGER PRIMARY KEY. Attribution
+    /// source-bucket IDs must never alias a later unrelated source inside the
+    /// same provenance epoch, so allocation uses a durable monotonic sequence.
+    private func allocateSourceID(
+        connection: SQLiteDatabaseConnection
+    ) throws -> Int64 {
+        let current = try connection.readRows(
+            "SELECT value FROM schema_meta WHERE key = 'source_id_sequence' LIMIT 1;"
+        ) { row in row.text(0).flatMap(Int64.init) }.first ?? nil
+        guard let current, current >= 0, current < Int64.max else {
+            throw SQLiteDatabaseError(
+                operation: "Allocate exact usage source identity",
+                code: SQLITE_CORRUPT,
+                message: "Invalid source identity sequence",
+                path: driver.url.path
+            )
+        }
+        let next = current + 1
+        try connection.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'source_id_sequence';",
+            bindings: [.text(String(next))]
+        )
+        return next
     }
 
     private func stagingDatabaseURL(for file: URL) -> URL {
@@ -2400,7 +3364,9 @@ private final class CodexUsageHistoryIndexOperationLockRegistry: @unchecked Send
             return existing
         }
         locks = locks.filter { $0.value.value != nil }
-        let created = CodexUsageHistoryIndexOperationGate(name: path)
+        let created = CodexUsageHistoryIndexOperationGate(
+            databaseURL: URL(fileURLWithPath: path)
+        )
         locks[path] = WeakOperationGate(created)
         return created
     }
@@ -2462,13 +3428,17 @@ private final class CodexSessionCatalogPublishTestState: @unchecked Sendable {
 private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
     private let recursiveLock = NSRecursiveLock()
     private let state = NSCondition()
+    private let crossProcessLockURL: URL
     private var pendingAcquisitions = 0
+    private var recursionDepth = 0
+    private var crossProcessLock: CodexCrossProcessFileLock?
 
-    init(name: String) {
-        recursiveLock.name = "CodexUsageHistoryIndex.\(name)"
+    init(databaseURL: URL) {
+        crossProcessLockURL = databaseURL.appendingPathExtension("operation.lock")
+        recursiveLock.name = "CodexUsageHistoryIndex.\(databaseURL.path)"
     }
 
-    func withLock<T>(_ body: () throws -> T) rethrows -> T {
+    func withLock<T>(_ body: () throws -> T) throws -> T {
         state.lock()
         pendingAcquisitions += 1
         state.broadcast()
@@ -2481,7 +3451,26 @@ private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
         state.broadcast()
         state.unlock()
 
-        defer { recursiveLock.unlock() }
+        if recursionDepth == 0 {
+            do {
+                crossProcessLock = try CodexCrossProcessFileLock(
+                    url: crossProcessLockURL,
+                    label: "精确历史索引"
+                )
+            } catch {
+                recursiveLock.unlock()
+                throw error
+            }
+        }
+        recursionDepth += 1
+        defer {
+            recursionDepth -= 1
+            if recursionDepth == 0 {
+                crossProcessLock?.release()
+                crossProcessLock = nil
+            }
+            recursiveLock.unlock()
+        }
         return try body()
     }
 
@@ -2528,4 +3517,19 @@ private func sqliteInt64(_ value: UInt64) throws -> Int64 {
         )
     }
     return Int64(value)
+}
+
+private func attributionBucketStart(for date: Date) throws -> Int64 {
+    let rawBucket = floor(date.timeIntervalSince1970 / 300)
+    guard rawBucket.isFinite,
+          rawBucket >= Double(Int64.min / 300),
+          rawBucket <= Double(Int64.max / 300) else {
+        throw SQLiteDatabaseError(
+            operation: "Encode exact usage attribution bucket",
+            code: SQLITE_TOOBIG,
+            message: "Event timestamp exceeds SQLite signed integer range",
+            path: nil
+        )
+    }
+    return Int64(rawBucket) * 300
 }

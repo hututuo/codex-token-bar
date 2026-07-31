@@ -131,9 +131,9 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
 extension OfficialAPIPriceModel {
     var quotaEstimateShortTitle: String {
         switch self {
-        case .gpt55: "5.5"
-        case .gpt54: "5.4"
-        case .gpt54Mini: "mini"
+        case .gpt56Sol: "Sol"
+        case .gpt56Terra: "Terra"
+        case .gpt56Luna: "Luna"
         }
     }
 }

@@ -142,4 +142,102 @@ final class QuotaMonotonicNormalizerTests: XCTestCase {
         XCTAssertEqual(adjusted.fiveHour?.usedPercent, 10)
         XCTAssertEqual(adjusted.sevenDay?.usedPercent, 10)
     }
+
+    func testStableIdentityPreventsSameDisplayNameAccountsFromBeingStitched() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        var previous = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 18, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: nil,
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        previous.historyIdentity = QuotaHistoryIdentity(
+            homeIdentity: "home-a",
+            stableAccountKey: "account-a",
+            planType: "pro",
+            limitID: "codex"
+        )
+        var current = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 13, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: nil,
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        current.historyIdentity = QuotaHistoryIdentity(
+            homeIdentity: "home-a",
+            stableAccountKey: "account-b",
+            planType: "pro",
+            limitID: "codex"
+        )
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(current, after: previous)
+
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 13)
+    }
+
+    func testStableIdentityKeepsMonotonicProtectionWhenDisplayNameChanges() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let identity = QuotaHistoryIdentity(
+            homeIdentity: "home-a",
+            stableAccountKey: "account-a",
+            planType: "pro",
+            limitID: "codex"
+        )
+        var previous = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 18, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "旧显示名",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        previous.historyIdentity = identity
+        var current = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 13, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: "新显示名",
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        current.historyIdentity = identity
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(current, after: previous)
+
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 18)
+    }
+
+    func testOneSidedStableIdentityFailsClosedInsteadOfFallingBackToDisplayName() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let previous = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 18, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: nil,
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        var current = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 13, resetsAt: reset),
+            planType: "pro",
+            limitName: "codex",
+            accountName: nil,
+            status: "额度已更新",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+        current.historyIdentity = QuotaHistoryIdentity(
+            homeIdentity: "home-a",
+            stableAccountKey: "account-b",
+            planType: "pro",
+            limitID: "codex"
+        )
+
+        let adjusted = QuotaMonotonicNormalizer.normalizedSnapshot(current, after: previous)
+
+        XCTAssertEqual(adjusted.sevenDay?.usedPercent, 13)
+    }
 }

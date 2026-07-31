@@ -202,7 +202,7 @@ struct RecentChartQuotaEstimateModelSelector: View {
                     Text(option.shortTitle)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(selectedModel == model ? AppTheme.accentBlue : .secondary)
-                        .frame(width: 34, height: 22)
+                        .frame(width: 42, height: 22)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(selectedModel == model ? AppTheme.accentBlue.opacity(0.12) : Color.clear)

@@ -48,6 +48,11 @@ protocol DashboardSnapshotLoading: Sendable {
     func loadCompactSummary(
         dataSource: CodexDataSource
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary?
+    func acknowledgeAttributionSafety(
+        dataSource: CodexDataSource,
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) async throws -> Bool
 }
 
 extension DashboardSnapshotLoading {
@@ -55,6 +60,14 @@ extension DashboardSnapshotLoading {
         dataSource: CodexDataSource
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         nil
+    }
+
+    func acknowledgeAttributionSafety(
+        dataSource: CodexDataSource,
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) async throws -> Bool {
+        false
     }
 }
 
@@ -76,6 +89,20 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).loadCompactSummary()
+        }.value
+    }
+
+    func acknowledgeAttributionSafety(
+        dataSource: CodexDataSource,
+        provenanceEpoch: String,
+        throughGeneration: Int64
+    ) async throws -> Bool {
+        try await Task.detached(priority: .utility) {
+            try CodexUsageAnalyzer(dataSource: dataSource)
+                .acknowledgeAttributionSafety(
+                    provenanceEpoch: provenanceEpoch,
+                    throughGeneration: throughGeneration
+                )
         }.value
     }
 }

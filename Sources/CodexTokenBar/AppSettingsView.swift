@@ -133,6 +133,9 @@ struct AppSettingsView: View {
     let onClose: () -> Void
 
     @AppStorage(AccountQuotaRefreshCadence.storageKey) private var quotaRefreshCadenceRaw = AccountQuotaRefreshCadence.defaultRawValue
+    @AppStorage(SharedAccountUsageAttributionSettings.enabledKey) private var sharedAccountAttributionEnabled = SharedAccountUsageAttributionSettings.defaultEnabled
+    @AppStorage(SharedAccountUsageAttributionSettings.tierKey) private var sharedAccountRadarTierRaw = SharedAccountUsageAttributionSettings.defaultTier.rawValue
+    @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var sharedAccountPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @FocusState private var focusedCategory: AppSettingsCategory?
 
     var body: some View {
@@ -149,6 +152,8 @@ struct AppSettingsView: View {
         .background(AppTheme.panelBackground)
         .onExitCommand(perform: onClose)
         .onAppear {
+            sharedAccountRadarTierRaw = SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw).rawValue
+            sharedAccountPriceModelRaw = OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw).rawValue
             if selectedCategory == .autoResume {
                 autoResumeController.refreshThreads()
             }
@@ -504,6 +509,38 @@ struct AppSettingsView: View {
                     options: AccountQuotaRefreshCadence.allCases.map { ($0.rawValue, $0.label) }
                 )
             }
+
+            settingsSection(
+                title: "共享账号用量归因",
+                subtitle: "用本机同基准 API 金额占 Radar 套餐总额的比例，对照账号本周期实际下降"
+            ) {
+                settingsToggle(
+                    "显示共享账号归因",
+                    systemImage: "person.2",
+                    isOn: $sharedAccountAttributionEnabled
+                )
+                if sharedAccountAttributionEnabled {
+                    settingsPicker(
+                        "Radar 套餐",
+                        systemImage: "dot.radiowaves.left.and.right",
+                        selection: sharedAccountRadarTierBinding,
+                        options: SharedAccountRadarTier.allCases.map { ($0.rawValue, $0.title) }
+                    )
+                    .settingsRowDivider()
+                    settingsPicker(
+                        "折算模型",
+                        systemImage: "cpu",
+                        selection: sharedAccountPriceModelBinding,
+                        options: OfficialAPIPriceModel.allCases.map { ($0.rawValue, $0.title) }
+                    )
+                    .settingsRowDivider()
+                    settingsInfoRow(
+                        "计算口径",
+                        systemImage: "function",
+                        detail: "本机占比 = 本机等价金额 ÷ Radar 套餐 7 天总额 × 100；非本机差额 = 账号已用百分比 − 本机占比。默认 20x Pro，负差额不会归零。"
+                    )
+                }
+            }
         }
     }
 
@@ -737,6 +774,20 @@ struct AppSettingsView: View {
         Binding(
             get: { updateSettingsStore.automaticChecksEnabled },
             set: { updateSettingsStore.setAutomaticChecksEnabled($0) }
+        )
+    }
+
+    private var sharedAccountRadarTierBinding: Binding<String> {
+        Binding(
+            get: { SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw).rawValue },
+            set: { sharedAccountRadarTierRaw = SharedAccountRadarTier.storedValue(for: $0).rawValue }
+        )
+    }
+
+    private var sharedAccountPriceModelBinding: Binding<String> {
+        Binding(
+            get: { OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw).rawValue },
+            set: { sharedAccountPriceModelRaw = OfficialAPIPriceModel.storedValue(for: $0).rawValue }
         )
     }
 

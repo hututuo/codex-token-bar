@@ -69,6 +69,10 @@ extension CodexUsageAnalyzer {
         let path: String
         let size: UInt64
         let modifiedAt: TimeInterval
+        let deviceID: UInt64?
+        let inode: UInt64?
+        let statusChangedSeconds: Int64?
+        let statusChangedNanoseconds: Int64?
     }
 
     struct SessionTreeSignature: Codable, Equatable {
@@ -76,6 +80,22 @@ extension CodexUsageAnalyzer {
         let utcOffsetSeconds: Int
         let files: [SessionCacheKey]
         let stateDatabase: SessionCacheKey?
+        let attributionProvenanceEpoch: String
+        let attributionGeneration: Int64
+
+        func withAttributionState(
+            provenanceEpoch: String,
+            generation: Int64
+        ) -> SessionTreeSignature {
+            SessionTreeSignature(
+                localDate: localDate,
+                utcOffsetSeconds: utcOffsetSeconds,
+                files: files,
+                stateDatabase: stateDatabase,
+                attributionProvenanceEpoch: provenanceEpoch,
+                attributionGeneration: generation
+            )
+        }
     }
 
     final class SessionEventCache: @unchecked Sendable {
@@ -554,7 +574,15 @@ extension CodexUsageAnalyzer {
                     continue
                 }
                 let path = URL(fileURLWithPath: metadata.path).resolvingSymlinksInPath().path
-                let key = SessionCacheKey(path: path, size: metadata.size, modifiedAt: metadata.modifiedAt)
+                let key = SessionCacheKey(
+                    path: path,
+                    size: metadata.size,
+                    modifiedAt: metadata.modifiedAt,
+                    deviceID: nil,
+                    inode: nil,
+                    statusChangedSeconds: nil,
+                    statusChangedNanoseconds: nil
+                )
                 loaded[path] = CachedSession(
                     key: key,
                     events: persistentEvents.map(tokenEvent),
@@ -589,7 +617,15 @@ extension CodexUsageAnalyzer {
                 }
                 let entry = file.entry
                 let path = URL(fileURLWithPath: entry.path).resolvingSymlinksInPath().path
-                let key = SessionCacheKey(path: path, size: entry.size, modifiedAt: entry.modifiedAt)
+                let key = SessionCacheKey(
+                    path: path,
+                    size: entry.size,
+                    modifiedAt: entry.modifiedAt,
+                    deviceID: nil,
+                    inode: nil,
+                    statusChangedSeconds: nil,
+                    statusChangedNanoseconds: nil
+                )
                 loaded[path] = CachedSession(
                     key: key,
                     events: entry.events.map(tokenEvent),

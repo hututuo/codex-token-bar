@@ -31,6 +31,9 @@ struct DashboardView: View {
     @AppStorage(StatusSummaryConfiguration.selectionKey) private var statusSummarySelectionRaw = StatusSummaryConfiguration.defaultSelectionRaw
     @AppStorage("liveRateMonitoringEnabled") private var liveRateMonitoringEnabled = true
     @AppStorage("preciseTokenCountingEnabled") private var preciseTokenCountingEnabled = false
+    @AppStorage(SharedAccountUsageAttributionSettings.enabledKey) private var sharedAccountAttributionEnabled = SharedAccountUsageAttributionSettings.defaultEnabled
+    @AppStorage(SharedAccountUsageAttributionSettings.tierKey) private var sharedAccountRadarTierRaw = SharedAccountUsageAttributionSettings.defaultTier.rawValue
+    @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var sharedAccountPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage("floatingPanelScale") private var floatingPanelScale = FloatingTokenPanelMetrics.defaultScale
     @AppStorage(InterfaceScaleSettings.autoEnabledKey) private var interfaceScaleAutoEnabled = InterfaceScaleSettings.defaultAutoEnabled
@@ -58,6 +61,7 @@ struct DashboardView: View {
     @State private var showingSetupGuide = false
     @State private var showingResetCreditDetails = false
     @State private var showingCodexRadarDetails = false
+    @State private var showingSharedAccountAttributionDetails = false
     @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
     @State private var showingUnreadEffectMenu = false
@@ -66,6 +70,14 @@ struct DashboardView: View {
     @State private var showingSessionManager = false
     @State private var appSettingsInitialCategory: AppSettingsCategory = .general
     @State private var exportAlert: DashboardExportAlertPresentation?
+    @State private var sharedAccountAttributionResult: SharedAccountUsageAttributionResult?
+    private let sharedAccountSafetyDatabase = SharedAccountUsageSafetyDatabase.shared
+    private let sharedAccountHighWatermarkStore = UserDefaultsSharedAccountUsageHighWatermarkStore(
+        safetyDatabase: .shared
+    )
+    private let sharedAccountSegmentStore = UserDefaultsSharedAccountUsageSegmentStore(
+        safetyDatabase: .shared
+    )
 
     init(
         loginItemStore: LoginItemStore,
@@ -147,6 +159,37 @@ struct DashboardView: View {
 
                         radarDetailOverlayCard
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
+                        .frame(maxHeight: max(520, proxy.size.height - 90))
+                        .padding(.top, 58)
+                    }
+                }
+                .zIndex(9)
+            }
+
+            if showingSharedAccountAttributionDetails,
+               let sharedAccountAttributionResult {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        AppTheme.pageBackground.opacity(0.34)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingSharedAccountAttributionDetails = false
+                            }
+
+                        SharedAccountUsageAttributionDetailView(
+                            result: sharedAccountAttributionResult,
+                            safetyRecoveryState: store.sharedAccountSafetyRecoveryState,
+                            recoveryAvailable: sharedAccountSafetyDatabase.recoveryRequired,
+                            onRebuildSafetyBaseline: {
+                                Task { @MainActor in
+                                    if await store.rebuildSharedAccountSafetyBaseline() {
+                                        quotaStore.refresh(force: true)
+                                    }
+                                }
+                            },
+                            onClose: { showingSharedAccountAttributionDetails = false }
+                        )
+                        .frame(width: min(820, max(680, proxy.size.width - 108)))
                         .frame(maxHeight: max(520, proxy.size.height - 90))
                         .padding(.top, 58)
                     }
@@ -259,6 +302,7 @@ struct DashboardView: View {
         .onExitCommand {
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingSharedAccountAttributionDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingContentSettingsMenu = false
@@ -277,6 +321,8 @@ struct DashboardView: View {
             )
             reportRuntimeConfiguration()
             consumePendingSettingsRequest()
+            migrateSharedAccountPriceModelIfNeeded()
+            refreshSharedAccountAttribution()
             if !setupGuideCompleted {
                 showingSetupGuide = true
             } else {
@@ -286,6 +332,9 @@ struct DashboardView: View {
         .onChange(of: runtimeConfigurationSignature) {
             reportRuntimeConfiguration()
         }
+        .onChange(of: sharedAccountAttributionInputSignature) {
+            refreshSharedAccountAttribution()
+        }
         .onChange(of: showingInterfaceScaleMenu) {
             guard showingInterfaceScaleMenu else { return }
             closePaletteMenu()
@@ -293,6 +342,7 @@ struct DashboardView: View {
             showingContentSettingsMenu = false
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingSharedAccountAttributionDetails = false
         }
         .onChange(of: showingPaletteMenu) {
             guard showingPaletteMenu else { return }
@@ -311,6 +361,7 @@ struct DashboardView: View {
             showingInterfaceScaleMenu = false
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingSharedAccountAttributionDetails = false
         }
         .onDisappear {
             runtime.releaseConsumer(runtimeConsumerID)
@@ -318,6 +369,7 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingSharedAccountAttributionDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingContentSettingsMenu = false
@@ -325,6 +377,7 @@ struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             showingCodexRadarDetails = false
+            showingSharedAccountAttributionDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
             showingContentSettingsMenu = false
@@ -486,6 +539,348 @@ struct DashboardView: View {
         )
     }
 
+    private var selectedSharedAccountRadarTier: SharedAccountRadarTier {
+        SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw)
+    }
+
+    private var selectedSharedAccountPriceModel: OfficialAPIPriceModel {
+        OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw)
+    }
+
+    private var sharedAccountAttributionInputSignature: String {
+        let quota = quotaStore.snapshot
+        let radar = radarStore.snapshot?.modelIQ.quotaRadar
+        let identity = quota.historyIdentity
+        let radarRows = radar?.rows.map { row -> String in
+            let sevenDay = row.sevenD.map { String($0) } ?? "-"
+            return [row.tier, sevenDay, row.basis].joined(separator: ":")
+        }.joined(separator: "|") ?? ""
+        let usageGeneratedAt = String(format: "%.3f", store.snapshot.generatedAt.timeIntervalSince1970)
+        let preciseTimeSeriesGeneratedAt = store.snapshot.preciseTimeSeriesGeneratedAt.map {
+            String(format: "%.3f", $0.timeIntervalSince1970)
+        } ?? ""
+        let preciseContinuityLostAt = store.preciseTimeSeriesContinuityLostAt.map {
+            String(format: "%.3f", $0.timeIntervalSince1970)
+        } ?? ""
+        let preciseContinuityLossID = store.preciseTimeSeriesContinuityLossID?.uuidString ?? ""
+        let recentBinCount = String(store.snapshot.cacheUsage.recentBins.count)
+        let latestBinStart = store.snapshot.cacheUsage.recentBins.last.map {
+            String(format: "%.3f", $0.start.timeIntervalSince1970)
+        } ?? ""
+        let sevenDayQuota = quota.sevenDay.map { quota in
+            let resetTimestamp = quota.resetsAt?.timeIntervalSince1970 ?? -1
+            return "\(quota.usedPercent):\(resetTimestamp)"
+        } ?? ""
+        let quotaUpdatedAt = quota.updatedAt.map {
+            String(format: "%.3f", $0.timeIntervalSince1970)
+        } ?? ""
+        let components: [String] = [
+            sharedAccountAttributionEnabled ? "1" : "0",
+            selectedSharedAccountRadarTier.rawValue,
+            selectedSharedAccountPriceModel.rawValue,
+            store.snapshot.usagePrecision.rawValue,
+            usageGeneratedAt,
+            store.preciseTimeSeriesFresh ? "precise-fresh" : "precise-stale",
+            preciseTimeSeriesGeneratedAt,
+            preciseContinuityLostAt,
+            preciseContinuityLossID,
+            store.preciseTimeSeriesContinuityLossReason?.rawValue ?? "",
+            store.preciseContinuityPersistenceHealthy ? "continuity-store-ok" : "continuity-store-failed",
+            String(describing: store.sharedAccountSafetyRecoveryState),
+            store.preciseObservationSessionID.uuidString,
+            store.preciseSessionMutationMonitoringHealthy ? "session-watch-ok" : "session-watch-failed",
+            recentBinCount,
+            latestBinStart,
+            sevenDayQuota,
+            quotaUpdatedAt,
+            quota.staleDataDisplayed ? "quota-stale" : "quota-fresh",
+            identity?.homeIdentity ?? "",
+            identity?.stableAccountKey ?? "",
+            identity?.planType ?? "",
+            identity?.limitID ?? "",
+            radar?.date ?? "",
+            radar?.basisDate ?? "",
+            radar?.updatedAt ?? "",
+            radar?.sevenDayPolicy ?? "",
+            radarStore.staleDataDisplayed ? "radar-stale" : "radar-fresh",
+            radarRows,
+        ]
+        return components.joined(separator: "\u{1f}")
+    }
+
+    private func migrateSharedAccountPriceModelIfNeeded() {
+        let migrated = OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw).rawValue
+        if migrated != sharedAccountPriceModelRaw {
+            sharedAccountPriceModelRaw = migrated
+        }
+    }
+
+    private func refreshSharedAccountAttribution() {
+        sharedAccountSegmentStore.setObserverInstanceID(
+            store.preciseObservationSessionID
+        )
+        let tier = selectedSharedAccountRadarTier
+        let model = selectedSharedAccountPriceModel
+        let quota = quotaStore.snapshot
+        let radar = radarStore.snapshot?.modelIQ.quotaRadar
+        let safetyLock = sharedAccountAttributionEnabled
+            && sharedAccountSafetyDatabase.isObserverOwner
+            ? sharedAccountSafetyDatabase.acquireCrossProcessLock()
+            : nil
+        defer { safetyLock?.release() }
+        let storageCoordinationHealthy = !sharedAccountAttributionEnabled
+            || (safetyLock != nil && sharedAccountSafetyDatabase.isObserverOwner)
+        if sharedAccountAttributionEnabled, storageCoordinationHealthy {
+            store.reloadPreciseTimeSeriesContinuityLoss()
+        }
+        let continuityLoss = store.preciseTimeSeriesContinuityLostAt
+        let continuityLossID = store.preciseTimeSeriesContinuityLossID
+        let continuityLossReason = store.preciseTimeSeriesContinuityLossReason
+        let cacheUsage = store.snapshot.cacheUsage
+        let indexSafetyGapID = UserDefaultsSharedAccountUsageSegmentStore
+            .attributionSafetyGapID(
+                provenanceEpoch: cacheUsage.attributionProvenanceEpoch,
+                unsafeSinceGeneration: cacheUsage.attributionUnsafeSinceGeneration,
+                currentScanUnsafeCauseDetected:
+                    cacheUsage.attributionCurrentScanUnsafeCauseDetected
+            )
+        var segment: SharedAccountUsageSegment?
+        if sharedAccountAttributionEnabled,
+           storageCoordinationHealthy,
+           let sevenDayQuota = quota.sevenDay,
+           let resetAt = sevenDayQuota.resetsAt,
+           resetAt > Date(),
+           let historyIdentity = quota.historyIdentity {
+            if !quota.staleDataDisplayed, let quotaUpdatedAt = quota.updatedAt {
+                let cycleStart = resetAt.addingTimeInterval(
+                    -SharedAccountUsageAttributionEstimator.sevenDayDuration
+                )
+                if cacheUsage.attributionCurrentScanUnsafeCauseDetected {
+                    // A duplicate/rewrite is still present in the current exact
+                    // scan. Do not create or advance any synthetic baseline from
+                    // this quota poll; the first clean scan must reset it.
+                    segment = sharedAccountSegmentStore.existingSegment(
+                        identity: historyIdentity,
+                        resetAt: resetAt
+                    )
+                } else if store.preciseTimeSeriesFresh,
+                   let gapDetectedAt = continuityLoss,
+                   let gapID = continuityLossID,
+                   let recoveredCoverageAt = store.snapshot.preciseTimeSeriesGeneratedAt {
+                    segment = sharedAccountSegmentStore.beginContinuityGapCutover(
+                        identity: historyIdentity,
+                        resetAt: resetAt,
+                        cycleStart: cycleStart,
+                        quotaUpdatedAt: quotaUpdatedAt,
+                        accountUsedPercent: Double(sevenDayQuota.usedPercent),
+                        gapID: gapID,
+                        gapDetectedAt: gapDetectedAt,
+                        recoveredCoverageAt: recoveredCoverageAt,
+                        cutoverReason: continuityLossReason == .storageRecovery
+                            ? .storageRecovery
+                            : .continuityGap
+                    )
+                } else if store.preciseTimeSeriesFresh,
+                          let gapID = indexSafetyGapID,
+                          let unsafeSince = cacheUsage.attributionUnsafeSinceGeneration,
+                          let recoveredCoverageAt = store.snapshot.preciseTimeSeriesGeneratedAt {
+                    segment = sharedAccountSegmentStore.beginContinuityGapCutover(
+                        identity: historyIdentity,
+                        resetAt: resetAt,
+                        cycleStart: cycleStart,
+                        quotaUpdatedAt: quotaUpdatedAt,
+                        accountUsedPercent: Double(sevenDayQuota.usedPercent),
+                        gapID: gapID,
+                        gapDetectedAt: store.snapshot.generatedAt,
+                        recoveredCoverageAt: recoveredCoverageAt,
+                        cleanRecoveryGeneration: unsafeSince
+                    )
+                } else {
+                    let existing = sharedAccountSegmentStore.existingSegment(
+                        identity: historyIdentity,
+                        resetAt: resetAt
+                    )
+                    if let existing,
+                       !existing.baselineReady,
+                       existing.effectiveCutoverReason.isContinuityRecovery,
+                       !store.preciseTimeSeriesFresh {
+                        // A quota poll alone cannot finish a recovery cutover;
+                        // wait until a new exact snapshot covers that poll.
+                        segment = existing
+                    } else {
+                        segment = sharedAccountSegmentStore.resolve(
+                            identity: historyIdentity,
+                            resetAt: resetAt,
+                            cycleStart: cycleStart,
+                            quotaUpdatedAt: quotaUpdatedAt,
+                            accountUsedPercent: Double(sevenDayQuota.usedPercent)
+                        )
+                    }
+                }
+            } else {
+                segment = sharedAccountSegmentStore.existingSegment(
+                    identity: historyIdentity,
+                    resetAt: resetAt
+                )
+            }
+        } else {
+            segment = nil
+        }
+        func estimate(
+            segment: SharedAccountUsageSegment?,
+            highWatermark: SharedAccountUsageHighWatermarkRecord? = nil,
+            forceStorageUnavailable: Bool = false
+        ) -> SharedAccountUsageAttributionResult {
+            SharedAccountUsageAttributionEstimator.estimate(
+                enabled: sharedAccountAttributionEnabled,
+                preciseUsageReady: store.snapshot.hasPreciseTokenUsage
+                    && store.snapshot.cacheUsage.attributionEventsComplete,
+                recentBins: store.snapshot.cacheUsage.recentBins,
+                recentAttributionEvents: store.snapshot.cacheUsage.attributionEventsComplete
+                    ? store.snapshot.cacheUsage.attributionEvents
+                    : nil,
+                attributionProvenanceEpoch:
+                    store.snapshot.cacheUsage.attributionProvenanceEpoch,
+                attributionSourceMutationDetected:
+                    store.snapshot.cacheUsage.attributionSourceMutationDetected,
+                sevenDayQuota: quota.sevenDay,
+                quotaUpdatedAt: segment?.comparisonUpdatedAt ?? quota.updatedAt,
+                historyIdentity: quota.historyIdentity,
+                radar: radar,
+                tier: tier,
+                model: model,
+                preciseUsageFresh: store.preciseTimeSeriesFresh,
+                persistenceHealthy: !forceStorageUnavailable
+                    && storageCoordinationHealthy
+                    && sharedAccountSafetyDatabase.persistenceHealthy
+                    && store.preciseContinuityPersistenceHealthy
+                    && store.preciseSessionMutationMonitoringHealthy
+                    && sharedAccountSegmentStore.persistenceHealthy
+                    && sharedAccountHighWatermarkStore.persistenceHealthy,
+                preciseUsageGeneratedAt: store.snapshot.preciseTimeSeriesGeneratedAt,
+                segment: segment,
+                highWatermark: highWatermark,
+                quotaDataStale: quota.staleDataDisplayed,
+                radarDataStale: radarStore.staleDataDisplayed
+            )
+        }
+
+        let rawResult = estimate(segment: segment)
+        var highWatermark: SharedAccountUsageHighWatermarkRecord?
+        var result = rawResult
+        if !cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+           SharedAccountUsageAttributionPersistencePolicy.shouldMergeHighWatermark(
+            attributionUnsafeSinceGeneration: cacheUsage.attributionUnsafeSinceGeneration
+        ),
+           let key = rawResult.highWatermarkKey,
+           let candidate = rawResult.highWatermarkCandidate {
+            let merged = sharedAccountHighWatermarkStore.merge(candidate, for: key)
+            highWatermark = merged
+            result = estimate(segment: segment, highWatermark: merged)
+        }
+
+        // An unchanged quota percentage normally keeps the last meaningful
+        // comparison timestamp. If known local usage is waiting in a now-closed
+        // bucket, advance exactly once when a later quota poll crosses the next
+        // 5-minute boundary, then ask the precise index to catch up if needed.
+        if !cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+           result.state == .awaitingQuotaRefresh,
+           result.usagePendingQuotaRefresh,
+           let currentSegment = segment,
+           currentSegment.baselineReady,
+           let sevenDayQuota = quota.sevenDay,
+           let resetAt = sevenDayQuota.resetsAt,
+           resetAt > Date(),
+           let actualQuotaUpdatedAt = quota.updatedAt,
+           let historyIdentity = quota.historyIdentity,
+           !quota.staleDataDisplayed,
+           let advanced = sharedAccountSegmentStore.advanceComparisonAcrossCompletedBoundaryIfNeeded(
+               identity: historyIdentity,
+               resetAt: resetAt,
+               quotaUpdatedAt: actualQuotaUpdatedAt,
+               accountUsedPercent: Double(sevenDayQuota.usedPercent)
+           ) {
+            segment = advanced
+            result = estimate(segment: advanced, highWatermark: highWatermark)
+        }
+
+        if SharedAccountUsageAttributionAutoRefreshPolicy.shouldRequestPreciseCatchUp(
+            result: result,
+            continuityLossID: continuityLossID,
+            segment: segment
+        ),
+           sharedAccountAttributionEnabled,
+           !store.isRefreshing,
+           !quota.staleDataDisplayed {
+            // A manual/global refresh starts local usage and quota reads next to
+            // each other, so the quota observation can finish a moment later.
+            // Run one explicit full time-series pass after that point instead of
+            // leaving attribution permanently stale or trusting a compact summary.
+            store.refreshPreciseTimeSeriesForAttribution()
+        }
+
+        if !cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+           let continuityLossID,
+           let segment,
+           segment.effectiveCutoverReason.isContinuityRecovery,
+           segment.continuityGapID == continuityLossID,
+           segment.baselineReady,
+           let requiredCoverage = segment.requiredLocalObservationAfter,
+           store.preciseTimeSeriesFresh,
+           let generatedAt = store.snapshot.preciseTimeSeriesGeneratedAt,
+           generatedAt >= requiredCoverage,
+           store.preciseContinuityPersistenceHealthy,
+           sharedAccountSegmentStore.persistenceHealthy,
+           sharedAccountHighWatermarkStore.persistenceHealthy,
+           result.state != .preciseUsageStale {
+            store.acknowledgePreciseTimeSeriesContinuityLoss(id: continuityLossID)
+        }
+
+        if let indexSafetyGapID,
+           continuityLossID == nil,
+           let segment,
+           segment.effectiveCutoverReason == .continuityGap,
+           segment.continuityGapID == indexSafetyGapID,
+           segment.baselineReady,
+           let provenanceEpoch = cacheUsage.attributionProvenanceEpoch,
+           let generation = cacheUsage.attributionGeneration,
+           let unsafeSince = cacheUsage.attributionUnsafeSinceGeneration,
+           segment.cutoverRecoveryGeneration == unsafeSince,
+           !cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+           store.preciseTimeSeriesFresh,
+           store.preciseContinuityPersistenceHealthy,
+           store.preciseSessionMutationMonitoringHealthy,
+           sharedAccountSegmentStore.persistenceHealthy,
+           sharedAccountHighWatermarkStore.persistenceHealthy,
+           result.state != .attributionStorageUnavailable,
+           result.state != .preciseUsageStale {
+            // The new segment is already durable and this unsafe snapshot was
+            // never merged into its high-water record. Clear only the exact
+            // epoch/generation observed here; success triggers a fresh precise
+            // scan before any safe-generation candidate can enter the segment.
+            store.acknowledgeAttributionSafetyAfterDurableCutover(
+                provenanceEpoch: provenanceEpoch,
+                throughGeneration: generation
+            )
+        }
+
+        if sharedAccountAttributionEnabled, storageCoordinationHealthy {
+            store.reloadPreciseTimeSeriesContinuityLoss()
+            if !store.preciseContinuityPersistenceHealthy
+                || store.preciseTimeSeriesContinuityLossID != continuityLossID {
+                // A writer that could not take the wider file lock still
+                // commits the gap atomically. Recheck before publication and
+                // invalidate this computation; the published continuity change
+                // triggers a clean recomputation after the lock is released.
+                result = estimate(
+                    segment: nil,
+                    forceStorageUnavailable: true
+                )
+            }
+        }
+        sharedAccountAttributionResult = result
+    }
+
     private func presentExportResult(_ result: DashboardExportResult) {
         guard let presentation = DashboardExportAlertPresentation(result: result) else { return }
         exportAlert = presentation
@@ -533,6 +928,12 @@ struct DashboardView: View {
                 },
                 threadDeleteStatus: threadDeleteBridge.status,
                 autoResumeEnabled: autoResumeController.hasProtectedTasks,
+                sharedAccountAttribution: sharedAccountAttributionEnabled ? sharedAccountAttributionResult : nil,
+                onShowSharedAccountAttribution: {
+                    showingResetCreditDetails = false
+                    showingCodexRadarDetails = false
+                    showingSharedAccountAttributionDetails = true
+                },
                 showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
@@ -556,7 +957,10 @@ struct DashboardView: View {
                 staleDataDisplayed: radarStore.staleDataDisplayed,
                 feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
                 onRefresh: radarStore.refresh,
-                onShowDetails: { showingCodexRadarDetails = true }
+                onShowDetails: {
+                    showingSharedAccountAttributionDetails = false
+                    showingCodexRadarDetails = true
+                }
             )
 
             LiveRateView(

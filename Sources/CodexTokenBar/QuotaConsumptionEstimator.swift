@@ -6,44 +6,84 @@ enum QuotaConsumptionConfidence: Equatable {
     case noTokenUsage
 }
 
-enum OfficialAPIPriceModel: String, CaseIterable, Identifiable {
-    case gpt55
-    case gpt54
-    case gpt54Mini
+struct APIPriceRates: Equatable, Sendable {
+    let inputUSDPerMillion: Double
+    let cachedInputUSDPerMillion: Double
+    let outputUSDPerMillion: Double
+
+    func costUSD(for breakdown: TokenCacheBreakdown) -> Double {
+        let cachedInput = max(0, min(breakdown.cachedInputTokens, breakdown.inputTokens))
+        let uncachedInput = max(0, breakdown.inputTokens - cachedInput)
+        return (
+            Double(uncachedInput) * inputUSDPerMillion
+            + Double(cachedInput) * cachedInputUSDPerMillion
+            + Double(max(breakdown.outputTokens, 0)) * outputUSDPerMillion
+        ) / 1_000_000
+    }
+}
+
+enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
+    case gpt56Sol
+    case gpt56Terra
+    case gpt56Luna
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .gpt55: "GPT-5.5"
-        case .gpt54: "GPT-5.4"
-        case .gpt54Mini: "GPT-5.4 mini"
+        case .gpt56Sol: "GPT-5.6 Sol"
+        case .gpt56Terra: "GPT-5.6 Terra"
+        case .gpt56Luna: "GPT-5.6 Luna"
+        }
+    }
+
+    var currentPriceRates: APIPriceRates {
+        switch self {
+        case .gpt56Sol:
+            APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
+        case .gpt56Terra:
+            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
+        case .gpt56Luna:
+            APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
         }
     }
 
     var inputUSDPerMillion: Double {
-        switch self {
-        case .gpt55: 5.00
-        case .gpt54: 2.50
-        case .gpt54Mini: 0.75
-        }
+        currentPriceRates.inputUSDPerMillion
     }
 
     var cachedInputUSDPerMillion: Double {
-        switch self {
-        case .gpt55: 0.50
-        case .gpt54: 0.25
-        case .gpt54Mini: 0.075
-        }
+        currentPriceRates.cachedInputUSDPerMillion
     }
 
     var outputUSDPerMillion: Double {
-        switch self {
-        case .gpt55: 30.00
-        case .gpt54: 15.00
-        case .gpt54Mini: 4.50
+        currentPriceRates.outputUSDPerMillion
+    }
+
+    /// Reads both the current model IDs and values written by releases before
+    /// GPT-5.6 family names became available. The storage key itself remains
+    /// unchanged so chart, savings and shared-account estimates stay aligned.
+    static func storedValue(for rawValue: String?) -> OfficialAPIPriceModel {
+        if let rawValue, let current = OfficialAPIPriceModel(rawValue: rawValue) {
+            return current
+        }
+        switch rawValue {
+        case "gpt55":
+            return .gpt56Sol
+        case "gpt54":
+            return .gpt56Terra
+        case "gpt54Mini":
+            return .gpt56Luna
+        default:
+            return .gpt56Sol
         }
     }
+
+    // Source-compatible aliases for tests and integrations compiled against
+    // the old enum spelling. New persisted values always use GPT-5.6 IDs.
+    static let gpt55: OfficialAPIPriceModel = .gpt56Sol
+    static let gpt54: OfficialAPIPriceModel = .gpt56Terra
+    static let gpt54Mini: OfficialAPIPriceModel = .gpt56Luna
 }
 
 enum QuotaConsumptionPriceCard: Equatable {
@@ -59,13 +99,7 @@ enum QuotaConsumptionPriceCard: Equatable {
     func costUSD(for breakdown: TokenCacheBreakdown) -> Double {
         switch self {
         case .officialAPI(let model):
-            let cachedInput = max(0, min(breakdown.cachedInputTokens, breakdown.inputTokens))
-            let uncachedInput = max(0, breakdown.inputTokens - cachedInput)
-            return (
-                Double(uncachedInput) * model.inputUSDPerMillion
-                + Double(cachedInput) * model.cachedInputUSDPerMillion
-                + Double(breakdown.outputTokens) * model.outputUSDPerMillion
-            ) / 1_000_000
+            model.currentPriceRates.costUSD(for: breakdown)
         }
     }
 }
