@@ -37,5 +37,21 @@ test("status tray left click toggles status panel while its menu opens dashboard
     surfaces,
     /fn create_status_panel_window[\s\S]*?\.shadow\(true\)[\s\S]*?\.transparent\(true\)[\s\S]*?\.visible\(false\)/,
   );
+  assert.match(
+    surfaces,
+    /fn apply_macos_status_tray_title[\s\S]*?with_inner_tray_icon[\s\S]*?setAttributedTitle[\s\S]*?NSVariableStatusItemLength/,
+  );
+  assert.match(
+    surfaces,
+    /fn position_macos_status_panel_at_tray[\s\S]*?ns_status_item[\s\S]*?visibleFrame[\s\S]*?setFrameOrigin/,
+  );
+  assert.match(
+    surfaces,
+    /fn safe_status_panel_position[\s\S]*?work\.x \+ work\.width - panel\.0, work\.y/,
+  );
+  assert.match(
+    surfaces,
+    /fn create_status_tray[\s\S]*?builder\.build\(app\)\?;[\s\S]*?apply_status_tray_readout_now\(app, readout\)/,
+  );
   assert.match(surfaces, /app\.exit\(0\)/);
 });

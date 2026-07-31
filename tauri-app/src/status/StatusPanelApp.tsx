@@ -38,6 +38,7 @@ import type {
   StatusSummarySectionId,
   UnreadSummary,
 } from "../types/dashboard";
+import { compactQuotaResetText } from "../utils/quota";
 import {
   buildStatusIndicatorPresentation,
   buildStatusMetricStates,
@@ -50,6 +51,7 @@ import {
   statusPanelSummaryVisible,
 } from "./statusPanelDataInterests";
 import { StatusPanelCompactIndicator } from "./StatusPanelCompactIndicator";
+import { latestTrustedStatusUpdate } from "./statusSummaryUpdatedAt";
 import { useStatusPanelWindowLifecycleState } from "./useStatusPanelWindowLifecycle";
 
 export function StatusPanelApp() {
@@ -254,6 +256,7 @@ export function StatusPanelApp() {
     unread: displayUnreadSummary.active,
     unreadSummary: displayUnreadSummary,
   };
+  const summaryUpdatedAt = latestTrustedStatusUpdate(quota, runningThreads);
   const metricStates = useMemo(() => buildStatusMetricStates({
     liveRateEnabled: displaySurfaces.liveRateEnabled,
     snapshot: displaySnapshot,
@@ -285,6 +288,7 @@ export function StatusPanelApp() {
     const readout = displaySurfaces.statusTrayLiveTextEnabled
       ? indicatorPresentation
       : {
+          columns: [],
           title: "",
           tooltip: "Codex Token Bar",
           width: 0,
@@ -323,12 +327,14 @@ export function StatusPanelApp() {
       label: displaySnapshot.fiveHourLabel,
       remainingPercent: displaySnapshot.fiveHourRemainingPercent,
       expectedRemainingPercent: displaySnapshot.fiveHourExpectedRemainingPercent,
+      resetText: compactQuotaResetText(quota.quota.fiveHour),
     }]),
     {
       availability: displaySnapshot.sevenDayAvailability,
       label: displaySnapshot.sevenDayLabel,
       remainingPercent: displaySnapshot.sevenDayRemainingPercent,
       expectedRemainingPercent: displaySnapshot.sevenDayExpectedRemainingPercent,
+      resetText: compactQuotaResetText(quota.quota.sevenDay),
     },
   ];
 
@@ -345,7 +351,10 @@ export function StatusPanelApp() {
                 <strong>{rate.available ? formatLiveRateValue(measuredRate) : "—"}</strong>
                 <em>tok/s</em>
               </span>
-              <b>{rate.available ? (floatingStandaloneStatusText(displaySnapshot) || "—") : "—"}</b>
+              <span className="status-summary-overview-meta">
+                <b>{rate.available ? (floatingStandaloneStatusText(displaySnapshot) || "—") : "—"}</b>
+                <small>更新 {summaryUpdatedAt ? formatStatusClock(summaryUpdatedAt) : "—"}</small>
+              </span>
             </div>
             <div className="status-panel-meter" aria-hidden="true">
               <i
@@ -378,6 +387,7 @@ export function StatusPanelApp() {
                   key={window.label}
                   label={window.label}
                   remainingPercent={window.remainingPercent}
+                  resetText={window.resetText}
                   expectedRemainingPercent={window.expectedRemainingPercent}
                   settings={settings}
                 />
@@ -388,33 +398,36 @@ export function StatusPanelApp() {
       case "running":
         return (
           <article className="status-summary-card" key={section}>
-            <header><span>运行线程</span><strong>{summaryNumber(runningThreads.total)}</strong></header>
-            <dl className="status-summary-metrics">
-              <div><dt>主任务</dt><dd>{summaryNumber(runningThreads.mainThreads)}</dd></div>
-              <div><dt>子 Agent</dt><dd>{summaryNumber(runningThreads.subagents)}</dd></div>
-            </dl>
+            <header><span>运行线程</span></header>
+            <p className="status-summary-running-line">
+              <strong>{summaryNumber(runningThreads.total)}</strong><span>运行</span>
+              <i>·</i><strong>{summaryNumber(runningThreads.mainThreads)}</strong><span>主任务</span>
+              <i>·</i><strong>{summaryNumber(runningThreads.subagents)}</strong><span>子 Agent</span>
+            </p>
           </article>
         );
       case "unread":
         return (
           <article className="status-summary-card" key={section}>
-            <header><span>未读会话</span><strong>{metricStates.unread.value}</strong></header>
-            <p title={displaySnapshot.unreadSummary.detail}>
-              {metricStates.unread.available
-                ? (displaySnapshot.unreadSummary.label || "—")
-                : "—"}
-            </p>
-            {metricStates.unread.available && displaySnapshot.unreadSummary.active ? (
-              <button className="status-summary-inline-action" onClick={acknowledgeUnread} type="button">
-                标记已读
+            <header><span>未读会话</span></header>
+            <div className="status-summary-unread-line" title={displaySnapshot.unreadSummary.detail}>
+              <strong>{metricStates.unread.value}</strong>
+              <span>个未读</span>
+              <button
+                className="status-summary-inline-action"
+                disabled={!metricStates.unread.available || !displaySnapshot.unreadSummary.active}
+                onClick={acknowledgeUnread}
+                type="button"
+              >
+                全部已读
               </button>
-            ) : null}
+            </div>
           </article>
         );
       case "radar":
         return (
           <article className="status-summary-card status-summary-card--wide" key={section}>
-            <header><span>雷达</span></header>
+            <header><span>Codex 雷达</span></header>
             <FloatingRadarRow snapshot={radarSnapshot} style={{}} />
           </article>
         );
@@ -431,7 +444,7 @@ export function StatusPanelApp() {
   if (compact) {
     return (
       <StatusPanelCompactIndicator
-        items={indicatorPresentation.visibleItems}
+        columns={indicatorPresentation.columns}
         onExpand={expandPanel}
         tooltip={indicatorPresentation.tooltip}
       />
@@ -489,12 +502,14 @@ function StatusPanelQuotaRow({
   expectedRemainingPercent,
   label,
   remainingPercent,
+  resetText,
   settings,
 }: {
   availability: FloatingPanelSnapshot["fiveHourAvailability"];
   expectedRemainingPercent: number | null;
   label: string;
   remainingPercent: number | null;
+  resetText: string;
   settings: FloatingWindowSettings;
 }) {
   const measured = availability === "measured"
@@ -527,7 +542,7 @@ function StatusPanelQuotaRow({
           }}
         />
       </i>
-      <strong>{measured ? `剩 ${Math.round(percent)}%` : "—"}</strong>
+      <strong>{measured ? `剩 ${Math.round(percent)}% · ${resetText || "—"}` : "—"}</strong>
     </div>
   );
 }
@@ -536,6 +551,15 @@ function summaryNumber(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value)
     ? "—"
     : String(Math.max(0, Math.round(value)));
+}
+
+function formatStatusClock(date: Date): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(date);
 }
 
 function statusPanelHeaderText(

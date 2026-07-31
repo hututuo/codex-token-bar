@@ -107,14 +107,14 @@ test("status indicator settings preview, select, reorder and restore through one
     const preview = panel.querySelector(".status-indicator-preview");
     assert.ok(preview);
     assert.deepEqual(
-      [...preview.querySelectorAll(".status-indicator-ranking > span")].map((node) => node.textContent),
-      ["1 Sol·MAX", "2 Luna·H"],
+      [...preview.querySelectorAll(".status-indicator-column")].map((node) => node.textContent),
+      ["12.4tok/s", "⁵42%⁷76%", "1 Sol·MAX2 Luna·H"],
     );
-    assert.deepEqual(
-      [...preview.querySelectorAll(".status-indicator-quota-marker span")].map((node) => node.textContent),
-      ["5", "H", "7", "D"],
+    assert.match(preview.textContent, /12\.4tok\/s⁵42%⁷76%1 Sol·MAX2 Luna·H/);
+    assert.doesNotMatch(
+      preview.querySelector(".status-indicator-compact-columns")?.textContent ?? "",
+      /5 小时|7 天/,
     );
-    assert.match(preview.textContent, /12\.4\/s5H42%7D76%1 Sol·MAX2 Luna·H/);
     assert.match(panel.textContent, /指标与顺序/);
     assert.match(panel.textContent, /真实为零时仍显示/);
     assert.match(panel.textContent, /今日众测榜/);

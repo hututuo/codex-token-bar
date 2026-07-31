@@ -2,7 +2,7 @@ import type { StatusIndicatorPresentation } from "./statusIndicatorPresentation"
 
 type StatusIndicatorReadout = Pick<
   StatusIndicatorPresentation,
-  "title" | "tooltip" | "width"
+  "columns" | "title" | "tooltip" | "width"
 >;
 
 export interface StatusIndicatorPublishAttempt {
@@ -14,7 +14,12 @@ export interface StatusIndicatorPublishAttempt {
 export async function attemptStatusIndicatorReadoutPublish(
   readout: StatusIndicatorReadout,
   committedSignature: string,
-  publish: (title: string, tooltip: string, width: number) => Promise<boolean>,
+  publish: (
+    title: string,
+    tooltip: string,
+    width: number,
+    columns: StatusIndicatorPresentation["columns"],
+  ) => Promise<boolean>,
 ): Promise<StatusIndicatorPublishAttempt> {
   const nextSignature = statusIndicatorReadoutSignature(readout);
   if (nextSignature === committedSignature) {
@@ -26,7 +31,12 @@ export async function attemptStatusIndicatorReadoutPublish(
   }
 
   try {
-    const succeeded = await publish(readout.title, readout.tooltip, readout.width);
+    const succeeded = await publish(
+      readout.title,
+      readout.tooltip,
+      readout.width,
+      readout.columns,
+    );
     return succeeded
       ? {
           committedSignature: nextSignature,
@@ -50,5 +60,5 @@ export async function attemptStatusIndicatorReadoutPublish(
 export function statusIndicatorReadoutSignature(
   readout: StatusIndicatorReadout,
 ): string {
-  return JSON.stringify([readout.title, readout.tooltip, readout.width]);
+  return JSON.stringify([readout.title, readout.tooltip, readout.width, readout.columns]);
 }

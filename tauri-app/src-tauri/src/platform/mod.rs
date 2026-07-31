@@ -47,6 +47,7 @@ pub use settings::{
     save_auto_resume_settings, save_custom_account_display_name, save_quota_refresh_interval_ms,
     save_session_enhancement_settings, save_setup_guide_completed,
 };
+pub(crate) use surfaces::StatusTrayColumn;
 pub use surfaces::{
     dismiss_status_panel_on_blur, hide_floating_window, hide_status_panel_window,
     publish_status_indicator_readout_native, set_status_indicator_enabled_native,

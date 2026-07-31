@@ -24,10 +24,21 @@ export interface StatusIndicatorItem {
 }
 
 export interface StatusIndicatorPresentation {
+  columns: StatusIndicatorTrayColumn[];
   title: string;
   tooltip: string;
   width: number;
   visibleItems: StatusIndicatorItem[];
+}
+
+export interface StatusIndicatorTrayColumn {
+  bottom: StatusIndicatorTrayLine;
+  top: StatusIndicatorTrayLine;
+}
+
+export interface StatusIndicatorTrayLine {
+  secondary?: boolean;
+  text: string;
 }
 
 export interface StatusIndicatorPresentationInput {
@@ -132,14 +143,15 @@ export function buildStatusIndicatorPresentation({
     );
     return item === null ? [] : [item];
   });
+  const columns = buildStatusIndicatorTrayColumns(visibleItems, labelStyle);
   const title = visibleItems.map((item) => item.shortLabel).join(" · ");
-  const compactWidthTitle = visibleItems.map(compactWidthLabel).join(" · ");
   return {
+    columns,
     title,
     tooltip: visibleItems.length > 0
       ? `Codex Token Bar · ${visibleItems.map((item) => item.tooltipLabel).join(" · ")}`
       : "Codex Token Bar",
-    width: estimateStatusIndicatorWidth(compactWidthTitle),
+    width: estimateStatusIndicatorColumnsWidth(columns),
     visibleItems,
   };
 }
@@ -184,14 +196,15 @@ export function buildStatusIndicatorPreview(
       value,
     };
   });
+  const columns = buildStatusIndicatorTrayColumns(visibleItems, labelStyle);
   const title = visibleItems.map((item) => item.shortLabel).join(" · ");
-  const compactWidthTitle = visibleItems.map(compactWidthLabel).join(" · ");
   return {
+    columns,
     title,
     tooltip: visibleItems.length > 0
       ? `Codex Token Bar · ${visibleItems.map((item) => item.tooltipLabel).join(" · ")}`
       : "Codex Token Bar",
-    width: estimateStatusIndicatorWidth(compactWidthTitle),
+    width: estimateStatusIndicatorColumnsWidth(columns),
     visibleItems,
   };
 }
@@ -371,13 +384,128 @@ function compactReasoningEffort(effort: string | null | undefined): string {
   return labels[effort?.trim().toLowerCase() ?? ""] ?? "—";
 }
 
-function compactWidthLabel(item: StatusIndicatorItem): string {
-  if (item.compactRows) {
-    return item.compactRows.reduce((longest, row) => (
-      estimateStatusIndicatorWidth(row) > estimateStatusIndicatorWidth(longest) ? row : longest
-    ), "");
+export function buildStatusIndicatorTrayColumns(
+  items: readonly StatusIndicatorItem[],
+  labelStyle: StatusMetricLabelStyle,
+): StatusIndicatorTrayColumn[] {
+  const columns: StatusIndicatorTrayColumn[] = [];
+  let pendingLine: StatusIndicatorTrayLine | null = null;
+
+  const flushPending = () => {
+    if (pendingLine === null) {
+      return;
+    }
+    columns.push({
+      top: pendingLine,
+      bottom: { text: "" },
+    });
+    pendingLine = null;
+  };
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.id === "rate") {
+      flushPending();
+      columns.push({
+        top: { text: item.value },
+        bottom: labelStyle === "hidden"
+          ? { text: "" }
+          : { secondary: true, text: "tok/s" },
+      });
+      continue;
+    }
+
+    if (item.id === "fiveHour" || item.id === "sevenDay") {
+      flushPending();
+      const quotaLines: StatusIndicatorTrayLine[] = [quotaTrayLine(item, labelStyle)];
+      const nextItem = items[index + 1];
+      if (
+        nextItem
+        && (nextItem.id === "fiveHour" || nextItem.id === "sevenDay")
+      ) {
+        quotaLines.push(quotaTrayLine(nextItem, labelStyle));
+        index += 1;
+      }
+      columns.push({
+        top: quotaLines[0],
+        bottom: quotaLines[1] ?? { text: "" },
+      });
+      continue;
+    }
+
+    if (item.compactRows) {
+      flushPending();
+      columns.push({
+        top: { text: item.compactRows[0] },
+        bottom: { text: item.compactRows[1] },
+      });
+      continue;
+    }
+
+    const line = { text: item.shortLabel };
+    if (pendingLine === null) {
+      pendingLine = line;
+    } else {
+      columns.push({ top: pendingLine, bottom: line });
+      pendingLine = null;
+    }
   }
-  return item.shortLabel;
+
+  flushPending();
+  return columns;
+}
+
+function quotaTrayLine(
+  item: StatusIndicatorItem,
+  labelStyle: StatusMetricLabelStyle,
+): StatusIndicatorTrayLine {
+  if (labelStyle === "hidden") {
+    return { text: item.value };
+  }
+  if (labelStyle === "full") {
+    return { text: `${item.id === "fiveHour" ? "5h" : "7d"} ${item.value}` };
+  }
+  return { text: `${item.id === "fiveHour" ? "⁵" : "⁷"}${item.value}` };
+}
+
+export function estimateStatusIndicatorColumnsWidth(
+  columns: readonly StatusIndicatorTrayColumn[],
+): number {
+  if (columns.length === 0) {
+    return 0;
+  }
+  const contentWidth = columns.reduce((total, column) => {
+    const topWidth = estimateStatusIndicatorTextWidth(column.top.text, column.top.secondary);
+    const bottomWidth = estimateStatusIndicatorTextWidth(column.bottom.text, column.bottom.secondary);
+    return total + Math.max(topWidth, bottomWidth);
+  }, 0);
+  const shellAndCardChrome = 30;
+  const columnSpacing = Math.max(0, columns.length - 1) * 10;
+  return Math.ceil(Math.min(
+    720,
+    Math.max(64, contentWidth + shellAndCardChrome + columnSpacing),
+  ));
+}
+
+function estimateStatusIndicatorTextWidth(text: string, secondary = false): number {
+  const scale = secondary ? 0.72 : 0.84;
+  let contentWidth = 0;
+  for (const character of text) {
+    if (/\s/u.test(character)) {
+      contentWidth += 3;
+    } else if (/[\u2E80-\u9FFF]/u.test(character)) {
+      contentWidth += 11;
+    } else if (/[A-Z]/u.test(character)) {
+      contentWidth += 7.2;
+    } else if (/[0-9]/u.test(character)) {
+      contentWidth += 6.3;
+    } else if (/[⁵⁷]/u.test(character)) {
+      contentWidth += 4;
+    } else {
+      contentWidth += 4.8;
+    }
+  }
+  return contentWidth * scale;
 }
 
 function metricStateItem(

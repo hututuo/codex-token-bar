@@ -7,6 +7,7 @@ import type {
   CodexHomeSourceToken,
   LiveRateStreamLease,
 } from "../types/dashboard";
+import type { StatusIndicatorTrayColumn } from "../status/statusIndicatorPresentation";
 
 export type SurfaceCommandResult = PlatformCommandResult<boolean>;
 export type LiveRateStreamCommandResult = PlatformCommandResult<LiveRateStreamLease | null>;
@@ -68,8 +69,10 @@ export function publishStatusIndicatorReadout(
   title: string,
   tooltip: string,
   width: number,
+  columns: StatusIndicatorTrayColumn[],
 ): Promise<boolean> {
   return invokePlatformCommand("publish_status_indicator_readout", false, {
+    columns,
     title,
     tooltip,
     width,

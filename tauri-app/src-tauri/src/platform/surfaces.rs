@@ -1,11 +1,24 @@
 use crate::core::startup_trace;
 use super::StartupLaunchMode;
+use serde::Deserialize;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::Duration,
+};
+#[cfg(target_os = "macos")]
+use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{
+    NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName,
+    NSFontWeightSemibold, NSForegroundColorAttributeName, NSKernAttributeName,
+    NSStringDrawing, NSVariableStatusItemLength, NSWindow,
+};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{
+    NSDictionary, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSString,
 };
 use tauri::{
     async_runtime,
@@ -81,15 +94,35 @@ static UPDATE_TRAY_FALLBACK_VERSION: OnceLock<Mutex<Option<String>>> = OnceLock:
 static STATUS_TRAY_LIVE_READOUT: OnceLock<Mutex<StatusTrayReadout>> = OnceLock::new();
 static STATUS_TRAY_APPLIED_READOUT: OnceLock<Mutex<Option<StatusTrayReadout>>> = OnceLock::new();
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatusTrayLine {
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) secondary: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatusTrayColumn {
+    pub(crate) top: StatusTrayLine,
+    pub(crate) bottom: StatusTrayLine,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StatusTrayReadout {
+    columns: Vec<StatusTrayColumn>,
     title: String,
     tooltip: String,
 }
 
 impl Default for StatusTrayReadout {
     fn default() -> Self {
-        Self { title: String::new(), tooltip: "Codex Token Bar".into() }
+        Self {
+            columns: Vec::new(),
+            title: String::new(),
+            tooltip: "Codex Token Bar".into(),
+        }
     }
 }
 
@@ -744,7 +777,23 @@ fn present_status_panel(
         StatusIndicatorMode::Expanded | StatusIndicatorMode::Hidden => (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT),
     };
     window.set_size(LogicalSize::new(logical_size.0, logical_size.1)).map_err(|error| error.to_string())?;
-    position_status_panel(app, window, tray_bounds, logical_size, mode)?;
+    #[cfg(target_os = "macos")]
+    let positioned_natively = if mode == StatusIndicatorMode::Expanded {
+        match position_macos_status_panel_at_tray(app, window, logical_size) {
+            Ok(positioned) => positioned,
+            Err(error) => {
+                startup_trace::mark(&format!("native status panel anchor skipped: {error}"));
+                false
+            }
+        }
+    } else {
+        false
+    };
+    #[cfg(not(target_os = "macos"))]
+    let positioned_natively = false;
+    if !positioned_natively {
+        position_status_panel(app, window, tray_bounds, logical_size, mode)?;
+    }
     window.show().map_err(|error| error.to_string())?;
     if mode == StatusIndicatorMode::Expanded {
         window.set_focus().map_err(|error| error.to_string())?;
@@ -819,13 +868,76 @@ fn status_indicator_position(
 
 fn safe_status_panel_position(work: PhysicalBounds, panel: (f64, f64)) -> (f64, f64) {
     clamp_status_panel_position(
-        (
-            work.x + (work.width - panel.0) / 2.0,
-            work.y + (work.height - panel.1) / 2.0,
-        ),
+        (work.x + work.width - panel.0, work.y),
         work,
         panel,
     )
+}
+
+fn macos_status_panel_position(
+    tray: PhysicalBounds,
+    visible_frame: PhysicalBounds,
+    panel: (f64, f64),
+) -> (f64, f64) {
+    let desired = (
+        tray.x + (tray.width - panel.0) / 2.0,
+        tray.y - panel.1,
+    );
+    clamp_status_panel_position(desired, visible_frame, panel)
+}
+
+#[cfg(target_os = "macos")]
+fn position_macos_status_panel_at_tray(
+    app: &tauri::AppHandle,
+    window: &WebviewWindow,
+    logical_size: (f64, f64),
+) -> Result<bool, String> {
+    let tray = app
+        .tray_by_id(STATUS_TRAY_ID)
+        .ok_or_else(|| "status tray is not available".to_string())?;
+    let panel_window = window.ns_window().map_err(|error| error.to_string())?;
+    if panel_window.is_null() {
+        return Err("status panel native window is not available".into());
+    }
+    let panel_window_address = panel_window as usize;
+
+    tray.with_inner_tray_icon(move |inner| -> Result<bool, String> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| "status panel positioning must run on the main thread".to_string())?;
+        let status_item = inner
+            .ns_status_item()
+            .ok_or_else(|| "status item is not available".to_string())?;
+        let button = status_item
+            .button(mtm)
+            .ok_or_else(|| "status item button is not available".to_string())?;
+        let tray_window = button
+            .window()
+            .ok_or_else(|| "status item window is not available".to_string())?;
+        let screen = tray_window
+            .screen()
+            .ok_or_else(|| "status item screen is not available".to_string())?;
+        let tray_frame = tray_window.frame();
+        let visible = screen.visibleFrame();
+        let origin = macos_status_panel_position(
+            PhysicalBounds {
+                x: tray_frame.origin.x,
+                y: tray_frame.origin.y,
+                width: tray_frame.size.width,
+                height: tray_frame.size.height,
+            },
+            PhysicalBounds {
+                x: visible.origin.x,
+                y: visible.origin.y,
+                width: visible.size.width,
+                height: visible.size.height,
+            },
+            logical_size,
+        );
+        let panel_window = unsafe { &*(panel_window_address as *const NSWindow) };
+        panel_window.setFrameOrigin(NSPoint::new(origin.0, origin.1));
+        Ok(true)
+    })
+    .map_err(|error| error.to_string())?
 }
 
 fn fallback_status_panel_position(work: PhysicalBounds, panel: (f64, f64), anchor: StatusPanelAnchor) -> (f64, f64) {
@@ -1001,7 +1113,11 @@ pub fn set_status_tray_readout_native(
     if status_indicator_composed_owner_active() {
         return Ok(true);
     }
-    let readout = StatusTrayReadout { title, tooltip };
+    let readout = StatusTrayReadout {
+        columns: Vec::new(),
+        title,
+        tooltip,
+    };
     cache_status_tray_readout(readout.clone());
     apply_status_tray_readout(app, readout)
 }
@@ -1041,8 +1157,13 @@ pub async fn publish_status_indicator_readout_native(
     title: String,
     tooltip: String,
     width: f64,
+    columns: Vec<StatusTrayColumn>,
 ) -> Result<bool, String> {
-    let readout = StatusTrayReadout { title, tooltip };
+    let readout = StatusTrayReadout {
+        columns,
+        title,
+        tooltip,
+    };
     cache_status_tray_readout(readout.clone());
     let transition = status_indicator_presentation_cell()
         .lock()
@@ -1113,16 +1234,139 @@ fn apply_status_tray_readout_now(
     let tray = app
         .tray_by_id(STATUS_TRAY_ID)
         .ok_or_else(|| "status tray is not available".to_string())?;
-    if cfg!(target_os = "macos") {
-        tray.set_title(Some(readout.title.clone()))
-            .map_err(|error| error.to_string())?;
-    }
+    #[cfg(target_os = "macos")]
+    apply_macos_status_tray_title(&tray, &readout)?;
     tray.set_tooltip(Some(readout.tooltip.clone()))
         .map_err(|error| error.to_string())?;
     if let Ok(mut applied) = status_tray_applied_readout().lock() {
         *applied = Some(readout);
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_status_tray_title<R: tauri::Runtime>(
+    tray: &tauri::tray::TrayIcon<R>,
+    readout: &StatusTrayReadout,
+) -> Result<(), String> {
+    if readout.columns.is_empty() {
+        return tray
+            .set_title(Some(readout.title.clone()))
+            .map_err(|error| error.to_string());
+    }
+
+    let columns = readout.columns.clone();
+    tray.with_inner_tray_icon(move |inner| -> Result<(), String> {
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| "status tray title must be updated on the main thread".to_string())?;
+        let status_item = inner
+            .ns_status_item()
+            .ok_or_else(|| "status item is not available".to_string())?;
+        let button = status_item
+            .button(mtm)
+            .ok_or_else(|| "status item button is not available".to_string())?;
+        let attributed_title = macos_status_tray_attributed_title(&columns);
+        button.setAttributedTitle(&attributed_title);
+        status_item.setLength(NSVariableStatusItemLength);
+        Ok(())
+    })
+    .map_err(|error| error.to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn macos_status_tray_attributed_title(
+    columns: &[StatusTrayColumn],
+) -> Retained<NSMutableAttributedString> {
+    const PRIMARY_FONT_SIZE: f64 = 6.5;
+    const SECONDARY_FONT_SIZE: f64 = 6.0;
+    const UPPER_BASELINE_OFFSET: f64 = 3.25;
+    const LOWER_BASELINE_OFFSET: f64 = -3.25;
+    const COLUMN_SPACING: f64 = 4.5;
+
+    let semibold_weight = unsafe { NSFontWeightSemibold };
+    let primary_font = NSFont::monospacedSystemFontOfSize_weight(PRIMARY_FONT_SIZE, semibold_weight);
+    let secondary_font = NSFont::monospacedSystemFontOfSize_weight(SECONDARY_FONT_SIZE, semibold_weight);
+    let color = NSColor::controlTextColor();
+    let result = NSMutableAttributedString::from_nsstring(&NSString::from_str(""));
+
+    for (index, column) in columns.iter().enumerate() {
+        let top_font = if column.top.secondary {
+            secondary_font.as_ref()
+        } else {
+            primary_font.as_ref()
+        };
+        let bottom_font = if column.bottom.secondary {
+            secondary_font.as_ref()
+        } else {
+            primary_font.as_ref()
+        };
+        let top_width = macos_status_line_width(&column.top.text, top_font);
+        let bottom_width = macos_status_line_width(&column.bottom.text, bottom_font);
+        let column_width = top_width.max(bottom_width);
+        let trailing_spacing = if index + 1 < columns.len() { COLUMN_SPACING } else { 0.0 };
+
+        macos_append_status_line(
+            &result,
+            &column.top.text,
+            top_font,
+            &color,
+            UPPER_BASELINE_OFFSET,
+            -top_width,
+        );
+        macos_append_status_line(
+            &result,
+            &column.bottom.text,
+            bottom_font,
+            &color,
+            LOWER_BASELINE_OFFSET,
+            column_width - bottom_width + trailing_spacing,
+        );
+    }
+
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn macos_status_line_width(text: &str, font: &NSFont) -> f64 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let text = NSString::from_str(text);
+    let font_object: &AnyObject = font.as_ref();
+    let font_attribute_name = unsafe { NSFontAttributeName };
+    let attributes = NSDictionary::from_slices(&[font_attribute_name], &[font_object]);
+    unsafe { text.sizeWithAttributes(Some(&attributes)).width }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_append_status_line(
+    result: &NSMutableAttributedString,
+    text: &str,
+    font: &NSFont,
+    color: &NSColor,
+    baseline_offset: f64,
+    trailing_kern: f64,
+) {
+    let rendered_text = if text.is_empty() { "\u{200B}" } else { text };
+    let piece = NSMutableAttributedString::from_nsstring(&NSString::from_str(rendered_text));
+    let start = result.length();
+    let length = piece.length();
+    result.appendAttributedString(&piece);
+    let range = NSRange::new(start, length);
+    let font_object: &AnyObject = font.as_ref();
+    let color_object: &AnyObject = color.as_ref();
+    let baseline = NSNumber::new_f64(baseline_offset);
+    let kern = NSNumber::new_f64(trailing_kern);
+    unsafe {
+        result.addAttribute_value_range(NSFontAttributeName, font_object, range);
+        result.addAttribute_value_range(NSForegroundColorAttributeName, color_object, range);
+        result.addAttribute_value_range(NSBaselineOffsetAttributeName, baseline.as_ref(), range);
+        result.addAttribute_value_range(
+            NSKernAttributeName,
+            kern.as_ref(),
+            NSRange::new(start + length - 1, 1),
+        );
+    }
 }
 
 pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str) -> Result<bool, String> {
@@ -1133,19 +1377,13 @@ pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str)
     let version = version.to_string();
     let readout = status_tray_readout_with_update(live_readout, Some(&version));
     dispatch_status_tray_operation(app, "update available", move |app| {
+        apply_status_tray_readout_now(app, readout)?;
         let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
             return Ok(());
         };
-        if cfg!(target_os = "macos") {
-            tray.set_title(Some(readout.title.clone())).map_err(|error| error.to_string())?;
-        }
         tray.set_icon(Some(status_tray_update_icon())).map_err(|error| error.to_string())?;
-        tray.set_tooltip(Some(readout.tooltip.clone())).map_err(|error| error.to_string())?;
         let menu = status_tray_menu(app, Some(&version)).map_err(|error| error.to_string())?;
         tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
-        if let Ok(mut applied) = status_tray_applied_readout().lock() {
-            *applied = Some(readout);
-        }
         Ok(())
     })
 }
@@ -1154,19 +1392,13 @@ pub fn clear_update_available_tray_fallback(app: &tauri::AppHandle) -> Result<bo
     if let Ok(mut cached) = update_tray_fallback_version().lock() { *cached = None; }
     let live_readout = visible_status_tray_readout();
     dispatch_status_tray_operation(app, "clear update", move |app| {
+        apply_status_tray_readout_now(app, live_readout)?;
         let Some(tray) = app.tray_by_id(STATUS_TRAY_ID) else {
             return Ok(());
         };
-        if cfg!(target_os = "macos") {
-            tray.set_title(Some(live_readout.title.clone())).map_err(|error| error.to_string())?;
-        }
         tray.set_icon(Some(status_tray_icon())).map_err(|error| error.to_string())?;
-        tray.set_tooltip(Some(live_readout.tooltip.clone())).map_err(|error| error.to_string())?;
         let menu = status_tray_menu(app, None).map_err(|error| error.to_string())?;
         tray.set_menu(Some(menu)).map_err(|error| error.to_string())?;
-        if let Ok(mut applied) = status_tray_applied_readout().lock() {
-            *applied = Some(live_readout);
-        }
         Ok(())
     })
 }
@@ -1419,6 +1651,19 @@ fn status_tray_title(live_title: &str, update_version: Option<&str>) -> String {
 }
 
 fn status_tray_readout_with_update(readout: StatusTrayReadout, update_version: Option<&str>) -> StatusTrayReadout {
+    let mut columns = readout.columns;
+    if let Some(version) = update_version {
+        columns.push(StatusTrayColumn {
+            top: StatusTrayLine {
+                text: "↑".into(),
+                secondary: false,
+            },
+            bottom: StatusTrayLine {
+                text: format!("v{version}"),
+                secondary: true,
+            },
+        });
+    }
     let title = status_tray_title(&readout.title, update_version);
     let tooltip = update_version
         .map(|version| {
@@ -1429,7 +1674,11 @@ fn status_tray_readout_with_update(readout: StatusTrayReadout, update_version: O
             }
         })
         .unwrap_or(readout.tooltip);
-    StatusTrayReadout { title, tooltip }
+    StatusTrayReadout {
+        columns,
+        title,
+        tooltip,
+    }
 }
 
 fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -1509,9 +1758,7 @@ fn create_status_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     });
 
     builder.build(app)?;
-    if let Ok(mut applied) = status_tray_applied_readout().lock() {
-        *applied = Some(readout);
-    }
+    apply_status_tray_readout_now(app, readout).map_err(|error| std::io::Error::other(error))?;
 
     Ok(())
 }
@@ -2218,6 +2465,24 @@ mod tests {
     }
 
     #[test]
+    fn macos_status_panel_anchor_stays_below_the_clicked_item_and_clamps_edges() {
+        let visible = bounds(0.0, 24.0, 1512.0, 958.0);
+        let panel = (STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT);
+        assert_eq!(
+            macos_status_panel_position(bounds(900.0, 960.0, 72.0, 22.0), visible, panel),
+            (741.0, 520.0)
+        );
+        assert_eq!(
+            macos_status_panel_position(bounds(8.0, 960.0, 40.0, 22.0), visible, panel),
+            (0.0, 520.0)
+        );
+        assert_eq!(
+            macos_status_panel_position(bounds(1500.0, 960.0, 40.0, 22.0), visible, panel),
+            (1122.0, 520.0)
+        );
+    }
+
+    #[test]
     fn compact_status_indicator_width_is_bounded_and_accepts_narrow_content() {
         assert_eq!(status_indicator_width(0.0), 0.0);
         assert_eq!(status_indicator_width(-1.0), 0.0);
@@ -2358,6 +2623,10 @@ mod tests {
             safe_status_panel_position(bounds(-800.0, 0.0, 800.0, 600.0), (900.0, 700.0)),
             (-800.0, 0.0)
         );
+        assert_eq!(
+            safe_status_panel_position(bounds(0.0, 24.0, 1920.0, 1056.0), (390.0, 440.0)),
+            (1530.0, 24.0)
+        );
     }
 
     #[test]
@@ -2378,11 +2647,25 @@ mod tests {
 
     #[test]
     fn empty_composed_readout_is_data_not_a_disable_signal() {
-        let readout = StatusTrayReadout { title: String::new(), tooltip: String::new() };
+        let readout = StatusTrayReadout {
+            columns: Vec::new(),
+            title: String::new(),
+            tooltip: String::new(),
+        };
         assert_eq!(status_tray_readout_with_update(readout.clone(), None), readout);
         assert_eq!(
             status_tray_readout_with_update(readout, Some("0.9.0")),
             StatusTrayReadout {
+                columns: vec![StatusTrayColumn {
+                    top: StatusTrayLine {
+                        text: "↑".into(),
+                        secondary: false,
+                    },
+                    bottom: StatusTrayLine {
+                        text: "v0.9.0".into(),
+                        secondary: true,
+                    },
+                }],
                 title: "↑v0.9.0".into(),
                 tooltip: "有新版本 v0.9.0，打开主界面安装".into(),
             }
@@ -2394,6 +2677,7 @@ mod tests {
         assert_eq!(
             StatusTrayReadout::default(),
             StatusTrayReadout {
+                columns: Vec::new(),
                 title: String::new(),
                 tooltip: "Codex Token Bar".into(),
             }

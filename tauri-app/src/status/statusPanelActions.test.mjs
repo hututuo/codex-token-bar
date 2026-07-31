@@ -10,7 +10,7 @@ test("Status panel can acknowledge the same unread baseline as the main dashboar
   assert.match(source, /sameCodexHomeSourceToken\(sourceTokenRef\.current, acknowledgedSourceToken\)/);
   assert.match(source, /publishUnreadSummaryChanged/);
   assert.match(source, /onUnreadSummaryChanged/);
-  assert.match(source, /标记已读/);
+  assert.match(source, /全部已读/);
   assert.match(
     source,
     /useFloatingRadar\([\s\S]*?active && sourceReady && dataInterests\.radar,[\s\S]*?\)/,
@@ -22,6 +22,8 @@ test("Status panel can acknowledge the same unread baseline as the main dashboar
   );
   assert.match(source, /crowdRadar: crowdRadarSnapshot/);
   assert.match(source, /StatusPanelQuotaRow/);
+  assert.match(source, /latestTrustedStatusUpdate\(quota, runningThreads\)/);
+  assert.doesNotMatch(source, /summaryUpdatedAt\s*=\s*useMemo\(\(\)\s*=>\s*new Date/);
   assert.match(source, /publishOpenAppSettings/);
   assert.match(source, />设置<\/button>/);
 });

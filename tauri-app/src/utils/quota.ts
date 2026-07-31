@@ -42,7 +42,10 @@ export function expectedRemainingPercentByEvenPace(
   return Math.round(remainingSeconds / durationSeconds * 100);
 }
 
-function compactQuotaResetText(limit: AccountQuotaBundle["quota"]["fiveHour"], now: Date): string {
+export function compactQuotaResetText(
+  limit: AccountQuotaBundle["quota"]["fiveHour"],
+  now: Date = new Date(),
+): string {
   if (limit.label !== "7d" || typeof limit.resetsAtUnix !== "number" || !Number.isFinite(limit.resetsAtUnix)) {
     return limit.resetsAt;
   }

@@ -1,24 +1,14 @@
 import type { KeyboardEvent } from "react";
-
-export interface StatusPanelCompactItem {
-  compactMarker?: {
-    bottom: "H" | "D";
-    top: "5" | "7";
-  };
-  compactRows?: [string, string];
-  id: string;
-  shortLabel: string;
-  value: string;
-}
+import type { StatusIndicatorTrayColumn } from "./statusIndicatorPresentation";
 
 export interface StatusPanelCompactIndicatorProps {
-  items: StatusPanelCompactItem[];
+  columns: StatusIndicatorTrayColumn[];
   onExpand(): void;
   tooltip: string;
 }
 
 export function StatusPanelCompactIndicator({
-  items,
+  columns,
   onExpand,
   tooltip,
 }: StatusPanelCompactIndicatorProps) {
@@ -41,7 +31,7 @@ export function StatusPanelCompactIndicator({
         tabIndex={0}
         title={tooltip}
       >
-        <StatusPanelCompactItems ariaHidden items={items} />
+        <StatusPanelCompactItems ariaHidden columns={columns} />
       </section>
     </main>
   );
@@ -49,39 +39,19 @@ export function StatusPanelCompactIndicator({
 
 export function StatusPanelCompactItems({
   ariaHidden = false,
-  items,
+  columns,
 }: {
   ariaHidden?: boolean;
-  items: StatusPanelCompactItem[];
+  columns: StatusIndicatorTrayColumn[];
 }) {
   return (
-    <div aria-hidden={ariaHidden || undefined} className="status-indicator-compact-items">
-      {items.map((item) => <CompactItem item={item} key={item.id} />)}
+    <div aria-hidden={ariaHidden || undefined} className="status-indicator-compact-columns">
+      {columns.map((column, index) => (
+        <span className="status-indicator-column" key={`${column.top.text}-${column.bottom.text}-${index}`}>
+          <span className={column.top.secondary ? "is-secondary" : undefined}>{column.top.text}</span>
+          <span className={column.bottom.secondary ? "is-secondary" : undefined}>{column.bottom.text}</span>
+        </span>
+      ))}
     </div>
   );
-}
-
-function CompactItem({ item }: { item: StatusPanelCompactItem }) {
-  if (item.compactRows) {
-    return (
-      <strong aria-label={item.shortLabel} className="status-indicator-ranking">
-        <span aria-hidden="true">{item.compactRows[0]}</span>
-        <span aria-hidden="true">{item.compactRows[1]}</span>
-      </strong>
-    );
-  }
-
-  if (item.compactMarker) {
-    return (
-      <strong aria-label={item.shortLabel} className="status-indicator-quota-item">
-        <span aria-hidden="true" className="status-indicator-quota-marker">
-          <span>{item.compactMarker.top}</span>
-          <span>{item.compactMarker.bottom}</span>
-        </span>
-        <span aria-hidden="true" className="status-indicator-quota-value">{item.value}</span>
-      </strong>
-    );
-  }
-
-  return <strong>{item.shortLabel}</strong>;
 }

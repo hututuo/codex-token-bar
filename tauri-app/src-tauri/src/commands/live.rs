@@ -1285,9 +1285,10 @@ pub async fn publish_status_indicator_readout(
     title: String,
     tooltip: String,
     width: f64,
+    columns: Vec<platform::StatusTrayColumn>,
 ) -> Result<bool, String> {
     require_window_label(&window, "publish_status_indicator_readout")?;
-    platform::publish_status_indicator_readout_native(&app, title, tooltip, width).await
+    platform::publish_status_indicator_readout_native(&app, title, tooltip, width, columns).await
 }
 
 #[tauri::command]

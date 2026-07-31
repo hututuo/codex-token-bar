@@ -281,9 +281,17 @@ test("status panel uses the Swift-aligned single-column popover hierarchy", asyn
   assert.equal(statusPanel.includes('|| "等待输出"'), true);
   assert.equal(statusPanel.includes("status-summary-usage-tiles"), true);
   assert.equal(statusPanel.includes("status-panel-quota--stacked"), true);
+  assert.equal(statusPanel.includes('更新 {summaryUpdatedAt ? formatStatusClock(summaryUpdatedAt) : "—"}'), true);
+  assert.equal(statusPanel.includes("resetText={window.resetText}"), true);
+  assert.equal(statusPanel.includes("status-summary-running-line"), true);
+  assert.equal(statusPanel.includes("status-summary-unread-line"), true);
+  assert.equal(statusPanel.includes("Codex 雷达"), true);
+  assert.equal(statusPanel.includes("全部已读"), true);
   assert.match(css, /\.status-panel-card\s*\{[^}]*padding:\s*14px;[^}]*border-radius:\s*16px;/s);
   assert.match(css, /\.status-panel-summary-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
   assert.match(css, /\.status-summary-card\s*\{[^}]*border-radius:\s*11px;/s);
+  assert.match(css, /\.status-panel-meter\s*\{[^}]*height:\s*6px;/s);
+  assert.match(css, /\.status-summary-usage-tiles\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s);
   assert.equal(actionButton.includes("min-height: 27px;"), true);
 });
 

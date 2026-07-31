@@ -842,7 +842,7 @@ function StatusIndicatorSettings({
           <span>{platform.platform === "windows" ? "Windows 紧凑条示例" : "macOS 菜单栏示例"}</span>
           {preview.visibleItems.length > 0 ? (
             <div aria-label={preview.title} style={{ display: "flex", justifyContent: "flex-end", overflow: "hidden" }}>
-              <StatusPanelCompactItems items={preview.visibleItems} />
+              <StatusPanelCompactItems columns={preview.columns} />
             </div>
           ) : <strong>仅显示应用图标</strong>}
           <em title={preview.tooltip}>{preview.tooltip}</em>

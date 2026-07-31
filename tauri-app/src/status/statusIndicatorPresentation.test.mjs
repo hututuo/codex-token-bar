@@ -47,6 +47,11 @@ test("status presentation follows configured order and preserves a real zero rat
 
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["sevenDay", "rate", "today"]);
   assert.equal(result.title, "7D76% · 0/s · 今84K");
+  assert.deepEqual(result.columns, [
+    { top: { text: "⁷76%" }, bottom: { text: "" } },
+    { top: { text: "0" }, bottom: { secondary: true, text: "tok/s" } },
+    { top: { text: "今84K" }, bottom: { text: "" } },
+  ]);
   assert.match(result.tooltip, /7 天额度剩余 76%.*速度 0 tok\/s.*今日 Token 84K/);
   assert.ok(result.width >= 38);
 });
@@ -132,6 +137,25 @@ test("status presentation replaces IQ score with a structured two-row model rank
   assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·MAX", "2 Terra·U"]);
   assert.doesNotMatch(result.title, /IQ/);
   assert.match(result.tooltip, /今日众测实时榜：1 Sol·MAX；2 Terra·U/);
+});
+
+test("default metrics collapse into three compact two-line tray columns", () => {
+  const result = buildStatusIndicatorPresentation({
+    crowdRadar: crowdRadarFixture(),
+    labelStyle: "compact",
+    metricStates: metricStatesFor({ ...BASE_SNAPSHOT, tokensPerSecond: 12.4 }),
+    order: ["rate", "fiveHour", "sevenDay", "iq"],
+    snapshot: { ...BASE_SNAPSHOT, tokensPerSecond: 12.4 },
+  });
+
+  assert.deepEqual(result.columns, [
+    { top: { text: "12.4" }, bottom: { secondary: true, text: "tok/s" } },
+    { top: { text: "⁵41%" }, bottom: { text: "⁷76%" } },
+    { top: { text: "1 Sol·MAX" }, bottom: { text: "2 Terra·U" } },
+  ]);
+  assert.equal(result.columns.flatMap((column) => [column.top.text, column.bottom.text]).join(" ").includes("5 小时"), false);
+  assert.ok(result.width >= 50 + result.columns.length * 20);
+  assert.ok(result.width < estimateStatusIndicatorWidth(result.title));
 });
 
 test("status model ranking compacts every supported reasoning effort", () => {
@@ -402,6 +426,7 @@ test("unread availability does not depend on the live-rate toggle", () => {
 
 test("readout signature commits only after native success and failed attempts can retry", async () => {
   const readout = {
+    columns: [{ top: { text: "12.4" }, bottom: { secondary: true, text: "tok/s" } }],
     title: "12.4/s",
     tooltip: "Codex Token Bar · 速度 12.4 tok/s",
     width: 64,
@@ -441,15 +466,31 @@ test("readout signature commits only after native success and failed attempts ca
   assert.equal(calls, 2, "a committed signature is not republished without a change");
   assert.equal(unchanged.published, false);
   assert.equal(unchanged.shouldRetry, false);
+
+  const relayout = await attemptStatusIndicatorReadoutPublish(
+    {
+      ...readout,
+      columns: [{ top: { text: "tok/s" }, bottom: { text: "12.4" } }],
+    },
+    succeeded.committedSignature,
+    async () => {
+      calls += 1;
+      return true;
+    },
+  );
+  assert.equal(calls, 3, "a native row-layout change must be republished");
+  assert.equal(relayout.published, true);
 });
 
 test("switching between live metrics and icon-only readouts republishes each state", async () => {
   const liveReadout = {
+    columns: [{ top: { text: "12.4" }, bottom: { secondary: true, text: "tok/s" } }],
     title: "12.4/s",
     tooltip: "Codex Token Bar · 速度 12.4 tok/s",
     width: 64,
   };
   const iconOnlyReadout = {
+    columns: [],
     title: "",
     tooltip: "Codex Token Bar",
     width: 0,
@@ -476,12 +517,20 @@ test("switching between live metrics and icon-only readouts republishes each sta
   assert.equal(liveAgain.published, true);
 });
 
-test("full and hidden label styles change only the short title, not tooltip detail", () => {
+test("full and hidden label styles change title and stacked labels without changing tooltip detail", () => {
   const full = buildStatusIndicatorPreview(["rate", "fiveHour", "sevenDay", "today"], "full");
   const hidden = buildStatusIndicatorPreview(["rate", "fiveHour", "sevenDay", "today"], "hidden");
 
   assert.equal(full.title, "速率12.4/s · 5H42% · 7D76% · 今日84K");
   assert.equal(hidden.title, "12.4 · 42% · 76% · 84K");
+  assert.deepEqual(full.columns[0], {
+    top: { text: "12.4" },
+    bottom: { secondary: true, text: "tok/s" },
+  });
+  assert.deepEqual(hidden.columns[0], {
+    top: { text: "12.4" },
+    bottom: { text: "" },
+  });
   assert.equal(full.tooltip, hidden.tooltip);
 });
 
