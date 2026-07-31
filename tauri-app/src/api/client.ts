@@ -5,6 +5,7 @@ export {
 } from "./command";
 
 export {
+  acknowledgeAttributionSafety,
   getCodexHome,
   readAccountQuota,
   readDashboardSnapshot,

@@ -8,7 +8,7 @@ import {
   savingsPresentation,
 } from "./savings.ts";
 
-test("lifetime savings subtracts monthly Pro cost from cache-aware GPT-5.5 API value", () => {
+test("lifetime savings subtracts monthly Pro cost from cache-aware GPT-5.6 Sol API value", () => {
   const breakdown = {
     inputTokens: 2_000_000,
     cachedInputTokens: 1_000_000,
@@ -19,7 +19,7 @@ test("lifetime savings subtracts monthly Pro cost from cache-aware GPT-5.5 API v
     breakdown,
     firstUsageAt: "2026-01-01T00:00:00Z",
     planLabel: "Pro",
-    priceModel: "gpt55",
+    priceModel: "gpt56Sol",
     now: new Date("2026-07-07T00:00:00Z"),
   });
 
@@ -63,12 +63,12 @@ test("unknown plan shows API equivalent instead of inventing subscription cost",
     breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000 },
     firstUsageAt: "2026-07-01T00:00:00Z",
     planLabel: "Enterprise",
-    priceModel: "gpt54",
+    priceModel: "gpt56Terra",
     now: new Date("2026-07-07T00:00:00Z"),
   });
   const presentation = savingsPresentation(estimate);
 
-  assert.equal(presentation.valueText, "$2.50");
+  assert.equal(presentation.valueText, "$2.00");
   assert.equal(presentation.labelText, "API 等值（估）");
   assert.match(presentation.helpText, /暂不计算净节省/);
 });

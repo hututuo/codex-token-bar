@@ -82,6 +82,7 @@ export {
 export {
   mergeLiveRate,
   mergeLiveThreadOptions,
+  markPreciseRecentUsageStale,
   mergePreciseDashboard,
   mergeQuota,
 } from "./dashboardMergers";

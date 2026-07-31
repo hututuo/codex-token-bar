@@ -17,6 +17,8 @@ interface PreciseDashboardLoadOptions {
   sourceToken: CodexHomeSourceToken | null;
   source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot" | "readUsageCacheStatus">;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
+  onPreciseDashboardFailure?: () => void;
+  onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized?: () => void;
   onUsageCacheStatus?: (status: UsageCacheStatus) => void;
   onLoadEnd?: () => void;
@@ -31,6 +33,8 @@ export function usePreciseDashboardLoad({
   sourceToken,
   source,
   onPreciseDashboard,
+  onPreciseDashboardFailure,
+  onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
   onLoadEnd,
@@ -58,7 +62,18 @@ export function usePreciseDashboardLoad({
     );
 
     async function loadPreciseSnapshot() {
+      // A new exact read owns freshness until it publishes a full snapshot.
+      // If cache-status, native indexing, or the optional command fails, this
+      // explicit false remains instead of trusting the previous canvas.
+      onPreciseDashboardStale?.();
       onLoadStart?.();
+      let failureReported = false;
+      const reportFailure = () => {
+        if (!cancelled && !failureReported) {
+          failureReported = true;
+          onPreciseDashboardFailure?.();
+        }
+      };
       try {
         const cacheStatus = await source.readUsageCacheStatus();
         if (!cancelled) {
@@ -78,10 +93,22 @@ export function usePreciseDashboardLoad({
           },
         );
         unsubscribePrecise = preciseFlight.unsubscribe;
+        void preciseFlight.result.then(
+          (result) => {
+            if (result === null
+              || result.preciseRecentUsageFresh !== true
+              || !result.preciseRecentUsageCoveredAt) {
+              reportFailure();
+            }
+          },
+          reportFailure,
+        );
         // The native owner keeps running after this soft UI budget. Ending the
         // visible refresh state does not release the single-flight entry or
         // enqueue another Rust scan; a late current result still publishes.
         await preciseFlight.waitForUiBudget(PRECISE_DASHBOARD_UI_WAIT_MS);
+      } catch {
+        reportFailure();
       } finally {
         onLoadEnd?.();
       }
@@ -111,6 +138,8 @@ export function usePreciseDashboardLoad({
     onLoadEnd,
     onLoadStart,
     onPreciseDashboard,
+    onPreciseDashboardFailure,
+    onPreciseDashboardStale,
     onUsageCacheInitialized,
     onUsageCacheStatus,
     source,

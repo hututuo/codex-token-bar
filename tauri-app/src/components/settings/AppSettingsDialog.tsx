@@ -22,6 +22,12 @@ import {
   DEFAULT_STATUS_SUMMARY_ORDER,
 } from "../../settings/displaySettings";
 import { QUOTA_REFRESH_CADENCE_OPTIONS } from "../../settings/quotaRefreshCadence";
+import { QUOTA_PRICE_MODEL_OPTIONS, type OfficialAPIPriceModel } from "../../settings/quotaPriceModel";
+import {
+  SHARED_ACCOUNT_RADAR_TIER_OPTIONS,
+  type SharedAccountRadarTier,
+} from "../../settings/sharedAccountAttribution";
+import { useSharedAccountAttributionSettings } from "../../settings/useSharedAccountAttributionSettings";
 import { buildStatusIndicatorPreview } from "../../status/statusIndicatorPresentation";
 import {
   AUTO_RESUME_FAILURE_REASONS,
@@ -959,6 +965,8 @@ function MonitoringSettings({
   | "quotaRefreshIntervalMs"
 >) {
   const fullScale = Math.round(floatingSettings.tokenRateFullScale);
+  const { settings: attributionSettings, updateSettings: updateAttributionSettings } =
+    useSharedAccountAttributionSettings();
   return (
     <>
       <SettingsGroup title="实时速率" description="调整本地速率采样与图形标尺。">
@@ -996,6 +1004,51 @@ function MonitoringSettings({
           </select>
         </SettingRow>
         <div className="app-settings-note">跨平台版会自动使用精确的本地会话统计，无需单独开启。</div>
+      </SettingsGroup>
+      <SettingsGroup title="共享账号归因" description="对比本机等值消耗与账号 7 天额度变化。">
+        <SettingRow
+          title="估算本机与他人用量"
+          description="只在本机计算；差额是估算值，不会读取其他使用者的会话。"
+        >
+          <ToggleButton
+            active={attributionSettings.enabled}
+            label="共享账号用量归因"
+            onClick={() => updateAttributionSettings({ enabled: !attributionSettings.enabled })}
+          />
+        </SettingRow>
+        <SettingRow title="雷达 7 天套餐总额" description="默认按 20x Pro；本机等值金额除以该套餐 7 天总额度，得到本机额度占比。">
+          <select
+            aria-label="共享账号归因雷达套餐"
+            className="app-settings-select"
+            disabled={!attributionSettings.enabled}
+            onChange={(event) => updateAttributionSettings({
+              radarTier: event.currentTarget.value as SharedAccountRadarTier,
+            })}
+            value={attributionSettings.radarTier}
+          >
+            {SHARED_ACCOUNT_RADAR_TIER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow title="本机价格模型" description="与折线图反推和累计 API 等值共用同一项。">
+          <select
+            aria-label="共享账号归因价格模型"
+            className="app-settings-select"
+            disabled={!attributionSettings.enabled}
+            onChange={(event) => updateAttributionSettings({
+              priceModel: event.currentTarget.value as OfficialAPIPriceModel,
+            })}
+            value={attributionSettings.priceModel}
+          >
+            {QUOTA_PRICE_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </SettingRow>
+        <div className="app-settings-note">
+          归因会自动使用与雷达日期相容的价格基准；详情仍单独显示按当前官方 API 单价计算的金额。
+        </div>
       </SettingsGroup>
     </>
   );

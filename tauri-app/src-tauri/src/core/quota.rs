@@ -472,6 +472,9 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
             plan_label,
             limit_id,
         }) => {
+            // Capture the rate-limit snapshot time immediately after the provider read.
+            // Later reset-credit/history work must not make a cached snapshot look newer.
+            let updated_at = diagnostic_timestamp();
             let mut warnings = Vec::new();
             let mut diagnostics = Vec::new();
             quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
@@ -486,6 +489,8 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
             });
             (
                 AccountQuotaBundle {
+                    updated_at,
+                    attribution_identity: None,
                     account: account_info(codex_home, plan_label.as_deref()),
                     quota,
                     quota_history_daily: Vec::new(),
@@ -528,6 +533,7 @@ fn finalize_account_quota(
     let Some(history_identity) = scope.history_identity(&bundle, history_limit_id) else {
         return Ok(bundle);
     };
+    bundle.attribution_identity = Some(history_identity.attribution_identity());
     if let Err(error) = quota_history::record_bundle(&history_identity, &bundle) {
         bundle.warnings.push(quota_history::warning(error));
         return Ok(bundle);
@@ -537,6 +543,7 @@ fn finalize_account_quota(
 }
 
 fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
+    let updated_at = diagnostic_timestamp();
     let mut quota = placeholder_quota();
     quota.pace_label = "额度身份已变化".into();
     let diagnostic = QuotaDiagnostic {
@@ -549,10 +556,12 @@ fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
         attempts: None,
         http_status: None,
         retryable: true,
-        occurred_at: diagnostic_timestamp(),
+        occurred_at: updated_at.clone(),
         stale_data_displayed: false,
     };
     AccountQuotaBundle {
+        updated_at,
+        attribution_identity: None,
         account: account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
@@ -565,6 +574,7 @@ fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
 }
 
 fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle {
+    let updated_at = diagnostic_timestamp();
     let mut quota = placeholder_quota();
     quota.pace_label = "额度读取失败".into();
     let mut diagnostics = vec![classify_quota_error("account_quota", &error)];
@@ -578,6 +588,8 @@ fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle 
     });
 
     let bundle = AccountQuotaBundle {
+        updated_at,
+        attribution_identity: None,
         account: account_info(codex_home, None),
         quota,
         quota_history_daily: Vec::new(),
@@ -1872,6 +1884,8 @@ mod tests {
         }))
         .unwrap();
         let success = Ok(AccountQuotaBundle {
+            updated_at: "2026-07-31T00:00:00Z".into(),
+            attribution_identity: None,
             account: AccountInfo {
                 display_name: "本地用户".into(),
                 plan_label: "Pro".into(),
@@ -2222,6 +2236,9 @@ printf '%s\n' "$1"
             "HTTP 429 Too Many Requests".to_string(),
         );
 
+        assert!(OffsetDateTime::parse(&bundle.updated_at, &Rfc3339).is_ok());
+        assert!(bundle.attribution_identity.is_none());
+
         assert!(bundle
             .diagnostics
             .iter()
@@ -2264,6 +2281,12 @@ printf '%s\n' "$1"
             Vec::new(),
             Vec::new(),
         );
+        previous.updated_at = "2026-07-30T08:20:35Z".into();
+        previous.attribution_identity = Some(crate::models::QuotaAttributionIdentity {
+            scope_key: format!("sha256:{}", "a".repeat(64)),
+            plan: "Pro".into(),
+            limit: "codex".into(),
+        });
         previous
             .quota_history_24h
             .push(crate::models::QuotaHistoryPoint {
@@ -2278,15 +2301,18 @@ printf '%s\n' "$1"
             "account_quota",
             &quota_deadline_error(Duration::from_secs(12), Some("plugin manifest WARN")),
         );
-        let failed = quota_bundle_fixture(
+        let mut failed = quota_bundle_fixture(
             "failed",
             failed_quota,
             diagnostics_to_warnings(&[timeout.clone()]),
             vec![timeout],
         );
+        failed.updated_at = "2026-07-31T08:20:35Z".into();
 
         let stale = stale_quota_bundle(previous.clone(), failed);
 
+        assert_eq!(stale.updated_at, previous.updated_at);
+        assert_eq!(stale.attribution_identity, previous.attribution_identity);
         assert_eq!(stale.quota.five_hour.resets_at_unix, previous.quota.five_hour.resets_at_unix);
         assert_eq!(stale.quota.seven_day.resets_at_unix, previous.quota.seven_day.resets_at_unix);
         assert_eq!(stale.quota.pace_label, previous.quota.pace_label);
@@ -2317,6 +2343,8 @@ printf '%s\n' "$1"
                 .as_nanos()
         ));
         let bundle = AccountQuotaBundle {
+            updated_at: "2026-07-31T00:00:00Z".into(),
+            attribution_identity: None,
             account: AccountInfo {
                 display_name: "本地用户".into(),
                 plan_label: "Pro".into(),
@@ -2434,6 +2462,8 @@ printf '%s\n' "$1"
         diagnostics: Vec<QuotaDiagnostic>,
     ) -> AccountQuotaBundle {
         AccountQuotaBundle {
+            updated_at: "2026-07-31T00:00:00Z".into(),
+            attribution_identity: None,
             account: AccountInfo {
                 display_name: name.into(),
                 plan_label: "Pro".into(),

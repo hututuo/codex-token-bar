@@ -7,10 +7,10 @@ import {
   estimateLifetimeSavings,
   isOfficialAPIPriceModel,
   QUOTA_PRICE_MODEL_EVENT,
-  QUOTA_PRICE_MODEL_STORAGE_KEY,
   lifetimeBreakdownFromStats,
   savingsPresentation,
 } from "./statsStrip/savings";
+import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 
 interface StatsStripProps {
   stats: DashboardStats;
@@ -28,7 +28,7 @@ const statsConfig: Array<[keyof DashboardStats, string, (value: number) => strin
 
 function StatsStripView({ stats, planLabel, warnings = [] }: StatsStripProps) {
   const usageWarnings = usagePrecisionWarnings(warnings);
-  const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt55");
+  const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt56Sol");
   const savings = useMemo(() => savingsPresentation(estimateLifetimeSavings({
     breakdown: lifetimeBreakdownFromStats(stats),
     firstUsageAt: stats.firstUsageAt,
@@ -37,8 +37,7 @@ function StatsStripView({ stats, planLabel, warnings = [] }: StatsStripProps) {
   })), [planLabel, priceModel, stats]);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(QUOTA_PRICE_MODEL_STORAGE_KEY);
-    if (isOfficialAPIPriceModel(stored)) setPriceModel(stored);
+    setPriceModel(readStoredQuotaPriceModel());
     const onPriceModel = (event: Event) => {
       const next = (event as CustomEvent<string>).detail;
       if (isOfficialAPIPriceModel(next)) setPriceModel(next);

@@ -1,4 +1,5 @@
 import {
+  acknowledgeAttributionSafety,
   getCodexHome,
   readAccountQuota,
   readDashboardSnapshot,
@@ -25,6 +26,12 @@ import type {
 } from "../types/dashboard";
 
 export interface DashboardDataSource {
+  acknowledgeAttributionSafety: (
+    sourceToken: CodexHomeSourceToken,
+    provenanceEpoch: string,
+    unsafeID: string,
+    throughGeneration: number,
+  ) => Promise<boolean>;
   getCodexHome: () => Promise<CodexHomeSourceEnvelope | null>;
   setCodexHome: (path: string) => Promise<CodexHomeSourceEnvelope>;
   resetCodexHome: () => Promise<CodexHomeSourceEnvelope>;
@@ -47,6 +54,7 @@ export interface DashboardDataSource {
 }
 
 export const dashboardDataSource: DashboardDataSource = {
+  acknowledgeAttributionSafety,
   getCodexHome,
   setCodexHome,
   resetCodexHome,

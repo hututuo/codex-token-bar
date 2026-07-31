@@ -1493,6 +1493,33 @@ pub async fn read_precise_dashboard_snapshot(
     result
 }
 
+#[tauri::command]
+pub async fn acknowledge_attribution_safety(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    provenance_epoch: String,
+    unsafe_id: String,
+    through_generation: u64,
+) -> Result<bool, String> {
+    require_window_label(&window, "acknowledge_attribution_safety")?;
+    if uuid::Uuid::parse_str(&provenance_epoch).is_err() {
+        return Err("精确 token 归因安全确认的谱系标识无效".into());
+    }
+    if uuid::Uuid::parse_str(&unsafe_id).is_err() {
+        return Err("精确 token 归因安全确认的事件标识无效".into());
+    }
+    run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+        token_count_jsonl::acknowledge_attribution_safety(
+            &codex_home,
+            &provenance_epoch,
+            &unsafe_id,
+            through_generation,
+        )
+    })
+    .await
+}
+
 async fn run_source_bound_dashboard_read_with<
     T,
     Detect,
@@ -2729,6 +2756,8 @@ mod tests {
         let mut quota = placeholder_quota_for_test();
         quota.pace_label = "额度读取失败".into();
         let placeholder = Ok(AccountQuotaBundle {
+            updated_at: "2026-07-31T00:00:00Z".into(),
+            attribution_identity: None,
             account: AccountInfo {
                 display_name: "本地用户".into(),
                 plan_label: "Pro".into(),
@@ -2755,6 +2784,8 @@ mod tests {
             "failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)；".repeat(8)
         );
         let placeholder = Ok(AccountQuotaBundle {
+            updated_at: "2026-07-31T00:00:00Z".into(),
+            attribution_identity: None,
             account: AccountInfo {
                 display_name: "本地用户".into(),
                 plan_label: "Pro".into(),

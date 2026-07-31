@@ -2555,6 +2555,8 @@ mod tests {
 
     fn bundle(five: QuotaLimit, seven: QuotaLimit) -> AccountQuotaBundle {
         AccountQuotaBundle {
+            updated_at: "2026-07-31T00:00:00Z".into(),
+            attribution_identity: None,
             account: AccountInfo {
                 display_name: String::new(),
                 plan_label: String::new(),

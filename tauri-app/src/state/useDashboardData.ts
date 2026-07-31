@@ -29,6 +29,7 @@ import {
   initialDashboardState,
   mergeLiveRate,
   mergeLiveThreadOptions,
+  markPreciseRecentUsageStale,
   mergePreciseDashboard,
   mergeQuota,
   pendingLiveRateSnapshot,
@@ -49,7 +50,14 @@ import {
   type DashboardSourceToken,
 } from "./dashboardSourceTransition";
 import { makeQuotaAutoRefreshPlan } from "./quotaAutoRefreshModel";
+import {
+  advanceQuotaComparisonObservation,
+  alignQuotaComparisonObservation,
+  type QuotaComparisonObservationState,
+} from "./quotaComparisonObservation";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
+import { planPreciseUsageCatchUp } from "./preciseUsageCatchUp";
+import { publishPreciseUsageFailure } from "./preciseUsageFailureChannel";
 import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
@@ -107,6 +115,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const sourceTransitionRef = useRef(createDashboardSourceTransition());
   const sourceReconcileRequestRef = useRef(0);
   const sourceReconcileInFlightRef = useRef<Promise<CodexHomeSourceEnvelope | null> | null>(null);
+  const quotaComparisonObservationRef = useRef<QuotaComparisonObservationState | null>(null);
+  const latestComparisonUpdatedAtRef = useRef<string | null>(null);
+  const preciseCatchUpQuotaRef = useRef<string | null>(null);
+  const attributionPreciseRefreshRef = useRef<string | null>(null);
+  const latestPreciseCoverageRef = useRef<string | null>(null);
+  latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
 
   // 本地命令失败诊断接入 state.diagnostics（订阅即回放当前快照），
@@ -161,6 +175,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setUsageCacheInitializing(false);
 
     if (result.sourceChanged) {
+      quotaComparisonObservationRef.current = null;
+      latestComparisonUpdatedAtRef.current = null;
+      preciseCatchUpQuotaRef.current = null;
+      attributionPreciseRefreshRef.current = null;
       setLoadGeneration((current) => current + 1);
       setQuotaLoadGeneration((current) => current + 1);
       setRadarRefreshGeneration((current) => current + 1);
@@ -236,19 +254,116 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         ? mergePreciseDashboard(current, precise)
         : current);
     });
+    const catchUp = planPreciseUsageCatchUp({
+      quotaUpdatedAt: latestComparisonUpdatedAtRef.current,
+      preciseCoveredAt: precise.preciseRecentUsageCoveredAt,
+      preciseFresh: precise.preciseRecentUsageFresh,
+      requestedForQuotaUpdatedAt: preciseCatchUpQuotaRef.current,
+    });
+    preciseCatchUpQuotaRef.current = catchUp.requestedForQuotaUpdatedAt;
+    if (catchUp.shouldSchedule) {
+      setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+    }
   }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
+
+  const markPreciseSnapshotStale = useCallback(() => {
+    if (!isSourceTokenCurrent(sourceToken)) {
+      return;
+    }
+    setState((current) => isSourceTokenCurrent(sourceToken)
+      ? markPreciseRecentUsageStale(current)
+      : current);
+  }, [isSourceTokenCurrent, sourceToken]);
+
+  const markPreciseSnapshotFailure = useCallback(() => {
+    if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) return;
+    const sourceHomeIdentity = `${sourceToken.canonicalHomeKey}\u0000${sourceToken.physicalHomeKey}`;
+    const coveredAt = latestPreciseCoverageRef.current;
+    const coveredAtMillis = coveredAt === null ? Number.NaN : Date.parse(coveredAt);
+    publishPreciseUsageFailure(
+      sourceHomeIdentity,
+      Number.isFinite(coveredAtMillis) ? coveredAtMillis / 1_000 : Date.now() / 1_000,
+    );
+  }, [isSourceTokenCurrent, sourceToken]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
     if (!isSourceTokenCurrent(sourceToken)) {
       return;
     }
     markRenderCommit("frontend quota dashboard");
+    const comparison = advanceQuotaComparisonObservation(
+      quotaComparisonObservationRef.current,
+      {
+        quotaDataFresh: !quota.diagnostics.some((diagnostic) => (
+          diagnostic.staleDataDisplayed || diagnostic.category === "stale_cached_data"
+        )),
+        updatedAt: quota.updatedAt,
+        resetAtUnix: quota.quota.sevenDay.resetsAtUnix,
+        usedPercent: quota.quota.sevenDay.usedPercent,
+        identity: quota.attributionIdentity,
+      },
+    );
+    quotaComparisonObservationRef.current = comparison.state;
+    latestComparisonUpdatedAtRef.current = comparison.state?.comparisonUpdatedAt ?? null;
     startTransition(() => {
       setState((current) => isSourceTokenCurrent(sourceToken)
         ? mergeQuota(current, quota)
         : current);
     });
+    // Poll timestamps alone are not a comparison boundary. Exact usage catches
+    // up only after a substantive account/reset/used-percent transition.
+    if (comparison.shouldRefreshPreciseUsage) {
+      attributionPreciseRefreshRef.current = comparison.state?.comparisonUpdatedAt ?? quota.updatedAt;
+      setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+    }
   }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
+
+  const refreshAttributionPreciseUsage = useCallback((comparisonUpdatedAt: string) => {
+    if (!isSourceTokenCurrent(sourceToken)
+      || !Number.isFinite(Date.parse(comparisonUpdatedAt))) {
+      return;
+    }
+    const alreadyRequested = attributionPreciseRefreshRef.current === comparisonUpdatedAt;
+    attributionPreciseRefreshRef.current = comparisonUpdatedAt;
+    quotaComparisonObservationRef.current = alignQuotaComparisonObservation(
+      quotaComparisonObservationRef.current,
+      comparisonUpdatedAt,
+    );
+    const previousMillis = latestComparisonUpdatedAtRef.current === null
+      ? Number.NEGATIVE_INFINITY
+      : Date.parse(latestComparisonUpdatedAtRef.current);
+    if (Date.parse(comparisonUpdatedAt) > previousMillis) {
+      latestComparisonUpdatedAtRef.current = comparisonUpdatedAt;
+    }
+    if (alreadyRequested) return;
+    setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+  }, [isSourceTokenCurrent, sourceToken]);
+
+  const acknowledgeAttributionSafety = useCallback(async (
+    provenanceEpoch: string,
+    unsafeID: string,
+    throughGeneration: number,
+  ) => {
+    if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) return false;
+    const acknowledged = await source.acknowledgeAttributionSafety(
+      sourceToken,
+      provenanceEpoch,
+      unsafeID,
+      throughGeneration,
+    );
+    if (acknowledged && isSourceTokenCurrent(sourceToken)) {
+      // The acknowledgement changes native exact-index state. Only a fresh
+      // precise snapshot without the episode token may advance the baseline.
+      setLoadGeneration((current) => current + 1);
+    }
+    return acknowledged;
+  }, [isSourceTokenCurrent, source, sourceToken]);
+
+  const refreshAttributionSafety = useCallback(() => {
+    if (isSourceTokenCurrent(sourceToken)) {
+      setLoadGeneration((current) => current + 1);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -604,6 +719,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     sourceToken,
     source,
     onPreciseDashboard: mergePreciseSnapshot,
+    onPreciseDashboardFailure: markPreciseSnapshotFailure,
+    onPreciseDashboardStale: markPreciseSnapshotStale,
     onUsageCacheInitialized: markUsageCacheInitialized,
     onUsageCacheStatus: updateUsageCacheStatus,
     onQuota: mergeQuotaSnapshot,
@@ -647,6 +764,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     radarRefreshGeneration,
     reloadAll,
     reloadQuota,
+    refreshAttributionPreciseUsage,
+    acknowledgeAttributionSafety,
+    refreshAttributionSafety,
     acknowledgeUnread,
     retryLiveRateStream,
     updateCodexHome,

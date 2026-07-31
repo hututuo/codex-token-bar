@@ -48,6 +48,9 @@ export function DashboardApp() {
     updateCodexHome,
     restoreAutoCodexHome,
     reloadQuota,
+    refreshAttributionPreciseUsage,
+    acknowledgeAttributionSafety,
+    refreshAttributionSafety,
     updateProviderRepair,
     providerSourceKey,
     sourceToken,
@@ -116,6 +119,9 @@ export function DashboardApp() {
         onProviderRepairSnapshotChange={updateProviderRepair}
         onQuotaRefresh={reloadQuota}
         onQuotaRefreshIntervalChange={shellSettings.updateQuotaRefreshIntervalMs}
+        onAttributionPreciseRefreshNeeded={refreshAttributionPreciseUsage}
+        onAttributionSafetyAcknowledge={acknowledgeAttributionSafety}
+        onAttributionSafetyRefreshNeeded={refreshAttributionSafety}
         onToggleLiveRate={shellSettings.toggleLiveRate}
         onToggleFloating={shellSettings.toggleFloatingWindow}
         onToggleStatusTray={shellSettings.toggleStatusTrayLiveText}

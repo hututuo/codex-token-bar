@@ -151,6 +151,8 @@ fn usage_series(
                 },
                 five_hour_remaining_percent: None,
                 seven_day_remaining_percent: None,
+                source_contribution_epoch: None,
+                source_contributions: Vec::new(),
             }
         })
         .collect()

@@ -5,6 +5,10 @@ use super::{AccountInfo, LocalDataWarning, QuotaDiagnostic};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountQuotaBundle {
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution_identity: Option<QuotaAttributionIdentity>,
     pub account: AccountInfo,
     pub quota: QuotaSnapshot,
     pub quota_history_daily: Vec<QuotaHistoryDailyPoint>,
@@ -14,6 +18,16 @@ pub struct AccountQuotaBundle {
     pub warnings: Vec<LocalDataWarning>,
     #[serde(default)]
     pub diagnostics: Vec<QuotaDiagnostic>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaAttributionIdentity {
+    /// A one-way, domain-separated hash of the pinned Codex Home, stable account key,
+    /// and selected quota limit. Raw account and filesystem identities never cross IPC.
+    pub scope_key: String,
+    pub plan: String,
+    pub limit: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

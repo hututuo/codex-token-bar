@@ -1141,6 +1141,43 @@ button.quota-side-card:hover {
   min-width: 0;
 }
 
+.shared-attribution-trigger {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 148px;
+  height: 20px;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel-solid));
+  color: var(--text);
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.shared-attribution-trigger:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-solid));
+}
+
+.shared-attribution-trigger span {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--accent) 84%, var(--text));
+  font-size: 8px;
+  line-height: 1;
+}
+
+.shared-attribution-trigger b {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 8.5px;
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .quota-read-warning {
   grid-column: 2 / -1;
   display: flex;
@@ -1333,6 +1370,228 @@ button.quota-side-card:hover {
   justify-items: center;
   padding: clamp(58px, 8vh, 78px) 24px 24px;
   background: transparent;
+}
+
+.shared-attribution-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 162;
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  padding: clamp(58px, 8vh, 78px) 24px 24px;
+  background: rgb(12 24 42 / 0.2);
+  backdrop-filter: blur(3px);
+}
+
+.shared-attribution-panel {
+  display: grid;
+  gap: 12px;
+  width: min(670px, calc(100vw - 48px));
+  max-height: calc(100vh - 102px);
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 16px;
+  background: var(--panel-solid);
+  box-shadow: 0 24px 64px rgb(10 32 62 / 0.22);
+  padding: 16px;
+  color: var(--text);
+}
+
+.shared-attribution-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 12px;
+  align-items: start;
+}
+
+.shared-attribution-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.shared-attribution-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.04em;
+}
+
+.shared-attribution-head strong {
+  font-size: 18px;
+  font-weight: var(--weight-medium);
+}
+
+.shared-attribution-head button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 0;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 24px;
+}
+
+.shared-attribution-status {
+  display: grid;
+  gap: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel-soft));
+  padding: 9px 11px;
+}
+
+.shared-attribution-status--positiveResidual {
+  border-color: color-mix(in srgb, #df8020 32%, var(--line));
+  background: color-mix(in srgb, #df8020 8%, var(--panel-soft));
+}
+
+.shared-attribution-status--negativeResidual {
+  border-color: color-mix(in srgb, #df8020 32%, var(--line));
+  background: color-mix(in srgb, #df8020 8%, var(--panel-soft));
+}
+
+.shared-attribution-status--pricingVersionUnavailable {
+  border-color: color-mix(in srgb, #d24c58 30%, var(--line));
+  background: color-mix(in srgb, #d24c58 7%, var(--panel-soft));
+}
+
+.shared-attribution-status--attributionStorageUnavailable,
+.shared-attribution-status--localHistoryAmbiguous {
+  border-color: color-mix(in srgb, #df8020 32%, var(--line));
+  background: color-mix(in srgb, #df8020 8%, var(--panel-soft));
+}
+
+.shared-attribution-status strong {
+  font-size: 12px;
+  font-weight: var(--weight-medium);
+}
+
+.shared-attribution-status span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.shared-attribution-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.shared-attribution-metrics > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-soft) 66%, transparent);
+  padding: 10px 11px;
+}
+
+.shared-attribution-metrics span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.shared-attribution-metrics strong {
+  color: color-mix(in srgb, var(--accent) 82%, var(--text));
+  font-size: 20px;
+  font-weight: var(--weight-medium);
+  line-height: 1;
+}
+
+.shared-attribution-metrics .is-negative strong {
+  color: #cf771d;
+}
+
+.shared-attribution-formula {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--panel-soft) 76%, transparent);
+  padding: 10px 11px;
+}
+
+.shared-attribution-formula span {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.shared-attribution-formula code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.shared-attribution-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  overflow: hidden;
+}
+
+.shared-attribution-details > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shared-attribution-details > div:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+
+.shared-attribution-details > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.shared-attribution-details dt {
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.shared-attribution-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.shared-attribution-details a {
+  color: var(--accent);
+}
+
+.shared-attribution-note {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel-soft));
+  padding: 7px 9px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.shared-attribution-note--basis {
+  border-left-color: #9b6de0;
+}
+
+.shared-attribution-note--warning {
+  border-left-color: #df8020;
+  color: color-mix(in srgb, #df8020 76%, var(--text));
 }
 
 .reset-credit-panel {
@@ -7754,6 +8013,30 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   .quota-pace,
   .quota-read-warning {
     grid-column: 1 / -1;
+  }
+
+  .shared-attribution-layer {
+    padding: 20px 12px;
+  }
+
+  .shared-attribution-panel {
+    width: min(670px, calc(100vw - 24px));
+    max-height: calc(100vh - 40px);
+  }
+
+  .shared-attribution-metrics,
+  .shared-attribution-details {
+    grid-template-columns: 1fr;
+  }
+
+  .shared-attribution-details > div,
+  .shared-attribution-details > div:nth-child(odd) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .shared-attribution-details > div:nth-last-child(2) {
+    border-bottom: 1px solid var(--line);
   }
 }
 

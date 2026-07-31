@@ -1,6 +1,13 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { RecentUsagePoint } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
+import {
+  normalizeOfficialAPIPriceModel,
+  QUOTA_PRICE_MODEL_EVENT,
+  QUOTA_PRICE_MODEL_OPTIONS,
+  readStoredQuotaPriceModel,
+  writeStoredQuotaPriceModel,
+} from "../settings/quotaPriceModel";
 import {
   activeQuotaSelectionEndIndex,
   bridgedOptionalSmoothPath,
@@ -43,14 +50,6 @@ const PLOT_HEIGHT = 143;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
-const QUOTA_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
-const QUOTA_MODEL_EVENT = "codex-token-bar:quota-price-model";
-const QUOTA_MODEL_OPTIONS: Array<{ value: OfficialAPIPriceModel; label: string }> = [
-  { value: "gpt55", label: "官方 API · GPT-5.5" },
-  { value: "gpt54", label: "官方 API · GPT-5.4" },
-  { value: "gpt54Mini", label: "官方 API · GPT-5.4 mini" },
-];
-
 export function RecentUsageChart({
   recentUsage24h,
   recentUsage7d,
@@ -102,6 +101,15 @@ export function RecentUsageChart({
     setChartViewportWidth(scrollElement.clientWidth || CHART_WIDTH);
   }, [scrollLayout.latestScrollLeft, data.range, data.points.length]);
 
+  useEffect(() => {
+    const onPriceModel = (event: Event) => {
+      const next = normalizeOfficialAPIPriceModel((event as CustomEvent<unknown>).detail);
+      if (next) setQuotaModel(next);
+    };
+    window.addEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
+    return () => window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
+  }, []);
+
   function updateRange(next: RecentChartRange) {
     setRange(next);
     setHoveredIndex(null);
@@ -111,8 +119,7 @@ export function RecentUsageChart({
 
   function updateQuotaModel(next: OfficialAPIPriceModel) {
     setQuotaModel(next);
-    window.localStorage.setItem(QUOTA_MODEL_STORAGE_KEY, next);
-    window.dispatchEvent(new CustomEvent(QUOTA_MODEL_EVENT, { detail: next }));
+    writeStoredQuotaPriceModel(next);
   }
 
   function updateVisibility(key: keyof SeriesVisibility) {
@@ -180,8 +187,8 @@ export function RecentUsageChart({
           <label className="quota-model-select">
             <span>反推</span>
             <select value={quotaModel} onChange={(event) => updateQuotaModel(event.target.value as OfficialAPIPriceModel)}>
-              {QUOTA_MODEL_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
+              {QUOTA_PRICE_MODEL_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>官方 API · {option.label}</option>
               ))}
             </select>
           </label>
@@ -571,8 +578,7 @@ function readStoredVisibility(): SeriesVisibility {
 }
 
 function readStoredQuotaModel(): OfficialAPIPriceModel {
-  const stored = window.localStorage.getItem(QUOTA_MODEL_STORAGE_KEY);
-  return stored === "gpt54" || stored === "gpt54Mini" || stored === "gpt55" ? stored : "gpt55";
+  return readStoredQuotaPriceModel();
 }
 
 function chartAccessibility(

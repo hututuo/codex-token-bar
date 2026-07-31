@@ -13,6 +13,178 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn attribution_mutation_classifier_ignores_append_but_rejects_delete_rename_and_overflow() {
+    use notify::event::{CreateKind, DataChange, Flag, RemoveKind, RenameMode};
+
+    let home = PathBuf::from("/tmp/codex-home-watcher");
+    let session = home.join("sessions/2026/07/rollout.jsonl");
+    let active_rollout = home.join("active-rollouts/rollout.jsonl");
+    let unrelated = home.join("config.toml");
+    let append = NotifyEvent::new(NotifyEventKind::Modify(ModifyKind::Data(
+        DataChange::Content,
+    )))
+    .add_path(session.clone());
+    let create = NotifyEvent::new(NotifyEventKind::Create(CreateKind::File))
+        .add_path(session.clone());
+    let delete = NotifyEvent::new(NotifyEventKind::Remove(RemoveKind::File))
+        .add_path(session.clone());
+    let rename = NotifyEvent::new(NotifyEventKind::Modify(ModifyKind::Name(
+        RenameMode::Both,
+    )))
+    .add_path(session.clone());
+    let unrelated_delete = NotifyEvent::new(NotifyEventKind::Remove(RemoveKind::File))
+        .add_path(unrelated);
+    let active_rollout_delete = NotifyEvent::new(NotifyEventKind::Remove(RemoveKind::File))
+        .add_path(active_rollout);
+    let overflow = NotifyEvent::new(NotifyEventKind::Other).set_flag(Flag::Rescan);
+
+    assert!(!mutation_event_requires_continuity_cutover(&home, &append));
+    assert!(!mutation_event_requires_continuity_cutover(&home, &create));
+    assert!(mutation_event_requires_continuity_cutover(&home, &delete));
+    assert!(mutation_event_requires_continuity_cutover(&home, &rename));
+    assert!(mutation_event_requires_continuity_cutover(
+        &home,
+        &active_rollout_delete
+    ));
+    assert!(!mutation_event_requires_continuity_cutover(
+        &home,
+        &unrelated_delete
+    ));
+    assert!(mutation_event_requires_continuity_cutover(&home, &overflow));
+}
+
+#[test]
+fn attribution_mutation_watcher_covers_transient_state_rollout_outside_sessions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let active_dir = root.join("active-rollouts");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::create_dir_all(&active_dir).unwrap();
+    let stable = session_dir.join("rollout-stable.jsonl");
+    write_lines(
+        &stable,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let marker_path = observer_marker_path(&root).unwrap();
+    let watcher = start_attribution_mutation_watcher(&root).unwrap();
+
+    let transient = active_dir.join(
+        "rollout-019eoutside-0000-0000-0000-stateonly.jsonl",
+    );
+    write_lines(
+        &transient,
+        &[r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}"#],
+    );
+    create_state_database_with_rollout(
+        &root,
+        "019eoutside-0000-0000-0000-stateonly",
+        &transient,
+    );
+    fs::remove_file(&transient).unwrap();
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+    while !marker_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+    assert!(
+        marker_path.exists(),
+        "state rollout JSONL outside sessions must be continuity-covered"
+    );
+
+    drop(watcher);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn attribution_mutation_watcher_persists_a_create_consume_delete_gap() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let stable = session_dir.join("rollout-stable.jsonl");
+    write_lines(
+        &stable,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let marker_path = observer_marker_path(&root).unwrap();
+    assert!(!marker_path.exists());
+    let watcher = start_attribution_mutation_watcher(&root).unwrap();
+
+    let transient = session_dir.join("rollout-transient.jsonl");
+    write_lines(
+        &transient,
+        &[r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}"#],
+    );
+    fs::remove_file(&transient).unwrap();
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+    while !marker_path.exists() && Instant::now() < deadline {
+        std::thread::sleep(StdDuration::from_millis(20));
+    }
+    assert!(
+        marker_path.exists(),
+        "create-to-delete between exact polls must durably mark continuity unsafe"
+    );
+    let marker = precise_observer_identity(&root).unwrap();
+    assert!(marker.sequence > 0);
+    assert_ne!(marker.epoch, precise_process_observer_identity().epoch);
+
+    drop(watcher);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn attribution_mutation_watcher_rebinds_when_the_same_path_points_to_a_new_directory() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let retired_root = root.with_extension("retired-watch-root");
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    ensure_attribution_mutation_watcher(&root).unwrap();
+    let canonical_home = fs::canonicalize(&root).unwrap();
+    let first_identity = attribution_watch_root_physical_identity(&root).unwrap();
+    assert_eq!(
+        ATTRIBUTION_MUTATION_WATCHERS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&canonical_home)
+            .map(|entry| entry.physical_home_identity.as_str()),
+        Some(first_identity.as_str())
+    );
+
+    fs::rename(&root, &retired_root).unwrap();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let replacement_identity = attribution_watch_root_physical_identity(&root).unwrap();
+    assert_ne!(replacement_identity, first_identity);
+
+    ensure_attribution_mutation_watcher(&root).unwrap();
+    let rebound_identity = ATTRIBUTION_MUTATION_WATCHERS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&canonical_home)
+        .map(|entry| entry.physical_home_identity.clone());
+    assert_eq!(rebound_identity.as_deref(), Some(replacement_identity.as_str()));
+    let marker = precise_observer_identity(&root).unwrap();
+    assert!(marker.sequence > 0);
+    assert_ne!(marker.epoch, precise_process_observer_identity().epoch);
+
+    let removed = ATTRIBUTION_MUTATION_WATCHERS
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&canonical_home);
+    drop(removed);
+    clear_attribution_watcher_failure(&canonical_home);
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(retired_root).unwrap();
+}
+
+#[test]
 fn usage_summary_refresh_owner_releases_claim_during_unwind() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
@@ -162,6 +334,16 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     assert_eq!(initial.stats.total_tokens, 150);
     assert_eq!(initial.stats.total_calls, 2);
     assert_eq!(initial.stats.total_threads, 2);
+    let initial_epoch = initial.recent_usage_24h[0]
+        .source_contribution_epoch
+        .clone()
+        .unwrap();
+    assert_eq!(attribution_source_tokens(&initial), 150);
+    assert!(initial
+        .recent_usage_24h
+        .iter()
+        .flat_map(|point| &point.source_contributions)
+        .all(|source| source.source_id.len() == 64));
 
     write_lines(
         &changed_file,
@@ -173,14 +355,463 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     assert_eq!(rebuilt.stats.total_tokens, 105);
     assert_eq!(rebuilt.stats.total_calls, 2);
     assert_eq!(rebuilt.stats.total_threads, 2);
+    let rebuilt_epoch = rebuilt.recent_usage_24h[0]
+        .source_contribution_epoch
+        .clone()
+        .unwrap();
+    assert_ne!(rebuilt_epoch, initial_epoch);
+    assert_eq!(attribution_source_tokens(&rebuilt), 105);
 
     fs::remove_file(&deleted_file).unwrap();
     let after_delete = dashboard_snapshot(&root).unwrap();
     assert_eq!(after_delete.stats.total_tokens, 75);
     assert_eq!(after_delete.stats.total_calls, 1);
     assert_eq!(after_delete.stats.total_threads, 1);
+    assert_eq!(
+        after_delete.recent_usage_24h[0]
+            .source_contribution_epoch
+            .as_deref(),
+        Some(rebuilt_epoch.as_str())
+    );
+    assert_eq!(
+        attribution_source_tokens(&after_delete),
+        105,
+        "deleted sources remain in the durable sparse attribution ledger"
+    );
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_acknowledged() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join(
+        "rollout-019erewrite-1111-4111-8111-persistent000.jsonl",
+    );
+    let event = |tokens| {
+        serde_json::json!({
+            "timestamp": "2026-07-20T01:00:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": tokens,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": tokens,
+                    }
+                }
+            }
+        })
+        .to_string()
+    };
+    write_lines(&file, &[event(100)]);
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert!(!initial.precise_attribution_current_scan_unsafe);
+    assert!(initial.precise_attribution_unsafe_since_generation.is_none());
+
+    write_lines(&file, &[event(200)]);
+    let first_unsafe = dashboard_snapshot(&root).unwrap();
+    assert!(first_unsafe.precise_attribution_current_scan_unsafe);
+    let unsafe_epoch = first_unsafe
+        .precise_attribution_provenance_epoch
+        .clone()
+        .unwrap();
+    let unsafe_since = first_unsafe
+        .precise_attribution_unsafe_since_generation
+        .unwrap();
+    let unsafe_id = first_unsafe.precise_attribution_unsafe_id.clone().unwrap();
+
+    write_lines(&file, &[event(300)]);
+    let still_unsafe = dashboard_snapshot(&root).unwrap();
+    assert!(still_unsafe.precise_attribution_current_scan_unsafe);
+    assert_eq!(
+        still_unsafe.precise_attribution_provenance_epoch.as_deref(),
+        Some(unsafe_epoch.as_str())
+    );
+    assert_eq!(
+        still_unsafe.precise_attribution_unsafe_since_generation,
+        Some(unsafe_since)
+    );
+    assert_eq!(
+        still_unsafe.precise_attribution_unsafe_id.as_deref(),
+        Some(unsafe_id.as_str())
+    );
+    assert!(!acknowledge_attribution_safety(
+        &root,
+        &unsafe_epoch,
+        &unsafe_id,
+        still_unsafe.precise_attribution_generation.unwrap(),
+    )
+    .unwrap());
+
+    let clean = dashboard_snapshot(&root).unwrap();
+    assert!(!clean.precise_attribution_current_scan_unsafe);
+    assert_eq!(
+        clean.precise_attribution_unsafe_id.as_deref(),
+        Some(unsafe_id.as_str())
+    );
+    let clean_generation = clean.precise_attribution_generation.unwrap();
+    assert!(!acknowledge_attribution_safety(
+        &root,
+        &unsafe_epoch,
+        &unsafe_id,
+        clean_generation.saturating_sub(1),
+    )
+    .unwrap());
+    assert!(!acknowledge_attribution_safety(
+        &root,
+        &unsafe_epoch,
+        &Uuid::new_v4().to_string(),
+        clean_generation,
+    )
+    .unwrap());
+    assert!(!acknowledge_attribution_safety(
+        &root,
+        &unsafe_epoch,
+        &unsafe_id,
+        clean_generation.saturating_add(1),
+    )
+    .unwrap());
+    assert!(acknowledge_attribution_safety(
+        &root,
+        &unsafe_epoch,
+        &unsafe_id,
+        clean_generation,
+    )
+    .unwrap());
+    let acknowledged = ExactUsageIndex::open(&root)
+        .unwrap()
+        .attribution_safety_state()
+        .unwrap();
+    assert!(acknowledged.unsafe_since_generation.is_none());
+    assert!(acknowledged.unsafe_id.is_none());
+
+    let post_ack_clean = dashboard_snapshot(&root).unwrap();
+    assert!(!post_ack_clean.precise_attribution_current_scan_unsafe);
+    assert!(post_ack_clean.precise_attribution_unsafe_id.is_none());
+
+    write_lines(&file, &[event(400)]);
+    let second_unsafe = dashboard_snapshot(&root).unwrap();
+    assert!(second_unsafe.precise_attribution_current_scan_unsafe);
+    assert_ne!(
+        second_unsafe.precise_attribution_provenance_epoch.as_deref(),
+        Some(unsafe_epoch.as_str()),
+        "a later incident after acknowledgement must rotate provenance again"
+    );
+    let second_unsafe_id = second_unsafe.precise_attribution_unsafe_id.clone().unwrap();
+    assert_ne!(second_unsafe_id, unsafe_id);
+    let second_clean = dashboard_snapshot(&root).unwrap();
+    assert!(!second_clean.precise_attribution_current_scan_unsafe);
+    assert_eq!(
+        second_clean.precise_attribution_unsafe_id.as_deref(),
+        Some(second_unsafe_id.as_str())
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn persistent_duplicate_session_lineage_does_not_rotate_until_it_becomes_clean() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let first_dir = session_dir.join("first");
+    let second_dir = session_dir.join("second");
+    fs::create_dir_all(&first_dir).unwrap();
+    fs::create_dir_all(&second_dir).unwrap();
+    let duplicate_name = "rollout-019eduplicate-1111-4111-8111-000000000001.jsonl";
+    let first = first_dir.join(duplicate_name);
+    let second = second_dir.join(duplicate_name);
+    write_lines(
+        &first,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    write_lines(
+        &second,
+        &[r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}"#],
+    );
+
+    let first_unsafe = dashboard_snapshot(&root).unwrap();
+    assert!(first_unsafe.precise_attribution_current_scan_unsafe);
+    let unsafe_epoch = first_unsafe
+        .precise_attribution_provenance_epoch
+        .clone()
+        .unwrap();
+    let unsafe_id = first_unsafe.precise_attribution_unsafe_id.clone().unwrap();
+    let repeated = dashboard_snapshot(&root).unwrap();
+    assert!(repeated.precise_attribution_current_scan_unsafe);
+    assert_eq!(
+        repeated.precise_attribution_provenance_epoch.as_deref(),
+        Some(unsafe_epoch.as_str())
+    );
+    assert_eq!(
+        repeated.precise_attribution_unsafe_id.as_deref(),
+        Some(unsafe_id.as_str())
+    );
+
+    fs::remove_file(&second).unwrap();
+    let clean = dashboard_snapshot(&root).unwrap();
+    assert!(!clean.precise_attribution_current_scan_unsafe);
+    assert_eq!(
+        clean.precise_attribution_unsafe_id.as_deref(),
+        Some(unsafe_id.as_str())
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn incomplete_session_directory_scan_keeps_published_stats_and_blocks_safety_ack() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_file =
+        session_dir.join("rollout-019eincomplete-dir-0000-0000-0000-safe.jsonl");
+    write_lines(
+        &session_file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 100);
+    assert!(initial.precise_recent_usage_fresh);
+    assert!(!initial.precise_attribution_current_scan_unsafe);
+
+    let retained_session_dir = root.join("retained-sessions");
+    fs::rename(&session_dir, &retained_session_dir).unwrap();
+    fs::write(&session_dir, b"not-a-directory").unwrap();
+    let incomplete = dashboard_snapshot(&root).unwrap();
+    assert_eq!(
+        incomplete.stats.total_tokens, 100,
+        "an incomplete directory enumeration must keep the last published totals"
+    );
+    assert!(!incomplete.precise_recent_usage_fresh);
+    assert!(incomplete.precise_recent_usage_covered_at.is_none());
+    assert!(incomplete.precise_attribution_current_scan_unsafe);
+    assert!(incomplete.warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan" && warning.message.contains("本轮跳过该目录")
+    }));
+    let epoch = incomplete
+        .precise_attribution_provenance_epoch
+        .clone()
+        .unwrap();
+    let unsafe_id = incomplete.precise_attribution_unsafe_id.clone().unwrap();
+    assert!(!acknowledge_attribution_safety(
+        &root,
+        &epoch,
+        &unsafe_id,
+        incomplete.precise_attribution_generation.unwrap(),
+    )
+    .unwrap());
+
+    fs::remove_file(&session_dir).unwrap();
+    fs::rename(&retained_session_dir, &session_dir).unwrap();
+    let recovered = dashboard_snapshot(&root).unwrap();
+    assert_eq!(recovered.stats.total_tokens, 100);
+    assert!(recovered.precise_recent_usage_fresh);
+    assert!(recovered.precise_recent_usage_covered_at.is_some());
+    assert!(!recovered.precise_attribution_current_scan_unsafe);
+    assert_eq!(
+        recovered.precise_attribution_unsafe_id.as_deref(),
+        Some(unsafe_id.as_str()),
+        "a complete recovery scan must restore freshness without silently clearing the sticky unsafe episode"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_home_replacement_during_precise_scan_marks_the_generation_unsafe() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let retired_root = root.with_extension("retired-precise-root");
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eroot-swap-0000-0000-0000-safe.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    let replacement_root = root.clone();
+    let replacement_file_name = file.file_name().unwrap().to_owned();
+    let retired_for_hook = retired_root.clone();
+    ExactUsageIndex::set_after_file_commit_hook_for_testing(move |_| {
+        fs::rename(&replacement_root, &retired_for_hook).map_err(|error| error.to_string())?;
+        let replacement_sessions = replacement_root.join("sessions");
+        fs::create_dir_all(&replacement_sessions).map_err(|error| error.to_string())?;
+        write_lines(
+            &replacement_sessions.join(replacement_file_name),
+            &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":0,"total_tokens":900}}}}"#],
+        );
+        Ok(())
+    });
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 100);
+    assert!(!snapshot.precise_recent_usage_fresh);
+    assert!(snapshot.precise_attribution_current_scan_unsafe);
+    assert!(snapshot.warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan"
+            && warning.message.contains("同路径替换")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+    fs::remove_dir_all(retired_root).unwrap();
+}
+
+#[test]
+fn missing_active_rollout_marks_the_scan_unsafe_without_losing_session_totals() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eincomplete-state-0000-0000-0000-safe.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":0,"output_tokens":0,"total_tokens":120}}}}"#],
+    );
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+
+    let missing_rollout = root
+        .join("active-rollouts")
+        .join("rollout-019emissing-active-0000-0000-0000.jsonl");
+    create_state_database_with_rollout(
+        &root,
+        "019emissing-active-0000-0000-0000-rollout",
+        &missing_rollout,
+    );
+    let incomplete = dashboard_snapshot(&root).unwrap();
+    assert_eq!(incomplete.stats.total_tokens, 120);
+    assert!(!incomplete.precise_recent_usage_fresh);
+    assert!(incomplete.precise_attribution_current_scan_unsafe);
+    assert!(incomplete.warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan"
+            && warning.message.contains("无法确认 active rollout 会话文件边界")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn staged_jsonl_open_failure_is_a_structured_incomplete_scan() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019estage-open-stable-0000-0000-0000.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 100);
+
+    let disappearing =
+        session_dir.join("rollout-019estage-open-new-0000-0000-0000.jsonl");
+    let mut handle = std::io::BufWriter::new(fs::File::create(&disappearing).unwrap());
+    handle.write_all(br#"{"padding":""#).unwrap();
+    handle
+        .write_all(&vec![b'p'; EXACT_INDEX_CHUNK_SIZE as usize])
+        .unwrap();
+    handle.write_all(b"\"}\n").unwrap();
+    writeln!(
+        handle,
+        "{}",
+        r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}"#
+    )
+    .unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    ExactUsageIndex::set_before_staging_open_hook_for_testing(
+        fs::canonicalize(&disappearing).unwrap(),
+        |path| fs::remove_file(path).unwrap(),
+    );
+
+    let incomplete = dashboard_snapshot(&root).unwrap();
+    assert_eq!(incomplete.stats.total_tokens, 100);
+    assert!(!incomplete.precise_recent_usage_fresh);
+    assert!(incomplete.precise_attribution_current_scan_unsafe);
+    assert!(incomplete.warnings.iter().any(|warning| {
+        warning.source == "jsonl_scan" && warning.message.contains("暂存读取不完整")
+    }));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let stable_file = session_dir.join("rollout-019eledger-stable-0000-0000-0000.jsonl");
+    let transient_file = session_dir.join("rollout-019eledger-transient-0000-0000-0000.jsonl");
+    write_lines(
+        &stable_file,
+        &[r#"{"timestamp":"2026-07-20T03:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    let initial = dashboard_snapshot(&root).unwrap();
+    let epoch = initial.recent_usage_24h[0]
+        .source_contribution_epoch
+        .clone()
+        .unwrap();
+    assert_eq!(attribution_source_tokens(&initial), 100);
+
+    write_lines(
+        &transient_file,
+        &[r#"{"timestamp":"2026-07-20T03:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}"#],
+    );
+    assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 400);
+    fs::remove_file(&transient_file).unwrap();
+    assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 100);
+
+    let after_delete = dashboard_snapshot(&root).unwrap();
+    assert_eq!(after_delete.stats.total_tokens, 100);
+    assert_eq!(attribution_source_tokens(&after_delete), 400);
+    assert_eq!(
+        after_delete.recent_usage_24h[0]
+            .source_contribution_epoch
+            .as_deref(),
+        Some(epoch.as_str())
+    );
+
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .execute(
+                "DELETE FROM attribution_source_buckets WHERE tokens = 300",
+                [],
+            )
+            .unwrap(),
+        1
+    );
+    drop(connection);
+    let after_missing_row = dashboard_snapshot(&root).unwrap();
+    assert_ne!(
+        after_missing_row.recent_usage_24h[0]
+            .source_contribution_epoch
+            .as_deref(),
+        Some(epoch.as_str()),
+        "a logically missing durable ledger row must rotate provenance instead of understating local use"
+    );
+    assert_eq!(attribution_source_tokens(&after_missing_row), 100);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn attribution_source_tokens(snapshot: &DashboardSnapshot) -> u64 {
+    snapshot
+        .recent_usage_24h
+        .iter()
+        .flat_map(|point| &point.source_contributions)
+        .map(|source| source.tokens)
+        .sum()
 }
 
 #[test]
@@ -199,7 +830,8 @@ fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
             r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
         ],
     );
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
     write_lines(
         &file,
         &[
@@ -373,7 +1005,13 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     drop(handle);
     let initial_size = fs::metadata(&file).unwrap().len();
 
-    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+    assert_eq!(attribution_source_tokens(&initial), 120);
+    let initial_epoch = initial.recent_usage_24h[0]
+        .source_contribution_epoch
+        .clone()
+        .unwrap();
     let (cold_bytes, append_bytes_before) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(cold_bytes, initial_size);
     assert_eq!(append_bytes_before, 0);
@@ -388,6 +1026,14 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     let refreshed = dashboard_snapshot(&root).unwrap();
     assert_eq!(refreshed.stats.total_tokens, 150);
     assert_eq!(refreshed.stats.total_calls, 2);
+    assert_eq!(attribution_source_tokens(&refreshed), 150);
+    assert_eq!(
+        refreshed.recent_usage_24h[0]
+            .source_contribution_epoch
+            .as_deref(),
+        Some(initial_epoch.as_str()),
+        "a proven append must keep the same attribution provenance epoch"
+    );
     let (full_bytes_after, append_bytes_after) = ExactUsageIndex::scan_bytes_for_testing();
     assert_eq!(
         full_bytes_after, cold_bytes,
@@ -1249,6 +1895,9 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
     fs::create_dir_all(&session_dir).unwrap();
     let original_file = session_dir.join("rollout-019epublished-a-0000-0000-0000-exact.jsonl");
     write_lines(
@@ -1259,6 +1908,26 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
     let published_revision = ExactUsageIndex::open(&root).unwrap().revision().unwrap();
+    let read_attribution_state = || {
+        let connection = Connection::open(&index_path).unwrap();
+        let epoch = connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'attribution_provenance_epoch'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let tokens = connection
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM attribution_source_buckets WHERE provenance_epoch = ?1",
+                [&epoch],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        (epoch, tokens)
+    };
+    let (published_epoch, published_attribution_tokens) = read_attribution_state();
+    assert_eq!(published_attribution_tokens, 120);
 
     write_lines(
         &original_file,
@@ -1291,6 +1960,11 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
         120,
         "the UI-facing aggregate must remain on the last complete revision"
     );
+    assert_eq!(
+        read_attribution_state(),
+        (published_epoch.clone(), 120),
+        "an interrupted rewrite must not publish its new epoch or attribution ledger"
+    );
 
     let completed_revision = interrupted.sync(&root, &mut Vec::new()).unwrap();
     assert!(completed_revision > published_revision);
@@ -1301,6 +1975,9 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
             .total_tokens,
         151
     );
+    let (completed_epoch, completed_attribution_tokens) = read_attribution_state();
+    assert_ne!(completed_epoch, published_epoch);
+    assert_eq!(completed_attribution_tokens, 151);
     drop(interrupted);
 
     fs::remove_dir_all(root).unwrap();
@@ -1358,6 +2035,10 @@ fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
     write_lines(&file, &[original]);
     let initial = dashboard_snapshot(&root).unwrap();
     assert_eq!(initial.stats.total_tokens, 120);
+    let initial_epoch = initial.recent_usage_24h[0]
+        .source_contribution_epoch
+        .clone()
+        .unwrap();
     let original_modified = fs::metadata(&file).unwrap().modified().unwrap();
 
     write_lines(&file, &[rewritten]);
@@ -1375,6 +2056,13 @@ fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
     let rebuilt = dashboard_snapshot(&root).unwrap();
     assert_eq!(rebuilt.stats.total_tokens, 121);
     assert_eq!(rebuilt.stats.total_calls, 1);
+    assert_ne!(
+        rebuilt.recent_usage_24h[0]
+            .source_contribution_epoch
+            .as_deref(),
+        Some(initial_epoch.as_str()),
+        "a same-size rewrite with restored mtime must rotate attribution provenance"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -2466,6 +3154,8 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     let full = dashboard_snapshot(&root).unwrap();
     assert!(!full.recent_usage_24h.is_empty());
     assert!(!full.cache_usage.turns.is_empty());
+    assert!(full.precise_recent_usage_fresh);
+    assert!(full.precise_recent_usage_covered_at.is_some());
     let persisted = fs::read(&cache_path).unwrap();
     assert!(
         persisted.len() < 512 * 1024,
@@ -2473,10 +3163,15 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 16);
+    assert_eq!(json["version"], 17);
     assert_eq!(
         json["snapshot"]["recentUsage24h"].as_array().unwrap().len(),
         0
+    );
+    assert_eq!(json["snapshot"]["preciseRecentUsageFresh"], false);
+    assert_eq!(
+        json["snapshot"]["preciseRecentUsageCoveredAt"].as_str(),
+        full.precise_recent_usage_covered_at.as_deref()
     );
     assert_eq!(
         json["snapshot"]["cacheHitRanking"]
@@ -2504,9 +3199,24 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     let startup = cached_dashboard_snapshot_for_startup(&root).unwrap();
     assert!(startup.recent_usage_24h.is_empty());
     assert!(startup.cache_usage.turns.is_empty());
+    assert!(!startup.precise_recent_usage_fresh);
+    assert_eq!(
+        startup.precise_recent_usage_covered_at,
+        full.precise_recent_usage_covered_at
+    );
+    let compact_index = ExactUsageIndex::open(&root).unwrap();
+    let compact_signature = dashboard_index_signature(&root, compact_index.revision().unwrap());
+    let compact_summary = cached_dashboard_usage_summary(&root).unwrap();
+    store_usage_summary(compact_signature.clone(), compact_summary);
+    assert!(
+        cached_dashboard_snapshot(&compact_signature).is_none(),
+        "a compact persisted snapshot must never be promoted to full exact coverage"
+    );
     let rebuilt = dashboard_snapshot(&root).unwrap();
     assert!(!rebuilt.recent_usage_24h.is_empty());
     assert!(!rebuilt.cache_usage.turns.is_empty());
+    assert!(rebuilt.precise_recent_usage_fresh);
+    assert!(rebuilt.precise_recent_usage_covered_at.is_some());
     assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
 
     fs::remove_dir_all(root).unwrap();
@@ -2544,7 +3254,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v16_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v17_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -2580,7 +3290,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v16_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":16"#));
+    assert!(aggregate_cache_text().contains(r#""version":17"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -2589,7 +3299,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v16_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v16 aggregate should be reused after memory state is cleared"
+        "current v17 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();

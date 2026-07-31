@@ -23,7 +23,8 @@ pub use auto_resume::{
 };
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, RecentUsagePoint,
-    SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
+    RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage,
+    TurnCacheUsage,
 };
 pub use live::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
 pub use platform::{
@@ -34,8 +35,8 @@ pub use provider_repair::{
     ProviderRepairBackupRestoreStatus, ProviderRepairSnapshot, ProviderRepairStep,
 };
 pub use quota::{
-    AccountQuotaBundle, QuotaAvailability, QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit,
-    QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
+    AccountQuotaBundle, QuotaAttributionIdentity, QuotaAvailability, QuotaHistoryDailyPoint,
+    QuotaHistoryPoint, QuotaLimit, QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
 };
 pub use session_management::{
     SessionActionItemResult, SessionBatchActionResult, SessionContextMessage,

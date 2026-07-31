@@ -1,4 +1,10 @@
 import type { RecentUsagePoint } from "../../types/dashboard";
+import {
+  officialAPICostUSD as calculateOfficialAPICostUSD,
+  type OfficialAPIPriceModel,
+} from "../../settings/quotaPriceModel.ts";
+
+export type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
 export type RecentChartRange = "24h" | "7d" | "30d";
 
@@ -65,8 +71,6 @@ export interface RecentChartTimeMarker {
 }
 
 export type QuotaConsumptionConfidence = "measured" | "insufficientQuotaMovement" | "noTokenUsage";
-
-export type OfficialAPIPriceModel = "gpt55" | "gpt54" | "gpt54Mini";
 
 export interface QuotaConsumptionEstimate {
   selectedCostUSD: number;
@@ -574,7 +578,7 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
   const cachedInputTokens = points.reduce((total, point) => total + point.cachedInputTokens, 0);
   const outputTokens = points.reduce((total, point) => total + (point.outputTokens ?? Math.max(point.tokens - point.inputTokens, 0)), 0);
   const calls = points.reduce((total, point) => total + point.calls, 0);
-  const costUSD = officialAPICostUSD(inputTokens, cachedInputTokens, outputTokens, "gpt55");
+  const costUSD = officialAPICostUSD(inputTokens, cachedInputTokens, outputTokens, "gpt56Sol");
   return {
     inputTokens,
     cachedInputTokens,
@@ -663,25 +667,13 @@ export function officialAPICostUSD(
   outputTokens: number,
   priceModel: OfficialAPIPriceModel,
 ): number {
-  const prices = officialAPIPrices(priceModel);
-  const cachedInput = Math.max(0, Math.min(cachedInputTokens, inputTokens));
-  const uncachedInput = Math.max(0, inputTokens - cachedInput);
-  return (
-    uncachedInput * prices.inputUSDPerMillion
-    + cachedInput * prices.cachedInputUSDPerMillion
-    + Math.max(0, outputTokens) * prices.outputUSDPerMillion
-  ) / 1_000_000;
-}
-
-function officialAPIPrices(priceModel: OfficialAPIPriceModel) {
-  switch (priceModel) {
-    case "gpt55":
-      return { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 };
-    case "gpt54":
-      return { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 };
-    case "gpt54Mini":
-      return { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 };
-  }
+  return calculateOfficialAPICostUSD(
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    priceModel,
+    "current",
+  );
 }
 
 function latestPresent(values: Array<number | null>): number | null {

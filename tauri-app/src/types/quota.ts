@@ -5,6 +5,13 @@ export interface AccountInfo {
   planLabel: string;
 }
 
+export interface QuotaAttributionIdentity {
+  /** Opaque native hash; never contains the raw account or limit identifier. */
+  scopeKey: string;
+  plan: string;
+  limit: string;
+}
+
 export interface QuotaLimit {
   label: string;
   availability: "measured" | "unavailable" | "absent";
@@ -60,6 +67,8 @@ export interface QuotaSnapshot {
 }
 
 export interface AccountQuotaBundle {
+  updatedAt: string;
+  attributionIdentity?: QuotaAttributionIdentity | null;
   account: AccountInfo;
   quota: QuotaSnapshot;
   quotaHistoryDaily: QuotaHistoryDailyPoint[];

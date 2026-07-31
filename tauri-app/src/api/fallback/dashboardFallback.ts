@@ -6,6 +6,18 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
   const now = new Date();
   return {
     generatedAt: now.toISOString(),
+    preciseRecentUsageCoveredAt: null,
+    preciseRecentUsageFresh: false,
+    preciseObserverEpoch: null,
+    preciseObserverStartedAtUnixMicros: null,
+    preciseObserverSequence: null,
+    preciseAttributionProvenanceEpoch: null,
+    preciseAttributionGeneration: null,
+    preciseAttributionUnsafeSinceGeneration: null,
+    preciseAttributionUnsafeId: null,
+    preciseAttributionCurrentScanUnsafe: false,
+    quotaUpdatedAt: null,
+    attributionIdentity: null,
     account: {
       displayName: "账户待读取",
       planLabel: "计划待读取",

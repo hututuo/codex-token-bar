@@ -129,6 +129,80 @@ fn shared_quota_history_identity_fixture_is_strict_and_fail_closed() {
 }
 
 #[test]
+fn attribution_identity_serializes_only_hashed_scope_and_canonical_dimensions() {
+    let home = "/Users/private-account/.codex";
+    let stable_account_key = "sub:private-account-id";
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new(home),
+        Some(stable_account_key),
+        "chatgpt-pro",
+        "codex",
+    )
+    .unwrap();
+    let public_identity = identity.attribution_identity();
+
+    assert_eq!(public_identity.plan, "Pro");
+    assert_eq!(public_identity.limit, "codex");
+    assert_eq!(public_identity.scope_key.len(), "sha256:".len() + 64);
+    assert!(public_identity.scope_key.starts_with("sha256:"));
+    assert!(public_identity.scope_key["sha256:".len()..]
+        .chars()
+        .all(|character| character.is_ascii_hexdigit()));
+
+    let serialized = serde_json::to_value(&public_identity).unwrap();
+    assert_eq!(serialized["scopeKey"], public_identity.scope_key);
+    assert_eq!(serialized["plan"], "Pro");
+    assert_eq!(serialized["limit"], "codex");
+    assert!(serialized.get("scope_key").is_none());
+    let serialized_text = serialized.to_string();
+    assert!(!serialized_text.contains(home));
+    assert!(!serialized_text.contains(stable_account_key));
+
+    let mut bundle = bundle("本地用户", 0.2, 1_781_715_600, 0.4, 1_782_144_492);
+    bundle.updated_at = "2026-07-31T08:20:35Z".into();
+    bundle.attribution_identity = Some(public_identity.clone());
+    let bundle_json = serde_json::to_value(&bundle).unwrap();
+    assert_eq!(bundle_json["updatedAt"], "2026-07-31T08:20:35Z");
+    assert_eq!(
+        bundle_json["attributionIdentity"]["scopeKey"],
+        public_identity.scope_key
+    );
+    assert!(bundle_json.get("updated_at").is_none());
+    assert!(bundle_json.get("attribution_identity").is_none());
+    let bundle_text = bundle_json.to_string();
+    assert!(!bundle_text.contains(home));
+    assert!(!bundle_text.contains(stable_account_key));
+
+    let other_home = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/Users/other/.codex"),
+        Some(stable_account_key),
+        "Pro",
+        "codex",
+    )
+    .unwrap()
+    .attribution_identity();
+    let other_account = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new(home),
+        Some("sub:other-account-id"),
+        "Pro",
+        "codex",
+    )
+    .unwrap()
+    .attribution_identity();
+    let other_limit = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new(home),
+        Some(stable_account_key),
+        "Pro",
+        "gpt-5.3-codex-spark",
+    )
+    .unwrap()
+    .attribution_identity();
+    assert_ne!(public_identity.scope_key, other_home.scope_key);
+    assert_ne!(public_identity.scope_key, other_account.scope_key);
+    assert_ne!(public_identity.scope_key, other_limit.scope_key);
+}
+
+#[test]
 fn legacy_shared_quota_history_is_copied_to_tauri_support_on_first_use() {
     let root = temp_dir_path("legacy-migration");
     let _env = app_paths::app_path_test_env_guard(&[
@@ -1716,6 +1790,8 @@ fn bundle_with_plan(
     seven_reset: i64,
 ) -> AccountQuotaBundle {
     AccountQuotaBundle {
+        updated_at: "2026-07-31T00:00:00Z".into(),
+        attribution_identity: None,
         account: AccountInfo {
             display_name: name.into(),
             plan_label: plan_label.into(),
@@ -1866,5 +1942,7 @@ fn recent_point(start_unix: i64) -> RecentUsagePoint {
         cache_hit_rate: None,
         five_hour_remaining_percent: None,
         seven_day_remaining_percent: None,
+        source_contribution_epoch: None,
+        source_contributions: Vec::new(),
     }
 }

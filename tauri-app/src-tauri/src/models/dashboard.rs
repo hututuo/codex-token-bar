@@ -6,6 +6,38 @@ use super::{AccountInfo, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot};
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
     pub generated_at: String,
+    /// Time through which the last successful full exact-usage sync proved the
+    /// five-minute recent-usage series complete. This deliberately does not
+    /// advance for the compact startup/metadata-only snapshot.
+    #[serde(default)]
+    pub precise_recent_usage_covered_at: Option<String>,
+    /// Explicit trust bit for the recent-usage series. Frontends must not infer
+    /// this from warning copy or from a non-empty placeholder canvas.
+    #[serde(default)]
+    pub precise_recent_usage_fresh: bool,
+    /// Per-native-process identity for detecting time in which no exact-index
+    /// observer was alive. Never trusted from the persisted startup cache.
+    #[serde(default)]
+    pub precise_observer_epoch: Option<String>,
+    #[serde(default)]
+    pub precise_observer_started_at_unix_micros: Option<u64>,
+    #[serde(default)]
+    pub precise_observer_sequence: Option<u64>,
+    /// Sticky exact-index safety incident. It remains present after the first
+    /// clean scan until a durable synthetic cutover acknowledges that exact
+    /// provenance/generation.
+    #[serde(default)]
+    pub precise_attribution_provenance_epoch: Option<String>,
+    #[serde(default)]
+    pub precise_attribution_generation: Option<u64>,
+    #[serde(default)]
+    pub precise_attribution_unsafe_since_generation: Option<u64>,
+    #[serde(default)]
+    pub precise_attribution_unsafe_id: Option<String>,
+    /// True while this complete source scan still sees a rewrite, duplicate
+    /// session lineage, or ledger-integrity loss. No baseline may advance.
+    #[serde(default)]
+    pub precise_attribution_current_scan_unsafe: bool,
     pub account: AccountInfo,
     pub stats: DashboardStats,
     pub quota: QuotaSnapshot,
@@ -64,6 +96,23 @@ pub struct RecentUsagePoint {
     pub cache_hit_rate: Option<f64>,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,
+    /// Stable only while the native exact index can prove one append-only lineage.
+    #[serde(default)]
+    pub source_contribution_epoch: Option<String>,
+    /// Sparse anonymous source totals for this fixed five-minute bucket.
+    #[serde(default)]
+    pub source_contributions: Vec<RecentUsageSourceContribution>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentUsageSourceContribution {
+    pub source_id: String,
+    pub tokens: u64,
+    pub calls: u32,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -2,13 +2,14 @@ use crate::core::app_paths;
 use crate::core::sqlite;
 use crate::core::time_series_timeline::LONG_RECENT_POINT_COUNT;
 use crate::models::{
-    AccountQuotaBundle, LocalDataWarning, QuotaAvailability, QuotaHistoryDailyPoint,
-    QuotaHistoryPoint, QuotaLimit, QuotaSnapshot,
+    AccountQuotaBundle, LocalDataWarning, QuotaAttributionIdentity, QuotaAvailability,
+    QuotaHistoryDailyPoint, QuotaHistoryPoint, QuotaLimit, QuotaSnapshot,
 };
 #[cfg(test)]
 use crate::models::RecentUsagePoint;
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, Result as SqlResult};
+use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -87,6 +88,30 @@ impl QuotaHistoryIdentity {
             limit_id,
         })
     }
+
+    pub(crate) fn attribution_identity(&self) -> QuotaAttributionIdentity {
+        let mut hasher = Sha256::new();
+        hasher.update(b"codex-token-bar/quota-attribution-scope/v1\0");
+        update_length_prefixed_hash(&mut hasher, self.home_identity.as_bytes());
+        update_length_prefixed_hash(&mut hasher, self.stable_account_key.as_bytes());
+        update_length_prefixed_hash(&mut hasher, self.limit_id.as_bytes());
+        let scope_key = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        QuotaAttributionIdentity {
+            scope_key: format!("sha256:{scope_key}"),
+            plan: self.plan_type.clone(),
+            limit: self.limit_id.clone(),
+        }
+    }
+}
+
+fn update_length_prefixed_hash(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
 }
 
 #[derive(Clone, Debug, Default)]

@@ -1,5 +1,15 @@
 import type { DashboardStats } from "../../types/usage";
-import type { OfficialAPIPriceModel } from "../recentUsageChart/model";
+import {
+  officialAPICostUSD,
+  priceModelTitle,
+  type OfficialAPIPriceModel,
+} from "../../settings/quotaPriceModel.ts";
+
+export {
+  isOfficialAPIPriceModel,
+  QUOTA_PRICE_MODEL_EVENT,
+  QUOTA_PRICE_MODEL_STORAGE_KEY,
+} from "../../settings/quotaPriceModel.ts";
 
 export interface LifetimeTokenBreakdown {
   inputTokens: number;
@@ -24,9 +34,6 @@ export interface LifetimeSavingsPresentation {
   labelText: string;
   helpText: string;
 }
-
-export const QUOTA_PRICE_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
-export const QUOTA_PRICE_MODEL_EVENT = "codex-token-bar:quota-price-model";
 
 export function lifetimeBreakdownFromStats(stats: DashboardStats): LifetimeTokenBreakdown {
   const inputTokens = Math.max(0, stats.totalInputTokens ?? 0);
@@ -78,33 +85,6 @@ export function estimateLifetimeSavings({
   };
 }
 
-function officialAPICostUSD(
-  inputTokens: number,
-  cachedInputTokens: number,
-  outputTokens: number,
-  priceModel: OfficialAPIPriceModel,
-): number {
-  const prices = officialAPIPrices(priceModel);
-  const cachedInput = Math.max(0, Math.min(cachedInputTokens, inputTokens));
-  const uncachedInput = Math.max(0, inputTokens - cachedInput);
-  return (
-    uncachedInput * prices.inputUSDPerMillion
-    + cachedInput * prices.cachedInputUSDPerMillion
-    + Math.max(0, outputTokens) * prices.outputUSDPerMillion
-  ) / 1_000_000;
-}
-
-function officialAPIPrices(priceModel: OfficialAPIPriceModel) {
-  switch (priceModel) {
-    case "gpt55":
-      return { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 };
-    case "gpt54":
-      return { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 };
-    case "gpt54Mini":
-      return { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 };
-  }
-}
-
 export function inclusiveCalendarMonths(first: Date, now: Date): number {
   if (first.getTime() > now.getTime()) return 0;
   return Math.max(
@@ -149,18 +129,6 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
     labelText: "API 等值（估）",
     helpText: `按 ${modelTitle} 当前 API 单价估算为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.normalizedPlanName} 没有公开固定月费，暂不计算净节省。`,
   };
-}
-
-export function isOfficialAPIPriceModel(value: string | null): value is OfficialAPIPriceModel {
-  return value === "gpt55" || value === "gpt54" || value === "gpt54Mini";
-}
-
-function priceModelTitle(model: OfficialAPIPriceModel): string {
-  switch (model) {
-    case "gpt55": return "GPT-5.5";
-    case "gpt54": return "GPT-5.4";
-    case "gpt54Mini": return "GPT-5.4 mini";
-  }
 }
 
 function compactMoney(value: number): string {

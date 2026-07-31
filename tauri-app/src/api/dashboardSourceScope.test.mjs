@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("usage summary and quota IPC calls forward the exact source token", async () => {
+test("usage, quota, and attribution safety IPC calls forward the exact source token", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const calls = [];
   Object.defineProperty(globalThis, "window", {
@@ -12,7 +12,9 @@ test("usage summary and quota IPC calls forward the exact source token", async (
       __TAURI_INTERNALS__: {
         invoke(command, args) {
           calls.push({ args, command });
-          return Promise.resolve(command === "read_account_quota" ? { quota: {} } : { totalTokens: 1 });
+          if (command === "read_account_quota") return Promise.resolve({ quota: {} });
+          if (command === "acknowledge_attribution_safety") return Promise.resolve(true);
+          return Promise.resolve({ totalTokens: 1 });
         },
       },
       clearTimeout: globalThis.clearTimeout.bind(globalThis),
@@ -24,6 +26,7 @@ test("usage summary and quota IPC calls forward the exact source token", async (
   try {
     await withSsrModules(async (load) => {
       const {
+        acknowledgeAttributionSafety,
         readAccountQuota,
         readUsageSummarySnapshot,
       } = await load("/src/api/dashboardClient.ts");
@@ -35,6 +38,12 @@ test("usage summary and quota IPC calls forward the exact source token", async (
 
       await readUsageSummarySnapshot(sourceToken);
       await readAccountQuota(sourceToken, true);
+      assert.equal(await acknowledgeAttributionSafety(
+        sourceToken,
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        9,
+      ), true);
 
       assert.deepEqual(calls, [
         {
@@ -44,6 +53,15 @@ test("usage summary and quota IPC calls forward the exact source token", async (
         {
           command: "read_account_quota",
           args: { forceRefresh: true, sourceToken },
+        },
+        {
+          command: "acknowledge_attribution_safety",
+          args: {
+            provenanceEpoch: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            sourceToken,
+            throughGeneration: 9,
+            unsafeId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          },
         },
       ]);
     });

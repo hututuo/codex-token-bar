@@ -3,6 +3,10 @@ use crate::core::app_paths;
 use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
+use notify::event::ModifyKind;
+use notify::{
+    Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -10,9 +14,10 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration as StdDuration, Instant, SystemTime};
+use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
+use uuid::Uuid;
 
 #[cfg(test)]
 mod aggregates;
@@ -35,14 +40,393 @@ static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = Once
 static USAGE_SUMMARY_SOURCE_SCAN_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, bool)>>> =
     OnceLock::new();
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
+static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
+static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<Mutex<HashMap<PathBuf, AttributionMutationWatcher>>> =
+    OnceLock::new();
+static ATTRIBUTION_MARKER_WRITE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+static ATTRIBUTION_WATCHER_FAILURES: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 16;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 17;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
 const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreciseObserverIdentity {
+    epoch: String,
+    started_at_unix_micros: u64,
+    sequence: u64,
+}
+
+struct AttributionMutationWatcher {
+    _watcher: RecommendedWatcher,
+    physical_home_identity: String,
+}
+
+#[cfg(unix)]
+fn attribution_watch_root_physical_identity(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let handle = fs::File::open(path).map_err(|error| {
+        format!(
+            "无法打开本地用量监听目录以核对物理身份 {}：{error}",
+            path.display()
+        )
+    })?;
+    let metadata = handle.metadata().map_err(|error| {
+        format!(
+            "无法读取本地用量监听目录物理身份 {}：{error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!("本地用量监听路径不是目录：{}", path.display()));
+    }
+    Ok(format!("unix:{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn attribution_watch_root_physical_identity(path: &Path) -> Result<String, String> {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO,
+    };
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let handle = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "无法打开本地用量监听目录以核对物理身份 {}：{error}",
+                path.display()
+            )
+        })?;
+    let mut info = FILE_ID_INFO::default();
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            handle.as_raw_handle() as _,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).unwrap_or(u32::MAX),
+        )
+    };
+    if succeeded == 0 {
+        return Err(format!(
+            "无法读取 Windows 本地用量监听目录物理身份 {}：{}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    let file_id = info
+        .FileId
+        .Identifier
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("windows:{}:{file_id}", info.VolumeSerialNumber))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn attribution_watch_root_physical_identity(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "无法读取本地用量监听目录物理身份 {}：{error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!("本地用量监听路径不是目录：{}", path.display()));
+    }
+    Ok(format!(
+        "portable:{}:{:?}:{:?}",
+        metadata.len(),
+        metadata.created().ok(),
+        metadata.modified().ok()
+    ))
+}
+
+fn precise_process_observer_identity() -> &'static PreciseObserverIdentity {
+    PRECISE_PROCESS_OBSERVER_IDENTITY.get_or_init(|| PreciseObserverIdentity {
+        epoch: Uuid::new_v4().to_string(),
+        started_at_unix_micros: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        sequence: 0,
+    })
+}
+
+fn observer_marker_path(codex_home: &Path) -> Result<PathBuf, String> {
+    let database = exact_usage_index::database_path(codex_home)?;
+    let mut marker = database.as_os_str().to_os_string();
+    marker.push(".attribution-continuity-unsafe.json");
+    Ok(PathBuf::from(marker))
+}
+
+fn precise_observer_identity(codex_home: &Path) -> Result<PreciseObserverIdentity, String> {
+    let canonical_home = fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
+    if let Some(error) = ATTRIBUTION_WATCHER_FAILURES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&canonical_home)
+        .cloned()
+    {
+        return Err(error);
+    }
+    let process = precise_process_observer_identity().clone();
+    let marker_path = observer_marker_path(codex_home)?;
+    let bytes = match fs::read(&marker_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(process),
+        Err(error) => {
+            return Err(format!(
+                "无法读取本地用量连续性标记 {}：{error}",
+                marker_path.display()
+            ))
+        }
+    };
+    let marker: PreciseObserverIdentity = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "本地用量连续性标记损坏，已停止共享账号归因：{}（{error}）",
+            marker_path.display()
+        )
+    })?;
+    if Uuid::parse_str(&marker.epoch).is_err() || marker.started_at_unix_micros == 0 {
+        return Err("本地用量连续性标记字段无效，已停止共享账号归因".into());
+    }
+    if observer_identity_order(&marker) > observer_identity_order(&process) {
+        Ok(marker)
+    } else {
+        Ok(process)
+    }
+}
+
+fn observer_identity_order(identity: &PreciseObserverIdentity) -> (u64, u64) {
+    (identity.started_at_unix_micros, identity.sequence)
+}
+
+fn write_attribution_continuity_unsafe_marker(
+    codex_home: &Path,
+    reason: &str,
+) -> Result<(), String> {
+    let _guard = ATTRIBUTION_MARKER_WRITE_GATE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let marker_path = observer_marker_path(codex_home)?;
+    if let Some(parent) = marker_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "无法创建本地用量连续性目录 {}：{error}",
+                parent.display()
+            )
+        })?;
+    }
+    let previous = fs::read(&marker_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<PreciseObserverIdentity>(&bytes).ok());
+    let process = precise_process_observer_identity();
+    let now_micros: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    let previous_sequence = previous.as_ref().map(|value| value.sequence).unwrap_or(0);
+    let previous_started_at = previous
+        .as_ref()
+        .map(|value| value.started_at_unix_micros)
+        .unwrap_or(0);
+    let marker = PreciseObserverIdentity {
+        epoch: Uuid::new_v4().to_string(),
+        started_at_unix_micros: now_micros
+            .max(process.started_at_unix_micros)
+            .max(previous_started_at),
+        sequence: previous_sequence.saturating_add(1),
+    };
+    let data = serde_json::to_vec(&marker)
+        .map_err(|error| format!("无法编码本地用量连续性标记（{reason}）：{error}"))?;
+    crate::core::atomic_file::write_atomically(&marker_path, &data).map_err(|error| {
+        format!(
+            "无法持久化本地用量连续性标记 {}（{reason}）：{error}",
+            marker_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn is_monitored_exact_source_path(codex_home: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(codex_home) else {
+        return false;
+    };
+    let Some(first) = relative.components().next() else {
+        return false;
+    };
+    let first = first.as_os_str().to_string_lossy();
+    first.eq_ignore_ascii_case("sessions")
+        || first.eq_ignore_ascii_case("archived_sessions")
+        || relative
+            .extension()
+            .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("jsonl"))
+}
+
+fn mutation_event_requires_continuity_cutover(codex_home: &Path, event: &NotifyEvent) -> bool {
+    if event.need_rescan() {
+        return true;
+    }
+    let touches_exact_source = event
+        .paths
+        .iter()
+        .any(|path| is_monitored_exact_source_path(codex_home, path));
+    if !touches_exact_source {
+        return false;
+    }
+    matches!(
+        event.kind,
+        NotifyEventKind::Remove(_)
+            | NotifyEventKind::Modify(ModifyKind::Name(_))
+            | NotifyEventKind::Any
+            | NotifyEventKind::Other
+    )
+}
+
+fn record_attribution_watcher_failure(codex_home: &Path, error: String) {
+    ATTRIBUTION_WATCHER_FAILURES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(codex_home.to_path_buf(), error);
+}
+
+fn clear_attribution_watcher_failure(codex_home: &Path) {
+    ATTRIBUTION_WATCHER_FAILURES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(codex_home);
+}
+
+fn start_attribution_mutation_watcher(codex_home: &Path) -> Result<RecommendedWatcher, String> {
+    let canonical_home = fs::canonicalize(codex_home).map_err(|error| {
+        format!(
+            "无法确认本地用量监听目录 {}：{error}",
+            codex_home.display()
+        )
+    })?;
+    let callback_home = canonical_home.clone();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<NotifyEvent>| {
+        let reason = match result {
+            Ok(event) if mutation_event_requires_continuity_cutover(&callback_home, &event) => {
+                Some(format!("session_mutation:{:?}", event.kind))
+            }
+            Ok(_) => None,
+            Err(error) => Some(format!("watcher_drop_or_overflow:{error}")),
+        };
+        let Some(reason) = reason else {
+            return;
+        };
+        match write_attribution_continuity_unsafe_marker(&callback_home, &reason) {
+            Ok(()) => clear_attribution_watcher_failure(&callback_home),
+            Err(error) => record_attribution_watcher_failure(&callback_home, error),
+        }
+    })
+    .map_err(|error| format!("无法启动本地用量目录监听：{error}"))?;
+    watcher
+        .watch(&canonical_home, RecursiveMode::Recursive)
+        .map_err(|error| format!("无法监听本地会话目录 {}：{error}", canonical_home.display()))?;
+    Ok(watcher)
+}
+
+fn ensure_attribution_mutation_watcher(codex_home: &Path) -> Result<(), String> {
+    let canonical_home = fs::canonicalize(codex_home).map_err(|error| {
+        format!(
+            "无法确认本地用量监听目录 {}：{error}",
+            codex_home.display()
+        )
+    })?;
+    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
+    let watchers = ATTRIBUTION_MUTATION_WATCHERS
+        .get_or_init(|| Mutex::new(HashMap::new()));
+    let mut watchers = watchers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    watchers.retain(|path, _| path.exists());
+    if watchers.get(&canonical_home).is_some_and(|entry| {
+        entry.physical_home_identity == physical_home_identity
+    }) {
+        return precise_observer_identity(&canonical_home).map(|_| ());
+    }
+    let replaced_physical_root = watchers.remove(&canonical_home).is_some();
+    if replaced_physical_root {
+        if let Err(error) = write_attribution_continuity_unsafe_marker(
+            &canonical_home,
+            "watch_root_physical_identity_changed",
+        ) {
+            record_attribution_watcher_failure(&canonical_home, error.clone());
+            return Err(error);
+        }
+    }
+    // Clear an earlier start failure before registering the callback. Clearing
+    // after `watch()` would race an immediately delivered native event and
+    // could erase a real marker-write failure reported by that callback.
+    clear_attribution_watcher_failure(&canonical_home);
+    let watcher = match start_attribution_mutation_watcher(&canonical_home) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            record_attribution_watcher_failure(&canonical_home, error.clone());
+            return Err(error);
+        }
+    };
+    let rebound_physical_home_identity =
+        match attribution_watch_root_physical_identity(&canonical_home) {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(watcher);
+                record_attribution_watcher_failure(&canonical_home, error.clone());
+                return Err(error);
+            }
+        };
+    if rebound_physical_home_identity != physical_home_identity {
+        drop(watcher);
+        let reason = "watch_root_changed_while_binding";
+        if let Err(error) =
+            write_attribution_continuity_unsafe_marker(&canonical_home, reason)
+        {
+            record_attribution_watcher_failure(&canonical_home, error.clone());
+            return Err(error);
+        }
+        let error = format!(
+            "本地用量监听目录在重绑期间已被替换，已停止本轮共享账号归因：{}",
+            canonical_home.display()
+        );
+        record_attribution_watcher_failure(&canonical_home, error.clone());
+        return Err(error);
+    }
+    watchers.insert(
+        canonical_home,
+        AttributionMutationWatcher {
+            _watcher: watcher,
+            physical_home_identity: rebound_physical_home_identity,
+        },
+    );
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct IndexedSessionMetadata {
@@ -143,12 +527,28 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut warnings = Vec::new();
     let mut index = ExactUsageIndex::open(codex_home)?;
+    #[cfg(not(test))]
+    ensure_attribution_mutation_watcher(codex_home)?;
+    // This is a conservative coverage watermark, captured before the full sync
+    // starts. Events appended while sync/aggregation is running may or may not
+    // enter this generation, so publishing the return time would overclaim.
+    let precise_coverage_at = OffsetDateTime::now_utc();
     let revision = index.sync(codex_home, &mut warnings)?;
+    #[cfg(not(test))]
+    ensure_attribution_mutation_watcher(codex_home)?;
+    let attribution_safety = index.attribution_safety_state()?;
+    let observer_identity = precise_observer_identity(codex_home)?;
     let signature = dashboard_index_signature(codex_home, revision);
-    if let Some(mut snapshot) = cached_dashboard_snapshot(&signature) {
+    if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
         let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+        let mut snapshot = snapshot_with_precise_coverage(
+            snapshot,
+            precise_coverage_at,
+            &observer_identity,
+            &attribution_safety,
+        );
         merge_usage_cache_marker_warning(&mut snapshot);
-        return Ok(snapshot_with_generated_at(snapshot));
+        return Ok(snapshot);
     }
     if index.is_empty()? {
         return Err(no_token_events_error(&warnings));
@@ -161,9 +561,32 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+    let precise_scan_complete = !attribution_safety.current_scan_incomplete;
+    let precise_recent_usage_covered_at = precise_scan_complete.then(|| {
+        precise_coverage_at
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
+    });
 
     let mut snapshot = DashboardSnapshot {
-        generated_at,
+        generated_at: generated_at.clone(),
+        precise_recent_usage_covered_at,
+        precise_recent_usage_fresh: precise_scan_complete,
+        precise_observer_epoch: precise_scan_complete
+            .then_some(observer_identity.epoch.clone()),
+        precise_observer_started_at_unix_micros: precise_scan_complete
+            .then_some(observer_identity.started_at_unix_micros),
+        precise_observer_sequence: precise_scan_complete
+            .then_some(observer_identity.sequence),
+        precise_attribution_provenance_epoch: Some(
+            attribution_safety.provenance_epoch.clone(),
+        ),
+        precise_attribution_generation: Some(attribution_safety.generation),
+        precise_attribution_unsafe_since_generation:
+            attribution_safety.unsafe_since_generation,
+        precise_attribution_unsafe_id: attribution_safety.unsafe_id.clone(),
+        precise_attribution_current_scan_unsafe:
+            attribution_safety.current_scan_unsafe_cause_detected,
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
@@ -240,6 +663,16 @@ fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
 
 pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
     usage_summary(codex_home)
+}
+
+pub fn acknowledge_attribution_safety(
+    codex_home: &Path,
+    provenance_epoch: &str,
+    unsafe_id: &str,
+    through_generation: u64,
+) -> Result<bool, String> {
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)
 }
 
 pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
@@ -597,11 +1030,20 @@ fn store_dashboard_aggregate(
     store_usage_summary_cache(signature.clone(), summary.clone());
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
+    let snapshot_complete = snapshot.as_ref().is_some_and(|snapshot| {
+        snapshot.precise_recent_usage_fresh
+            && snapshot.precise_observer_epoch.is_some()
+            && snapshot.precise_observer_started_at_unix_micros.is_some()
+            && snapshot.precise_observer_sequence.is_some()
+            && snapshot.precise_attribution_provenance_epoch.is_some()
+            && snapshot.precise_attribution_generation.is_some()
+            && !snapshot.recent_usage_24h.is_empty()
+    });
     let mut aggregate = CachedDashboardAggregate {
         signature,
         snapshot,
         summary,
-        snapshot_complete: true,
+        snapshot_complete,
     };
     let warning = save_persistent_dashboard_aggregate(&aggregate)
         .err()
@@ -774,6 +1216,15 @@ fn sanitize_snapshot_for_persistence(mut snapshot: DashboardSnapshot) -> Dashboa
     snapshot.recent_usage_24h.clear();
     snapshot.cache_hit_ranking.clear();
     snapshot.cache_usage = Default::default();
+    snapshot.precise_recent_usage_fresh = false;
+    snapshot.precise_observer_epoch = None;
+    snapshot.precise_observer_started_at_unix_micros = None;
+    snapshot.precise_observer_sequence = None;
+    snapshot.precise_attribution_provenance_epoch = None;
+    snapshot.precise_attribution_generation = None;
+    snapshot.precise_attribution_unsafe_since_generation = None;
+    snapshot.precise_attribution_unsafe_id = None;
+    snapshot.precise_attribution_current_scan_unsafe = false;
     snapshot
 }
 
@@ -781,6 +1232,68 @@ fn snapshot_with_generated_at(mut snapshot: DashboardSnapshot) -> DashboardSnaps
     snapshot.generated_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+    snapshot
+}
+
+fn snapshot_with_precise_coverage(
+    mut snapshot: DashboardSnapshot,
+    coverage_at: OffsetDateTime,
+    observer_identity: &PreciseObserverIdentity,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> DashboardSnapshot {
+    let generated_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+    if snapshot.recent_usage_24h.is_empty() {
+        snapshot.generated_at = generated_at;
+        snapshot.precise_recent_usage_fresh = false;
+        snapshot.precise_observer_epoch = None;
+        snapshot.precise_observer_started_at_unix_micros = None;
+        snapshot.precise_observer_sequence = None;
+        snapshot.precise_attribution_provenance_epoch = None;
+        snapshot.precise_attribution_generation = None;
+        snapshot.precise_attribution_unsafe_since_generation = None;
+        snapshot.precise_attribution_unsafe_id = None;
+        snapshot.precise_attribution_current_scan_unsafe = false;
+        return snapshot;
+    }
+    if attribution_safety.current_scan_incomplete {
+        snapshot.generated_at = generated_at;
+        snapshot.precise_recent_usage_fresh = false;
+        snapshot.precise_observer_epoch = None;
+        snapshot.precise_observer_started_at_unix_micros = None;
+        snapshot.precise_observer_sequence = None;
+        snapshot.precise_attribution_provenance_epoch = Some(
+            attribution_safety.provenance_epoch.clone(),
+        );
+        snapshot.precise_attribution_generation = Some(attribution_safety.generation);
+        snapshot.precise_attribution_unsafe_since_generation =
+            attribution_safety.unsafe_since_generation;
+        snapshot.precise_attribution_unsafe_id = attribution_safety.unsafe_id.clone();
+        snapshot.precise_attribution_current_scan_unsafe =
+            attribution_safety.current_scan_unsafe_cause_detected;
+        return snapshot;
+    }
+    let covered_at = coverage_at
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
+    snapshot.generated_at = generated_at;
+    snapshot.precise_recent_usage_covered_at = Some(covered_at);
+    snapshot.precise_recent_usage_fresh = true;
+    snapshot.precise_observer_epoch = Some(observer_identity.epoch.clone());
+    snapshot.precise_observer_started_at_unix_micros = Some(
+        observer_identity.started_at_unix_micros,
+    );
+    snapshot.precise_observer_sequence = Some(observer_identity.sequence);
+    snapshot.precise_attribution_provenance_epoch = Some(
+        attribution_safety.provenance_epoch.clone(),
+    );
+    snapshot.precise_attribution_generation = Some(attribution_safety.generation);
+    snapshot.precise_attribution_unsafe_since_generation =
+        attribution_safety.unsafe_since_generation;
+    snapshot.precise_attribution_unsafe_id = attribution_safety.unsafe_id.clone();
+    snapshot.precise_attribution_current_scan_unsafe =
+        attribution_safety.current_scan_unsafe_cause_detected;
     snapshot
 }
 

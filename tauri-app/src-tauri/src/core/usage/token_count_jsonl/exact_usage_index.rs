@@ -6,8 +6,8 @@ use super::session_parser::{
     USAGE_SNAPSHOT_FINGERPRINT_BYTES,
 };
 use super::{
-    IndexedSessionCatalogEntry, IndexedSessionCatalogSnapshot, IndexedSessionMetadata,
-    TokenUsageSummary,
+    attribution_watch_root_physical_identity, IndexedSessionCatalogEntry,
+    IndexedSessionCatalogSnapshot, IndexedSessionMetadata, TokenUsageSummary,
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
@@ -17,7 +17,8 @@ use crate::core::time_series_timeline::{
 };
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, RecentUsagePoint,
-    SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
+    RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage,
+    TurnCacheUsage,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -37,12 +38,23 @@ use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
+use uuid::Uuid;
 
 // v6：重放指纹与 Swift 统一为 11 字段（含 reasoning）。旧版指纹是 9 字段 72 字节
 // blob，与新 88 字节 blob 永不相等，混存会让历史 snapshot 重新计数；因此 v6 起
 // 不再提供任何旧版原地迁移，非当前版本一律整库重建（索引可完整重建）。
 const INDEX_SCHEMA_VERSION: i64 = 6;
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
+const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
+const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
+const ATTRIBUTION_LEDGER_INTEGRITY_KEY: &str = "attribution_ledger_integrity_v1";
+const ATTRIBUTION_UNSAFE_EPOCH_KEY: &str = "attribution_unsafe_epoch";
+const ATTRIBUTION_UNSAFE_GENERATION_KEY: &str = "attribution_unsafe_generation";
+const ATTRIBUTION_UNSAFE_ID_KEY: &str = "attribution_unsafe_id";
+const ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY: &str = "attribution_current_scan_unsafe";
+const ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY: &str = "attribution_current_scan_incomplete";
+const BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY: &str =
+    "building_attribution_provenance_rotate";
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -54,6 +66,27 @@ const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(super) struct ExactUsageIndex {
     connection: ManagedIndexConnection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AttributionSafetyState {
+    pub(super) provenance_epoch: String,
+    pub(super) generation: u64,
+    pub(super) unsafe_since_generation: Option<u64>,
+    pub(super) unsafe_id: Option<String>,
+    pub(super) current_scan_unsafe_cause_detected: bool,
+    pub(super) current_scan_incomplete: bool,
+}
+
+#[derive(Default)]
+struct ExactScanCompleteness {
+    incomplete_source_scan: bool,
+}
+
+impl ExactScanCompleteness {
+    fn mark_incomplete(&mut self) {
+        self.incomplete_source_scan = true;
+    }
 }
 
 struct ManagedIndexConnection {
@@ -166,8 +199,19 @@ struct StagedFullRebuild {
 
 struct StagedFullRebuildResult {
     order: usize,
-    result: Result<StagedFullRebuild, String>,
+    result: Result<StagedFullRebuild, StagedFullRebuildError>,
     warnings: Vec<LocalDataWarning>,
+}
+
+enum StagedFullRebuildError {
+    IncompleteSource(String),
+    Fatal(String),
+}
+
+impl From<String> for StagedFullRebuildError {
+    fn from(error: String) -> Self {
+        Self::Fatal(error)
+    }
 }
 
 struct IndexedTurnCandidate {
@@ -290,7 +334,11 @@ impl ExactUsageIndex {
             set_metadata(&connection, "published_generation", "0")?;
             connection
                 .execute(
-                    "DELETE FROM metadata WHERE key IN ('building_generation', 'building_changed')",
+                    "DELETE FROM metadata WHERE key IN (
+                        'building_generation',
+                        'building_changed',
+                        'building_attribution_provenance_rotate'
+                    )",
                     [],
                 )
                 .map_err(|error| format!("无法初始化精确 token 同步状态：{error}"))?;
@@ -305,6 +353,7 @@ impl ExactUsageIndex {
                 .execute_batch(
                     r#"
                     DELETE FROM events;
+                    DELETE FROM attribution_source_buckets;
                     DELETE FROM file_fingerprints;
                     DELETE FROM file_chunks;
                     DELETE FROM files;
@@ -319,6 +368,11 @@ impl ExactUsageIndex {
             set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
             set_metadata(&connection, "published_generation", "0")?;
             set_metadata(&connection, "session_catalog_published_generation", "0")?;
+        }
+        if metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            rotate_attribution_provenance_epoch(&connection)?;
         }
 
         Ok(Self { connection })
@@ -562,6 +616,18 @@ impl ExactUsageIndex {
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
+        let mut scan_completeness = ExactScanCompleteness::default();
+        let scan_start_home_identity =
+            match attribution_watch_root_physical_identity(codex_home) {
+                Ok(identity) => Some(identity),
+                Err(error) => {
+                    scan_completeness.mark_incomplete();
+                    warnings.push(scan_warning(format!(
+                        "精确 token 扫描开始时无法固定 Codex Home 物理身份：{error}"
+                    )));
+                    None
+                }
+            };
         prune_published_tombstone_versions(&self.connection)?;
         prepare_scan_temp_tables(&self.connection)?;
         let generation = begin_or_resume_generation(&mut self.connection)?;
@@ -570,17 +636,29 @@ impl ExactUsageIndex {
             &mut self.connection,
             codex_home,
             warnings,
-            |connection, file, warnings| {
-                if let Some(job) =
-                    process_session_file(connection, generation, codex_home, file, warnings)?
-                {
+            &mut scan_completeness,
+            |connection, file, warnings, scan_completeness| {
+                if let Some(job) = process_session_file(
+                    connection,
+                    generation,
+                    codex_home,
+                    file,
+                    warnings,
+                    scan_completeness,
+                )? {
                     full_rebuild_jobs.push(job);
                 }
                 Ok(())
             },
         )?;
         let index_path = database_path(codex_home)?;
-        let staged = stage_full_rebuilds(&full_rebuild_jobs, &index_path, codex_home, warnings)?;
+        let staged = stage_full_rebuilds(
+            &full_rebuild_jobs,
+            &index_path,
+            codex_home,
+            warnings,
+            &mut scan_completeness,
+        )?;
         #[cfg(test)]
         if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
             return Err("injected interruption after durable exact token staging".into());
@@ -590,13 +668,86 @@ impl ExactUsageIndex {
             remove_index_storage(&staged_file.database_path)?;
             run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
         }
-        let revision = finalize_generation(&mut self.connection, generation, codex_home, warnings)?;
+        match attribution_watch_root_physical_identity(codex_home) {
+            Ok(identity) if scan_start_home_identity.as_ref() == Some(&identity) => {}
+            Ok(_) => {
+                scan_completeness.mark_incomplete();
+                warnings.push(scan_warning(
+                    "Codex Home 在精确 token 扫描期间被同路径替换，本轮归因已停止建立安全覆盖"
+                        .into(),
+                ));
+            }
+            Err(error) => {
+                scan_completeness.mark_incomplete();
+                warnings.push(scan_warning(format!(
+                    "精确 token 扫描结束时无法复核 Codex Home 物理身份：{error}"
+                )));
+            }
+        }
+        let revision = finalize_generation(
+            &mut self.connection,
+            generation,
+            codex_home,
+            warnings,
+            scan_completeness,
+        )?;
         remove_staging_directory(&index_path)?;
         Ok(revision)
     }
 
     pub(super) fn revision(&self) -> Result<u64, String> {
         Ok(u64::try_from(metadata_i64(&self.connection, "revision")?.unwrap_or(0)).unwrap_or(0))
+    }
+
+    pub(super) fn attribution_safety_state(&self) -> Result<AttributionSafetyState, String> {
+        attribution_safety_state(&self.connection)
+    }
+
+    /// Clears only the exact clean generation represented by a durable
+    /// synthetic cutover. A stale acknowledgement, or any scan that still sees
+    /// the unsafe cause, is rejected without changing provenance state.
+    pub(super) fn acknowledge_attribution_safety(
+        &mut self,
+        provenance_epoch: &str,
+        unsafe_id: &str,
+        through_generation: u64,
+    ) -> Result<bool, String> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("无法开始精确 token 归因安全确认事务：{error}"))?;
+        let state = attribution_safety_state(&transaction)?;
+        if state.provenance_epoch != provenance_epoch
+            || state.unsafe_since_generation.is_none()
+            || state.unsafe_id.as_deref() != Some(unsafe_id)
+            || state.current_scan_unsafe_cause_detected
+            || state.current_scan_incomplete
+            || through_generation != state.generation
+            || through_generation < state.unsafe_since_generation.unwrap_or(u64::MAX)
+        {
+            transaction
+                .commit()
+                .map_err(|error| format!("无法结束未生效的精确 token 归因安全确认：{error}"))?;
+            return Ok(false);
+        }
+        transaction
+            .execute(
+                "DELETE FROM metadata WHERE key IN (?1, ?2, ?3)",
+                params![
+                    ATTRIBUTION_UNSAFE_EPOCH_KEY,
+                    ATTRIBUTION_UNSAFE_GENERATION_KEY,
+                    ATTRIBUTION_UNSAFE_ID_KEY,
+                ],
+            )
+            .map_err(|error| format!("无法清除精确 token 归因安全断点：{error}"))?;
+        let revision = metadata_i64(&transaction, "revision")?
+            .unwrap_or(0)
+            .saturating_add(1);
+        set_metadata(&transaction, "revision", &revision.to_string())?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交精确 token 归因安全确认：{error}"))?;
+        Ok(true)
     }
 
     pub(super) fn sources_changed(
@@ -612,11 +763,13 @@ impl ExactUsageIndex {
         let published_files = self.source_change_snapshot_signatures()?;
         let mut seen_files = HashSet::with_capacity(published_files.len());
         let mut changed = false;
+        let mut ignored_scan_completeness = ExactScanCompleteness::default();
         visit_session_files(
             &mut self.connection,
             codex_home,
             warnings,
-            |_connection, file, _warnings| {
+            &mut ignored_scan_completeness,
+            |_connection, file, _warnings, _scan_completeness| {
                 let path = file.to_string_lossy().into_owned();
                 if !seen_files.insert(path.clone()) {
                     return Ok(());
@@ -640,7 +793,7 @@ impl ExactUsageIndex {
         let deleted = published_files
             .keys()
             .any(|path| !seen_files.contains(path));
-        Ok(changed || deleted)
+        Ok(changed || deleted || ignored_scan_completeness.incomplete_source_scan)
     }
 
     fn prepare_source_change_snapshot(&self) -> Result<(), String> {
@@ -977,6 +1130,15 @@ impl ExactUsageIndex {
             .copied()
             .unwrap_or(now_utc.unix_timestamp())
             .saturating_add(interval_seconds);
+        let source_contribution_epoch = if interval_seconds == LONG_RECENT_INTERVAL_SECONDS {
+            Some(
+                metadata_text(&self.connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?,
+            )
+        } else {
+            None
+        };
         let mut grouped = HashMap::new();
         let mut statement = self
             .connection
@@ -1013,6 +1175,59 @@ impl ExactUsageIndex {
             grouped.insert(bin, (tokens, calls, input, cached, output));
         }
 
+        let mut source_grouped: HashMap<i64, Vec<RecentUsageSourceContribution>> =
+            HashMap::new();
+        if let Some(provenance_epoch) = source_contribution_epoch.as_deref() {
+            let mut source_statement = self
+                .connection
+                .prepare(
+                    r#"
+                    SELECT
+                        bucket_start,
+                        source_id,
+                        tokens,
+                        calls,
+                        input_tokens,
+                        cached_input_tokens,
+                        output_tokens
+                    FROM attribution_source_buckets
+                    WHERE provenance_epoch = ?1
+                      AND bucket_start >= ?2
+                      AND bucket_start < ?3
+                    ORDER BY bucket_start, source_id
+                    "#,
+                )
+                .map_err(|error| format!("无法准备精确 token 匿名来源时间序列：{error}"))?;
+            let source_rows = source_statement
+                .query_map(params![provenance_epoch, start, end], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                })
+                .map_err(|error| format!("无法读取精确 token 匿名来源时间序列：{error}"))?;
+            for row in source_rows {
+                let (bin, source_id, tokens, calls, input, cached, output) = row
+                    .map_err(|error| format!("无法解码精确 token 匿名来源时间序列：{error}"))?;
+                source_grouped
+                    .entry(bin)
+                    .or_default()
+                    .push(RecentUsageSourceContribution {
+                        source_id,
+                        tokens: nonnegative_u64(tokens),
+                        calls: saturating_u32(calls),
+                        input_tokens: nonnegative_u64(input),
+                        cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
+                        output_tokens: nonnegative_u64(output),
+                    });
+            }
+        }
+
         Ok(bin_starts
             .into_iter()
             .map(|start_unix| {
@@ -1034,6 +1249,8 @@ impl ExactUsageIndex {
                     cache_hit_rate: (input > 0).then(|| cache_hit_rate(input, cached)),
                     five_hour_remaining_percent: None,
                     seven_day_remaining_percent: None,
+                    source_contribution_epoch: source_contribution_epoch.clone(),
+                    source_contributions: source_grouped.remove(&start_unix).unwrap_or_default(),
                 }
             })
             .collect())
@@ -1616,6 +1833,7 @@ fn stage_full_rebuilds(
     index_path: &Path,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
+    scan_completeness: &mut ExactScanCompleteness,
 ) -> Result<Vec<StagedFullRebuild>, String> {
     if jobs.is_empty() {
         return Ok(Vec::new());
@@ -1693,8 +1911,16 @@ fn stage_full_rebuilds(
         warnings.append(&mut result.warnings);
         match result.result {
             Ok(value) => staged.push(value),
-            Err(error) if first_error.is_none() => first_error = Some(error),
-            Err(_) => {}
+            Err(StagedFullRebuildError::IncompleteSource(error)) => {
+                scan_completeness.mark_incomplete();
+                warnings.push(scan_warning(format!(
+                    "会话文件暂存读取不完整，本轮保留已有统计：{error}"
+                )));
+            }
+            Err(StagedFullRebuildError::Fatal(error)) if first_error.is_none() => {
+                first_error = Some(error);
+            }
+            Err(StagedFullRebuildError::Fatal(_)) => {}
         }
     }
     if let Some(error) = first_error {
@@ -1744,7 +1970,7 @@ fn stage_or_reuse_full_rebuild(
     index_path: &Path,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-) -> Result<StagedFullRebuild, String> {
+) -> Result<StagedFullRebuild, StagedFullRebuildError> {
     let database_path = staging_database_path(index_path, &job.path);
     if let Some(staged) = reusable_staged_full_rebuild(&database_path, job)? {
         return Ok(staged);
@@ -1757,25 +1983,26 @@ fn build_staged_full_rebuild(
     database_path: PathBuf,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-) -> Result<StagedFullRebuild, String> {
+) -> Result<StagedFullRebuild, StagedFullRebuildError> {
     let _activity = StageActivityGuard::begin();
     remove_index_storage(&database_path)?;
     run_before_staging_open_hook_for_testing(&job.file);
     let mut handle = fs::File::open(&job.file).map_err(|error| {
-        format!(
+        StagedFullRebuildError::IncompleteSource(format!(
             "读取精确 token 暂存源文件失败：{}（{}）",
             job.file.display(),
             error
-        )
+        ))
     })?;
-    let current_signature = file_signature_from_handle(&handle, &job.file)?;
+    let current_signature = file_signature_from_handle(&handle, &job.file)
+        .map_err(StagedFullRebuildError::IncompleteSource)?;
     if current_signature.identity != job.signature.identity
         || current_signature.size < job.signature.size
     {
-        return Err(format!(
+        return Err(StagedFullRebuildError::IncompleteSource(format!(
             "会话文件在进入并行暂存前被替换或截断，将在下一次刷新重试：{}",
             relative_display_path(codex_home, &job.file)
-        ));
+        )));
     }
     // Freeze the discovery-time prefix. A normal active-session append changes
     // size/mtime/ctime before the worker opens the file, but must not invalidate
@@ -1804,7 +2031,8 @@ fn build_staged_full_rebuild(
         &job.session_id,
         &mut sink,
         warnings,
-    )?;
+    )
+    .map_err(StagedFullRebuildError::IncompleteSource)?;
     let event_count = sink.ordinal;
     drop(sink);
     #[cfg(test)]
@@ -1812,18 +2040,18 @@ fn build_staged_full_rebuild(
     run_after_prefix_scan_hook_for_testing(&job.file);
 
     if parsed.bytes_read != job.signature.size {
-        return Err(format!(
+        return Err(StagedFullRebuildError::IncompleteSource(format!(
             "会话文件固定前缀未完整扫描，将在下一次刷新重试：{}",
             relative_display_path(codex_home, &job.file)
-        ));
+        )));
     }
     validate_same_file_prefix(&job.file, &mut handle, job.signature, parsed.prefix_sha256)
         .map_err(|reason| {
-            format!(
+            StagedFullRebuildError::IncompleteSource(format!(
                 "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
                 relative_display_path(codex_home, &job.file),
                 reason
-            )
+            ))
         })?;
 
     {
@@ -2522,7 +2750,11 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
         }
         transaction
             .execute(
-                "DELETE FROM metadata WHERE key IN ('building_generation', 'building_changed')",
+                "DELETE FROM metadata WHERE key IN (
+                    'building_generation',
+                    'building_changed',
+                    'building_attribution_provenance_rotate'
+                )",
                 [],
             )
             .map_err(|error| format!("无法修复失效的精确 token 同步状态：{error}"))?;
@@ -2540,6 +2772,11 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
         .ok_or_else(|| "精确 token 文件代次已超出 SQLite 整数范围".to_string())?;
     set_metadata(&transaction, "building_generation", &generation.to_string())?;
     set_metadata(&transaction, "building_changed", "0")?;
+    set_metadata(
+        &transaction,
+        BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+        "0",
+    )?;
     transaction
         .commit()
         .map_err(|error| format!("无法持久化精确 token 同步状态：{error}"))?;
@@ -2562,6 +2799,7 @@ fn finalize_generation(
     generation: i64,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
+    scan_completeness: ExactScanCompleteness,
 ) -> Result<u64, String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -2685,6 +2923,84 @@ fn finalize_generation(
     if sync_thread_metadata(&transaction, codex_home, warnings)? {
         set_metadata(&transaction, "building_changed", "1")?;
     }
+    let rotate_attribution_provenance = metadata_i64(
+        &transaction,
+        BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+    )?
+    .unwrap_or(0)
+        != 0;
+    let source_index_changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
+    let safety_before = attribution_safety_state(&transaction)?;
+    let lineage_ambiguity_detected = visible_duplicate_session_lineage(&transaction, generation)?;
+    let ledger_integrity_mismatch = attribution_ledger_integrity_mismatch(&transaction)?;
+    let current_scan_unsafe_cause_detected = rotate_attribution_provenance
+        || lineage_ambiguity_detected
+        || ledger_integrity_mismatch
+        || scan_completeness.incomplete_source_scan;
+    // One unresolved incident owns one provenance rotation. A file that is
+    // truncated/replaced on every normal poll, or a duplicate UUID that stays
+    // present, must remain sticky unsafe without creating an epoch/WAL storm.
+    let rotate_for_new_unsafe_incident = current_scan_unsafe_cause_detected
+        && safety_before.unsafe_since_generation.is_none();
+    if synchronize_attribution_ledger(
+        &transaction,
+        generation,
+        source_index_changed,
+        rotate_for_new_unsafe_incident,
+        ledger_integrity_mismatch,
+    )? {
+        set_metadata(&transaction, "building_changed", "1")?;
+    }
+    let provenance_epoch = metadata_text(&transaction, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
+    if rotate_for_new_unsafe_incident {
+        set_metadata(
+            &transaction,
+            ATTRIBUTION_UNSAFE_EPOCH_KEY,
+            &provenance_epoch,
+        )?;
+        set_metadata(
+            &transaction,
+            ATTRIBUTION_UNSAFE_GENERATION_KEY,
+            &generation.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            ATTRIBUTION_UNSAFE_ID_KEY,
+            &Uuid::new_v4().to_string(),
+        )?;
+        set_metadata(&transaction, "building_changed", "1")?;
+    }
+    let previous_current_scan_unsafe = metadata_i64(
+        &transaction,
+        ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
+    )?
+    .unwrap_or(0)
+        != 0;
+    if previous_current_scan_unsafe != current_scan_unsafe_cause_detected {
+        set_metadata(&transaction, "building_changed", "1")?;
+    }
+    set_metadata(
+        &transaction,
+        ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
+        if current_scan_unsafe_cause_detected { "1" } else { "0" },
+    )?;
+    let current_scan_incomplete = scan_completeness.incomplete_source_scan;
+    let previous_current_scan_incomplete = metadata_i64(
+        &transaction,
+        ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
+    )?
+    .unwrap_or(0)
+        != 0;
+    if previous_current_scan_incomplete != current_scan_incomplete {
+        set_metadata(&transaction, "building_changed", "1")?;
+    }
+    set_metadata(
+        &transaction,
+        ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
+        if current_scan_incomplete { "1" } else { "0" },
+    )?;
     let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
     let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
     let revision = if changed {
@@ -2700,7 +3016,11 @@ fn finalize_generation(
     set_metadata(&transaction, "revision", &revision.to_string())?;
     transaction
         .execute(
-            "DELETE FROM metadata WHERE key IN ('building_generation', 'building_changed')",
+            "DELETE FROM metadata WHERE key IN (
+                'building_generation',
+                'building_changed',
+                'building_attribution_provenance_rotate'
+            )",
             [],
         )
         .map_err(|error| format!("无法结束精确 token 同步状态：{error}"))?;
@@ -2710,12 +3030,267 @@ fn finalize_generation(
     Ok(u64::try_from(revision).unwrap_or(0))
 }
 
+fn visible_duplicate_session_lineage(
+    connection: &Connection,
+    generation: i64,
+) -> Result<bool, String> {
+    connection
+        .query_row(
+            r#"
+            WITH latest AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= ?1
+                GROUP BY path
+            ), visible_files AS (
+                SELECT f.path, f.session_id
+                FROM latest
+                JOIN files f
+                  ON f.path = latest.path
+                 AND f.generation = latest.generation
+                WHERE f.deleted = 0
+                  AND TRIM(f.session_id) <> ''
+            )
+            SELECT EXISTS(
+                SELECT 1
+                FROM visible_files
+                GROUP BY session_id
+                HAVING COUNT(*) > 1
+                LIMIT 1
+            )
+            "#,
+            params![generation],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查精确 token 重复会话来源：{error}"))
+}
+
+fn attribution_ledger_integrity_mismatch(connection: &Connection) -> Result<bool, String> {
+    let provenance_epoch = metadata_text(connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
+    if metadata_text(connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.as_deref()
+        != Some(provenance_epoch.as_str())
+    {
+        return Ok(false);
+    }
+    let Some(expected) = metadata_text(connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)? else {
+        return Ok(false);
+    };
+    Ok(attribution_ledger_integrity(connection, &provenance_epoch)? != expected)
+}
+
+/// Persists anonymous source x fixed-5m totals on every exact-index sync, including
+/// compact summary syncs. Deleted sources stay in the ledger. A non-append rewrite
+/// rotates and rebuilds the epoch in this same publication transaction, so readers
+/// can observe either the old events+epoch or the new events+epoch, never a mix.
+fn synchronize_attribution_ledger(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    source_index_changed: bool,
+    rotate_provenance: bool,
+    integrity_mismatch: bool,
+) -> Result<bool, String> {
+    let previous_epoch = metadata_text(transaction, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
+    let ledger_epoch = metadata_text(transaction, ATTRIBUTION_LEDGER_EPOCH_KEY)?;
+    let stored_integrity = metadata_text(transaction, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?;
+    let integrity_missing = ledger_epoch.as_deref() == Some(previous_epoch.as_str())
+        && stored_integrity.is_none();
+    // A logically missing ledger row is not reported by SQLite quick_check.
+    // Rotate and rebuild instead of silently accepting a smaller local total;
+    // consumers will see the new epoch and keep ambiguity sticky for the old
+    // segment. This also self-heals without imposing a history cap.
+    let provenance_epoch = if rotate_provenance {
+        let next = Uuid::new_v4().to_string();
+        set_metadata(transaction, ATTRIBUTION_PROVENANCE_EPOCH_KEY, &next)?;
+        next
+    } else {
+        previous_epoch
+    };
+    let rebuild = rotate_provenance
+        || integrity_mismatch
+        || ledger_epoch.as_deref() != Some(&provenance_epoch);
+    if !rebuild && !source_index_changed && !integrity_missing {
+        return Ok(false);
+    }
+    if rebuild {
+        transaction
+            .execute("DELETE FROM attribution_source_buckets", [])
+            .map_err(|error| format!("无法重建精确 token 归因来源账本：{error}"))?;
+    }
+
+    let full_query = r#"
+        WITH latest AS (
+            SELECT path, MAX(generation) AS generation
+            FROM files
+            WHERE generation <= ?1
+            GROUP BY path
+        ), visible_files AS (
+            SELECT latest.path, latest.generation
+            FROM latest
+            JOIN files f
+              ON f.path = latest.path
+             AND f.generation = latest.generation
+            WHERE f.deleted = 0
+        )
+        SELECT
+            e.timestamp - (e.timestamp % ?2),
+            e.session_id,
+            COALESCE(SUM(e.tokens), 0),
+            COUNT(*),
+            COALESCE(SUM(e.input_tokens), 0),
+            COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
+            COALESCE(SUM(e.output_tokens), 0)
+        FROM events e
+        JOIN visible_files f
+          ON f.generation = e.file_generation
+         AND f.path = e.file_path
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    "#;
+    let incremental_query = r#"
+        SELECT
+            timestamp - (timestamp % ?2),
+            session_id,
+            COALESCE(SUM(tokens), 0),
+            COUNT(*),
+            COALESCE(SUM(input_tokens), 0),
+            COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+            COALESCE(SUM(output_tokens), 0)
+        FROM events
+        WHERE file_generation = ?1
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    "#;
+    let mut source_rows = transaction
+        .prepare(if rebuild { full_query } else { incremental_query })
+        .map_err(|error| format!("无法准备精确 token 归因来源账本：{error}"))?;
+    let mut rows = source_rows
+        .query(params![generation, LONG_RECENT_INTERVAL_SECONDS])
+        .map_err(|error| format!("无法读取精确 token 归因来源账本：{error}"))?;
+    let mut upsert = transaction
+        .prepare(
+            r#"
+            INSERT INTO attribution_source_buckets(
+                provenance_epoch,
+                source_id,
+                bucket_start,
+                tokens,
+                calls,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(provenance_epoch, source_id, bucket_start) DO UPDATE SET
+                tokens = MAX(tokens, excluded.tokens),
+                calls = MAX(calls, excluded.calls),
+                input_tokens = MAX(input_tokens, excluded.input_tokens),
+                cached_input_tokens = MAX(cached_input_tokens, excluded.cached_input_tokens),
+                output_tokens = MAX(output_tokens, excluded.output_tokens)
+            "#,
+        )
+        .map_err(|error| format!("无法准备写入精确 token 归因来源账本：{error}"))?;
+    let mut wrote_rows = false;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| format!("无法遍历精确 token 归因来源账本：{error}"))?
+    {
+        let bucket_start = row
+            .get::<_, i64>(0)
+            .map_err(|error| format!("无法解码精确 token 归因桶时间：{error}"))?;
+        let session_id = row
+            .get::<_, String>(1)
+            .map_err(|error| format!("无法解码精确 token 归因来源：{error}"))?;
+        let tokens = row
+            .get::<_, i64>(2)
+            .map_err(|error| format!("无法解码精确 token 归因总量：{error}"))?;
+        let calls = row
+            .get::<_, i64>(3)
+            .map_err(|error| format!("无法解码精确 token 归因调用量：{error}"))?;
+        let input = row
+            .get::<_, i64>(4)
+            .map_err(|error| format!("无法解码精确 token 归因输入量：{error}"))?;
+        let cached = row
+            .get::<_, i64>(5)
+            .map_err(|error| format!("无法解码精确 token 归因缓存量：{error}"))?;
+        let output = row
+            .get::<_, i64>(6)
+            .map_err(|error| format!("无法解码精确 token 归因输出量：{error}"))?;
+        upsert
+            .execute(params![
+                &provenance_epoch,
+                opaque_attribution_source_id(&session_id),
+                bucket_start,
+                tokens.max(0),
+                calls.max(0),
+                input.max(0),
+                cached.max(0).min(input.max(0)),
+                output.max(0),
+            ])
+            .map_err(|error| format!("无法写入精确 token 归因来源账本：{error}"))?;
+        wrote_rows = true;
+    }
+    drop(rows);
+    drop(source_rows);
+    set_metadata(
+        transaction,
+        ATTRIBUTION_LEDGER_EPOCH_KEY,
+        &provenance_epoch,
+    )?;
+    set_metadata(
+        transaction,
+        ATTRIBUTION_LEDGER_INTEGRITY_KEY,
+        &attribution_ledger_integrity(transaction, &provenance_epoch)?,
+    )?;
+    Ok(rebuild || wrote_rows)
+}
+
+fn attribution_ledger_integrity(
+    connection: &Connection,
+    provenance_epoch: &str,
+) -> Result<String, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(tokens), 0),
+                COALESCE(SUM(calls), 0),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(cached_input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(MIN(bucket_start), 0),
+                COALESCE(MAX(bucket_start), 0)
+            FROM attribution_source_buckets
+            WHERE provenance_epoch = ?1
+            "#,
+            params![provenance_epoch],
+            |row| {
+                Ok(format!(
+                    "{}:{}:{}:{}:{}:{}:{}:{}",
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("无法校验精确 token 归因来源账本完整性：{error}"))
+}
+
 fn process_session_file(
     connection: &mut Connection,
     generation: i64,
     codex_home: &Path,
     file: &Path,
     warnings: &mut Vec<LocalDataWarning>,
+    scan_completeness: &mut ExactScanCompleteness,
 ) -> Result<Option<FullRebuildJob>, String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path = canonical.to_string_lossy().into_owned();
@@ -2737,6 +3312,7 @@ fn process_session_file(
     let mut handle = match fs::File::open(file) {
         Ok(handle) => handle,
         Err(error) => {
+            scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
                 "读取会话文件失败，本轮跳过该文件：{}（{}）",
                 file.display(),
@@ -2745,8 +3321,19 @@ fn process_session_file(
             return Ok(None);
         }
     };
-    let signature = file_signature_from_handle(&handle, file)?;
-    let unchanged = connection
+    let signature = match file_signature_from_handle(&handle, file) {
+        Ok(signature) => signature,
+        Err(error) => {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "读取会话文件身份失败，本轮跳过该文件：{}（{}）",
+                file.display(),
+                error
+            )));
+            return Ok(None);
+        }
+    };
+    let previous_signature = connection
         .query_row(
             r#"
             SELECT deleted, size, modified_ns, device_id, file_id, changed_ns
@@ -2768,19 +3355,22 @@ fn process_session_file(
             },
         )
         .optional()
-        .map_err(|error| format!("无法读取会话文件索引签名：{error}"))?
-        .is_some_and(
-            |(deleted, size, modified_ns, device_id, file_id, changed_ns)| {
-                !deleted
-                    && signature.matches_stored(
-                        nonnegative_u64(size),
-                        &modified_ns,
-                        &device_id,
-                        &file_id,
-                        &changed_ns,
-                    )
-            },
-        );
+        .map_err(|error| format!("无法读取会话文件索引签名：{error}"))?;
+    let had_existing_source = previous_signature
+        .as_ref()
+        .is_some_and(|(deleted, ..)| !deleted);
+    let unchanged = previous_signature.as_ref().is_some_and(
+        |(deleted, size, modified_ns, device_id, file_id, changed_ns)| {
+            !deleted
+                && signature.matches_stored(
+                    nonnegative_u64(*size),
+                    modified_ns,
+                    device_id,
+                    file_id,
+                    changed_ns,
+                )
+        },
+    );
     if unchanged {
         return Ok(None);
     }
@@ -2802,6 +3392,17 @@ fn process_session_file(
         {
             return Ok(None);
         }
+    }
+
+    // A previously published source that cannot be proven as a pure append may
+    // have reordered or replaced events. Rotate only when this generation is
+    // atomically published; new files and deletions keep the current lineage.
+    if had_existing_source {
+        set_metadata(
+            connection,
+            BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+            "1",
+        )?;
     }
 
     if signature.size < PARALLEL_STAGING_MIN_BYTES {
@@ -3631,13 +4232,25 @@ fn visit_session_files(
     connection: &mut Connection,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-    mut visit: impl FnMut(&mut Connection, &Path, &mut Vec<LocalDataWarning>) -> Result<(), String>,
+    scan_completeness: &mut ExactScanCompleteness,
+    mut visit: impl FnMut(
+        &mut Connection,
+        &Path,
+        &mut Vec<LocalDataWarning>,
+        &mut ExactScanCompleteness,
+    ) -> Result<(), String>,
 ) -> Result<(), String> {
     super::record_dashboard_source_scan_for_testing();
     let canonical_home = canonical_codex_home(codex_home)?;
     let sessions_root = codex_home.join("sessions");
     if sessions_root.exists() {
-        enqueue_directory(connection, &canonical_home, &sessions_root, warnings)?;
+        enqueue_directory(
+            connection,
+            &canonical_home,
+            &sessions_root,
+            warnings,
+            scan_completeness,
+        )?;
         loop {
             let directory = connection
                 .query_row(
@@ -3663,6 +4276,7 @@ fn visit_session_files(
             let entries = match fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) => {
+                    scan_completeness.mark_incomplete();
                     warnings.push(scan_warning(format!(
                         "读取会话目录失败，本轮跳过该目录：{}（{}）",
                         directory.display(),
@@ -3676,6 +4290,7 @@ fn visit_session_files(
                 let entry = match entry {
                     Ok(entry) => entry,
                     Err(error) => {
+                        scan_completeness.mark_incomplete();
                         warnings.push(scan_warning(format!(
                             "读取会话目录项失败，本轮跳过该目录剩余条目：{}（{}）",
                             directory.display(),
@@ -3689,6 +4304,7 @@ fn visit_session_files(
                 let metadata = match fs::symlink_metadata(&path) {
                     Ok(metadata) => metadata,
                     Err(error) => {
+                        scan_completeness.mark_incomplete();
                         warnings.push(scan_warning(format!(
                             "读取会话目录项元数据失败，本轮跳过该条目：{}（{}）",
                             path.display(),
@@ -3699,27 +4315,46 @@ fn visit_session_files(
                     }
                 };
                 if metadata.file_type().is_dir() {
-                    enqueue_directory(connection, &canonical_home, &path, warnings)?;
+                    enqueue_directory(
+                        connection,
+                        &canonical_home,
+                        &path,
+                        warnings,
+                        scan_completeness,
+                    )?;
                 } else if path
                     .extension()
                     .is_some_and(|extension| extension == "jsonl")
                 {
-                    if let Some(file) =
-                        resolve_file_within_codex_home(&canonical_home, &path, "会话目录", warnings)
-                    {
-                        visit(connection, &file, warnings)?;
+                    if let Some(file) = resolve_file_within_codex_home(
+                        &canonical_home,
+                        &path,
+                        "会话目录",
+                        warnings,
+                    ) {
+                        visit(connection, &file, warnings, scan_completeness)?;
+                    } else {
+                        scan_completeness.mark_incomplete();
                     }
                 }
             }
         }
     } else {
+        scan_completeness.mark_incomplete();
         warnings.push(scan_warning(format!(
             "会话目录不存在：{}",
             sessions_root.display()
         )));
     }
 
-    visit_active_rollouts(connection, codex_home, &canonical_home, warnings, visit)
+    visit_active_rollouts(
+        connection,
+        codex_home,
+        &canonical_home,
+        warnings,
+        scan_completeness,
+        visit,
+    )
 }
 
 /// 把 root（文件或目录）下所有已索引路径补进 exact_seen_files：不可读条目本轮
@@ -3749,10 +4384,12 @@ fn enqueue_directory(
     canonical_home: &Path,
     directory: &Path,
     warnings: &mut Vec<LocalDataWarning>,
+    scan_completeness: &mut ExactScanCompleteness,
 ) -> Result<(), String> {
     let canonical = match fs::canonicalize(directory) {
         Ok(canonical) if canonical.starts_with(canonical_home) => canonical,
         Ok(canonical) => {
+            scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
                 "拒绝读取 Codex Home 外的会话目录：{} -> {}",
                 directory.display(),
@@ -3761,6 +4398,7 @@ fn enqueue_directory(
             return Ok(());
         }
         Err(error) => {
+            scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
                 "无法确认会话目录边界：{}（{}）",
                 directory.display(),
@@ -3786,41 +4424,93 @@ fn visit_active_rollouts(
     codex_home: &Path,
     canonical_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
-    mut visit: impl FnMut(&mut Connection, &Path, &mut Vec<LocalDataWarning>) -> Result<(), String>,
+    scan_completeness: &mut ExactScanCompleteness,
+    mut visit: impl FnMut(
+        &mut Connection,
+        &Path,
+        &mut Vec<LocalDataWarning>,
+        &mut ExactScanCompleteness,
+    ) -> Result<(), String>,
 ) -> Result<(), String> {
     let database = codex_home.join("state_5.sqlite");
     if !database.exists() {
         return Ok(());
     }
-    let state_connection = sqlite::open_read_only(&database, StdDuration::from_millis(100))
-        .map_err(|error| {
-            let message = format!(
-                "读取 active rollout 索引失败：{}（{}）",
+    let state_connection = match sqlite::open_read_only(&database, StdDuration::from_millis(100)) {
+        Ok(connection) => connection,
+        Err(error) => {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "读取 active rollout 索引失败，本轮保留已有统计：{}（{}）",
                 database.display(),
                 error
-            );
-            warnings.push(scan_warning(message.clone()));
-            message
-        })?;
-    if !column_exists(&state_connection, "threads", "rollout_path") {
+            )));
+            return Ok(());
+        }
+    };
+    let has_rollout_path = match column_exists_checked(&state_connection, "threads", "rollout_path")
+    {
+        Ok(value) => value,
+        Err(error) => {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "读取 active rollout 索引结构失败，本轮保留已有统计：{}（{}）",
+                database.display(),
+                error
+            )));
+            return Ok(());
+        }
+    };
+    if !has_rollout_path {
         return Ok(());
     }
-    let archived_filter = if column_exists(&state_connection, "threads", "archived") {
-        "COALESCE(archived, 0) = 0"
-    } else {
-        "1 = 1"
+    let archived_filter = match column_exists_checked(&state_connection, "threads", "archived") {
+        Ok(true) => "COALESCE(archived, 0) = 0",
+        Ok(false) => "1 = 1",
+        Err(error) => {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "读取 active rollout 归档字段失败，将保守扫描全部路径：{}（{}）",
+                database.display(),
+                error
+            )));
+            "1 = 1"
+        }
     };
     let sql = format!(
         "SELECT rollout_path FROM threads WHERE {archived_filter} AND rollout_path IS NOT NULL AND rollout_path <> ''"
     );
-    let mut statement = state_connection
-        .prepare(&sql)
-        .map_err(|error| format!("读取 active rollout 路径失败：{error}"))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| format!("读取 active rollout 路径失败：{error}"))?;
+    let mut statement = match state_connection.prepare(&sql) {
+        Ok(statement) => statement,
+        Err(error) => {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "准备 active rollout 路径枚举失败，本轮保留已有统计：{error}"
+            )));
+            return Ok(());
+        }
+    };
+    let rows = match statement.query_map([], |row| row.get::<_, String>(0)) {
+        Ok(rows) => rows,
+        Err(error) => {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "开始 active rollout 路径枚举失败，本轮保留已有统计：{error}"
+            )));
+            return Ok(());
+        }
+    };
     for row in rows {
-        let raw = row.map_err(|error| format!("读取 active rollout 路径失败：{error}"))?;
+        let raw = match row {
+            Ok(raw) => raw,
+            Err(error) => {
+                scan_completeness.mark_incomplete();
+                warnings.push(scan_warning(format!(
+                    "读取 active rollout 路径项失败，本轮跳过该项：{error}"
+                )));
+                continue;
+            }
+        };
         let path = {
             let path = PathBuf::from(raw);
             if path.is_absolute() {
@@ -3829,15 +4519,23 @@ fn visit_active_rollouts(
                 codex_home.join(path)
             }
         };
-        if path
+        if !path
             .extension()
             .is_some_and(|extension| extension == "jsonl")
         {
-            if let Some(file) =
-                resolve_file_within_codex_home(canonical_home, &path, "active rollout", warnings)
-            {
-                visit(index_connection, &file, warnings)?;
-            }
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "active rollout 路径不是 JSONL，本轮跳过该项：{}",
+                path.display()
+            )));
+            continue;
+        }
+        if let Some(file) =
+            resolve_file_within_codex_home(canonical_home, &path, "active rollout", warnings)
+        {
+            visit(index_connection, &file, warnings, scan_completeness)?;
+        } else {
+            scan_completeness.mark_incomplete();
         }
     }
     Ok(())
@@ -4207,6 +4905,21 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 ON events(timestamp);
             CREATE INDEX IF NOT EXISTS events_session_idx
                 ON events(session_id, timestamp, file_generation, file_path, ordinal);
+
+            CREATE TABLE IF NOT EXISTS attribution_source_buckets (
+                provenance_epoch TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(provenance_epoch, source_id, bucket_start)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS attribution_source_buckets_time_idx
+                ON attribution_source_buckets(provenance_epoch, bucket_start);
 
             CREATE TABLE IF NOT EXISTS file_fingerprints (
                 file_generation INTEGER NOT NULL,
@@ -4903,7 +5616,7 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-fn database_path(codex_home: &Path) -> Result<PathBuf, String> {
+pub(super) fn database_path(codex_home: &Path) -> Result<PathBuf, String> {
     #[cfg(test)]
     {
         return Ok(codex_home
@@ -5274,6 +5987,53 @@ fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, Strin
     Ok(metadata_text(connection, key)?.and_then(|value| value.parse().ok()))
 }
 
+fn attribution_safety_state(
+    connection: &Connection,
+) -> Result<AttributionSafetyState, String> {
+    let provenance_epoch = metadata_text(connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
+    let generation = nonnegative_u64(
+        metadata_i64(connection, "published_generation")?.unwrap_or(0),
+    );
+    let unsafe_epoch = metadata_text(connection, ATTRIBUTION_UNSAFE_EPOCH_KEY)?;
+    let unsafe_generation = metadata_i64(connection, ATTRIBUTION_UNSAFE_GENERATION_KEY)?
+        .map(nonnegative_u64);
+    let unsafe_id = metadata_text(connection, ATTRIBUTION_UNSAFE_ID_KEY)?;
+    let current_scan_unsafe_cause_detected =
+        metadata_i64(connection, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?.unwrap_or(0) != 0;
+    let current_scan_incomplete =
+        metadata_i64(connection, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?.unwrap_or(0) != 0;
+    let unresolved_matches_current = unsafe_epoch.as_deref() == Some(provenance_epoch.as_str())
+        && unsafe_generation.is_some()
+        && unsafe_id
+            .as_deref()
+            .is_some_and(|value| Uuid::parse_str(value).is_ok());
+    Ok(AttributionSafetyState {
+        provenance_epoch,
+        generation,
+        unsafe_since_generation: unresolved_matches_current.then_some(unsafe_generation).flatten(),
+        unsafe_id: unresolved_matches_current.then_some(unsafe_id).flatten(),
+        current_scan_unsafe_cause_detected,
+        current_scan_incomplete,
+    })
+}
+
+fn rotate_attribution_provenance_epoch(connection: &Connection) -> Result<(), String> {
+    set_metadata(
+        connection,
+        ATTRIBUTION_PROVENANCE_EPOCH_KEY,
+        &Uuid::new_v4().to_string(),
+    )
+}
+
+fn opaque_attribution_source_id(session_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-token-bar-attribution-source-v1\0");
+    hasher.update(session_id.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn set_metadata(connection: &Connection, key: &str, value: &str) -> Result<(), String> {
     connection
         .execute(
@@ -5383,15 +6143,24 @@ fn longest_streak_days(days: &[ActivityDay]) -> u32 {
     best
 }
 
-fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
-    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
-        return false;
-    };
-    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(1)) else {
-        return false;
-    };
-    let exists = rows.filter_map(Result::ok).any(|name| name == column);
-    exists
+fn column_exists_checked(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("无法读取 SQLite 表结构 {table}：{error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("无法枚举 SQLite 表结构 {table}：{error}"))?;
+    for row in rows {
+        let name = row.map_err(|error| format!("无法读取 SQLite 字段 {table}：{error}"))?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn first_non_empty(values: [Option<String>; 3]) -> Option<String> {

@@ -31,6 +31,48 @@ test("mergeQuota aligns quota history by startUnix instead of array position", a
   });
 });
 
+test("quota metadata reaches DashboardSnapshot and survives a later precise usage merge", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard, mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const quota = quotaBundleFixture({
+      updatedAt: "2026-07-31T05:02:00Z",
+      attributionIdentity: {
+        scopeKey: "opaque-hash-only",
+        plan: "pro",
+        limit: "codex",
+      },
+    });
+    const withQuota = mergeQuota(stateWithDashboard(), quota);
+    const next = mergePreciseDashboard(withQuota, dashboardFixture({
+      generatedAt: "2026-07-31T05:05:00Z",
+      quotaUpdatedAt: null,
+      attributionIdentity: null,
+    }));
+
+    assert.equal(next.dashboard.quotaUpdatedAt, "2026-07-31T05:02:00Z");
+    assert.deepEqual(next.dashboard.attributionIdentity, quota.attributionIdentity);
+  });
+});
+
+test("exact-read start marks prior recent usage stale while quota merge preserves coverage metadata", async () => {
+  return withSsrModules(async (load) => {
+    const { markPreciseRecentUsageStale, mergeQuota } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      preciseRecentUsageCoveredAt: "2026-07-31T05:05:00Z",
+      preciseRecentUsageFresh: true,
+    });
+
+    const stale = markPreciseRecentUsageStale(state);
+    assert.equal(stale.dashboard.preciseRecentUsageFresh, false);
+    assert.equal(stale.dashboard.preciseRecentUsageCoveredAt, "2026-07-31T05:05:00Z");
+
+    const withQuota = mergeQuota(stale, quotaBundleFixture({ updatedAt: "2026-07-31T05:06:00Z" }));
+    assert.equal(withQuota.dashboard.preciseRecentUsageFresh, false);
+    assert.equal(withQuota.dashboard.preciseRecentUsageCoveredAt, "2026-07-31T05:05:00Z");
+    assert.equal(withQuota.dashboard.quotaUpdatedAt, "2026-07-31T05:06:00Z");
+  });
+});
+
 test("mergeQuota overlays the full 30-day five-minute canvas without changing 7d or 30d axes", async () => {
   return withSsrModules(async (load) => {
     const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
@@ -329,6 +371,10 @@ function stateWithDashboard(overrides = {}) {
 function dashboardFixture(overrides = {}) {
   return {
     generatedAt: "2026-07-06T00:00:00Z",
+    preciseRecentUsageCoveredAt: null,
+    preciseRecentUsageFresh: false,
+    quotaUpdatedAt: null,
+    attributionIdentity: null,
     account: { displayName: "本地用户", planLabel: "Pro" },
     stats: {
       totalTokens: 0,
@@ -354,6 +400,8 @@ function dashboardFixture(overrides = {}) {
 
 function quotaBundleFixture(overrides = {}) {
   return {
+    updatedAt: "2026-07-06T00:00:00Z",
+    attributionIdentity: null,
     account: { displayName: "本地用户", planLabel: "Pro" },
     quota: quotaSnapshotFixture(),
     quotaHistoryDaily: [],

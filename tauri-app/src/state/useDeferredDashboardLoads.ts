@@ -26,6 +26,8 @@ interface DeferredDashboardLoadsOptions {
     | "readLiveThreadOptions"
   >;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
+  onPreciseDashboardFailure?: () => void;
+  onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized: () => void;
   onUsageCacheStatus: (status: UsageCacheStatus) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
@@ -45,6 +47,8 @@ export function useDeferredDashboardLoads({
   sourceToken,
   source,
   onPreciseDashboard,
+  onPreciseDashboardFailure,
+  onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
   onQuota,
@@ -59,6 +63,8 @@ export function useDeferredDashboardLoads({
     generation,
     loading,
     onPreciseDashboard,
+    onPreciseDashboardFailure,
+    onPreciseDashboardStale,
     onUsageCacheInitialized,
     onUsageCacheStatus,
     onLoadEnd: onRefreshTaskEnd,

@@ -28,6 +28,8 @@ export function mergePreciseDashboard(
         ? precise
         : {
             ...precise,
+            quotaUpdatedAt: state.dashboard.quotaUpdatedAt ?? null,
+            attributionIdentity: state.dashboard.attributionIdentity ?? null,
             account: state.dashboard.account,
             quota: state.dashboard.quota,
             activityDays: mergeActivityQuotaHistory(precise.activityDays, state.dashboard.activityDays),
@@ -40,12 +42,27 @@ export function mergePreciseDashboard(
   };
 }
 
+export function markPreciseRecentUsageStale(state: DashboardAppState): DashboardAppState {
+  if (state.dashboard === null || state.dashboard.preciseRecentUsageFresh === false) {
+    return state;
+  }
+  return {
+    ...state,
+    dashboard: {
+      ...state.dashboard,
+      preciseRecentUsageFresh: false,
+    },
+  };
+}
+
 export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle): DashboardAppState {
   const dashboard =
     state.dashboard === null
       ? null
       : {
           ...state.dashboard,
+          quotaUpdatedAt: quota.updatedAt,
+          attributionIdentity: quota.attributionIdentity ?? null,
           account: quota.account,
           quota: quota.quota,
           activityDays: mergeActivityQuotaHistory(state.dashboard.activityDays, quota.quotaHistoryDaily),

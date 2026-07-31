@@ -44,6 +44,20 @@ export function readPreciseDashboardSnapshot(
   return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, null);
 }
 
+export function acknowledgeAttributionSafety(
+  sourceToken: CodexHomeSourceToken,
+  provenanceEpoch: string,
+  unsafeID: string,
+  throughGeneration: number,
+): Promise<boolean> {
+  return callCommandStrict<boolean>("acknowledge_attribution_safety", {
+    provenanceEpoch,
+    sourceToken,
+    throughGeneration,
+    unsafeId: unsafeID,
+  });
+}
+
 export function readUsageSummarySnapshot(
   sourceToken: CodexHomeSourceToken,
 ): Promise<UsageSummarySnapshot | null> {

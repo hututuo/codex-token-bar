@@ -86,6 +86,13 @@ interface DashboardPageProps {
   onProviderRepairSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   onQuotaRefresh: () => void;
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
+  onAttributionPreciseRefreshNeeded: (comparisonUpdatedAt: string) => void;
+  onAttributionSafetyAcknowledge: (
+    provenanceEpoch: string,
+    unsafeID: string,
+    throughGeneration: number,
+  ) => Promise<boolean>;
+  onAttributionSafetyRefreshNeeded: () => void;
   onToggleLiveRate: () => void;
   onRefresh: () => Promise<void>;
   onCancelAutoResume: () => Promise<void>;
@@ -156,6 +163,9 @@ export function DashboardPage({
   onProviderRepairSnapshotChange,
   onQuotaRefresh,
   onQuotaRefreshIntervalChange,
+  onAttributionPreciseRefreshNeeded,
+  onAttributionSafetyAcknowledge,
+  onAttributionSafetyRefreshNeeded,
   onCancelAutoResume,
   onRefreshAutoResume,
   onRunAutoResume,
@@ -267,6 +277,9 @@ export function DashboardPage({
               onLiveThreadSelect={onLiveThreadSelect}
               onQuotaRefresh={onQuotaRefresh}
               onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+              onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
+              onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
+              onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
               onToggleLiveRate={onToggleLiveRate}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
@@ -275,6 +288,9 @@ export function DashboardPage({
               refreshing={refreshing}
               liveRateEnabled={liveRateEnabled}
               selectedLiveThreadId={selectedLiveThreadId}
+              sourceHomeIdentity={sourceToken === null
+                ? providerSourceKey
+                : `${sourceToken.canonicalHomeKey}\u0000${sourceToken.physicalHomeKey}`}
               usageCacheInitializing={usageCacheInitializing}
             />
             {analyticsReady ? (

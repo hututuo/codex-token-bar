@@ -20,6 +20,8 @@ test("a render during the cold-start grace period cannot permanently skip the pr
         physicalHomeKey: "physical-home",
         transitionGeneration: 1,
       };
+      let staleMarks = 0;
+      let failureMarks = 0;
       let preciseReads = 0;
       const source = {
         async readUsageCacheStatus() {
@@ -43,6 +45,12 @@ test("a render during the cold-start grace period cannot permanently skip the pr
           source,
           sourceToken,
           onPreciseDashboard() {},
+          onPreciseDashboardFailure() {
+            failureMarks += 1;
+          },
+          onPreciseDashboardStale() {
+            staleMarks += 1;
+          },
           onUsageCacheStatus() {
             void renderRevision;
           },
@@ -65,6 +73,8 @@ test("a render during the cold-start grace period cannot permanently skip the pr
           await Promise.resolve();
         });
         assert.equal(preciseReads, 1);
+        assert.equal(staleMarks, 1, "a failed optional precise read must leave freshness false");
+        assert.equal(failureMarks, 1, "the settled failure must persist one continuity gap");
       } finally {
         await React.act(async () => root.unmount());
       }

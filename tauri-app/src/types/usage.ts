@@ -1,5 +1,5 @@
 import type { LocalDataWarning, QuotaDiagnostic } from "./diagnostics";
-import type { AccountInfo, QuotaSnapshot } from "./quota";
+import type { AccountInfo, QuotaAttributionIdentity, QuotaSnapshot } from "./quota";
 
 export interface DashboardStats {
   totalTokens: number;
@@ -35,6 +35,19 @@ export interface RecentUsagePoint {
   cacheHitRate: number | null;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
+  /** Opaque stable session/event-source contributions for monotonic archival merge. */
+  sourceContributions?: RecentUsageSourceContribution[];
+  /** Rotates whenever the native exact index can no longer prove append-only lineage. */
+  sourceContributionEpoch?: string | null;
+}
+
+export interface RecentUsageSourceContribution {
+  sourceId: string;
+  tokens: number;
+  calls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
 }
 
 export interface CacheHitRankingItem {
@@ -79,6 +92,21 @@ export interface TokenCacheUsage {
 
 export interface DashboardSnapshot {
   generatedAt: string;
+  /** Last native full exact-usage sync that covers the five-minute series. */
+  preciseRecentUsageCoveredAt?: string | null;
+  /** False for compact startup data, metadata-only data, and failed refreshes. */
+  preciseRecentUsageFresh?: boolean;
+  /** Stable for one native process; changes after an app restart/observer gap. */
+  preciseObserverEpoch?: string | null;
+  preciseObserverStartedAtUnixMicros?: number | null;
+  preciseObserverSequence?: number | null;
+  preciseAttributionProvenanceEpoch?: string | null;
+  preciseAttributionGeneration?: number | null;
+  preciseAttributionUnsafeSinceGeneration?: number | null;
+  preciseAttributionUnsafeId?: string | null;
+  preciseAttributionCurrentScanUnsafe?: boolean;
+  quotaUpdatedAt?: string | null;
+  attributionIdentity?: QuotaAttributionIdentity | null;
   account: AccountInfo;
   stats: DashboardStats;
   quota: QuotaSnapshot;

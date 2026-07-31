@@ -55,6 +55,8 @@ export function emptyAccountQuotaBundle(): AccountQuotaBundle {
   }));
 
   return {
+    updatedAt: now.toISOString(),
+    attributionIdentity: null,
     account: {
       displayName: "账户待读取",
       planLabel: "计划待读取",

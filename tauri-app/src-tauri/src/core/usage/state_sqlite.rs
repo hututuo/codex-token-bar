@@ -36,6 +36,16 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
 
     Ok(DashboardSnapshot {
         generated_at,
+        precise_recent_usage_covered_at: None,
+        precise_recent_usage_fresh: false,
+        precise_observer_epoch: None,
+        precise_observer_started_at_unix_micros: None,
+        precise_observer_sequence: None,
+        precise_attribution_provenance_epoch: None,
+        precise_attribution_generation: None,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
@@ -96,6 +106,8 @@ fn empty_recent_usage(
                 cache_hit_rate: None,
                 five_hour_remaining_percent: None,
                 seven_day_remaining_percent: None,
+                source_contribution_epoch: None,
+                source_contributions: Vec::new(),
             }
         })
         .collect()
@@ -213,6 +225,8 @@ mod tests {
         assert_eq!(snapshot.stats.longest_streak_days, 0);
         assert_eq!(snapshot.stats.total_calls, 0);
         assert_eq!(snapshot.stats.total_threads, 2);
+        assert_eq!(snapshot.precise_recent_usage_covered_at, None);
+        assert!(!snapshot.precise_recent_usage_fresh);
         assert!(snapshot.activity_days.iter().all(|day| day.tokens == 0));
         assert_eq!(
             snapshot.recent_usage_24h.len(),
