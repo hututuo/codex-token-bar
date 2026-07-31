@@ -1114,6 +1114,8 @@ enum AccountQuotaReader {
         var snapshot = AccountQuotaSnapshot(
             fiveHour: primary,
             sevenDay: secondary,
+            fiveHourAvailability: primaryCard?.resolvedFiveHourAvailability ?? .unavailable,
+            sevenDayAvailability: primaryCard?.resolvedSevenDayAvailability ?? .unavailable,
             planType: planType,
             limitName: limitName,
             accountName: accountName,
@@ -1196,7 +1198,6 @@ enum AccountQuotaReader {
         }
 
         return cards
-            .filter(\.hasQuotaWindows)
             .sorted { lhs, rhs in
                 let lhsIsCodex = lhs.id.caseInsensitiveCompare("codex") == .orderedSame
                 let rhsIsCodex = rhs.id.caseInsensitiveCompare("codex") == .orderedSame
@@ -1205,26 +1206,88 @@ enum AccountQuotaReader {
             }
     }
 
-    private static func parseLimitCard(_ raw: [String: Any], limitID: String) -> AccountQuotaLimitCard? {
-        var fiveHour: AccountQuotaWindow?
-        var sevenDay: AccountQuotaWindow?
-        for window in [
-            parseWindow(raw["primary"] as? [String: Any], fallbackLabel: "5h"),
-            parseWindow(raw["secondary"] as? [String: Any], fallbackLabel: "7d")
-        ].compactMap({ $0 }) {
-            if window.label == "7d" {
-                if sevenDay == nil { sevenDay = window }
-            } else if fiveHour == nil {
-                fiveHour = window
+    private enum ParsedQuotaWindowSlot {
+        case measured(AccountQuotaWindow)
+        case absent(label: String)
+        case unavailable(label: String)
+
+        var label: String {
+            switch self {
+            case .measured(let window):
+                return window.label
+            case .absent(let label), .unavailable(let label):
+                return label
             }
         }
-        guard fiveHour != nil || sevenDay != nil else { return nil }
+    }
+
+    private static func parseLimitCard(_ raw: [String: Any], limitID: String) -> AccountQuotaLimitCard? {
+        guard raw.keys.contains("primary") || raw.keys.contains("secondary") else {
+            return nil
+        }
+
+        var fiveHour: AccountQuotaWindow?
+        var sevenDay: AccountQuotaWindow?
+        var fiveHourAvailability: AccountQuotaWindowAvailability = .absent
+        var sevenDayAvailability: AccountQuotaWindowAvailability = .absent
+
+        let slots = [
+            parseWindowSlot(raw["primary"], keyPresent: raw.keys.contains("primary"), fallbackLabel: "5h"),
+            parseWindowSlot(raw["secondary"], keyPresent: raw.keys.contains("secondary"), fallbackLabel: "7d")
+        ]
+
+        for slot in slots {
+            let targetsSevenDay = slot.label == "7d"
+            switch slot {
+            case .measured(let window):
+                if targetsSevenDay {
+                    if sevenDay == nil { sevenDay = window }
+                    sevenDayAvailability = .measured
+                } else {
+                    if fiveHour == nil { fiveHour = window }
+                    fiveHourAvailability = .measured
+                }
+            case .unavailable:
+                if targetsSevenDay {
+                    if sevenDay == nil { sevenDayAvailability = .unavailable }
+                } else if fiveHour == nil {
+                    fiveHourAvailability = .unavailable
+                }
+            case .absent:
+                break
+            }
+        }
+
         return AccountQuotaLimitCard(
             id: limitID,
             limitName: raw["limitName"] as? String,
             planType: raw["planType"] as? String,
             fiveHour: fiveHour,
-            sevenDay: sevenDay
+            sevenDay: sevenDay,
+            fiveHourAvailability: fiveHourAvailability,
+            sevenDayAvailability: sevenDayAvailability
+        )
+    }
+
+    private static func parseWindowSlot(
+        _ rawValue: Any?,
+        keyPresent: Bool,
+        fallbackLabel: String
+    ) -> ParsedQuotaWindowSlot {
+        guard keyPresent, !(rawValue is NSNull) else {
+            return .absent(label: fallbackLabel)
+        }
+        guard let raw = rawValue as? [String: Any] else {
+            return .unavailable(label: fallbackLabel)
+        }
+        if let window = parseWindow(raw, fallbackLabel: fallbackLabel) {
+            return .measured(window)
+        }
+
+        let resetsAt = (raw["resetsAt"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue) }
+        return .unavailable(
+            label: quotaWindowLabel(raw, fallback: fallbackLabel, resetsAt: resetsAt)
         )
     }
 

@@ -33,6 +33,17 @@
         margin: 0;
       }
 
+      html.status-document,
+      html.status-document body,
+      html.status-document #root,
+      html.status-document .boot-shell {
+        background: transparent;
+      }
+
+      html.status-document .boot-shell {
+        visibility: hidden;
+      }
+
       .boot-shell {
         display: grid;
         min-height: 100vh;

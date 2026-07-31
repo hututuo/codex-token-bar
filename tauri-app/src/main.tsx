@@ -5,6 +5,9 @@ import { App } from "./app/App";
 import "./styles/global.css";
 
 const startupSurface = new URLSearchParams(window.location.search).get("surface") ?? "main";
+if (startupSurface === "status") {
+  document.documentElement.classList.add("status-document");
+}
 
 void recordStartupEvent(`${startupSurface} entry script`);
 

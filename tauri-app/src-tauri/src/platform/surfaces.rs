@@ -1961,6 +1961,7 @@ fn create_status_panel_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     .always_on_top(true)
     .skip_taskbar(true)
     .shadow(true)
+    .transparent(true)
     .visible(false);
     #[cfg(target_os = "windows")]
     let webview_attempt = begin_windows_webview_creation("status");

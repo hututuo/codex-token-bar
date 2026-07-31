@@ -20,6 +20,7 @@ final class StatusBarMetricsTests: XCTestCase {
             "rate,fiveHour,sevenDay,iq"
         )
         XCTAssertEqual(StatusBarMetricConfiguration.default.labelStyle, .compact)
+        XCTAssertEqual(StatusBarMetricID.iq.title, "今日模型榜")
     }
 
     func testConfigurationPreservesKnownUserOrderAndRepairsDuplicatesAndUnknownIDs() {
@@ -47,7 +48,7 @@ final class StatusBarMetricsTests: XCTestCase {
             rate: 42.4,
             fiveHour: 76,
             sevenDay: 42,
-            iq: 104,
+            rankings: sampleRankings,
             today: 84_000,
             total: 1_200_000,
             requests: 42,
@@ -67,7 +68,7 @@ final class StatusBarMetricsTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.text,
-            "⁵ʰ76% · ⁷ᵈ42% · IQ104 · 跑3 · 未2 · 今84K · 总1.2M · 次42 · 42.4/s"
+            "5H76% · 7D42% · 1 Sol·XH / 2 Luna·H · 跑3 · 未2 · 今84K · 总1.2M · 次42 · 42.4/s"
         )
         XCTAssertEqual(
             presentation.segments.map(\.id),
@@ -85,7 +86,6 @@ final class StatusBarMetricsTests: XCTestCase {
             rate: nil,
             fiveHour: 0,
             sevenDay: nil,
-            iq: 0,
             today: 0,
             total: nil,
             requests: 0
@@ -96,11 +96,251 @@ final class StatusBarMetricsTests: XCTestCase {
             configuration: configuration
         )
 
-        XCTAssertEqual(presentation.text, "⁵ʰ0% · ⁷ᵈ— · IQ0 · 今0 · 总— · 次0 · —")
+        XCTAssertFalse(values.fiveHourWindowOfficiallyAbsent)
+        XCTAssertEqual(presentation.text, "5H0% · 7D— · 1 — / 2 — · 今0 · 总— · 次0 · —")
         XCTAssertEqual(
             presentation.segments.map(\.id),
             [.fiveHour, .sevenDay, .iq, .today, .total, .requests, .rate]
         )
+    }
+
+    func testIsolatedFiveHourAbsenceHidesOnlyFiveHourMetric() {
+        let values = makeValues(fiveHour: nil, sevenDay: 42)
+        let presentation = StatusBarMetricsPresentation.make(
+            values: values,
+            configuration: quotaOnlyConfiguration
+        )
+
+        XCTAssertTrue(values.fiveHourWindowOfficiallyAbsent)
+        XCTAssertEqual(presentation.segments.map(\.id), [.sevenDay])
+        XCTAssertEqual(presentation.text, "7D42%")
+    }
+
+    func testMalformedFiveHourRemainsVisibleAsDashWhenSevenDayIsMeasured() {
+        let values = makeValues(
+            fiveHour: nil,
+            sevenDay: 42,
+            fiveHourAvailability: .unavailable
+        )
+        let presentation = StatusBarMetricsPresentation.make(
+            values: values,
+            configuration: quotaOnlyConfiguration
+        )
+
+        XCTAssertFalse(values.fiveHourWindowOfficiallyAbsent)
+        XCTAssertEqual(presentation.segments.map(\.id), [.fiveHour, .sevenDay])
+        XCTAssertEqual(presentation.text, "5H— · 7D42%")
+    }
+
+    func testTotalQuotaFailureKeepsBothUnavailableMetrics() {
+        let values = makeValues(fiveHour: nil, sevenDay: nil)
+        let presentation = StatusBarMetricsPresentation.make(
+            values: values,
+            configuration: quotaOnlyConfiguration
+        )
+
+        XCTAssertFalse(values.fiveHourWindowOfficiallyAbsent)
+        XCTAssertEqual(presentation.segments.map(\.id), [.fiveHour, .sevenDay])
+        XCTAssertEqual(presentation.text, "5H— · 7D—")
+    }
+
+    func testFiveHourTrueZeroRemainsVisibleWhenSevenDayIsUnavailable() {
+        let values = makeValues(fiveHour: 0, sevenDay: nil)
+        let presentation = StatusBarMetricsPresentation.make(
+            values: values,
+            configuration: quotaOnlyConfiguration
+        )
+
+        XCTAssertFalse(values.fiveHourWindowOfficiallyAbsent)
+        XCTAssertEqual(presentation.segments.map(\.id), [.fiveHour, .sevenDay])
+        XCTAssertEqual(presentation.text, "5H0% · 7D—")
+    }
+
+    func testTodayModelRankingUsesShortFamiliesAndEffortCodes() {
+        let cases = [
+            ("gpt-5.6-sol", "max", "Sol·MAX"),
+            ("GPT-5.6 Luna", "xhigh", "Luna·XH"),
+            ("gpt-5.6-terra", "high", "Terra·H"),
+            ("Sol", "medium", "Sol·M"),
+            ("Luna", "low", "Luna·L"),
+            ("Terra", "minimal", "Terra·MIN"),
+            ("Sol", "ultra", "Sol·U"),
+            ("gpt-5.5", "xhigh", "5.5·XH"),
+            ("gpt-5.4", "high", "5.4·H"),
+        ]
+
+        for (model, effort, expected) in cases {
+            XCTAssertEqual(
+                StatusBarModelRankingEntry(modelName: model, reasoningEffort: effort).compactText,
+                expected
+            )
+        }
+
+        let presentation = StatusBarMetricsPresentation.make(
+            values: makeValues(rankings: [
+                StatusBarModelRankingEntry(modelName: "gpt-5.6-sol", reasoningEffort: "xhigh")
+            ]),
+            configuration: StatusBarMetricConfiguration(
+                orderedMetricIDs: [.iq],
+                selectedMetricIDs: [.iq],
+                showsIcon: false
+            )
+        )
+        XCTAssertEqual(presentation.text, "1 Sol·XH / 2 —")
+        XCTAssertTrue(presentation.accessibilityValue.contains("思考强度 xhigh"))
+    }
+
+    func testSnapshotConversionUsesRadarTopTwoWithoutIQScores() throws {
+        let radarSnapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: Data(#"""
+            {
+              "timezone": "Asia/Shanghai",
+              "model_iq": {
+                "latest": {
+                  "date": "2026-07-31",
+                  "score": 130,
+                  "tasks": 10,
+                  "valid_tasks": 10,
+                  "model": "gpt-5.6-luna",
+                  "reasoning_effort": "high"
+                },
+                "comparisons": {
+                  "sol": {
+                    "label": "GPT-5.6 Sol xhigh",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "xhigh",
+                    "latest": {
+                      "date": "2026-07-31",
+                      "score": 150,
+                      "tasks": 10,
+                      "valid_tasks": 10,
+                      "model": "gpt-5.6-sol",
+                      "reasoning_effort": "xhigh"
+                    }
+                  },
+                  "terra": {
+                    "label": "GPT-5.6 Terra max",
+                    "model": "gpt-5.6-terra",
+                    "reasoning_effort": "max",
+                    "latest": {
+                      "date": "2026-07-31",
+                      "score": 120,
+                      "tasks": 10,
+                      "valid_tasks": 10,
+                      "model": "gpt-5.6-terra",
+                      "reasoning_effort": "max"
+                    }
+                  }
+                }
+              }
+            }
+            """#.utf8)
+        )
+        let tokenSnapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "等待输出",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            quota: .empty,
+            updatedAt: .distantPast
+        )
+
+        let values = StatusBarMetricValues(
+            snapshot: tokenSnapshot,
+            radar: CodexRadarPresentationState(snapshot: radarSnapshot),
+            unreadThreadCount: 0,
+            now: july30_2026_1630UTC,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(values.modelRankings.map(\.compactText), ["Sol·XH", "Luna·H"])
+        XCTAssertFalse(
+            values.modelRankings.map(\.compactText).contains { $0.localizedCaseInsensitiveContains("IQ") }
+        )
+
+        let staleValues = StatusBarMetricValues(
+            snapshot: tokenSnapshot,
+            radar: CodexRadarPresentationState(
+                snapshot: radarSnapshot,
+                staleDataDisplayed: true
+            ),
+            unreadThreadCount: 0,
+            now: july31_2026UTC,
+            calendar: utcCalendar
+        )
+        XCTAssertTrue(staleValues.modelRankings.isEmpty)
+    }
+
+    func testTodayModelRankingRejectsStaleAndZeroSampleRowsButKeepsMeasuredZero() throws {
+        let radarSnapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: Data(#"""
+            {
+              "model_iq": {
+                "latest": {
+                  "date": "2026-07-31",
+                  "score": 0,
+                  "tasks": 1,
+                  "valid_tasks": 1,
+                  "model": "gpt-5.6-sol",
+                  "reasoning_effort": "ultra"
+                },
+                "comparisons": {
+                  "stale": {
+                    "label": "GPT-5.6 Luna max",
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "max",
+                    "latest": {
+                      "date": "2026-07-30",
+                      "score": 999,
+                      "tasks": 10,
+                      "valid_tasks": 10,
+                      "model": "gpt-5.6-luna",
+                      "reasoning_effort": "max"
+                    }
+                  },
+                  "pending": {
+                    "label": "GPT-5.6 Terra xhigh",
+                    "model": "gpt-5.6-terra",
+                    "reasoning_effort": "xhigh",
+                    "latest": {
+                      "date": "2026-07-31",
+                      "score": 500,
+                      "status": "pending",
+                      "tasks": 0,
+                      "valid_tasks": 0,
+                      "model": "gpt-5.6-terra",
+                      "reasoning_effort": "xhigh"
+                    }
+                  }
+                }
+              }
+            }
+            """#.utf8)
+        )
+        let tokenSnapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "等待输出",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            quota: .empty,
+            updatedAt: .distantPast
+        )
+
+        let values = StatusBarMetricValues(
+            snapshot: tokenSnapshot,
+            radar: CodexRadarPresentationState(snapshot: radarSnapshot),
+            unreadThreadCount: 0,
+            now: july31_2026UTC,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(values.modelRankings.map(\.compactText), ["Sol·U"])
     }
 
     func testRunningAndUnreadStayVisibleAtZeroAndUseDashOnlyWhenUnavailable() {
@@ -189,14 +429,44 @@ final class StatusBarMetricsTests: XCTestCase {
         XCTAssertNil(values.todayTokens)
         XCTAssertNil(values.totalTokens)
         XCTAssertNil(values.requests)
-        XCTAssertEqual(presentation.text, "今— · 总— · 次— · ⁵ʰ0%")
+        XCTAssertEqual(presentation.text, "今— · 总— · 次— · 5H0%")
+    }
+
+    func testQuotaReadFailureShowsDashesInsteadOfStaleCachedPercentages() {
+        let snapshot = TokenDisplaySnapshot(
+            title: "全会话实时",
+            status: "等待输出",
+            rate: 0,
+            consumedTokens: 0,
+            todayTokens: 0,
+            todayRequests: 0,
+            quota: AccountQuotaSnapshot(
+                fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: nil),
+                sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: nil),
+                diagnostics: [.staleCachedData(source: .accountQuota)]
+            ),
+            updatedAt: .distantPast
+        )
+        let values = StatusBarMetricValues(
+            snapshot: snapshot,
+            radar: CodexRadarPresentationState(),
+            unreadThreadCount: 0
+        )
+
+        let presentation = StatusBarMetricsPresentation.make(
+            values: values,
+            configuration: quotaOnlyConfiguration
+        )
+
+        XCTAssertFalse(values.fiveHourWindowOfficiallyAbsent)
+        XCTAssertEqual(presentation.text, "5H— · 7D—")
     }
 
     func testLabelStylesChangePrefixesWithoutChangingValuesOrOrder() {
         let values = makeValues(
             fiveHour: 72,
             sevenDay: nil,
-            iq: 104,
+            rankings: sampleRankings,
             today: 84_000,
             running: RunningThreadSummary(
                 main: 0,
@@ -236,9 +506,9 @@ final class StatusBarMetricsTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(full.text, "5h72% · 7d— · 模型 IQ104 · 今日84K · 运行0")
-        XCTAssertEqual(compact.text, "⁵ʰ72% · ⁷ᵈ— · IQ104 · 今84K · 跑0")
-        XCTAssertEqual(hidden.text, "72% · — · 104 · 84K · 0")
+        XCTAssertEqual(full.text, "5h72% · 7d— · 1 Sol·XH / 2 Luna·H · 今日84K · 运行0")
+        XCTAssertEqual(compact.text, "5H72% · 7D— · 1 Sol·XH / 2 Luna·H · 今84K · 跑0")
+        XCTAssertEqual(hidden.text, "72% · — · 1 Sol·XH / 2 Luna·H · 84K · 0")
     }
 
     func testSummarySectionRawIDsDefaultsAndUserOrderStayStable() {
@@ -294,7 +564,8 @@ final class StatusBarMetricsTests: XCTestCase {
         rate: Double? = 0,
         fiveHour: Int? = nil,
         sevenDay: Int? = nil,
-        iq: Double? = nil,
+        fiveHourAvailability: AccountQuotaWindowAvailability? = nil,
+        rankings: [StatusBarModelRankingEntry] = [],
         today: Int? = nil,
         total: Int? = nil,
         requests: Int? = nil,
@@ -305,12 +576,48 @@ final class StatusBarMetricsTests: XCTestCase {
             rate: rate,
             fiveHourRemainingPercent: fiveHour,
             sevenDayRemainingPercent: sevenDay,
-            iqScore: iq,
+            fiveHourAvailability: fiveHourAvailability,
+            modelRankings: rankings,
             todayTokens: today,
             totalTokens: total,
             requests: requests,
             runningThreads: running,
             unreadThreadCount: unread
         )
+    }
+
+    private var quotaOnlyConfiguration: StatusBarMetricConfiguration {
+        StatusBarMetricConfiguration(
+            orderedMetricIDs: [.fiveHour, .sevenDay],
+            selectedMetricIDs: [.fiveHour, .sevenDay],
+            showsIcon: false
+        )
+    }
+
+    private var sampleRankings: [StatusBarModelRankingEntry] {
+        [
+            StatusBarModelRankingEntry(modelName: "gpt-5.6-sol", reasoningEffort: "xhigh"),
+            StatusBarModelRankingEntry(modelName: "gpt-5.6-luna", reasoningEffort: "high"),
+        ]
+    }
+
+    private var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private var july31_2026UTC: Date {
+        utcCalendar.date(from: DateComponents(year: 2026, month: 7, day: 31))!
+    }
+
+    private var july30_2026_1630UTC: Date {
+        utcCalendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 30,
+            hour: 16,
+            minute: 30
+        ))!
     }
 }

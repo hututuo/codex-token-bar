@@ -135,7 +135,7 @@ export interface CodexRadarModelIQPoint {
   passed: number;
   tasks: number;
   invalid: number;
-  validTasks: number;
+  validTasks?: number;
   totalTokens: number;
   inputTokens: number;
   cachedInputTokens: number;
@@ -150,7 +150,9 @@ export interface CodexRadarModelIQPoint {
 
 export interface CodexRadarModelIQComparisonRow {
   label: string;
+  model?: string | null;
   point: CodexRadarModelIQPoint;
+  reasoningEffort?: string | null;
 }
 
 export interface CodexRadarChartSeries {
@@ -519,10 +521,16 @@ export function selectCodexRadarDetailSnapshot(
 }
 
 export function primaryModelRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow {
-  return [...allCurrentRows(modelIq)].sort(preferredModelOrder)[0] ?? {
+  return rankedModelRows(modelIq)[0] ?? {
     label: modelDisplayName(modelIq.latest),
+    model: modelIq.latest.model,
     point: modelIq.latest,
+    reasoningEffort: modelIq.latest.reasoningEffort,
   };
+}
+
+export function rankedModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow[] {
+  return [...allCurrentRows(modelIq)].sort(preferredModelOrder);
 }
 
 export function primaryModelMeasurementRow(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow | null {
@@ -644,7 +652,7 @@ export function compactRadarModelName(label: string): string {
   const family = label.match(/\b(sol|luna|terra)\b/i)?.[1];
   if (family) {
     const familyName = family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
-    const effort = label.match(/\b(max|xhigh|high|medium|low|minimal)\b/i)?.[1]?.toLowerCase();
+    const effort = label.match(/\b(ultra|max|xhigh|high|medium|low|minimal)\b/i)?.[1]?.toLowerCase();
     return effort ? `${familyName} ${effort}` : familyName;
   }
   return label
@@ -690,12 +698,19 @@ export function environmentCount(
 function allCurrentRows(modelIq: CodexRadarModelIQ): CodexRadarModelIQComparisonRow[] {
   const rows: CodexRadarModelIQComparisonRow[] = [];
   if (modelPointHasMeasurement(modelIq.latest)) {
-    rows.push({ label: modelDisplayName(modelIq.latest), point: modelIq.latest });
+    rows.push({
+      label: modelDisplayName(modelIq.latest),
+      model: modelIq.latest.model,
+      point: modelIq.latest,
+      reasoningEffort: modelIq.latest.reasoningEffort,
+    });
   }
   rows.push(
     ...Object.values(modelIq.comparisons ?? {}).filter((comparison) => modelPointHasMeasurement(comparison.latest)).map((comparison) => ({
       label: comparison.label,
+      model: comparison.model || comparison.latest.model,
       point: comparison.latest,
+      reasoningEffort: comparison.reasoningEffort || comparison.latest.reasoningEffort,
     })),
   );
   return rows;
@@ -738,6 +753,10 @@ function reasoningEffortCostRank(effort: string | null | undefined): number {
       return 3;
     case "xhigh":
       return 4;
+    case "max":
+      return 5;
+    case "ultra":
+      return 6;
     default:
       return Number.MAX_SAFE_INTEGER;
   }
@@ -837,7 +856,7 @@ function normalizeModelPoint(raw: unknown): CodexRadarModelIQPoint {
     passed: numberValue(read(point, "passed")),
     tasks: numberValue(read(point, "tasks")),
     invalid: numberValue(read(point, "invalid")),
-    validTasks: numberValue(read(point, "validTasks", "valid_tasks")),
+    validTasks: optionalNumber(read(point, "validTasks", "valid_tasks")),
     totalTokens: numberValue(read(point, "totalTokens", "total_tokens")),
     inputTokens: numberValue(read(point, "inputTokens", "input_tokens")),
     cachedInputTokens: numberValue(read(point, "cachedInputTokens", "cached_input_tokens")),

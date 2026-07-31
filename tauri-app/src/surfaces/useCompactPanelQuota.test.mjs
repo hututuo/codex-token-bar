@@ -36,6 +36,9 @@ test("hidden compact quota rejects late data and refreshes once for the next act
         if (reads === 2) {
           return delayedARead.promise;
         }
+        if (reads === 4) {
+          return Promise.resolve(null);
+        }
         return Promise.resolve(quotaBundle(emptyAccountQuotaBundle, "source-b"));
       };
       const container = window.document.createElement("div");
@@ -92,6 +95,14 @@ test("hidden compact quota rejects late data and refreshes once for the next act
         await render(true, sourceB);
         await tick();
         assert.equal(reads, 3);
+
+        const sourceBInterval = [...intervals.values()].find(({ delayMs }) => delayMs === 60_000);
+        assert.ok(sourceBInterval);
+        await React.act(async () => {
+          sourceBInterval.callback();
+          await tick();
+        });
+        await waitForAct(React, () => reads === 4 && container.textContent === "initial");
       } finally {
         await React.act(async () => root.unmount());
       }

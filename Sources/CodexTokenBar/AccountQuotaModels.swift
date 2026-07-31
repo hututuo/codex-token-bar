@@ -84,12 +84,48 @@ struct AccountQuotaWindow: Equatable, Sendable {
     }
 }
 
+enum AccountQuotaWindowAvailability: Equatable, Sendable {
+    case measured
+    case absent
+    case unavailable
+}
+
 struct AccountQuotaLimitCard: Equatable, Sendable {
     let id: String
     let limitName: String?
     let planType: String?
     let fiveHour: AccountQuotaWindow?
     let sevenDay: AccountQuotaWindow?
+    let fiveHourAvailability: AccountQuotaWindowAvailability?
+    let sevenDayAvailability: AccountQuotaWindowAvailability?
+
+    init(
+        id: String,
+        limitName: String?,
+        planType: String?,
+        fiveHour: AccountQuotaWindow?,
+        sevenDay: AccountQuotaWindow?,
+        fiveHourAvailability: AccountQuotaWindowAvailability? = nil,
+        sevenDayAvailability: AccountQuotaWindowAvailability? = nil
+    ) {
+        self.id = id
+        self.limitName = limitName
+        self.planType = planType
+        self.fiveHour = fiveHour
+        self.sevenDay = sevenDay
+        self.fiveHourAvailability = fiveHourAvailability
+        self.sevenDayAvailability = sevenDayAvailability
+    }
+
+    var resolvedFiveHourAvailability: AccountQuotaWindowAvailability {
+        if fiveHour != nil { return .measured }
+        return fiveHourAvailability ?? (sevenDay != nil ? .absent : .unavailable)
+    }
+
+    var resolvedSevenDayAvailability: AccountQuotaWindowAvailability {
+        if sevenDay != nil { return .measured }
+        return sevenDayAvailability ?? .unavailable
+    }
 
     var displayName: String {
         if let limitName, !limitName.isEmpty {
@@ -224,6 +260,8 @@ enum AccountQuotaPaceDetailText {
 struct AccountQuotaSnapshot: Equatable, Sendable {
     var fiveHour: AccountQuotaWindow?
     var sevenDay: AccountQuotaWindow?
+    var fiveHourAvailability: AccountQuotaWindowAvailability? = nil
+    var sevenDayAvailability: AccountQuotaWindowAvailability? = nil
     var planType: String?
     var limitName: String?
     var accountName: String?
@@ -237,6 +275,16 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var historyIdentity: QuotaHistoryIdentity?
 
     static let empty = AccountQuotaSnapshot()
+
+    var resolvedFiveHourAvailability: AccountQuotaWindowAvailability {
+        if fiveHour != nil { return .measured }
+        return fiveHourAvailability ?? (sevenDay != nil ? .absent : .unavailable)
+    }
+
+    var resolvedSevenDayAvailability: AccountQuotaWindowAvailability {
+        if sevenDay != nil { return .measured }
+        return sevenDayAvailability ?? .unavailable
+    }
 
     var isAvailable: Bool {
         fiveHour != nil || sevenDay != nil

@@ -82,6 +82,7 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol max");
   assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna max");
   assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra max");
+  assert.equal(compactRadarModelName("GPT-5.6 Terra ultra"), "Terra ultra");
   assert.equal(compactRadarModelName("GPT-5.6 Sol xhigh"), "Sol xhigh");
 });
 

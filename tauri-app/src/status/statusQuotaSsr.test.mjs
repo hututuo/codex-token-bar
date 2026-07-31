@@ -40,6 +40,20 @@ test("status quota projection omits an absent five-hour window", async () => {
   });
 });
 
+test("status quota projection keeps an absent seven-day window as an unavailable row", async () => {
+  await withSsrModules(async (load) => {
+    const { StatusQuotaProjection } = await load("/src/status/StatusQuotaProjection.tsx");
+    const html = renderToStaticMarkup(React.createElement(StatusQuotaProjection, {
+      fiveHour: quotaLimit("5h", "absent", null),
+      sevenDay: quotaLimit("7d", "absent", null),
+    }));
+
+    assert.doesNotMatch(html, /5h/);
+    assert.match(html, /7d 待读取/);
+    assert.match(html, /role="status"/);
+  });
+});
+
 function quotaFixtures() {
   return [
     { availability: "unavailable", remainingPercent: 0 },

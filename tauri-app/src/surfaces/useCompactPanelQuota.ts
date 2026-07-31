@@ -85,9 +85,8 @@ export function useCompactPanelQuota({
         && current.enabled
         && current.generation === requestGeneration
         && current.sourceKey === requestSourceKey
-        && next !== null
       ) {
-        setQuota(next);
+        setQuota(next ?? emptyAccountQuotaBundle());
       }
     } finally {
       if (inFlightGeneration.current === requestGeneration) {

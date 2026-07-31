@@ -25,8 +25,19 @@ test("the whole compact indicator opens the summary by click Enter and Space", a
         await React.act(async () => root.render(
           React.createElement(StatusPanelCompactIndicator, {
             items: [
-              { id: "rate", shortLabel: "0.0/s" },
-              { id: "fiveHour", shortLabel: "⁵ʰ—" },
+              { id: "rate", shortLabel: "0.0/s", value: "0.0" },
+              {
+                compactMarker: { top: "5", bottom: "H" },
+                id: "fiveHour",
+                shortLabel: "5H—",
+                value: "—",
+              },
+              {
+                compactRows: ["1 Sol·MAX", "2 Luna·H"],
+                id: "iq",
+                shortLabel: "1 Sol·MAX / 2 Luna·H",
+                value: "1 Sol·MAX / 2 Luna·H",
+              },
             ],
             onExpand: () => {
               expansions += 1;
@@ -38,7 +49,18 @@ test("the whole compact indicator opens the summary by click Enter and Space", a
         const indicator = container.querySelector('[role="button"]');
         assert.ok(indicator);
         assert.equal(indicator.getAttribute("tabindex"), "0");
-        assert.equal(indicator.textContent, "0.0/s⁵ʰ—");
+        assert.equal(indicator.getAttribute("aria-label"), "实时速度 0.0/s · 5 小时 —");
+        assert.equal(indicator.querySelector(".status-indicator-compact-items")?.getAttribute("aria-hidden"), "true");
+        assert.equal(indicator.textContent, "0.0/s5H—1 Sol·MAX2 Luna·H");
+        assert.deepEqual(
+          [...indicator.querySelectorAll(".status-indicator-quota-marker span")].map((node) => node.textContent),
+          ["5", "H"],
+        );
+        assert.deepEqual(
+          [...indicator.querySelectorAll(".status-indicator-ranking > span")].map((node) => node.textContent),
+          ["1 Sol·MAX", "2 Luna·H"],
+        );
+        assert.equal(container.textContent.includes("⁵ʰ"), false);
 
         await React.act(async () => indicator.click());
         assert.equal(expansions, 1);

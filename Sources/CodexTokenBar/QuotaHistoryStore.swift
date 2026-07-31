@@ -743,8 +743,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     private static func snapshot(from row: QuotaHistoryRow, base quota: AccountQuotaSnapshot) -> AccountQuotaSnapshot {
         var adjusted = quota
-        adjusted.fiveHour = window(label: "5h", usedPercent: row.fiveHourUsedPercent, resetsAt: row.fiveHourResetsAt)
-        adjusted.sevenDay = window(label: "7d", usedPercent: row.sevenDayUsedPercent, resetsAt: row.sevenDayResetsAt)
+        if quota.resolvedFiveHourAvailability == .measured {
+            adjusted.fiveHour = window(label: "5h", usedPercent: row.fiveHourUsedPercent, resetsAt: row.fiveHourResetsAt)
+        } else {
+            adjusted.fiveHour = nil
+        }
+        if quota.resolvedSevenDayAvailability == .measured {
+            adjusted.sevenDay = window(label: "7d", usedPercent: row.sevenDayUsedPercent, resetsAt: row.sevenDayResetsAt)
+        } else {
+            adjusted.sevenDay = nil
+        }
         return adjusted
     }
 

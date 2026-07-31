@@ -29,6 +29,7 @@ import {
 } from "../../settings/sharedAccountAttribution";
 import { useSharedAccountAttributionSettings } from "../../settings/useSharedAccountAttributionSettings";
 import { buildStatusIndicatorPreview } from "../../status/statusIndicatorPresentation";
+import { StatusPanelCompactItems } from "../../status/StatusPanelCompactIndicator";
 import {
   AUTO_RESUME_FAILURE_REASONS,
   AUTO_RESUME_INTERVAL_OPTIONS,
@@ -699,9 +700,9 @@ const STATUS_METRIC_OPTIONS: ReadonlyArray<{
   label: string;
 }> = [
   { id: "rate", label: "实时速度", description: "当前 Token 生成速度；真实为零时仍显示。" },
-  { id: "fiveHour", label: "5 小时额度", description: "读取不到时保留“—”占位。" },
+  { id: "fiveHour", label: "5 小时额度", description: "官方未提供时隐藏；读取失败时保留“—”。" },
   { id: "sevenDay", label: "7 天额度", description: "读取不到时保留“—”占位。" },
-  { id: "iq", label: "雷达 IQ", description: "读取不到时保留“—”占位。" },
+  { id: "iq", label: "今日模型榜", description: "两行显示当前第一、第二名模型及思考强度。" },
   { id: "today", label: "今日 Token", description: "今天累计处理的 Token。" },
   { id: "total", label: "累计 Token", description: "本机历史累计 Token。" },
   { id: "requests", label: "请求次数", description: "累计请求数量。" },
@@ -839,7 +840,11 @@ function StatusIndicatorSettings({
         </SettingRow>
         <div className="status-indicator-preview" aria-label="状态栏指标实时示例">
           <span>{platform.platform === "windows" ? "Windows 紧凑条示例" : "macOS 菜单栏示例"}</span>
-          <strong>{preview.title || "仅显示应用图标"}</strong>
+          {preview.visibleItems.length > 0 ? (
+            <div aria-label={preview.title} style={{ display: "flex", justifyContent: "flex-end", overflow: "hidden" }}>
+              <StatusPanelCompactItems items={preview.visibleItems} />
+            </div>
+          ) : <strong>仅显示应用图标</strong>}
           <em title={preview.tooltip}>{preview.tooltip}</em>
         </div>
         {!statusAvailable ? (

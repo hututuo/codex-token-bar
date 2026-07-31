@@ -275,7 +275,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             button.imagePosition = presentation.showsIcon ? .imageLeading : .noImage
         }
         if changes.titleChanged {
-            button.title = presentation.title
+            button.attributedTitle = StatusBarAttributedTitleBuilder.make(metricsPresentation)
         }
         if changes.accessibilityChanged {
             button.setAccessibilityLabel("Codex Token Bar 状态栏指标")
@@ -406,6 +406,102 @@ struct StatusBarTokenItemChanges: Equatable {
         self.accessibilityChanged = accessibilityChanged
         self.imageChanged = imageChanged
         self.toolTipChanged = toolTipChanged
+    }
+}
+
+@MainActor
+enum StatusBarAttributedTitleBuilder {
+    static let upperBaselineOffset: CGFloat = 3.25
+    static let lowerBaselineOffset: CGFloat = -3.25
+
+    private static let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+    private static let stackedFont = NSFont.monospacedSystemFont(ofSize: 6.5, weight: .bold)
+    private static let stackedTrailingSpacing: CGFloat = 1.5
+
+    static func make(_ presentation: StatusBarMetricsPresentation) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: "")
+        for (index, segment) in presentation.segments.enumerated() {
+            if index > 0 {
+                appendPlain(StatusBarMetricsPresentation.separator, to: result)
+            }
+            switch segment.layout {
+            case .inline:
+                appendPlain(segment.text, to: result)
+            case .stackedPrefix(let top, let bottom, let suffix):
+                appendStackedLines(
+                    top: top,
+                    bottom: bottom,
+                    trailingSpacing: stackedTrailingSpacing,
+                    to: result
+                )
+                appendPlain(suffix, to: result)
+            case .stackedLines(let top, let bottom):
+                appendStackedLines(top: top, bottom: bottom, trailingSpacing: 0, to: result)
+            }
+        }
+        return result
+    }
+
+    private static func appendPlain(_ text: String, to result: NSMutableAttributedString) {
+        result.append(NSAttributedString(string: text, attributes: baseAttributes))
+    }
+
+    private static func appendStackedLines(
+        top: String,
+        bottom: String,
+        trailingSpacing: CGFloat,
+        to result: NSMutableAttributedString
+    ) {
+        let topWidth = textWidth(top)
+        let bottomWidth = textWidth(bottom)
+        let occupiedWidth = max(topWidth, bottomWidth)
+
+        let topRun = NSMutableAttributedString(
+            string: top,
+            attributes: stackedAttributes(baselineOffset: upperBaselineOffset)
+        )
+        if topRun.length > 0 {
+            topRun.addAttribute(
+                .kern,
+                value: -topWidth,
+                range: NSRange(location: topRun.length - 1, length: 1)
+            )
+        }
+        result.append(topRun)
+
+        let bottomRun = NSMutableAttributedString(
+            string: bottom,
+            attributes: stackedAttributes(baselineOffset: lowerBaselineOffset)
+        )
+        if bottomRun.length > 0 {
+            bottomRun.addAttribute(
+                .kern,
+                value: occupiedWidth - bottomWidth + trailingSpacing,
+                range: NSRange(location: bottomRun.length - 1, length: 1)
+            )
+        }
+        result.append(bottomRun)
+    }
+
+    private static var baseAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: baseFont,
+            .foregroundColor: NSColor.controlTextColor,
+        ]
+    }
+
+    private static func stackedAttributes(
+        baselineOffset: CGFloat
+    ) -> [NSAttributedString.Key: Any] {
+        [
+            .font: stackedFont,
+            .foregroundColor: NSColor.controlTextColor,
+            .baselineOffset: baselineOffset,
+        ]
+    }
+
+    private static func textWidth(_ text: String) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: stackedFont]).width)
     }
 }
 
@@ -621,8 +717,9 @@ struct StatusBarTokenPopoverView: View {
         case .quota:
             StatusSummaryCard(section: section) {
                 VStack(alignment: .leading, spacing: 7) {
-                    StatusBarQuotaLine(title: "5h", window: snapshot.quota.fiveHour)
-                    StatusBarQuotaLine(title: "7d", window: snapshot.quota.sevenDay)
+                    ForEach(StatusBarQuotaPresentation.items(for: snapshot.quota)) { item in
+                        StatusBarQuotaLine(title: item.title, window: item.window)
+                    }
                 }
             }
         case .running:
@@ -819,17 +916,25 @@ private struct StatusBarMetricTile: View {
 
 struct StatusBarQuotaPresentationItem: Identifiable {
     let title: String
-    let window: AccountQuotaWindow
+    let window: AccountQuotaWindow?
 
     var id: String { title }
 }
 
 enum StatusBarQuotaPresentation {
     static func items(for quota: AccountQuotaSnapshot) -> [StatusBarQuotaPresentationItem] {
-        [
-            quota.fiveHour.map { StatusBarQuotaPresentationItem(title: "5h", window: $0) },
-            quota.sevenDay.map { StatusBarQuotaPresentationItem(title: "7d", window: $0) }
-        ].compactMap { $0 }
+        if quota.staleDataDisplayed {
+            return [
+                StatusBarQuotaPresentationItem(title: "5h", window: nil),
+                StatusBarQuotaPresentationItem(title: "7d", window: nil),
+            ]
+        }
+        var items: [StatusBarQuotaPresentationItem] = []
+        if quota.resolvedFiveHourAvailability != .absent {
+            items.append(StatusBarQuotaPresentationItem(title: "5h", window: quota.fiveHour))
+        }
+        items.append(StatusBarQuotaPresentationItem(title: "7d", window: quota.sevenDay))
+        return items
     }
 }
 

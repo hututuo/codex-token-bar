@@ -46,6 +46,7 @@ final class StatusBarTokenPanelTests: XCTestCase {
                 usedPercent: 0,
                 resetsAt: Date(timeIntervalSince1970: 20_000)
             ),
+            fiveHourAvailability: .absent,
             status: "额度已更新",
             updatedAt: Date(timeIntervalSince1970: 1_000)
         )
@@ -53,7 +54,101 @@ final class StatusBarTokenPanelTests: XCTestCase {
         let items = StatusBarQuotaPresentation.items(for: quota)
 
         XCTAssertEqual(items.map(\.title), ["7d"])
-        XCTAssertEqual(items.first?.window.usedPercent, 0)
+        XCTAssertEqual(items.first?.window?.usedPercent, 0)
+    }
+
+    func testStatusBarQuotaPresentationKeepsMalformedFiveHourAsDash() {
+        let quota = AccountQuotaSnapshot(
+            fiveHour: nil,
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 58, resetsAt: nil),
+            fiveHourAvailability: .unavailable
+        )
+
+        let items = StatusBarQuotaPresentation.items(for: quota)
+
+        XCTAssertEqual(items.map(\.title), ["5h", "7d"])
+        XCTAssertNil(items.first?.window)
+        XCTAssertEqual(items.last?.window?.usedPercent, 58)
+    }
+
+    func testStatusBarQuotaPresentationReplacesStaleCacheWithDashesAfterReadFailure() {
+        let quota = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: nil),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: nil),
+            diagnostics: [.staleCachedData(source: .accountQuota)]
+        )
+
+        let items = StatusBarQuotaPresentation.items(for: quota)
+
+        XCTAssertEqual(items.map(\.title), ["5h", "7d"])
+        XCTAssertTrue(items.allSatisfy { $0.window == nil })
+    }
+
+    func testStatusBarQuotaPresentationKeepsBothDashesForTotalFailure() {
+        let items = StatusBarQuotaPresentation.items(for: .empty)
+
+        XCTAssertEqual(items.map(\.title), ["5h", "7d"])
+        XCTAssertTrue(items.allSatisfy { $0.window == nil })
+    }
+
+    func testStatusBarQuotaPresentationKeepsTrueZeroAndMissingSevenDay() {
+        let quota = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 100, resetsAt: nil),
+            sevenDay: nil
+        )
+
+        let items = StatusBarQuotaPresentation.items(for: quota)
+
+        XCTAssertEqual(items.map(\.title), ["5h", "7d"])
+        XCTAssertEqual(items.first?.window?.remainingPercent, 0)
+        XCTAssertNil(items.last?.window)
+    }
+
+    @MainActor
+    func testAttributedStatusTitleStacksQuotaMarkersAndTodayModelRows() throws {
+        let presentation = StatusBarMetricsPresentation(segments: [
+            StatusBarMetricSegment(
+                id: .fiveHour,
+                text: "5H0%",
+                accessibilityText: "5 小时额度剩余 0%",
+                layout: .stackedPrefix(top: "5", bottom: "H", suffix: "0%")
+            ),
+            StatusBarMetricSegment(
+                id: .sevenDay,
+                text: "7D42%",
+                accessibilityText: "7 天额度剩余 42%",
+                layout: .stackedPrefix(top: "7", bottom: "D", suffix: "42%")
+            ),
+            StatusBarMetricSegment(
+                id: .iq,
+                text: "1 Sol·XH / 2 Luna·H",
+                accessibilityText: "今日模型榜",
+                layout: .stackedLines(top: "1 Sol·XH", bottom: "2 Luna·H")
+            ),
+        ])
+
+        let title = StatusBarAttributedTitleBuilder.make(presentation)
+        let rawTitle = title.string as NSString
+        let fiveMarker = rawTitle.range(of: "5H")
+        let sevenMarker = rawTitle.range(of: "7D")
+        let firstModel = rawTitle.range(of: "1 Sol·XH")
+        let secondModel = rawTitle.range(of: "2 Luna·H")
+
+        XCTAssertNotEqual(fiveMarker.location, NSNotFound)
+        XCTAssertNotEqual(sevenMarker.location, NSNotFound)
+        XCTAssertNotEqual(firstModel.location, NSNotFound)
+        XCTAssertNotEqual(secondModel.location, NSNotFound)
+        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: fiveMarker.location, in: title), 0)
+        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: fiveMarker.location + 1, in: title), 0)
+        XCTAssertLessThan(try numericAttribute(.kern, at: fiveMarker.location, in: title), 0)
+        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: sevenMarker.location, in: title), 0)
+        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: sevenMarker.location + 1, in: title), 0)
+        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: firstModel.location, in: title), 0)
+        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: secondModel.location, in: title), 0)
+        XCTAssertLessThan(
+            try numericAttribute(.kern, at: NSMaxRange(firstModel) - 1, in: title),
+            0
+        )
     }
 
     func testClosedStatusItemRefreshUsesOneSecondCadence() {
@@ -276,5 +371,14 @@ final class StatusBarTokenPanelTests: XCTestCase {
         } else {
             defaults.removeObject(forKey: key)
         }
+    }
+
+    private func numericAttribute(
+        _ key: NSAttributedString.Key,
+        at index: Int,
+        in value: NSAttributedString
+    ) throws -> Double {
+        let number = try XCTUnwrap(value.attribute(key, at: index, effectiveRange: nil) as? NSNumber)
+        return number.doubleValue
     }
 }

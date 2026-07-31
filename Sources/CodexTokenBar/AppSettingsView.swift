@@ -1135,7 +1135,7 @@ struct AppSettingsView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("默认组合")
                     .font(.system(size: 11.5, weight: .semibold))
-                Text("实时速率、5 小时额度、7 天额度、模型 IQ")
+                Text("实时速率、5 小时额度、7 天额度、今日模型榜")
                     .font(.system(size: 8.5, weight: .medium))
                     .foregroundStyle(.secondary)
             }

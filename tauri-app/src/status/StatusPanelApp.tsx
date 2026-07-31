@@ -15,8 +15,8 @@ import {
 import { floatingStandaloneStatusText } from "../floating/floatingPanelLabels";
 import {
   FloatingCrowdRadarRow,
-  FloatingQuotaBar,
   FloatingRadarRow,
+  floatingQuotaFillBackground,
 } from "../floating/FloatingPanelPreview";
 import { useFloatingCrowdRadar, useFloatingRadar } from "../floating/useFloatingRadar";
 import { desktopPlatform } from "../platform/desktop";
@@ -33,6 +33,7 @@ import {
 import type {
   CodexHomeSourceToken,
   DisplaySurfaceSettings,
+  FloatingPanelSnapshot,
   FloatingWindowSettings,
   StatusSummarySectionId,
   UnreadSummary,
@@ -40,6 +41,7 @@ import type {
 import {
   buildStatusIndicatorPresentation,
   buildStatusMetricStates,
+  statusSnapshotForQuotaDiagnostics,
 } from "./statusIndicatorPresentation";
 import { attemptStatusIndicatorReadoutPublish } from "./statusIndicatorPublisher";
 import {
@@ -88,7 +90,7 @@ export function StatusPanelApp() {
   const sourceTokenRef = useRef<CodexHomeSourceToken | null>(sourceToken);
   const lastPublishedReadoutRef = useRef("");
   const [publishRetryNonce, setPublishRetryNonce] = useState(0);
-  const { runningThreads, snapshot } = useCompactPanelData({
+  const { quota, runningThreads, snapshot } = useCompactPanelData({
     active: active && sourceReady,
     liveRateEnabled: dataInterests.liveRate,
     liveRateOwnerToken: "status-live-rate",
@@ -244,9 +246,10 @@ export function StatusPanelApp() {
     });
   }
 
-  const displayUnreadSummary = acknowledgedUnreadSummary ?? snapshot.unreadSummary;
+  const statusQuotaSnapshot = statusSnapshotForQuotaDiagnostics(snapshot, quota.diagnostics);
+  const displayUnreadSummary = acknowledgedUnreadSummary ?? statusQuotaSnapshot.unreadSummary;
   const displaySnapshot = {
-    ...snapshot,
+    ...statusQuotaSnapshot,
     unread: displayUnreadSummary.active,
     unreadSummary: displayUnreadSummary,
   };
@@ -314,19 +317,19 @@ export function StatusPanelApp() {
   ]);
 
   const statusQuotaWindows = [
-    {
+    ...(displaySnapshot.fiveHourAvailability === "absent" ? [] : [{
       availability: displaySnapshot.fiveHourAvailability,
       label: displaySnapshot.fiveHourLabel,
       remainingPercent: displaySnapshot.fiveHourRemainingPercent,
       expectedRemainingPercent: displaySnapshot.fiveHourExpectedRemainingPercent,
-    },
+    }]),
     {
       availability: displaySnapshot.sevenDayAvailability,
       label: displaySnapshot.sevenDayLabel,
       remainingPercent: displaySnapshot.sevenDayRemainingPercent,
       expectedRemainingPercent: displaySnapshot.sevenDayExpectedRemainingPercent,
     },
-  ].filter((window) => window.availability !== "absent");
+  ];
 
   function renderSummarySection(section: StatusSummarySectionId) {
     switch (section) {
@@ -335,40 +338,41 @@ export function StatusPanelApp() {
         const measuredRate = rate.available ? displaySnapshot.tokensPerSecond : 0;
         return (
           <article className="status-summary-card status-summary-card--overview" key={section}>
-            <header>
-              <span>实时速度</span>
-              <strong>
-                {rate.available ? `${formatLiveRateValue(measuredRate)} tok/s` : "—"}
-              </strong>
-            </header>
+            <header><span>关键概览</span></header>
+            <div className="status-summary-overview-readout">
+              <span>
+                <strong>{rate.available ? formatLiveRateValue(measuredRate) : "—"}</strong>
+                <em>tok/s</em>
+              </span>
+              <b>{rate.available ? (floatingStandaloneStatusText(displaySnapshot) || "—") : "—"}</b>
+            </div>
             <div className="status-panel-meter" aria-hidden="true">
               <i
                 className="rate-fill"
                 style={rateFillStyle(measuredRate, settings.tokenRateFullScale)}
               />
             </div>
-            <p>{rate.available ? (floatingStandaloneStatusText(displaySnapshot) || "—") : "—"}</p>
           </article>
         );
       }
       case "usage":
         return (
           <article className="status-summary-card" key={section}>
-            <header><span>用量统计</span></header>
-            <dl className="status-summary-metrics status-summary-metrics--three">
-              <div><dt>今日</dt><dd>{metricStates.today.value}</dd></div>
-              <div><dt>累计</dt><dd>{metricStates.total.value}</dd></div>
-              <div><dt>请求</dt><dd>{metricStates.requests.value}</dd></div>
+            <header><span>Token 用量</span></header>
+            <dl className="status-summary-usage-tiles">
+              <div><dt>累计 Token</dt><dd>{metricStates.total.value}</dd></div>
+              <div><dt>今日 Token</dt><dd>{metricStates.today.value}</dd></div>
+              <div><dt>今日请求</dt><dd>{metricStates.requests.value}</dd></div>
             </dl>
           </article>
         );
       case "quota":
         return (
           <article className="status-summary-card status-summary-card--wide" key={section}>
-            <header><span>账户额度</span></header>
-            <div className="status-panel-quota" aria-label="账户额度">
+            <header><span>额度</span></header>
+            <div className="status-panel-quota status-panel-quota--stacked" aria-label="账户额度">
               {statusQuotaWindows.map((window) => (
-                <FloatingQuotaBar
+                <StatusPanelQuotaRow
                   availability={window.availability}
                   key={window.label}
                   label={window.label}
@@ -377,14 +381,13 @@ export function StatusPanelApp() {
                   settings={settings}
                 />
               ))}
-              {statusQuotaWindows.length === 0 ? <span className="status-panel-quota-empty">—</span> : null}
             </div>
           </article>
         );
       case "running":
         return (
           <article className="status-summary-card" key={section}>
-            <header><span>运行任务</span><strong>{summaryNumber(runningThreads.total)}</strong></header>
+            <header><span>运行线程</span><strong>{summaryNumber(runningThreads.total)}</strong></header>
             <dl className="status-summary-metrics">
               <div><dt>主任务</dt><dd>{summaryNumber(runningThreads.mainThreads)}</dd></div>
               <div><dt>子 Agent</dt><dd>{summaryNumber(runningThreads.subagents)}</dd></div>
@@ -449,17 +452,19 @@ export function StatusPanelApp() {
       >
         <header className="status-panel-head">
           <div>
-            <span>Codex Token Bar · 状态摘要</span>
-            <strong title={indicatorPresentation.tooltip}>
-              {indicatorPresentation.title || "已启用图标入口"}
-            </strong>
+            <strong>Codex Token Bar</strong>
+            <span title={indicatorPresentation.tooltip}>
+              状态摘要 · {statusPanelHeaderText(displaySnapshot)}
+            </span>
           </div>
-          <div className="status-panel-rate-unit">
-            <button type="button" aria-label="关闭状态栏详情" onClick={closePanel}>×</button>
-          </div>
+          <em className="status-panel-arrangement">按设置编排</em>
         </header>
 
-        <div className="status-panel-summary-scroll">
+        <div
+          aria-label="状态摘要内容"
+          className="status-panel-summary-scroll"
+          tabIndex={0}
+        >
           <div className="status-panel-summary-grid">
             {displaySurfaces.statusSummaryOrder.map(renderSummarySection)}
             {displaySurfaces.statusSummaryOrder.length === 0 ? (
@@ -469,7 +474,7 @@ export function StatusPanelApp() {
         </div>
 
         <footer className="status-panel-actions">
-          <button type="button" onClick={openDashboard}>打开主界面</button>
+          <button type="button" onClick={openDashboard}>主界面</button>
           <button type="button" onClick={openSettings}>设置</button>
           <button type="button" onClick={closePanel}>收起</button>
         </footer>
@@ -478,8 +483,67 @@ export function StatusPanelApp() {
   );
 }
 
+function StatusPanelQuotaRow({
+  availability,
+  expectedRemainingPercent,
+  label,
+  remainingPercent,
+  settings,
+}: {
+  availability: FloatingPanelSnapshot["fiveHourAvailability"];
+  expectedRemainingPercent: number | null;
+  label: string;
+  remainingPercent: number | null;
+  settings: FloatingWindowSettings;
+}) {
+  const measured = availability === "measured"
+    && typeof remainingPercent === "number"
+    && Number.isFinite(remainingPercent);
+  const percent = measured
+    ? Math.min(100, Math.max(0, remainingPercent * 100))
+    : 0;
+  const expectedPercent = typeof expectedRemainingPercent === "number"
+    && Number.isFinite(expectedRemainingPercent)
+    ? Math.min(100, Math.max(0, expectedRemainingPercent * 100))
+    : null;
+  const compactLabel = label.trim().split(/\s+/u)[0] || "额度";
+
+  return (
+    <div
+      aria-label={measured ? `${compactLabel}，剩余 ${Math.round(percent)}%` : `${compactLabel}，额度待读取`}
+      aria-valuemax={measured ? 100 : undefined}
+      aria-valuemin={measured ? 0 : undefined}
+      aria-valuenow={measured ? Math.round(percent) : undefined}
+      className="status-panel-quota-row"
+      role={measured ? "meter" : "status"}
+    >
+      <span>{compactLabel}</span>
+      <i aria-hidden="true" className="status-panel-quota-track">
+        <b
+          style={{
+            background: floatingQuotaFillBackground(settings, percent, expectedPercent),
+            width: `${percent}%`,
+          }}
+        />
+      </i>
+      <strong>{measured ? `剩 ${Math.round(percent)}%` : "—"}</strong>
+    </div>
+  );
+}
+
 function summaryNumber(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value)
     ? "—"
     : String(Math.max(0, Math.round(value)));
+}
+
+function statusPanelHeaderText(
+  snapshot: FloatingPanelSnapshot,
+): string {
+  if (snapshot.liveRateStatusKind === "failure") {
+    return snapshot.liveRateStatusLabel?.trim() || "等待输出";
+  }
+  return snapshot.trendLabel.trim()
+    || snapshot.liveRateStatusLabel?.trim()
+    || "等待输出";
 }

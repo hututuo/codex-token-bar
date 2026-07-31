@@ -6,6 +6,7 @@ import {
   buildStatusIndicatorPreview,
   buildStatusMetricStates,
   estimateStatusIndicatorWidth,
+  statusSnapshotForQuotaDiagnostics,
 } from "./statusIndicatorPresentation.ts";
 import { attemptStatusIndicatorReadoutPublish } from "./statusIndicatorPublisher.ts";
 
@@ -20,11 +21,11 @@ const BASE_SNAPSHOT = {
   requestsLabel: "次 42",
   fiveHourLabel: "5h 41%",
   fiveHourAvailability: "measured",
-  fiveHourRemainingPercent: 41.2,
+  fiveHourRemainingPercent: 0.412,
   fiveHourExpectedRemainingPercent: 50,
   sevenDayLabel: "7d 76%",
   sevenDayAvailability: "measured",
-  sevenDayRemainingPercent: 75.6,
+  sevenDayRemainingPercent: 0.756,
   sevenDayExpectedRemainingPercent: 80,
   unread: false,
   unreadSummary: {
@@ -36,6 +37,8 @@ const BASE_SNAPSHOT = {
   },
 };
 
+const RADAR_NOW = new Date("2026-07-30T04:00:00Z");
+
 test("status presentation follows configured order and preserves a real zero rate", () => {
   const result = buildStatusIndicatorPresentation({
     labelStyle: "compact",
@@ -45,7 +48,7 @@ test("status presentation follows configured order and preserves a real zero rat
   });
 
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["sevenDay", "rate", "today"]);
-  assert.equal(result.title, "⁷ᵈ76% · 0/s · 今84K");
+  assert.equal(result.title, "7D76% · 0/s · 今84K");
   assert.match(result.tooltip, /7 天额度剩余 76%.*速度 0 tok\/s.*今日 Token 84K/);
   assert.ok(result.width >= 38);
 });
@@ -96,10 +99,10 @@ test("status presentation keeps selected unavailable and zero metrics visible", 
     result.visibleItems.map((item) => item.id),
     ["rate", "fiveHour", "sevenDay", "iq", "running", "unread"],
   );
-  assert.equal(result.title, "—/s · ⁵ʰ— · ⁷ᵈ— · IQ— · 跑0 · 未—");
+  assert.equal(result.title, "—/s · 5H— · 7D— · 1 — / 2 — · 跑0 · 未—");
 });
 
-test("status presentation includes measured IQ, running and unread values", () => {
+test("status presentation replaces IQ score with a structured two-row model ranking", () => {
   const snapshot = {
     ...BASE_SNAPSHOT,
     unread: true,
@@ -114,6 +117,7 @@ test("status presentation includes measured IQ, running and unread values", () =
     labelStyle: "compact",
     metricStates: metricStatesFor(snapshot),
     order: ["iq", "running", "unread"],
+    now: RADAR_NOW,
     radar: radarFixture(103.6),
     running: {
       total: 3,
@@ -127,8 +131,224 @@ test("status presentation includes measured IQ, running and unread values", () =
     snapshot,
   });
 
-  assert.equal(result.title, "IQ103.6 · 跑3 · 未2");
+  assert.equal(result.title, "1 Sol·MAX / 2 Luna·H · 跑3 · 未2");
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["iq", "running", "unread"]);
+  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·MAX", "2 Luna·H"]);
+  assert.doesNotMatch(result.title, /IQ|103\.6/);
+  assert.match(result.tooltip, /今日模型榜：1 Sol·MAX；2 Luna·H/);
+});
+
+test("status model ranking compacts every supported reasoning effort", () => {
+  const expected = new Map([
+    ["ultra", "U"],
+    ["max", "MAX"],
+    ["xhigh", "XH"],
+    ["high", "H"],
+    ["medium", "M"],
+    ["low", "L"],
+    ["minimal", "MIN"],
+  ]);
+  for (const [effort, compact] of expected) {
+    const radar = radarFixture(100);
+    radar.modelIq.latest.reasoningEffort = effort;
+    radar.modelIq.comparisons = {};
+    const result = buildStatusIndicatorPresentation({
+      labelStyle: "compact",
+      metricStates: metricStatesFor(BASE_SNAPSHOT),
+      now: RADAR_NOW,
+      order: ["iq"],
+      radar,
+      snapshot: BASE_SNAPSHOT,
+    });
+    assert.deepEqual(result.visibleItems[0].compactRows, [`1 Sol·${compact}`, "2 —"]);
+  }
+});
+
+test("today model ranking excludes stale snapshots and prior-day scores", () => {
+  const stale = radarFixture(150);
+  stale.staleDataDisplayed = true;
+  const staleResult = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar: stale,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(staleResult.visibleItems[0].compactRows, ["1 —", "2 —"]);
+
+  const mixedDates = radarFixture(150);
+  mixedDates.modelIq.latest.date = "2026-07-29T23:00:00+08:00";
+  mixedDates.modelIq.comparisons.luna.latest.score = 95;
+  const currentOnly = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar: mixedDates,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(currentOnly.visibleItems[0].compactRows, ["1 Luna·H", "2 —"]);
+});
+
+test("today model ranking rejects zero-sample placeholders but preserves a measured zero score", () => {
+  const placeholder = radarFixture(150);
+  Object.assign(placeholder.modelIq.latest, {
+    passed: 0,
+    tasks: 0,
+    validTasks: 0,
+  });
+  const withoutPlaceholder = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar: placeholder,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(withoutPlaceholder.visibleItems[0].compactRows, ["1 Luna·H", "2 —"]);
+
+  const realZero = radarFixture(0);
+  realZero.modelIq.comparisons = {};
+  realZero.modelIq.latest.passed = 0;
+  realZero.modelIq.latest.tasks = 1;
+  delete realZero.modelIq.latest.validTasks;
+  const measuredZero = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar: realZero,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(measuredZero.visibleItems[0].compactRows, ["1 Sol·MAX", "2 —"]);
+
+  const explicitlyInvalid = radarFixture(200);
+  Object.assign(explicitlyInvalid.modelIq.latest, {
+    passed: 10,
+    tasks: 10,
+    validTasks: 0,
+  });
+  const withoutInvalidSamples = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar: explicitlyInvalid,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(withoutInvalidSamples.visibleItems[0].compactRows, ["1 Luna·H", "2 —"]);
+});
+
+test("today model ranking falls back to comparison identity and skips identity-free rows", () => {
+  const radar = radarFixture(150);
+  Object.assign(radar.modelIq.latest, {
+    model: null,
+    passed: 0,
+    tasks: 0,
+    validTasks: 0,
+  });
+  const comparison = radar.modelIq.comparisons.luna;
+  comparison.label = "Current contender";
+  comparison.model = "gpt-5.6-sol";
+  comparison.reasoningEffort = "ultra";
+  comparison.latest.model = null;
+  comparison.latest.reasoningEffort = null;
+  const result = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(result.visibleItems[0].compactRows, ["1 Sol·U", "2 —"]);
+
+  comparison.model = "";
+  comparison.reasoningEffort = "";
+  comparison.label = "MODEL";
+  const identityFree = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    now: RADAR_NOW,
+    order: ["iq"],
+    radar,
+    snapshot: BASE_SNAPSHOT,
+  });
+  assert.deepEqual(identityFree.visibleItems[0].compactRows, ["1 —", "2 —"]);
+});
+
+test("an officially absent five-hour window is omitted while unavailable five-hour and absent seven-day stay visible", () => {
+  const absentFiveHour = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    order: ["fiveHour", "sevenDay"],
+    snapshot: {
+      ...BASE_SNAPSHOT,
+      fiveHourAvailability: "absent",
+      fiveHourRemainingPercent: null,
+      sevenDayAvailability: "absent",
+      sevenDayRemainingPercent: null,
+    },
+  });
+  assert.deepEqual(absentFiveHour.visibleItems.map((item) => item.id), ["sevenDay"]);
+  assert.equal(absentFiveHour.title, "7D—");
+
+  const unavailableFiveHour = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    order: ["fiveHour", "sevenDay"],
+    snapshot: {
+      ...BASE_SNAPSHOT,
+      fiveHourAvailability: "unavailable",
+      fiveHourRemainingPercent: null,
+    },
+  });
+  assert.deepEqual(unavailableFiveHour.visibleItems.map((item) => item.id), ["fiveHour", "sevenDay"]);
+  assert.equal(unavailableFiveHour.title, "5H— · 7D76%");
+});
+
+test("status quota uses the shared zero-to-one contract and preserves measured zero and full values", () => {
+  const result = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(BASE_SNAPSHOT),
+    order: ["fiveHour", "sevenDay"],
+    snapshot: {
+      ...BASE_SNAPSHOT,
+      fiveHourRemainingPercent: 0,
+      sevenDayRemainingPercent: 1,
+    },
+  });
+  assert.equal(result.title, "5H0% · 7D100%");
+  assert.equal(result.visibleItems[0].available, true);
+  assert.equal(result.visibleItems[1].available, true);
+  assert.deepEqual(result.visibleItems[0].compactMarker, { top: "5", bottom: "H" });
+  assert.deepEqual(result.visibleItems[1].compactMarker, { top: "7", bottom: "D" });
+});
+
+test("stale cached quota diagnostics replace retained percentages with two unavailable dashes", () => {
+  const staleSnapshot = statusSnapshotForQuotaDiagnostics(BASE_SNAPSHOT, [{
+    category: "stale_cached_data",
+    message: "额度刷新失败，暂时显示上次成功额度。",
+    occurredAt: "2026-07-31T08:20:35Z",
+    retryable: true,
+    severity: "warning",
+    source: "account_quota",
+    staleDataDisplayed: true,
+  }]);
+  assert.equal(staleSnapshot.fiveHourAvailability, "unavailable");
+  assert.equal(staleSnapshot.fiveHourRemainingPercent, null);
+  assert.equal(staleSnapshot.sevenDayAvailability, "unavailable");
+  assert.equal(staleSnapshot.sevenDayRemainingPercent, null);
+
+  const result = buildStatusIndicatorPresentation({
+    labelStyle: "compact",
+    metricStates: metricStatesFor(staleSnapshot),
+    order: ["fiveHour", "sevenDay"],
+    snapshot: staleSnapshot,
+  });
+  assert.equal(result.title, "5H— · 7D—");
+  assert.deepEqual(result.visibleItems.map((item) => item.id), ["fiveHour", "sevenDay"]);
 });
 
 test("empty metric order produces icon-only output without inventing a metric", () => {
@@ -286,7 +506,7 @@ test("full and hidden label styles change only the short title, not tooltip deta
   const full = buildStatusIndicatorPreview(["rate", "fiveHour", "sevenDay", "today"], "full");
   const hidden = buildStatusIndicatorPreview(["rate", "fiveHour", "sevenDay", "today"], "hidden");
 
-  assert.equal(full.title, "速率12.4/s · 5h42% · 7d76% · 今日84K");
+  assert.equal(full.title, "速率12.4/s · 5H42% · 7D76% · 今日84K");
   assert.equal(hidden.title, "12.4 · 42% · 76% · 84K");
   assert.equal(full.tooltip, hidden.tooltip);
 });
@@ -306,14 +526,29 @@ function radarFixture(score) {
     outputTokens: 50,
     wallSeconds: 1,
     wallTimeHuman: "1s",
-    model: "gpt-5.6",
-    reasoningEffort: "high",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "max",
   };
   return {
+    staleDataDisplayed: false,
+    timezone: "Asia/Shanghai",
     modelIq: {
       latest: point,
       recentDays: [point],
-      comparisons: {},
+      comparisons: {
+        luna: {
+          label: "GPT-5.6 Luna high",
+          model: "gpt-5.6-luna",
+          reasoningEffort: "high",
+          latest: {
+            ...point,
+            score: score - 5,
+            model: "gpt-5.6-luna",
+            reasoningEffort: "high",
+          },
+          recentDays: [],
+        },
+      },
     },
   };
 }

@@ -18,7 +18,7 @@ enum StatusBarMetricID: String, CaseIterable, Codable, Identifiable, Sendable {
         case .rate: return "实时速率"
         case .fiveHour: return "5 小时额度"
         case .sevenDay: return "7 天额度"
-        case .iq: return "模型 IQ"
+        case .iq: return "今日模型榜"
         case .today: return "今日 Token"
         case .total: return "累计 Token"
         case .requests: return "今日请求"
@@ -30,9 +30,9 @@ enum StatusBarMetricID: String, CaseIterable, Codable, Identifiable, Sendable {
     var settingsSubtitle: String {
         switch self {
         case .rate: return "例：42.4/s"
-        case .fiveHour: return "例：⁵ʰ72%"
-        case .sevenDay: return "例：⁷ᵈ38%"
-        case .iq: return "例：IQ146"
+        case .fiveHour: return "例：5H72%"
+        case .sevenDay: return "例：7D38%"
+        case .iq: return "例：1 Sol·XH / 2 Luna·H"
         case .today: return "例：今84K"
         case .total: return "例：总1.2M"
         case .requests: return "例：次128"
@@ -307,7 +307,8 @@ struct StatusBarMetricValues: Equatable, Sendable {
     let rate: Double?
     let fiveHourRemainingPercent: Int?
     let sevenDayRemainingPercent: Int?
-    let iqScore: Double?
+    let fiveHourWindowOfficiallyAbsent: Bool
+    let modelRankings: [StatusBarModelRankingEntry]
     let todayTokens: Int?
     let totalTokens: Int?
     let requests: Int?
@@ -318,7 +319,8 @@ struct StatusBarMetricValues: Equatable, Sendable {
         rate: Double?,
         fiveHourRemainingPercent: Int?,
         sevenDayRemainingPercent: Int?,
-        iqScore: Double?,
+        fiveHourAvailability: AccountQuotaWindowAvailability? = nil,
+        modelRankings: [StatusBarModelRankingEntry],
         todayTokens: Int?,
         totalTokens: Int?,
         requests: Int?,
@@ -326,9 +328,15 @@ struct StatusBarMetricValues: Equatable, Sendable {
         unreadThreadCount: Int?
     ) {
         self.rate = rate.flatMap { $0.isFinite ? max(0, $0) : nil }
-        self.fiveHourRemainingPercent = fiveHourRemainingPercent.map { min(100, max(0, $0)) }
-        self.sevenDayRemainingPercent = sevenDayRemainingPercent.map { min(100, max(0, $0)) }
-        self.iqScore = iqScore.flatMap { $0.isFinite ? $0 : nil }
+        let normalizedFiveHour = fiveHourRemainingPercent.map { min(100, max(0, $0)) }
+        let normalizedSevenDay = sevenDayRemainingPercent.map { min(100, max(0, $0)) }
+        self.fiveHourRemainingPercent = normalizedFiveHour
+        self.sevenDayRemainingPercent = normalizedSevenDay
+        let resolvedFiveHourAvailability = normalizedFiveHour == nil
+            ? (fiveHourAvailability ?? (normalizedSevenDay != nil ? .absent : .unavailable))
+            : .measured
+        self.fiveHourWindowOfficiallyAbsent = resolvedFiveHourAvailability == .absent
+        self.modelRankings = Array(modelRankings.prefix(2))
         self.todayTokens = todayTokens.map { max(0, $0) }
         self.totalTokens = totalTokens.map { max(0, $0) }
         self.requests = requests.map { max(0, $0) }
@@ -340,13 +348,35 @@ struct StatusBarMetricValues: Equatable, Sendable {
         snapshot: TokenDisplaySnapshot,
         radar: CodexRadarPresentationState,
         rateAvailable: Bool = true,
-        unreadThreadCount: Int?
+        unreadThreadCount: Int?,
+        now: Date = Date(),
+        calendar: Calendar = .current
     ) {
+        let quotaReadFailed = snapshot.quota.staleDataDisplayed
+        var radarCalendar = calendar
+        let radarTimeZoneIdentifier = radar.snapshot?.timezone
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let radarTimeZone = TimeZone(identifier: radarTimeZoneIdentifier) {
+            radarCalendar.timeZone = radarTimeZone
+        }
         self.init(
             rate: rateAvailable ? snapshot.rate : nil,
-            fiveHourRemainingPercent: snapshot.quota.fiveHour?.remainingPercent,
-            sevenDayRemainingPercent: snapshot.quota.sevenDay?.remainingPercent,
-            iqScore: radar.snapshot?.modelIQ.primaryModelPoint?.score,
+            fiveHourRemainingPercent: quotaReadFailed
+                ? nil
+                : snapshot.quota.fiveHour?.remainingPercent,
+            sevenDayRemainingPercent: quotaReadFailed
+                ? nil
+                : snapshot.quota.sevenDay?.remainingPercent,
+            fiveHourAvailability: quotaReadFailed
+                ? .unavailable
+                : snapshot.quota.resolvedFiveHourAvailability,
+            modelRankings: radar.staleDataDisplayed
+                ? []
+                : Self.modelRankings(
+                    from: radar.snapshot?.modelIQ,
+                    now: now,
+                    calendar: radarCalendar
+                ),
             todayTokens: snapshot.hasPreciseTokenUsage ? snapshot.todayTokens : nil,
             totalTokens: snapshot.hasPreciseTokenUsage ? snapshot.consumedTokens : nil,
             requests: snapshot.hasPreciseTokenUsage ? snapshot.todayRequests : nil,
@@ -354,12 +384,134 @@ struct StatusBarMetricValues: Equatable, Sendable {
             unreadThreadCount: unreadThreadCount
         )
     }
+
+    private static func modelRankings(
+        from modelIQ: CodexRadarModelIQ?,
+        now: Date,
+        calendar: Calendar
+    ) -> [StatusBarModelRankingEntry] {
+        guard let modelIQ else { return [] }
+        let today = calendar.dateComponents([.year, .month, .day], from: now)
+        guard let year = today.year, let month = today.month, let day = today.day else {
+            return []
+        }
+        let todayKey = String(format: "%04d-%02d-%02d", year, month, day)
+        return ([modelIQ.primaryModelRow] + modelIQ.secondaryModelRows)
+            .filter { row in
+                let point = row.point
+                let validSampleCount = point.validTasks ?? point.tasks
+                return point.hasMeasurement
+                    && String(point.date.prefix(10)) == todayKey
+                    && validSampleCount > 0
+            }
+            .compactMap(StatusBarModelRankingEntry.init)
+            .prefix(2)
+            .map { $0 }
+    }
+}
+
+struct StatusBarModelRankingEntry: Equatable, Sendable {
+    let modelName: String
+    let reasoningEffortCode: String
+    let reasoningEffortAccessibilityText: String
+
+    init(modelName: String, reasoningEffort: String) {
+        self.modelName = Self.shortModelName(modelName) ?? "—"
+        self.reasoningEffortCode = Self.compactReasoningEffort(reasoningEffort)
+        self.reasoningEffortAccessibilityText = reasoningEffort.isEmpty ? "未知" : reasoningEffort
+    }
+
+    init?(row: CodexRadarModelIQComparisonRow) {
+        guard row.point.hasMeasurement,
+              let modelName = Self.shortModelName(
+                [row.point.model, row.label].compactMap { $0 }.joined(separator: " ")
+              )
+        else {
+            return nil
+        }
+        let pointEffort = row.point.reasoningEffort?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let effort = pointEffort.isEmpty
+            ? Self.reasoningEffort(in: row.label) ?? ""
+            : pointEffort
+        self.modelName = modelName
+        self.reasoningEffortCode = Self.compactReasoningEffort(effort)
+        self.reasoningEffortAccessibilityText = effort.isEmpty ? "未知" : effort
+    }
+
+    var compactText: String {
+        "\(modelName)·\(reasoningEffortCode)"
+    }
+
+    private static func shortModelName(_ rawValue: String) -> String? {
+        let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        for family in ["Sol", "Luna", "Terra"] {
+            if tokens.contains(where: { $0.caseInsensitiveCompare(family) == .orderedSame }) {
+                return family
+            }
+        }
+
+        let normalized = rawValue.lowercased()
+        for version in ["5.6", "5.5", "5.4"] where normalized.contains("gpt-\(version)") {
+            return version
+        }
+
+        let compact = CodexRadarPresentationText.compactModelName(rawValue)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let candidate = compact.split(whereSeparator: \.isWhitespace).first,
+              candidate != "--",
+              candidate.caseInsensitiveCompare("model") != .orderedSame,
+              candidate.caseInsensitiveCompare("unknown") != .orderedSame else {
+            return nil
+        }
+        return String(candidate.prefix(8))
+    }
+
+    private static func reasoningEffort(in rawValue: String) -> String? {
+        let tokens = rawValue
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.lowercased() }
+        return ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+            .first(where: tokens.contains)
+    }
+
+    private static func compactReasoningEffort(_ rawValue: String) -> String {
+        switch rawValue.lowercased() {
+        case "max": return "MAX"
+        case "xhigh": return "XH"
+        case "high": return "H"
+        case "medium": return "M"
+        case "low": return "L"
+        case "minimal": return "MIN"
+        case "ultra": return "U"
+        default: return "—"
+        }
+    }
+}
+
+enum StatusBarMetricSegmentLayout: Equatable, Sendable {
+    case inline
+    case stackedPrefix(top: String, bottom: String, suffix: String)
+    case stackedLines(top: String, bottom: String)
 }
 
 struct StatusBarMetricSegment: Equatable, Sendable {
     let id: StatusBarMetricID
     let text: String
     let accessibilityText: String
+    let layout: StatusBarMetricSegmentLayout
+
+    init(
+        id: StatusBarMetricID,
+        text: String,
+        accessibilityText: String,
+        layout: StatusBarMetricSegmentLayout = .inline
+    ) {
+        self.id = id
+        self.text = text
+        self.accessibilityText = accessibilityText
+        self.layout = layout
+    }
 }
 
 struct StatusBarMetricsPresentation: Equatable, Sendable {
@@ -383,8 +535,11 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
         configuration: StatusBarMetricConfiguration
     ) -> StatusBarMetricsPresentation {
         StatusBarMetricsPresentation(
-            segments: configuration.visibleMetricIDs.map { metric in
-                segment(
+            segments: configuration.visibleMetricIDs.compactMap { metric in
+                if metric == .fiveHour, values.fiveHourWindowOfficiallyAbsent {
+                    return nil
+                }
+                return segment(
                     for: metric,
                     values: values,
                     labelStyle: configuration.labelStyle
@@ -416,43 +571,60 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
             )
         case .fiveHour:
             let value = values.fiveHourRemainingPercent.map { "\($0)%" } ?? "—"
+            let layout: StatusBarMetricSegmentLayout = labelStyle == .compact
+                ? .stackedPrefix(top: "5", bottom: "H", suffix: value)
+                : .inline
             return StatusBarMetricSegment(
                 id: metric,
                 text: labeledValue(
                     full: "5h",
-                    compact: "⁵ʰ",
+                    compact: "5H",
                     value: value,
                     style: labelStyle
                 ),
                 accessibilityText: values.fiveHourRemainingPercent.map {
                     "5 小时额度剩余 \($0)%"
-                } ?? "5 小时额度暂不可用"
+                } ?? "5 小时额度暂不可用",
+                layout: layout
             )
         case .sevenDay:
             let value = values.sevenDayRemainingPercent.map { "\($0)%" } ?? "—"
+            let layout: StatusBarMetricSegmentLayout = labelStyle == .compact
+                ? .stackedPrefix(top: "7", bottom: "D", suffix: value)
+                : .inline
             return StatusBarMetricSegment(
                 id: metric,
                 text: labeledValue(
                     full: "7d",
-                    compact: "⁷ᵈ",
+                    compact: "7D",
                     value: value,
                     style: labelStyle
                 ),
                 accessibilityText: values.sevenDayRemainingPercent.map {
                     "7 天额度剩余 \($0)%"
-                } ?? "7 天额度暂不可用"
+                } ?? "7 天额度暂不可用",
+                layout: layout
             )
         case .iq:
-            let scoreText = values.iqScore.map { CodexRadarModelIQPoint.display($0) } ?? "—"
+            let rankingLines = (0..<2).map { index -> String in
+                guard values.modelRankings.indices.contains(index) else {
+                    return "\(index + 1) —"
+                }
+                return "\(index + 1) \(values.modelRankings[index].compactText)"
+            }
+            let accessibilityText: String
+            if values.modelRankings.isEmpty {
+                accessibilityText = "今日模型榜暂不可用"
+            } else {
+                accessibilityText = "今日模型榜，" + values.modelRankings.enumerated().map { index, entry in
+                    "第 \(index + 1) 名 \(entry.modelName)，思考强度 \(entry.reasoningEffortAccessibilityText)"
+                }.joined(separator: "；")
+            }
             return StatusBarMetricSegment(
                 id: metric,
-                text: labeledValue(
-                    full: "模型 IQ",
-                    compact: "IQ",
-                    value: scoreText,
-                    style: labelStyle
-                ),
-                accessibilityText: values.iqScore == nil ? "模型 IQ 暂不可用" : "模型 IQ \(scoreText)"
+                text: rankingLines.joined(separator: " / "),
+                accessibilityText: accessibilityText,
+                layout: .stackedLines(top: rankingLines[0], bottom: rankingLines[1])
             )
         case .today:
             let value = values.todayTokens.map(compactCount) ?? "—"

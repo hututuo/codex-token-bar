@@ -104,9 +104,21 @@ test("status indicator settings preview, select, reorder and restore through one
   await withMountedSettings(async ({ act, calls, container, render, window }) => {
     await click(act, tabByName(container, "状态栏与托盘"), window);
     let panel = activePanel(container);
-    assert.match(panel.textContent, /12\.4\/s · ⁵ʰ42% · ⁷ᵈ76% · IQ104/);
+    const preview = panel.querySelector(".status-indicator-preview");
+    assert.ok(preview);
+    assert.deepEqual(
+      [...preview.querySelectorAll(".status-indicator-ranking > span")].map((node) => node.textContent),
+      ["1 Sol·MAX", "2 Luna·H"],
+    );
+    assert.deepEqual(
+      [...preview.querySelectorAll(".status-indicator-quota-marker span")].map((node) => node.textContent),
+      ["5", "H", "7", "D"],
+    );
+    assert.match(preview.textContent, /12\.4\/s5H42%7D76%1 Sol·MAX2 Luna·H/);
     assert.match(panel.textContent, /指标与顺序/);
     assert.match(panel.textContent, /真实为零时仍显示/);
+    assert.match(panel.textContent, /今日模型榜/);
+    assert.doesNotMatch(panel.textContent, /雷达 IQ/);
     await click(act, buttonWithText(panel, "仅数值"), window);
     assert.equal(calls.statusMetricLabelStyles.at(-1), "hidden");
 

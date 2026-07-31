@@ -41,6 +41,17 @@ fn absent_quota(label: &str) -> QuotaLimit {
     }
 }
 
+fn unavailable_quota(label: &str) -> QuotaLimit {
+    QuotaLimit {
+        label: label.into(),
+        availability: QuotaAvailability::Unavailable,
+        remaining_percent: None,
+        used_percent: None,
+        resets_at: "待读取".into(),
+        resets_at_unix: None,
+    }
+}
+
 pub(super) struct ParsedRateLimits {
     pub quota: QuotaSnapshot,
     pub plan_label: Option<String>,
@@ -203,15 +214,21 @@ fn parse_fallback_limit_card(value: &Value) -> Option<ParsedLimitCard> {
 }
 
 fn parse_window(value: Option<&Value>, label: &str) -> Option<QuotaLimit> {
-    let value = value?;
-    let used_percent = value.get("usedPercent")?;
-    let used = normalized_percent(used_percent, uses_percent_scale(value, used_percent))?;
+    let value = value.filter(|value| !value.is_null())?;
     let reset_at_unix = value
         .get("resetsAt")
         .and_then(normalized_unix_timestamp_seconds);
     let reset_at =
         reset_at_unix.and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok());
     let label = window_label(value, label, reset_at_unix);
+    let Some(used) = value
+        .get("usedPercent")
+        .and_then(|used_percent| {
+            normalized_percent(used_percent, uses_percent_scale(value, used_percent))
+        })
+    else {
+        return Some(unavailable_quota(label));
+    };
     Some(QuotaLimit {
         label: label.into(),
         availability: QuotaAvailability::Measured,
@@ -256,6 +273,9 @@ fn uses_percent_scale(window: &Value, used_percent: &Value) -> bool {
 
 fn normalized_percent(value: &Value, percent_scale: bool) -> Option<f64> {
     let raw = number(value)?;
+    if !raw.is_finite() {
+        return None;
+    }
     if percent_scale {
         Some(raw / 100.0)
     } else {
@@ -405,6 +425,68 @@ mod tests {
         assert_eq!(quota.five_hour.label, "5h");
         assert!((quota.five_hour.used_percent.unwrap() - 0.25).abs() < 0.001);
         assert!((quota.seven_day.remaining_percent.unwrap() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn missing_five_hour_window_is_absent_but_malformed_window_is_unavailable() {
+        let absent = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "secondary": {
+                        "usedPercent": 20,
+                        "windowDurationMins": 10080
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(absent.five_hour.availability, QuotaAvailability::Absent);
+        assert_eq!(absent.seven_day.availability, QuotaAvailability::Measured);
+
+        let malformed = parse_rate_limits(&json!({
+            "rateLimitsByLimitId": {
+                "codex": {
+                    "primary": {
+                        "usedPercent": "not-a-number",
+                        "windowDurationMins": 300
+                    },
+                    "secondary": {
+                        "usedPercent": 20,
+                        "windowDurationMins": 10080
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            malformed.five_hour.availability,
+            QuotaAvailability::Unavailable
+        );
+        assert_eq!(malformed.five_hour.remaining_percent, None);
+        assert_eq!(malformed.five_hour.used_percent, None);
+        assert_eq!(malformed.seven_day.availability, QuotaAvailability::Measured);
+    }
+
+    #[test]
+    fn malformed_seven_day_window_stays_visible_as_unavailable() {
+        let quota = parse_rate_limits(&json!({
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 25,
+                    "windowDurationMins": 300
+                },
+                "secondary": {
+                    "windowDurationMins": 10080
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(quota.five_hour.availability, QuotaAvailability::Measured);
+        assert_eq!(quota.seven_day.availability, QuotaAvailability::Unavailable);
+        assert_eq!(quota.seven_day.remaining_percent, None);
+        assert_eq!(quota.seven_day.used_percent, None);
     }
 
     #[test]

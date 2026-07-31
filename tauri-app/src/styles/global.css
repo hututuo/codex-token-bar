@@ -7435,7 +7435,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   height: 100vh;
   place-items: center;
   overflow: hidden;
-  padding: 7px;
+  padding: 0;
   background: transparent;
 }
 
@@ -7443,12 +7443,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: grid;
   width: 100%;
   height: 100%;
+  min-height: 0;
   align-content: start;
-  gap: 7px;
-  padding: 12px;
+  gap: 9px;
+  overflow: hidden;
+  padding: 14px;
   border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  background: var(--panel);
+  border-radius: 16px;
+  background: var(--panel-solid);
   color: var(--text);
 }
 
@@ -7468,7 +7470,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .status-panel-head div:first-child {
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 
 .status-panel-head span,
@@ -7480,9 +7482,18 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .status-panel-head strong {
-  font-size: 34px;
+  font-size: 14px;
   font-weight: var(--weight-semibold);
-  line-height: 0.92;
+  line-height: 1.2;
+}
+
+.status-panel-arrangement {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: var(--weight-semibold);
+  line-height: 1.2;
 }
 
 .status-panel-rate-unit {
@@ -7595,13 +7606,13 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .status-panel-actions button {
   flex: 1;
   min-width: 0;
-  min-height: 34px;
+  min-height: 27px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
   color: var(--text);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 9.5px;
   font-weight: var(--weight-semibold);
   padding: 0 7px;
 }
@@ -7610,11 +7621,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   grid-template-rows: auto minmax(0, 1fr) auto;
   align-content: stretch;
   gap: 9px;
-  padding: 11px;
+  padding: 14px;
 }
 
 .status-panel-card--expanded .status-panel-head {
-  align-items: center;
+  align-items: flex-start;
 }
 
 .status-panel-card--expanded .status-panel-head > div:first-child {
@@ -7622,42 +7633,48 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .status-panel-card--expanded .status-panel-head strong {
-  overflow: hidden;
-  max-width: 300px;
-  font-size: 13px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.2;
 }
 
 .status-panel-summary-scroll {
   overflow: auto;
   min-height: 0;
-  padding-right: 2px;
-  scrollbar-width: thin;
+  padding-right: 1px;
+  scrollbar-width: none;
+}
+
+.status-panel-summary-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.status-panel-summary-scroll:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: -2px;
+  border-radius: 11px;
 }
 
 .status-panel-summary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
 .status-summary-card {
   display: grid;
   align-content: start;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
-  min-height: 86px;
+  min-height: 0;
   padding: 10px;
   border: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
-  border-radius: 10px;
+  border-radius: 11px;
   background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel));
 }
 
 .status-summary-card--wide,
 .status-summary-card--overview {
-  grid-column: 1 / -1;
+  grid-column: auto;
 }
 
 .status-summary-card > header {
@@ -7690,11 +7707,44 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .status-summary-card--overview {
-  min-height: 92px;
+  min-height: 94px;
 }
 
-.status-summary-card--overview > header strong {
-  font-size: 20px;
+.status-summary-overview-readout {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.status-summary-overview-readout > span {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.status-summary-overview-readout strong {
+  color: var(--text);
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+  line-height: 0.95;
+}
+
+.status-summary-overview-readout em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: var(--weight-semibold);
+}
+
+.status-summary-overview-readout b {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text) 76%, var(--accent));
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-summary-metrics {
@@ -7706,6 +7756,40 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .status-summary-metrics--three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.status-summary-usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.status-summary-usage-tiles > div {
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--text) 5.5%, transparent);
+}
+
+.status-summary-usage-tiles dt {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-summary-usage-tiles dd {
+  overflow: hidden;
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-summary-metrics > div {
@@ -7725,6 +7809,50 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .status-summary-card .status-panel-quota {
   display: flex;
   gap: 7px;
+}
+
+.status-summary-card .status-panel-quota--stacked {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+}
+
+.status-panel-quota-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 70px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.status-panel-quota-row > span,
+.status-panel-quota-row > strong {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-panel-quota-row > strong {
+  text-align: right;
+}
+
+.status-panel-quota-track {
+  display: block;
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-soft) 88%, var(--text) 12%);
+}
+
+.status-panel-quota-track > b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
 }
 
 .status-summary-card > .floating-radar,
@@ -7803,17 +7931,71 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .status-indicator-compact-items strong {
+  position: relative;
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
   color: var(--text);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   font-weight: var(--weight-semibold);
+  line-height: 1;
 }
 
 .status-indicator-compact-items strong + strong::before {
+  position: absolute;
+  top: 50%;
+  left: -7px;
   content: "·";
-  margin: 0 6px;
   color: var(--muted);
   font-weight: var(--weight-regular);
+  transform: translateY(-50%);
+}
+
+.status-indicator-compact-items strong + strong {
+  margin-left: 13px;
+}
+
+.status-indicator-quota-item {
+  gap: 2px;
+}
+
+.status-indicator-quota-marker {
+  display: grid;
+  grid-template-rows: repeat(2, 6px);
+  width: 7px;
+  align-content: center;
+  color: var(--muted);
+  font-size: 6px;
+  font-weight: var(--weight-bold);
+  line-height: 6px;
+  text-align: center;
+}
+
+.status-indicator-quota-marker span {
+  display: block;
+  height: 6px;
+}
+
+.status-indicator-quota-value {
+  line-height: 1;
+}
+
+.status-indicator-compact-items .status-indicator-ranking {
+  display: grid;
+  grid-template-rows: repeat(2, 10px);
+  align-content: center;
+  gap: 1px;
+  font-size: 9px;
+  line-height: 10px;
+}
+
+.status-indicator-ranking span {
+  display: block;
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 960px) {

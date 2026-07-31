@@ -199,6 +199,30 @@ final class AccountQuotaReaderTests: XCTestCase {
         XCTAssertEqual(snapshot.limitCards.map(\.id), ["codex"])
     }
 
+    func testFiveHourAbsenceAndMalformedPayloadRemainDistinctThroughProductionParsing() {
+        let absent = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "codex",
+                "secondary": ["usedPercent": 34, "windowDurationMins": 10_080]
+            ]
+        ], accountName: "Absent")
+        let malformed = AccountQuotaReader.parse([
+            "rateLimits": [
+                "limitId": "codex",
+                "primary": ["usedPercent": "broken", "windowDurationMins": 300],
+                "secondary": ["usedPercent": 34, "windowDurationMins": 10_080]
+            ]
+        ], accountName: "Malformed")
+
+        XCTAssertEqual(absent.resolvedFiveHourAvailability, .absent)
+        XCTAssertNil(absent.fiveHour)
+        XCTAssertEqual(absent.sevenDay?.usedPercent, 34)
+
+        XCTAssertEqual(malformed.resolvedFiveHourAvailability, .unavailable)
+        XCTAssertNil(malformed.fiveHour)
+        XCTAssertEqual(malformed.sevenDay?.usedPercent, 34)
+    }
+
     func testPrimarySevenDayWindowIsNotMislabeledAsFiveHour() {
         let snapshot = AccountQuotaReader.parse([
             "rateLimits": [

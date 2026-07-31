@@ -267,20 +267,24 @@ test("status panel hides itself when focus leaves", async () => {
   assert.equal(statusPanel.includes('window.removeEventListener("blur", dismissWhenBlurred)'), true);
 });
 
-test("status panel controls keep comfortable hit targets", async () => {
+test("status panel uses the Swift-aligned single-column popover hierarchy", async () => {
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
-  const closeButton = css.slice(
-    css.indexOf(".status-panel-rate-unit button {"),
-    css.indexOf(".status-panel-meter {"),
-  );
   const actionButton = css.slice(
     css.indexOf(".status-panel-actions button {"),
     css.indexOf("@media (max-width: 960px)"),
   );
 
-  assert.equal(closeButton.includes("width: 28px;"), true);
-  assert.equal(closeButton.includes("height: 28px;"), true);
-  assert.equal(actionButton.includes("min-height: 34px;"), true);
+  assert.equal(statusPanel.includes('aria-label="关闭状态栏详情"'), false);
+  assert.equal(statusPanel.includes("status-panel-arrangement"), true);
+  assert.equal(statusPanel.includes("按设置编排"), true);
+  assert.equal(statusPanel.includes('|| "等待输出"'), true);
+  assert.equal(statusPanel.includes("status-summary-usage-tiles"), true);
+  assert.equal(statusPanel.includes("status-panel-quota--stacked"), true);
+  assert.match(css, /\.status-panel-card\s*\{[^}]*padding:\s*14px;[^}]*border-radius:\s*16px;/s);
+  assert.match(css, /\.status-panel-summary-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+  assert.match(css, /\.status-summary-card\s*\{[^}]*border-radius:\s*11px;/s);
+  assert.equal(actionButton.includes("min-height: 27px;"), true);
 });
 
 test("status surface exposes only the composite indicator readout writer", async () => {
@@ -503,4 +507,15 @@ test("dark dashboard stats follow Swift dark panel instead of white gradient", a
   assert.equal(statsBlock.includes("rgba(255, 255, 255, 0.78)"), false);
   assert.equal(statsBlock.includes("background: var(--panel);"), true);
   assert.equal(css.includes("html:not(.floating-document):not(.status-document) .app-shell"), true);
+});
+
+test("status entry marks the document transparent before React renders", async () => {
+  const main = await readFile(new URL("../main.tsx", import.meta.url), "utf8");
+  const html = await readFile(new URL("../../index.html", import.meta.url), "utf8");
+
+  const classWrite = main.indexOf('classList.add("status-document")');
+  const reactRender = main.indexOf("ReactDOM.createRoot");
+  assert.ok(classWrite >= 0 && classWrite < reactRender);
+  assert.match(html, /html\.status-document \.boot-shell\s*\{\s*visibility:\s*hidden;/s);
+  assert.match(html, /html\.status-document[^}]*background:\s*transparent;/s);
 });
