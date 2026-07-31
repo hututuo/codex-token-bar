@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import CodexTokenBar
 
@@ -36,6 +37,75 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
             return XCTFail("Expected unread state to be readable")
         }
         XCTAssertEqual(threadIDs, [userID, vscodeID])
+    }
+
+    func testUnreadPollingDoesNotRetainStateDatabaseDescriptors() throws {
+        let codexHome = try makeCodexHome()
+        let threadID = "019edaaa-1010-7222-8333-aaaaaaaaaaaa"
+        try writeUnreadState([threadID], to: codexHome)
+        try seedVisibleStateDatabase(at: codexHome, threadIDs: [threadID])
+        let databaseURL = codexHome.appendingPathComponent("state_5.sqlite")
+
+        for _ in 0..<10 {
+            XCTAssertEqual(
+                availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+                [threadID]
+            )
+            XCTAssertEqual(
+                try openDescriptorCount(for: databaseURL),
+                0,
+                "unread polling must close state_5 before returning"
+            )
+        }
+    }
+
+    func testUnreadPollingReopensSameSizeSameMtimeReplacement() throws {
+        let codexHome = try makeCodexHome()
+        let threadID = "019edaaa-2020-7333-8444-bbbbbbbbbbbb"
+        let sessions = codexHome.appendingPathComponent("sessions/2026/07/31", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try writeSessionMeta(
+            id: threadID,
+            threadSource: "user",
+            to: sessions.appendingPathComponent("rollout-visible.jsonl")
+        )
+        try writeUnreadState([threadID], to: codexHome)
+
+        let databaseURL = codexHome.appendingPathComponent("state_5.sqlite")
+        try seedVisibilityDatabase(at: databaseURL, threadID: threadID, archived: false)
+        let fixedDate = Date(timeIntervalSince1970: 1_800_000_000)
+        try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: databaseURL.path)
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [threadID]
+        )
+        XCTAssertEqual(try openDescriptorCount(for: databaseURL), 0)
+
+        let originalAttributes = try FileManager.default.attributesOfItem(atPath: databaseURL.path)
+        let replacementURL = codexHome.appendingPathComponent("state_5.replacement.sqlite")
+        try seedVisibilityDatabase(at: replacementURL, threadID: threadID, archived: true)
+        try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: replacementURL.path)
+        let replacementAttributes = try FileManager.default.attributesOfItem(atPath: replacementURL.path)
+        XCTAssertEqual(
+            originalAttributes[.size] as? NSNumber,
+            replacementAttributes[.size] as? NSNumber,
+            "fixture must defeat the former size-only identity check"
+        )
+        XCTAssertEqual(
+            originalAttributes[.modificationDate] as? Date,
+            replacementAttributes[.modificationDate] as? Date,
+            "fixture must defeat the former mtime-only identity check"
+        )
+
+        try FileManager.default.removeItem(at: databaseURL)
+        try FileManager.default.moveItem(at: replacementURL, to: databaseURL)
+
+        XCTAssertEqual(
+            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
+            [],
+            "the replacement database marks the thread archived; stale handle or fallback data must not win"
+        )
+        XCTAssertEqual(try openDescriptorCount(for: databaseURL), 0)
     }
 
     func testInitializedSidebarStateFiltersGhostUnreadThreads() throws {
@@ -307,5 +377,42 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
                 bindings: [.text(threadID)]
             )
         }
+    }
+
+    private func seedVisibilityDatabase(at url: URL, threadID: String, archived: Bool) throws {
+        let driver = SQLiteDatabaseDriver(url: url)
+        try driver.execute("""
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            archived INTEGER,
+            thread_source TEXT,
+            source TEXT,
+            preview TEXT
+        );
+        """)
+        try driver.execute(
+            """
+            INSERT INTO threads (id, archived, thread_source, source, preview)
+            VALUES (?, ?, 'user', 'desktop', 'visible user thread');
+            """,
+            bindings: [.text(threadID), .int(archived ? 1 : 0)]
+        )
+    }
+
+    private func openDescriptorCount(for url: URL) throws -> Int {
+        var expected = stat()
+        let status = url.path.withCString { Darwin.lstat($0, &expected) }
+        guard status == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        var count = 0
+        for descriptor in 0..<getdtablesize() {
+            var candidate = stat()
+            guard Darwin.fstat(descriptor, &candidate) == 0 else { continue }
+            if candidate.st_dev == expected.st_dev, candidate.st_ino == expected.st_ino {
+                count += 1
+            }
+        }
+        return count
     }
 }

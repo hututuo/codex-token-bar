@@ -469,15 +469,20 @@ extension LiveRateMonitor {
         db path: String,
         sql: String,
         bindings: [SQLiteBinding] = [],
+        consistency: SQLiteConnectionConsistency = .ordinary,
         map: (SQLiteStatement) throws -> T
     ) throws -> [T] {
-        let driver = SQLiteDatabaseDriver(
-            url: URL(fileURLWithPath: path),
-            readOnly: true,
-            busyTimeoutMilliseconds: 3_000,
-            enableWAL: false
-        )
-        return try driver.readRows(sql, bindings: bindings, map: map)
+        try SQLiteReadRecovery.run {
+            let driver = SQLiteDatabaseDriver(
+                url: URL(fileURLWithPath: path),
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 3_000,
+                enableWAL: false,
+                consistency: consistency
+            )
+            return try driver.readRows(sql, bindings: bindings, map: map)
+        }
     }
 
     nonisolated static func sqliteText(_ statement: SQLiteStatement, _ column: Int32) -> String? {

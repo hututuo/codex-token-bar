@@ -221,52 +221,57 @@ enum RunningThreadScanner {
             return nil
         }
 
-        let database = SQLiteDatabaseDriver(
-            url: databaseURL,
-            readOnly: true,
-            createsFileIfMissing: false,
-            busyTimeoutMilliseconds: 500
-        )
-        return try database.withConnection { connection in
-            let columns = Set(
-                try connection.readRows("PRAGMA table_info(threads)") { statement in
-                    statement.text(1) ?? ""
-                }
+        return try SQLiteReadRecovery.run {
+            let database = SQLiteDatabaseDriver(
+                url: databaseURL,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 500,
+                consistency: .externallyOwnedWAL
             )
-            guard columns.contains("rollout_path"),
-                  columns.contains("updated_at_ms") || columns.contains("updated_at") else {
-                return nil
-            }
+            return try database.withConnection { connection in
+                try connection.readTransaction { snapshot in
+                    let columns = Set(
+                        try snapshot.readRows("PRAGMA table_info(threads)") { statement in
+                            statement.text(1) ?? ""
+                        }
+                    )
+                    guard columns.contains("rollout_path"),
+                          columns.contains("updated_at_ms") || columns.contains("updated_at") else {
+                        return nil
+                    }
 
-            let archivedExpression = columns.contains("archived")
-                ? "COALESCE(archived, 0)"
-                : "0"
-            let updatedExpression: String
-            if columns.contains("updated_at_ms"), columns.contains("updated_at") {
-                updatedExpression = """
-                CASE
-                    WHEN COALESCE(updated_at_ms, 0) > 0 THEN updated_at_ms
-                    ELSE COALESCE(updated_at, 0) * 1000
-                END
-                """
-            } else if columns.contains("updated_at_ms") {
-                updatedExpression = "COALESCE(updated_at_ms, 0)"
-            } else {
-                updatedExpression = "COALESCE(updated_at, 0) * 1000"
-            }
+                    let archivedExpression = columns.contains("archived")
+                        ? "COALESCE(archived, 0)"
+                        : "0"
+                    let updatedExpression: String
+                    if columns.contains("updated_at_ms"), columns.contains("updated_at") {
+                        updatedExpression = """
+                        CASE
+                            WHEN COALESCE(updated_at_ms, 0) > 0 THEN updated_at_ms
+                            ELSE COALESCE(updated_at, 0) * 1000
+                        END
+                        """
+                    } else if columns.contains("updated_at_ms") {
+                        updatedExpression = "COALESCE(updated_at_ms, 0)"
+                    } else {
+                        updatedExpression = "COALESCE(updated_at, 0) * 1000"
+                    }
 
-            let rows = try connection.readRows(
-                """
-                SELECT rollout_path
-                FROM threads
-                WHERE \(archivedExpression) = 0
-                  AND \(updatedExpression) >= ?
-                """,
-                bindings: [.int64(Int64(cutoff.timeIntervalSince1970 * 1000))]
-            ) { statement in
-                statement.text(0) ?? ""
+                    let rows = try snapshot.readRows(
+                        """
+                        SELECT rollout_path
+                        FROM threads
+                        WHERE \(archivedExpression) = 0
+                          AND \(updatedExpression) >= ?
+                        """,
+                        bindings: [.int64(Int64(cutoff.timeIntervalSince1970 * 1000))]
+                    ) { statement in
+                        statement.text(0) ?? ""
+                    }
+                    return Set(rows.filter { !$0.isEmpty })
+                }
             }
-            return Set(rows.filter { !$0.isEmpty })
         }
     }
 

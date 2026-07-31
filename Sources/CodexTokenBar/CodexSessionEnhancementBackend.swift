@@ -450,34 +450,42 @@ final class FoundationCodexSessionEnhancementExecutor: CodexSessionEnhancementEx
         guard FileManager.default.fileExists(atPath: dataSource.stateDatabase.path) else {
             throw CodexSessionEnhancementBackendError.databaseUnavailable
         }
-        let database = SQLiteDatabaseDriver(
-            url: dataSource.stateDatabase,
-            readOnly: true,
-            busyTimeoutMilliseconds: 5_000
-        )
-        let columns = Set(try database.readRows("PRAGMA table_info(threads)") { statement in
-            statement.text(1) ?? ""
-        })
-        guard columns.contains("id"),
-              columns.contains("title"),
-              columns.contains("cwd"),
-              columns.contains("rollout_path") else {
-            throw CodexSessionEnhancementBackendError.unsupportedSchema
-        }
-        let rows = try database.readRows(
-            "SELECT title, cwd, rollout_path FROM threads WHERE id = ?1 LIMIT 1",
-            bindings: [.text(threadID)]
-        ) { statement in
-            ThreadRecord(
-                title: statement.text(0) ?? "",
-                cwd: statement.text(1) ?? "",
-                rolloutPath: statement.text(2) ?? ""
+        return try SQLiteReadRecovery.run {
+            let database = SQLiteDatabaseDriver(
+                url: dataSource.stateDatabase,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 5_000,
+                consistency: .externallyOwnedWAL
             )
+            return try database.withConnection { connection in
+                try connection.readTransaction { snapshot in
+                    let columns = Set(try snapshot.readRows("PRAGMA table_info(threads)") { statement in
+                        statement.text(1) ?? ""
+                    })
+                    guard columns.contains("id"),
+                          columns.contains("title"),
+                          columns.contains("cwd"),
+                          columns.contains("rollout_path") else {
+                        throw CodexSessionEnhancementBackendError.unsupportedSchema
+                    }
+                    let rows = try snapshot.readRows(
+                        "SELECT title, cwd, rollout_path FROM threads WHERE id = ?1 LIMIT 1",
+                        bindings: [.text(threadID)]
+                    ) { statement in
+                        ThreadRecord(
+                            title: statement.text(0) ?? "",
+                            cwd: statement.text(1) ?? "",
+                            rolloutPath: statement.text(2) ?? ""
+                        )
+                    }
+                    guard let record = rows.first else {
+                        throw CodexSessionEnhancementBackendError.threadNotFound(threadID)
+                    }
+                    return record
+                }
+            }
         }
-        guard let record = rows.first else {
-            throw CodexSessionEnhancementBackendError.threadNotFound(threadID)
-        }
-        return record
     }
 
     private static func trustedRolloutURL(

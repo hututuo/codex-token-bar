@@ -65,6 +65,7 @@ final class LiveRateMonitor: ObservableObject {
     private var lastLogsSignature: LogStoreSignature?
     private var lastThreadOptionsSignature: LogStoreSignature?
     private var lastThreadOptionsRefreshAt: TimeInterval = 0
+    private var lastThreadOptionsFailure: (mainIdentity: String?, attemptedAt: TimeInterval)?
     private let threadOptionsRefreshTTL: TimeInterval = 5
     private var lastPollProcessedRows = false
     private var lastSnapshotPublishAt: TimeInterval = 0
@@ -285,6 +286,7 @@ final class LiveRateMonitor: ObservableObject {
         lastLogsSignature = nil
         lastThreadOptionsSignature = nil
         lastThreadOptionsRefreshAt = 0
+        lastThreadOptionsFailure = nil
         lastPollProcessedRows = false
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
@@ -728,6 +730,11 @@ final class LiveRateMonitor: ObservableObject {
         guard let source else { return }
         let stateDB = source.stateDatabase.path
         let signature = Self.logStoreSignature(logsDB: stateDB)
+        if let failure = lastThreadOptionsFailure,
+           failure.mainIdentity == signature.database.physicalIdentity,
+           now - failure.attemptedAt < threadOptionsRefreshTTL {
+            return
+        }
         guard Self.shouldRefreshThreads(
             current: signature,
             previous: lastThreadOptionsSignature,
@@ -751,6 +758,7 @@ final class LiveRateMonitor: ObservableObject {
             }
             lastThreadOptionsSignature = signature
             lastThreadOptionsRefreshAt = now
+            lastThreadOptionsFailure = nil
             reconcileThreadOptions(threads)
         } catch {
             if validatePollingActivity {
@@ -762,6 +770,15 @@ final class LiveRateMonitor: ObservableObject {
             } else {
                 guard isCurrentSource(generation: generation, bindingGeneration: bindingGeneration) else { return }
             }
+            // Back off by main-file identity, not the full WAL signature.
+            // Normal WAL writes can change size/mtime every active 0.25-second
+            // tick; only a physical main-database replacement bypasses the TTL.
+            lastThreadOptionsSignature = signature
+            lastThreadOptionsRefreshAt = now
+            lastThreadOptionsFailure = (
+                mainIdentity: signature.database.physicalIdentity,
+                attemptedAt: now
+            )
             snapshot.status = "刷新活动会话失败：\(error.localizedDescription)"
         }
     }

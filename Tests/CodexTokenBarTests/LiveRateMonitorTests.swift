@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import CodexTokenBar
 
@@ -298,6 +299,41 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(loader.loadCount, 2)
         XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-new"])
         XCTAssertEqual(monitor.testRolloutOffset(path: rollout.path), UInt64(try Data(contentsOf: rollout).count))
+    }
+
+    @MainActor
+    func testFailedThreadRefreshReturnsToTTLInsteadOfFastPollStorm() async throws {
+        let source = try makeCodexDataSource(named: "thread-refresh-failure-backoff")
+        try Data("state".utf8).write(to: source.stateDatabase)
+        let loader = CountingRecentThreadsLoader(
+            rows: [],
+            failure: SQLiteDatabaseError(
+                operation: "Prepare SQLite query",
+                code: SQLITE_IOERR,
+                message: "disk I/O error",
+                path: source.stateDatabase.path
+            )
+        )
+        let monitor = LiveRateMonitor(
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        monitor.setDataSource(source)
+
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 100)
+        let walURL = URL(fileURLWithPath: source.stateDatabase.path + "-wal")
+        try Data("active-wal-1".utf8).write(to: walURL)
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 100.25)
+        try Data("active-wal-2-is-larger".utf8).write(to: walURL)
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 101)
+        XCTAssertEqual(
+            loader.loadCount,
+            1,
+            "a failed state read must not be replayed on every 0.25-second active poll"
+        )
+
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 105.01)
+        XCTAssertEqual(loader.loadCount, 2, "the normal thread-refresh TTL must still retry")
     }
 
     func testLogRowsFilterThreadIDWithQuotesUsingBindings() throws {
@@ -2470,16 +2506,19 @@ private struct CountingLiveRateLogReader: LiveRateLogReading, @unchecked Sendabl
 private final class CountingRecentThreadsLoader: @unchecked Sendable {
     private let lock = NSLock()
     private let rows: [LiveRateMonitor.ThreadRow]
+    private let failure: Error?
     private(set) var loadCount = 0
 
-    init(rows: [LiveRateMonitor.ThreadRow]) {
+    init(rows: [LiveRateMonitor.ThreadRow], failure: Error? = nil) {
         self.rows = rows
+        self.failure = failure
     }
 
     func load(path: String) throws -> [LiveRateMonitor.ThreadRow] {
         lock.lock()
         loadCount += 1
         lock.unlock()
+        if let failure { throw failure }
         return rows
     }
 }

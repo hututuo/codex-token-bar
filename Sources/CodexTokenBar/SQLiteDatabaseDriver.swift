@@ -66,11 +66,30 @@ struct SQLiteStatement {
     }
 }
 
-struct SQLiteDatabaseError: LocalizedError {
+protocol SQLiteTransientReadFailureReporting {
+    var isTransientReadFailure: Bool { get }
+}
+
+struct SQLiteDatabaseError: LocalizedError, SQLiteTransientReadFailureReporting {
     let operation: String
     let code: Int32
     let message: String
     let path: String?
+    let systemErrno: Int32?
+
+    init(
+        operation: String,
+        code: Int32,
+        message: String,
+        path: String?,
+        systemErrno: Int32? = nil
+    ) {
+        self.operation = operation
+        self.code = code
+        self.message = message
+        self.path = path
+        self.systemErrno = systemErrno
+    }
 
     var primaryCode: Int32 {
         code & 0xFF
@@ -78,12 +97,29 @@ struct SQLiteDatabaseError: LocalizedError {
 
     var isTransientReadFailure: Bool {
         switch primaryCode {
-        case SQLITE_BUSY, SQLITE_LOCKED, SQLITE_IOERR, SQLITE_PROTOCOL:
+        case SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL, SQLITE_SCHEMA:
             return true
+        case SQLITE_IOERR:
+            return code != Self.ioErrorData && code != Self.ioErrorCorruptFileSystem
+        case SQLITE_CANTOPEN:
+            return code == Self.cantOpenDirtyWAL
+                || systemErrno == POSIXErrorCode.ENOENT.rawValue
+                || systemErrno == POSIXErrorCode.ESTALE.rawValue
         default:
-            return false
+            return code == Self.errorSnapshot
+                || code == Self.readOnlyDatabaseMoved
+                || code == Self.readOnlyCannotInitialize
         }
     }
+
+    // Some extended-result-code macros are not imported by every Swift SDK.
+    // Keep the values local instead of weakening recovery back to primary codes.
+    private static let errorSnapshot = SQLITE_ERROR | (3 << 8)
+    private static let ioErrorData = SQLITE_IOERR | (32 << 8)
+    private static let ioErrorCorruptFileSystem = SQLITE_IOERR | (33 << 8)
+    private static let cantOpenDirtyWAL = SQLITE_CANTOPEN | (5 << 8)
+    private static let readOnlyDatabaseMoved = SQLITE_READONLY | (4 << 8)
+    private static let readOnlyCannotInitialize = SQLITE_READONLY | (5 << 8)
 
     var errorDescription: String? {
         if let path {
@@ -94,7 +130,7 @@ struct SQLiteDatabaseError: LocalizedError {
 }
 
 enum SQLiteReadRecovery {
-    static let defaultRetryDelays: [TimeInterval] = [0.05, 0.20]
+    static let defaultRetryDelays: [TimeInterval] = [0.05, 0.20, 0.75]
 
     static func run<T>(
         retryDelays: [TimeInterval] = defaultRetryDelays,
@@ -115,6 +151,142 @@ enum SQLiteReadRecovery {
             }
         }
     }
+
+    static func isTransientReadFailure(_ error: Error) -> Bool {
+        if let reported = error as? any SQLiteTransientReadFailureReporting {
+            return reported.isTransientReadFailure
+        }
+        let cocoaError = error as NSError
+        if let underlying = cocoaError.userInfo[NSUnderlyingErrorKey] as? Error,
+           underlying as NSError !== cocoaError {
+            return isTransientReadFailure(underlying)
+        }
+        return false
+    }
+}
+
+enum SQLiteConnectionConsistency: Equatable {
+    case ordinary
+    case externallyOwnedWAL
+}
+
+/// Only the Codex-owned state database opts into this gate. A single global
+/// non-recursive lock avoids path-alias holes and multi-database lock ordering:
+/// every opted-in connection fully closes before another one opens.
+private final class SQLiteExternalWALConnectionCoordinator: @unchecked Sendable {
+    static let shared = SQLiteExternalWALConnectionCoordinator()
+    private let lock = NSLock()
+    private let recursionKey = "CodexTokenBar.SQLiteExternalWALConnectionCoordinator.active"
+
+    func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
+        let threadState = Thread.current.threadDictionary
+        guard threadState[recursionKey] == nil else {
+            throw SQLiteDatabaseError(
+                operation: "Coordinate external SQLite database",
+                code: SQLITE_MISUSE,
+                message: "nested externally-owned WAL connection is not allowed",
+                path: nil
+            )
+        }
+        lock.lock()
+        threadState[recursionKey] = true
+        defer {
+            threadState.removeObject(forKey: recursionKey)
+            lock.unlock()
+        }
+        return try body()
+    }
+}
+
+private struct SQLiteDatabaseFamilySnapshot {
+    private struct Member {
+        let url: URL
+        let deviceID: UInt64
+        let fileID: UInt64
+
+        func identifiesSameFile(as other: Member) -> Bool {
+            deviceID == other.deviceID && fileID == other.fileID
+        }
+    }
+
+    private let databaseURL: URL
+    private let main: Member?
+    private let wal: Member?
+    private let shm: Member?
+
+    init(databaseURL: URL) throws {
+        self.databaseURL = databaseURL
+        main = try Self.member(at: databaseURL)
+        wal = try Self.member(at: Self.sidecarURL(for: databaseURL, suffix: "-wal"))
+        shm = try Self.member(at: Self.sidecarURL(for: databaseURL, suffix: "-shm"))
+    }
+
+    func validateSafeToOpen() throws {
+        guard main != nil else {
+            throw transientIdentityError("database file is temporarily unavailable", path: databaseURL.path)
+        }
+    }
+
+    func validateTransition(to next: SQLiteDatabaseFamilySnapshot) throws {
+        try next.validateSafeToOpen()
+        guard let main, let nextMain = next.main, main.identifiesSameFile(as: nextMain) else {
+            throw transientIdentityError(
+                "database file identity changed while the read was in progress",
+                path: databaseURL.path
+            )
+        }
+        try validateRetainedSidecar(wal, next.wal, label: "WAL")
+        try validateRetainedSidecar(shm, next.shm, label: "SHM")
+    }
+
+    private func validateRetainedSidecar(_ previous: Member?, _ next: Member?, label: String) throws {
+        guard let previous else { return }
+        guard let next, previous.identifiesSameFile(as: next) else {
+            throw transientIdentityError(
+                "\(label) identity changed while the read was in progress",
+                path: previous.url.path
+            )
+        }
+    }
+
+    private func transientIdentityError(_ message: String, path: String) -> SQLiteDatabaseError {
+        SQLiteDatabaseError(
+            operation: "Read stable SQLite database family",
+            code: SQLITE_PROTOCOL,
+            message: message,
+            path: path
+        )
+    }
+
+    private static func member(at url: URL) throws -> Member? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch {
+            if !FileManager.default.fileExists(atPath: url.path) { return nil }
+            throw SQLiteDatabaseError(
+                operation: "Inspect SQLite database family",
+                code: SQLITE_IOERR,
+                message: error.localizedDescription,
+                path: url.path
+            )
+        }
+        guard let deviceID = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+              let fileID = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value else {
+            throw SQLiteDatabaseError(
+                operation: "Inspect SQLite database family",
+                code: SQLITE_IOERR,
+                message: "physical file identity is unavailable",
+                path: url.path
+            )
+        }
+        return Member(url: url, deviceID: deviceID, fileID: fileID)
+    }
+
+    private static func sidecarURL(for url: URL, suffix: String) -> URL {
+        URL(fileURLWithPath: url.path + suffix)
+    }
 }
 
 final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
@@ -125,6 +297,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private let busyTimeoutMilliseconds: Int32
     private let enableWAL: Bool
     private let fileManager: FileManager
+    private let consistency: SQLiteConnectionConsistency
 
     init(
         url: URL,
@@ -132,7 +305,8 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         createsFileIfMissing: Bool = true,
         busyTimeoutMilliseconds: Int32 = 3_000,
         enableWAL: Bool = false,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        consistency: SQLiteConnectionConsistency = .ordinary
     ) {
         self.url = url
         self.readOnly = readOnly
@@ -140,6 +314,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
         self.enableWAL = enableWAL
         self.fileManager = fileManager
+        self.consistency = consistency
     }
 
     func readRows<T>(
@@ -181,6 +356,34 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     }
 
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        if consistency == .externallyOwnedWAL {
+            guard readOnly else {
+                throw SQLiteDatabaseError(
+                    operation: "Coordinate external SQLite database",
+                    code: SQLITE_MISUSE,
+                    message: "externally-owned WAL consistency is read-only",
+                    path: url.path
+                )
+            }
+            return try SQLiteExternalWALConnectionCoordinator.shared.withExclusiveAccess {
+                let beforeOpen = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
+                try beforeOpen.validateSafeToOpen()
+                return try withUncoordinatedConnection { connection in
+                    let afterOpen = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
+                    try beforeOpen.validateTransition(to: afterOpen)
+                    let result = try body(connection)
+                    let afterBody = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
+                    try afterOpen.validateTransition(to: afterBody)
+                    return result
+                }
+            }
+        }
+        return try withUncoordinatedConnection(body)
+    }
+
+    private func withUncoordinatedConnection<T>(
+        _ body: (SQLiteDatabaseConnection) throws -> T
+    ) throws -> T {
         if !readOnly, createsFileIfMissing {
             try fileManager.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -213,13 +416,22 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         let status = sqlite3_open_v2(url.path, &database, flags, nil)
         guard status == SQLITE_OK, let database else {
             let message = database.map { Self.message(from: $0) } ?? "Unable to open database"
+            let errorCode = database.map { Self.extendedErrorCode(from: $0, fallback: status) } ?? status
+            let systemErrno = database.flatMap(Self.systemErrno(from:))
             if let database {
                 sqlite3_close(database)
             }
-            throw SQLiteDatabaseError(operation: "Open SQLite database", code: status, message: message, path: url.path)
+            throw SQLiteDatabaseError(
+                operation: "Open SQLite database",
+                code: errorCode,
+                message: message,
+                path: url.path,
+                systemErrno: systemErrno
+            )
         }
-        defer { sqlite3_close(database) }
+        defer { sqlite3_close_v2(database) }
 
+        sqlite3_extended_result_codes(database, 1)
         sqlite3_busy_timeout(database, busyTimeoutMilliseconds)
 
         let connection = SQLiteDatabaseConnection(database: database, path: url.path)
@@ -236,24 +448,45 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         }
         return String(cString: message)
     }
+
+    fileprivate static func extendedErrorCode(
+        from database: OpaquePointer?,
+        fallback: Int32
+    ) -> Int32 {
+        guard let database else { return fallback }
+        let code = sqlite3_extended_errcode(database)
+        return code == SQLITE_OK ? fallback : code
+    }
+
+    fileprivate static func systemErrno(from database: OpaquePointer?) -> Int32? {
+        guard let database else { return nil }
+        let value = sqlite3_system_errno(database)
+        return value == 0 ? nil : value
+    }
 }
 
 final class SQLitePersistentDatabaseReader: @unchecked Sendable {
     let url: URL
 
     private let busyTimeoutMilliseconds: Int32
+    private let consistency: SQLiteConnectionConsistency
     private let lock = NSLock()
     private var database: OpaquePointer?
 
-    init(url: URL, busyTimeoutMilliseconds: Int32 = 100) {
+    init(
+        url: URL,
+        busyTimeoutMilliseconds: Int32 = 100,
+        consistency: SQLiteConnectionConsistency = .ordinary
+    ) {
         self.url = url
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
+        self.consistency = consistency
     }
 
     deinit {
         lock.lock()
         if let database {
-            sqlite3_close(database)
+            sqlite3_close_v2(database)
         }
         database = nil
         lock.unlock()
@@ -270,11 +503,40 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
     }
 
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
-        lock.lock()
-        defer { lock.unlock() }
+        if consistency == .externallyOwnedWAL {
+            return try SQLiteExternalWALConnectionCoordinator.shared.withExclusiveAccess {
+                try withLockedConnection(releaseWhenFinished: true, body)
+            }
+        }
+        return try withLockedConnection(releaseWhenFinished: false, body)
+    }
 
-        let connection = SQLiteDatabaseConnection(database: try databaseHandle(), path: url.path)
-        return try body(connection)
+    private func withLockedConnection<T>(
+        releaseWhenFinished: Bool,
+        _ body: (SQLiteDatabaseConnection) throws -> T
+    ) throws -> T {
+        lock.lock()
+        defer {
+            if releaseWhenFinished { closeDatabase() }
+            lock.unlock()
+        }
+
+        return try SQLiteReadRecovery.run {
+            do {
+                let beforeRead = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
+                try beforeRead.validateSafeToOpen()
+                let connection = SQLiteDatabaseConnection(database: try databaseHandle(), path: url.path)
+                let afterOpen = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
+                try beforeRead.validateTransition(to: afterOpen)
+                let result = try body(connection)
+                let afterRead = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
+                try afterOpen.validateTransition(to: afterRead)
+                return result
+            } catch let error as SQLiteDatabaseError where error.isTransientReadFailure {
+                closeDatabase()
+                throw error
+            }
+        }
     }
 
     private func databaseHandle() throws -> OpaquePointer {
@@ -287,15 +549,33 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
         let status = sqlite3_open_v2(url.path, &opened, flags, nil)
         guard status == SQLITE_OK, let opened else {
             let message = opened.map { SQLiteDatabaseDriver.message(from: $0) } ?? "Unable to open database"
+            let errorCode = opened.map {
+                SQLiteDatabaseDriver.extendedErrorCode(from: $0, fallback: status)
+            } ?? status
+            let systemErrno = opened.flatMap(SQLiteDatabaseDriver.systemErrno(from:))
             if let opened {
                 sqlite3_close(opened)
             }
-            throw SQLiteDatabaseError(operation: "Open SQLite database", code: status, message: message, path: url.path)
+            throw SQLiteDatabaseError(
+                operation: "Open SQLite database",
+                code: errorCode,
+                message: message,
+                path: url.path,
+                systemErrno: systemErrno
+            )
         }
 
+        sqlite3_extended_result_codes(opened, 1)
         sqlite3_busy_timeout(opened, busyTimeoutMilliseconds)
         database = opened
         return opened
+    }
+
+    private func closeDatabase() {
+        if let database {
+            sqlite3_close_v2(database)
+        }
+        database = nil
     }
 }
 
@@ -433,6 +713,18 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         }
     }
 
+    func readTransaction<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        try execute("BEGIN;")
+        do {
+            let result = try body(self)
+            try execute("COMMIT;")
+            return result
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+    }
+
     func prepare(_ sql: String) throws -> SQLitePreparedStatement {
         var statement: OpaquePointer?
         let status = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
@@ -521,9 +813,10 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     private func error(operation: String, code: Int32) -> SQLiteDatabaseError {
         SQLiteDatabaseError(
             operation: operation,
-            code: code,
+            code: SQLiteDatabaseDriver.extendedErrorCode(from: database, fallback: code),
             message: SQLiteDatabaseDriver.message(from: database),
-            path: path
+            path: path,
+            systemErrno: SQLiteDatabaseDriver.systemErrno(from: database)
         )
     }
 }

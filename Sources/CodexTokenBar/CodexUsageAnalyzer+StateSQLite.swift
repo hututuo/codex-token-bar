@@ -99,22 +99,27 @@ extension CodexUsageAnalyzer {
     }
 
     private func sqliteRows(db: String, sql: String) throws -> [[String]] {
-        let driver = SQLiteDatabaseDriver(
-            url: URL(fileURLWithPath: db),
-            readOnly: true,
-            busyTimeoutMilliseconds: 3_000,
-            enableWAL: false
-        )
-        return try driver.readRows(sql) { statement in
-            (0..<statement.columnCount).map { column in
-                statement.text(column) ?? ""
+        try SQLiteReadRecovery.run {
+            let driver = SQLiteDatabaseDriver(
+                url: URL(fileURLWithPath: db),
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 3_000,
+                enableWAL: false,
+                consistency: .externallyOwnedWAL
+            )
+            return try driver.readRows(sql) { statement in
+                (0..<statement.columnCount).map { column in
+                    statement.text(column) ?? ""
+                }
             }
         }
     }
 
     func loadThreadMetadata() -> (plugins: [PluginUsage], reasoning: String) {
         let db = dataSource.stateDatabase.path
-        guard let rows = try? sqliteRows(
+        guard fileManager.fileExists(atPath: db),
+              let rows = try? sqliteRows(
             db: db,
             sql: """
             SELECT substr(title, 1, 240), substr(first_user_message, 1, 360), substr(preview, 1, 360), reasoning_effort
@@ -148,7 +153,8 @@ extension CodexUsageAnalyzer {
 
     func loadThreadInfo() -> [String: ThreadInfo] {
         let db = dataSource.stateDatabase.path
-        guard let rows = try? sqliteRows(
+        guard fileManager.fileExists(atPath: db),
+              let rows = try? sqliteRows(
             db: db,
             sql: """
             SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)

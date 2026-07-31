@@ -1,7 +1,6 @@
 import Foundation
 
 enum CodexUnreadThreadReader {
-    private static let stateDatabaseCache = StateDatabaseCache()
     private static let sessionVisibilityCache = SessionVisibilityCache()
 
     static func readUnreadThreadIDs(codexHome: URL) -> CodexUnreadThreadReadResult {
@@ -106,13 +105,32 @@ enum CodexUnreadThreadReader {
         }
 
         do {
-            return try stateDatabaseCache.read(databaseURL: databaseURL) { database, columns in
-                try visibleUserThreadIDs(
-                    from: threadIDs,
-                    database: database,
-                    columns: columns,
-                    codexHome: codexHome
+            return try SQLiteReadRecovery.run {
+                // state_5.sqlite belongs to Codex and may be atomically
+                // replaced together with its WAL family. Never retain a handle
+                // between unread polls: a vnode invalidated by an external
+                // unlink must reach a real zero-reference boundary in this
+                // process before the next attempt.
+                let database = SQLiteDatabaseDriver(
+                    url: databaseURL,
+                    readOnly: true,
+                    createsFileIfMissing: false,
+                    busyTimeoutMilliseconds: 3_000,
+                    consistency: .externallyOwnedWAL
                 )
+                return try database.withConnection { connection in
+                    try connection.readTransaction { snapshot in
+                        let columnNames = try snapshot.readRows("PRAGMA table_info(threads)") {
+                            $0.text(1) ?? ""
+                        }
+                        return try visibleUserThreadIDs(
+                            from: threadIDs,
+                            database: snapshot,
+                            columns: Set(columnNames.filter { !$0.isEmpty }),
+                            codexHome: codexHome
+                        )
+                    }
+                }
             }
         } catch {
             return sessionVisibleThreadIDs(from: threadIDs, codexHome: codexHome).visibleIDs
@@ -170,84 +188,6 @@ enum CodexUnreadThreadReader {
     private struct SessionVisibility {
         var visibleIDs = Set<String>()
         var foundIDs = Set<String>()
-    }
-
-    private final class StateDatabaseCache: @unchecked Sendable {
-        private struct Entry {
-            let signature: DatabaseSignature
-            let reader: SQLitePersistentDatabaseReader
-            var columns: Set<String>?
-        }
-
-        private struct DatabaseSignature: Equatable {
-            let size: UInt64
-            let modifiedAt: TimeInterval
-
-            init(url: URL) {
-                let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
-                size = attributes[.size] as? UInt64 ?? 0
-                modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            }
-        }
-
-        private let lock = NSLock()
-        private var entries: [String: Entry] = [:]
-
-        func read<T>(
-            databaseURL: URL,
-            body: (SQLiteDatabaseConnection, Set<String>) throws -> T
-        ) throws -> T {
-            let reader = reader(for: databaseURL)
-            return try reader.withConnection { database in
-                let columns = try columns(for: databaseURL, database: database)
-                return try body(database, columns)
-            }
-        }
-
-        private func reader(for databaseURL: URL) -> SQLitePersistentDatabaseReader {
-            let path = databaseURL.path
-            let signature = DatabaseSignature(url: databaseURL)
-
-            lock.lock()
-            defer { lock.unlock() }
-
-            if let entry = entries[path], entry.signature == signature {
-                return entry.reader
-            }
-
-            let reader = SQLitePersistentDatabaseReader(
-                url: databaseURL,
-                busyTimeoutMilliseconds: 3_000
-            )
-            entries[path] = Entry(signature: signature, reader: reader, columns: nil)
-            return reader
-        }
-
-        private func columns(for databaseURL: URL, database: SQLiteDatabaseConnection) throws -> Set<String> {
-            let path = databaseURL.path
-            let signature = DatabaseSignature(url: databaseURL)
-
-            lock.lock()
-            if let entry = entries[path], entry.signature == signature, let columns = entry.columns {
-                lock.unlock()
-                return columns
-            }
-            lock.unlock()
-
-            let columnNames = try database.readRows("PRAGMA table_info(threads)") { statement in
-                statement.text(1) ?? ""
-            }
-            let columns = Set(columnNames.filter { !$0.isEmpty })
-
-            lock.lock()
-            if var entry = entries[path], entry.signature == signature {
-                entry.columns = columns
-                entries[path] = entry
-            }
-            lock.unlock()
-
-            return columns
-        }
     }
 
     private final class SessionVisibilityCache: @unchecked Sendable {

@@ -76,6 +76,8 @@ final class CodexUsageStore: ObservableObject {
     private var timer: Timer?
     private var initialPreciseTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var transientDatabaseRecoveryTask: Task<Void, Never>?
+    private let transientDatabaseRecoveryDelay: TimeInterval
     private var refreshGeneration = 0
     private(set) var sourceIdentityGeneration = 0
     private(set) var sourceBindingGeneration = 0
@@ -97,6 +99,7 @@ final class CodexUsageStore: ObservableObject {
     private var continuityObserver: SharedAccountContinuityObserverToken?
     private let sessionMutationMonitor = CodexSessionMutationMonitor()
     private var sessionMutationMonitoringActive = false
+    private static let maxTransientDatabaseRecoveryAttempts = 5
 
     nonisolated static let preciseContinuityStorageKey = "preciseTimeSeriesContinuityLossesV02"
     nonisolated static let legacyPreciseContinuityStorageKey = "preciseTimeSeriesContinuityLossesV01"
@@ -118,7 +121,8 @@ final class CodexUsageStore: ObservableObject {
         continuityDefaults: UserDefaults = .standard,
         continuityStorageKey: String = preciseContinuityStorageKey,
         legacyContinuityStorageKey: String? = legacyPreciseContinuityStorageKey,
-        continuitySafetyDatabase: SharedAccountUsageSafetyDatabase? = nil
+        continuitySafetyDatabase: SharedAccountUsageSafetyDatabase? = nil,
+        transientDatabaseRecoveryDelay: TimeInterval = 2.0
     ) {
         self.resolver = resolver
         self.snapshotLoader = snapshotLoader
@@ -126,6 +130,7 @@ final class CodexUsageStore: ObservableObject {
         self.continuityStorageKey = continuityStorageKey
         self.legacyContinuityStorageKey = legacyContinuityStorageKey
         self.continuitySafetyDatabase = continuitySafetyDatabase
+        self.transientDatabaseRecoveryDelay = max(0.05, transientDatabaseRecoveryDelay)
         dataSource = resolver.resolve()
         dataSourceIdentity = dataSource?.stableIdentityKey
         dataSourceBindingKey = Self.bindingKey(for: dataSource)
@@ -160,10 +165,10 @@ final class CodexUsageStore: ObservableObject {
     }
 
     func refresh() {
-        // An open continuity loss gets one normal-cadence full recovery attempt
-        // even when only compact surfaces are visible. Failure callbacks do not
-        // call this method, so retries remain bounded by the regular timer or a
-        // manual refresh instead of forming a tight self-triggered loop.
+        // An open continuity loss gets a full recovery attempt even when only
+        // compact surfaces are visible. Transient SQLite failures additionally
+        // start one bounded exponential recovery episode; permanent/exhausted
+        // errors remain on the regular timer/manual cadence.
         refresh(
             includePreciseScan: true,
             forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil
@@ -328,6 +333,8 @@ final class CodexUsageStore: ObservableObject {
 
         refreshTask?.cancel()
         refreshTask = nil
+        transientDatabaseRecoveryTask?.cancel()
+        transientDatabaseRecoveryTask = nil
         attributionSafetyAckTask?.cancel()
         attributionSafetyAckTask = nil
         pendingAttributionSafetyAckKey = nil
@@ -362,8 +369,13 @@ final class CodexUsageStore: ObservableObject {
 
     private func refresh(
         includePreciseScan: Bool,
-        forceFullTimeSeries: Bool = false
+        forceFullTimeSeries: Bool = false,
+        transientRecoveryAttempt: Int? = nil
     ) {
+        if transientRecoveryAttempt == nil {
+            transientDatabaseRecoveryTask?.cancel()
+            transientDatabaseRecoveryTask = nil
+        }
         let observerTakeover = continuitySafetyDatabase?.attemptObserverTakeover() ?? false
         let effectiveIncludePreciseScan = (includePreciseScan || observerTakeover)
             && (continuitySafetyDatabase?.isObserverOwner ?? true)
@@ -402,6 +414,8 @@ final class CodexUsageStore: ObservableObject {
         } else if isRefreshing {
             refreshTask?.cancel()
             refreshTask = nil
+            transientDatabaseRecoveryTask?.cancel()
+            transientDatabaseRecoveryTask = nil
             refreshGeneration += 1
             isRefreshing = false
             trace?.mark("cancelled-stale-refresh")
@@ -474,6 +488,7 @@ final class CodexUsageStore: ObservableObject {
 
         refreshTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            var shouldScheduleTransientDatabaseRecovery = false
             do {
                 let source = dataSource
                 trace?.mark("task.started", metadata: [
@@ -616,12 +631,18 @@ final class CodexUsageStore: ObservableObject {
                     self.snapshotSourceID = nil
                 }
                 self.preciseTimeSeriesFresh = false
-                if includePreciseScan, let currentSource = self.dataSource {
+                if includePreciseScan,
+                   (transientRecoveryAttempt == nil || self.preciseTimeSeriesContinuityLossID == nil),
+                   let currentSource = self.dataSource {
                     self.markPreciseTimeSeriesContinuityLoss(for: currentSource)
                 }
                 self.status = retainedTrustedSnapshot
                     ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
                     : "读取失败：\(error.localizedDescription)"
+                shouldScheduleTransientDatabaseRecovery =
+                    SQLiteReadRecovery.isTransientReadFailure(error)
+                    && (transientRecoveryAttempt ?? 0)
+                        < Self.maxTransientDatabaseRecoveryAttempts
                 trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
             if self.isCurrentRefresh(
@@ -640,9 +661,40 @@ final class CodexUsageStore: ObservableObject {
                 self.isInitialLoading = false
                 self.isPreparingUsageCache = false
                 if shouldRunPendingFullRefresh {
-                    self.refresh(includePreciseScan: true, forceFullTimeSeries: true)
+                    self.refresh(
+                        includePreciseScan: true,
+                        forceFullTimeSeries: true,
+                        transientRecoveryAttempt: transientRecoveryAttempt
+                    )
+                } else if shouldScheduleTransientDatabaseRecovery {
+                    self.scheduleTransientDatabaseRecovery(
+                        attempt: (transientRecoveryAttempt ?? 0) + 1
+                    )
                 }
             }
+        }
+    }
+
+    private func scheduleTransientDatabaseRecovery(attempt: Int) {
+        transientDatabaseRecoveryTask?.cancel()
+        guard backgroundActivityEnabled else {
+            transientDatabaseRecoveryTask = nil
+            return
+        }
+        let exponent = max(0, attempt - 1)
+        let delay = min(
+            16,
+            transientDatabaseRecoveryDelay * pow(2, Double(exponent))
+        )
+        transientDatabaseRecoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.backgroundActivityEnabled else { return }
+            self.transientDatabaseRecoveryTask = nil
+            self.refresh(
+                includePreciseScan: true,
+                forceFullTimeSeries: true,
+                transientRecoveryAttempt: attempt
+            )
         }
     }
 
@@ -1135,6 +1187,8 @@ final class CodexUsageStore: ObservableObject {
             initialPreciseTask = nil
             refreshTask?.cancel()
             refreshTask = nil
+            transientDatabaseRecoveryTask?.cancel()
+            transientDatabaseRecoveryTask = nil
             refreshGeneration += 1
             activeRefreshSourceID = nil
             activeRefreshCompactOnly = false

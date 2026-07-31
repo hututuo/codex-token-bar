@@ -1,5 +1,6 @@
 import CoreServices
 import Foundation
+import SQLite3
 import XCTest
 @testable import CodexTokenBar
 
@@ -617,6 +618,78 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.stats.totalThreads, 2)
         XCTAssertTrue(store.status.contains("当前显示已陈旧"))
         XCTAssertFalse(store.isInitialLoading)
+    }
+
+    func testTransientSQLiteFailureAutomaticallyClearsStaleStatus() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/transient-state-recovery/.codex"),
+            origin: .defaultHome
+        )
+        let recovered = makeSnapshot(totalTokens: 98_765, dayTokens: 432)
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: [
+                .failure(SQLiteDatabaseError(
+                    operation: "Prepare SQLite query",
+                    code: SQLITE_IOERR,
+                    message: "disk I/O error",
+                    path: source.stateDatabase.path
+                )),
+                .success(recovered),
+            ]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            transientDatabaseRecoveryDelay: 0.05
+        )
+
+        store.refresh()
+        await waitUntil("automatic transient SQLite recovery") {
+            store.snapshot.stats.totalTokens == 98_765 && !store.isRefreshing
+        }
+
+        XCTAssertFalse(store.status.hasPrefix("读取失败"))
+        XCTAssertFalse(store.status.contains("当前显示已陈旧"))
+        XCTAssertTrue(store.status.contains("token_count"))
+    }
+
+    func testPersistentTransientSQLiteFailureStopsAfterBoundedRecoveryEpisode() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/bounded-state-recovery/.codex"),
+            origin: .defaultHome
+        )
+        let failures: [Result<DashboardSnapshot, Error>] = (0..<6).map { _ in
+            .failure(SQLiteDatabaseError(
+                operation: "Prepare SQLite query",
+                code: SQLITE_IOERR,
+                message: "disk I/O error",
+                path: source.stateDatabase.path
+            ))
+        }
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: failures
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            transientDatabaseRecoveryDelay: 0.05
+        )
+
+        store.refresh()
+        await waitUntil("bounded transient SQLite recovery episode", timeout: 3) {
+            await loader.preciseRequestCount() == 6 && !store.isRefreshing
+        }
+        let lossID = store.preciseTimeSeriesContinuityLossID
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let finalRequestCount = await loader.preciseRequestCount()
+
+        XCTAssertEqual(finalRequestCount, 6)
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLossID, lossID)
+        XCTAssertTrue(store.status.hasPrefix("读取失败"))
     }
 
     func testColdStartFailureDoesNotPublishPreciseZero() async {
@@ -2048,6 +2121,7 @@ private actor SuspendedCompactSummaryProbeLoader: DashboardSnapshotLoading {
 private actor SequentialDashboardSnapshotLoader: DashboardSnapshotLoading {
     private var fastResults: [Result<DashboardSnapshot, Error>]
     private var preciseResults: [Result<DashboardSnapshot, Error>]
+    private var preciseRequests = 0
 
     init(
         fastResults: [Result<DashboardSnapshot, Error>],
@@ -2062,7 +2136,12 @@ private actor SequentialDashboardSnapshotLoader: DashboardSnapshotLoading {
     }
 
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
-        try next(from: &preciseResults)
+        preciseRequests += 1
+        return try next(from: &preciseResults)
+    }
+
+    func preciseRequestCount() -> Int {
+        preciseRequests
     }
 
     private func next(from results: inout [Result<DashboardSnapshot, Error>]) throws -> DashboardSnapshot {

@@ -2,11 +2,18 @@ import CryptoKit
 import Darwin
 import Foundation
 
-enum CodexUsageDiscoveryError: LocalizedError {
+enum CodexUsageDiscoveryError: LocalizedError, SQLiteTransientReadFailureReporting {
     case selectedHomeUnavailable(path: String)
     case selectedHomeIdentityChanged(path: String)
     case traversalFailed(path: String, reason: String)
-    case stateDatabaseReadFailed(path: String, reason: String)
+    case stateDatabaseReadFailed(path: String, reason: String, transient: Bool)
+
+    var isTransientReadFailure: Bool {
+        guard case .stateDatabaseReadFailed(_, _, let transient) = self else {
+            return false
+        }
+        return transient
+    }
 
     var errorDescription: String? {
         switch self {
@@ -16,7 +23,7 @@ enum CodexUsageDiscoveryError: LocalizedError {
             return "所选 Codex Home 身份已变化，已停止读取：\(path)"
         case .traversalFailed(let path, let reason):
             return "会话目录遍历失败：\(path)（\(reason)）"
-        case .stateDatabaseReadFailed(let path, let reason):
+        case .stateDatabaseReadFailed(let path, let reason, _):
             return "活动会话索引读取失败：\(path)（\(reason)）"
         }
     }
@@ -495,7 +502,8 @@ extension CodexUsageAnalyzer {
         } catch {
             throw CodexUsageDiscoveryError.stateDatabaseReadFailed(
                 path: dataSource.stateDatabase.path,
-                reason: error.localizedDescription
+                reason: error.localizedDescription,
+                transient: SQLiteReadRecovery.isTransientReadFailure(error)
             )
         }
         return try rows.compactMap { row in
@@ -517,7 +525,8 @@ extension CodexUsageAnalyzer {
         } catch {
             throw CodexUsageDiscoveryError.stateDatabaseReadFailed(
                 path: dataSource.stateDatabase.path,
-                reason: error.localizedDescription
+                reason: error.localizedDescription,
+                transient: SQLiteReadRecovery.isTransientReadFailure(error)
             )
         }
         return Set(rows.compactMap { row in
@@ -535,8 +544,10 @@ extension CodexUsageAnalyzer {
             let driver = SQLiteDatabaseDriver(
                 url: URL(fileURLWithPath: db),
                 readOnly: true,
+                createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 1_000,
-                enableWAL: false
+                enableWAL: false,
+                consistency: .externallyOwnedWAL
             )
             return try driver.readRows(sql) { statement in
                 (0..<statement.columnCount).map { column in

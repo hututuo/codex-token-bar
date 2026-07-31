@@ -1036,7 +1036,8 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             url: dataSource.stateDatabase,
             readOnly: true,
             createsFileIfMissing: false,
-            busyTimeoutMilliseconds: 5_000
+            busyTimeoutMilliseconds: 5_000,
+            consistency: .externallyOwnedWAL
         )
         let columns = Set(try SQLiteReadRecovery.run {
             try database.readRows("PRAGMA table_info(threads)") {
@@ -1416,7 +1417,8 @@ private extension FoundationSessionManagementBackend {
             url: dataSource.stateDatabase,
             readOnly: true,
             createsFileIfMissing: false,
-            busyTimeoutMilliseconds: 5_000
+            busyTimeoutMilliseconds: 5_000,
+            consistency: .externallyOwnedWAL
         )
         let columns = Set(try SQLiteReadRecovery.run {
             try database.readRows("PRAGMA table_info(threads)") {

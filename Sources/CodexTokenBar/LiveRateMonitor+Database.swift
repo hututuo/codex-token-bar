@@ -9,7 +9,11 @@ extension LiveRateMonitor {
         ORDER BY updated_at_ms DESC, updated_at DESC
         LIMIT 20;
         """
-        return try sqliteRows(db: stateDB, sql: sql) { statement in
+        return try sqliteRows(
+            db: stateDB,
+            sql: sql,
+            consistency: .externallyOwnedWAL
+        ) { statement in
             ThreadRow(
                 id: sqliteText(statement, 0) ?? "",
                 title: sqliteText(statement, 1) ?? "",
