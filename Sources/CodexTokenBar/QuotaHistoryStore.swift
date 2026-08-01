@@ -776,12 +776,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             let binStart = start.addingTimeInterval(Double(index) * interval)
             let end = binStart.addingTimeInterval(interval)
             let sampleDate = min(end, now)
+            let firstUnreadRowIndex = rowIndex
 
             while rowIndex < rows.count, rows[rowIndex].createdAt <= sampleDate {
                 latestRow = rows[rowIndex]
                 rowIndex += 1
             }
             let nextRow = rows[safe: rowIndex]
+            let observations = rows[firstUnreadRowIndex..<rowIndex].filter { row in
+                row.createdAt >= binStart && row.createdAt <= sampleDate
+            }
 
             return QuotaHistoryRecentBucket(
                 start: binStart,
@@ -804,9 +808,36 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                     remaining: \.sevenDayRemainingPercent,
                     resetsAt: \.sevenDayResetsAt,
                     sameCycle: { $0.isSameSevenDayCycle(as: $1) }
-                )
+                ),
+                fiveHourObservations: observations.compactMap { row in
+                    quotaObservation(
+                        from: row,
+                        remaining: \.fiveHourRemainingPercent,
+                        resetsAt: \.fiveHourResetsAt
+                    )
+                },
+                sevenDayObservations: observations.compactMap { row in
+                    quotaObservation(
+                        from: row,
+                        remaining: \.sevenDayRemainingPercent,
+                        resetsAt: \.sevenDayResetsAt
+                    )
+                }
             )
         }
+    }
+
+    private static func quotaObservation(
+        from row: QuotaHistoryRow,
+        remaining: KeyPath<QuotaHistoryRow, Double?>,
+        resetsAt: KeyPath<QuotaHistoryRow, Date?>
+    ) -> QuotaHistoryObservation? {
+        guard let remainingPercent = row[keyPath: remaining] else { return nil }
+        return QuotaHistoryObservation(
+            observedAt: row.createdAt,
+            remainingPercent: remainingPercent,
+            resetsAt: row[keyPath: resetsAt]
+        )
     }
 
     private static func quotaRemaining(

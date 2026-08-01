@@ -6,6 +6,14 @@ enum QuotaConsumptionConfidence: Equatable {
     case noTokenUsage
 }
 
+enum QuotaConsumptionDropBasis: Equatable, Sendable {
+    /// Two distinct persisted quota observations inside one reset cycle.
+    case observed
+    /// A chart-only calculation from carried or interpolated display values.
+    case estimated
+    case unavailable
+}
+
 struct APIPriceRates: Equatable, Sendable {
     let inputUSDPerMillion: Double
     let cachedInputUSDPerMillion: Double
@@ -108,12 +116,61 @@ struct QuotaConsumptionEstimate: Equatable {
     let selectedCostUSD: Double
     let impliedWindowBudgetUSD: Double?
     let quotaDropPercent: Double
+    let quotaDropBasis: QuotaConsumptionDropBasis
+    let comparisonBreakdown: TokenCacheBreakdown
+    let comparisonStartDate: Date?
+    let comparisonEndDate: Date?
+    let comparisonUsesConservativeBuckets: Bool
     let inputTokens: Int
     let cachedInputTokens: Int
     let outputTokens: Int
     let calls: Int
     let cacheHitRate: Double
     let confidence: QuotaConsumptionConfidence
+
+    var quotaDropObserved: Bool { quotaDropBasis == .observed }
+    var quotaDropEstimated: Bool { quotaDropBasis == .estimated }
+
+    init(
+        selectedCostUSD: Double,
+        impliedWindowBudgetUSD: Double?,
+        quotaDropPercent: Double,
+        quotaDropObserved: Bool = true,
+        quotaDropBasis: QuotaConsumptionDropBasis? = nil,
+        comparisonBreakdown: TokenCacheBreakdown? = nil,
+        comparisonStartDate: Date? = nil,
+        comparisonEndDate: Date? = nil,
+        comparisonUsesConservativeBuckets: Bool = false,
+        inputTokens: Int,
+        cachedInputTokens: Int,
+        outputTokens: Int,
+        calls: Int,
+        cacheHitRate: Double,
+        confidence: QuotaConsumptionConfidence
+    ) {
+        self.selectedCostUSD = selectedCostUSD
+        self.impliedWindowBudgetUSD = impliedWindowBudgetUSD
+        self.quotaDropPercent = quotaDropPercent
+        self.quotaDropBasis = quotaDropBasis
+            ?? (quotaDropObserved ? .observed : .unavailable)
+        self.comparisonBreakdown = comparisonBreakdown ?? TokenCacheBreakdown(
+            inputTokens: inputTokens,
+            cachedInputTokens: cachedInputTokens,
+            outputTokens: outputTokens,
+            reasoningOutputTokens: 0,
+            totalTokens: max(inputTokens, 0) + max(outputTokens, 0),
+            calls: calls
+        )
+        self.comparisonStartDate = comparisonStartDate
+        self.comparisonEndDate = comparisonEndDate
+        self.comparisonUsesConservativeBuckets = comparisonUsesConservativeBuckets
+        self.inputTokens = inputTokens
+        self.cachedInputTokens = cachedInputTokens
+        self.outputTokens = outputTokens
+        self.calls = calls
+        self.cacheHitRate = cacheHitRate
+        self.confidence = confidence
+    }
 }
 
 enum QuotaConsumptionEstimator {
@@ -123,9 +180,14 @@ enum QuotaConsumptionEstimator {
         quotaEndPercent: Double?,
         priceCard: QuotaConsumptionPriceCard
     ) -> QuotaConsumptionEstimate {
-        estimate(
+        let quotaDropPercent: Double? = if let quotaStartPercent, let quotaEndPercent {
+            max(quotaStartPercent - quotaEndPercent, 0)
+        } else {
+            nil
+        }
+        return estimate(
             breakdown: breakdown,
-            quotaDropPercent: max((quotaStartPercent ?? 0) - (quotaEndPercent ?? 0), 0),
+            quotaDropPercent: quotaDropPercent,
             priceCard: priceCard
         )
     }
@@ -133,28 +195,44 @@ enum QuotaConsumptionEstimator {
     static func estimate(
         breakdown: TokenCacheBreakdown,
         quotaDropPercent: Double?,
-        priceCard: QuotaConsumptionPriceCard
+        priceCard: QuotaConsumptionPriceCard,
+        quotaDropBasis: QuotaConsumptionDropBasis? = nil,
+        comparisonBreakdown: TokenCacheBreakdown? = nil,
+        comparisonStartDate: Date? = nil,
+        comparisonEndDate: Date? = nil,
+        comparisonUsesConservativeBuckets: Bool = false
     ) -> QuotaConsumptionEstimate {
         let selectedCost = priceCard.costUSD(for: breakdown)
+        let resolvedBasis = quotaDropBasis
+            ?? (quotaDropPercent == nil ? .unavailable : .observed)
+        let resolvedComparisonBreakdown = comparisonBreakdown ?? breakdown
+        let comparableCost = priceCard.costUSD(for: resolvedComparisonBreakdown)
         let drop = max(quotaDropPercent ?? 0, 0)
         let confidence: QuotaConsumptionConfidence
         let impliedBudget: Double?
 
-        if breakdown.totalTokens <= 0 && breakdown.inputTokens <= 0 && breakdown.outputTokens <= 0 {
+        if resolvedComparisonBreakdown.totalTokens <= 0
+            && resolvedComparisonBreakdown.inputTokens <= 0
+            && resolvedComparisonBreakdown.outputTokens <= 0 {
             confidence = .noTokenUsage
             impliedBudget = nil
-        } else if drop <= 0.0001 {
+        } else if resolvedBasis == .unavailable || drop <= 0.0001 {
             confidence = .insufficientQuotaMovement
             impliedBudget = nil
         } else {
             confidence = .measured
-            impliedBudget = selectedCost / (drop / 100)
+            impliedBudget = comparableCost / (drop / 100)
         }
 
         return QuotaConsumptionEstimate(
             selectedCostUSD: selectedCost,
             impliedWindowBudgetUSD: impliedBudget,
             quotaDropPercent: drop,
+            quotaDropBasis: resolvedBasis,
+            comparisonBreakdown: resolvedComparisonBreakdown,
+            comparisonStartDate: comparisonStartDate,
+            comparisonEndDate: comparisonEndDate,
+            comparisonUsesConservativeBuckets: comparisonUsesConservativeBuckets,
             inputTokens: breakdown.inputTokens,
             cachedInputTokens: breakdown.cachedInputTokens,
             outputTokens: breakdown.outputTokens,
@@ -188,6 +266,10 @@ extension QuotaConsumptionSelection {
     var hasDivergentBudgetRatio: Bool {
         guard let ratio = sevenDayToFiveHourBudgetRatio else { return false }
         return ratio < 4.5 || ratio > 7.5
+    }
+
+    var sevenDayAttributionBreakdown: TokenCacheBreakdown {
+        sevenDay.comparisonBreakdown
     }
 }
 
@@ -229,6 +311,15 @@ struct RecentChartConsumptionSelectionState: Equatable {
     }
 }
 
+private struct RecentChartQuotaDropResolution {
+    let percent: Double?
+    let basis: QuotaConsumptionDropBasis
+    let comparisonBreakdown: TokenCacheBreakdown
+    let comparisonStartDate: Date?
+    let comparisonEndDate: Date?
+    let comparisonUsesConservativeBuckets: Bool
+}
+
 extension RecentChartPreparedData {
     func quotaConsumptionSelection(
         startIndex: Int,
@@ -245,48 +336,272 @@ extension RecentChartPreparedData {
         let breakdown = (lower...upper)
             .map { cacheBreakdowns[safe: $0] ?? .empty }
             .combined
-        let fiveHourDrop = cumulativeQuotaDrop(fiveHourRemainingPercents, lower: lower, upper: upper)
-        let sevenDayDrop = cumulativeQuotaDrop(sevenDayRemainingPercents, lower: lower, upper: upper)
+        let end = endStart.addingTimeInterval(bucketInterval)
+        let fiveHourDrop = quotaDropResolution(
+            values: fiveHourRemainingPercents,
+            observations: fiveHourQuotaObservations,
+            lower: lower,
+            upper: upper,
+            selectionStart: start,
+            selectionEnd: end,
+            fullSelectionBreakdown: breakdown
+        )
+        let sevenDayDrop = quotaDropResolution(
+            values: sevenDayRemainingPercents,
+            observations: sevenDayQuotaObservations,
+            lower: lower,
+            upper: upper,
+            selectionStart: start,
+            selectionEnd: end,
+            fullSelectionBreakdown: breakdown
+        )
 
         return QuotaConsumptionSelection(
             startIndex: lower,
             endIndex: upper,
             bucketCount: upper - lower + 1,
             startDate: start,
-            endDate: endStart.addingTimeInterval(bucketInterval),
+            endDate: end,
             priceCard: priceCard,
             breakdown: breakdown,
             fiveHour: QuotaConsumptionEstimator.estimate(
                 breakdown: breakdown,
-                quotaDropPercent: fiveHourDrop,
-                priceCard: priceCard
+                quotaDropPercent: fiveHourDrop.percent,
+                priceCard: priceCard,
+                quotaDropBasis: fiveHourDrop.basis,
+                comparisonBreakdown: fiveHourDrop.comparisonBreakdown,
+                comparisonStartDate: fiveHourDrop.comparisonStartDate,
+                comparisonEndDate: fiveHourDrop.comparisonEndDate,
+                comparisonUsesConservativeBuckets: fiveHourDrop.comparisonUsesConservativeBuckets
             ),
             sevenDay: QuotaConsumptionEstimator.estimate(
                 breakdown: breakdown,
-                quotaDropPercent: sevenDayDrop,
-                priceCard: priceCard
+                quotaDropPercent: sevenDayDrop.percent,
+                priceCard: priceCard,
+                quotaDropBasis: sevenDayDrop.basis,
+                comparisonBreakdown: sevenDayDrop.comparisonBreakdown,
+                comparisonStartDate: sevenDayDrop.comparisonStartDate,
+                comparisonEndDate: sevenDayDrop.comparisonEndDate,
+                comparisonUsesConservativeBuckets: sevenDayDrop.comparisonUsesConservativeBuckets
             )
         )
     }
 
-    private func cumulativeQuotaDrop(_ values: [Double?], lower: Int, upper: Int) -> Double? {
-        let availableValues = sanitizedQuotaDropValues(values[lower...upper].compactMap { $0 })
-        guard availableValues.count >= 2 else { return nil }
+    private func quotaDropResolution(
+        values: [Double?],
+        observations: [QuotaHistoryObservation],
+        lower: Int,
+        upper: Int,
+        selectionStart: Date,
+        selectionEnd: Date,
+        fullSelectionBreakdown: TokenCacheBreakdown
+    ) -> RecentChartQuotaDropResolution {
+        if quotaObservationProvenanceAvailable,
+           let observed = observedQuotaDropResolution(
+               observations: observations,
+               lower: lower,
+               upper: upper,
+               selectionStart: selectionStart,
+               selectionEnd: selectionEnd
+           ) {
+            return observed
+        }
 
-        return zip(availableValues, availableValues.dropFirst())
-            .reduce(0) { partial, pair in
-                partial + max(pair.0 - pair.1, 0)
+        // Display values are sampled at each bucket's end. Include the value
+        // immediately before the selected first bucket so this provisional drop
+        // spans the same full interval as `fullSelectionBreakdown`.
+        let boundaryLower = quotaObservationProvenanceAvailable && lower > 0
+            ? lower - 1
+            : lower
+        let estimatedDrop = cumulativeQuotaDrop(
+            values,
+            lower: boundaryLower,
+            upper: upper
+        )
+        let estimatedComparisonBreakdown: TokenCacheBreakdown
+        let estimatedComparisonStart: Date?
+        let estimatedComparisonEnd: Date?
+        if quotaObservationProvenanceAvailable, let estimatedDrop {
+            let firstCoveredIndex = max(lower, estimatedDrop.firstBoundaryIndex + 1)
+            let lastCoveredIndex = min(upper, estimatedDrop.lastBoundaryIndex)
+            guard firstCoveredIndex <= lastCoveredIndex else {
+                return RecentChartQuotaDropResolution(
+                    percent: nil,
+                    basis: .unavailable,
+                    comparisonBreakdown: .empty,
+                    comparisonStartDate: nil,
+                    comparisonEndDate: nil,
+                    comparisonUsesConservativeBuckets: false
+                )
             }
+            estimatedComparisonBreakdown = (firstCoveredIndex...lastCoveredIndex)
+                .map { cacheBreakdowns[safe: $0] ?? .empty }
+                .combined
+            estimatedComparisonStart = bins[safe: firstCoveredIndex]?.start
+            estimatedComparisonEnd = bins[safe: lastCoveredIndex]?.start
+                .addingTimeInterval(bucketInterval)
+        } else {
+            estimatedComparisonBreakdown = fullSelectionBreakdown
+            estimatedComparisonStart = estimatedDrop == nil ? nil : selectionStart
+            estimatedComparisonEnd = estimatedDrop == nil ? nil : selectionEnd
+        }
+        return RecentChartQuotaDropResolution(
+            percent: estimatedDrop?.percent,
+            basis: estimatedDrop == nil
+                ? .unavailable
+                : .estimated,
+            comparisonBreakdown: estimatedComparisonBreakdown,
+            comparisonStartDate: estimatedComparisonStart,
+            comparisonEndDate: estimatedComparisonEnd,
+            comparisonUsesConservativeBuckets: false
+        )
     }
 
-    private func sanitizedQuotaDropValues(_ values: [Double]) -> [Double] {
-        values.enumerated().compactMap { index, value in
-            let previous = index > 0 ? values[index - 1] : nil
-            let next = index + 1 < values.count ? values[index + 1] : nil
-            if isFullUsageSpike(value, previous: previous, next: next) {
+    private func observedQuotaDropResolution(
+        observations: [QuotaHistoryObservation],
+        lower: Int,
+        upper: Int,
+        selectionStart: Date,
+        selectionEnd: Date
+    ) -> RecentChartQuotaDropResolution? {
+        let observations = observationSlice(
+            observations,
+            from: selectionStart,
+            through: selectionEnd
+        )
+        let adjacentObservations = zip(observations, observations.dropFirst())
+        guard observations.count >= 2,
+              let first = observations.first,
+              observations.dropFirst().allSatisfy({
+                  sameQuotaCycle(first, $0)
+              }),
+              adjacentObservations.allSatisfy({ pair in
+                  pair.1.remainingPercent <= pair.0.remainingPercent + 0.0001
+              }),
+              let last = observations.last else {
+            return nil
+        }
+
+        // Both partial boundary buckets are included conservatively. This can
+        // overstate local usage, but it cannot turn local usage into a false
+        // positive "other user" gap. The attribution layer still marks such
+        // ranges provisional because bucket-level data cannot split at seconds.
+        let comparisonStart = quotaBucketBoundary(for: first.observedAt)
+        let lastBoundary = quotaBucketBoundary(for: last.observedAt)
+        let firstIsAligned = abs(first.observedAt.timeIntervalSince(comparisonStart)) < 0.5
+        let lastIsAligned = abs(last.observedAt.timeIntervalSince(lastBoundary)) < 0.5
+        let comparisonEnd = lastIsAligned
+            ? lastBoundary
+            : lastBoundary.addingTimeInterval(bucketInterval)
+        guard comparisonEnd > comparisonStart else { return nil }
+
+        let comparisonBreakdown = (lower...upper)
+            .compactMap { index -> TokenCacheBreakdown? in
+                guard let binStart = bins[safe: index]?.start,
+                      binStart >= comparisonStart,
+                      binStart < comparisonEnd else { return nil }
+                return cacheBreakdowns[safe: index] ?? .empty
+            }
+            .combined
+        let drop = max(first.remainingPercent - last.remainingPercent, 0)
+
+        return RecentChartQuotaDropResolution(
+            percent: drop,
+            basis: .observed,
+            comparisonBreakdown: comparisonBreakdown,
+            comparisonStartDate: comparisonStart,
+            comparisonEndDate: comparisonEnd,
+            comparisonUsesConservativeBuckets: bucketInterval > 5 * 60 + 0.5
+                || !firstIsAligned
+                || !lastIsAligned
+        )
+    }
+
+    private func observationSlice(
+        _ observations: [QuotaHistoryObservation],
+        from startDate: Date,
+        through endDate: Date
+    ) -> ArraySlice<QuotaHistoryObservation> {
+        var low = 0
+        var high = observations.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if observations[middle].observedAt < startDate {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        let lowerBound = low
+
+        low = lowerBound
+        high = observations.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if observations[middle].observedAt <= endDate {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return observations[lowerBound..<low]
+    }
+
+    private func sameQuotaCycle(
+        _ lhs: QuotaHistoryObservation,
+        _ rhs: QuotaHistoryObservation
+    ) -> Bool {
+        switch (lhs.resetsAt, rhs.resetsAt) {
+        case let (left?, right?):
+            abs(left.timeIntervalSince(right)) <= 2 * 60
+        case (nil, nil), (_?, nil), (nil, _?):
+            false
+        }
+    }
+
+    private func quotaBucketBoundary(for date: Date) -> Date {
+        Date(
+            timeIntervalSince1970: floor(
+                date.timeIntervalSince1970 / bucketInterval
+            ) * bucketInterval
+        )
+    }
+
+    private func cumulativeQuotaDrop(
+        _ values: [Double?],
+        lower: Int,
+        upper: Int
+    ) -> (percent: Double, firstBoundaryIndex: Int, lastBoundaryIndex: Int)? {
+        guard !values.isEmpty else { return nil }
+        let safeLower = max(0, min(lower, values.count - 1))
+        let safeUpper = max(safeLower, min(upper, values.count - 1))
+        let indexedValues = values[safeLower...safeUpper].enumerated().compactMap { offset, value in
+            value.map { (index: safeLower + offset, value: $0) }
+        }
+        let availableValues = sanitizedQuotaDropValues(indexedValues)
+        guard availableValues.count >= 2 else { return nil }
+
+        let percent = zip(availableValues, availableValues.dropFirst())
+            .reduce(0) { partial, pair in
+                partial + max(pair.0.value - pair.1.value, 0)
+            }
+        return (
+            percent: percent,
+            firstBoundaryIndex: availableValues[0].index,
+            lastBoundaryIndex: availableValues[availableValues.count - 1].index
+        )
+    }
+
+    private func sanitizedQuotaDropValues(
+        _ values: [(index: Int, value: Double)]
+    ) -> [(index: Int, value: Double)] {
+        values.enumerated().compactMap { offset, item in
+            let previous = offset > 0 ? values[offset - 1].value : nil
+            let next = offset + 1 < values.count ? values[offset + 1].value : nil
+            if isFullUsageSpike(item.value, previous: previous, next: next) {
                 return nil
             }
-            return value
+            return item
         }
     }
 

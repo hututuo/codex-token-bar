@@ -43,13 +43,41 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
             return
         }
 
+        guard estimate.quotaDropBasis != .unavailable else {
+            detail = "\(title) 样本不足"
+            accessibilityText = "选区内缺少足够的 \(Self.accessibilityWindowName(title))额度样本"
+            return
+        }
+
         switch estimate.confidence {
         case .measured:
-            detail = "\(estimate.quotaEstimatorBudgetText) · 降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
-            accessibilityText = "反推总额度 \(estimate.quotaEstimatorBudgetText)，下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+            if estimate.comparisonUsesConservativeBuckets {
+                detail = "≈\(estimate.quotaEstimatorBudgetText) · 边界暂算降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+                accessibilityText = "额度观测位于聚合桶边界，本机用量按首尾整桶保守计入，暂算总额度 \(estimate.quotaEstimatorBudgetText)，暂算下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+            } else if estimate.quotaDropEstimated {
+                detail = "≈\(estimate.quotaEstimatorBudgetText) · 暂算降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+                accessibilityText = "根据沿用或插值额度暂算总额度 \(estimate.quotaEstimatorBudgetText)，暂算下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+            } else {
+                detail = "\(estimate.quotaEstimatorBudgetText) · 降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+                accessibilityText = "反推总额度 \(estimate.quotaEstimatorBudgetText)，下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+            }
         case .insufficientQuotaMovement:
-            detail = "降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent) · 不反推"
-            accessibilityText = "额度下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)，不能反推总额度"
+            let prefix = if estimate.comparisonUsesConservativeBuckets {
+                "边界暂算降"
+            } else if estimate.quotaDropEstimated {
+                "暂算降"
+            } else {
+                "降"
+            }
+            detail = "\(prefix) \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent) · 不反推"
+            let dropDescription = if estimate.comparisonUsesConservativeBuckets {
+                "额度观测位于聚合桶边界，本机用量按首尾整桶保守计入，暂算下降"
+            } else if estimate.quotaDropEstimated {
+                "根据沿用或插值额度暂算下降"
+            } else {
+                "额度下降"
+            }
+            accessibilityText = "\(dropDescription) \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)，不能反推总额度"
         case .noTokenUsage:
             detail = "无 token"
             accessibilityText = "没有 token 用量"
@@ -61,6 +89,33 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
         case "5h": "5 小时"
         case "7d": "7 天"
         default: "\(title) "
+        }
+    }
+}
+
+struct QuotaConsumptionComparisonCoveragePresentation: Equatable {
+    let sectionTitle: String
+    let sourceTitle: String
+
+    init(
+        basis: QuotaConsumptionDropBasis,
+        usesConservativeBuckets: Bool = false
+    ) {
+        switch basis {
+        case .observed:
+            if usesConservativeBuckets {
+                sectionTitle = "7d 保守整桶归因统计"
+                sourceTitle = "保守整桶计入范围"
+            } else {
+                sectionTitle = "7d 观测覆盖内归因统计"
+                sourceTitle = "额度观测覆盖"
+            }
+        case .estimated:
+            sectionTitle = "7d 暂算覆盖内归因统计"
+            sourceTitle = "额度暂算覆盖"
+        case .unavailable:
+            sectionTitle = "7d 可比范围内归因统计"
+            sourceTitle = "额度可比范围"
         }
     }
 }
@@ -107,7 +162,15 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
             estimate: selection.sevenDay,
             isQuotaAvailable: currentSevenDayQuotaPresent
         )
-        budgetRatioText = selection.quotaEstimatorBudgetRatioText
+        let budgetRatioIsProvisional = selection.fiveHour.quotaDropEstimated
+            || selection.sevenDay.quotaDropEstimated
+            || selection.fiveHour.comparisonUsesConservativeBuckets
+            || selection.sevenDay.comparisonUsesConservativeBuckets
+        let rawBudgetRatioText = selection.quotaEstimatorBudgetRatioText
+        budgetRatioText = budgetRatioIsProvisional
+            && selection.sevenDayToFiveHourBudgetRatio != nil
+            ? "≈\(rawBudgetRatioText)"
+            : rawBudgetRatioText
         showsBudgetRatio = showsFiveHourQuota
             && showsSevenDayQuota
             && currentFiveHourQuotaPresent
@@ -125,6 +188,112 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         if showsSevenDayQuota { accessibilityParts.append("7 天 \(sevenDayChip.accessibilityText)") }
         if showsBudgetRatio { accessibilityParts.append("倍率 \(budgetRatioText)") }
         accessibilityValue = accessibilityParts.joined(separator: "，")
+    }
+}
+
+struct QuotaSelectionAttributionPresentation: Equatable {
+    let accountTitle: String
+    let localTitle = "本机折算"
+    let differenceTitle: String
+
+    let accountText: String
+    let localText: String
+    let differenceText: String
+    let stateText: String
+    let localFormula: String
+    let differenceFormula: String
+    let accessibilityValue: String
+
+    init(result: QuotaSelectionAttributionResult) {
+        switch result.accountDropBasis {
+        case .observed:
+            accountTitle = "账号实降"
+        case .estimated:
+            accountTitle = "账号暂降"
+        case .unavailable:
+            accountTitle = "账号下降"
+        }
+        accountText = result.accountDropPercent.map {
+            result.accountDropBasis == .estimated ? "≈\(Self.percent($0))" : Self.percent($0)
+        } ?? "--"
+        localText = result.localSharePercent.map { "≈\(Self.percent($0))" } ?? "--"
+
+        switch result.state {
+        case .suspectedNonLocalUsage:
+            differenceTitle = "疑似他人"
+            differenceText = result.nonLocalDifferencePercent
+                .map { "≈\(Self.percent(max($0, 0)))" } ?? "--"
+            stateText = "正差超过 2 个百分点"
+        case .withinTolerance:
+            differenceTitle = "差额"
+            differenceText = result.nonLocalDifferencePercent.map(Self.signedPercent) ?? "--"
+            stateText = "差值在估算误差内"
+        case .localEstimateExceedsAccountDrop:
+            differenceTitle = "本机估高"
+            differenceText = result.nonLocalDifferencePercent
+                .map { Self.percent(abs($0)) } ?? "--"
+            stateText = "本机估值高于账号实降"
+        case .provisional:
+            differenceTitle = "暂算差额"
+            differenceText = result.nonLocalDifferencePercent.map(Self.signedPercent) ?? "--"
+            stateText = "安全基线未完全覆盖，不归因到他人"
+        case .missingQuotaHistory:
+            differenceTitle = "差额"
+            differenceText = "--"
+            stateText = "选区 7 天额度样本不足"
+        case .missingRadarTierBaseline:
+            differenceTitle = "差额"
+            differenceText = "--"
+            stateText = "Radar 套餐总额缺失"
+        case .missingCompatiblePriceRevision:
+            differenceTitle = "差额"
+            differenceText = "--"
+            stateText = "Radar 价格版本未知"
+        }
+
+        if let localCost = result.localComparableCostUSD,
+           let radarTotal = result.radarSevenDayTotalUSD,
+           let localShare = result.localSharePercent {
+            localFormula = "本机占比 = \(Self.money(localCost)) ÷ \(Self.money(radarTotal)) × 100 = \(Self.percent(localShare))"
+        } else {
+            localFormula = "本机占比 = 本机同基准金额 ÷ Radar \(result.tier.title) 7 天总额 × 100"
+        }
+
+        let accountTerm = switch result.accountDropBasis {
+        case .observed: "账号实降"
+        case .estimated: "账号暂算下降"
+        case .unavailable: "账号下降"
+        }
+        if let account = result.accountDropPercent,
+           let local = result.localSharePercent,
+           let difference = result.nonLocalDifferencePercent {
+            let label = result.allowsAttributionConclusion ? "非本机差额" : "暂算差额"
+            differenceFormula = "\(label) = \(accountTerm) \(Self.percent(account)) − 本机 \(Self.percent(local)) = \(Self.signedPercent(difference))"
+        } else {
+            differenceFormula = "差额 = \(accountTerm) − 本机折算占比"
+        }
+
+        accessibilityValue = [
+            "\(accountTitle) \(accountText)",
+            "本机折算 \(localText)",
+            "\(differenceTitle) \(differenceText)",
+            stateText,
+        ].joined(separator: "，")
+    }
+
+    static func percent(_ value: Double) -> String {
+        value.quotaEstimatorOneDecimalPercent
+    }
+
+    static func signedPercent(_ value: Double) -> String {
+        if value.rounded() == value {
+            return String(format: "%+d%%", Int(value))
+        }
+        return String(format: "%+.1f%%", value)
+    }
+
+    static func money(_ value: Double) -> String {
+        "$\(QuotaConsumptionEstimate.quotaEstimatorMoneyString(value))"
     }
 }
 

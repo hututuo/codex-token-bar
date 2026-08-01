@@ -143,10 +143,29 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             currentFiveHourQuotaPresent: false,
             currentSevenDayQuotaPresent: true
         )
+        let selectionForContext = attributionSelection(
+            sevenDayDrop: 13,
+            quotaDropObserved: true
+        )
+        let changedAttributionContext = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: [],
+            currentFiveHourQuotaPresent: true,
+            currentSevenDayQuotaPresent: true,
+            sharedAccountAttributionContext: attributionContext(
+                for: selectionForContext,
+                radarTotalUSD: 1_000
+            )
+        )
 
         XCTAssertEqual(baseline, identical)
         XCTAssertNotEqual(baseline, changedUsage)
         XCTAssertNotEqual(baseline, changedQuotaAvailability)
+        XCTAssertNotEqual(baseline, changedAttributionContext)
     }
 
     @MainActor
@@ -222,6 +241,189 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
 
         XCTAssertNil(estimate.impliedWindowBudgetUSD)
         XCTAssertEqual(estimate.confidence, .insufficientQuotaMovement)
+        XCTAssertTrue(estimate.quotaDropObserved)
+    }
+
+    func testSelectionAttributionComputesAccountLocalAndPositiveNonLocalDifference() throws {
+        let selection = attributionSelection(sevenDayDrop: 13, quotaDropObserved: true)
+        let result = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(for: selection, radarTotalUSD: 1_000)
+        )
+
+        XCTAssertEqual(result.state, .suspectedNonLocalUsage)
+        XCTAssertTrue(result.allowsAttributionConclusion)
+        XCTAssertEqual(try XCTUnwrap(result.accountDropPercent), 13, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 100, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 3, accuracy: 0.0001)
+
+        let presentation = QuotaSelectionAttributionPresentation(result: result)
+        XCTAssertEqual(presentation.accountText, "13%")
+        XCTAssertEqual(presentation.localText, "≈10%")
+        XCTAssertEqual(presentation.differenceTitle, "疑似他人")
+        XCTAssertEqual(presentation.differenceText, "≈3%")
+    }
+
+    func testSelectionAttributionPreservesNegativeDifference() throws {
+        let selection = attributionSelection(sevenDayDrop: 5, quotaDropObserved: true)
+        let result = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(for: selection, radarTotalUSD: 1_000)
+        )
+
+        XCTAssertEqual(result.state, .localEstimateExceedsAccountDrop)
+        XCTAssertTrue(result.allowsAttributionConclusion)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), -5, accuracy: 0.0001)
+        XCTAssertEqual(
+            QuotaSelectionAttributionPresentation(result: result).differenceText,
+            "5%"
+        )
+    }
+
+    func testFlatZeroQuotaMovementIsObservedAndDistinctFromMissingHistory() throws {
+        let flatSelection = attributionSelection(sevenDayDrop: 0, quotaDropObserved: true)
+        let flatResult = QuotaSelectionAttributionEstimator.estimate(
+            selection: flatSelection,
+            context: attributionContext(for: flatSelection, radarTotalUSD: 1_000)
+        )
+        XCTAssertEqual(flatResult.state, .localEstimateExceedsAccountDrop)
+        XCTAssertEqual(try XCTUnwrap(flatResult.accountDropPercent), 0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(flatResult.nonLocalDifferencePercent), -10, accuracy: 0.0001)
+
+        let missingSelection = attributionSelection(sevenDayDrop: 0, quotaDropObserved: false)
+        let missingResult = QuotaSelectionAttributionEstimator.estimate(
+            selection: missingSelection,
+            context: attributionContext(for: missingSelection, radarTotalUSD: 1_000)
+        )
+        XCTAssertEqual(missingResult.state, .missingQuotaHistory)
+        XCTAssertNil(missingResult.accountDropPercent)
+        XCTAssertNil(missingResult.nonLocalDifferencePercent)
+    }
+
+    func testSelectionAttributionFailsClosedForMissingRadarAndUnknownPriceRevision() {
+        let selection = attributionSelection(sevenDayDrop: 13, quotaDropObserved: true)
+        let missingRadar = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(for: selection, radarTotalUSD: nil)
+        )
+        XCTAssertEqual(missingRadar.state, .missingRadarTierBaseline)
+        XCTAssertEqual(missingRadar.accountDropPercent, 13)
+        XCTAssertNil(missingRadar.localSharePercent)
+
+        let estimatedSelection = attributionSelection(
+            sevenDayDrop: 13,
+            quotaDropObserved: false,
+            quotaDropBasis: .estimated
+        )
+        let estimatedMissingRadar = QuotaSelectionAttributionEstimator.estimate(
+            selection: estimatedSelection,
+            context: attributionContext(for: estimatedSelection, radarTotalUSD: nil)
+        )
+        XCTAssertTrue(
+            QuotaSelectionAttributionPresentation(result: estimatedMissingRadar)
+                .differenceFormula.contains("账号暂算下降")
+        )
+
+        let unknownPrice = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(
+                for: selection,
+                radarTotalUSD: 1_000,
+                priceRevision: .unavailable
+            )
+        )
+        XCTAssertEqual(unknownPrice.state, .missingCompatiblePriceRevision)
+        XCTAssertNil(unknownPrice.localSharePercent)
+        XCTAssertNil(unknownPrice.nonLocalDifferencePercent)
+    }
+
+    func testUnsafeSelectionContextsRemainProvisionalInsteadOfAccusingOtherUsers() {
+        let selection = attributionSelection(sevenDayDrop: 13, quotaDropObserved: true)
+        let stale = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(
+                for: selection,
+                radarTotalUSD: 1_000,
+                quotaDataStale: true
+            )
+        )
+        XCTAssertEqual(stale.state, .provisional)
+        XCTAssertFalse(stale.allowsAttributionConclusion)
+        XCTAssertEqual(stale.nonLocalDifferencePercent, 3)
+        XCTAssertTrue(stale.caveats.contains { $0.contains("旧数据") })
+
+        let highWatermark = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(
+                for: selection,
+                radarTotalUSD: 1_000,
+                usedHighWatermark: true
+            )
+        )
+        XCTAssertEqual(highWatermark.state, .provisional)
+        XCTAssertTrue(highWatermark.caveats.contains { $0.contains("高水位") })
+
+        let outsideSegment = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(
+                for: selection,
+                radarTotalUSD: 1_000,
+                segmentStart: selection.startDate.addingTimeInterval(60)
+            )
+        )
+        XCTAssertEqual(outsideSegment.state, .provisional)
+        XCTAssertTrue(outsideSegment.caveats.contains { $0.contains("安全基线") })
+        XCTAssertEqual(
+            QuotaSelectionAttributionPresentation(result: outsideSegment).differenceTitle,
+            "暂算差额"
+        )
+
+        let partialBuckets = attributionSelection(
+            sevenDayDrop: 13,
+            quotaDropObserved: true,
+            comparisonUsesConservativeBuckets: true
+        )
+        let conservative = QuotaSelectionAttributionEstimator.estimate(
+            selection: partialBuckets,
+            context: attributionContext(for: partialBuckets, radarTotalUSD: 1_000)
+        )
+        XCTAssertEqual(conservative.state, .provisional)
+        XCTAssertTrue(conservative.caveats.contains { $0.contains("首尾整桶") })
+    }
+
+    func testEstimatedQuotaDropStaysProvisionalAndUsesOnlyObservationCoveredTokens() throws {
+        let comparisonBreakdown = TokenCacheBreakdown(
+            inputTokens: 10_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 10_000_000,
+            calls: 1
+        )
+        let selection = attributionSelection(
+            sevenDayDrop: 13,
+            quotaDropObserved: false,
+            quotaDropBasis: .estimated,
+            sevenDayComparisonBreakdown: comparisonBreakdown
+        )
+        let result = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(for: selection, radarTotalUSD: 1_000)
+        )
+
+        XCTAssertEqual(result.state, .provisional)
+        XCTAssertFalse(result.allowsAttributionConclusion)
+        XCTAssertEqual(try XCTUnwrap(result.accountDropPercent), 13, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 50, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 8, accuracy: 0.0001)
+        XCTAssertTrue(result.caveats.contains { $0.contains("暂算") })
+        let presentation = QuotaSelectionAttributionPresentation(result: result)
+        XCTAssertEqual(presentation.accountTitle, "账号暂降")
+        XCTAssertEqual(presentation.accountText, "≈13%")
+        XCTAssertEqual(presentation.differenceTitle, "暂算差额")
+        XCTAssertTrue(presentation.differenceFormula.contains("账号暂算下降"))
     }
 
     func testPreparedDataBuildsEstimatorSelectionFromClickedRange() throws {
@@ -315,7 +517,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(selection.fiveHour.confidence, .insufficientQuotaMovement)
         XCTAssertEqual(selection.sevenDay.confidence, .insufficientQuotaMovement)
         XCTAssertEqual(presentation.durationText, "持续 10分钟")
-        XCTAssertEqual(presentation.fiveHourChip.detail, "降 0% · 不反推")
+        XCTAssertEqual(presentation.fiveHourChip.detail, "暂算降 0% · 不反推")
         XCTAssertTrue(presentation.accessibilityValue.contains("持续 10分钟"))
     }
 
@@ -911,6 +1113,50 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(callbacks.isEmpty)
     }
 
+    @MainActor
+    func testHostedChartInteractionLayerReceivesRealClicksBeforeAndAfterScrolling() throws {
+        var clickLocations: [CGPoint] = []
+        var selectionState = RecentChartConsumptionSelectionState()
+        let hostingView = NSHostingView(
+            rootView: HostedRecentChartClickHarness { location in
+                clickLocations.append(location)
+                let index = min(max(Int(location.x / 60), 0), 9)
+                selectionState.click(index: index, validCount: 10)
+            }
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 300, height: 70)
+        let window = NSWindow(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hostingView.layoutSubtreeIfNeeded()
+        runMainLoopBriefly()
+
+        let trackingView = try XCTUnwrap(firstChartTrackingView(in: hostingView))
+        try clickHostedChartTrackingView(trackingView, window: window, localX: 65)
+        try clickHostedChartTrackingView(trackingView, window: window, localX: 245)
+        runMainLoopBriefly()
+
+        XCTAssertEqual(clickLocations.count, 2)
+        XCTAssertEqual(selectionState.startIndex, 1)
+        XCTAssertEqual(selectionState.fixedEndIndex, 4)
+
+        let scrollView = try XCTUnwrap(firstScrollView(in: hostingView))
+        scrollView.contentView.scroll(to: NSPoint(x: 120, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        try clickHostedChartTrackingView(trackingView, window: window, localX: 185)
+        runMainLoopBriefly()
+
+        XCTAssertEqual(clickLocations.count, 3)
+        XCTAssertEqual(selectionState.startIndex, 3)
+        XCTAssertNil(selectionState.fixedEndIndex)
+    }
+
     func testTimeMarkerLabelsUseDatesForScrollableRanges() {
         let calendar = Calendar.current
         let date = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 13, minute: 45))!
@@ -950,21 +1196,71 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("consumptionSelectionState"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
+        XCTAssertTrue(source.contains(".accessibilityAdjustableAction"))
+        XCTAssertTrue(source.contains(".accessibilityAction(named: Text(\"设置选区点\"))"))
+        XCTAssertTrue(source.contains(".onMoveCommand"))
+        XCTAssertTrue(source.contains(".onKeyPress(.space)"))
         XCTAssertTrue(componentSource.contains("onClose:"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
     }
 
-    func testEstimateOverlayLivesInTheFixedViewportInsteadOfTheScrollableCanvas() throws {
+    func testEstimateSummaryLivesBelowPlotInsteadOfInsideTheHitLayer() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
-        let chartStart = try XCTUnwrap(source.range(of: "private var chartPlot: some View")).lowerBound
+        let chartStart = try XCTUnwrap(source.range(of: "private func chartPlot(")).lowerBound
         let canvasStart = try XCTUnwrap(source.range(of: "private func chartPlotCanvas")).lowerBound
-        let refreshStart = try XCTUnwrap(source.range(of: "private func refreshPreparedData()", range: canvasStart..<source.endIndex)).lowerBound
-        let viewportSource = source[chartStart..<canvasStart]
-        let canvasSource = source[canvasStart..<refreshStart]
+        let summaryStart = try XCTUnwrap(
+            source.range(of: "private func consumptionSelectionSummary(")
+        ).lowerBound
+        let bodyStart = try XCTUnwrap(
+            source.range(of: "var body: some View", range: summaryStart..<source.endIndex)
+        ).lowerBound
+        let accessibilityStart = try XCTUnwrap(
+            source.range(of: "private var accessibilitySummary", range: bodyStart..<source.endIndex)
+        ).lowerBound
+        let plotSource = source[chartStart..<canvasStart]
+        let bodySource = source[bodyStart..<accessibilityStart]
 
-        XCTAssertTrue(viewportSource.contains("RecentChartQuotaEstimateOverlay"))
-        XCTAssertFalse(canvasSource.contains("RecentChartQuotaEstimateOverlay"))
+        XCTAssertTrue(
+            bodySource.contains(
+                "chartPlot(consumptionSelection: consumptionSelection)\n            consumptionSelectionSummary("
+            )
+        )
+        XCTAssertFalse(plotSource.contains("RecentChartQuotaEstimateOverlay"))
+        XCTAssertFalse(source.contains(".position(x: 205, y: -40)"))
+    }
+
+    func testComparisonCoveragePresentationKeepsObservedAndEstimatedProvenanceDistinct() {
+        XCTAssertEqual(
+            QuotaConsumptionComparisonCoveragePresentation(basis: .observed).sectionTitle,
+            "7d 观测覆盖内归因统计"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionComparisonCoveragePresentation(
+                basis: .observed,
+                usesConservativeBuckets: true
+            ).sectionTitle,
+            "7d 保守整桶归因统计"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionComparisonCoveragePresentation(
+                basis: .observed,
+                usesConservativeBuckets: true
+            ).sourceTitle,
+            "保守整桶计入范围"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionComparisonCoveragePresentation(basis: .estimated).sectionTitle,
+            "7d 暂算覆盖内归因统计"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionComparisonCoveragePresentation(basis: .estimated).sourceTitle,
+            "额度暂算覆盖"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionComparisonCoveragePresentation(basis: .unavailable).sourceTitle,
+            "额度可比范围"
+        )
     }
 
     func testEstimateAffordancePresentationProvidesChartHelpAndModelOptions() {
@@ -1054,6 +1350,43 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             cacheHitRate: 0,
             confidence: .noTokenUsage
         )
+        let missingQuotaSamples = QuotaConsumptionEstimate(
+            selectedCostUSD: 1,
+            impliedWindowBudgetUSD: nil,
+            quotaDropPercent: 0,
+            quotaDropObserved: false,
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            calls: 1,
+            cacheHitRate: 0,
+            confidence: .insufficientQuotaMovement
+        )
+        let estimatedQuotaDrop = QuotaConsumptionEstimate(
+            selectedCostUSD: 1,
+            impliedWindowBudgetUSD: 20,
+            quotaDropPercent: 5,
+            quotaDropBasis: .estimated,
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            calls: 1,
+            cacheHitRate: 0,
+            confidence: .measured
+        )
+        let conservativeBoundary = QuotaConsumptionEstimate(
+            selectedCostUSD: 1,
+            impliedWindowBudgetUSD: 20,
+            quotaDropPercent: 5,
+            quotaDropBasis: .observed,
+            comparisonUsesConservativeBuckets: true,
+            inputTokens: 1,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            calls: 1,
+            cacheHitRate: 0,
+            confidence: .measured
+        )
 
         XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).detail, "降 0% · 不反推")
         XCTAssertEqual(
@@ -1064,6 +1397,30 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).accessibilityText,
             "没有 token 用量"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: missingQuotaSamples).detail,
+            "7d 样本不足"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: missingQuotaSamples).accessibilityText,
+            "选区内缺少足够的 7 天额度样本"
+        )
+        XCTAssertEqual(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: estimatedQuotaDrop).detail,
+            "≈$20.0 · 暂算降 5%"
+        )
+        XCTAssertTrue(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: estimatedQuotaDrop)
+                .accessibilityText.contains("暂算")
+        )
+        XCTAssertEqual(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: conservativeBoundary).detail,
+            "≈$20.0 · 边界暂算降 5%"
+        )
+        XCTAssertTrue(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: conservativeBoundary)
+                .accessibilityText.contains("首尾整桶保守计入")
         )
     }
 
@@ -1105,6 +1462,90 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 cacheHitRate: 0,
                 confidence: .measured
             )
+        )
+    }
+
+    private func attributionSelection(
+        sevenDayDrop: Double,
+        quotaDropObserved: Bool,
+        quotaDropBasis: QuotaConsumptionDropBasis? = nil,
+        sevenDayComparisonBreakdown: TokenCacheBreakdown? = nil,
+        comparisonUsesConservativeBuckets: Bool = false
+    ) -> QuotaConsumptionSelection {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let end = start.addingTimeInterval(600)
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 20_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 20_000_000,
+            calls: 2
+        )
+        return QuotaConsumptionSelection(
+            startIndex: 0,
+            endIndex: 1,
+            bucketCount: 2,
+            startDate: start,
+            endDate: end,
+            priceCard: .officialAPI(.gpt56Sol),
+            breakdown: breakdown,
+            fiveHour: QuotaConsumptionEstimator.estimate(
+                breakdown: breakdown,
+                quotaDropPercent: 20,
+                priceCard: .officialAPI(.gpt56Sol)
+            ),
+            sevenDay: QuotaConsumptionEstimate(
+                selectedCostUSD: 100,
+                impliedWindowBudgetUSD: sevenDayDrop > 0
+                    ? 100 / (sevenDayDrop / 100)
+                    : nil,
+                quotaDropPercent: sevenDayDrop,
+                quotaDropObserved: quotaDropObserved,
+                quotaDropBasis: quotaDropBasis,
+                comparisonBreakdown: sevenDayComparisonBreakdown,
+                comparisonUsesConservativeBuckets: comparisonUsesConservativeBuckets,
+                inputTokens: breakdown.inputTokens,
+                cachedInputTokens: breakdown.cachedInputTokens,
+                outputTokens: breakdown.outputTokens,
+                calls: breakdown.calls,
+                cacheHitRate: breakdown.cacheHitRate,
+                confidence: sevenDayDrop > 0
+                    ? .measured
+                    : .insufficientQuotaMovement
+            )
+        )
+    }
+
+    private func attributionContext(
+        for selection: QuotaConsumptionSelection,
+        radarTotalUSD: Double?,
+        priceRevision: SharedAccountRadarPriceRevision = .currentOfficial,
+        quotaDataStale: Bool = false,
+        usedHighWatermark: Bool = false,
+        segmentStart: Date? = nil
+    ) -> QuotaSelectionAttributionContext {
+        QuotaSelectionAttributionContext(
+            sourceState: .suspectedNonLocalUsage,
+            tier: .twentyXPro,
+            model: .gpt56Sol,
+            priceRevision: priceRevision,
+            cycleStart: selection.startDate.addingTimeInterval(-60 * 60),
+            cycleEnd: selection.endDate.addingTimeInterval(60 * 60),
+            localSegmentStart: segmentStart ?? selection.startDate.addingTimeInterval(-60),
+            quotaUpdatedAt: selection.endDate.addingTimeInterval(5 * 60),
+            radarSevenDayTotalUSD: radarTotalUSD,
+            radarBasis: "API-equivalent",
+            radarDate: "2026-07-31",
+            radarPricingBasisDate: "2026-07-31",
+            radarUpdatedAt: "2026-07-31T12:00:00Z",
+            radarSource: "Codex Radar",
+            quotaDataStale: quotaDataStale,
+            radarDataStale: false,
+            usagePendingQuotaRefresh: false,
+            localHistoryAmbiguous: false,
+            usedHighWatermark: usedHighWatermark,
+            hasFinalAttributionConclusion: true
         )
     }
 }
@@ -1149,6 +1590,25 @@ private struct HostedRecentChartScrollReaderHarness: View {
     }
 }
 
+private struct HostedRecentChartClickHarness: View {
+    let onClick: (CGPoint) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: 600, height: 70)
+                HoverTrackingArea(
+                    onMove: { _ in },
+                    onClick: onClick,
+                    onExit: {}
+                )
+                .frame(width: 600, height: 60)
+            }
+        }
+    }
+}
+
 @MainActor
 private func firstScrollView(in view: NSView) -> NSScrollView? {
     if let scrollView = view as? NSScrollView {
@@ -1160,6 +1620,60 @@ private func firstScrollView(in view: NSView) -> NSScrollView? {
         }
     }
     return nil
+}
+
+@MainActor
+private func firstChartTrackingView(
+    in view: NSView
+) -> HoverTrackingArea.TrackingView? {
+    if let trackingView = view as? HoverTrackingArea.TrackingView {
+        return trackingView
+    }
+    for subview in view.subviews {
+        if let trackingView = firstChartTrackingView(in: subview) {
+            return trackingView
+        }
+    }
+    return nil
+}
+
+@MainActor
+private func clickHostedChartTrackingView(
+    _ trackingView: HoverTrackingArea.TrackingView,
+    window: NSWindow,
+    localX: CGFloat
+) throws {
+    let localPoint = NSPoint(x: localX, y: trackingView.bounds.midY)
+    let windowPoint = trackingView.convert(localPoint, to: nil)
+    let timestamp = ProcessInfo.processInfo.systemUptime
+    let mouseDown = try XCTUnwrap(
+        NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: timestamp,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )
+    )
+    let mouseUp = try XCTUnwrap(
+        NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: timestamp + 0.01,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )
+    )
+    window.sendEvent(mouseDown)
+    window.sendEvent(mouseUp)
 }
 
 @MainActor

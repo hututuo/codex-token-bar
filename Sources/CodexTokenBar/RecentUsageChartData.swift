@@ -26,6 +26,14 @@ extension RecentUsageChart {
         )
         let fiveHourRemaining = quotaBuckets.map { $0?.fiveHourRemainingPercent }
         let sevenDayRemaining = quotaBuckets.map { $0?.sevenDayRemainingPercent }
+        let fiveHourObservations = quotaObservations(
+            quotaBuckets,
+            keyPath: \.fiveHourObservations
+        )
+        let sevenDayObservations = quotaObservations(
+            quotaBuckets,
+            keyPath: \.sevenDayObservations
+        )
         let markerIndices = markerIndices(for: range, bins: bins, bucketInterval: range.bucketInterval)
 
         return RecentChartPreparedData(
@@ -41,6 +49,9 @@ extension RecentUsageChart {
             observedCacheHitRates: observedRates,
             fiveHourRemainingPercents: fiveHourRemaining,
             sevenDayRemainingPercents: sevenDayRemaining,
+            fiveHourQuotaObservations: fiveHourObservations,
+            sevenDayQuotaObservations: sevenDayObservations,
+            quotaObservationProvenanceAvailable: true,
             latestFiveHourRemaining: fiveHourRemaining.reversed().compactMap { $0 }.first,
             latestSevenDayRemaining: sevenDayRemaining.reversed().compactMap { $0 }.first,
             hasCacheCalls: cacheBreakdowns.contains { $0.calls > 0 },
@@ -157,8 +168,38 @@ extension RecentUsageChart {
         return QuotaHistoryRecentBucket(
             start: start,
             fiveHourRemainingPercent: fiveHour,
-            sevenDayRemainingPercent: sevenDay
+            sevenDayRemainingPercent: sevenDay,
+            fiveHourObservations: buckets
+                .flatMap(\.fiveHourObservations)
+                .sorted { $0.observedAt < $1.observedAt },
+            sevenDayObservations: buckets
+                .flatMap(\.sevenDayObservations)
+                .sorted { $0.observedAt < $1.observedAt }
         )
+    }
+
+    private static func quotaObservations(
+        _ buckets: [QuotaHistoryRecentBucket?],
+        keyPath: KeyPath<QuotaHistoryRecentBucket, [QuotaHistoryObservation]>
+    ) -> [QuotaHistoryObservation] {
+        let ordered = buckets
+            .compactMap { $0 }
+            .flatMap { $0[keyPath: keyPath] }
+            .sorted { lhs, rhs in
+                if lhs.observedAt != rhs.observedAt {
+                    return lhs.observedAt < rhs.observedAt
+                }
+                return lhs.remainingPercent < rhs.remainingPercent
+            }
+        var deduplicated: [QuotaHistoryObservation] = []
+        for observation in ordered {
+            if deduplicated.last?.observedAt == observation.observedAt {
+                deduplicated[deduplicated.count - 1] = observation
+            } else {
+                deduplicated.append(observation)
+            }
+        }
+        return deduplicated
     }
 
     private static func average(_ values: [Double]) -> Double? {
