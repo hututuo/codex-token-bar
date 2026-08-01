@@ -430,6 +430,7 @@ struct SharedAccountUsageHighWatermarkRecord: Codable, Equatable, Sendable {
         TokenCacheAttributionEvent(
             id: stored.id,
             start: stored.start,
+            model: stored.model ?? candidate.model,
             breakdown: TokenCacheBreakdown(
                 inputTokens: max(
                     stored.breakdown.inputTokens,
@@ -1515,6 +1516,8 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let state: SharedAccountUsageAttributionState
     let tier: SharedAccountRadarTier
     let model: OfficialAPIPriceModel
+    let detectedModels: [OfficialAPIPriceModel]
+    let fallbackModelCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let cycleStart: Date?
     let cycleEnd: Date?
@@ -1604,6 +1607,12 @@ enum SharedAccountUsageAttributionEstimator {
     static let comparisonTolerancePercent = 2.0
     static let sevenDayDuration: TimeInterval = 7 * 24 * 60 * 60
     static let recentBinDuration: TimeInterval = 5 * 60
+
+    private struct ModelAwareCost {
+        let value: Double
+        let detectedModels: [OfficialAPIPriceModel]
+        let fallbackCalls: Int
+    }
 
     static func estimate(
         enabled: Bool,
@@ -1764,6 +1773,9 @@ enum SharedAccountUsageAttributionEstimator {
         let persistenceAttributionEvents = recentAttributionEvents?.filter {
             $0.start >= localBucketStart && $0.start < preciseCoverageEnd
         }
+        let comparisonAttributionEvents = recentAttributionEvents?.filter {
+            $0.start >= localBucketStart && $0.start < comparisonEnd
+        }
         let scannedBreakdown = comparisonBins.map(\.breakdown).combined
         let scannedHasPendingLocalUsage = attributionBins.contains { bin in
             bin.start >= comparisonEnd
@@ -1816,9 +1828,82 @@ enum SharedAccountUsageAttributionEstimator {
             from: localBucketStart,
             before: comparisonEnd
         ) ?? scannedBreakdown
+        let protectedAttributionEvents: [TokenCacheAttributionEvent]? = if let effectiveHighWatermark,
+           effectiveHighWatermark.eventProvenanceComplete {
+            effectiveHighWatermark.contributions.values
+                .filter { $0.start >= localBucketStart && $0.start < comparisonEnd }
+        } else {
+            comparisonAttributionEvents
+        }
         let shouldUseHighWatermark = protectedBreakdown != scannedBreakdown
         let localHistoryAmbiguous = effectiveHighWatermark?.ambiguityDetected ?? false
         guard resolvedSegment.baselineReady else {
+            let pendingCurrentCost = modelAwareCost(
+                events: protectedAttributionEvents,
+                fallbackBreakdown: protectedBreakdown,
+                fallbackModel: model,
+                rates: { $0.currentPriceRates }
+            )
+            let pendingRadarRow = radar.flatMap { tier.sevenDayRow(in: $0) }
+            let pendingRadarTotal = pendingRadarRow?.sevenD
+            let pendingComparableCost: ModelAwareCost? = if priceRevision != .unavailable {
+                modelAwareCost(
+                    events: protectedAttributionEvents,
+                    fallbackBreakdown: protectedBreakdown,
+                    fallbackModel: model,
+                    rates: { priceRevision.rates(for: $0) ?? $0.currentPriceRates }
+                )
+            } else {
+                nil
+            }
+            let pendingShare: Double? = if let cost = pendingComparableCost?.value,
+                                  let total = pendingRadarTotal,
+                                  total > 0 {
+                cost / total * 100
+            } else {
+                nil
+            }
+            if let radar,
+               let pendingRadarRow,
+               let pendingRadarTotal,
+               let pendingComparableCost {
+                return SharedAccountUsageAttributionResult(
+                    state: .awaitingAccountSwitchBaseline,
+                    tier: tier,
+                    model: model,
+                    detectedModels: pendingComparableCost.detectedModels,
+                    fallbackModelCalls: pendingComparableCost.fallbackCalls,
+                    priceRevision: priceRevision,
+                    cycleStart: cycleStart,
+                    cycleEnd: resetAt,
+                    localSegmentStart: segmentStart,
+                    accountUsedBaselinePercent: resolvedSegment.accountUsedBaselinePercent,
+                    switchedAccountDuringCycle: resolvedSegment.switchedAccountDuringCycle,
+                    cutoverReason: resolvedSegment.effectiveCutoverReason,
+                    quotaUpdatedAt: quotaUpdatedAt,
+                    accountUsedPercent: nil,
+                    breakdown: protectedBreakdown,
+                    scannedBreakdown: scannedBreakdown,
+                    scannedComparableCostUSD: nil,
+                    localComparableCostUSD: pendingComparableCost.value,
+                    localCurrentOfficialCostUSD: pendingCurrentCost.value,
+                    radarSevenDayTotalUSD: pendingRadarTotal,
+                    localSharePercent: pendingShare,
+                    nonLocalDifferencePercent: nil,
+                    radarBasis: pendingRadarRow.basis,
+                    radarDate: radar.date,
+                    radarPricingBasisDate: radar.basisDate,
+                    radarUpdatedAt: radar.updatedAt,
+                    radarSource: radar.source,
+                    quotaDataStale: quotaDataStale,
+                    radarDataStale: radarDataStale,
+                    usagePendingQuotaRefresh: hasPendingLocalUsage,
+                    localHistoryAmbiguous: localHistoryAmbiguous,
+                    highWatermarkKey: highWatermarkKey,
+                    highWatermarkCandidate: rawCandidate,
+                    usedHighWatermark: shouldUseHighWatermark
+                )
+            }
             return unavailable(
                 .awaitingAccountSwitchBaseline,
                 tier: tier,
@@ -1833,7 +1918,9 @@ enum SharedAccountUsageAttributionEstimator {
                 quotaUpdatedAt: quotaUpdatedAt,
                 breakdown: protectedBreakdown,
                 scannedBreakdown: scannedBreakdown,
-                currentOfficialCostUSD: model.currentPriceRates.costUSD(for: protectedBreakdown),
+                currentOfficialCostUSD: pendingCurrentCost.value,
+                radarTotalUSD: pendingRadarTotal,
+                radarRow: pendingRadarRow,
                 radar: radar,
                 quotaDataStale: quotaDataStale,
                 radarDataStale: radarDataStale,
@@ -1877,8 +1964,14 @@ enum SharedAccountUsageAttributionEstimator {
             )
         }
 
-        let currentOfficialCost = model.currentPriceRates.costUSD(for: protectedBreakdown)
-        guard let comparableRates = priceRevision.rates(for: model) else {
+        let currentOfficialEstimate = modelAwareCost(
+            events: protectedAttributionEvents,
+            fallbackBreakdown: protectedBreakdown,
+            fallbackModel: model,
+            rates: { $0.currentPriceRates }
+        )
+        let currentOfficialCost = currentOfficialEstimate.value
+        guard priceRevision != .unavailable else {
             return unavailable(
                 .missingCompatiblePriceRevision,
                 tier: tier,
@@ -1908,9 +2001,21 @@ enum SharedAccountUsageAttributionEstimator {
             )
         }
 
-        let scannedComparableCost = comparableRates.costUSD(for: scannedBreakdown)
-        let localComparableCost = comparableRates.costUSD(for: protectedBreakdown)
-        let localCurrentOfficialCost = model.currentPriceRates.costUSD(for: protectedBreakdown)
+        let scannedComparableEstimate = modelAwareCost(
+            events: comparisonAttributionEvents,
+            fallbackBreakdown: scannedBreakdown,
+            fallbackModel: model,
+            rates: { priceRevision.rates(for: $0) ?? $0.currentPriceRates }
+        )
+        let localComparableEstimate = modelAwareCost(
+            events: protectedAttributionEvents,
+            fallbackBreakdown: protectedBreakdown,
+            fallbackModel: model,
+            rates: { priceRevision.rates(for: $0) ?? $0.currentPriceRates }
+        )
+        let scannedComparableCost = scannedComparableEstimate.value
+        let localComparableCost = localComparableEstimate.value
+        let localCurrentOfficialCost = currentOfficialEstimate.value
         let localShare = localComparableCost / radarTotal * 100
         let difference = accountUsed - localShare
 
@@ -1936,6 +2041,8 @@ enum SharedAccountUsageAttributionEstimator {
             state: state,
             tier: tier,
             model: model,
+            detectedModels: localComparableEstimate.detectedModels,
+            fallbackModelCalls: localComparableEstimate.fallbackCalls,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: resetAt,
@@ -1990,6 +2097,40 @@ enum SharedAccountUsageAttributionEstimator {
         )
     }
 
+    private static func modelAwareCost(
+        events: [TokenCacheAttributionEvent]?,
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel,
+        rates: (OfficialAPIPriceModel) -> APIPriceRates
+    ) -> ModelAwareCost {
+        guard let events, !events.isEmpty else {
+            return ModelAwareCost(
+                value: rates(fallbackModel).costUSD(for: fallbackBreakdown),
+                detectedModels: [],
+                fallbackCalls: fallbackBreakdown.calls
+            )
+        }
+        var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
+        var fallbackBreakdowns: [TokenCacheBreakdown] = []
+        for event in events {
+            if let detected = OfficialAPIPriceModel.detected(from: event.model) {
+                grouped[detected, default: []].append(event.breakdown)
+            } else {
+                fallbackBreakdowns.append(event.breakdown)
+            }
+        }
+        var value = grouped.reduce(0.0) { partial, entry in
+            partial + rates(entry.key).costUSD(for: entry.value.combined)
+        }
+        let fallbackBreakdown = fallbackBreakdowns.combined
+        value += rates(fallbackModel).costUSD(for: fallbackBreakdown)
+        return ModelAwareCost(
+            value: value,
+            detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
+            fallbackCalls: fallbackBreakdown.calls
+        )
+    }
+
     private static func sourceBucketBins(
         _ contributions: [TokenCacheAttributionEvent]
     ) -> [TokenCacheBucket] {
@@ -2034,6 +2175,8 @@ enum SharedAccountUsageAttributionEstimator {
             state: state,
             tier: tier,
             model: model,
+            detectedModels: [],
+            fallbackModelCalls: breakdown.calls,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,

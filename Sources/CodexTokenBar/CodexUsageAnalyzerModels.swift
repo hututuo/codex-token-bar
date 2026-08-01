@@ -146,6 +146,7 @@ extension CodexUsageAnalyzer {
         struct PersistentEvent: Codable {
             let timestamp: TimeInterval
             let sessionID: String
+            let model: String?
             let tokens: Int
             let inputTokens: Int
             let cachedInputTokens: Int
@@ -828,6 +829,7 @@ extension CodexUsageAnalyzer {
             PersistentEvent(
                 timestamp: event.timestamp.timeIntervalSince1970,
                 sessionID: event.sessionID,
+                model: event.model,
                 tokens: event.tokens,
                 inputTokens: event.inputTokens,
                 cachedInputTokens: event.cachedInputTokens,
@@ -849,6 +851,7 @@ extension CodexUsageAnalyzer {
             TokenEvent(
                 timestamp: Date(timeIntervalSince1970: event.timestamp),
                 sessionID: event.sessionID,
+                model: event.model,
                 tokens: event.tokens,
                 inputTokens: event.inputTokens,
                 cachedInputTokens: event.cachedInputTokens,

@@ -38,6 +38,91 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
     }
 
+    func testAutomaticallyPricesEachRecordedModelAndUsesFallbackOnlyForUnknownRows() throws {
+        let sol = attributionEvent(
+            id: "sol",
+            at: cycleStart,
+            input: 1_000_000,
+            model: "gpt-5.6-sol"
+        )
+        let terra = attributionEvent(
+            id: "terra",
+            at: cycleStart.addingTimeInterval(300),
+            input: 1_000_000,
+            model: "gpt-5.6-terra"
+        )
+        let result = SharedAccountUsageAttributionEstimator.estimate(
+            enabled: true,
+            preciseUsageReady: true,
+            recentBins: [
+                bucket(at: sol.start, input: 1_000_000, cached: 0, output: 0),
+                bucket(at: terra.start, input: 1_000_000, cached: 0, output: 0),
+            ],
+            recentAttributionEvents: [sol, terra],
+            sevenDayQuota: quota(used: 8, resetAt: resetAt),
+            quotaUpdatedAt: now,
+            historyIdentity: identity(),
+            radar: try radar(date: "2026-07-30", tier: "20x Pro", fiveHour: nil, sevenDay: 100),
+            tier: .twentyXPro,
+            model: .gpt56Luna,
+            now: now
+        )
+
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 7.0, accuracy: 0.0001)
+        XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
+        XCTAssertEqual(result.fallbackModelCalls, 0)
+        XCTAssertEqual(
+            SharedAccountUsageAttributionPresentation(result: result).modelLine,
+            "自动：Sol/Terra"
+        )
+    }
+
+    func testPendingRestartBaselineStillShowsLocalAutomaticEquivalent() throws {
+        let event = attributionEvent(
+            id: "sol",
+            at: cycleStart,
+            input: 1_000_000,
+            model: "gpt-5.6-sol"
+        )
+        let pending = SharedAccountUsageSegment(
+            cycleResetAt: resetAt,
+            start: cycleStart,
+            accountUsedBaselinePercent: 10,
+            switchedAccountDuringCycle: false,
+            baselineReady: false,
+            baselineObservedAt: now.addingTimeInterval(-60),
+            accountUsedObservedPercent: 10,
+            comparisonUpdatedAt: now.addingTimeInterval(-60),
+            quotaMovementPendingUntil: nil,
+            requiredLocalObservationAfter: nil,
+            cutoverReason: .continuityGap,
+            cutoverDetectedAt: now.addingTimeInterval(-120),
+            cutoverRecoveredAt: now.addingTimeInterval(-90),
+            continuityGapID: UUID()
+        )
+        let result = SharedAccountUsageAttributionEstimator.estimate(
+            enabled: true,
+            preciseUsageReady: true,
+            recentBins: [bucket(at: cycleStart, input: 1_000_000, cached: 0, output: 0)],
+            recentAttributionEvents: [event],
+            sevenDayQuota: quota(used: 10, resetAt: resetAt),
+            quotaUpdatedAt: now,
+            historyIdentity: identity(),
+            radar: try radar(date: "2026-07-30", tier: "20x Pro", fiveHour: nil, sevenDay: 100),
+            tier: .twentyXPro,
+            model: .gpt56Luna,
+            now: now,
+            segment: pending
+        )
+
+        XCTAssertEqual(result.state, .awaitingAccountSwitchBaseline)
+        XCTAssertNil(result.accountUsedPercent)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 5, accuracy: 0.0001)
+        XCTAssertNil(result.nonLocalDifferencePercent)
+    }
+
     func testDifferenceWithinTwoPercentagePointsIsNotLabeledNonLocal() throws {
         let result = estimate(
             accountUsed: 11,
@@ -2005,7 +2090,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(activation.effectiveCutoverReason, .initialActivation)
         XCTAssertEqual(result.state, .awaitingAccountSwitchBaseline)
         XCTAssertNil(result.accountUsedPercent)
-        XCTAssertNil(result.localSharePercent)
+        XCTAssertEqual(result.localSharePercent, 0)
         XCTAssertNil(result.nonLocalDifferencePercent)
     }
 
@@ -2319,7 +2404,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             segment: pending
         )
         XCTAssertEqual(pendingResult.state, .awaitingAccountSwitchBaseline)
-        XCTAssertNil(pendingResult.localSharePercent)
+        XCTAssertEqual(pendingResult.localSharePercent, 0)
         XCTAssertNil(pendingResult.nonLocalDifferencePercent)
 
         // The 12:10 quota snapshot becomes the baseline. Usage in the 12:00
@@ -2528,7 +2613,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(result.scannedBreakdown.inputTokens, 0)
         XCTAssertEqual(try XCTUnwrap(result.highWatermarkCandidate).breakdown.inputTokens, 1_000_000)
         XCTAssertNil(result.accountUsedPercent)
-        XCTAssertNil(result.localSharePercent)
+        XCTAssertEqual(result.localSharePercent, 0)
         XCTAssertNil(result.nonLocalDifferencePercent)
     }
 
@@ -2689,11 +2774,13 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         at date: Date,
         input: Int,
         cached: Int = 0,
-        output: Int = 0
+        output: Int = 0,
+        model: String? = nil
     ) -> TokenCacheAttributionEvent {
         TokenCacheAttributionEvent(
             id: id,
             start: date,
+            model: model,
             breakdown: TokenCacheBreakdown(
                 inputTokens: input,
                 cachedInputTokens: cached,

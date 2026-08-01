@@ -87,6 +87,24 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         }
     }
 
+    static func detected(from rawValue: String?) -> OfficialAPIPriceModel? {
+        guard let rawValue else { return nil }
+        let key = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        switch key {
+        case "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol", "gpt-5.5", "gpt55":
+            return .gpt56Sol
+        case "gpt-5.6-terra", "gpt5.6-terra", "gpt56-terra", "gpt56terra", "gpt-5.4", "gpt54":
+            return .gpt56Terra
+        case "gpt-5.6-luna", "gpt5.6-luna", "gpt56-luna", "gpt56luna", "gpt-5.4-mini", "gpt54mini":
+            return .gpt56Luna
+        default:
+            return nil
+        }
+    }
+
     // Source-compatible aliases for tests and integrations compiled against
     // the old enum spelling. New persisted values always use GPT-5.6 IDs.
     static let gpt55: OfficialAPIPriceModel = .gpt56Sol

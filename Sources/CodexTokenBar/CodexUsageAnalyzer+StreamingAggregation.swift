@@ -161,7 +161,11 @@ extension CodexUsageAnalyzer {
                     cacheRecentByStart[start, default: TokenCacheAccumulator()].add(event)
                     let sourceID = attributionSourceID ?? event.sessionID
                     attributionBySourceBucket[
-                        AttributionSourceBucketKey(sourceID: sourceID, start: start),
+                        AttributionSourceBucketKey(
+                            sourceID: sourceID,
+                            start: start,
+                            model: event.model
+                        ),
                         default: TokenCacheAccumulator()
                     ].add(event)
                 }
@@ -300,6 +304,7 @@ extension CodexUsageAnalyzer {
                     provenanceEpoch: attributionProvenanceEpoch,
                     sourceID: key.sourceID,
                     start: key.start,
+                    model: key.model,
                     breakdown: accumulator.breakdown
                 )
             }
@@ -328,6 +333,7 @@ extension CodexUsageAnalyzer {
         private struct AttributionSourceBucketKey: Hashable {
             let sourceID: String
             let start: Date
+            let model: String?
         }
     }
 }

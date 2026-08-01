@@ -94,7 +94,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
     }
 
     func testPreciseJSONLScanBuildsUsageSeriesAndCacheBreakdown() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let codexHome = try makeCodexHome()
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
         let sessionID = "019eaaaa-bbbb-cccc-dddd-eeeeffffffff"
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
@@ -102,6 +109,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let now = Date()
 
         let lines = [
+            turnContextLine(timestamp: now.addingTimeInterval(-140), model: "gpt-5.6-sol"),
             messageLine(timestamp: now.addingTimeInterval(-130), type: "user_message", message: "First question"),
             messageLine(timestamp: now.addingTimeInterval(-120), type: "agent_message", message: "First answer"),
             try tokenCountLine(
@@ -109,6 +117,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 total: Usage(input: 100, cachedInput: 40, output: 20, reasoning: 5, total: 120),
                 last: Usage(input: 100, cachedInput: 40, output: 20, reasoning: 5, total: 120)
             ),
+            turnContextLine(timestamp: now.addingTimeInterval(-90), model: "gpt-5.6-terra"),
             messageLine(timestamp: now.addingTimeInterval(-80), type: "user_message", message: "Second question"),
             messageLine(timestamp: now.addingTimeInterval(-70), type: "agent_message", message: "Second answer"),
             try tokenCountLine(
@@ -120,6 +129,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
 
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+        let exactDatabase = SQLiteDatabaseDriver(
+            url: try exactUsageDatabaseURL(in: cacheRoot)
+        )
 
         XCTAssertEqual(snapshot.usagePrecision, .precise)
         XCTAssertTrue(snapshot.hasPreciseTokenUsage)
@@ -138,6 +150,22 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 $0 + $1.breakdown.calls
             },
             2
+        )
+        XCTAssertEqual(
+            Set(snapshot.cacheUsage.attributionEvents.compactMap(\.model)),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
+        )
+        XCTAssertEqual(
+            Set(try exactDatabase.readRows(
+                "SELECT DISTINCT model FROM events WHERE model IS NOT NULL ORDER BY model;"
+            ) { $0.text(0) }.compactMap { $0 }),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
+        )
+        XCTAssertEqual(
+            Set(try exactDatabase.readRows(
+                "SELECT DISTINCT model FROM attribution_source_buckets WHERE model <> '' ORDER BY model;"
+            ) { $0.text(0) }.compactMap { $0 }),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
         )
         XCTAssertNotNil(snapshot.cacheUsage.attributionProvenanceEpoch)
         XCTAssertFalse(snapshot.cacheUsage.attributionSourceMutationDetected)
@@ -2457,7 +2485,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version';",
                 in: database
             ),
-            3
+            4
         )
     }
 
@@ -3137,7 +3165,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.compactMap { $0 }.first
         )
-        XCTAssertEqual(schemaVersion, "3")
+        XCTAssertEqual(schemaVersion, "4")
 
         try appendLines([
             try tokenCountLine(
@@ -4052,6 +4080,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "type": type,
                 "message": message
             ]
+        ])
+    }
+
+    private func turnContextLine(timestamp: Date, model: String) -> String {
+        encodeLine([
+            "timestamp": iso8601String(from: timestamp),
+            "type": "turn_context",
+            "payload": ["model": model]
         ])
     }
 

@@ -166,6 +166,7 @@ extension CodexUsageAnalyzer {
         var previousTotal = request.initialState.previousTotalTokens
         var currentUserPromptOffset = request.initialState.currentUserPromptOffset
         var assistantStartOffset = request.initialState.assistantStartOffset
+        var currentModel = request.initialState.currentModel
         var forkReplayStartedAt = request.initialState.forkReplayStartedAt
         var isSkippingForkReplay = request.initialState.isSkippingForkReplay
         var lastSkippedForkReplayTokenAt =
@@ -184,6 +185,11 @@ extension CodexUsageAnalyzer {
                    let timestamp = parseSessionMetaForkTimestamp(lineString) {
                     forkReplayStartedAt = timestamp
                     isSkippingForkReplay = true
+                    return
+                }
+
+                if let model = parseTurnContextModel(lineString) {
+                    currentModel = model
                     return
                 }
 
@@ -248,6 +254,7 @@ extension CodexUsageAnalyzer {
                 let event = TokenEvent(
                     timestamp: usageLine.timestamp,
                     sessionID: sessionID,
+                    model: currentModel,
                     tokens: delta,
                     inputTokens: usageLine.last?.inputTokens ?? 0,
                     cachedInputTokens: usageLine.last?.cachedInputTokens ?? 0,
@@ -281,7 +288,8 @@ extension CodexUsageAnalyzer {
                 isSkippingForkReplay: isSkippingForkReplay,
                 lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
                 currentUserPromptOffset: currentUserPromptOffset,
-                assistantStartOffset: assistantStartOffset
+                assistantStartOffset: assistantStartOffset,
+                currentModel: currentModel
             ),
             chunkHashes: stream.chunkHashes,
             validationChunkHash: stream.validationChunkHash
@@ -737,6 +745,20 @@ extension CodexUsageAnalyzer {
         return ParsedTokenUsageLine(timestamp: timestamp, total: total, last: last)
     }
 
+    private func parseTurnContextModel(_ line: String) -> String? {
+        guard line.contains(#""turn_context""#),
+              line.contains(#""model""#),
+              let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["type"] as? String == "turn_context",
+              let payload = object["payload"] as? [String: Any],
+              let rawModel = payload["model"] as? String else {
+            return nil
+        }
+        let model = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.isEmpty ? nil : model
+    }
+
     private func parseTokenUsage(_ raw: [String: Any]?) -> ParsedTokenUsage? {
         guard let raw,
               let totalTokens = intValue(raw["total_tokens"]) else {
@@ -858,6 +880,7 @@ extension CodexUsageAnalyzer {
         let newline = Data([0x0A])
         let needles = [
             Data(#""token_count""#.utf8),
+            Data(#""turn_context""#.utf8),
             Data(#""user_message""#.utf8),
             Data(#""agent_message""#.utf8),
             Data(#""session_meta""#.utf8)

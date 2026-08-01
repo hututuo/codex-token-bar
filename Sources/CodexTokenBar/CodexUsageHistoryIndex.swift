@@ -46,6 +46,7 @@ extension CodexUsageAnalyzer {
         var lastSkippedForkReplayTokenAt: Date?
         var currentUserPromptOffset: UInt64?
         var assistantStartOffset: UInt64?
+        var currentModel: String?
 
         static let empty = IndexedSessionParserState(
             previousTotalTokens: nil,
@@ -53,7 +54,8 @@ extension CodexUsageAnalyzer {
             isSkippingForkReplay: false,
             lastSkippedForkReplayTokenAt: nil,
             currentUserPromptOffset: nil,
-            assistantStartOffset: nil
+            assistantStartOffset: nil,
+            currentModel: nil
         )
     }
 
@@ -272,12 +274,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let signature: SessionCatalogFileSignature
     }
 
-    private static let schemaVersion = "3"
+    private static let schemaVersion = "4"
     private static let legacyAppendMigrationSchemaVersion = "2"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
-    private static let attributionProvenanceRevision = "source-bucket-v2-incremental-parser-v1"
+    private static let attributionProvenanceRevision = "source-bucket-v3-model-aware-parser-v1"
     private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
@@ -974,6 +976,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         SELECT
                             source_lineage,
                             bucket_start,
+                            model,
                             input_tokens,
                             cached_input_tokens,
                             output_tokens,
@@ -984,7 +987,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         WHERE provenance_epoch = ?
                           AND bucket_start >= ?
                           AND bucket_start < ?
-                        ORDER BY bucket_start, source_lineage;
+                        ORDER BY bucket_start, source_lineage, model;
                         """,
                         bindings: [
                             .text(provenanceEpoch),
@@ -994,12 +997,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) { row -> TokenCacheAttributionEvent? in
                         guard let sourceLineage = row.text(0),
                               let bucketStart = row.int64(1),
-                              let inputTokens = row.int(2),
-                              let cachedInputTokens = row.int(3),
-                              let outputTokens = row.int(4),
-                              let reasoningOutputTokens = row.int(5),
-                              let totalTokens = row.int(6),
-                              let calls = row.int(7) else {
+                              let inputTokens = row.int(3),
+                              let cachedInputTokens = row.int(4),
+                              let outputTokens = row.int(5),
+                              let reasoningOutputTokens = row.int(6),
+                              let totalTokens = row.int(7),
+                              let calls = row.int(8) else {
                             return nil
                         }
                         let start = Date(timeIntervalSince1970: TimeInterval(bucketStart))
@@ -1007,6 +1010,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             provenanceEpoch: provenanceEpoch,
                             sourceID: sourceLineage,
                             start: start,
+                            model: row.text(2).flatMap { $0.isEmpty ? nil : $0 },
                             breakdown: TokenCacheBreakdown(
                                 inputTokens: inputTokens,
                                 cachedInputTokens: cachedInputTokens,
@@ -1069,7 +1073,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 events.input_tokens,
                 events.cached_input_tokens,
                 events.output_tokens,
-                events.reasoning_output_tokens
+                events.reasoning_output_tokens,
+                events.model
             FROM events
             JOIN sources ON sources.source_id = events.source_id
             ORDER BY sources.session_id, events.timestamp, events.source_id, events.source_offset;
@@ -1094,6 +1099,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     event: TokenEvent(
                         timestamp: Date(timeIntervalSince1970: timestamp),
                         sessionID: sessionID,
+                        model: row.text(9),
                         tokens: tokens,
                         inputTokens: inputTokens,
                         cachedInputTokens: cachedInputTokens,
@@ -1278,6 +1284,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     last_skipped_fork_replay_token_at REAL,
                     current_user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
+                    current_model TEXT,
                     audit_chunk_index INTEGER NOT NULL DEFAULT 0
                 );
 
@@ -1290,6 +1297,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
                     reasoning_output_tokens INTEGER NOT NULL,
+                    model TEXT,
                     user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
                     PRIMARY KEY(source_id, source_offset)
@@ -1306,13 +1314,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     provenance_epoch TEXT NOT NULL,
                     source_lineage TEXT NOT NULL,
                     bucket_start INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
                     input_tokens INTEGER NOT NULL,
                     cached_input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
                     reasoning_output_tokens INTEGER NOT NULL,
                     total_tokens INTEGER NOT NULL,
                     calls INTEGER NOT NULL,
-                    PRIMARY KEY(provenance_epoch, source_lineage, bucket_start)
+                    PRIMARY KEY(provenance_epoch, source_lineage, bucket_start, model)
                 ) WITHOUT ROWID;
 
                 CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
@@ -1429,13 +1438,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 provenance_epoch TEXT NOT NULL,
                 source_lineage TEXT NOT NULL,
                 bucket_start INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL,
                 cached_input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
                 reasoning_output_tokens INTEGER NOT NULL,
                 total_tokens INTEGER NOT NULL,
                 calls INTEGER NOT NULL,
-                PRIMARY KEY(provenance_epoch, source_lineage, bucket_start)
+                PRIMARY KEY(provenance_epoch, source_lineage, bucket_start, model)
             ) WITHOUT ROWID;
 
             CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
@@ -1549,6 +1559,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     provenance_epoch,
                     source_lineage,
                     bucket_start,
+                    model,
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
@@ -1560,6 +1571,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ?,
                     source_lineage,
                     bucket_start,
+                    model,
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
@@ -1714,6 +1726,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 SELECT
                     e.source_id,
                     CAST(e.timestamp / 300 AS INTEGER) * 300 AS bucket_start,
+                    COALESCE(e.model, '') AS model,
                     SUM(e.input_tokens) AS input_tokens,
                     SUM(e.cached_input_tokens) AS cached_input_tokens,
                     SUM(e.output_tokens) AS output_tokens,
@@ -1724,12 +1737,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE \(sourcePredicate)
                 \(bucketPredicate)
-                GROUP BY e.source_id, CAST(e.timestamp / 300 AS INTEGER)
+                GROUP BY e.source_id, CAST(e.timestamp / 300 AS INTEGER), COALESCE(e.model, '')
             )
             INSERT INTO attribution_source_buckets(
                 provenance_epoch,
                 source_lineage,
                 bucket_start,
+                model,
                 input_tokens,
                 cached_input_tokens,
                 output_tokens,
@@ -1741,6 +1755,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ?,
                 ?,
                 bucket_start,
+                model,
                 MAX(input_tokens),
                 MAX(cached_input_tokens),
                 MAX(output_tokens),
@@ -1748,8 +1763,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 MAX(total_tokens),
                 MAX(calls)
             FROM per_source
-            GROUP BY bucket_start
-            ON CONFLICT(provenance_epoch, source_lineage, bucket_start)
+            GROUP BY bucket_start, model
+            ON CONFLICT(provenance_epoch, source_lineage, bucket_start, model)
             DO UPDATE SET
                 \(conflictUpdate);
             """,
@@ -1839,6 +1854,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ("last_skipped_fork_replay_token_at", "REAL"),
             ("current_user_prompt_offset", "INTEGER"),
             ("assistant_start_offset", "INTEGER"),
+            ("current_model", "TEXT"),
             ("audit_chunk_index", "INTEGER NOT NULL DEFAULT 0")
         ]
         for (column, definition) in additions where !existingColumns.contains(column) {
@@ -1940,6 +1956,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 last_skipped_fork_replay_token_at,
                 current_user_prompt_offset,
                 assistant_start_offset,
+                current_model,
                 audit_chunk_index
             FROM sources
             WHERE path = ?
@@ -1980,9 +1997,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         },
                         assistantStartOffset: row.int64(15).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
-                        }
+                        },
+                        currentModel: row.text(16)
                     ),
-                    auditChunkIndex: row.int64(16).flatMap {
+                    auditChunkIndex: row.int64(17).flatMap {
                         $0 >= 0 ? UInt64($0) : nil
                     } ?? 0
                 )
@@ -2075,10 +2093,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         cached_input_tokens,
                         output_tokens,
                         reasoning_output_tokens,
+                        model,
                         user_prompt_offset,
                         assistant_start_offset
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
 
@@ -2129,6 +2148,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .int(min(event.cachedInputTokens, event.inputTokens)),
                             .int(event.outputTokens),
                             .int(event.reasoningOutputTokens),
+                            event.model.map(SQLiteBinding.text) ?? .null,
                             userPromptOffset,
                             assistantStartOffset
                         ])
@@ -2367,6 +2387,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 last_skipped_fork_replay_token_at = ?,
                 current_user_prompt_offset = ?,
                 assistant_start_offset = ?,
+                current_model = ?,
                 audit_chunk_index = ?
             WHERE source_id = ?;
             """,
@@ -2391,6 +2412,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try state.assistantStartOffset.map {
                     .int64(try sqliteInt64($0))
                 } ?? .null,
+                state.currentModel.map(SQLiteBinding.text) ?? .null,
                 .int64(try sqliteInt64(auditChunkIndex)),
                 .int64(sourceID)
             ]
@@ -2547,7 +2569,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     is_skipping_fork_replay INTEGER NOT NULL,
                     last_skipped_fork_replay_token_at REAL,
                     current_user_prompt_offset INTEGER,
-                    assistant_start_offset INTEGER
+                    assistant_start_offset INTEGER,
+                    current_model TEXT
                 );
 
                 CREATE TABLE fingerprints (
@@ -2562,6 +2585,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens INTEGER NOT NULL,
                     output_tokens INTEGER NOT NULL,
                     reasoning_output_tokens INTEGER NOT NULL,
+                    model TEXT,
                     user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER
                 ) WITHOUT ROWID;
@@ -2587,9 +2611,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         cached_input_tokens,
                         output_tokens,
                         reasoning_output_tokens,
+                        model,
                         user_prompt_offset,
                         assistant_start_offset
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
                 let result = try parser(
@@ -2623,6 +2648,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .int(min(event.cachedInputTokens, event.inputTokens)),
                             .int(event.outputTokens),
                             .int(event.reasoningOutputTokens),
+                            event.model.map(SQLiteBinding.text) ?? .null,
                             userPromptOffset,
                             assistantStartOffset
                         ])
@@ -2682,8 +2708,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         is_skipping_fork_replay,
                         last_skipped_fork_replay_token_at,
                         current_user_prompt_offset,
-                        assistant_start_offset
-                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        assistant_start_offset,
+                        current_model
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .text(job.sessionID),
@@ -2701,7 +2728,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         .int(state.isSkippingForkReplay ? 1 : 0),
                         .optionalDate(state.lastSkippedForkReplayTokenAt),
                         try optionalOffsetBinding(state.currentUserPromptOffset),
-                        try optionalOffsetBinding(state.assistantStartOffset)
+                        try optionalOffsetBinding(state.assistantStartOffset),
+                        state.currentModel.map(SQLiteBinding.text) ?? .null
                     ]
                 )
                 return StagedFullRebuild(
@@ -2755,7 +2783,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     is_skipping_fork_replay,
                     last_skipped_fork_replay_token_at,
                     current_user_prompt_offset,
-                    assistant_start_offset
+                    assistant_start_offset,
+                    current_model
                 FROM manifest
                 WHERE complete = 1
                 LIMIT 1;
@@ -2807,7 +2836,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         },
                         assistantStartOffset: row.int64(15).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
-                        }
+                        },
+                        currentModel: row.text(16)
                     )
                 )
             }
@@ -3083,9 +3113,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
+                    model,
                     user_prompt_offset,
                     assistant_start_offset
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
             )
             try stage.forEachRow(
@@ -3098,6 +3129,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
+                    model,
                     user_prompt_offset,
                     assistant_start_offset
                 FROM events
@@ -3122,8 +3154,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     .int(cachedInputTokens),
                     .int(outputTokens),
                     .int(reasoningOutputTokens),
-                    row.int64(7).map(SQLiteBinding.int64) ?? .null,
-                    row.int64(8).map(SQLiteBinding.int64) ?? .null
+                    row.text(7).map(SQLiteBinding.text) ?? .null,
+                    row.int64(8).map(SQLiteBinding.int64) ?? .null,
+                    row.int64(9).map(SQLiteBinding.int64) ?? .null
                 ])
             }
             let chunkStatement = try transaction.prepare(

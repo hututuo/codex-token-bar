@@ -87,6 +87,16 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
         return parts.joined(separator: " · ")
     }
 
+    var modelLine: String {
+        let detected = result.detectedModels.map(\.quotaEstimateShortTitle)
+        if detected.isEmpty {
+            return "未知模型回退：\(result.model.title)"
+        }
+        let automatic = "自动：\(detected.joined(separator: "/"))"
+        guard result.fallbackModelCalls > 0 else { return automatic }
+        return "\(automatic) · \(result.fallbackModelCalls) 次回退 \(result.model.quotaEstimateShortTitle)"
+    }
+
     var compactSummaryLine: String {
         guard let local = result.localSharePercent,
               let difference = result.nonLocalDifferencePercent else {
@@ -359,7 +369,7 @@ struct SharedAccountUsageAttributionDetailView: View {
                     .accessibilityHint("在浏览器打开 Codex Radar")
                 }
                 HStack(spacing: 12) {
-                    sourceValue("模型", result.model.title)
+                    sourceValue("模型", presentation.modelLine)
                     sourceValue("basis", nonempty(result.radarBasis))
                     sourceValue("Radar 日期", nonempty(result.radarDate))
                 }
@@ -380,7 +390,7 @@ struct SharedAccountUsageAttributionDetailView: View {
                         .padding(.bottom, 4)
                 }
                 explanationLine("额度按整数百分比显示、Radar 总额为众测估算，约 ±2 个百分点内不判定为明显非本机使用。")
-                explanationLine("本机金额按所选模型的标准短上下文价格估算；当前索引无法逐事件识别 cache write、超过 272K 的长上下文和 Fast/service tier 附加项，混用模型也会带来误差，因此不是精确账单。")
+                explanationLine("本机金额会按每次 token 记录之前最近的 turn_context 自动识别 Sol、Terra 或 Luna；旧记录、自动路由和未知别名才按设置中的回退模型计算。当前索引仍无法逐事件识别 cache write、超过 272K 的长上下文和 Fast/service tier 附加项，因此不是精确账单。")
                 explanationLine("正差额只表示疑似来自其他设备、其他共用者或价格/刷新误差，不等同于已确认他人使用。")
                 explanationLine("负差额会原样保留，通常表示价格基准、额度取整或刷新时点仍有偏差。")
                 explanationLine("账号隔离从本功能首次观察到当前 Home 起生效；首次启用不会回算无法证明完整的本周期早期历史。")

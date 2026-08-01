@@ -528,7 +528,7 @@ struct AppSettingsView: View {
                     )
                     .settingsRowDivider()
                     settingsPicker(
-                        "折算模型",
+                        "未知模型回退",
                         systemImage: "cpu",
                         selection: sharedAccountPriceModelBinding,
                         options: OfficialAPIPriceModel.allCases.map { ($0.rawValue, $0.title) }
@@ -537,7 +537,7 @@ struct AppSettingsView: View {
                     settingsInfoRow(
                         "计算口径",
                         systemImage: "function",
-                        detail: "本机占比 = 本机等价金额 ÷ Radar 套餐 7 天总额 × 100；非本机差额 = 账号已用百分比 − 本机占比。默认 20x Pro，负差额不会归零。"
+                        detail: "已记录的 Sol、Terra、Luna 会逐次自动计价；旧记录和未知路由才使用上方回退模型。本机占比 = 本机等价金额 ÷ Radar 套餐 7 天总额 × 100；负差额不会归零。"
                     )
                 }
             }

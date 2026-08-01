@@ -5,6 +5,9 @@ struct TokenEvent: Identifiable {
     let id = UUID()
     let timestamp: Date
     let sessionID: String
+    /// Model recorded by the latest `turn_context` before this token snapshot.
+    /// Older rollouts and unknown router aliases intentionally remain nil.
+    let model: String?
     let tokens: Int
     let inputTokens: Int
     let cachedInputTokens: Int
@@ -12,6 +15,30 @@ struct TokenEvent: Identifiable {
     let reasoningOutputTokens: Int
     let userPrompt: String
     let assistantResponse: String
+
+    init(
+        timestamp: Date,
+        sessionID: String,
+        model: String? = nil,
+        tokens: Int,
+        inputTokens: Int,
+        cachedInputTokens: Int,
+        outputTokens: Int,
+        reasoningOutputTokens: Int,
+        userPrompt: String,
+        assistantResponse: String
+    ) {
+        self.timestamp = timestamp
+        self.sessionID = sessionID
+        self.model = model
+        self.tokens = tokens
+        self.inputTokens = inputTokens
+        self.cachedInputTokens = cachedInputTokens
+        self.outputTokens = outputTokens
+        self.reasoningOutputTokens = reasoningOutputTokens
+        self.userPrompt = userPrompt
+        self.assistantResponse = assistantResponse
+    }
 }
 
 extension TokenEvent {
@@ -21,6 +48,7 @@ extension TokenEvent {
         TokenEvent(
             timestamp: timestamp,
             sessionID: sessionID,
+            model: model,
             tokens: tokens,
             inputTokens: inputTokens,
             cachedInputTokens: cachedInputTokens,
@@ -96,24 +124,44 @@ struct TokenCacheBucket: Codable, Identifiable, Equatable {
 struct TokenCacheAttributionEvent: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let start: Date
+    let model: String?
     let breakdown: TokenCacheBreakdown
+
+    init(
+        id: String,
+        start: Date,
+        model: String? = nil,
+        breakdown: TokenCacheBreakdown
+    ) {
+        self.id = id
+        self.start = start
+        self.model = model
+        self.breakdown = breakdown
+    }
 
     static func sourceBucket(
         provenanceEpoch: String,
         sourceID: String,
         start: Date,
+        model: String? = nil,
         breakdown: TokenCacheBreakdown
     ) -> TokenCacheAttributionEvent {
         let identity = [
             "codex-token-bar-attribution-source-bucket-v1",
             provenanceEpoch,
             sourceID,
+            model ?? "unknown",
             String(Int64(start.timeIntervalSince1970.rounded())),
         ].joined(separator: "\u{1f}")
         let id = SHA256.hash(data: Data(identity.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
-        return TokenCacheAttributionEvent(id: id, start: start, breakdown: breakdown)
+        return TokenCacheAttributionEvent(
+            id: id,
+            start: start,
+            model: model,
+            breakdown: breakdown
+        )
     }
 }
 
