@@ -12,7 +12,6 @@ const execFileAsync = promisify(execFile);
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const macScript = path.join(scriptsDir, "sign_tauri_windows_release.sh");
 const renameHelperSource = path.join(scriptsDir, "rename_no_replace_darwin.c");
-const macSigningRuntimeTest = process.platform === "darwin" ? test : test.skip;
 const version = "0.7.2";
 const installerNames = [
   `CodexTokenBar-v${version}-windows-arm64-setup.exe`,
@@ -24,6 +23,7 @@ const test = (name, fn) =>
       ? false
       : "requires the macOS signing host and Darwin rename semantics",
   }, fn);
+const macSigningRuntimeTest = process.platform === "darwin" ? test : test.skip;
 
 function sha256(data) {
   return createHash("sha256").update(data).digest("hex");
