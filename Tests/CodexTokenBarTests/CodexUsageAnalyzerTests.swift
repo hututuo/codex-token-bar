@@ -472,6 +472,35 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.sessions.map(\.id), [sessionID])
     }
 
+    func testPreciseJSONLScanIncludesArchivedSessionsOutsideActiveState() throws {
+        let codexHome = try makeCodexHome()
+        let activeFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-cccc-dddd-activehistory",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let archivedRoot = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: archivedRoot, withIntermediateDirectories: true)
+        let archivedFile = try writeTokenCountRollout(
+            in: archivedRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-archivedhistory",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 30
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let files = try analyzer.usageJSONLFiles()
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(
+            files.map { $0.resolvingSymlinksInPath().path },
+            [activeFile, archivedFile].map { $0.resolvingSymlinksInPath().path }.sorted()
+        )
+        XCTAssertEqual(snapshot.stats.totalTokens, 150)
+        XCTAssertEqual(snapshot.stats.totalCalls, 2)
+    }
+
     func testPreciseJSONLScanRejectsAbsoluteActiveRolloutOutsideSelectedHome() throws {
         let codexHome = try makeCodexHome()
         let trustedFile = try writeTokenCountRollout(

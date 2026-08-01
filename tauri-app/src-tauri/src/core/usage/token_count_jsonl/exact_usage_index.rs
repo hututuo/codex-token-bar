@@ -4243,14 +4243,32 @@ fn visit_session_files(
     super::record_dashboard_source_scan_for_testing();
     let canonical_home = canonical_codex_home(codex_home)?;
     let sessions_root = codex_home.join("sessions");
-    if sessions_root.exists() {
-        enqueue_directory(
-            connection,
-            &canonical_home,
-            &sessions_root,
-            warnings,
-            scan_completeness,
-        )?;
+    let archived_sessions_root = codex_home.join("archived_sessions");
+    if sessions_root.exists() || archived_sessions_root.exists() {
+        if sessions_root.exists() {
+            enqueue_directory(
+                connection,
+                &canonical_home,
+                &sessions_root,
+                warnings,
+                scan_completeness,
+            )?;
+        } else {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(format!(
+                "会话目录不存在：{}",
+                sessions_root.display()
+            )));
+        }
+        if archived_sessions_root.exists() {
+            enqueue_directory(
+                connection,
+                &canonical_home,
+                &archived_sessions_root,
+                warnings,
+                scan_completeness,
+            )?;
+        }
         loop {
             let directory = connection
                 .query_row(

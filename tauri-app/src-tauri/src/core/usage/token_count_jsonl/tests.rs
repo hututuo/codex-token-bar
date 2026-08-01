@@ -863,6 +863,36 @@ fn exact_index_prunes_superseded_file_versions_on_the_next_streaming_scan() {
 }
 
 #[test]
+fn exact_index_includes_archived_sessions_outside_active_state() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let sessions_dir = root.join("sessions");
+    let archived_dir = root.join("archived_sessions");
+    fs::create_dir_all(&sessions_dir).unwrap();
+    fs::create_dir_all(&archived_dir).unwrap();
+    write_lines(
+        &sessions_dir.join("rollout-019eexact-active-0000-0000-0000-index.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    write_lines(
+        &archived_dir.join("rollout-019eexact-archived-0000-0000-0000-index.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+
+    assert_eq!(snapshot.stats.total_tokens, 150);
+    assert_eq!(snapshot.stats.total_calls, 2);
+    assert_eq!(snapshot.stats.total_threads, 2);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_scans_more_than_20_000_session_files_without_truncation() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

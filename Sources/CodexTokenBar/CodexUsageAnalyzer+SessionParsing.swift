@@ -384,9 +384,13 @@ extension CodexUsageAnalyzer {
     func usageJSONLFiles() throws -> [URL] {
         let canonicalHome = try canonicalSelectedHome()
         var files: [URL] = []
-        if fileManager.fileExists(atPath: dataSource.sessionsRoot.path) {
+        let historyRoots = [
+            dataSource.sessionsRoot,
+            canonicalHome.appendingPathComponent("archived_sessions", isDirectory: true)
+        ]
+        for root in historyRoots where fileManager.fileExists(atPath: root.path) {
             let sessionFiles = try jsonlFiles(
-                under: dataSource.sessionsRoot,
+                under: root,
                 canonicalHome: canonicalHome
             )
             files.append(contentsOf: sessionFiles)
