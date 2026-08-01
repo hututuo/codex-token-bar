@@ -72,6 +72,7 @@ extension CodexUsageAnalyzer {
 
     func cacheUsage(from events: [TokenEvent], recentBins: [BinUsage], threadInfo: [String: ThreadInfo]) -> TokenCacheUsage {
         var total = TokenCacheAccumulator()
+        var byModel: [String: TokenCacheAccumulator] = [:]
         var daily: [Date: TokenCacheAccumulator] = [:]
         var hourly: [Date: TokenCacheAccumulator] = [:]
         var recent: [Date: TokenCacheAccumulator] = [:]
@@ -83,6 +84,7 @@ extension CodexUsageAnalyzer {
 
         for event in events {
             total.add(event)
+            byModel[event.model ?? "", default: TokenCacheAccumulator()].add(event)
 
             let day = calendar.startOfDay(for: event.timestamp)
             daily[day, default: TokenCacheAccumulator()].add(event)
@@ -181,6 +183,13 @@ extension CodexUsageAnalyzer {
 
         return TokenCacheUsage(
             total: total.breakdown,
+            modelBreakdowns: byModel.map { model, accumulator in
+                ModelTokenBreakdown(
+                    model: model.isEmpty ? nil : model,
+                    breakdown: accumulator.breakdown
+                )
+            }
+            .sorted { ($0.model ?? "") < ($1.model ?? "") },
             daily: dailyBuckets,
             hourly: hourlyBuckets,
             recentBins: recentBuckets,

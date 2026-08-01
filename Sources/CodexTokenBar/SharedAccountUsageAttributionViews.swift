@@ -78,7 +78,7 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
 
     var summaryDetail: String {
         guard result.hasComputedAttribution else {
-            return "\(result.tier.title) · \(result.model.title)"
+            return "\(result.tier.title) · \(modelLine)"
         }
         var parts = [result.tier.title, result.priceRevision.isLegacy ? "Radar 旧价" : "现行价", stateTitle]
         if result.quotaDataStale { parts.append("额度旧数据") }

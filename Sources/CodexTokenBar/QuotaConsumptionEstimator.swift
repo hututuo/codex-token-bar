@@ -30,6 +30,82 @@ struct APIPriceRates: Equatable, Sendable {
     }
 }
 
+struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
+    let costUSD: Double
+    let detectedModels: [OfficialAPIPriceModel]
+    let fallbackCalls: Int
+}
+
+enum ModelAwareAPIPriceEstimator {
+    static func estimate(
+        events: [TokenCacheAttributionEvent]?,
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel,
+        rates: (OfficialAPIPriceModel) -> APIPriceRates
+    ) -> ModelAwareAPIPriceEstimate {
+        guard let events, !events.isEmpty else {
+            return fallback(
+                breakdown: fallbackBreakdown,
+                model: fallbackModel,
+                rates: rates
+            )
+        }
+        return estimate(
+            modelBreakdowns: events.map {
+                ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown)
+            },
+            fallbackBreakdown: fallbackBreakdown,
+            fallbackModel: fallbackModel,
+            rates: rates
+        )
+    }
+
+    static func estimate(
+        modelBreakdowns: [ModelTokenBreakdown],
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel,
+        rates: (OfficialAPIPriceModel) -> APIPriceRates
+    ) -> ModelAwareAPIPriceEstimate {
+        guard !modelBreakdowns.isEmpty else {
+            return fallback(
+                breakdown: fallbackBreakdown,
+                model: fallbackModel,
+                rates: rates
+            )
+        }
+        var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
+        var fallbackBreakdowns: [TokenCacheBreakdown] = []
+        for row in modelBreakdowns {
+            if let detected = OfficialAPIPriceModel.detected(from: row.model) {
+                grouped[detected, default: []].append(row.breakdown)
+            } else {
+                fallbackBreakdowns.append(row.breakdown)
+            }
+        }
+        let knownCost = grouped.reduce(0.0) { partial, entry in
+            partial + rates(entry.key).costUSD(for: entry.value.combined)
+        }
+        let unknownBreakdown = fallbackBreakdowns.combined
+        return ModelAwareAPIPriceEstimate(
+            costUSD: knownCost + rates(fallbackModel).costUSD(for: unknownBreakdown),
+            detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
+            fallbackCalls: unknownBreakdown.calls
+        )
+    }
+
+    private static func fallback(
+        breakdown: TokenCacheBreakdown,
+        model: OfficialAPIPriceModel,
+        rates: (OfficialAPIPriceModel) -> APIPriceRates
+    ) -> ModelAwareAPIPriceEstimate {
+        ModelAwareAPIPriceEstimate(
+            costUSD: rates(model).costUSD(for: breakdown),
+            detectedModels: [],
+            fallbackCalls: breakdown.calls
+        )
+    }
+}
+
 enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
     case gpt56Sol
     case gpt56Terra
@@ -115,10 +191,9 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
 enum QuotaConsumptionPriceCard: Equatable {
     case officialAPI(OfficialAPIPriceModel)
 
-    var title: String {
+    var officialAPIModel: OfficialAPIPriceModel {
         switch self {
-        case .officialAPI(let model):
-            "官方 API · \(model.title)"
+        case .officialAPI(let model): model
         }
     }
 
@@ -214,17 +289,20 @@ enum QuotaConsumptionEstimator {
         breakdown: TokenCacheBreakdown,
         quotaDropPercent: Double?,
         priceCard: QuotaConsumptionPriceCard,
+        selectedCostUSD: Double? = nil,
+        comparisonCostUSD: Double? = nil,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
         comparisonBreakdown: TokenCacheBreakdown? = nil,
         comparisonStartDate: Date? = nil,
         comparisonEndDate: Date? = nil,
         comparisonUsesConservativeBuckets: Bool = false
     ) -> QuotaConsumptionEstimate {
-        let selectedCost = priceCard.costUSD(for: breakdown)
+        let selectedCost = selectedCostUSD ?? priceCard.costUSD(for: breakdown)
         let resolvedBasis = quotaDropBasis
             ?? (quotaDropPercent == nil ? .unavailable : .observed)
         let resolvedComparisonBreakdown = comparisonBreakdown ?? breakdown
-        let comparableCost = priceCard.costUSD(for: resolvedComparisonBreakdown)
+        let comparableCost = comparisonCostUSD
+            ?? priceCard.costUSD(for: resolvedComparisonBreakdown)
         let drop = max(quotaDropPercent ?? 0, 0)
         let confidence: QuotaConsumptionConfidence
         let impliedBudget: Double?
@@ -271,9 +349,62 @@ struct QuotaConsumptionSelection: Equatable {
     let breakdown: TokenCacheBreakdown
     let fiveHour: QuotaConsumptionEstimate
     let sevenDay: QuotaConsumptionEstimate
+    let fullAttributionEvents: [TokenCacheAttributionEvent]
+    let fiveHourAttributionEvents: [TokenCacheAttributionEvent]
+    let sevenDayAttributionEvents: [TokenCacheAttributionEvent]
+
+    init(
+        startIndex: Int,
+        endIndex: Int,
+        bucketCount: Int,
+        startDate: Date,
+        endDate: Date,
+        priceCard: QuotaConsumptionPriceCard,
+        breakdown: TokenCacheBreakdown,
+        fiveHour: QuotaConsumptionEstimate,
+        sevenDay: QuotaConsumptionEstimate,
+        fullAttributionEvents: [TokenCacheAttributionEvent] = [],
+        fiveHourAttributionEvents: [TokenCacheAttributionEvent] = [],
+        sevenDayAttributionEvents: [TokenCacheAttributionEvent] = []
+    ) {
+        self.startIndex = startIndex
+        self.endIndex = endIndex
+        self.bucketCount = bucketCount
+        self.startDate = startDate
+        self.endDate = endDate
+        self.priceCard = priceCard
+        self.breakdown = breakdown
+        self.fiveHour = fiveHour
+        self.sevenDay = sevenDay
+        self.fullAttributionEvents = fullAttributionEvents
+        self.fiveHourAttributionEvents = fiveHourAttributionEvents
+        self.sevenDayAttributionEvents = sevenDayAttributionEvents
+    }
 }
 
 extension QuotaConsumptionSelection {
+    var fallbackPriceModel: OfficialAPIPriceModel {
+        priceCard.officialAPIModel
+    }
+
+    var fullCurrentAPIPriceEstimate: ModelAwareAPIPriceEstimate {
+        ModelAwareAPIPriceEstimator.estimate(
+            events: fullAttributionEvents,
+            fallbackBreakdown: breakdown,
+            fallbackModel: fallbackPriceModel,
+            rates: { $0.currentPriceRates }
+        )
+    }
+
+    var sevenDayCurrentAPIPriceEstimate: ModelAwareAPIPriceEstimate {
+        ModelAwareAPIPriceEstimator.estimate(
+            events: sevenDayAttributionEvents,
+            fallbackBreakdown: sevenDayAttributionBreakdown,
+            fallbackModel: fallbackPriceModel,
+            rates: { $0.currentPriceRates }
+        )
+    }
+
     var sevenDayToFiveHourBudgetRatio: Double? {
         guard let fiveHourBudget = fiveHour.impliedWindowBudgetUSD,
               let sevenDayBudget = sevenDay.impliedWindowBudgetUSD,
@@ -342,7 +473,8 @@ extension RecentChartPreparedData {
     func quotaConsumptionSelection(
         startIndex: Int,
         endIndex: Int,
-        priceCard: QuotaConsumptionPriceCard
+        priceCard: QuotaConsumptionPriceCard,
+        attributionEvents: [TokenCacheAttributionEvent] = []
     ) -> QuotaConsumptionSelection? {
         guard !bins.isEmpty else { return nil }
         let lower = max(0, min(startIndex, endIndex))
@@ -373,6 +505,36 @@ extension RecentChartPreparedData {
             selectionEnd: end,
             fullSelectionBreakdown: breakdown
         )
+        let fallbackModel = priceCard.officialAPIModel
+        let fullEvents = attributionEvents.filter {
+            $0.start >= start && $0.start < end
+        }
+        let fiveHourEvents = attributionEvents.filter {
+            $0.start >= (fiveHourDrop.comparisonStartDate ?? start)
+                && $0.start < (fiveHourDrop.comparisonEndDate ?? end)
+        }
+        let sevenDayEvents = attributionEvents.filter {
+            $0.start >= (sevenDayDrop.comparisonStartDate ?? start)
+                && $0.start < (sevenDayDrop.comparisonEndDate ?? end)
+        }
+        let fullPrice = ModelAwareAPIPriceEstimator.estimate(
+            events: fullEvents,
+            fallbackBreakdown: breakdown,
+            fallbackModel: fallbackModel,
+            rates: { $0.currentPriceRates }
+        )
+        let fiveHourPrice = ModelAwareAPIPriceEstimator.estimate(
+            events: fiveHourEvents,
+            fallbackBreakdown: fiveHourDrop.comparisonBreakdown,
+            fallbackModel: fallbackModel,
+            rates: { $0.currentPriceRates }
+        )
+        let sevenDayPrice = ModelAwareAPIPriceEstimator.estimate(
+            events: sevenDayEvents,
+            fallbackBreakdown: sevenDayDrop.comparisonBreakdown,
+            fallbackModel: fallbackModel,
+            rates: { $0.currentPriceRates }
+        )
 
         return QuotaConsumptionSelection(
             startIndex: lower,
@@ -386,6 +548,8 @@ extension RecentChartPreparedData {
                 breakdown: breakdown,
                 quotaDropPercent: fiveHourDrop.percent,
                 priceCard: priceCard,
+                selectedCostUSD: fullPrice.costUSD,
+                comparisonCostUSD: fiveHourPrice.costUSD,
                 quotaDropBasis: fiveHourDrop.basis,
                 comparisonBreakdown: fiveHourDrop.comparisonBreakdown,
                 comparisonStartDate: fiveHourDrop.comparisonStartDate,
@@ -396,12 +560,17 @@ extension RecentChartPreparedData {
                 breakdown: breakdown,
                 quotaDropPercent: sevenDayDrop.percent,
                 priceCard: priceCard,
+                selectedCostUSD: fullPrice.costUSD,
+                comparisonCostUSD: sevenDayPrice.costUSD,
                 quotaDropBasis: sevenDayDrop.basis,
                 comparisonBreakdown: sevenDayDrop.comparisonBreakdown,
                 comparisonStartDate: sevenDayDrop.comparisonStartDate,
                 comparisonEndDate: sevenDayDrop.comparisonEndDate,
                 comparisonUsesConservativeBuckets: sevenDayDrop.comparisonUsesConservativeBuckets
-            )
+            ),
+            fullAttributionEvents: fullEvents,
+            fiveHourAttributionEvents: fiveHourEvents,
+            sevenDayAttributionEvents: sevenDayEvents
         )
     }
 

@@ -1,12 +1,5 @@
 import Foundation
 
-struct RecentChartQuotaEstimateModelOptionPresentation: Equatable {
-    let groupLabel: String
-    let shortTitle: String
-    let accessibilityLabel: String
-    let accessibilityValue: String
-}
-
 enum RecentChartQuotaEstimateAffordancePresentation {
     static let headerLabel = "点击图表估算额度"
     static let headerHelp = "第一下定起点，移动鼠标实时预览，第二下固定终点；再次点击重新选择。"
@@ -14,17 +7,6 @@ enum RecentChartQuotaEstimateAffordancePresentation {
     static let hoverInstruction = "点击起点/终点可估算额度"
     static let hoverAccessibilityPrompt = "点击图表可估算额度"
 
-    static func modelOption(
-        for model: OfficialAPIPriceModel,
-        selectedModel: OfficialAPIPriceModel
-    ) -> RecentChartQuotaEstimateModelOptionPresentation {
-        RecentChartQuotaEstimateModelOptionPresentation(
-            groupLabel: "官方 API",
-            shortTitle: model.quotaEstimateShortTitle,
-            accessibilityLabel: "官方 API 定价 \(model.title)",
-            accessibilityValue: selectedModel == model ? "已选择" : "未选择"
-        )
-    }
 }
 
 struct QuotaConsumptionEstimatePresentation: Equatable {
@@ -148,7 +130,7 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         currentFiveHourQuotaPresent: Bool = true,
         currentSevenDayQuotaPresent: Bool = true
     ) {
-        costText = selection.breakdown.quotaEstimatorCostText(selection.priceCard)
+        costText = selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText
         timeRangeText = selection.quotaEstimatorTimeRangeText
         durationText = selection.quotaEstimatorDurationText
         cacheHitText = "命中 \(selection.breakdown.cacheHitRate.percentString)"
@@ -307,6 +289,28 @@ extension OfficialAPIPriceModel {
     }
 }
 
+extension ModelAwareAPIPriceEstimate {
+    func pricingModelText(fallbackModel: OfficialAPIPriceModel) -> String {
+        let detected = detectedModels.map(\.quotaEstimateShortTitle)
+        guard !detected.isEmpty else {
+            return "未知回退 \(fallbackModel.quotaEstimateShortTitle)"
+        }
+        let automatic = "自动 · \(detected.joined(separator: "/"))"
+        guard fallbackCalls > 0 else { return automatic }
+        return "\(automatic) + 未知→\(fallbackModel.quotaEstimateShortTitle)"
+    }
+}
+
+extension QuotaSelectionAttributionResult {
+    var pricingModelText: String {
+        ModelAwareAPIPriceEstimate(
+            costUSD: localCurrentOfficialCostUSD,
+            detectedModels: detectedModels,
+            fallbackCalls: fallbackModelCalls
+        ).pricingModelText(fallbackModel: model)
+    }
+}
+
 extension QuotaConsumptionSelection {
     var quotaEstimatorTimeRangeText: String {
         "\(DateFormatter.hourMinute.string(from: startDate))-\(DateFormatter.hourMinute.string(from: endDate))"
@@ -350,9 +354,9 @@ extension QuotaConsumptionEstimate {
     }
 }
 
-extension TokenCacheBreakdown {
-    func quotaEstimatorCostText(_ priceCard: QuotaConsumptionPriceCard) -> String {
-        "$\(QuotaConsumptionEstimate.quotaEstimatorMoneyString(priceCard.costUSD(for: self)))"
+extension Double {
+    var quotaEstimatorMoneyText: String {
+        "$\(QuotaConsumptionEstimate.quotaEstimatorMoneyString(self))"
     }
 }
 

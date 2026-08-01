@@ -16,6 +16,7 @@ extension CodexUsageAnalyzer {
         private let hourlyStart: Date?
 
         private var total = TokenCacheAccumulator()
+        private var cacheByModel: [String: TokenCacheAccumulator] = [:]
         private var dailyUsageByDate: [Date: (tokens: Int, calls: Int)] = [:]
         private var recentUsageByStart: [Date: (tokens: Int, calls: Int)] = [:]
         private var hourlyUsageByStart: [Date: (tokens: Int, calls: Int)] = [:]
@@ -117,6 +118,7 @@ extension CodexUsageAnalyzer {
         ) {
             sessionIDsWithEvents.insert(event.sessionID)
             total.add(event)
+            cacheByModel[event.model ?? "", default: TokenCacheAccumulator()].add(event)
             firstUsageAt = min(firstUsageAt ?? event.timestamp, event.timestamp)
 
             if let dailyStart, event.timestamp >= dailyStart {
@@ -314,6 +316,13 @@ extension CodexUsageAnalyzer {
             }
             return TokenCacheUsage(
                 total: total.breakdown,
+                modelBreakdowns: cacheByModel.map { model, accumulator in
+                    ModelTokenBreakdown(
+                        model: model.isEmpty ? nil : model,
+                        breakdown: accumulator.breakdown
+                    )
+                }
+                .sorted { ($0.model ?? "") < ($1.model ?? "") },
                 daily: daily,
                 hourly: hourly,
                 recentBins: recent,

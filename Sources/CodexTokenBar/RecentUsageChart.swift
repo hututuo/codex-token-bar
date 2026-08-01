@@ -321,6 +321,7 @@ struct RecentChartPreparationInput: Equatable {
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
     let cacheHourlyBins: [TokenCacheBucket]
+    let attributionEvents: [TokenCacheAttributionEvent]
     let quotaRecentBins: [QuotaHistoryRecentBucket]
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
 }
@@ -663,6 +664,7 @@ struct RecentUsageChart: View, Equatable {
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
     let cacheHourlyBins: [TokenCacheBucket]
+    let attributionEvents: [TokenCacheAttributionEvent]
     let quotaRecentBins: [QuotaHistoryRecentBucket]
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
     let currentFiveHourQuotaPresent: Bool
@@ -676,7 +678,7 @@ struct RecentUsageChart: View, Equatable {
     @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
     @AppStorage("recentChartShowFiveHourQuota") private var showFiveHourQuota = true
     @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
-    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
+    @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State private var consumptionSelectionTimeAnchor: RecentChartSelectionTimeAnchor?
@@ -690,6 +692,7 @@ struct RecentUsageChart: View, Equatable {
         hourlyBins: [BinUsage],
         cacheRecentBins: [TokenCacheBucket],
         cacheHourlyBins: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket],
         currentFiveHourQuotaPresent: Bool = true,
@@ -700,6 +703,7 @@ struct RecentUsageChart: View, Equatable {
         self.hourlyBins = hourlyBins
         self.cacheRecentBins = cacheRecentBins
         self.cacheHourlyBins = cacheHourlyBins
+        self.attributionEvents = attributionEvents
         self.quotaRecentBins = quotaRecentBins
         self.quotaHourlyBins = quotaHourlyBins
         self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
@@ -713,6 +717,7 @@ struct RecentUsageChart: View, Equatable {
             && lhs.hourlyBins == rhs.hourlyBins
             && lhs.cacheRecentBins == rhs.cacheRecentBins
             && lhs.cacheHourlyBins == rhs.cacheHourlyBins
+            && lhs.attributionEvents == rhs.attributionEvents
             && lhs.quotaRecentBins == rhs.quotaRecentBins
             && lhs.quotaHourlyBins == rhs.quotaHourlyBins
             && lhs.currentFiveHourQuotaPresent == rhs.currentFiveHourQuotaPresent
@@ -756,6 +761,7 @@ struct RecentUsageChart: View, Equatable {
             hourlyBins: hourlyBins,
             cacheRecentBins: cacheRecentBins,
             cacheHourlyBins: cacheHourlyBins,
+            attributionEvents: attributionEvents,
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
@@ -791,7 +797,6 @@ struct RecentUsageChart: View, Equatable {
 
             VStack(alignment: .trailing, spacing: 7) {
                 HStack(spacing: 8) {
-                    RecentChartQuotaEstimateModelSelector(selectedModel: selectedQuotaEstimateModelBinding)
                     RecentChartRangeSelector(selection: selectedRangeBinding)
                 }
 
@@ -1373,13 +1378,6 @@ struct RecentUsageChart: View, Equatable {
         OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw)
     }
 
-    private var selectedQuotaEstimateModelBinding: Binding<OfficialAPIPriceModel> {
-        Binding(
-            get: { selectedQuotaEstimateModel },
-            set: { quotaEstimateModelRaw = $0.rawValue }
-        )
-    }
-
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
         guard let startIndex = consumptionSelectionState.startIndex,
               !preparedData.bins.isEmpty else { return nil }
@@ -1392,7 +1390,8 @@ struct RecentUsageChart: View, Equatable {
         return preparedData.quotaConsumptionSelection(
             startIndex: startIndex,
             endIndex: endIndex,
-            priceCard: .officialAPI(selectedQuotaEstimateModel)
+            priceCard: .officialAPI(selectedQuotaEstimateModel),
+            attributionEvents: attributionEvents
         )
     }
 
@@ -1426,7 +1425,8 @@ struct RecentUsageChart: View, Equatable {
            let selection = preparedData.quotaConsumptionSelection(
                startIndex: startIndex,
                endIndex: fixedEndIndex,
-               priceCard: .officialAPI(selectedQuotaEstimateModel)
+               priceCard: .officialAPI(selectedQuotaEstimateModel),
+               attributionEvents: attributionEvents
            ) {
             consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
                 selection: selection,

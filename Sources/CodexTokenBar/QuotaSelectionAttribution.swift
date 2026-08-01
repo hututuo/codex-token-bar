@@ -103,7 +103,10 @@ enum QuotaSelectionAttributionState: Equatable {
 struct QuotaSelectionAttributionResult: Equatable {
     let state: QuotaSelectionAttributionState
     let tier: SharedAccountRadarTier
+    /// Fallback only; known records use their detected models automatically.
     let model: OfficialAPIPriceModel
+    let detectedModels: [OfficialAPIPriceModel]
+    let fallbackModelCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let accountDropBasis: QuotaConsumptionDropBasis
     let accountDropPercent: Double?
@@ -129,9 +132,10 @@ enum QuotaSelectionAttributionEstimator {
         selection: QuotaConsumptionSelection,
         context: QuotaSelectionAttributionContext
     ) -> QuotaSelectionAttributionResult {
-        let model = selection.priceCard.officialAPIModel
+        let model = selection.fallbackPriceModel
         let attributionBreakdown = selection.sevenDayAttributionBreakdown
-        let currentOfficialCost = model.currentPriceRates.costUSD(for: attributionBreakdown)
+        let currentOfficialEstimate = selection.sevenDayCurrentAPIPriceEstimate
+        let currentOfficialCost = currentOfficialEstimate.costUSD
         let accountDrop = selection.sevenDay.quotaDropBasis != .unavailable
             ? selection.sevenDay.quotaDropPercent
             : nil
@@ -141,7 +145,7 @@ enum QuotaSelectionAttributionEstimator {
                 .missingQuotaHistory,
                 context: context,
                 model: model,
-                currentOfficialCost: currentOfficialCost,
+                currentOfficialEstimate: currentOfficialEstimate,
                 caveats: ["选区内至少需要两个有效的 7 天额度观测点。"]
             )
         }
@@ -153,19 +157,19 @@ enum QuotaSelectionAttributionEstimator {
                 .missingRadarTierBaseline,
                 context: context,
                 model: model,
-                currentOfficialCost: currentOfficialCost,
+                currentOfficialEstimate: currentOfficialEstimate,
                 accountDrop: accountDrop,
                 accountDropBasis: selection.sevenDay.quotaDropBasis,
                 caveats: ["Codex Radar 尚未提供所选套餐的 7 天总额。"]
             )
         }
 
-        guard let comparableRates = context.priceRevision.rates(for: model) else {
+        guard context.priceRevision != .unavailable else {
             return unavailable(
                 .missingCompatiblePriceRevision,
                 context: context,
                 model: model,
-                currentOfficialCost: currentOfficialCost,
+                currentOfficialEstimate: currentOfficialEstimate,
                 accountDrop: accountDrop,
                 accountDropBasis: selection.sevenDay.quotaDropBasis,
                 radarTotal: radarTotal,
@@ -173,13 +177,18 @@ enum QuotaSelectionAttributionEstimator {
             )
         }
 
-        let comparableCost = comparableRates.costUSD(for: attributionBreakdown)
+        let comparableEstimate = ModelAwareAPIPriceEstimator.estimate(
+            events: selection.sevenDayAttributionEvents,
+            fallbackBreakdown: attributionBreakdown,
+            fallbackModel: model,
+            rates: { context.priceRevision.rates(for: $0) ?? $0.currentPriceRates }
+        )
+        let comparableCost = comparableEstimate.costUSD
         let localShare = comparableCost / radarTotal * 100
         let difference = accountDrop - localShare
         let caveats = safetyCaveats(
             selection: selection,
-            context: context,
-            selectedModel: model
+            context: context
         )
         let allowsConclusion = caveats.isEmpty
         let state: QuotaSelectionAttributionState
@@ -197,6 +206,8 @@ enum QuotaSelectionAttributionEstimator {
             state: state,
             tier: context.tier,
             model: model,
+            detectedModels: currentOfficialEstimate.detectedModels,
+            fallbackModelCalls: currentOfficialEstimate.fallbackCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: selection.sevenDay.quotaDropBasis,
             accountDropPercent: accountDrop,
@@ -217,8 +228,7 @@ enum QuotaSelectionAttributionEstimator {
 
     private static func safetyCaveats(
         selection: QuotaConsumptionSelection,
-        context: QuotaSelectionAttributionContext,
-        selectedModel: OfficialAPIPriceModel
+        context: QuotaSelectionAttributionContext
     ) -> [String] {
         var caveats: [String] = []
 
@@ -245,9 +255,6 @@ enum QuotaSelectionAttributionEstimator {
         }
         if selection.sevenDay.comparisonUsesConservativeBuckets {
             caveats.append("额度观测落在聚合桶边界内，本机归因按首尾整桶保守计入，仅作暂算。")
-        }
-        if context.model != selectedModel {
-            caveats.append("选区价格模型刚刚变化，等待共享归因上下文同步。")
         }
         if let cycleStart = context.cycleStart,
            selection.startDate < cycleStart {
@@ -307,7 +314,7 @@ enum QuotaSelectionAttributionEstimator {
         _ state: QuotaSelectionAttributionState,
         context: QuotaSelectionAttributionContext,
         model: OfficialAPIPriceModel,
-        currentOfficialCost: Double,
+        currentOfficialEstimate: ModelAwareAPIPriceEstimate,
         accountDrop: Double? = nil,
         accountDropBasis: QuotaConsumptionDropBasis = .unavailable,
         radarTotal: Double? = nil,
@@ -317,11 +324,13 @@ enum QuotaSelectionAttributionEstimator {
             state: state,
             tier: context.tier,
             model: model,
+            detectedModels: currentOfficialEstimate.detectedModels,
+            fallbackModelCalls: currentOfficialEstimate.fallbackCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: accountDropBasis,
             accountDropPercent: accountDrop,
             localComparableCostUSD: nil,
-            localCurrentOfficialCostUSD: currentOfficialCost,
+            localCurrentOfficialCostUSD: currentOfficialEstimate.costUSD,
             radarSevenDayTotalUSD: radarTotal,
             localSharePercent: nil,
             nonLocalDifferencePercent: nil,
@@ -333,13 +342,5 @@ enum QuotaSelectionAttributionEstimator {
             radarUpdatedAt: context.radarUpdatedAt,
             radarSource: context.radarSource
         )
-    }
-}
-
-private extension QuotaConsumptionPriceCard {
-    var officialAPIModel: OfficialAPIPriceModel {
-        switch self {
-        case .officialAPI(let model): model
-        }
     }
 }

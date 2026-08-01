@@ -372,6 +372,7 @@ extension CodexUsageAnalyzer {
         }
         return TokenCacheUsage(
             total: cacheUsage.total,
+            modelBreakdowns: cacheUsage.modelBreakdowns,
             daily: cacheUsage.daily,
             hourly: cacheUsage.hourly,
             recentBins: cacheUsage.recentBins,

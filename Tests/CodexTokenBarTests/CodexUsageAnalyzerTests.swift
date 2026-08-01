@@ -144,6 +144,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total.outputTokens, 30)
         XCTAssertEqual(snapshot.cacheUsage.total.reasoningOutputTokens, 7)
         XCTAssertEqual(snapshot.cacheUsage.total.calls, 2)
+        XCTAssertEqual(
+            Set(snapshot.cacheUsage.modelBreakdowns.compactMap(\.model)),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
+        )
+        XCTAssertEqual(
+            snapshot.cacheUsage.modelBreakdowns.reduce(0) { $0 + $1.breakdown.calls },
+            2
+        )
         XCTAssertTrue(snapshot.cacheUsage.attributionEventsComplete)
         XCTAssertEqual(
             snapshot.cacheUsage.attributionEvents.reduce(0) {

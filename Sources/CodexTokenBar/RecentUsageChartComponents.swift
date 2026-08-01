@@ -182,48 +182,6 @@ struct ChartLineToggle: View {
     }
 }
 
-struct RecentChartQuotaEstimateModelSelector: View {
-    @Binding var selectedModel: OfficialAPIPriceModel
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text(RecentChartQuotaEstimateAffordancePresentation.modelOption(for: selectedModel, selectedModel: selectedModel).groupLabel)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            ForEach(OfficialAPIPriceModel.allCases) { model in
-                let option = RecentChartQuotaEstimateAffordancePresentation.modelOption(
-                    for: model,
-                    selectedModel: selectedModel
-                )
-                Button {
-                    selectedModel = model
-                } label: {
-                    Text(option.shortTitle)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(selectedModel == model ? AppTheme.accentBlue : .secondary)
-                        .frame(width: 42, height: 22)
-                        .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(selectedModel == model ? AppTheme.accentBlue.opacity(0.12) : Color.clear)
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(option.accessibilityLabel)
-                .accessibilityValue(option.accessibilityValue)
-            }
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 3)
-        .padding(.vertical, 3)
-        .background(AppTheme.raisedBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(AppTheme.border, lineWidth: 1)
-        )
-    }
-}
-
 struct RecentChartSelectionInvalidationBanner: View {
     let message: String
 
@@ -621,7 +579,7 @@ struct QuotaConsumptionSelectionDetailView: View {
                 Divider().frame(height: 30)
                 compactValue(
                     "当前 API 等值",
-                    selection.breakdown.quotaEstimatorCostText(selection.priceCard)
+                    selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText
                 )
             }
         }
@@ -652,7 +610,7 @@ struct QuotaConsumptionSelectionDetailView: View {
                             QuotaSelectionAttributionPresentation.money(
                                 $0.localCurrentOfficialCostUSD
                             )
-                        } ?? covered.quotaEstimatorCostText(selection.priceCard)
+                        } ?? selection.sevenDayCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText
                     )
                 }
             }
@@ -675,7 +633,13 @@ struct QuotaConsumptionSelectionDetailView: View {
                         .map(QuotaSelectionAttributionPresentation.money) ?? "--"
                 )
                 sourceValue("定价版本", snapshot.attribution?.priceRevision.title ?? "--")
-                sourceValue("价格模型", snapshot.attribution?.model.title ?? selection.priceCard.title)
+                sourceValue(
+                    "模型计价",
+                    snapshot.attribution?.pricingModelText
+                        ?? selection.sevenDayCurrentAPIPriceEstimate.pricingModelText(
+                            fallbackModel: selection.fallbackPriceModel
+                        )
+                )
                 sourceValue("Radar 基准日", snapshot.attribution?.radarPricingBasisDate ?? "--")
                 sourceValue("Radar 来源", snapshot.attribution?.radarSource ?? "--")
                 sourceValue("Radar 更新时间", snapshot.attribution?.radarUpdatedAt ?? "--")

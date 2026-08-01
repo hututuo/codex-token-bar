@@ -242,8 +242,16 @@ struct TurnCacheUsage: Codable, Identifiable {
     }
 }
 
+struct ModelTokenBreakdown: Codable, Equatable, Sendable {
+    let model: String?
+    let breakdown: TokenCacheBreakdown
+}
+
 struct TokenCacheUsage: Codable {
     let total: TokenCacheBreakdown
+    /// Lifetime exact usage grouped by the recorded model. An empty array
+    /// means an older/approximate snapshot and must fall back to `total`.
+    let modelBreakdowns: [ModelTokenBreakdown]
     let daily: [TokenCacheBucket]
     let hourly: [TokenCacheBucket]
     let recentBins: [TokenCacheBucket]
@@ -278,6 +286,7 @@ struct TokenCacheUsage: Codable {
 
     init(
         total: TokenCacheBreakdown,
+        modelBreakdowns: [ModelTokenBreakdown] = [],
         daily: [TokenCacheBucket],
         hourly: [TokenCacheBucket],
         recentBins: [TokenCacheBucket],
@@ -292,6 +301,7 @@ struct TokenCacheUsage: Codable {
         attributionSourceMutationDetected: Bool = false
     ) {
         self.total = total
+        self.modelBreakdowns = modelBreakdowns
         self.daily = daily
         self.hourly = hourly
         self.recentBins = recentBins
@@ -309,6 +319,7 @@ struct TokenCacheUsage: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case total
+        case modelBreakdowns
         case daily
         case hourly
         case recentBins
@@ -326,6 +337,10 @@ struct TokenCacheUsage: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         total = try container.decode(TokenCacheBreakdown.self, forKey: .total)
+        modelBreakdowns = try container.decodeIfPresent(
+            [ModelTokenBreakdown].self,
+            forKey: .modelBreakdowns
+        ) ?? []
         daily = try container.decode([TokenCacheBucket].self, forKey: .daily)
         hourly = try container.decode([TokenCacheBucket].self, forKey: .hourly)
         recentBins = try container.decode([TokenCacheBucket].self, forKey: .recentBins)
@@ -364,6 +379,7 @@ struct TokenCacheUsage: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(total, forKey: .total)
+        try container.encode(modelBreakdowns, forKey: .modelBreakdowns)
         try container.encode(daily, forKey: .daily)
         try container.encode(hourly, forKey: .hourly)
         try container.encode(recentBins, forKey: .recentBins)
@@ -389,6 +405,7 @@ struct TokenCacheUsage: Codable {
 
     static let empty = TokenCacheUsage(
         total: .empty,
+        modelBreakdowns: [],
         daily: [],
         hourly: [],
         recentBins: [],

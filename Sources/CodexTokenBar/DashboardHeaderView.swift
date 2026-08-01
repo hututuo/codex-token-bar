@@ -636,7 +636,7 @@ struct StatStrip: View {
     var isPreparingUsageCache = false
     var cacheStatus = ""
 
-    @AppStorage("recentChartQuotaEstimateModel") private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
+    @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
 
     private var stats: DashboardStats {
         snapshot.stats
@@ -663,6 +663,7 @@ struct StatStrip: View {
         let estimate = snapshot.hasPreciseTokenUsage
             ? SubscriptionSavingsEstimator.estimate(
                 breakdown: stats.lifetimeTokenBreakdown,
+                modelBreakdowns: snapshot.cacheUsage.modelBreakdowns,
                 firstUsageAt: stats.firstUsageAt,
                 planLabel: planLabel,
                 priceModel: priceModel

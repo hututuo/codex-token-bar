@@ -36,6 +36,54 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.netSavingsUSD, -1_364.5)
     }
 
+    func testEstimateAutomaticallyPricesEachRecordedModelAndUsesFallbackOnlyForUnknownRows() throws {
+        let first = Date(timeIntervalSince1970: 1_767_225_600)
+        let now = Date(timeIntervalSince1970: 1_767_312_000)
+        let sol = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let terra = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let unknown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+
+        let estimate = try XCTUnwrap(SubscriptionSavingsEstimator.estimate(
+            breakdown: [sol, terra, unknown].combined,
+            modelBreakdowns: [
+                ModelTokenBreakdown(model: "gpt-5.6-sol", breakdown: sol),
+                ModelTokenBreakdown(model: "gpt-5.6-terra", breakdown: terra),
+                ModelTokenBreakdown(model: "future-model", breakdown: unknown),
+            ],
+            firstUsageAt: first,
+            planLabel: "Enterprise",
+            priceModel: .gpt56Luna,
+            now: now,
+            calendar: utcCalendar
+        ))
+
+        XCTAssertEqual(estimate.apiEquivalentUSD, 7.2, accuracy: 0.0001)
+        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra])
+        XCTAssertEqual(estimate.fallbackModelCalls, 1)
+        XCTAssertTrue(SubscriptionSavingsPresentation(estimate: estimate).helpText.contains("未知记录"))
+    }
+
     func testBillingMonthsAreCalendarMonthsInclusive() {
         let components = DateComponents(timeZone: utcCalendar.timeZone, year: 2025, month: 11, day: 30)
         let first = utcCalendar.date(from: components)!
@@ -108,5 +156,19 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         XCTAssertNil(stats.totalCachedInputTokens)
         XCTAssertNil(stats.totalOutputTokens)
         XCTAssertNil(stats.firstUsageAt)
+    }
+
+    func testTokenCacheUsageDecodesSnapshotWrittenBeforeModelBreakdownsExisted() throws {
+        let encoded = try JSONEncoder().encode(TokenCacheUsage.empty)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "modelBreakdowns")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(TokenCacheUsage.self, from: legacyData)
+
+        XCTAssertTrue(decoded.modelBreakdowns.isEmpty)
+        XCTAssertEqual(decoded.total, .empty)
     }
 }

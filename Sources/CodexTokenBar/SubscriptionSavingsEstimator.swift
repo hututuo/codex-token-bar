@@ -7,13 +7,17 @@ struct SubscriptionSavingsEstimate: Equatable {
     let billingMonths: Int
     let monthlyPlanUSD: Double?
     let normalizedPlanName: String
+    /// Fallback only; recorded models are priced automatically when present.
     let priceModel: OfficialAPIPriceModel
+    let detectedModels: [OfficialAPIPriceModel]
+    let fallbackModelCalls: Int
     let firstUsageAt: Date
 }
 
 enum SubscriptionSavingsEstimator {
     static func estimate(
         breakdown: TokenCacheBreakdown,
+        modelBreakdowns: [ModelTokenBreakdown] = [],
         firstUsageAt: Date?,
         planLabel: String,
         priceModel: OfficialAPIPriceModel,
@@ -27,7 +31,13 @@ enum SubscriptionSavingsEstimator {
         let billingMonths = billingMonthCount(from: firstUsageAt, through: now, calendar: calendar)
         guard billingMonths > 0 else { return nil }
 
-        let apiEquivalentUSD = QuotaConsumptionPriceCard.officialAPI(priceModel).costUSD(for: breakdown)
+        let apiPrice = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: modelBreakdowns,
+            fallbackBreakdown: breakdown,
+            fallbackModel: priceModel,
+            rates: { $0.currentPriceRates }
+        )
+        let apiEquivalentUSD = apiPrice.costUSD
         let normalizedPlanName = normalizedPlanName(planLabel)
         let monthlyPlanUSD = monthlyPlanPriceUSD(planLabel)
         let subscriptionCostUSD = monthlyPlanUSD.map { $0 * Double(billingMonths) }
@@ -41,6 +51,8 @@ enum SubscriptionSavingsEstimator {
             monthlyPlanUSD: monthlyPlanUSD,
             normalizedPlanName: normalizedPlanName,
             priceModel: priceModel,
+            detectedModels: apiPrice.detectedModels,
+            fallbackModelCalls: apiPrice.fallbackCalls,
             firstUsageAt: firstUsageAt
         )
     }
@@ -102,12 +114,22 @@ struct SubscriptionSavingsPresentation: Equatable {
            let monthlyPlanUSD = estimate.monthlyPlanUSD {
             valueText = Self.compactMoney(netSavingsUSD)
             labelText = "累计薅到（估）"
-            helpText = "按 \(estimate.priceModel.title) 当前 API 单价估算：API 等值 \(Self.fullMoney(estimate.apiEquivalentUSD)) − \(estimate.normalizedPlanName) \(estimate.billingMonths) 个月套餐成本 \(Self.fullMoney(subscriptionCostUSD))（\(Self.fullMoney(monthlyPlanUSD))/月）= \(Self.fullMoney(netSavingsUSD))。历史套餐或模型变化未计入。"
+            helpText = "\(Self.pricingDescription(estimate))：API 等值 \(Self.fullMoney(estimate.apiEquivalentUSD)) − \(estimate.normalizedPlanName) \(estimate.billingMonths) 个月套餐成本 \(Self.fullMoney(subscriptionCostUSD))（\(Self.fullMoney(monthlyPlanUSD))/月）= \(Self.fullMoney(netSavingsUSD))。历史套餐变化未计入。"
         } else {
             valueText = Self.compactMoney(estimate.apiEquivalentUSD)
             labelText = "API 等值（估）"
-            helpText = "按 \(estimate.priceModel.title) 当前 API 单价估算为 \(Self.fullMoney(estimate.apiEquivalentUSD))；\(estimate.normalizedPlanName) 没有公开固定月费，暂不计算净节省。"
+            helpText = "\(Self.pricingDescription(estimate))为 \(Self.fullMoney(estimate.apiEquivalentUSD))；\(estimate.normalizedPlanName) 没有公开固定月费，暂不计算净节省。"
         }
+    }
+
+    private static func pricingDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
+        let models = estimate.detectedModels.map(\.quotaEstimateShortTitle)
+        guard !models.isEmpty else {
+            return "缺少逐模型历史，按未知模型回退 \(estimate.priceModel.title) 当前 API 单价估算"
+        }
+        let automatic = "按历史真实模型 \(models.joined(separator: "/")) 的当前 API 单价自动估算"
+        guard estimate.fallbackModelCalls > 0 else { return automatic }
+        return "\(automatic)，另有 \(estimate.fallbackModelCalls) 次未知记录按 \(estimate.priceModel.quotaEstimateShortTitle) 回退"
     }
 
     static func compactMoney(_ value: Double) -> String {

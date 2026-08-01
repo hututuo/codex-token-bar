@@ -985,6 +985,7 @@ struct DashboardView: View {
                 hourlyBins: store.snapshot.hourlyUsage,
                 cacheRecentBins: store.snapshot.cacheUsage.recentBins,
                 cacheHourlyBins: store.snapshot.cacheUsage.hourly,
+                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
                 quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
                 quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins,
                 currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,

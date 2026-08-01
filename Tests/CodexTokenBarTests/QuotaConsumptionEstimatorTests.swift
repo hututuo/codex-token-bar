@@ -143,6 +143,22 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             currentFiveHourQuotaPresent: false,
             currentSevenDayQuotaPresent: true
         )
+        let changedAttributionEvents = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            attributionEvents: [
+                TokenCacheAttributionEvent(
+                    id: "model-row",
+                    start: Date(timeIntervalSince1970: 1_800),
+                    model: "gpt-5.6-sol",
+                    breakdown: .empty
+                )
+            ],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
         let selectionForContext = attributionSelection(
             sevenDayDrop: 13,
             quotaDropObserved: true
@@ -165,6 +181,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(baseline, identical)
         XCTAssertNotEqual(baseline, changedUsage)
         XCTAssertNotEqual(baseline, changedQuotaAvailability)
+        XCTAssertNotEqual(baseline, changedAttributionEvents)
         XCTAssertNotEqual(baseline, changedAttributionContext)
     }
 
@@ -263,6 +280,52 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.localText, "≈10%")
         XCTAssertEqual(presentation.differenceTitle, "疑似他人")
         XCTAssertEqual(presentation.differenceText, "≈3%")
+    }
+
+    func testSelectionAttributionAutomaticallyPricesMixedModelsForCurrentAndRadarRevisions() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let sol = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let terra = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let events = [
+            TokenCacheAttributionEvent(id: "sol", start: start, model: "gpt-5.6-sol", breakdown: sol),
+            TokenCacheAttributionEvent(id: "terra", start: start.addingTimeInterval(300), model: "gpt-5.6-terra", breakdown: terra),
+        ]
+        let selection = attributionSelection(
+            sevenDayDrop: 10,
+            quotaDropObserved: true,
+            fallbackModel: .gpt56Luna,
+            sevenDayComparisonBreakdown: [sol, terra].combined,
+            sevenDayAttributionEvents: events
+        )
+        let result = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(
+                for: selection,
+                radarTotalUSD: 100,
+                priceRevision: .radar20260730
+            )
+        )
+
+        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 7.5, accuracy: 0.0001)
+        XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
+        XCTAssertEqual(result.fallbackModelCalls, 0)
+        XCTAssertEqual(result.pricingModelText, "自动 · Sol/Terra")
     }
 
     func testSelectionAttributionPreservesNegativeDifference() throws {
@@ -464,6 +527,65 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(selection.bucketCount, 3)
         XCTAssertEqual(try XCTUnwrap(selection.fiveHour.impliedWindowBudgetUSD), 110.1, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 275.25, accuracy: 0.0001)
+    }
+
+    func testPreparedSelectionUsesRecordedModelsInsteadOfTheFallbackPicker() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let sol = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let terra = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let prepared = RecentChartPreparedData(
+            range: .twentyFourHours,
+            bins: [
+                BinUsage(start: start, tokens: 1_000_000, calls: 1),
+                BinUsage(start: start.addingTimeInterval(300), tokens: 1_000_000, calls: 1),
+            ],
+            bucketInterval: 300,
+            maxTokens: 1_000_000,
+            maxCalls: 1,
+            tokenTotal: 2_000_000,
+            callTotal: 2,
+            recentCacheBreakdown: [sol, terra].combined,
+            cacheBreakdowns: [sol, terra],
+            observedCacheHitRates: [0, 0],
+            fiveHourRemainingPercents: [80, 70],
+            sevenDayRemainingPercents: [90, 80],
+            latestFiveHourRemaining: 70,
+            latestSevenDayRemaining: 80,
+            hasCacheCalls: true,
+            hasFiveHourQuota: true,
+            hasSevenDayQuota: true,
+            markerIndices: [0, 1]
+        )
+        let events = [
+            TokenCacheAttributionEvent(id: "sol", start: start, model: "gpt-5.6-sol", breakdown: sol),
+            TokenCacheAttributionEvent(id: "terra", start: start.addingTimeInterval(300), model: "gpt-5.6-terra", breakdown: terra),
+        ]
+
+        let selection = try XCTUnwrap(prepared.quotaConsumptionSelection(
+            startIndex: 0,
+            endIndex: 1,
+            priceCard: .officialAPI(.gpt56Luna),
+            attributionEvents: events
+        ))
+
+        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7, accuracy: 0.0001)
+        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7, accuracy: 0.0001)
+        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.detectedModels, [.gpt56Sol, .gpt56Terra])
     }
 
     func testFlatZeroQuotaRangeStillBuildsSelectionSummary() throws {
@@ -1192,7 +1314,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
         let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
 
-        XCTAssertTrue(source.contains("@AppStorage(\"recentChartQuotaEstimateModel\")"))
+        XCTAssertTrue(source.contains("@AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)"))
         XCTAssertTrue(source.contains("consumptionSelectionState"))
         XCTAssertTrue(source.contains("quotaConsumptionSelection("))
         XCTAssertTrue(source.contains("onClick:"))
@@ -1201,7 +1323,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains(".onMoveCommand"))
         XCTAssertTrue(source.contains(".onKeyPress(.space)"))
         XCTAssertTrue(componentSource.contains("onClose:"))
-        XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
+        XCTAssertFalse(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
     }
 
@@ -1263,7 +1385,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
     }
 
-    func testEstimateAffordancePresentationProvidesChartHelpAndModelOptions() {
+    func testEstimateAffordancePresentationProvidesChartHelpWithoutManualModelOptions() {
         XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.headerLabel, "点击图表估算额度")
         XCTAssertEqual(
             RecentChartQuotaEstimateAffordancePresentation.headerHelp,
@@ -1276,15 +1398,15 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.hoverInstruction, "点击起点/终点可估算额度")
         XCTAssertEqual(RecentChartQuotaEstimateAffordancePresentation.hoverAccessibilityPrompt, "点击图表可估算额度")
 
-        let option = RecentChartQuotaEstimateAffordancePresentation.modelOption(
-            for: .gpt56Luna,
-            selectedModel: .gpt56Sol
+        let estimate = ModelAwareAPIPriceEstimate(
+            costUSD: 7,
+            detectedModels: [.gpt56Sol, .gpt56Terra],
+            fallbackCalls: 0
         )
-
-        XCTAssertEqual(option.groupLabel, "官方 API")
-        XCTAssertEqual(option.shortTitle, "Luna")
-        XCTAssertEqual(option.accessibilityLabel, "官方 API 定价 GPT-5.6 Luna")
-        XCTAssertEqual(option.accessibilityValue, "未选择")
+        XCTAssertEqual(
+            estimate.pricingModelText(fallbackModel: .gpt56Luna),
+            "自动 · Sol/Terra"
+        )
     }
 
     func testOverlayPresentationBuildsSummaryAndAccessibilityForMeasuredSelection() throws {
@@ -1469,8 +1591,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         sevenDayDrop: Double,
         quotaDropObserved: Bool,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
+        fallbackModel: OfficialAPIPriceModel = .gpt56Sol,
         sevenDayComparisonBreakdown: TokenCacheBreakdown? = nil,
-        comparisonUsesConservativeBuckets: Bool = false
+        comparisonUsesConservativeBuckets: Bool = false,
+        sevenDayAttributionEvents: [TokenCacheAttributionEvent] = []
     ) -> QuotaConsumptionSelection {
         let start = Date(timeIntervalSince1970: 1_800)
         let end = start.addingTimeInterval(600)
@@ -1488,12 +1612,12 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             bucketCount: 2,
             startDate: start,
             endDate: end,
-            priceCard: .officialAPI(.gpt56Sol),
+            priceCard: .officialAPI(fallbackModel),
             breakdown: breakdown,
             fiveHour: QuotaConsumptionEstimator.estimate(
                 breakdown: breakdown,
                 quotaDropPercent: 20,
-                priceCard: .officialAPI(.gpt56Sol)
+                priceCard: .officialAPI(fallbackModel)
             ),
             sevenDay: QuotaConsumptionEstimate(
                 selectedCostUSD: 100,
@@ -1513,7 +1637,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 confidence: sevenDayDrop > 0
                     ? .measured
                     : .insufficientQuotaMovement
-            )
+            ),
+            sevenDayAttributionEvents: sevenDayAttributionEvents
         )
     }
 

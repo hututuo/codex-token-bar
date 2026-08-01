@@ -1608,12 +1608,6 @@ enum SharedAccountUsageAttributionEstimator {
     static let sevenDayDuration: TimeInterval = 7 * 24 * 60 * 60
     static let recentBinDuration: TimeInterval = 5 * 60
 
-    private struct ModelAwareCost {
-        let value: Double
-        let detectedModels: [OfficialAPIPriceModel]
-        let fallbackCalls: Int
-    }
-
     static func estimate(
         enabled: Bool,
         preciseUsageReady: Bool,
@@ -1838,7 +1832,7 @@ enum SharedAccountUsageAttributionEstimator {
         let shouldUseHighWatermark = protectedBreakdown != scannedBreakdown
         let localHistoryAmbiguous = effectiveHighWatermark?.ambiguityDetected ?? false
         guard resolvedSegment.baselineReady else {
-            let pendingCurrentCost = modelAwareCost(
+            let pendingCurrentCost = ModelAwareAPIPriceEstimator.estimate(
                 events: protectedAttributionEvents,
                 fallbackBreakdown: protectedBreakdown,
                 fallbackModel: model,
@@ -1846,8 +1840,8 @@ enum SharedAccountUsageAttributionEstimator {
             )
             let pendingRadarRow = radar.flatMap { tier.sevenDayRow(in: $0) }
             let pendingRadarTotal = pendingRadarRow?.sevenD
-            let pendingComparableCost: ModelAwareCost? = if priceRevision != .unavailable {
-                modelAwareCost(
+            let pendingComparableCost: ModelAwareAPIPriceEstimate? = if priceRevision != .unavailable {
+                ModelAwareAPIPriceEstimator.estimate(
                     events: protectedAttributionEvents,
                     fallbackBreakdown: protectedBreakdown,
                     fallbackModel: model,
@@ -1856,7 +1850,7 @@ enum SharedAccountUsageAttributionEstimator {
             } else {
                 nil
             }
-            let pendingShare: Double? = if let cost = pendingComparableCost?.value,
+            let pendingShare: Double? = if let cost = pendingComparableCost?.costUSD,
                                   let total = pendingRadarTotal,
                                   total > 0 {
                 cost / total * 100
@@ -1885,8 +1879,8 @@ enum SharedAccountUsageAttributionEstimator {
                     breakdown: protectedBreakdown,
                     scannedBreakdown: scannedBreakdown,
                     scannedComparableCostUSD: nil,
-                    localComparableCostUSD: pendingComparableCost.value,
-                    localCurrentOfficialCostUSD: pendingCurrentCost.value,
+                    localComparableCostUSD: pendingComparableCost.costUSD,
+                    localCurrentOfficialCostUSD: pendingCurrentCost.costUSD,
                     radarSevenDayTotalUSD: pendingRadarTotal,
                     localSharePercent: pendingShare,
                     nonLocalDifferencePercent: nil,
@@ -1918,7 +1912,7 @@ enum SharedAccountUsageAttributionEstimator {
                 quotaUpdatedAt: quotaUpdatedAt,
                 breakdown: protectedBreakdown,
                 scannedBreakdown: scannedBreakdown,
-                currentOfficialCostUSD: pendingCurrentCost.value,
+                currentOfficialCostUSD: pendingCurrentCost.costUSD,
                 radarTotalUSD: pendingRadarTotal,
                 radarRow: pendingRadarRow,
                 radar: radar,
@@ -1935,6 +1929,13 @@ enum SharedAccountUsageAttributionEstimator {
             0,
             Double(sevenDayQuota.usedPercent) - resolvedSegment.accountUsedBaselinePercent
         )
+        let currentOfficialEstimate = ModelAwareAPIPriceEstimator.estimate(
+            events: protectedAttributionEvents,
+            fallbackBreakdown: protectedBreakdown,
+            fallbackModel: model,
+            rates: { $0.currentPriceRates }
+        )
+        let currentOfficialCost = currentOfficialEstimate.costUSD
 
         guard let radar, let row = tier.sevenDayRow(in: radar), let radarTotal = row.sevenD else {
             return unavailable(
@@ -1952,7 +1953,7 @@ enum SharedAccountUsageAttributionEstimator {
                 accountUsedPercent: accountUsed,
                 breakdown: protectedBreakdown,
                 scannedBreakdown: scannedBreakdown,
-                currentOfficialCostUSD: model.currentPriceRates.costUSD(for: protectedBreakdown),
+                currentOfficialCostUSD: currentOfficialCost,
                 radar: radar,
                 quotaDataStale: quotaDataStale,
                 radarDataStale: radarDataStale,
@@ -1964,13 +1965,6 @@ enum SharedAccountUsageAttributionEstimator {
             )
         }
 
-        let currentOfficialEstimate = modelAwareCost(
-            events: protectedAttributionEvents,
-            fallbackBreakdown: protectedBreakdown,
-            fallbackModel: model,
-            rates: { $0.currentPriceRates }
-        )
-        let currentOfficialCost = currentOfficialEstimate.value
         guard priceRevision != .unavailable else {
             return unavailable(
                 .missingCompatiblePriceRevision,
@@ -2001,21 +1995,21 @@ enum SharedAccountUsageAttributionEstimator {
             )
         }
 
-        let scannedComparableEstimate = modelAwareCost(
+        let scannedComparableEstimate = ModelAwareAPIPriceEstimator.estimate(
             events: comparisonAttributionEvents,
             fallbackBreakdown: scannedBreakdown,
             fallbackModel: model,
             rates: { priceRevision.rates(for: $0) ?? $0.currentPriceRates }
         )
-        let localComparableEstimate = modelAwareCost(
+        let localComparableEstimate = ModelAwareAPIPriceEstimator.estimate(
             events: protectedAttributionEvents,
             fallbackBreakdown: protectedBreakdown,
             fallbackModel: model,
             rates: { priceRevision.rates(for: $0) ?? $0.currentPriceRates }
         )
-        let scannedComparableCost = scannedComparableEstimate.value
-        let localComparableCost = localComparableEstimate.value
-        let localCurrentOfficialCost = currentOfficialEstimate.value
+        let scannedComparableCost = scannedComparableEstimate.costUSD
+        let localComparableCost = localComparableEstimate.costUSD
+        let localCurrentOfficialCost = currentOfficialEstimate.costUSD
         let localShare = localComparableCost / radarTotal * 100
         let difference = accountUsed - localShare
 
@@ -2094,40 +2088,6 @@ enum SharedAccountUsageAttributionEstimator {
             tier: tier,
             model: model,
             priceRevision: priceRevision
-        )
-    }
-
-    private static func modelAwareCost(
-        events: [TokenCacheAttributionEvent]?,
-        fallbackBreakdown: TokenCacheBreakdown,
-        fallbackModel: OfficialAPIPriceModel,
-        rates: (OfficialAPIPriceModel) -> APIPriceRates
-    ) -> ModelAwareCost {
-        guard let events, !events.isEmpty else {
-            return ModelAwareCost(
-                value: rates(fallbackModel).costUSD(for: fallbackBreakdown),
-                detectedModels: [],
-                fallbackCalls: fallbackBreakdown.calls
-            )
-        }
-        var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
-        var fallbackBreakdowns: [TokenCacheBreakdown] = []
-        for event in events {
-            if let detected = OfficialAPIPriceModel.detected(from: event.model) {
-                grouped[detected, default: []].append(event.breakdown)
-            } else {
-                fallbackBreakdowns.append(event.breakdown)
-            }
-        }
-        var value = grouped.reduce(0.0) { partial, entry in
-            partial + rates(entry.key).costUSD(for: entry.value.combined)
-        }
-        let fallbackBreakdown = fallbackBreakdowns.combined
-        value += rates(fallbackModel).costUSD(for: fallbackBreakdown)
-        return ModelAwareCost(
-            value: value,
-            detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
-            fallbackCalls: fallbackBreakdown.calls
         )
     }
 
