@@ -210,7 +210,7 @@ fi
 
 existing_pids="$(/usr/bin/pgrep -f "$RUN_APP_BINARY" 2>/dev/null || true)"
 /bin/rm -f "$TRACE_LOG"
-/usr/bin/env -u CODEX_HOME -u CODEX_SQLITE_HOME /usr/bin/open -n "$RUN_APP_PATH"
+/usr/bin/open -n --env CODEX_HOME --env CODEX_SQLITE_HOME "$RUN_APP_PATH"
 
 opened_pid=""
 for _ in $(seq 1 120); do

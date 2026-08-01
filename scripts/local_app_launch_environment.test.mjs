@@ -13,7 +13,7 @@ test("local Swift and Tauri previews do not inherit a task-scoped Codex Home", a
   for (const launcher of [swiftLauncher, tauriLauncher]) {
     assert.match(
       launcher,
-      /\/usr\/bin\/env -u CODEX_HOME -u CODEX_SQLITE_HOME \/usr\/bin\/open/,
+      /\/usr\/bin\/open[^\n]*--env CODEX_HOME --env CODEX_SQLITE_HOME/,
     );
   }
 });
