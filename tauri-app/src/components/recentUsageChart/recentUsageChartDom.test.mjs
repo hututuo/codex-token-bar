@@ -75,6 +75,68 @@ test("quota estimate keeps historical 5h beside 7d after the current 5h window d
   }
 });
 
+test("hover detail moves above the plot and disappears after an unpinned pointer leaves", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h: [point(0, 0.82, 0.91), point(300, 0.78, 0.89)],
+          recentUsage7d: [],
+          recentUsage30d: [],
+        })));
+
+        const chart = container.querySelector("svg.usage-chart");
+        assert.ok(chart);
+        chart.getBoundingClientRect = () => ({
+          bottom: 185,
+          height: 185,
+          left: 0,
+          right: 980,
+          top: 0,
+          width: 980,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        });
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true,
+          clientX: 120,
+          clientY: 80,
+          pointerId: 1,
+        })));
+        assert.ok(container.querySelector(".chart-hover-bubble"));
+        assert.equal(container.querySelector('[role="dialog"]'), null);
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerout", {
+          bubbles: true,
+          clientX: 120,
+          clientY: 0,
+          pointerId: 1,
+          relatedTarget: window.document.body,
+        })));
+        assert.equal(container.querySelector(".chart-hover-bubble"), null);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 test("quota estimate adapts to seven-day-only history after the 5h window disappears", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
@@ -230,6 +292,14 @@ test("quota estimate card is positioned inside the visible chart viewport", asyn
   assert.doesNotMatch(cardRule.groups.body, /top:\s*-/);
   assert.match(cardRule.groups.body, /left:\s*14px;/);
 })
+
+test("hover detail keeps a clear gutter above the chart plot", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  const bubbleRule = css.match(/\.chart-hover-bubble\s*\{(?<body>[\s\S]*?)\n\}/);
+  assert.ok(bubbleRule?.groups?.body);
+  assert.match(bubbleRule.groups.body, /top:\s*-22px;/);
+  assert.match(bubbleRule.groups.body, /transform:\s*translate\(-50%,\s*-100%\);/);
+});
 
 function installDomGlobals(window) {
   const values = {

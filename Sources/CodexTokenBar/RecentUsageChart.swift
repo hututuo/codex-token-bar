@@ -484,7 +484,25 @@ private struct RecentChartPlotData {
     }
 }
 
-let recentChartHoverBubbleVerticalOffset: CGFloat = 50
+let recentChartHoverBubbleVerticalOffset: CGFloat = 74
+
+enum RecentChartHoverPresentation {
+    static func activeIndex(
+        hoveredIndex: Int?,
+        selectedIndex: Int?,
+        hasSelection: Bool,
+        validCount: Int
+    ) -> Int? {
+        guard validCount > 0 else { return nil }
+        if let hoveredIndex, (0..<validCount).contains(hoveredIndex) {
+            return hoveredIndex
+        }
+        guard hasSelection,
+              let selectedIndex,
+              (0..<validCount).contains(selectedIndex) else { return nil }
+        return selectedIndex
+    }
+}
 
 struct RecentChartQuotaSeriesVisibility: Equatable {
     let showsFiveHour: Bool
@@ -1031,10 +1049,12 @@ struct RecentUsageChart: View, Equatable {
         let plot = CGRect(x: 0, y: 18, width: width, height: max(height - 42, 1))
         let chartBins = preparedData.bins
         let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
-        let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
-            ?? accessibilityCursorState.index.flatMap {
-                chartBins.indices.contains($0) ? $0 : nil
-            }
+        let activeIndex = RecentChartHoverPresentation.activeIndex(
+            hoveredIndex: hoveredIndex,
+            selectedIndex: accessibilityCursorState.index,
+            hasSelection: consumptionSelectionState.startIndex != nil,
+            validCount: chartBins.count
+        )
         let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
 
         ZStack(alignment: .topLeading) {
