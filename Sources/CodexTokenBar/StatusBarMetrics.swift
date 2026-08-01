@@ -489,10 +489,25 @@ struct StatusBarModelRankingEntry: Equatable, Sendable {
     }
 }
 
+struct StatusBarMetricLine: Equatable, Sendable {
+    let text: String
+    let isSecondary: Bool
+
+    init(text: String, isSecondary: Bool = false) {
+        self.text = text
+        self.isSecondary = isSecondary
+    }
+}
+
+struct StatusBarMetricColumn: Equatable, Sendable {
+    let top: StatusBarMetricLine
+    let bottom: StatusBarMetricLine
+}
+
 enum StatusBarMetricSegmentLayout: Equatable, Sendable {
     case inline
-    case stackedPrefix(top: String, bottom: String, suffix: String)
-    case stackedLines(top: String, bottom: String)
+    case quotaLine(StatusBarMetricLine)
+    case stackedLines(top: StatusBarMetricLine, bottom: StatusBarMetricLine)
 }
 
 struct StatusBarMetricSegment: Equatable, Sendable {
@@ -530,6 +545,53 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
         return segments.map(\.accessibilityText).joined(separator: "；")
     }
 
+    var columns: [StatusBarMetricColumn] {
+        var columns: [StatusBarMetricColumn] = []
+        var pendingLine: StatusBarMetricLine?
+
+        func flushPendingLine() {
+            guard let line = pendingLine else { return }
+            columns.append(
+                StatusBarMetricColumn(
+                    top: line,
+                    bottom: StatusBarMetricLine(text: "")
+                )
+            )
+            pendingLine = nil
+        }
+
+        var index = 0
+        while index < segments.count {
+            let segment = segments[index]
+            switch segment.layout {
+            case .inline:
+                let line = StatusBarMetricLine(text: segment.text)
+                if let previous = pendingLine {
+                    columns.append(StatusBarMetricColumn(top: previous, bottom: line))
+                    pendingLine = nil
+                } else {
+                    pendingLine = line
+                }
+            case .quotaLine(let line):
+                flushPendingLine()
+                var bottom = StatusBarMetricLine(text: "")
+                if index + 1 < segments.count,
+                   case .quotaLine(let nextLine) = segments[index + 1].layout {
+                    bottom = nextLine
+                    index += 1
+                }
+                columns.append(StatusBarMetricColumn(top: line, bottom: bottom))
+            case .stackedLines(let top, let bottom):
+                flushPendingLine()
+                columns.append(StatusBarMetricColumn(top: top, bottom: bottom))
+            }
+            index += 1
+        }
+
+        flushPendingLine()
+        return columns
+    }
+
     static func make(
         values: StatusBarMetricValues,
         configuration: StatusBarMetricConfiguration
@@ -557,6 +619,9 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
         case .rate:
             let rate = values.rate.map { String(format: "%.1f", $0) }
             let value = rate.map { "\($0)/s" } ?? "—"
+            let unitsLine = labelStyle == .hidden
+                ? StatusBarMetricLine(text: "")
+                : StatusBarMetricLine(text: "tok/s", isSecondary: true)
             return StatusBarMetricSegment(
                 id: metric,
                 text: labeledValue(
@@ -567,13 +632,15 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                 ),
                 accessibilityText: rate.map {
                     "实时速率 \($0) token 每秒"
-                } ?? "实时速率暂不可用"
+                } ?? "实时速率暂不可用",
+                layout: .stackedLines(
+                    top: StatusBarMetricLine(text: rate ?? "—"),
+                    bottom: unitsLine
+                )
             )
         case .fiveHour:
             let value = values.fiveHourRemainingPercent.map { "\($0)%" } ?? "—"
-            let layout: StatusBarMetricSegmentLayout = labelStyle == .compact
-                ? .stackedPrefix(top: "5", bottom: "H", suffix: value)
-                : .inline
+            let label = quotaColumnLabel(full: "5h", compact: "5", style: labelStyle)
             return StatusBarMetricSegment(
                 id: metric,
                 text: labeledValue(
@@ -585,13 +652,13 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                 accessibilityText: values.fiveHourRemainingPercent.map {
                     "5 小时额度剩余 \($0)%"
                 } ?? "5 小时额度暂不可用",
-                layout: layout
+                layout: .quotaLine(
+                    StatusBarMetricLine(text: joinedColumnLabel(label, value: value))
+                )
             )
         case .sevenDay:
             let value = values.sevenDayRemainingPercent.map { "\($0)%" } ?? "—"
-            let layout: StatusBarMetricSegmentLayout = labelStyle == .compact
-                ? .stackedPrefix(top: "7", bottom: "D", suffix: value)
-                : .inline
+            let label = quotaColumnLabel(full: "7d", compact: "7", style: labelStyle)
             return StatusBarMetricSegment(
                 id: metric,
                 text: labeledValue(
@@ -603,7 +670,9 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                 accessibilityText: values.sevenDayRemainingPercent.map {
                     "7 天额度剩余 \($0)%"
                 } ?? "7 天额度暂不可用",
-                layout: layout
+                layout: .quotaLine(
+                    StatusBarMetricLine(text: joinedColumnLabel(label, value: value))
+                )
             )
         case .iq:
             let rankingLines = (0..<2).map { index -> String in
@@ -624,7 +693,10 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
                 id: metric,
                 text: rankingLines.joined(separator: " / "),
                 accessibilityText: accessibilityText,
-                layout: .stackedLines(top: rankingLines[0], bottom: rankingLines[1])
+                layout: .stackedLines(
+                    top: StatusBarMetricLine(text: rankingLines[0]),
+                    bottom: StatusBarMetricLine(text: rankingLines[1])
+                )
             )
         case .today:
             let value = values.todayTokens.map(compactCount) ?? "—"
@@ -712,6 +784,22 @@ struct StatusBarMetricsPresentation: Equatable, Sendable {
         case .hidden:
             return value
         }
+    }
+
+    private static func quotaColumnLabel(
+        full: String,
+        compact: String,
+        style: StatusBarMetricLabelStyle
+    ) -> String {
+        switch style {
+        case .full: return full
+        case .compact: return compact
+        case .hidden: return ""
+        }
+    }
+
+    private static func joinedColumnLabel(_ label: String, value: String) -> String {
+        label.isEmpty ? value : "\(label) \(value)"
     }
 
     private static func compactCount(_ value: Int) -> String {

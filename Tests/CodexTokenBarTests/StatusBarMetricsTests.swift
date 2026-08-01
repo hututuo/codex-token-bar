@@ -509,6 +509,16 @@ final class StatusBarMetricsTests: XCTestCase {
         XCTAssertEqual(full.text, "5h72% · 7d— · 1 Sol·XH / 2 Luna·H · 今日84K · 运行0")
         XCTAssertEqual(compact.text, "5H72% · 7D— · 1 Sol·XH / 2 Luna·H · 今84K · 跑0")
         XCTAssertEqual(hidden.text, "72% · — · 1 Sol·XH / 2 Luna·H · 84K · 0")
+        XCTAssertEqual(full.columns.first?.top.text, "5h 72%")
+        XCTAssertEqual(full.columns.first?.bottom.text, "7d —")
+        XCTAssertEqual(compact.columns.first?.top.text, "5 72%")
+        XCTAssertEqual(compact.columns.first?.bottom.text, "7 —")
+        XCTAssertEqual(hidden.columns.first?.top.text, "72%")
+        XCTAssertEqual(hidden.columns.first?.bottom.text, "—")
+        XCTAssertEqual(compact.columns[1].top.text, "1 Sol·XH")
+        XCTAssertEqual(compact.columns[1].bottom.text, "2 Luna·H")
+        XCTAssertEqual(compact.columns[2].top.text, "今84K")
+        XCTAssertEqual(compact.columns[2].bottom.text, "跑0")
     }
 
     func testSummarySectionRawIDsDefaultsAndUserOrderStayStable() {

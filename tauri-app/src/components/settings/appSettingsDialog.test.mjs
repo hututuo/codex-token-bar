@@ -108,9 +108,9 @@ test("status indicator settings preview, select, reorder and restore through one
     assert.ok(preview);
     assert.deepEqual(
       [...preview.querySelectorAll(".status-indicator-column")].map((node) => node.textContent),
-      ["12.4tok/s", "⁵42%⁷76%", "1 Sol·MAX2 Luna·H"],
+      ["12.4tok/s", "5 42%7 76%", "1 Sol·MAX2 Luna·H"],
     );
-    assert.match(preview.textContent, /12\.4tok\/s⁵42%⁷76%1 Sol·MAX2 Luna·H/);
+    assert.match(preview.textContent, /12\.4tok\/s5 42%7 76%1 Sol·MAX2 Luna·H/);
     assert.doesNotMatch(
       preview.querySelector(".status-indicator-compact-columns")?.textContent ?? "",
       /5 小时|7 天/,

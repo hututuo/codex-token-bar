@@ -622,8 +622,31 @@ struct AppSettingsView: View {
                     Text("仅保留恢复图标")
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(presentation.text)
-                        .foregroundStyle(.primary)
+                    HStack(spacing: 6) {
+                        ForEach(Array(presentation.columns.enumerated()), id: \.offset) { entry in
+                            let column = entry.element
+                            VStack(spacing: 0) {
+                                Text(column.top.text.isEmpty ? "\u{200B}" : column.top.text)
+                                    .font(.system(
+                                        size: column.top.isSecondary ? 6.5 : 7.5,
+                                        weight: .semibold,
+                                        design: .monospaced
+                                    ))
+                                    .foregroundStyle(column.top.isSecondary ? .secondary : .primary)
+                                    .frame(height: 8.5)
+                                Text(column.bottom.text.isEmpty ? "\u{200B}" : column.bottom.text)
+                                    .font(.system(
+                                        size: column.bottom.isSecondary ? 6.5 : 7.5,
+                                        weight: .semibold,
+                                        design: .monospaced
+                                    ))
+                                    .foregroundStyle(column.bottom.isSecondary ? .secondary : .primary)
+                                    .frame(height: 8.5)
+                            }
+                            .fixedSize()
+                        }
+                    }
+                    .accessibilityLabel(presentation.accessibilityValue)
                 }
                 Spacer(minLength: 10)
                 Text(statusBarPanelEnabled ? "实时指标" : "仅图标")

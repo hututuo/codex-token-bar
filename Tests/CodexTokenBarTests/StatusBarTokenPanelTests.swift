@@ -105,50 +105,61 @@ final class StatusBarTokenPanelTests: XCTestCase {
     }
 
     @MainActor
-    func testAttributedStatusTitleStacksQuotaMarkersAndTodayModelRows() throws {
+    func testAttributedStatusTitleUsesSeparatedTwoLineColumns() throws {
         let presentation = StatusBarMetricsPresentation(segments: [
             StatusBarMetricSegment(
                 id: .fiveHour,
                 text: "5H0%",
                 accessibilityText: "5 小时额度剩余 0%",
-                layout: .stackedPrefix(top: "5", bottom: "H", suffix: "0%")
+                layout: .quotaLine(StatusBarMetricLine(text: "5 0%"))
             ),
             StatusBarMetricSegment(
                 id: .sevenDay,
                 text: "7D42%",
                 accessibilityText: "7 天额度剩余 42%",
-                layout: .stackedPrefix(top: "7", bottom: "D", suffix: "42%")
+                layout: .quotaLine(StatusBarMetricLine(text: "7 42%"))
             ),
             StatusBarMetricSegment(
                 id: .iq,
                 text: "1 Sol·XH / 2 Luna·H",
                 accessibilityText: "今日模型榜",
-                layout: .stackedLines(top: "1 Sol·XH", bottom: "2 Luna·H")
+                layout: .stackedLines(
+                    top: StatusBarMetricLine(text: "1 Sol·XH"),
+                    bottom: StatusBarMetricLine(text: "2 Luna·H")
+                )
             ),
         ])
 
         let title = StatusBarAttributedTitleBuilder.make(presentation)
         let rawTitle = title.string as NSString
-        let fiveMarker = rawTitle.range(of: "5H")
-        let sevenMarker = rawTitle.range(of: "7D")
+        let fiveQuota = rawTitle.range(of: "5 0%")
+        let sevenQuota = rawTitle.range(of: "7 42%")
         let firstModel = rawTitle.range(of: "1 Sol·XH")
         let secondModel = rawTitle.range(of: "2 Luna·H")
 
-        XCTAssertNotEqual(fiveMarker.location, NSNotFound)
-        XCTAssertNotEqual(sevenMarker.location, NSNotFound)
+        XCTAssertNotEqual(fiveQuota.location, NSNotFound)
+        XCTAssertNotEqual(sevenQuota.location, NSNotFound)
         XCTAssertNotEqual(firstModel.location, NSNotFound)
         XCTAssertNotEqual(secondModel.location, NSNotFound)
-        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: fiveMarker.location, in: title), 0)
-        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: fiveMarker.location + 1, in: title), 0)
-        XCTAssertLessThan(try numericAttribute(.kern, at: fiveMarker.location, in: title), 0)
-        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: sevenMarker.location, in: title), 0)
-        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: sevenMarker.location + 1, in: title), 0)
+        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: fiveQuota.location, in: title), 0)
+        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: sevenQuota.location, in: title), 0)
+        XCTAssertLessThan(
+            try numericAttribute(.kern, at: NSMaxRange(fiveQuota) - 1, in: title),
+            0
+        )
         XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: firstModel.location, in: title), 0)
         XCTAssertLessThan(try numericAttribute(.baselineOffset, at: secondModel.location, in: title), 0)
         XCTAssertLessThan(
             try numericAttribute(.kern, at: NSMaxRange(firstModel) - 1, in: title),
             0
         )
+        XCTAssertGreaterThan(
+            StatusBarAttributedTitleBuilder.upperBaselineOffset
+                - StatusBarAttributedTitleBuilder.lowerBaselineOffset,
+            StatusBarAttributedTitleBuilder.primaryFontSize
+        )
+        XCTAssertFalse(title.string.contains("⁵"))
+        XCTAssertFalse(title.string.contains("⁷"))
     }
 
     func testClosedStatusItemRefreshUsesOneSecondCadence() {

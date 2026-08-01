@@ -282,9 +282,9 @@ function statusIndicatorItem(
 
 function formatStatusRate(value: number): string {
   if (value <= 0) {
-    return "0";
+    return "0.0";
   }
-  return value < 0.05 ? "0" : value.toFixed(1);
+  return value < 0.05 ? "0.0" : value.toFixed(1);
 }
 
 function quotaItem(
@@ -465,7 +465,7 @@ function quotaTrayLine(
   if (labelStyle === "full") {
     return { text: `${item.id === "fiveHour" ? "5h" : "7d"} ${item.value}` };
   }
-  return { text: `${item.id === "fiveHour" ? "⁵" : "⁷"}${item.value}` };
+  return { text: `${item.id === "fiveHour" ? "5" : "7"} ${item.value}` };
 }
 
 export function estimateStatusIndicatorColumnsWidth(

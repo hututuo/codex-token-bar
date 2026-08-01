@@ -1274,18 +1274,29 @@ fn apply_macos_status_tray_title<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "macos")]
+const MACOS_STATUS_TRAY_PRIMARY_FONT_SIZE: f64 = 7.0;
+#[cfg(target_os = "macos")]
+const MACOS_STATUS_TRAY_SECONDARY_FONT_SIZE: f64 = 6.25;
+#[cfg(target_os = "macos")]
+const MACOS_STATUS_TRAY_UPPER_BASELINE_OFFSET: f64 = 4.25;
+#[cfg(target_os = "macos")]
+const MACOS_STATUS_TRAY_LOWER_BASELINE_OFFSET: f64 = -4.25;
+#[cfg(target_os = "macos")]
+const MACOS_STATUS_TRAY_COLUMN_SPACING: f64 = 6.0;
+
+#[cfg(target_os = "macos")]
 fn macos_status_tray_attributed_title(
     columns: &[StatusTrayColumn],
 ) -> Retained<NSMutableAttributedString> {
-    const PRIMARY_FONT_SIZE: f64 = 6.5;
-    const SECONDARY_FONT_SIZE: f64 = 6.0;
-    const UPPER_BASELINE_OFFSET: f64 = 3.25;
-    const LOWER_BASELINE_OFFSET: f64 = -3.25;
-    const COLUMN_SPACING: f64 = 4.5;
-
     let semibold_weight = unsafe { NSFontWeightSemibold };
-    let primary_font = NSFont::monospacedSystemFontOfSize_weight(PRIMARY_FONT_SIZE, semibold_weight);
-    let secondary_font = NSFont::monospacedSystemFontOfSize_weight(SECONDARY_FONT_SIZE, semibold_weight);
+    let primary_font = NSFont::monospacedSystemFontOfSize_weight(
+        MACOS_STATUS_TRAY_PRIMARY_FONT_SIZE,
+        semibold_weight,
+    );
+    let secondary_font = NSFont::monospacedSystemFontOfSize_weight(
+        MACOS_STATUS_TRAY_SECONDARY_FONT_SIZE,
+        semibold_weight,
+    );
     let color = NSColor::controlTextColor();
     let result = NSMutableAttributedString::from_nsstring(&NSString::from_str(""));
 
@@ -1303,14 +1314,18 @@ fn macos_status_tray_attributed_title(
         let top_width = macos_status_line_width(&column.top.text, top_font);
         let bottom_width = macos_status_line_width(&column.bottom.text, bottom_font);
         let column_width = top_width.max(bottom_width);
-        let trailing_spacing = if index + 1 < columns.len() { COLUMN_SPACING } else { 0.0 };
+        let trailing_spacing = if index + 1 < columns.len() {
+            MACOS_STATUS_TRAY_COLUMN_SPACING
+        } else {
+            0.0
+        };
 
         macos_append_status_line(
             &result,
             &column.top.text,
             top_font,
             &color,
-            UPPER_BASELINE_OFFSET,
+            MACOS_STATUS_TRAY_UPPER_BASELINE_OFFSET,
             -top_width,
         );
         macos_append_status_line(
@@ -1318,7 +1333,7 @@ fn macos_status_tray_attributed_title(
             &column.bottom.text,
             bottom_font,
             &color,
-            LOWER_BASELINE_OFFSET,
+            MACOS_STATUS_TRAY_LOWER_BASELINE_OFFSET,
             column_width - bottom_width + trailing_spacing,
         );
     }
@@ -2682,6 +2697,16 @@ mod tests {
                 tooltip: "Codex Token Bar".into(),
             }
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_status_tray_two_line_baselines_exceed_the_primary_font_height() {
+        let baseline_separation = MACOS_STATUS_TRAY_UPPER_BASELINE_OFFSET
+            - MACOS_STATUS_TRAY_LOWER_BASELINE_OFFSET;
+        assert!(baseline_separation > MACOS_STATUS_TRAY_PRIMARY_FONT_SIZE);
+        assert!(baseline_separation > MACOS_STATUS_TRAY_SECONDARY_FONT_SIZE);
+        assert!(MACOS_STATUS_TRAY_COLUMN_SPACING >= 6.0);
     }
 
     #[test]

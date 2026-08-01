@@ -30,8 +30,8 @@ test("the whole compact indicator opens the summary by click Enter and Space", a
                 bottom: { secondary: true, text: "tok/s" },
               },
               {
-                top: { text: "⁵—" },
-                bottom: { text: "⁷76%" },
+                top: { text: "5 —" },
+                bottom: { text: "7 76%" },
               },
               {
                 top: { text: "1 Sol·MAX" },
@@ -50,10 +50,10 @@ test("the whole compact indicator opens the summary by click Enter and Space", a
         assert.equal(indicator.getAttribute("tabindex"), "0");
         assert.equal(indicator.getAttribute("aria-label"), "实时速度 0.0/s · 5 小时 —");
         assert.equal(indicator.querySelector(".status-indicator-compact-columns")?.getAttribute("aria-hidden"), "true");
-        assert.equal(indicator.textContent, "0.0tok/s⁵—⁷76%1 Sol·MAX2 Luna·H");
+        assert.equal(indicator.textContent, "0.0tok/s5 —7 76%1 Sol·MAX2 Luna·H");
         assert.deepEqual(
           [...indicator.querySelectorAll(".status-indicator-column")].map((node) => node.textContent),
-          ["0.0tok/s", "⁵—⁷76%", "1 Sol·MAX2 Luna·H"],
+          ["0.0tok/s", "5 —7 76%", "1 Sol·MAX2 Luna·H"],
         );
         assert.equal(indicator.querySelector(".is-secondary")?.textContent, "tok/s");
         assert.equal(container.textContent.includes("5 小时"), false);

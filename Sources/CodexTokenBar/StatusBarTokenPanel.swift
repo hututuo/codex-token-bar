@@ -411,97 +411,99 @@ struct StatusBarTokenItemChanges: Equatable {
 
 @MainActor
 enum StatusBarAttributedTitleBuilder {
-    static let upperBaselineOffset: CGFloat = 3.25
-    static let lowerBaselineOffset: CGFloat = -3.25
+    static let primaryFontSize: CGFloat = 7
+    static let secondaryFontSize: CGFloat = 6.25
+    static let upperBaselineOffset: CGFloat = 4.25
+    static let lowerBaselineOffset: CGFloat = -4.25
+    static let columnSpacing: CGFloat = 6
 
-    private static let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-    private static let stackedFont = NSFont.monospacedSystemFont(ofSize: 6.5, weight: .bold)
-    private static let stackedTrailingSpacing: CGFloat = 1.5
+    private static let primaryFont = NSFont.monospacedSystemFont(
+        ofSize: primaryFontSize,
+        weight: .semibold
+    )
+    private static let secondaryFont = NSFont.monospacedSystemFont(
+        ofSize: secondaryFontSize,
+        weight: .semibold
+    )
 
     static func make(_ presentation: StatusBarMetricsPresentation) -> NSAttributedString {
         let result = NSMutableAttributedString(string: "")
-        for (index, segment) in presentation.segments.enumerated() {
-            if index > 0 {
-                appendPlain(StatusBarMetricsPresentation.separator, to: result)
-            }
-            switch segment.layout {
-            case .inline:
-                appendPlain(segment.text, to: result)
-            case .stackedPrefix(let top, let bottom, let suffix):
-                appendStackedLines(
-                    top: top,
-                    bottom: bottom,
-                    trailingSpacing: stackedTrailingSpacing,
-                    to: result
-                )
-                appendPlain(suffix, to: result)
-            case .stackedLines(let top, let bottom):
-                appendStackedLines(top: top, bottom: bottom, trailingSpacing: 0, to: result)
-            }
+        let columns = presentation.columns
+        for (index, column) in columns.enumerated() {
+            appendStackedColumn(
+                column,
+                trailingSpacing: index + 1 < columns.count ? columnSpacing : 0,
+                to: result
+            )
         }
         return result
     }
 
-    private static func appendPlain(_ text: String, to result: NSMutableAttributedString) {
-        result.append(NSAttributedString(string: text, attributes: baseAttributes))
-    }
-
-    private static func appendStackedLines(
-        top: String,
-        bottom: String,
+    private static func appendStackedColumn(
+        _ column: StatusBarMetricColumn,
         trailingSpacing: CGFloat,
         to result: NSMutableAttributedString
     ) {
-        let topWidth = textWidth(top)
-        let bottomWidth = textWidth(bottom)
+        let topFont = font(for: column.top)
+        let bottomFont = font(for: column.bottom)
+        let topWidth = textWidth(column.top.text, font: topFont)
+        let bottomWidth = textWidth(column.bottom.text, font: bottomFont)
         let occupiedWidth = max(topWidth, bottomWidth)
 
-        let topRun = NSMutableAttributedString(
-            string: top,
-            attributes: stackedAttributes(baselineOffset: upperBaselineOffset)
+        appendLine(
+            column.top.text,
+            font: topFont,
+            baselineOffset: upperBaselineOffset,
+            trailingKern: -topWidth,
+            to: result
         )
-        if topRun.length > 0 {
-            topRun.addAttribute(
-                .kern,
-                value: -topWidth,
-                range: NSRange(location: topRun.length - 1, length: 1)
-            )
-        }
-        result.append(topRun)
-
-        let bottomRun = NSMutableAttributedString(
-            string: bottom,
-            attributes: stackedAttributes(baselineOffset: lowerBaselineOffset)
+        appendLine(
+            column.bottom.text,
+            font: bottomFont,
+            baselineOffset: lowerBaselineOffset,
+            trailingKern: occupiedWidth - bottomWidth + trailingSpacing,
+            to: result
         )
-        if bottomRun.length > 0 {
-            bottomRun.addAttribute(
-                .kern,
-                value: occupiedWidth - bottomWidth + trailingSpacing,
-                range: NSRange(location: bottomRun.length - 1, length: 1)
-            )
-        }
-        result.append(bottomRun)
     }
 
-    private static var baseAttributes: [NSAttributedString.Key: Any] {
-        [
-            .font: baseFont,
-            .foregroundColor: NSColor.controlTextColor,
-        ]
+    private static func appendLine(
+        _ text: String,
+        font: NSFont,
+        baselineOffset: CGFloat,
+        trailingKern: CGFloat,
+        to result: NSMutableAttributedString
+    ) {
+        let renderedText = text.isEmpty ? "\u{200B}" : text
+        let run = NSMutableAttributedString(
+            string: renderedText,
+            attributes: lineAttributes(font: font, baselineOffset: baselineOffset)
+        )
+        run.addAttribute(
+            .kern,
+            value: trailingKern,
+            range: NSRange(location: run.length - 1, length: 1)
+        )
+        result.append(run)
     }
 
-    private static func stackedAttributes(
+    private static func lineAttributes(
+        font: NSFont,
         baselineOffset: CGFloat
     ) -> [NSAttributedString.Key: Any] {
         [
-            .font: stackedFont,
+            .font: font,
             .foregroundColor: NSColor.controlTextColor,
             .baselineOffset: baselineOffset,
         ]
     }
 
-    private static func textWidth(_ text: String) -> CGFloat {
-        ceil((text as NSString).size(withAttributes: [.font: stackedFont]).width)
+    private static func font(for line: StatusBarMetricLine) -> NSFont {
+        line.isSecondary ? secondaryFont : primaryFont
+    }
+
+    private static func textWidth(_ text: String, font: NSFont) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
 }
 

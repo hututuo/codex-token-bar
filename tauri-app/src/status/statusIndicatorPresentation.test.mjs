@@ -46,13 +46,13 @@ test("status presentation follows configured order and preserves a real zero rat
   });
 
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["sevenDay", "rate", "today"]);
-  assert.equal(result.title, "7D76% · 0/s · 今84K");
+  assert.equal(result.title, "7D76% · 0.0/s · 今84K");
   assert.deepEqual(result.columns, [
-    { top: { text: "⁷76%" }, bottom: { text: "" } },
-    { top: { text: "0" }, bottom: { secondary: true, text: "tok/s" } },
+    { top: { text: "7 76%" }, bottom: { text: "" } },
+    { top: { text: "0.0" }, bottom: { secondary: true, text: "tok/s" } },
     { top: { text: "今84K" }, bottom: { text: "" } },
   ]);
-  assert.match(result.tooltip, /7 天额度剩余 76%.*速度 0 tok\/s.*今日 Token 84K/);
+  assert.match(result.tooltip, /7 天额度剩余 76%.*速度 0\.0 tok\/s.*今日 Token 84K/);
   assert.ok(result.width >= 38);
 });
 
@@ -150,7 +150,7 @@ test("default metrics collapse into three compact two-line tray columns", () => 
 
   assert.deepEqual(result.columns, [
     { top: { text: "12.4" }, bottom: { secondary: true, text: "tok/s" } },
-    { top: { text: "⁵41%" }, bottom: { text: "⁷76%" } },
+    { top: { text: "5 41%" }, bottom: { text: "7 76%" } },
     { top: { text: "1 Sol·MAX" }, bottom: { text: "2 Terra·U" } },
   ]);
   assert.equal(result.columns.flatMap((column) => [column.top.text, column.bottom.text]).join(" ").includes("5 小时"), false);
@@ -399,7 +399,7 @@ test("metric states distinguish unavailable placeholders from real zero values",
     },
   });
   assert.deepEqual(zero, {
-    rate: { available: true, value: "0" },
+    rate: { available: true, value: "0.0" },
     today: { available: true, value: "0" },
     total: { available: true, value: "0" },
     requests: { available: true, value: "0" },
