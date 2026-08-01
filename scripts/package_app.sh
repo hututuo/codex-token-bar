@@ -170,6 +170,6 @@ if [[ "$CONFIGURATION" == "debug" && "${CODEX_TOKEN_BAR_NO_OPEN:-0}" != "1" ]]; 
     sleep 0.1
   done
 
-  /usr/bin/open "$APP_DIR"
+  /usr/bin/env -u CODEX_HOME -u CODEX_SQLITE_HOME /usr/bin/open "$APP_DIR"
   echo "Opened $APP_DIR"
 fi
