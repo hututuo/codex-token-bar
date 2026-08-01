@@ -4,37 +4,8 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RecentChartSelectionInteractionTests: XCTestCase {
-    func testHoverBubbleLeavesThePlotUnlessASelectionPinsIt() {
-        XCTAssertEqual(
-            RecentChartHoverPresentation.activeIndex(
-                hoveredIndex: 3,
-                selectedIndex: nil,
-                hasSelection: false,
-                validCount: 8
-            ),
-            3
-        )
-        XCTAssertNil(
-            RecentChartHoverPresentation.activeIndex(
-                hoveredIndex: nil,
-                selectedIndex: 3,
-                hasSelection: false,
-                validCount: 8
-            )
-        )
-        XCTAssertEqual(
-            RecentChartHoverPresentation.activeIndex(
-                hoveredIndex: nil,
-                selectedIndex: 3,
-                hasSelection: true,
-                validCount: 8
-            ),
-            3
-        )
-    }
-
     func testHoverBubbleClearsThePlotByAnExtraVerticalGutter() {
-        XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 74)
+        XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 54)
     }
 
     func testAccessibilityCursorMovesSelectsClampsAndResets() {

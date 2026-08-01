@@ -6249,7 +6249,7 @@ input[type="range"]::-moz-range-thumb {
 .chart-hover-bubble {
   position: absolute;
   z-index: 4;
-  top: -22px;
+  top: -2px;
   width: 184px;
   padding: 9px 10px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 92%, transparent);
