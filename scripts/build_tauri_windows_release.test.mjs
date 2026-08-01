@@ -193,7 +193,7 @@ test("release builds run source tests and injection syntax gates before packagin
   const windows = await readFile(windowsScript, "utf8");
   const mac = await readFile(macReleaseScript, "utf8");
 
-  assert.match(windows, /cargo test --locked/);
+  assert.match(windows, /cargo test --locked[^\n]*-- --test-threads=1/);
   assert.match(windows, /node --check/);
   assert.match(windows, /node --test/);
   assert.match(windows, /CargoTestDir/);

@@ -1,7 +1,76 @@
-<?xml version="1.0" standalone="yes"?>
+<?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Codex Token Bar</title>
+        <item>
+            <title>0.8.3</title>
+            <pubDate>Thu, 30 Jul 2026 11:19:51 +0800</pubDate>
+            <sparkle:version>803</sparkle:version>
+            <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.8.3
+
+## 推荐直接下载
+
+- **Mac（Apple 芯片）**：[直接下载 DMG 安装包](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.dmg)
+- **Windows x64**：[直接下载安装程序](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-x64-setup.exe)
+- **Windows ARM64**：[直接下载安装程序](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-arm64-setup.exe)
+
+普通用户请选择上面的 DMG 或 EXE；`.app.zip`、`.sig` 和 `latest-windows.json` 主要供应用内自动更新与完整性校验使用。
+
+v0.8.3 是一次覆盖 Swift 原生版与跨平台版的统一更新，重点完善自动续跑、会话与 Provider 安全、精确历史、雷达实时口径、Windows 稳定性和双端界面一致性。
+
+## 更新亮点
+
+- **自动续跑改为任务监控**：可按会话创建、展开和修改保护任务，分别选择定时、额度恢复以及 Codex app-server 返回的中断/失败条件。无痕续跑优先在原线程调用空输入 `turn/start`，旧版 app-server 不兼容时才降级为可见续跑提示词；项目历史支持连续加载，不再停在固定 100 条。
+- **会话与 Provider 操作更安全**：Provider 修复、显式迁移、对话可见性重建、项目移动、会话删除与 Markdown 导出采用可恢复事务和跨端共享锁；多实例活动或目标 `CODEX_HOME` 无法可信确认时，破坏性操作会失败闭合，避免误删、误移或跨实例污染。
+- **隔离实例与同步能力**：支持创建隔离 Codex 实例并安全同步会话；同步、回滚和 Provider 双根恢复会核对文件身份、打开句柄与迁移阶段，异常退出后可以继续收敛。
+- **雷达与运行状态对齐网页实时口径**：官方雷达和众测雷达独立刷新并按网页当前值展示，兼容字段别名与短暂单源失败；主界面和悬浮窗可显示正在运行的主任务与子 Agent 数量，未读提醒只统计可确认的主会话。
+- **完整历史继续保持无上限精确**：精确索引覆盖所有可读取历史，不以文件数、字节数、事件数或扫描时长上限换性能；增量指纹、活跃文件暂存、损坏缓存重建和 Swift 分批释放临时对象降低了重复扫描、超时与高内存风险，已有兼容索引会继续复用。
+- **Windows 启动与界面修复**：首屏前仅执行最小同步工作，多个 WebView 延后到事件循环可用后创建，修复启动或反复重启仍卡死的风险；Windows 主应用图标改用 macOS 同源透明圆角图稿，浅色背景、字重、小字对比度和底部操作栏宽度也与 Swift 版进一步统一。
+- **后台与更新链路更稳健**：实时速率、未读刷新、设置保存、数据源切换、子进程输出和更新安装均缩短持锁窗口并增加可取消/有界回收；发布脚本在全部平台资产、签名和校验门禁通过后才原子更新 appcast。
+
+## 更新说明
+
+- 精确索引是本地缓存，不保存会话正文，也不会上传本地用量、历史或索引数据。
+- macOS 构建采用 ad-hoc 签名且未经过 Apple notarization；Windows 安装器未使用商业代码签名证书，首次安装可能出现系统安全提示。应用内更新资产仍使用独立的 Sparkle/Tauri 更新签名。
+- 请只从官方 GitHub Release 下载，并使用随包提供的统一 `SHA256SUMS-v0.8.3.txt` 核对文件。
+
+---
+
+## English
+
+# Codex Token Bar v0.8.3
+
+## Recommended downloads
+
+- **Mac (Apple silicon)**: [Download the DMG installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.dmg)
+- **Windows x64**: [Download the installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-x64-setup.exe)
+- **Windows ARM64**: [Download the installer](https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-windows-arm64-setup.exe)
+
+Most users should choose the DMG or EXE above. The `.app.zip`, `.sig`, and `latest-windows.json` files are primarily updater and integrity-verification assets.
+
+v0.8.3 is a unified update for the native Swift and cross-platform editions, focused on auto-resume, safe session and provider operations, exact history, live Radar semantics, Windows stability, and UI parity.
+
+## Highlights
+
+- **Auto-resume is now task-based monitoring**: create, expand, and edit a protected task per conversation, with separate timed, quota-recovery, and Codex app-server interruption/failure conditions. Invisible resume first starts an empty-input turn on the original thread; only older incompatible app-server versions fall back to a visible continuation prompt. Project history keeps loading beyond the initial 100 entries.
+- **Safer session and provider operations**: provider repair, explicit migration, conversation-visibility rebuilding, project moves, session deletion, and Markdown export now use recoverable transactions and shared cross-client locks. Destructive actions fail closed when multiple instances are active or the target `CODEX_HOME` cannot be proven, preventing operations against the wrong data root.
+- **Isolated instances and synchronization**: create isolated Codex instances and synchronize conversations safely. Synchronization, rollback, and dual-root provider recovery verify file identity, open handles, and migration phases so interrupted work can converge safely.
+- **Radar and running state match current web semantics**: official Radar and Crowd Radar refresh independently and show the website's current values, with field-alias compatibility and graceful single-source failure. The dashboard and floating panel show active main tasks and sub-agents, while unread alerts count only confirmed visible main conversations.
+- **Complete history remains exact and uncapped**: the index covers all readable history without file-count, byte, event, or scan-time caps. Incremental fingerprints, active-file staging, damaged-cache recovery, and batched Swift temporary-object release reduce rescans, timeouts, and memory pressure while preserving compatible existing indexes.
+- **Windows startup and interface fixes**: startup performs only minimal work before first paint, and additional WebViews are created after the event loop is available, addressing launch freezes that could survive repeated restarts. Windows now uses the same transparent rounded artwork as macOS, with lighter surfaces, normalized font weights, clearer small text, and a content-width bottom action rail.
+- **More robust background and update paths**: live-rate monitoring, unread refresh, settings persistence, source switching, child-process output, and update installation use shorter lock windows and cancellable bounded cleanup. The release pipeline publishes the appcast atomically only after every platform asset, signature, and checksum gate passes.
+
+## Update Notes
+
+- The exact index is local cache data. It does not retain conversation text or upload local usage, history, or index data.
+- The macOS build is ad-hoc signed and not Apple notarized. Windows installers do not use a commercial code-signing certificate, so the operating system may show a first-install warning. In-app updates still use separate Sparkle/Tauri updater signatures.
+- Download only from the official GitHub Release and verify files with the bundled unified `SHA256SUMS-v0.8.3.txt`.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.3/CodexTokenBar-v0.8.3-macos-arm64.app.zip" length="8409004" type="application/octet-stream" sparkle:edSignature="7zCbXup3Q6hn8fOiYVwF5IBtmn4h6zTjT80J1JMzyI0LkK4rF7Iu+QWdDNfGcG7cR0tSjLpIq70Lj9CnlJMkBg==" />
+        </item>
         <item>
             <title>0.8.2</title>
             <pubDate>Fri, 24 Jul 2026 20:31:13 +0800</pubDate>
@@ -9,7 +78,7 @@
             <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.8.2
+            <description sparkle:format="markdown"># Codex Token Bar v0.8.2
 
 v0.8.2 重做了 macOS Swift 原生版和 Windows Tauri 版的本地精确历史统计。目标不是限制可读取的历史，而是在保留完整、精确结果的前提下，让大体量 Codex 历史能够持续复用索引、增量更新并快速恢复。
 
@@ -54,8 +123,8 @@ v0.8.2 rebuilds exact local history accounting for both the native macOS Swift a
 - The first upgrade from v0.8.0 to v0.8.2 performs a one-time initial index build because v0.8.0 did not contain this exact SQLite index. Later compatible releases reuse it.
 - The exact index is a cache, not the source of truth. Deleting it does not delete Codex conversations; it only causes the index to be rebuilt.
 - The macOS build is ad-hoc signed and not Apple-notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
-]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.2/CodexTokenBar-v0.8.2-macos-arm64.app.zip" length="7642615" type="application/octet-stream" sparkle:edSignature="mJrxuPg0MKbVTJXkPbbG3EV3VmKkTicXKYoxObnpHWpI33S55Sd3gbK9hGPvD09GfeDh7iz5nONTnumwerY5BA=="/>
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.2/CodexTokenBar-v0.8.2-macos-arm64.app.zip" length="7642615" type="application/octet-stream" sparkle:edSignature="mJrxuPg0MKbVTJXkPbbG3EV3VmKkTicXKYoxObnpHWpI33S55Sd3gbK9hGPvD09GfeDh7iz5nONTnumwerY5BA==" />
         </item>
         <item>
             <title>0.8.0</title>
@@ -64,7 +133,7 @@ v0.8.2 rebuilds exact local history accounting for both the native macOS Swift a
             <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.8.0
+            <description sparkle:format="markdown"># Codex Token Bar v0.8.0
 
 v0.8.0 把 Codex Token Bar 从用量看板推进为本地优先的 Codex 会话、续跑、雷达与额度控制台，并同步覆盖 macOS Swift 原生版和 Windows Tauri 跨平台版。
 
@@ -80,7 +149,7 @@ v0.8.0 把 Codex Token Bar 从用量看板推进为本地优先的 Codex 会话�
 - **悬浮窗信息密度优化**：众测雷达成为独立整行，展示前三名且与官方 Radar 分栏线对齐；Radar 与众测之间更紧凑，众测与额度条仍保留正常留白。
 - **本地性能和磁盘写入优化**：Tauri 改用增量缓存与节流持久化，Swift 减少后台重复读取，未读扫描和实时速率链路降低无效 I/O；大规模本地 Codex 历史下仍保持 fail-closed 与可重建缓存隔离。
 - **Windows 构建兼容性**：进程存活判断显式采用 Win32 退出码类型，确保 x64 与 ARM64 构建兼容当前 `windows-sys` 绑定。
-- **会话删除可靠性加固**：修复 Chromium Origin、`local:<UUID>`、React reconciliation 回收按钮、旧事件处理器和 WebSocket 回执路由问题；真实删除仍走官方 `codex delete --force`，不直接手术 SQLite。
+- **会话删除可靠性加固**：修复 Chromium Origin、`local:&lt;UUID&gt;`、React reconciliation 回收按钮、旧事件处理器和 WebSocket 回执路由问题；真实删除仍走官方 `codex delete --force`，不直接手术 SQLite。
 
 ## 说明
 
@@ -106,11 +175,11 @@ v0.8.0 advances Codex Token Bar from a usage dashboard into a local-first Codex 
 - **Dual Radar and crowd ranking**: official Radar and Crowd Radar sit side by side on the dashboard. Detail and floating surfaces show the crowd top three, full ranking, task/cell coverage, and contributors. Tauri now reads the public endpoints through the native layer to avoid browser CORS, while both parsers tolerate wrappers, aliases, numeric strings, and malformed individual rows.
 - **More resilient Radar data**: official Radar blocks decode independently and tolerate quota-field and JSON-wrapper changes. Missing data remains unavailable instead of becoming a fabricated zero, and a failed refresh keeps a healthy prior snapshot with an explicit stale marker.
 - **Better quota and history analysis**: a selected 24-hour range still shows its total summary when quota stays at zero or does not change. Floating expiry supports fractional days, quota colors can follow relative pace, and the header adds an explainable lifetime “saved estimate” based on API value minus public plan fees.
-- **Redesigned settings**: Swift and Tauri share nine categories for General, Surfaces, Monitoring & Quota, Floating Panel, Content & Order, Alerts & Updates, Data & Maintenance, Session Enhancements, and Auto Resume, while frequent actions remain available on the dashboard.
+- **Redesigned settings**: Swift and Tauri share nine categories for General, Surfaces, Monitoring &amp; Quota, Floating Panel, Content &amp; Order, Alerts &amp; Updates, Data &amp; Maintenance, Session Enhancements, and Auto Resume, while frequent actions remain available on the dashboard.
 - **Denser floating layout**: Crowd Radar owns a separate full-width row with the top three and a divider aligned to official Radar. Radar-to-crowd spacing is tighter without compressing the normal gap before quota.
 - **Lower local I/O cost**: Tauri uses incremental caches and throttled persistence, Swift avoids repeated background reads, and unread/live-rate paths reduce unnecessary scanning. Rebuildable caches remain isolated and safety checks stay fail-closed on large local Codex histories.
 - **Windows build compatibility**: process-liveness checks now use the Win32 exit-code type explicitly, keeping x64 and ARM64 builds compatible with current `windows-sys` bindings.
-- **Hardened session deletion**: fixes cover Chromium Origin rejection, `local:<UUID>`, React reconciliation, stale handlers, and WebSocket response routing. Real deletion still uses official `codex delete --force` and never performs direct SQLite surgery.
+- **Hardened session deletion**: fixes cover Chromium Origin rejection, `local:&lt;UUID&gt;`, React reconciliation, stale handlers, and WebSocket response routing. Real deletion still uses official `codex delete --force` and never performs direct SQLite surgery.
 
 ## Notes
 
@@ -119,8 +188,8 @@ v0.8.0 advances Codex Token Bar from a usage dashboard into a local-first Codex 
 - macOS continues to use the native Swift app and Sparkle. Windows uses the Tauri + React + Rust app and separate Tauri updater metadata; the channels are not interchangeable.
 - The macOS build is ad-hoc signed and not Apple notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
 - Live rate and lifetime savings are local estimates. Local usage, conversations, quota, reset-credit, and Radar data are not uploaded as telemetry.
-]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.0/CodexTokenBar-v0.8.0-macos-arm64.app.zip" length="7604402" type="application/octet-stream" sparkle:edSignature="9sIfHcHPDSJgg2FXPWySCHhCLsLulfa3Y+hTI/fy5f1uwuFVTLzcrLvHUTkLJ7ppyfjjMr62Vsy+R6ummIRaDg=="/>
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.8.0/CodexTokenBar-v0.8.0-macos-arm64.app.zip" length="7604402" type="application/octet-stream" sparkle:edSignature="9sIfHcHPDSJgg2FXPWySCHhCLsLulfa3Y+hTI/fy5f1uwuFVTLzcrLvHUTkLJ7ppyfjjMr62Vsy+R6ummIRaDg==" />
         </item>
         <item>
             <title>0.7.3</title>
@@ -129,7 +198,7 @@ v0.8.0 advances Codex Token Bar from a usage dashboard into a local-first Codex 
             <sparkle:shortVersionString>0.7.3</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.7.3
+            <description sparkle:format="markdown"># Codex Token Bar v0.7.3
 
 v0.7.3 是一次覆盖 macOS Swift 原生版与 Windows Tauri 跨平台版的大型正确性、性能与界面优化。
 
@@ -188,8 +257,8 @@ v0.7.3 is a broad correctness, performance, accessibility, and interface update 
 - The macOS build is ad-hoc signed and not Apple notarized. Windows installers do not use a commercial code-signing certificate. Download only from the official Release and verify SHA256; the operating system may show an unidentified-developer or unknown-publisher warning.
 - Live rate is a work-intensity estimate, not exact throughput. Local usage, session, quota, reset-credit, and Radar data are not uploaded as telemetry.
 - The complete engineering report is available at `audits/v0.7.3/reports/optimization-report.md`.
-]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.3/CodexTokenBar-v0.7.3-macos-arm64.app.zip" length="6618673" type="application/octet-stream" sparkle:edSignature="r4kEEP1T20fJzm5GqCEgVNnFJpfIKOcRcZ+e+QBF2ZDmRClqAosnyczIUm4GznKykQTtYP9a5AHSv8aXFC25DQ=="/>
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.3/CodexTokenBar-v0.7.3-macos-arm64.app.zip" length="6618673" type="application/octet-stream" sparkle:edSignature="r4kEEP1T20fJzm5GqCEgVNnFJpfIKOcRcZ+e+QBF2ZDmRClqAosnyczIUm4GznKykQTtYP9a5AHSv8aXFC25DQ==" />
         </item>
         <item>
             <title>0.7.2</title>
@@ -198,7 +267,7 @@ v0.7.3 is a broad correctness, performance, accessibility, and interface update 
             <sparkle:shortVersionString>0.7.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.7.2
+            <description sparkle:format="markdown"># Codex Token Bar v0.7.2
 
 这次是 Mac Swift 版的稳定性更新，重点修正本地统计口径、实时速率、雷达详情刷新、曲线图浏览和额度刷新设置。Windows / Tauri 版本继续走自己的更新路线，不共用 Mac appcast。
 
@@ -247,69 +316,8 @@ This is a stability update for the native Mac Swift build. It focuses on local u
 - Live rate remains a work-intensity estimate, not exact throughput.
 - Local token usage, cache hit rates, session statistics, quota history, reset-credit data, and Radar data are not uploaded to third parties.
 - The app remains ad-hoc signed and is not Apple notarized. Verify the SHA256 checksum before opening if macOS warns about an unidentified developer.
-]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.2/CodexTokenBar-v0.7.2-macos-arm64.app.zip" length="6255944" type="application/octet-stream" sparkle:edSignature="ZjjYHSpykG8grslO6H+VvRfE+RFl+mblUkIaCi44fEP+WsOBFzSmgegnNwSGY0CjWqZVrEVI9k2vQiD70t6KAw=="/>
-        </item>
-        <item>
-            <title>0.7.0</title>
-            <pubDate>Sat, 27 Jun 2026 01:23:25 +0800</pubDate>
-            <sparkle:version>700</sparkle:version>
-            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Codex Token Bar v0.7.0
-
-这次更新把 Mac 版继续稳定在原生 Swift 路线：重点改进了实时速率显示、用量统计刷新性能、额度反推工具、重置卡详情和悬浮窗细节。Windows 版同样使用 `0.7.0` 版本号，但会按 Windows 自己的构建与更新路线发布。
-
-## 更新亮点
-
-- 用量统计改为增量刷新：手动刷新和自动刷新仍然是真刷新，但只处理新增或变化的会话文件，减少大体量历史数据下的重复扫描和缓存重写。
-- 实时速率更像“工作强度估计”：速度显示加入轻量平滑、显示上限和工具输入估算，降低 300-500 tok/s 这类离谱跳值；主界面也明确说明该速率只是估算。
-- 可以关闭实时速率：不想看速率的人可以直接关闭，主界面会变暗提示，悬浮窗里的速率模块也会同步关闭或开启。
-- 速度条更省性能：速度条填充改为 layer-backed 渲染，保留平滑过渡，但避免 SwiftUI Shape 动画持续占用 CPU。
-- 新增额度反推工具：在最近 24 小时曲线上选择起止范围后，可以根据 token 用量、缓存命中率、官方 API 定价和额度下降反推 5h / 7d 的估计总额度。
-- 额度曲线更稳：读取额度历史时会过滤明显异常的瞬间 100 / 0 跳点，并在中间缺失记录时平滑连接正常下降段。
-- 重置卡详情更清楚：主界面显示最近一张卡还剩多久，详情列表按最近到期排序，默认收起，只保留头像、剩余时间和进度条，点击后展开原因、关联用户、到期时间和卡片编号。
-- 悬浮窗继续打磨：趣味化余量、雷达、额度条、总/今/次调用的排版和自适应文字颜色继续调整，速率条上和居中状态使用不同字号。
-
-## 更新说明
-
-- Mac 版仍使用 Swift 原生 App、DMG 安装包和 Sparkle appcast 更新；Windows 版请使用 Windows 对应资产，不要混用 Mac 的 appcast。
-- 速率显示只用于判断 Codex 是否正在工作，不代表精确真实吞吐。官方为避免高频日志写入损耗硬盘，已经砍掉了很多流式输出日志。
-- 额度反推是估算工具，7d 下降太少、记录颗粒度太粗或遇到异常额度点时，结果可能偏差较大；界面会显示 7d / 5h 倍率辅助判断可信度。
-- 本地 token、缓存命中、会话统计、额度历史和重置卡信息仍然来自本机 Codex 数据与本地账号接口。
-- Codex Token Bar 不会上传 prompt、输出、日志、会话内容或账号额度。
-- Sparkle 更新仍然需要用户确认，不会在后台静默替换 App。
-- 当前构建仍是 ad-hoc 签名，尚未 Apple notarize。如果 macOS 提示“未知开发者”，请从官方 Release 下载并校验 SHA256 后再打开。
-
----
-
-## English
-
-This update keeps the Mac build on the native Swift lane. It focuses on live-rate display stability, incremental usage refresh performance, quota estimation, reset-credit details, and floating-panel polish. The Windows build also uses version `0.7.0`, but it should be released through the Windows-specific build and update path.
-
-## Highlights
-
-- Makes usage refresh incremental: manual and automatic refreshes still perform real refreshes, but only new or changed session files are processed, reducing repeated scans and large cache rewrites.
-- Makes live rate feel more like a work-intensity estimate: lightweight smoothing, display caps, and tool-input estimation reduce unrealistic 300-500 tok/s spikes, and the dashboard now explains that the rate is only an estimate.
-- Adds a live-rate off switch: users who do not want live rate can disable it. The dashboard dims the rate area, and the floating-panel rate module follows the same setting.
-- Improves speed-bar performance: the speed fill is now layer-backed, keeping smooth visual transitions while avoiding continuous SwiftUI Shape animation CPU cost.
-- Adds quota back-estimation: select a range on the recent 24-hour chart to estimate 5h / 7d total quota from token usage, cache hit rate, official API pricing, and quota drops.
-- Stabilizes quota curves: obvious instant 100 / 0 anomaly points are filtered, and normal drops are connected smoothly across missing history gaps.
-- Clarifies reset-credit details: the dashboard shows the nearest expiring credit, the detail list is sorted by expiry, rows stay collapsed by default, and each row can expand to show reason, linked user, expiry time, and card ID.
-- Polishes the floating panel: playful quota hints, Radar data, quota bars, and total/today/current calls receive further layout and adaptive text-color tuning, with separate font sizes for embedded and centered hint styles.
-
-## Update Notes
-
-- The Mac build still uses the native Swift app, DMG installer, and Sparkle appcast updates. Use the Windows assets for Windows; do not mix the Mac appcast into the Windows update lane.
-- Live rate is only a rough signal that Codex is working, not an exact throughput measurement. Official Codex builds now suppress many high-frequency streaming logs to avoid excessive disk writes.
-- Quota back-estimation is approximate. If the 7d quota barely moves, history granularity is coarse, or anomalous quota points appear, the result may drift; the UI shows the 7d / 5h ratio as a confidence hint.
-- Local token usage, cache hit rates, session statistics, quota history, and reset-credit data still come from local Codex files and local account endpoints.
-- Codex Token Bar does not upload prompts, outputs, logs, conversation content, or quota data.
-- Sparkle updates still require user confirmation; the app does not silently replace itself in the background.
-- The app remains ad-hoc signed and is not Apple notarized. Verify the SHA256 checksum before opening if macOS warns about an unidentified developer.
-]]></description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.0/CodexTokenBar-v0.7.0-macos-arm64.app.zip" length="6032281" type="application/octet-stream" sparkle:edSignature="QvMI136NPWmZ5roYPA+NRglUz//IWJNvE9nzcwsTb1G5qjBDhCMdGLsSaLu6EEOzSPdh9z2U774/UY2Zz3G4Dw=="/>
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.2/CodexTokenBar-v0.7.2-macos-arm64.app.zip" length="6255944" type="application/octet-stream" sparkle:edSignature="ZjjYHSpykG8grslO6H+VvRfE+RFl+mblUkIaCi44fEP+WsOBFzSmgegnNwSGY0CjWqZVrEVI9k2vQiD70t6KAw==" />
         </item>
     </channel>
 </rss>

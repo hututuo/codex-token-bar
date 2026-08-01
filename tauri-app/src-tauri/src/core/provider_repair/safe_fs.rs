@@ -1957,8 +1957,9 @@ fn windows_rename_open_file(
     replace_existing: bool,
 ) -> std::io::Result<()> {
     use windows_sys::Wdk::Storage::FileSystem::{
-        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
-        FILE_RENAME_INFORMATION_0,
+        FileRenameInformationEx, NtSetInformationFile, FILE_RENAME_INFORMATION,
+        FILE_RENAME_INFORMATION_0, FILE_RENAME_POSIX_SEMANTICS,
+        FILE_RENAME_REPLACE_IF_EXISTS,
     };
     use windows_sys::Win32::Foundation::RtlNtStatusToDosError;
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
@@ -1976,7 +1977,12 @@ fn windows_rename_open_file(
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     unsafe {
         (*info).Anonymous = FILE_RENAME_INFORMATION_0 {
-            ReplaceIfExists: replace_existing,
+            Flags: FILE_RENAME_POSIX_SEMANTICS
+                | if replace_existing {
+                    FILE_RENAME_REPLACE_IF_EXISTS
+                } else {
+                    0
+                },
         };
         (*info).RootDirectory = destination_parent.as_raw_handle() as _;
         (*info).FileNameLength = u32::try_from(name_bytes)
@@ -1991,7 +1997,7 @@ fn windows_rename_open_file(
             info.cast(),
             u32::try_from(buffer_bytes)
                 .map_err(|_| std::io::Error::other("Windows Provider rename 缓冲区过长"))?,
-            FileRenameInformation,
+            FileRenameInformationEx,
         )
     };
     if status < 0 {
@@ -2074,6 +2080,34 @@ fn cleanup_windows_temp_file(
     name: &OsStr,
     diagnostic: &Path,
 ) -> Result<(), String> {
+    match windows_open_regular_file_at(parent, name, diagnostic, windows_read_file_access()) {
+        Ok(Some(named)) => {
+            if windows_file_identity(&named)? != windows_file_identity(&file)? {
+                return Err(format!(
+                    "Provider 临时文件名称已指向其他物理文件，拒绝误删；残留路径为 {}",
+                    diagnostic.display()
+                ));
+            }
+        }
+        Ok(None) => {
+            // The owned file may already be delete-pending after a concurrent
+            // unlink. Closing our last handle completes that safe deletion.
+            drop(file);
+            parent.sync_all().map_err(|error| {
+                format!(
+                    "Provider 临时文件已删除但父目录同步失败，残留可能恢复于 {}：{error}",
+                    diagnostic.display()
+                )
+            })?;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!(
+                "Provider 临时文件清理状态无法确认，残留路径为 {}：{error}",
+                diagnostic.display()
+            ))
+        }
+    }
     windows_delete_open_file(&file).map_err(|error| {
         format!(
             "Provider 临时文件清理失败，残留路径为 {}：{error}",

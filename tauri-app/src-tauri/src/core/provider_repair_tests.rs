@@ -2825,15 +2825,27 @@ fn restore_commit_revalidation_rejects_account_and_home_generation_switches() {
                 || error.contains("规范路径"),
             "{case}: {error}"
         );
-        assert!(error.contains("已补偿"), "{case}: {error}");
+        if cfg!(windows) && case == "generation" {
+            assert!(
+                error.contains("恢复补偿未完成") && error.contains("恢复材料保留"),
+                "{case}: {error}"
+            );
+        } else {
+            assert!(error.contains("已补偿"), "{case}: {error}");
+        }
         if case == "generation" {
             assert_eq!(
                 fs::read_to_string(home.join("config.toml")).unwrap(),
                 "new-home-sentinel"
             );
+            let expected_held_config = if cfg!(windows) {
+                "backup-config"
+            } else {
+                "live-config"
+            };
             assert_eq!(
                 fs::read_to_string(held_home.join("config.toml")).unwrap(),
-                "live-config"
+                expected_held_config
             );
         } else {
             assert_eq!(
@@ -2841,7 +2853,16 @@ fn restore_commit_revalidation_rejects_account_and_home_generation_switches() {
                 "live-config"
             );
         }
-        assert_no_recovery_staging(&backup_root);
+        if cfg!(windows) && case == "generation" {
+            assert!(fs::read_dir(&backup_root).unwrap().flatten().any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".restore-recovery-")
+            }));
+        } else {
+            assert_no_recovery_staging(&backup_root);
+        }
         fs::remove_dir_all(fixture).unwrap();
     }
 }
@@ -4306,6 +4327,7 @@ fn windows_disposable_home_backup_sync_rollback_roundtrip() {
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
     fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "windows-roundtrip-account");
     fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
     let session = home.join("sessions/thread.jsonl");
     write_session(&session, "thread", "legacy-provider");

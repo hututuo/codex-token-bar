@@ -1200,7 +1200,7 @@ mod tests {
         assert_eq!(PathBuf::from(result.previous_cwd), fixture.original_cwd);
         assert_eq!(
             PathBuf::from(result.target_cwd),
-            target.canonicalize().unwrap()
+            persisted_workspace_path(&target.canonicalize().unwrap())
         );
         let connection = Connection::open(&fixture.database).unwrap();
         let cwd: String = connection
@@ -1210,7 +1210,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(PathBuf::from(cwd), target.canonicalize().unwrap());
+        assert_eq!(
+            PathBuf::from(cwd),
+            persisted_workspace_path(&target.canonicalize().unwrap())
+        );
         let first = std::fs::read_to_string(&fixture.rollout)
             .unwrap()
             .lines()
@@ -1218,9 +1221,7 @@ mod tests {
             .unwrap()
             .to_string();
         let event: Value = serde_json::from_str(&first).unwrap();
-        let expected_target = target
-            .canonicalize()
-            .unwrap()
+        let expected_target = persisted_workspace_path(&target.canonicalize().unwrap())
             .to_string_lossy()
             .into_owned();
         assert_eq!(
@@ -1328,7 +1329,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(PathBuf::from(cwd), target.canonicalize().unwrap());
+        assert_eq!(
+            PathBuf::from(cwd),
+            persisted_workspace_path(&target.canonicalize().unwrap())
+        );
     }
 
     #[test]
@@ -1539,9 +1543,7 @@ mod tests {
         let fixture = fixture();
         let target = fixture.home.join("Drift Target");
         std::fs::create_dir_all(&target).unwrap();
-        let canonical_target = target
-            .canonicalize()
-            .unwrap()
+        let canonical_target = persisted_workspace_path(&target.canonicalize().unwrap())
             .to_string_lossy()
             .into_owned();
         // 模拟历史漂移：数据库已在目标目录，rollout 首行仍指原目录。
@@ -1585,9 +1587,7 @@ mod tests {
         let fixture = fixture();
         let target = fixture.home.join("Swift Prepared Target");
         std::fs::create_dir_all(&target).unwrap();
-        let canonical_target = target
-            .canonicalize()
-            .unwrap()
+        let canonical_target = persisted_workspace_path(&target.canonicalize().unwrap())
             .to_string_lossy()
             .into_owned();
 
@@ -1662,9 +1662,7 @@ mod tests {
         let fixture = fixture();
         let target = fixture.home.join("Swap Remnant Target");
         std::fs::create_dir_all(&target).unwrap();
-        let canonical_target = target
-            .canonicalize()
-            .unwrap()
+        let canonical_target = persisted_workspace_path(&target.canonicalize().unwrap())
             .to_string_lossy()
             .into_owned();
 

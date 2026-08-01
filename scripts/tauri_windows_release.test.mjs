@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const macScript = path.join(scriptsDir, "sign_tauri_windows_release.sh");
 const renameHelperSource = path.join(scriptsDir, "rename_no_replace_darwin.c");
+const macSigningRuntimeTest = process.platform === "darwin" ? test : test.skip;
 const version = "0.7.2";
 const installerNames = [
   `CodexTokenBar-v${version}-windows-arm64-setup.exe`,
@@ -289,7 +290,7 @@ async function runSignerFixture(options = {}) {
   }
 }
 
-test("Mac signing treats installer bytes as opaque while manifest binds x64 and ARM64 targets", async () => {
+macSigningRuntimeTest("Mac signing treats installer bytes as opaque while manifest binds x64 and ARM64 targets", async () => {
   const result = await runSignerFixture();
   assert.equal(result.ok, true, result.stderr);
   await assert.rejects(access(path.join(result.root, "file-calls")), error => error?.code === "ENOENT");
@@ -326,7 +327,7 @@ test("Mac signing treats installer bytes as opaque while manifest binds x64 and 
   assert.doesNotMatch(published.join("") + result.stdout + result.stderr, /TEST_PRIVATE_KEY_DO_NOT_LEAK/);
 });
 
-test("npm signer distinguishes unset, empty, and nonempty password environments without exposing secrets", async () => {
+macSigningRuntimeTest("npm signer distinguishes unset, empty, and nonempty password environments without exposing secrets", async () => {
   for (const passwordMode of ["unset", "empty", "nonempty"]) {
     const result = await runSignerFixture({ useNpmSigner: true, passwordMode });
     assert.equal(result.ok, true, `${passwordMode}: ${result.stderr}`);
@@ -347,7 +348,7 @@ test("npm signer distinguishes unset, empty, and nonempty password environments 
   }
 });
 
-test("Mac signing refuses an existing output directory byte-for-byte", async () => {
+macSigningRuntimeTest("Mac signing refuses an existing output directory byte-for-byte", async () => {
   const result = await runSignerFixture({ outputExists: true });
   assert.equal(result.ok, false);
   assert.match(result.stderr, /Release output already exists/);
@@ -355,7 +356,7 @@ test("Mac signing refuses an existing output directory byte-for-byte", async () 
   assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
 });
 
-test("Mac rename helper uses Darwin RENAME_EXCL and preserves an empty destination created at the syscall boundary", async () => {
+macSigningRuntimeTest("Mac rename helper uses Darwin RENAME_EXCL and preserves an empty destination created at the syscall boundary", async () => {
   const source = await readFile(renameHelperSource, "utf8");
   assert.match(source, /renamex_np\s*\([^;]+RENAME_EXCL/);
   assert.match(source, /#ifdef RENAME_EXCL_TESTING[\s\S]+RENAME_EXCL_TEST_BARRIER[\s\S]+#endif/);
@@ -370,7 +371,7 @@ test("Mac rename helper uses Darwin RENAME_EXCL and preserves an empty destinati
   assert.deepEqual(await snapshotDirectory(result.buildDir), result.buildSnapshot);
 });
 
-test("Mac signing installs cleanup trap before allocating the rename helper temp file", async () => {
+macSigningRuntimeTest("Mac signing installs cleanup trap before allocating the rename helper temp file", async () => {
   const source = await readFile(macScript, "utf8");
   assert.ok(source.indexOf("trap cleanup EXIT INT TERM") < source.indexOf('RENAME_HELPER=$(mktemp'));
   const result = await runSignerFixture({ failSecondMktemp: true });
@@ -400,7 +401,7 @@ for (const [name, options, expectedError] of [
   ["extra build input", { extraFile: true }, /exactly two installers and build-manifest/i],
   ["final publication conflict", { finalConflict: true }, /appeared|already exists|publish/i],
 ]) {
-  test(`Mac signing rejects ${name} without creating the output directory`, async () => {
+  macSigningRuntimeTest(`Mac signing rejects ${name} without creating the output directory`, async () => {
     const result = await runSignerFixture(options);
     assert.equal(result.ok, false);
     assert.match(result.stderr, expectedError);
