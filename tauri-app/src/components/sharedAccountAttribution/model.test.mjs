@@ -168,6 +168,25 @@ test("Radar-compatible amount drives share while current API equivalent stays se
   assert.equal(result.residualPercent, 10.5);
 });
 
+test("shared-account API values use complete historical model rows before the fallback", () => {
+  const mixedBucket = bucket(0, 2_000_000, {
+    calls: 2,
+    modelTrackingComplete: true,
+    modelBreakdowns: [
+      { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+      { model: "gpt-5.6-terra", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+    ],
+  });
+  const result = estimate({
+    buckets: [mixedBucket],
+    scannedBuckets: [mixedBucket],
+    priceModel: "gpt56Luna",
+  });
+
+  assert.equal(result.localCurrentAPIEquivalentUSD, 7);
+  assert.equal(result.localComparableUSD, 7.5);
+});
+
 test("Radar basisDate controls pricing even when the outer feed date is newer", () => {
   const result = estimate({
     quotaRadar: radar({

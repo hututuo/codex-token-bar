@@ -1,6 +1,6 @@
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel";
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
-import type { RecentUsagePoint, RecentUsageSourceContribution } from "../../types/dashboard";
+import type { ModelTokenBreakdown, RecentUsagePoint, RecentUsageSourceContribution } from "../../types/dashboard";
 
 export const ATTRIBUTION_BUCKET_SECONDS = 5 * 60;
 const STORAGE_PREFIX = "sharedAccountAttributionBuckets:v4";
@@ -15,6 +15,8 @@ export interface AttributionTokenContribution {
 
 export interface AttributionTokenBucket extends AttributionTokenContribution {
   startUnix: number;
+  modelBreakdowns?: ModelTokenBreakdown[] | null;
+  modelTrackingComplete?: boolean;
   sourceContributions?: Record<string, AttributionTokenContribution> | null;
   sourceTrackingComplete?: boolean;
 }
@@ -339,9 +341,17 @@ function tokenBucketFromPoint(point: RecentUsagePoint): AttributionTokenBucket |
     outputTokens: finiteNonnegative(point.outputTokens),
     totalTokens: finiteNonnegative(point.tokens),
     calls: finiteNonnegative(point.calls),
+    modelBreakdowns: null,
+    modelTrackingComplete: false,
     sourceContributions: null,
     sourceTrackingComplete: false,
   };
+  const modelBreakdowns = normalizeModelBreakdowns(point.modelBreakdowns);
+  if (modelBreakdowns !== null
+    && sameContribution(aggregateModelBreakdowns(modelBreakdowns), bucket)) {
+    bucket.modelBreakdowns = modelBreakdowns;
+    bucket.modelTrackingComplete = true;
+  }
   if (!Array.isArray(point.sourceContributions)) return bucket;
   if (typeof point.sourceContributionEpoch !== "string"
     || !point.sourceContributionEpoch.trim()) return bucket;
@@ -357,6 +367,7 @@ function tokenBucketFromPoint(point: RecentUsagePoint): AttributionTokenBucket |
   return {
     startUnix: bucket.startUnix,
     ...aggregate,
+    ...modelTrackingFields(bucket, aggregate),
     sourceContributions,
     sourceTrackingComplete: true,
   };
@@ -410,6 +421,9 @@ function normalizeStoredBucket(value: unknown): AttributionTokenBucket | null {
     || !validNonnegative(candidate.calls)) return null;
   const inputTokens = candidate.inputTokens;
   const sourceContributions = normalizeStoredContributions(candidate.sourceContributions);
+  const modelBreakdowns = normalizeModelBreakdowns(candidate.modelBreakdowns);
+  const modelTrackingComplete = candidate.modelTrackingComplete === true
+    && modelBreakdowns !== null;
   const sourceTrackingComplete = candidate.sourceTrackingComplete === true
     && sourceContributions !== null;
   if (candidate.sourceTrackingComplete !== undefined
@@ -418,6 +432,12 @@ function normalizeStoredBucket(value: unknown): AttributionTokenBucket | null {
   if (candidate.sourceTrackingComplete !== true
     && candidate.sourceContributions !== undefined
     && candidate.sourceContributions !== null) return null;
+  if (candidate.modelTrackingComplete !== undefined
+    && typeof candidate.modelTrackingComplete !== "boolean") return null;
+  if (candidate.modelTrackingComplete === true && modelBreakdowns === null) return null;
+  if (candidate.modelTrackingComplete !== true
+    && candidate.modelBreakdowns !== undefined
+    && candidate.modelBreakdowns !== null) return null;
   const normalized: AttributionTokenBucket = {
     startUnix: Math.round(candidate.startUnix),
     inputTokens,
@@ -425,12 +445,78 @@ function normalizeStoredBucket(value: unknown): AttributionTokenBucket | null {
     outputTokens: candidate.outputTokens,
     totalTokens: candidate.totalTokens,
     calls: candidate.calls,
+    modelBreakdowns: modelTrackingComplete ? modelBreakdowns : null,
+    modelTrackingComplete,
     sourceContributions: sourceTrackingComplete ? sourceContributions : null,
     sourceTrackingComplete,
   };
   if (sourceTrackingComplete
     && !sameContribution(aggregateContributions(sourceContributions), normalized)) return null;
+  if (modelTrackingComplete
+    && !sameContribution(aggregateModelBreakdowns(modelBreakdowns), normalized)) return null;
   return normalized;
+}
+
+function normalizeModelBreakdowns(value: unknown): ModelTokenBreakdown[] | null {
+  if (!Array.isArray(value)) return null;
+  const result: ModelTokenBreakdown[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== "object") return null;
+    const candidate = row as Partial<ModelTokenBreakdown>;
+    if (candidate.model !== null && candidate.model !== undefined && typeof candidate.model !== "string") return null;
+    const raw = candidate.breakdown;
+    if (!raw
+      || !validNonnegative(raw.inputTokens)
+      || !validNonnegative(raw.cachedInputTokens)
+      || !validNonnegative(raw.outputTokens)
+      || !validNonnegative(raw.totalTokens)
+      || !validNonnegative(raw.calls)) return null;
+    result.push({
+      model: typeof candidate.model === "string" ? candidate.model : null,
+      breakdown: {
+        inputTokens: raw.inputTokens,
+        cachedInputTokens: Math.min(raw.cachedInputTokens, raw.inputTokens),
+        outputTokens: raw.outputTokens,
+        totalTokens: raw.totalTokens,
+        calls: raw.calls,
+      },
+    });
+  }
+  return result;
+}
+
+function aggregateModelBreakdowns(values: ModelTokenBreakdown[]): AttributionTokenContribution {
+  return values.reduce((total, row) => addContributions(total, {
+    inputTokens: row.breakdown.inputTokens,
+    cachedInputTokens: row.breakdown.cachedInputTokens,
+    outputTokens: row.breakdown.outputTokens,
+    totalTokens: row.breakdown.totalTokens,
+    calls: row.breakdown.calls,
+  }), emptyContribution());
+}
+
+function modelTrackingFields(
+  source: AttributionTokenBucket,
+  contribution: AttributionTokenContribution,
+): Pick<AttributionTokenBucket, "modelBreakdowns" | "modelTrackingComplete"> {
+  if (source.modelTrackingComplete === true
+    && Array.isArray(source.modelBreakdowns)
+    && sameContribution(source, contribution)) {
+    return { modelBreakdowns: source.modelBreakdowns, modelTrackingComplete: true };
+  }
+  return { modelBreakdowns: null, modelTrackingComplete: false };
+}
+
+function modelTrackingFieldsForMergedContribution(
+  previous: AttributionTokenBucket | null,
+  current: AttributionTokenBucket,
+  contribution: AttributionTokenContribution,
+): Pick<AttributionTokenBucket, "modelBreakdowns" | "modelTrackingComplete"> {
+  const currentFields = modelTrackingFields(current, contribution);
+  if (currentFields.modelTrackingComplete) return currentFields;
+  return previous
+    ? modelTrackingFields(previous, contribution)
+    : { modelBreakdowns: null, modelTrackingComplete: false };
 }
 
 function normalizeStoredContributions(
@@ -468,6 +554,11 @@ function mergeBucketContributions(
       bucket: {
         startUnix: current.startUnix,
         ...(previous ? maxContribution(previous, current) : current),
+        ...modelTrackingFieldsForMergedContribution(
+          previous,
+          current,
+          previous ? maxContribution(previous, current) : current,
+        ),
         sourceContributions: null,
         sourceTrackingComplete: false,
       },
@@ -499,6 +590,7 @@ function mergeBucketContributions(
       bucket: {
         startUnix: current.startUnix,
         ...aggregate,
+        ...modelTrackingFieldsForMergedContribution(previous, current, aggregate),
         sourceContributions: mergedSources,
         sourceTrackingComplete: true,
       },
@@ -510,6 +602,11 @@ function mergeBucketContributions(
     bucket: {
       startUnix: current.startUnix,
       ...maxContribution(previous, current),
+      ...modelTrackingFieldsForMergedContribution(
+        previous,
+        current,
+        maxContribution(previous, current),
+      ),
       sourceContributions: null,
       sourceTrackingComplete: false,
     },
@@ -580,8 +677,23 @@ function sameBucket(
   return left !== null && right !== null
     && left.startUnix === right.startUnix
     && sameContribution(left, right)
+    && (left.modelTrackingComplete === true) === (right.modelTrackingComplete === true)
+    && sameModelBreakdowns(left.modelBreakdowns, right.modelBreakdowns)
     && (left.sourceTrackingComplete === true) === (right.sourceTrackingComplete === true)
     && sameSourceContributions(left.sourceContributions, right.sourceContributions);
+}
+
+function sameModelBreakdowns(
+  left: ModelTokenBreakdown[] | null | undefined,
+  right: ModelTokenBreakdown[] | null | undefined,
+): boolean {
+  if (!left || !right) return !left && !right;
+  const sortKey = (row: ModelTokenBreakdown) => row.model ?? "";
+  const leftRows = [...left].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  const rightRows = [...right].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  return leftRows.length === rightRows.length
+    && leftRows.every((row, index) => row.model === rightRows[index].model
+      && sameContribution(row.breakdown, rightRows[index].breakdown));
 }
 
 function sameSourceContributions(

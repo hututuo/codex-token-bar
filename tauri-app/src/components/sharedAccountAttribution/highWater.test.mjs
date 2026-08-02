@@ -154,6 +154,8 @@ test("same source and bucket merge each component monotonically within one prove
     outputTokens: 40,
     totalTokens: 160,
     calls: 3,
+    modelBreakdowns: null,
+    modelTrackingComplete: false,
     sourceContributions: {
       "source-a": {
         inputTokens: 120,
@@ -165,6 +167,32 @@ test("same source and bucket merge each component monotonically within one prove
     },
     sourceTrackingComplete: true,
   });
+});
+
+test("complete point-level model rows survive high-water normalization", () => {
+  const modelBreakdowns = [
+    {
+      model: "gpt-5.6-sol",
+      breakdown: {
+        inputTokens: 100,
+        cachedInputTokens: 0,
+        outputTokens: 40,
+        totalTokens: 140,
+        calls: 2,
+      },
+    },
+  ];
+  const result = merge(null, [point(START, [contribution("source-a", 100, {
+    tokens: 140,
+    outputTokens: 40,
+    calls: 2,
+  })], { modelBreakdowns })]);
+
+  assert.equal(result.effectiveBuckets[0].modelTrackingComplete, true);
+  assert.deepEqual(result.effectiveBuckets[0].modelBreakdowns, modelBreakdowns);
+  assert.deepEqual(readAttributionHighWaterState("unused", {
+    getItem: () => JSON.stringify(result.record),
+  }).record, result.record);
 });
 
 test("a source component decrease or provenance epoch rotation becomes sticky ambiguity", () => {

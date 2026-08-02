@@ -4,7 +4,7 @@ import {
   type CodexRadarQuotaRow,
 } from "../../domain/codexRadar/model.ts";
 import type { OfficialAPIPriceModel, QuotaPriceBasis } from "../../settings/quotaPriceModel";
-import { officialAPICostUSD } from "../../settings/quotaPriceModel.ts";
+import { modelAwareAPICostUSD } from "../../settings/quotaPriceModel.ts";
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
 import type { QuotaAttributionIdentity, QuotaLimit } from "../../types/dashboard";
 import { ATTRIBUTION_BUCKET_SECONDS, type AttributionTokenBucket } from "./highWater.ts";
@@ -223,14 +223,20 @@ export function estimateSharedAccountAttribution({
 
   const tokens = aggregateAttributionBuckets(buckets);
   const scannedTokens = aggregateAttributionBuckets(scannedBuckets);
-  const localRadar20260730EquivalentUSD = costForBreakdown(tokens, priceModel, "radar20260730");
-  const localCurrentAPIEquivalentUSD = costForBreakdown(tokens, priceModel, "current");
+  const localRadar20260730EquivalentUSD = costForBreakdown(tokens, buckets, priceModel, "radar20260730");
+  const localCurrentAPIEquivalentUSD = costForBreakdown(tokens, buckets, priceModel, "current");
   const scannedLocalRadar20260730EquivalentUSD = costForBreakdown(
     scannedTokens,
+    scannedBuckets,
     priceModel,
     "radar20260730",
   );
-  const scannedLocalCurrentAPIEquivalentUSD = costForBreakdown(scannedTokens, priceModel, "current");
+  const scannedLocalCurrentAPIEquivalentUSD = costForBreakdown(
+    scannedTokens,
+    scannedBuckets,
+    priceModel,
+    "current",
+  );
   const localComparableUSD = priceBasis === "radar20260730"
     ? localRadar20260730EquivalentUSD
     : localCurrentAPIEquivalentUSD;
@@ -387,16 +393,26 @@ function attributionOutcome(
 
 function costForBreakdown(
   breakdown: SharedAccountTokenBreakdown,
+  buckets: AttributionTokenBucket[],
   priceModel: OfficialAPIPriceModel,
   basis: QuotaPriceBasis,
 ): number {
-  return officialAPICostUSD(
-    breakdown.inputTokens,
-    breakdown.cachedInputTokens,
-    breakdown.outputTokens,
+  const modelBreakdowns = buckets.every((bucket) => (
+    bucket.modelTrackingComplete === true && Array.isArray(bucket.modelBreakdowns)
+  ))
+    ? buckets.flatMap((bucket) => bucket.modelBreakdowns ?? [])
+    : [];
+  return modelAwareAPICostUSD(
+    modelBreakdowns,
+    {
+      inputTokens: breakdown.inputTokens,
+      cachedInputTokens: breakdown.cachedInputTokens,
+      outputTokens: breakdown.outputTokens,
+      calls: breakdown.calls,
+    },
     priceModel,
     basis,
-  );
+  ).costUSD;
 }
 
 function emptyResult(
