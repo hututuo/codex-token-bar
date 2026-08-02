@@ -40,25 +40,8 @@ extension RecentUsageChart {
         return path
     }
 
-    /// Cache hit rate is an observation, not a continuously changing value.
-    /// Only adjacent buckets with real usage are connected; idle gaps stay blank.
-    func observedOptionalLinePath(points: [CGPoint?]) -> Path {
-        var path = Path()
-        var previous: CGPoint?
-        for point in points {
-            guard let point else {
-                previous = nil
-                continue
-            }
-            if let previous {
-                path.move(to: previous)
-                path.addLine(to: point)
-            }
-            previous = point
-        }
-        return path
-    }
-
+    /// Cache hit rate is a discrete observation, so every real usage bucket is
+    /// rendered as an independent point without implying values between buckets.
     func observedOptionalPointPath(points: [CGPoint?], radius: CGFloat = 1.6) -> Path {
         Path { path in
             for point in points.compactMap({ $0 }) {

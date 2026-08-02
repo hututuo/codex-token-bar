@@ -6266,11 +6266,6 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 
-.chart-line--observed {
-  stroke-dasharray: none;
-  opacity: 0.72;
-}
-
 .chart-hover-bubble div {
   display: flex;
   align-items: baseline;

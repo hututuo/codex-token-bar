@@ -1106,8 +1106,6 @@ struct RecentUsageChart: View, Equatable {
             }
 
             if showCacheHitRate && preparedData.hasCacheCalls {
-                observedOptionalLinePath(points: plotData.cachePoints)
-                    .stroke(AppTheme.accentCyan.opacity(0.72), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
                 observedOptionalPointPath(points: plotData.cachePoints)
                     .fill(AppTheme.accentCyan)
             }

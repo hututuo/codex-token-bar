@@ -369,22 +369,6 @@ export function optionalSmoothPath(points: Array<Point | null>): string {
   return segments.join(" ");
 }
 
-export function observedOptionalPath(points: Array<Point | null>): string {
-  const commands: string[] = [];
-  let previous: Point | null = null;
-  for (const point of points) {
-    if (point === null) {
-      previous = null;
-      continue;
-    }
-    if (previous !== null) {
-      commands.push(`M ${formatNumber(previous.x)} ${formatNumber(previous.y)} L ${formatNumber(point.x)} ${formatNumber(point.y)}`);
-    }
-    previous = point;
-  }
-  return commands.join(" ");
-}
-
 export function observedPointPath(points: Array<Point | null>, radius = 1.6): string {
   return points
     .filter((point): point is Point => point !== null)

@@ -73,7 +73,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testCacheHitObservationPathDoesNotBridgeIdleBuckets() {
+    func testCacheHitObservationPointPathKeepsOnlyRealBuckets() {
         let chart = RecentUsageChart(
             bins: [],
             hourlyBins: [],
@@ -83,21 +83,14 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             quotaHourlyBins: []
         )
 
-        let path = chart.observedOptionalLinePath(points: [
+        let path = chart.observedOptionalPointPath(points: [
             CGPoint(x: 0, y: 20),
             nil,
             nil,
             CGPoint(x: 30, y: 10),
         ])
-        XCTAssertTrue(path.isEmpty)
-
-        let adjacent = chart.observedOptionalLinePath(points: [
-            CGPoint(x: 0, y: 20),
-            CGPoint(x: 10, y: 15),
-            nil,
-            CGPoint(x: 30, y: 10),
-        ])
-        XCTAssertEqual(adjacent.boundingRect.maxX, 10, accuracy: 0.0001)
+        XCTAssertFalse(path.isEmpty)
+        XCTAssertEqual(path.boundingRect.maxX, 31.6, accuracy: 0.0001)
     }
 
     @MainActor
