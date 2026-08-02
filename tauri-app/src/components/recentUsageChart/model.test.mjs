@@ -181,7 +181,9 @@ test("smoothPath uses cubic commands and optionalSmoothPath breaks at missing qu
 });
 
 test("cache hit observations render as independent points", () => {
-  assert.match(observedPointPath([{ x: 0, y: 20 }, null, { x: 30, y: 10 }]), /M -1\.6 18\.4/);
+  const path = observedPointPath([{ x: 0, y: 20 }, null, { x: 30, y: 10 }]);
+  assert.match(path, /M -1\.6 20 A 1\.6 1\.6 0 1 0 1\.6 20/);
+  assert.doesNotMatch(path, / L /);
 });
 
 test("smoothPath falls back to a full polyline when x positions are not increasing", () => {

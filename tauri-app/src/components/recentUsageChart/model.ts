@@ -373,11 +373,9 @@ export function observedPointPath(points: Array<Point | null>, radius = 1.6): st
   return points
     .filter((point): point is Point => point !== null)
     .map((point) => [
-      `M ${formatNumber(point.x - radius)} ${formatNumber(point.y - radius)}`,
-      `L ${formatNumber(point.x + radius)} ${formatNumber(point.y - radius)}`,
-      `L ${formatNumber(point.x + radius)} ${formatNumber(point.y + radius)}`,
-      `L ${formatNumber(point.x - radius)} ${formatNumber(point.y + radius)}`,
-      "Z",
+      `M ${formatNumber(point.x - radius)} ${formatNumber(point.y)}`,
+      `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(point.x + radius)} ${formatNumber(point.y)}`,
+      `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(point.x - radius)} ${formatNumber(point.y)}`,
     ].join(" "))
     .join(" ");
 }
