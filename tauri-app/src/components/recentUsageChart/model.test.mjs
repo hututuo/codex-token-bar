@@ -8,6 +8,7 @@ import {
   percentText,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaSelectionAttribution,
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
@@ -217,6 +218,58 @@ test("quotaConsumptionSelection uses cumulative quota drop instead of start-end 
   assert.equal(selection?.sevenDay.quotaDropPercent, 5);
   assert.equal(selection?.fiveHour.impliedWindowBudgetUSD?.toFixed(4), "15.3846");
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD?.toFixed(4), "40.0000");
+});
+
+test("24h selection attribution compares observed account drop with Radar-priced local usage", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, {
+        inputTokens: 1_000_000,
+        tokens: 1_000_000,
+        calls: 1,
+        sevenDayRemainingPercent: 0.90,
+        modelBreakdowns: [{
+          model: "gpt-5.6-terra",
+          breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+        }],
+      }),
+      point(300, {
+        inputTokens: 1_000_000,
+        tokens: 1_000_000,
+        calls: 1,
+        sevenDayRemainingPercent: 0.87,
+        modelBreakdowns: [{
+          model: "gpt-5.6-terra",
+          breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+        }],
+      }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+  assert.ok(selection);
+
+  const result = quotaSelectionAttribution(selection, {
+    status: "indistinguishable",
+    priceBasis: "radar20260730",
+    radarPlanTotalUSD: 100,
+    quotaDataStale: false,
+    radarDataStale: false,
+    usagePendingQuotaRefresh: false,
+    historyChangedLowConfidence: false,
+    cycleStartUnix: 0,
+    cycleEndUnix: 604_800,
+    segmentStartUnix: 0,
+    quotaUpdatedAtUnix: 600,
+  });
+
+  assert.ok(result);
+  assert.equal(result.accountDropPercent, 3);
+  assert.equal(result.localComparableCostUSD, 5);
+  assert.equal(result.localSharePercent, 5);
+  assert.equal(result.nonLocalDifferencePercent, -2);
+  assert.equal(result.state, "withinTolerance");
 });
 
 test("quotaConsumptionSelection keeps a flat zero-quota range summary", () => {

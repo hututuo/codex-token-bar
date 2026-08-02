@@ -152,9 +152,7 @@ struct AccountQuotaRefreshCadenceMenu: View {
 
 struct AccountQuotaStrip: View {
     let snapshot: AccountQuotaSnapshot
-    var sharedAccountAttribution: SharedAccountUsageAttributionResult? = nil
     @Binding var showingResetCreditDetails: Bool
-    var onShowSharedAccountAttribution: () -> Void = {}
 
     private var presentation: AccountQuotaStripPresentation {
         AccountQuotaStripPresentation(snapshot: snapshot)
@@ -194,9 +192,7 @@ struct AccountQuotaStrip: View {
                 }
 
                 AccountQuotaPaceInsight(
-                    snapshot: snapshot,
-                    sharedAccountAttribution: sharedAccountAttribution,
-                    onShowSharedAccountAttribution: onShowSharedAccountAttribution
+                    snapshot: snapshot
                 )
             }
 
@@ -736,8 +732,6 @@ struct AccountQuotaSegmentPresentation: Equatable {
 
 struct AccountQuotaPaceInsight: View {
     let snapshot: AccountQuotaSnapshot
-    var sharedAccountAttribution: SharedAccountUsageAttributionResult? = nil
-    var onShowSharedAccountAttribution: () -> Void = {}
 
     private var insight: AccountQuotaPaceStatus? {
         snapshot.sevenDayPaceStatus
@@ -756,19 +750,10 @@ struct AccountQuotaPaceInsight: View {
                 .frame(width: AccountQuotaPaceInsightLayout.iconWidth)
 
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text(insight?.title ?? "等待额度")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(insight == nil ? .secondary : .primary)
-                        .lineLimit(1)
-
-                    if let sharedAccountAttribution {
-                        SharedAccountUsageAttributionSummaryButton(
-                            result: sharedAccountAttribution,
-                            action: onShowSharedAccountAttribution
-                        )
-                    }
-                }
+                Text(insight?.title ?? "等待额度")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(insight == nil ? .secondary : .primary)
+                    .lineLimit(1)
                 Text(insight?.detail ?? "读取后计算均速")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.secondary)

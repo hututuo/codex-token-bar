@@ -89,6 +89,7 @@ interface QuotaStripProps {
     throughGeneration: number,
   ) => Promise<boolean>;
   onAttributionSafetyRefreshNeeded?: () => void;
+  onAttributionChange?: (result: SharedAccountAttributionResult | null) => void;
   onRetryQuotaRefresh?: () => void;
   preciseDataAvailable?: boolean;
   preciseDataCoveredAt?: string | null;
@@ -425,6 +426,7 @@ function QuotaStripView({
   onAttributionPreciseRefreshNeeded,
   onAttributionSafetyAcknowledge,
   onAttributionSafetyRefreshNeeded,
+  onAttributionChange,
   onQuotaRefreshIntervalChange,
   onRetryQuotaRefresh,
   preciseDataAvailable = false,
@@ -447,7 +449,6 @@ function QuotaStripView({
   warnings = [],
 }: QuotaStripProps) {
   const [showResetDetails, setShowResetDetails] = useState(false);
-  const [showAttributionDetails, setShowAttributionDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
   const [attributionPersistence, setAttributionPersistence] = useState({
     sourceHomeIdentity: "",
@@ -1191,6 +1192,11 @@ function QuotaStripView({
   );
 
   useEffect(() => {
+    onAttributionChange?.(attributionSettings.enabled ? attribution : null);
+    return () => onAttributionChange?.(null);
+  }, [attribution, attributionSettings.enabled, onAttributionChange]);
+
+  useEffect(() => {
     if (!attributionSettings.enabled
       || !ownsAttributionPersistence
       || !preciseDataFresh
@@ -1598,22 +1604,13 @@ function QuotaStripView({
     onAttributionPreciseRefreshNeeded(comparisonUpdatedAt);
   }, [onAttributionPreciseRefreshNeeded, segmentResolution]);
 
-  useEffect(() => {
-    if (!showAttributionDetails) return undefined;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowAttributionDetails(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [showAttributionDetails]);
-
   const selectedQuotaRefreshIntervalMs = sanitizeQuotaRefreshIntervalMs(quotaRefreshIntervalMs);
   const visibleQuotaLimits = [snapshot.fiveHour, snapshot.sevenDay]
     .filter((quota) => quota.availability !== "absent");
   const quotaStripClassName = [
     "quota-strip",
     visibleQuotaLimits.length === 1 ? "quota-strip--single-window" : "",
-    showResetDetails || showAttributionDetails ? "quota-strip--details-open" : "",
+    showResetDetails ? "quota-strip--details-open" : "",
   ].filter(Boolean).join(" ");
 
   function toggleCredit(credit: ResetCreditDetail, index: number) {
@@ -1630,7 +1627,11 @@ function QuotaStripView({
   }
 
   return (
-    <section className={quotaStripClassName} aria-label="账户额度">
+    <section
+      className={quotaStripClassName}
+      aria-label="账户额度"
+      data-attribution-status={attributionSettings.enabled ? attribution.status : undefined}
+    >
       <div className="quota-plan">
         <span>本地账户额度</span>
         <strong>本地读取</strong>
@@ -1658,18 +1659,6 @@ function QuotaStripView({
         <div className="quota-pace-copy">
           <div className="quota-pace-title">
             <strong>{snapshot.paceLabel}</strong>
-            {attributionSettings.enabled ? (
-              <button
-                aria-expanded={showAttributionDetails}
-                className="shared-attribution-trigger"
-                onClick={() => setShowAttributionDetails(true)}
-                title="查看本机与共享账号用量归因"
-                type="button"
-              >
-                <span>归因</span>
-                <b>{compactAttributionText(attribution)}</b>
-              </button>
-            ) : null}
           </div>
           <span>7d 均速比较</span>
         </div>
@@ -1742,13 +1731,6 @@ function QuotaStripView({
             )}
           </div>
         </div>
-      ) : null}
-      {showAttributionDetails ? (
-        <SharedAccountAttributionDetail
-          attribution={attribution}
-          onClose={() => setShowAttributionDetails(false)}
-          sourceUrl={radarSnapshot?.links.html ?? "https://codexradar.com"}
-        />
       ) : null}
     </section>
   );

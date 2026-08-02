@@ -2,20 +2,21 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("QuotaStrip keeps the attribution trigger separate from refresh select and exposes a full detail dialog", async () => {
-  const source = await readFile(new URL("../QuotaStrip.tsx", import.meta.url), "utf8");
-  const triggerIndex = source.indexOf('className="shared-attribution-trigger"');
-  const refreshIndex = source.indexOf('className="quota-refresh-cadence"');
+test("attribution leaves the top quota strip and is passed to the 24h selection card", async () => {
+  const [quotaStrip, chart, page] = await Promise.all([
+    readFile(new URL("../QuotaStrip.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../../pages/DashboardPage.tsx", import.meta.url), "utf8"),
+  ]);
 
-  assert.ok(triggerIndex > 0);
-  assert.ok(refreshIndex > triggerIndex);
-  assert.match(source, /aria-label="共享账号用量归因详情"/);
-  assert.match(source, /本机占比/);
-  assert.match(source, /本机等值|localComparableUSD/);
-  assert.match(source, /当前 API 等值/);
-  assert.match(source, /定价基准日/);
-  assert.match(source, /差额（他人估）/);
-  assert.match(source, /不会被截成 0/);
+  assert.doesNotMatch(quotaStrip, /className="shared-attribution-trigger"/);
+  assert.match(quotaStrip, /onAttributionChange/);
+  assert.match(page, /sharedAccountAttribution=\{sharedAccountAttribution\}/);
+  assert.match(chart, /range === "24h"/);
+  assert.match(chart, /fixedSelectionEndIndex !== null/);
+  assert.match(chart, /aria-label="选区共享账号归因"/);
+  assert.match(chart, /账号实降/);
+  assert.match(chart, /本机折算/);
 });
 
 test("monitoring settings own the default-on attribution, tier and shared price-model controls", async () => {

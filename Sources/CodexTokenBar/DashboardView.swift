@@ -928,12 +928,6 @@ struct DashboardView: View {
                 },
                 threadDeleteStatus: threadDeleteBridge.status,
                 autoResumeEnabled: autoResumeController.hasProtectedTasks,
-                sharedAccountAttribution: sharedAccountAttributionEnabled ? sharedAccountAttributionResult : nil,
-                onShowSharedAccountAttribution: {
-                    showingResetCreditDetails = false
-                    showingCodexRadarDetails = false
-                    showingSharedAccountAttributionDetails = true
-                },
                 showingInterfaceScaleMenu: $showingInterfaceScaleMenu,
                 interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,

@@ -6355,6 +6355,22 @@ input[type="range"]::-moz-range-thumb {
   color: var(--orange);
 }
 
+.quota-estimate-attribution {
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.quota-estimate-attribution strong {
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+.quota-estimate-attribution i {
+  color: var(--line-strong);
+  font-size: 10px;
+  font-style: normal;
+}
+
 .quota-estimate-chip {
   display: inline-flex;
   align-items: center;

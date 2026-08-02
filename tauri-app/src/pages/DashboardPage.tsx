@@ -33,6 +33,7 @@ import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 import type { CommandFailureDiagnostic } from "../api/client";
 import { buildLocalCommandNoticeLines } from "../state/localCommandNotice";
 import { desktopPlatform } from "../platform/desktop";
+import type { SharedAccountAttributionResult } from "../components/sharedAccountAttribution/model";
 
 const SessionManagementWorkspace = lazy(async () => {
   const module = await import("./SessionManagementWorkspace");
@@ -193,6 +194,7 @@ export function DashboardPage({
   selectedLiveThreadId,
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
+  const [sharedAccountAttribution, setSharedAccountAttribution] = useState<SharedAccountAttributionResult | null>(null);
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
   const [initialSettingsRequest] = useState(consumePendingSettingsRequest);
   const [settingsOpen, setSettingsOpen] = useState(initialSettingsRequest !== null);
@@ -280,6 +282,7 @@ export function DashboardPage({
               onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
               onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
               onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
+              onAttributionChange={setSharedAccountAttribution}
               onToggleLiveRate={onToggleLiveRate}
               onToggleFloating={onToggleFloating}
               onToggleStatusTray={onToggleStatusTray}
@@ -294,7 +297,10 @@ export function DashboardPage({
               usageCacheInitializing={usageCacheInitializing}
             />
             {analyticsReady ? (
-              <DashboardAnalyticsSection dashboard={dashboard} />
+              <DashboardAnalyticsSection
+                dashboard={dashboard}
+                sharedAccountAttribution={sharedAccountAttribution}
+              />
             ) : (
               <section className="analytics-boot" aria-label="图表区域正在准备">
                 <span>正在准备图表和排行...</span>

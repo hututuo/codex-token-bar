@@ -17,6 +17,7 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaSelectionAttribution,
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
@@ -27,10 +28,12 @@ import {
   type OfficialAPIPriceModel,
   type QuotaConsumptionEstimate,
   type QuotaConsumptionSelection,
+  type QuotaSelectionAttributionResult,
   type QuotaSelectionState,
   type RecentChartRange,
   type SeriesVisibility,
 } from "./recentUsageChart/model";
+import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
 
 interface RecentUsageChartProps {
   recentUsage24h: RecentUsagePoint[];
@@ -38,6 +41,7 @@ interface RecentUsageChartProps {
   recentUsage30d: RecentUsagePoint[];
   fiveHourQuotaPresent?: boolean;
   sevenDayQuotaPresent?: boolean;
+  sharedAccountAttribution?: SharedAccountAttributionResult | null;
 }
 
 const CHART_WIDTH = 980;
@@ -53,6 +57,7 @@ export function RecentUsageChart({
   recentUsage30d,
   fiveHourQuotaPresent = true,
   sevenDayQuotaPresent = true,
+  sharedAccountAttribution = null,
 }: RecentUsageChartProps) {
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
   const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
@@ -89,6 +94,11 @@ export function RecentUsageChart({
   const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
     ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
     : null;
+  const selectionAttribution = range === "24h"
+    && fixedSelectionEndIndex !== null
+    && consumptionSelection !== null
+    ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
+    : null;
   const quotaEstimateVisibility = quotaEstimateWindowVisibility(data);
 
   useLayoutEffect(() => {
@@ -109,6 +119,7 @@ export function RecentUsageChart({
     window.addEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
     return () => window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
   }, []);
+
 
   function updateRange(next: RecentChartRange) {
     setRange(next);
@@ -300,6 +311,7 @@ export function RecentUsageChart({
           currentSevenDayQuotaPresent={sevenDayQuotaPresent}
           showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
           selection={consumptionSelection}
+          attribution={selectionAttribution}
           showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
           onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
         />
@@ -431,6 +443,7 @@ function SelectionSummaryBubble({
 }
 
 function RecentChartQuotaEstimateOverlay({
+  attribution,
   currentFiveHourQuotaPresent,
   currentSevenDayQuotaPresent,
   showsFiveHourQuota,
@@ -438,6 +451,7 @@ function RecentChartQuotaEstimateOverlay({
   showsSevenDayQuota,
   onClose,
 }: {
+  attribution: QuotaSelectionAttributionResult | null;
   currentFiveHourQuotaPresent: boolean;
   currentSevenDayQuotaPresent: boolean;
   showsFiveHourQuota: boolean;
@@ -489,8 +503,36 @@ function RecentChartQuotaEstimateOverlay({
             {selection.hasDivergentBudgetRatio ? <b className="is-warning">偏离 6x，误差可能较大</b> : null}
           </div>
         ) : null}
+        {attribution ? <QuotaSelectionAttributionRow attribution={attribution} /> : null}
       </div>
       <button aria-label="关闭额度估算" onClick={onClose} type="button">×</button>
+    </div>
+  );
+}
+
+function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelectionAttributionResult }) {
+  const differenceTitle = attribution.state === "suspectedNonLocalUsage"
+    ? "疑似他人"
+    : attribution.state === "localEstimateExceedsAccountDrop"
+      ? "本机估高"
+      : attribution.allowsAttributionConclusion ? "差额" : "暂算差额";
+  const difference = attribution.state === "suspectedNonLocalUsage"
+    ? Math.max(attribution.nonLocalDifferencePercent, 0)
+    : attribution.state === "localEstimateExceedsAccountDrop"
+      ? Math.abs(attribution.nonLocalDifferencePercent)
+      : attribution.nonLocalDifferencePercent;
+  return (
+    <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
+      <span>账号实降</span>
+      <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
+      <i aria-hidden="true">｜</i>
+      <span>本机折算</span>
+      <strong>≈{oneDecimalPercent(attribution.localSharePercent)}</strong>
+      <i aria-hidden="true">｜</i>
+      <span>{differenceTitle}</span>
+      <strong>{attribution.state === "suspectedNonLocalUsage" || attribution.state === "localEstimateExceedsAccountDrop"
+        ? `≈${oneDecimalPercent(difference)}`
+        : signedOneDecimalPercent(difference)}</strong>
     </div>
   );
 }
@@ -656,6 +698,11 @@ function moneyText(value: number | null): string {
 
 function oneDecimalPercent(value: number): string {
   return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
+}
+
+function signedOneDecimalPercent(value: number): string {
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${oneDecimalPercent(value)}`;
 }
 
 function timeRange(startUnix: number, bucketSeconds: number): string {

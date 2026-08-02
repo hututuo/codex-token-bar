@@ -3,12 +3,14 @@ import { CacheHitRanking } from "../../components/CacheHitRanking";
 import { RecentUsageChart } from "../../components/RecentUsageChart";
 import { TokenActivitySection } from "../../components/TokenActivitySection";
 import type { DashboardSnapshot } from "../../types/dashboard";
+import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 
 interface DashboardAnalyticsSectionProps {
   dashboard: DashboardSnapshot;
+  sharedAccountAttribution: SharedAccountAttributionResult | null;
 }
 
-function DashboardAnalyticsSectionView({ dashboard }: DashboardAnalyticsSectionProps) {
+function DashboardAnalyticsSectionView({ dashboard, sharedAccountAttribution }: DashboardAnalyticsSectionProps) {
   return (
     <>
       <TokenActivitySection days={dashboard.activityDays} />
@@ -18,6 +20,7 @@ function DashboardAnalyticsSectionView({ dashboard }: DashboardAnalyticsSectionP
         recentUsage7d={dashboard.recentUsage7d}
         recentUsage30d={dashboard.recentUsage30d}
         sevenDayQuotaPresent={dashboard.quota.sevenDay.availability !== "absent"}
+        sharedAccountAttribution={sharedAccountAttribution}
       />
       <CacheHitRanking cacheUsage={dashboard.cacheUsage} legacyItems={dashboard.cacheHitRanking} />
     </>

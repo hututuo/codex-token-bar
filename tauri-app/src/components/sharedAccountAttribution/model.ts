@@ -420,10 +420,22 @@ function emptyResult(
   priceModel: OfficialAPIPriceModel,
   quotaRadar: CodexRadarQuotaRadar | null,
 ): SharedAccountAttributionResult {
+  const tierRow = quotaRadar?.rows.find((row) => radarTierForRow(row) === selectedTier) ?? null;
+  const radarPlanTotalUSD = quotaRadar
+    && quotaRadarWindowAvailable(quotaRadar, "sevenDay")
+    && tierRow?.sevenD !== null
+    && Number.isFinite(tierRow?.sevenD)
+    && (tierRow?.sevenD ?? 0) > 0
+    ? tierRow?.sevenD ?? null
+    : null;
+  const radarPricingBasisDate = normalizedRadarDate(quotaRadar?.basisDate || "");
+  const priceBasis = radarCompatiblePriceBasis(radarPricingBasisDate);
   return {
     status: "radarUnavailable",
-    pricingBasisStatus: "unknown",
-    priceBasis: null,
+    pricingBasisStatus: priceBasis === "radar20260730"
+      ? "legacyRadarBasis"
+      : priceBasis === "current" ? "currentBasis" : "unknown",
+    priceBasis,
     priceModel,
     selectedTier,
     selectedTierLabel: sharedAccountTierLabel(selectedTier),
@@ -444,9 +456,9 @@ function emptyResult(
     radarDataStale: false,
     preciseDataFresh: false,
     preciseDataCoveredAtUnix: null,
-    radarPlanTotalUSD: null,
+    radarPlanTotalUSD,
     radarDate: quotaRadar?.date || quotaRadar?.basisDate || "",
-    radarPricingBasisDate: normalizedRadarDate(quotaRadar?.basisDate || ""),
+    radarPricingBasisDate,
     radarBasis: quotaRadar?.basisWindowLabel || quotaRadar?.basisWindow || "",
     radarUpdatedAt: quotaRadar?.updatedAt || "",
     radarSource: quotaRadar?.source || "",

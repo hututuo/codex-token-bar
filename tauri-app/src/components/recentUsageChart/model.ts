@@ -2,8 +2,10 @@ import type { RecentUsagePoint } from "../../types/dashboard";
 import {
   modelAwareAPICostUSD,
   officialAPICostUSD as calculateOfficialAPICostUSD,
+  type ModelTokenCostRow,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
+import type { SharedAccountAttributionResult } from "../sharedAccountAttribution/model.ts";
 
 export type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
@@ -82,6 +84,7 @@ export interface QuotaConsumptionEstimate {
   outputTokens: number;
   calls: number;
   cacheHitRate: number;
+  quotaDropAvailable: boolean;
   confidence: QuotaConsumptionConfidence;
 }
 
@@ -99,10 +102,27 @@ export interface QuotaConsumptionSelection {
   outputTokens: number;
   calls: number;
   cacheHitRate: number;
+  modelBreakdowns: ModelTokenCostRow[];
   fiveHour: QuotaConsumptionEstimate;
   sevenDay: QuotaConsumptionEstimate;
   sevenDayToFiveHourBudgetRatio: number | null;
   hasDivergentBudgetRatio: boolean;
+}
+
+export type QuotaSelectionAttributionState =
+  | "withinTolerance"
+  | "suspectedNonLocalUsage"
+  | "localEstimateExceedsAccountDrop"
+  | "provisional";
+
+export interface QuotaSelectionAttributionResult {
+  state: QuotaSelectionAttributionState;
+  accountDropPercent: number;
+  localSharePercent: number;
+  nonLocalDifferencePercent: number;
+  localComparableCostUSD: number;
+  radarSevenDayTotalUSD: number;
+  allowsAttributionConclusion: boolean;
 }
 
 export interface QuotaSelectionState {
@@ -484,6 +504,7 @@ export function quotaConsumptionSelection(
     outputTokens: breakdown.outputTokens,
     calls: breakdown.calls,
     cacheHitRate: breakdown.cacheHitRate,
+    modelBreakdowns: selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
     fiveHour,
     sevenDay,
     sevenDayToFiveHourBudgetRatio: ratio,
@@ -619,7 +640,70 @@ function quotaConsumptionEstimate(
     outputTokens: breakdown.outputTokens,
     calls: breakdown.calls,
     cacheHitRate: breakdown.cacheHitRate,
+    quotaDropAvailable: quotaDropPercent !== null,
     confidence,
+  };
+}
+
+export function quotaSelectionAttribution(
+  selection: QuotaConsumptionSelection,
+  context: SharedAccountAttributionResult | null,
+): QuotaSelectionAttributionResult | null {
+  if (!context
+    || !selection.sevenDay.quotaDropAvailable
+    || context.priceBasis === null
+    || context.radarPlanTotalUSD === null
+    || !Number.isFinite(context.radarPlanTotalUSD)
+    || context.radarPlanTotalUSD <= 0) {
+    return null;
+  }
+
+  const localComparableCostUSD = modelAwareAPICostUSD(
+    selection.modelBreakdowns,
+    {
+      inputTokens: selection.inputTokens,
+      cachedInputTokens: selection.cachedInputTokens,
+      outputTokens: selection.outputTokens,
+      calls: selection.calls,
+    },
+    selection.priceModel,
+    context.priceBasis,
+  ).costUSD;
+  const accountDropPercent = selection.sevenDay.quotaDropPercent;
+  const localSharePercent = localComparableCostUSD / context.radarPlanTotalUSD * 100;
+  const nonLocalDifferencePercent = accountDropPercent - localSharePercent;
+  const quotaCoveredBoundary = context.quotaUpdatedAtUnix === null
+    ? null
+    : Math.floor(context.quotaUpdatedAtUnix / (5 * 60)) * (5 * 60);
+  const allowsAttributionConclusion = (
+    context.status === "positiveResidual"
+      || context.status === "negativeResidual"
+      || context.status === "indistinguishable"
+  )
+    && !context.quotaDataStale
+    && !context.radarDataStale
+    && !context.usagePendingQuotaRefresh
+    && !context.historyChangedLowConfidence
+    && (context.cycleStartUnix === null || selection.startUnix >= context.cycleStartUnix)
+    && (context.cycleEndUnix === null || selection.endUnix <= context.cycleEndUnix)
+    && (context.segmentStartUnix === null || selection.startUnix >= context.segmentStartUnix)
+    && (quotaCoveredBoundary === null || selection.endUnix <= quotaCoveredBoundary);
+  const state: QuotaSelectionAttributionState = !allowsAttributionConclusion
+    ? "provisional"
+    : Math.abs(nonLocalDifferencePercent) <= 2
+      ? "withinTolerance"
+      : nonLocalDifferencePercent > 0
+        ? "suspectedNonLocalUsage"
+        : "localEstimateExceedsAccountDrop";
+
+  return {
+    state,
+    accountDropPercent,
+    localSharePercent,
+    nonLocalDifferencePercent,
+    localComparableCostUSD,
+    radarSevenDayTotalUSD: context.radarPlanTotalUSD,
+    allowsAttributionConclusion,
   };
 }
 

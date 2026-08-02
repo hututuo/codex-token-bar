@@ -1437,7 +1437,8 @@ struct RecentUsageChart: View, Equatable {
     private func activeSelectionAttribution(
         for selection: QuotaConsumptionSelection?
     ) -> QuotaSelectionAttributionResult? {
-        guard let selection,
+        guard selectedRange == .twentyFourHours,
+              let selection,
               let sharedAccountAttributionContext else { return nil }
         return QuotaSelectionAttributionEstimator.estimate(
             selection: selection,

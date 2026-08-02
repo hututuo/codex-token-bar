@@ -10,6 +10,7 @@ import type {
   LiveThreadOption,
   PlatformCapabilities,
 } from "../../types/dashboard";
+import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 
 interface DashboardSummarySectionProps {
   dashboard: DashboardSnapshot;
@@ -33,6 +34,7 @@ interface DashboardSummarySectionProps {
     throughGeneration: number,
   ) => Promise<boolean>;
   onAttributionSafetyRefreshNeeded: () => void;
+  onAttributionChange: (result: SharedAccountAttributionResult | null) => void;
   onToggleLiveRate: () => void;
   onToggleFloating: () => void;
   onToggleStatusTray: () => void;
@@ -63,6 +65,7 @@ export function DashboardSummarySection({
   onAttributionPreciseRefreshNeeded,
   onAttributionSafetyAcknowledge,
   onAttributionSafetyRefreshNeeded,
+  onAttributionChange,
   onToggleLiveRate,
   onToggleFloating,
   onToggleStatusTray,
@@ -82,6 +85,7 @@ export function DashboardSummarySection({
         onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
         onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
         onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
+        onAttributionChange={onAttributionChange}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
         onRetryQuotaRefresh={onQuotaRefresh}
         preciseDataAvailable={dashboard.preciseRecentUsageCoveredAt !== null

@@ -78,7 +78,7 @@ test("expired reset waits for quota refresh without wall-clock-rejecting durable
           sourceHomeIdentity: "home-a",
         })));
 
-        assert.match(container.querySelector(".shared-attribution-trigger")?.textContent ?? "", /等待额度刷新/);
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "waitingQuotaRefresh");
         assert.equal(storageKeys(window.localStorage).some((key) => key.startsWith("sharedAccountAttributionBuckets:")), true);
         assert.equal(storageKeys(window.localStorage).some((key) => key.startsWith("sharedAccountAttributionSegment:")), true);
       } finally {
@@ -119,7 +119,7 @@ test("an older or failed precise series cannot write raw token high-water", asyn
           sourceHomeIdentity: "home-a",
         })));
 
-        assert.match(container.querySelector(".shared-attribution-trigger")?.textContent ?? "", /精确用量待刷新/);
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "preciseDataStale");
         assert.equal(
           storageKeys(window.localStorage).some((key) => key.startsWith("sharedAccountAttributionBuckets:")),
           false,
@@ -193,10 +193,7 @@ test("a ready segment whose durable high-water row disappeared is quarantined fo
           sourceHomeIdentity: "home-a",
         })));
 
-        assert.match(
-          container.querySelector(".shared-attribution-trigger")?.textContent ?? "",
-          /损坏记录已隔离/,
-        );
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "persistenceRebaseline");
         assert.equal(
           storageKeys(window.localStorage).some((key) => key.startsWith("sharedAccountAttributionBuckets:")),
           true,
@@ -279,7 +276,7 @@ test("a pending account switch persists post-boundary raw buckets without calcul
           sourceHomeIdentity: "home-a",
         })));
 
-        assert.match(container.querySelector(".shared-attribution-trigger")?.textContent ?? "", /切号基线待刷新/);
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "awaitingAccountSwitchBaseline");
         const pendingSegment = readAttributionSegment(segmentKey, window.localStorage);
         assert.equal(pendingSegment?.scopeKey, "sha256:account-b");
         assert.equal(pendingSegment?.baselineReady, false);
@@ -366,10 +363,7 @@ test("stored partial usage advances one unchanged comparison at the next 5m boun
           readAttributionSegment(segmentKey, window.localStorage)?.comparisonUpdatedAtUnix,
           nextBoundary,
         );
-        assert.match(
-          container.querySelector(".shared-attribution-trigger")?.textContent ?? "",
-          /精确用量待刷新/,
-        );
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "preciseDataStale");
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -473,10 +467,7 @@ test("persisted exact-read gap holds state, then recovery creates and clears a c
         assert.equal(pending.baselineReady, false);
         assert.equal(pending.segmentStartUnix, completedBucketBoundary(recoveryCoverageAt));
         assert.notEqual(readPreciseUsageContinuityGap("home-a", window.localStorage), null);
-        assert.match(
-          container.querySelector(".shared-attribution-trigger")?.textContent ?? "",
-          /连续性基线待刷新/,
-        );
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "awaitingAccountSwitchBaseline");
 
         const baselineQuotaAt = Math.max(pending.segmentStartUnix, recoveryQuotaAt + 1);
         await render({
@@ -549,7 +540,7 @@ test("native unsafe scans never advance state and each clean episode creates one
           preciseAttributionCurrentScanUnsafe: true,
           quotaUpdatedAt: new Date(firstObservedAt * 1_000).toISOString(),
         })));
-        assert.match(container.textContent, /本机历史安全检查中/);
+        assert.equal(container.querySelector(".quota-strip")?.getAttribute("data-attribution-status"), "nativeHistoryUnsafe");
         assert.equal(readAttributionSegment(
           attributionSegmentStorageKey("home-a"),
           window.localStorage,

@@ -277,6 +277,79 @@ test("quota estimate keeps the range summary visible when quota stays at zero", 
   }
 });
 
+test("fixed 24h selection renders shared-account attribution in the lower result card", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const attributionContext = {
+        status: "indistinguishable",
+        priceBasis: "current",
+        radarPlanTotalUSD: 100,
+        quotaDataStale: false,
+        radarDataStale: false,
+        usagePendingQuotaRefresh: false,
+        historyChangedLowConfidence: false,
+        cycleStartUnix: 0,
+        cycleEndUnix: 604_800,
+        segmentStartUnix: 0,
+        quotaUpdatedAtUnix: 600,
+      };
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h: [point(0, 0.8, 0.90), point(300, 0.78, 0.88), point(600, 0.76, 0.87)],
+          recentUsage7d: [],
+          recentUsage30d: [],
+          sharedAccountAttribution: attributionContext,
+        })));
+        const chart = container.querySelector("svg.usage-chart");
+        assert.ok(chart);
+        chart.getBoundingClientRect = () => ({
+          bottom: 185,
+          height: 185,
+          left: 0,
+          right: 980,
+          top: 0,
+          width: 980,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        });
+
+        for (const clientX of [0, 980]) {
+          await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            clientX,
+            clientY: 80,
+            pointerId: 1,
+          })));
+        }
+
+        const attribution = container.querySelector('[aria-label="选区共享账号归因"]');
+        assert.ok(attribution);
+        assert.match(attribution.textContent, /账号实降3%/);
+        assert.match(attribution.textContent, /本机折算≈1\.5%/);
+        assert.match(attribution.textContent, /差额\+1\.5%/);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   return {
     label: "00:00",

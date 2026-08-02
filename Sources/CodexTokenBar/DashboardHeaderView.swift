@@ -161,8 +161,6 @@ struct HeaderView: View {
     let onOpenAutoResume: () -> Void
     let threadDeleteStatus: CodexThreadDeleteBridgeStatus
     let autoResumeEnabled: Bool
-    var sharedAccountAttribution: SharedAccountUsageAttributionResult? = nil
-    var onShowSharedAccountAttribution: () -> Void = {}
     @Binding var showingInterfaceScaleMenu: Bool
     @Binding var interfaceScaleAutoEnabled: Bool
     @Binding var interfaceScaleManualMultiplier: Double
@@ -513,9 +511,7 @@ struct HeaderView: View {
 
                 AccountQuotaStrip(
                     snapshot: quotaSnapshot,
-                    sharedAccountAttribution: sharedAccountAttribution,
-                    showingResetCreditDetails: $showingResetCreditDetails,
-                    onShowSharedAccountAttribution: onShowSharedAccountAttribution
+                    showingResetCreditDetails: $showingResetCreditDetails
                 )
             }
         }
