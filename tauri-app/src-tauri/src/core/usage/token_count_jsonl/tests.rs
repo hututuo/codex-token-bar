@@ -1584,7 +1584,7 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
 }
 
 #[test]
-fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v6_fingerprints() {
+fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v7_model_events() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1620,7 +1620,7 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v6_fingerprints() {
         .unwrap();
     drop(connection);
 
-    // v4 指纹是 9 字段 72 字节布局，与 v6 的 11 字段 blob 不可混存（混存会让
+    // v4 指纹是 9 字段 72 字节布局，与 v7 的逐模型事件结构不可混存（混存会让
     // 历史 snapshot 重新计数）：不再原地迁移，任何旧版本一律整库丢弃重建。
     let rebuilt = ExactUsageIndex::open(&root).unwrap();
     assert!(
@@ -1642,7 +1642,7 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v6_fingerprints() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "6"
+        "7"
     );
     assert_eq!(
         connection
@@ -2141,7 +2141,7 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "6"
+        "7"
     );
     drop(connection);
 
@@ -2473,12 +2473,27 @@ fn parses_token_count_totals_as_deltas() {
     let second_line = format!(
         r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":8,"total_tokens":28}},"last_token_usage":{{"input_tokens":10,"cached_input_tokens":3,"output_tokens":5,"total_tokens":15}}}}}}}}"#
     );
-    write_lines(&file, &[first_line, second_line]);
+    write_lines(
+        &file,
+        &[
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#.to_string(),
+            first_line,
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-terra"}}"#.to_string(),
+            second_line,
+        ],
+    );
 
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 28);
     assert_eq!(snapshot.stats.total_calls, 2);
     assert_eq!(snapshot.stats.total_threads, 1);
+    assert_eq!(snapshot.stats.model_breakdowns.len(), 2);
+    assert!(snapshot.stats.model_breakdowns.iter().any(|row| {
+        row.model.as_deref() == Some("gpt-5.6-sol") && row.breakdown.calls == 1
+    }));
+    assert!(snapshot.stats.model_breakdowns.iter().any(|row| {
+        row.model.as_deref() == Some("gpt-5.6-terra") && row.breakdown.calls == 1
+    }));
     assert!(snapshot.activity_days.iter().any(|day| day.tokens == 28));
     assert_eq!(snapshot.recent_usage_24h.len(), 30 * 24 * 12);
     assert_eq!(snapshot.recent_usage_7d.len(), 168);
@@ -3193,7 +3208,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 17);
+    assert_eq!(json["version"], 18);
     assert_eq!(
         json["snapshot"]["recentUsage24h"].as_array().unwrap().len(),
         0
@@ -3320,7 +3335,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v17_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":17"#));
+    assert!(aggregate_cache_text().contains(r#""version":18"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();

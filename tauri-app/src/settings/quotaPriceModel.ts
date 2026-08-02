@@ -8,6 +8,22 @@ export interface APIPriceRates {
   outputUSDPerMillion: number;
 }
 
+export interface ModelTokenCostRow {
+  model: string | null;
+  breakdown: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    calls: number;
+  };
+}
+
+export interface ModelAwareAPICostEstimate {
+  costUSD: number;
+  detectedModels: OfficialAPIPriceModel[];
+  fallbackCalls: number;
+}
+
 export const QUOTA_PRICE_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
 export const QUOTA_PRICE_MODEL_EVENT = "codex-token-bar:quota-price-model";
 
@@ -94,6 +110,72 @@ export function officialAPICostUSD(
     + cachedInput * prices.cachedInputUSDPerMillion
     + finiteNonnegative(outputTokens) * prices.outputUSDPerMillion
   ) / 1_000_000;
+}
+
+export function detectedOfficialAPIPriceModel(value: string | null | undefined): OfficialAPIPriceModel | null {
+  const key = value?.trim().toLowerCase().replaceAll("_", "-");
+  switch (key) {
+    case "gpt-5.6-sol":
+    case "gpt5.6-sol":
+    case "gpt56-sol":
+    case "gpt56sol":
+    case "gpt-5.5":
+    case "gpt55":
+      return "gpt56Sol";
+    case "gpt-5.6-terra":
+    case "gpt5.6-terra":
+    case "gpt56-terra":
+    case "gpt56terra":
+    case "gpt-5.4":
+    case "gpt54":
+      return "gpt56Terra";
+    case "gpt-5.6-luna":
+    case "gpt5.6-luna":
+    case "gpt56-luna":
+    case "gpt56luna":
+    case "gpt-5.4-mini":
+    case "gpt54mini":
+      return "gpt56Luna";
+    default:
+      return null;
+  }
+}
+
+export function modelAwareAPICostUSD(
+  rows: ModelTokenCostRow[] | null | undefined,
+  fallback: ModelTokenCostRow["breakdown"],
+  fallbackModel: OfficialAPIPriceModel,
+  basis: QuotaPriceBasis = "current",
+): ModelAwareAPICostEstimate {
+  if (!rows || rows.length === 0) {
+    return {
+      costUSD: officialAPICostUSD(fallback.inputTokens, fallback.cachedInputTokens, fallback.outputTokens, fallbackModel, basis),
+      detectedModels: [],
+      fallbackCalls: fallback.calls,
+    };
+  }
+  const grouped = new Map<OfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
+  const unknown = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
+  for (const row of rows) {
+    const detected = detectedOfficialAPIPriceModel(row.model);
+    const target = detected
+      ? grouped.get(detected) ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 }
+      : unknown;
+    target.inputTokens += row.breakdown.inputTokens;
+    target.cachedInputTokens += row.breakdown.cachedInputTokens;
+    target.outputTokens += row.breakdown.outputTokens;
+    target.calls += row.breakdown.calls;
+    if (detected) grouped.set(detected, target);
+  }
+  let costUSD = officialAPICostUSD(unknown.inputTokens, unknown.cachedInputTokens, unknown.outputTokens, fallbackModel, basis);
+  for (const [model, breakdown] of grouped) {
+    costUSD += officialAPICostUSD(breakdown.inputTokens, breakdown.cachedInputTokens, breakdown.outputTokens, model, basis);
+  }
+  return {
+    costUSD,
+    detectedModels: QUOTA_PRICE_MODEL_OPTIONS.map((option) => option.value).filter((model) => grouped.has(model)),
+    fallbackCalls: unknown.calls,
+  };
 }
 
 export function priceModelTitle(model: OfficialAPIPriceModel): string {

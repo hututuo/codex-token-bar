@@ -41,6 +41,7 @@ pub(super) struct ExactTokenEvent {
     pub(super) input_tokens: u64,
     pub(super) cached_input_tokens: u64,
     pub(super) output_tokens: u64,
+    pub(super) model: Option<String>,
     pub(super) source_offsets: ExactEventSourceOffsets,
 }
 
@@ -104,7 +105,7 @@ pub(super) struct ExactSessionParseResult {
     pub(super) fork_replay_active: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct ExactSessionParserState {
     pub(super) previous_total_tokens: Option<u64>,
     pub(super) fork_replay_started_at: Option<OffsetDateTime>,
@@ -112,6 +113,7 @@ pub(super) struct ExactSessionParserState {
     pub(super) last_skipped_fork_replay_token_at: Option<OffsetDateTime>,
     pub(super) current_user_prompt: Option<SourceByteRange>,
     pub(super) assistant_response: Option<SourceByteRange>,
+    pub(super) current_model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -221,6 +223,7 @@ pub(super) fn stream_session_file_exact_from(
     let mut previous_total = initial_state.previous_total_tokens;
     let mut current_user_prompt = initial_state.current_user_prompt;
     let mut assistant_response = initial_state.assistant_response;
+    let mut current_model = initial_state.current_model;
     #[cfg(test)]
     let mut event_count = 0_u64;
     let mut source_offset = parsing_start_offset;
@@ -254,6 +257,11 @@ pub(super) fn stream_session_file_exact_from(
         }
         resume_offset = source_offset;
         let line = line.trim_end_matches(['\r', '\n']);
+
+        if let Some(model) = parse_turn_context_model(line) {
+            current_model = Some(model);
+            continue;
+        }
 
         if fork_replay_started_at.is_none() {
             if let Some(timestamp) = forked_session_replay_started_at_line(line) {
@@ -340,6 +348,7 @@ pub(super) fn stream_session_file_exact_from(
                 .last
                 .as_ref()
                 .map_or(0, |usage| usage.output_tokens),
+            model: current_model.clone(),
             source_offsets: ExactEventSourceOffsets {
                 user_prompt: current_user_prompt,
                 assistant_response,
@@ -378,6 +387,7 @@ pub(super) fn stream_session_file_exact_from(
             last_skipped_fork_replay_token_at,
             current_user_prompt,
             assistant_response,
+            current_model,
         },
         chunk_hashes,
         validation_chunk_hash,
@@ -720,6 +730,18 @@ fn parse_payload_message_marker(line: &str, expected_type: &str) -> Option<Offse
         .flatten()
 }
 
+fn parse_turn_context_model(line: &str) -> Option<String> {
+    if !line.contains("\"turn_context\"") || !line.contains("\"model\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("type")?.as_str()? != "turn_context" {
+        return None;
+    }
+    let model = value.get("payload")?.get("model")?.as_str()?.trim();
+    (!model.is_empty()).then(|| model.to_string())
+}
+
 fn borrowed_payload_message<'a>(
     line: &'a str,
     expected_type: &str,
@@ -936,7 +958,7 @@ fn jsonl_file_warning(message: String) -> LocalDataWarning {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_payload_message_marker;
+    use super::{parse_payload_message_marker, parse_turn_context_model};
 
     #[test]
     fn borrowed_message_marker_checks_escaped_content_without_materializing_the_message() {
@@ -946,5 +968,14 @@ mod tests {
         assert!(parse_payload_message_marker(whitespace, "user_message").is_none());
         assert!(parse_payload_message_marker(content, "user_message").is_some());
         assert!(parse_payload_message_marker(content, "agent_message").is_none());
+    }
+
+    #[test]
+    fn turn_context_model_is_read_from_the_authoritative_payload() {
+        let line = r#"{"type":"turn_context","payload":{"model":"gpt-5.6-terra"}}"#;
+        let wrong_type = r#"{"type":"event_msg","payload":{"model":"gpt-5.6-sol"}}"#;
+
+        assert_eq!(parse_turn_context_model(line).as_deref(), Some("gpt-5.6-terra"));
+        assert!(parse_turn_context_model(wrong_type).is_none());
     }
 }

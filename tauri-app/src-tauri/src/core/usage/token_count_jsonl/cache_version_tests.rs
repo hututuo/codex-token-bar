@@ -14,7 +14,7 @@ fn dashboard_aggregate_version_thirteen_is_rejected_by_the_current_cache_schema(
         summary: TokenUsageSummary::default(),
     };
 
-    assert_eq!(DASHBOARD_AGGREGATE_CACHE_VERSION, 17);
+    assert_eq!(DASHBOARD_AGGREGATE_CACHE_VERSION, 18);
     assert_ne!(old_cache.version, DASHBOARD_AGGREGATE_CACHE_VERSION);
     let encoded = serde_json::to_vec(&old_cache).unwrap();
     assert!(decode_persistent_dashboard_aggregate(&encoded).is_none());

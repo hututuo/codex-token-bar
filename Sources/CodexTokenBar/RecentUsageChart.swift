@@ -894,7 +894,8 @@ struct RecentUsageChart: View, Equatable {
                                 viewportWidth: viewportWidth,
                                 height: proxy.size.height,
                                 contentWidth: contentWidth,
-                                contentOffset: presentation.contentOffset
+                                contentOffset: presentation.contentOffset,
+                                consumptionSelection: consumptionSelection
                             )
                         }
                         .accessibilityElement(children: .ignore)
@@ -1039,10 +1040,9 @@ struct RecentUsageChart: View, Equatable {
         let plot = CGRect(x: 0, y: 18, width: width, height: max(height - 42, 1))
         let chartBins = preparedData.bins
         let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
-        let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
-            ?? accessibilityCursorState.index.flatMap {
-                chartBins.indices.contains($0) ? $0 : nil
-            }
+        let activeIndex = consumptionSelectionState.fixedEndIndex.flatMap {
+            chartBins.indices.contains($0) ? $0 : nil
+        } ?? hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
         let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
 
         ZStack(alignment: .topLeading) {
@@ -1069,6 +1069,8 @@ struct RecentUsageChart: View, Equatable {
                 Path { path in
                     path.move(to: CGPoint(x: lowerX, y: plot.minY))
                     path.addLine(to: CGPoint(x: lowerX, y: plot.maxY))
+                    path.move(to: CGPoint(x: upperX, y: plot.minY))
+                    path.addLine(to: CGPoint(x: upperX, y: plot.maxY))
                 }
                 .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
 
@@ -1104,8 +1106,10 @@ struct RecentUsageChart: View, Equatable {
             }
 
             if showCacheHitRate && preparedData.hasCacheCalls {
-                bridgedOptionalLinePath(points: plotData.cachePoints)
-                    .stroke(AppTheme.accentCyan, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [5, 5]))
+                observedOptionalLinePath(points: plotData.cachePoints)
+                    .stroke(AppTheme.accentCyan.opacity(0.72), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+                observedOptionalPointPath(points: plotData.cachePoints)
+                    .fill(AppTheme.accentCyan)
             }
 
             if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
@@ -1215,13 +1219,15 @@ struct RecentUsageChart: View, Equatable {
         viewportWidth: CGFloat,
         height: CGFloat,
         contentWidth: CGFloat,
-        contentOffset: CGFloat
+        contentOffset: CGFloat,
+        consumptionSelection: QuotaConsumptionSelection?
     ) -> some View {
         let chartBins = preparedData.bins
-        let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
-            ?? accessibilityCursorState.index.flatMap {
-                chartBins.indices.contains($0) ? $0 : nil
-            }
+        let liveHoverIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+        let fixedEndIndex = consumptionSelectionState.fixedEndIndex.flatMap {
+            chartBins.indices.contains($0) ? $0 : nil
+        }
+        let activeIndex = fixedEndIndex ?? liveHoverIndex
 
         if let activeIndex {
             let contentPlot = CGRect(x: 0, y: 18, width: contentWidth, height: max(height - 42, 1))
@@ -1229,18 +1235,24 @@ struct RecentUsageChart: View, Equatable {
             let step = contentPlot.width / CGFloat(max(chartBins.count - 1, 1))
             let viewportTokenX = contentPlot.minX + CGFloat(activeIndex) * step - contentOffset
 
-            ChartHoverBubble(
-                bin: chartBins[activeIndex],
-                cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
-                fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
-                    ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
-                    : nil,
-                sevenDayRemaining: quotaSeriesVisibility.showsSevenDay
-                    ? preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil
-                    : nil,
-                bucketInterval: preparedData.bucketInterval,
-                isHovering: true
-            )
+            Group {
+                if fixedEndIndex != nil, let selection = consumptionSelection {
+                    ChartSelectionSummaryBubble(selection: selection)
+                } else {
+                    ChartHoverBubble(
+                        bin: chartBins[activeIndex],
+                        cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
+                        fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
+                            ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
+                            : nil,
+                        sevenDayRemaining: quotaSeriesVisibility.showsSevenDay
+                            ? preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil
+                            : nil,
+                        bucketInterval: preparedData.bucketInterval,
+                        isHovering: true
+                    )
+                }
+            }
             .chartBubblePlacement(tokenX: viewportTokenX, plot: viewportPlot)
             .zIndex(10)
         }

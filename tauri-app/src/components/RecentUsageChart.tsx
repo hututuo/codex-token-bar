@@ -4,13 +4,12 @@ import { formatTokens } from "../utils/format";
 import {
   normalizeOfficialAPIPriceModel,
   QUOTA_PRICE_MODEL_EVENT,
-  QUOTA_PRICE_MODEL_OPTIONS,
   readStoredQuotaPriceModel,
-  writeStoredQuotaPriceModel,
 } from "../settings/quotaPriceModel";
 import {
   activeQuotaSelectionEndIndex,
-  bridgedOptionalSmoothPath,
+  observedOptionalPath,
+  observedPointPath,
   clickQuotaSelection,
   clampQuotaSelection,
   DEFAULT_SERIES_VISIBILITY,
@@ -81,6 +80,9 @@ export function RecentUsageChart({
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;
   const activeTokenPoint = activeIndex !== null ? plotData.tokenPoints[activeIndex] : null;
+  const fixedSelectionEndIndex = quotaSelectionState.fixedEndIndex !== null && data.points[quotaSelectionState.fixedEndIndex]
+    ? quotaSelectionState.fixedEndIndex
+    : null;
   const quotaEndIndex = activeQuotaSelectionEndIndex(
     clampQuotaSelection(quotaSelectionState, data.points.length),
     activeIndex,
@@ -115,11 +117,6 @@ export function RecentUsageChart({
     setHoveredIndex(null);
     setQuotaSelectionState({ startIndex: null, fixedEndIndex: null });
     window.localStorage.setItem(RANGE_STORAGE_KEY, next);
-  }
-
-  function updateQuotaModel(next: OfficialAPIPriceModel) {
-    setQuotaModel(next);
-    writeStoredQuotaPriceModel(next);
   }
 
   function updateVisibility(key: keyof SeriesVisibility) {
@@ -184,14 +181,6 @@ export function RecentUsageChart({
           ))}
         </div>
         <div className="recent-chart-controls">
-          <label className="quota-model-select">
-            <span>反推</span>
-            <select value={quotaModel} onChange={(event) => updateQuotaModel(event.target.value as OfficialAPIPriceModel)}>
-              {QUOTA_PRICE_MODEL_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>官方 API · {option.label}</option>
-              ))}
-            </select>
-          </label>
           <div className="chart-legend">
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(data.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${data.callTotal}`} />
@@ -252,7 +241,10 @@ export function RecentUsageChart({
                 <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
               ) : null}
               {visibility.cacheHitRate && data.hasCacheCalls ? (
-                <path className="chart-line chart-line--hit" d={offsetPath(bridgedOptionalSmoothPath(plotData.cachePoints))} />
+                <>
+                  <path className="chart-line chart-line--hit chart-line--observed" d={offsetPath(observedOptionalPath(plotData.cachePoints))} />
+                  <path className="chart-observation-points chart-observation-points--hit" d={offsetPath(observedPointPath(plotData.cachePoints))} />
+                </>
               ) : null}
               {fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? (
                 <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />
@@ -278,7 +270,13 @@ export function RecentUsageChart({
           {visibleWindowLabel ? (
             <div className="recent-chart-visible-window">当前窗口：{visibleWindowLabel}</div>
           ) : null}
-          {activePoint && activeTokenPoint ? (
+          {fixedSelectionEndIndex !== null && consumptionSelection ? (
+            <SelectionSummaryBubble
+              selection={consumptionSelection}
+              viewportWidth={chartViewportWidth}
+              x={(plotData.tokenPoints[fixedSelectionEndIndex]?.x ?? 0) - chartScrollLeft}
+            />
+          ) : activePoint && activeTokenPoint ? (
             <HoverBubble
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
@@ -398,6 +396,31 @@ function HoverBubble({
       ) : null}
       {quotaParts.length > 0 ? <span>额度 {quotaParts.join(" · ")}</span> : null}
       <em>点击起点/终点可估算额度</em>
+    </div>
+  );
+}
+
+function SelectionSummaryBubble({
+  selection,
+  viewportWidth,
+  x,
+}: {
+  selection: QuotaConsumptionSelection;
+  viewportWidth: number;
+  x: number;
+}) {
+  const left = Math.min(Math.max(x, 112), Math.max(112, viewportWidth - 112));
+  const average = selection.calls > 0 ? Math.round(selection.totalTokens / selection.calls) : 0;
+  return (
+    <div className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
+      <div>
+        <strong>选中区间</strong>
+        <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>
+      </div>
+      <b>{formatTokens(selection.totalTokens)}</b>
+      <span>请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
+      {selection.calls > 0 ? <em>缓存命中 {percentText(selection.cacheHitRate)}</em> : null}
+      <span>{quotaSelectionDurationText(selection)}</span>
     </div>
   );
 }

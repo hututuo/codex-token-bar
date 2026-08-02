@@ -258,6 +258,11 @@ test("quota estimate keeps the range summary visible when quota stays at zero", 
         assert.match(estimate.textContent, /5h降 0% · 不反推/);
         assert.match(estimate.textContent, /7d降 0% · 不反推/);
         assert.ok(container.querySelector(".chart-selection-range"));
+        const selectionSummary = container.querySelector(".chart-selection-summary-bubble");
+        assert.ok(selectionSummary);
+        assert.match(selectionSummary.textContent, /选中区间/);
+        assert.match(selectionSummary.textContent, /30\.0万/);
+        assert.doesNotMatch(selectionSummary.textContent, /当前点/);
       } finally {
         await React.act(async () => root.unmount());
       }

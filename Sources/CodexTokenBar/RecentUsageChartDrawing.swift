@@ -40,10 +40,36 @@ extension RecentUsageChart {
         return path
     }
 
-    func bridgedOptionalLinePath(points: [CGPoint?]) -> Path {
+    /// Cache hit rate is an observation, not a continuously changing value.
+    /// Only adjacent buckets with real usage are connected; idle gaps stay blank.
+    func observedOptionalLinePath(points: [CGPoint?]) -> Path {
         var path = Path()
-        appendOptionalSegment(points.compactMap { $0 }, to: &path)
+        var previous: CGPoint?
+        for point in points {
+            guard let point else {
+                previous = nil
+                continue
+            }
+            if let previous {
+                path.move(to: previous)
+                path.addLine(to: point)
+            }
+            previous = point
+        }
         return path
+    }
+
+    func observedOptionalPointPath(points: [CGPoint?], radius: CGFloat = 1.6) -> Path {
+        Path { path in
+            for point in points.compactMap({ $0 }) {
+                path.addEllipse(in: CGRect(
+                    x: point.x - radius,
+                    y: point.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                ))
+            }
+        }
     }
 
     private func appendOptionalSegment(_ points: [CGPoint], to path: inout Path) {

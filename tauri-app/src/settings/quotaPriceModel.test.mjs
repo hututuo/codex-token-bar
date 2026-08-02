@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  modelAwareAPICostUSD,
   normalizeOfficialAPIPriceModel,
   officialAPICostUSD,
   officialAPIPrices,
   readStoredQuotaPriceModel,
 } from "./quotaPriceModel.ts";
+
+test("historical model rows are priced automatically and unknown rows use only the fallback", () => {
+  const estimate = modelAwareAPICostUSD([
+    { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 2 } },
+    { model: "gpt-5.6-terra", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 3 } },
+    { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 4 } },
+  ], { inputTokens: 3_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 9 }, "gpt56Luna");
+
+  assert.equal(estimate.costUSD, 7.2);
+  assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra"]);
+  assert.equal(estimate.fallbackCalls, 4);
+});
 
 test("GPT-5.6 current price cards use the official Sol, Terra and Luna rates", () => {
   assert.deepEqual(officialAPIPrices("gpt56Sol"), {

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  bridgedOptionalSmoothPath,
+  observedOptionalPath,
+  observedPointPath,
   clickQuotaSelection,
   hoverIndexForX,
   optionalSmoothPath,
@@ -180,16 +181,22 @@ test("smoothPath uses cubic commands and optionalSmoothPath breaks at missing qu
   assert.match(optionalSmoothPath([{ x: 4, y: 6 }, null]), /^M 4 6 L /);
 });
 
-test("cache hit path bridges unknown buckets without inventing samples", () => {
-  const path = bridgedOptionalSmoothPath([
+test("cache hit observations leave idle buckets blank", () => {
+  const path = observedOptionalPath([
     { x: 0, y: 20 },
     null,
     null,
     { x: 30, y: 10 },
   ]);
 
-  assert.equal(path, "M 0 20 L 30 10");
-  assert.equal(path.match(/(?:^| )M /g)?.length, 1);
+  assert.equal(path, "");
+  assert.equal(observedOptionalPath([
+    { x: 0, y: 20 },
+    { x: 10, y: 15 },
+    null,
+    { x: 30, y: 10 },
+  ]), "M 0 20 L 10 15");
+  assert.match(observedPointPath([{ x: 0, y: 20 }, null, { x: 30, y: 10 }]), /M -1\.6 18\.4/);
 });
 
 test("smoothPath falls back to a full polyline when x positions are not increasing", () => {
@@ -514,7 +521,7 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
     "clickQuotaSelection",
     "RecentChartQuotaEstimateOverlay",
     "反推总额度",
-    "官方 API",
+    "SelectionSummaryBubble",
     "偏离 6x",
   ]) {
     assert.equal(source.includes(expected), true, expected);

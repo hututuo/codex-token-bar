@@ -1939,6 +1939,7 @@ fn recent_point(start_unix: i64) -> RecentUsagePoint {
         input_tokens: 0,
         cached_input_tokens: 0,
         output_tokens: 0,
+        model_breakdowns: Vec::new(),
         cache_hit_rate: None,
         five_hour_remaining_percent: None,
         seven_day_remaining_percent: None,

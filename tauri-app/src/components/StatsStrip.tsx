@@ -34,6 +34,7 @@ function StatsStripView({ stats, planLabel, warnings = [] }: StatsStripProps) {
     firstUsageAt: stats.firstUsageAt,
     planLabel,
     priceModel,
+    modelBreakdowns: stats.modelBreakdowns,
   })), [planLabel, priceModel, stats]);
 
   useEffect(() => {

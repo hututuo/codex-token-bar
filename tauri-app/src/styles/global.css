@@ -6260,6 +6260,17 @@ input[type="range"]::-moz-range-thumb {
   transform: translate(-50%, -100%);
 }
 
+.chart-observation-points--hit {
+  fill: var(--accent-cyan, #03a6c8);
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+.chart-line--observed {
+  stroke-dasharray: none;
+  opacity: 0.72;
+}
+
 .chart-hover-bubble div {
   display: flex;
   align-items: baseline;

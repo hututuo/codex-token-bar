@@ -103,6 +103,7 @@ fn empty_recent_usage(
                 input_tokens: 0,
                 cached_input_tokens: 0,
                 output_tokens: 0,
+                model_breakdowns: Vec::new(),
                 cache_hit_rate: None,
                 five_hour_remaining_percent: None,
                 seven_day_remaining_percent: None,
@@ -134,6 +135,7 @@ fn read_stats(connection: &Connection) -> Result<DashboardStats> {
         total_input_tokens: 0,
         total_cached_input_tokens: 0,
         total_output_tokens: 0,
+        model_breakdowns: Vec::new(),
         first_usage_at: None,
     })
 }

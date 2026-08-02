@@ -69,6 +69,8 @@ pub struct DashboardStats {
     #[serde(default)]
     pub total_output_tokens: u64,
     #[serde(default)]
+    pub model_breakdowns: Vec<ModelTokenBreakdown>,
+    #[serde(default)]
     pub first_usage_at: Option<String>,
 }
 
@@ -93,6 +95,8 @@ pub struct RecentUsagePoint {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(default)]
+    pub model_breakdowns: Vec<ModelTokenBreakdown>,
     pub cache_hit_rate: Option<f64>,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,
@@ -102,6 +106,13 @@ pub struct RecentUsagePoint {
     /// Sparse anonymous source totals for this fixed five-minute bucket.
     #[serde(default)]
     pub source_contributions: Vec<RecentUsageSourceContribution>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTokenBreakdown {
+    pub model: Option<String>,
+    pub breakdown: TokenCacheBreakdown,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

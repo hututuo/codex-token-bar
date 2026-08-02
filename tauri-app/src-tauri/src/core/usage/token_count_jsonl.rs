@@ -49,7 +49,7 @@ static ATTRIBUTION_WATCHER_FAILURES: OnceLock<Mutex<HashMap<PathBuf, String>>> =
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 17;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
 const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);

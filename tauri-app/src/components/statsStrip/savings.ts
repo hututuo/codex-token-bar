@@ -1,6 +1,6 @@
 import type { DashboardStats } from "../../types/usage";
 import {
-  officialAPICostUSD,
+  modelAwareAPICostUSD,
   priceModelTitle,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
@@ -26,6 +26,8 @@ export interface LifetimeSavingsEstimate {
   monthlyPlanUSD: number | null;
   normalizedPlanName: string;
   priceModel: OfficialAPIPriceModel;
+  detectedModels: OfficialAPIPriceModel[];
+  fallbackModelCalls: number;
   firstUsageAt: Date;
 }
 
@@ -50,12 +52,14 @@ export function estimateLifetimeSavings({
   firstUsageAt,
   planLabel,
   priceModel,
+  modelBreakdowns = [],
   now = new Date(),
 }: {
   breakdown: LifetimeTokenBreakdown;
   firstUsageAt: string | null | undefined;
   planLabel: string;
   priceModel: OfficialAPIPriceModel;
+  modelBreakdowns?: DashboardStats["modelBreakdowns"];
   now?: Date;
 }): LifetimeSavingsEstimate | null {
   if (breakdown.totalTokens <= 0 || !firstUsageAt) return null;
@@ -64,12 +68,13 @@ export function estimateLifetimeSavings({
   const billingMonths = inclusiveCalendarMonths(first, now);
   if (billingMonths <= 0) return null;
 
-  const apiEquivalentUSD = officialAPICostUSD(
-    breakdown.inputTokens,
-    breakdown.cachedInputTokens,
-    breakdown.outputTokens,
-    priceModel,
-  );
+  const automaticPrice = modelAwareAPICostUSD(modelBreakdowns, {
+    inputTokens: breakdown.inputTokens,
+    cachedInputTokens: breakdown.cachedInputTokens,
+    outputTokens: breakdown.outputTokens,
+    calls: 0,
+  }, priceModel);
+  const apiEquivalentUSD = automaticPrice.costUSD;
   const monthlyPlanUSD = monthlyPlanPriceUSD(planLabel);
   const subscriptionCostUSD = monthlyPlanUSD === null ? null : monthlyPlanUSD * billingMonths;
 
@@ -81,6 +86,8 @@ export function estimateLifetimeSavings({
     monthlyPlanUSD,
     normalizedPlanName: planLabel.trim().toUpperCase() || "套餐未知",
     priceModel,
+    detectedModels: automaticPrice.detectedModels,
+    fallbackModelCalls: automaticPrice.fallbackCalls,
     firstUsageAt: first,
   };
 }
@@ -115,19 +122,24 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
     };
   }
 
-  const modelTitle = priceModelTitle(estimate.priceModel);
+  const modelTitle = estimate.detectedModels.length > 0
+    ? estimate.detectedModels.map(priceModelTitle).join(" + ")
+    : priceModelTitle(estimate.priceModel);
+  const priceBasis = estimate.detectedModels.length > 0
+    ? `按历史真实模型 ${modelTitle} 当前 API 单价自动估算${estimate.fallbackModelCalls > 0 ? `，另有 ${estimate.fallbackModelCalls} 次未知记录按 ${priceModelTitle(estimate.priceModel)} 回退` : ""}`
+    : `缺少逐模型历史，按未知模型回退 ${modelTitle} 当前 API 单价估算`;
   if (estimate.netSavingsUSD !== null && estimate.subscriptionCostUSD !== null && estimate.monthlyPlanUSD !== null) {
     return {
       valueText: compactMoney(estimate.netSavingsUSD),
       labelText: "累计薅到（估）",
-      helpText: `按 ${modelTitle} 当前 API 单价估算：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐或模型变化未计入。`,
+      helpText: `${priceBasis}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐变化未计入。`,
     };
   }
 
   return {
     valueText: compactMoney(estimate.apiEquivalentUSD),
     labelText: "API 等值（估）",
-    helpText: `按 ${modelTitle} 当前 API 单价估算为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.normalizedPlanName} 没有公开固定月费，暂不计算净节省。`,
+    helpText: `${priceBasis}为 ${fullMoney(estimate.apiEquivalentUSD)}；${estimate.normalizedPlanName} 没有公开固定月费，暂不计算净节省。`,
   };
 }
 

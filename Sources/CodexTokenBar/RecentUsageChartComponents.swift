@@ -940,6 +940,73 @@ struct ChartHoverBubble: View {
     }
 }
 
+struct ChartSelectionSummaryBubble: View {
+    let selection: QuotaConsumptionSelection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text("选中区间")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(AppTheme.accentBlue)
+                Text(timeRange)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Text(selection.breakdown.totalTokens.abbreviatedTokens)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppTheme.accentBlue)
+            Text("请求 \(selection.breakdown.calls) 次 · avg \(average.abbreviatedTokens)")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            if selection.breakdown.calls > 0 {
+                Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(AppTheme.accentCyan)
+            }
+            Text("持续 \(durationText)")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(AppTheme.hoverBubble, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.borderStrong, lineWidth: 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("曲线选中区间")
+        .accessibilityValue("\(timeRange)；\(selection.breakdown.totalTokens.abbreviatedTokens) token；\(selection.breakdown.calls) 次请求；缓存命中率 \(selection.breakdown.cacheHitRate.percentString)")
+    }
+
+    private var average: Int {
+        selection.breakdown.calls > 0
+            ? selection.breakdown.totalTokens / selection.breakdown.calls
+            : 0
+    }
+
+    private var timeRange: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = Calendar.current.isDate(selection.startDate, inSameDayAs: selection.endDate)
+            ? "HH:mm"
+            : "M月d日 HH:mm"
+        return "\(formatter.string(from: selection.startDate)) - \(formatter.string(from: selection.endDate))"
+    }
+
+    private var durationText: String {
+        let seconds = max(0, Int(selection.endDate.timeIntervalSince(selection.startDate)))
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        let minutes = (seconds % 3_600) / 60
+        if days > 0 { return "\(days)天 \(hours)小时" }
+        if hours > 0 { return "\(hours)小时 \(minutes)分钟" }
+        return "\(max(minutes, 1))分钟"
+    }
+}
+
 struct ChartTimeMarkers: View {
     let bins: [BinUsage]
     let markerIndices: [Int]

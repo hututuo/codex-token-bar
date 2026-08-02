@@ -41,6 +41,23 @@ test("calendar month count is inclusive and public plan mapping is conservative"
   assert.equal(monthlyPlanPriceUSD("套餐待读取"), null);
 });
 
+test("lifetime savings uses recorded historical models before the fallback model", () => {
+  const estimate = estimateLifetimeSavings({
+    breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000 },
+    modelBreakdowns: [
+      { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+      { model: "gpt-5.6-terra", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
+    ],
+    firstUsageAt: "2026-07-01T00:00:00Z",
+    planLabel: "Enterprise",
+    priceModel: "gpt56Luna",
+    now: new Date("2026-07-07T00:00:00Z"),
+  });
+
+  assert.equal(estimate?.apiEquivalentUSD, 7);
+  assert.match(savingsPresentation(estimate).helpText, /历史真实模型/);
+});
+
 test("lifetime breakdown comes from full aggregate stats and clamps malformed cached input", () => {
   const combined = lifetimeBreakdownFromStats({
     totalTokens: 165,

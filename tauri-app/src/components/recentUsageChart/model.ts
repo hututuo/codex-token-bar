@@ -1,5 +1,6 @@
 import type { RecentUsagePoint } from "../../types/dashboard";
 import {
+  modelAwareAPICostUSD,
   officialAPICostUSD as calculateOfficialAPICostUSD,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
@@ -92,6 +93,7 @@ export interface QuotaConsumptionSelection {
   endUnix: number;
   priceModel: OfficialAPIPriceModel;
   selectedCostUSD: number;
+  totalTokens: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -367,8 +369,33 @@ export function optionalSmoothPath(points: Array<Point | null>): string {
   return segments.join(" ");
 }
 
-export function bridgedOptionalSmoothPath(points: Array<Point | null>): string {
-  return optionalSegmentPath(points.filter((point): point is Point => point !== null));
+export function observedOptionalPath(points: Array<Point | null>): string {
+  const commands: string[] = [];
+  let previous: Point | null = null;
+  for (const point of points) {
+    if (point === null) {
+      previous = null;
+      continue;
+    }
+    if (previous !== null) {
+      commands.push(`M ${formatNumber(previous.x)} ${formatNumber(previous.y)} L ${formatNumber(point.x)} ${formatNumber(point.y)}`);
+    }
+    previous = point;
+  }
+  return commands.join(" ");
+}
+
+export function observedPointPath(points: Array<Point | null>, radius = 1.6): string {
+  return points
+    .filter((point): point is Point => point !== null)
+    .map((point) => [
+      `M ${formatNumber(point.x - radius)} ${formatNumber(point.y - radius)}`,
+      `L ${formatNumber(point.x + radius)} ${formatNumber(point.y - radius)}`,
+      `L ${formatNumber(point.x + radius)} ${formatNumber(point.y + radius)}`,
+      `L ${formatNumber(point.x - radius)} ${formatNumber(point.y + radius)}`,
+      "Z",
+    ].join(" "))
+    .join(" ");
 }
 
 function optionalSegmentPath(points: Point[]): string {
@@ -459,10 +486,15 @@ export function quotaConsumptionSelection(
 
   const selectedPoints = data.points.slice(lower, upper + 1);
   const breakdown = combineTokenBreakdown(selectedPoints);
+  const selectedCostUSD = modelAwareAPICostUSD(
+    selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
+    breakdown,
+    priceModel,
+  ).costUSD;
   const fiveHourDrop = cumulativeQuotaDrop(selectedPoints.map((point) => point.fiveHourRemainingPercent));
   const sevenDayDrop = cumulativeQuotaDrop(selectedPoints.map((point) => point.sevenDayRemainingPercent));
-  const fiveHour = quotaConsumptionEstimate(breakdown, fiveHourDrop, priceModel);
-  const sevenDay = quotaConsumptionEstimate(breakdown, sevenDayDrop, priceModel);
+  const fiveHour = quotaConsumptionEstimate(breakdown, fiveHourDrop, selectedCostUSD);
+  const sevenDay = quotaConsumptionEstimate(breakdown, sevenDayDrop, selectedCostUSD);
   const ratio = fiveHour.impliedWindowBudgetUSD && sevenDay.impliedWindowBudgetUSD
     ? sevenDay.impliedWindowBudgetUSD / fiveHour.impliedWindowBudgetUSD
     : null;
@@ -475,6 +507,7 @@ export function quotaConsumptionSelection(
     endUnix: data.points[upper].startUnix + data.bucketSeconds,
     priceModel,
     selectedCostUSD: fiveHour.selectedCostUSD,
+    totalTokens: breakdown.totalTokens,
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
     outputTokens: breakdown.outputTokens,
@@ -593,14 +626,8 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
 function quotaConsumptionEstimate(
   breakdown: ReturnType<typeof combineTokenBreakdown>,
   quotaDropPercent: number | null,
-  priceModel: OfficialAPIPriceModel,
+  selectedCostUSD: number,
 ): QuotaConsumptionEstimate {
-  const selectedCostUSD = officialAPICostUSD(
-    breakdown.inputTokens,
-    breakdown.cachedInputTokens,
-    breakdown.outputTokens,
-    priceModel,
-  );
   const drop = Math.max(quotaDropPercent ?? 0, 0);
   const hasTokenUsage = breakdown.totalTokens > 0 || breakdown.inputTokens > 0 || breakdown.outputTokens > 0;
   let confidence: QuotaConsumptionConfidence = "measured";

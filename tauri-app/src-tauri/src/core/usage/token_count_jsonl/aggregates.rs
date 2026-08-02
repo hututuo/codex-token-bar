@@ -144,6 +144,7 @@ fn usage_series(
                 input_tokens: usage.input_tokens,
                 cached_input_tokens: usage.cached_input_tokens,
                 output_tokens: usage.output_tokens,
+                model_breakdowns: Vec::new(),
                 cache_hit_rate: if usage.input_tokens > 0 {
                     Some(usage.cache_hit_rate())
                 } else {
@@ -182,6 +183,7 @@ pub(super) fn stats_at(events: &[TokenEvent], days: &[ActivityDay], today: Date)
         total_input_tokens: lifetime.input_tokens,
         total_cached_input_tokens: lifetime.cached_input_tokens,
         total_output_tokens: lifetime.output_tokens,
+        model_breakdowns: Vec::new(),
         first_usage_at: events
             .iter()
             .map(|event| event.timestamp)

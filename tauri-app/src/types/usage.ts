@@ -12,6 +12,7 @@ export interface DashboardStats {
   totalInputTokens?: number;
   totalCachedInputTokens?: number;
   totalOutputTokens?: number;
+  modelBreakdowns?: ModelTokenBreakdown[];
   firstUsageAt?: string | null;
 }
 
@@ -32,6 +33,7 @@ export interface RecentUsagePoint {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  modelBreakdowns?: ModelTokenBreakdown[];
   cacheHitRate: number | null;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
@@ -65,6 +67,11 @@ export interface TokenCacheBreakdown {
   outputTokens: number;
   totalTokens: number;
   calls: number;
+}
+
+export interface ModelTokenBreakdown {
+  model: string | null;
+  breakdown: TokenCacheBreakdown;
 }
 
 export interface SessionCacheUsage {

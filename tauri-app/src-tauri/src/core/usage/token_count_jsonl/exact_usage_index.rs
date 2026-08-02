@@ -16,9 +16,9 @@ use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
 use crate::models::{
-    ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, RecentUsagePoint,
-    RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown, TokenCacheUsage,
-    TurnCacheUsage,
+    ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
+    RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
+    TokenCacheUsage, TurnCacheUsage,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -43,7 +43,7 @@ use uuid::Uuid;
 // v6：重放指纹与 Swift 统一为 11 字段（含 reasoning）。旧版指纹是 9 字段 72 字节
 // blob，与新 88 字节 blob 永不相等，混存会让历史 snapshot 重新计数；因此 v6 起
 // 不再提供任何旧版原地迁移，非当前版本一律整库重建（索引可完整重建）。
-const INDEX_SCHEMA_VERSION: i64 = 6;
+const INDEX_SCHEMA_VERSION: i64 = 7;
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -1098,6 +1098,42 @@ impl ExactUsageIndex {
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|error| format!("无法读取精确 token 会话峰值：{error}"))?;
+        let mut model_breakdowns = Vec::new();
+        let mut model_statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    model,
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(tokens), 0),
+                    COUNT(*)
+                FROM published_events
+                GROUP BY model
+                "#,
+            )
+            .map_err(|error| format!("无法准备逐模型精确 token 总览：{error}"))?;
+        let model_rows = model_statement
+            .query_map([], |row| {
+                Ok(ModelTokenBreakdown {
+                    model: row.get(0)?,
+                    breakdown: TokenCacheBreakdown {
+                        input_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
+                        cached_input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
+                        output_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                        total_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
+                        calls: saturating_u32(row.get::<_, i64>(5)?),
+                    },
+                })
+            })
+            .map_err(|error| format!("无法读取逐模型精确 token 总览：{error}"))?;
+        for model_row in model_rows {
+            model_breakdowns.push(
+                model_row.map_err(|error| format!("无法解码逐模型精确 token 总览：{error}"))?,
+            );
+        }
         let today = now_utc.to_offset(local_offset).date();
 
         Ok(DashboardStats {
@@ -1111,6 +1147,7 @@ impl ExactUsageIndex {
             total_input_tokens: nonnegative_u64(row.3),
             total_cached_input_tokens: nonnegative_u64(row.4),
             total_output_tokens: nonnegative_u64(row.5),
+            model_breakdowns,
             first_usage_at: row.6.and_then(format_rfc3339_unix),
         })
     }
@@ -1173,6 +1210,49 @@ impl ExactUsageIndex {
             let (bin, tokens, calls, input, cached, output) =
                 row.map_err(|error| format!("无法解码精确 token 时间序列：{error}"))?;
             grouped.insert(bin, (tokens, calls, input, cached, output));
+        }
+
+        let mut model_grouped: HashMap<i64, Vec<ModelTokenBreakdown>> = HashMap::new();
+        let mut model_statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    timestamp - (timestamp % ?1),
+                    model,
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(tokens), 0),
+                    COUNT(*)
+                FROM published_events
+                WHERE timestamp >= ?2 AND timestamp < ?3
+                GROUP BY 1, model
+                ORDER BY 1
+                "#,
+            )
+            .map_err(|error| format!("无法准备逐模型精确 token 时间序列：{error}"))?;
+        let model_rows = model_statement
+            .query_map(params![interval_seconds, start, end], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    ModelTokenBreakdown {
+                        model: row.get(1)?,
+                        breakdown: TokenCacheBreakdown {
+                            input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
+                            cached_input_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                            output_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
+                            total_tokens: nonnegative_u64(row.get::<_, i64>(5)?),
+                            calls: saturating_u32(row.get::<_, i64>(6)?),
+                        },
+                    },
+                ))
+            })
+            .map_err(|error| format!("无法读取逐模型精确 token 时间序列：{error}"))?;
+        for model_row in model_rows {
+            let (bin, breakdown) = model_row
+                .map_err(|error| format!("无法解码逐模型精确 token 时间序列：{error}"))?;
+            model_grouped.entry(bin).or_default().push(breakdown);
         }
 
         let mut source_grouped: HashMap<i64, Vec<RecentUsageSourceContribution>> =
@@ -1246,6 +1326,7 @@ impl ExactUsageIndex {
                     input_tokens: nonnegative_u64(input),
                     cached_input_tokens: nonnegative_u64(cached),
                     output_tokens: nonnegative_u64(output),
+                    model_breakdowns: model_grouped.remove(&start_unix).unwrap_or_default(),
                     cache_hit_rate: (input > 0).then(|| cache_hit_rate(input, cached)),
                     five_hour_remaining_percent: None,
                     seven_day_remaining_percent: None,
@@ -1660,11 +1741,12 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                 "#,
                 params![
                     self.file_generation,
@@ -1676,6 +1758,7 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     checked_i64(event.input_tokens, "输入 token")?,
                     checked_i64(event.cached_input_tokens, "缓存输入 token")?,
                     checked_i64(event.output_tokens, "输出 token")?,
+                    event.model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
@@ -1719,11 +1802,12 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                 "#,
                 params![
                     checked_i64(self.ordinal, "暂存事件序号")?,
@@ -1732,6 +1816,7 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     checked_i64(event.input_tokens, "暂存输入 token")?,
                     checked_i64(event.cached_input_tokens, "暂存缓存输入 token")?,
                     checked_i64(event.output_tokens, "暂存输出 token")?,
+                    event.model,
                     checked_optional_i64(
                         event.source_offsets.user_prompt.map(|range| range.start),
                         "暂存用户问题起始位置",
@@ -1775,6 +1860,7 @@ struct StageManifest {
     fork_replay_started_ns: Option<String>,
     fork_replay_active: bool,
     last_skipped_fork_replay_token_ns: Option<String>,
+    current_model: Option<String>,
     current_user_prompt_start: Option<i64>,
     current_user_prompt_end: Option<i64>,
     assistant_response_start: Option<i64>,
@@ -2078,7 +2164,7 @@ fn build_staged_full_rebuild(
             row.get::<_, i64>(0)
         })
         .map_err(|error| format!("无法统计精确 token 暂存去重状态：{error}"))?;
-    let state = parsed.state;
+    let state = parsed.state.clone();
     transaction
         .execute(
             r#"
@@ -2097,6 +2183,7 @@ fn build_staged_full_rebuild(
                 fork_replay_started_ns,
                 fork_replay_active,
                 last_skipped_fork_replay_token_ns,
+                current_model,
                 current_user_prompt_start,
                 current_user_prompt_end,
                 assistant_response_start,
@@ -2104,7 +2191,7 @@ fn build_staged_full_rebuild(
                 event_count,
                 fingerprint_count,
                 chunk_count
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
             "#,
             params![
                 &job.path,
@@ -2120,6 +2207,7 @@ fn build_staged_full_rebuild(
                 timestamp_ns_text(state.fork_replay_started_at),
                 state.fork_replay_active,
                 timestamp_ns_text(state.last_skipped_fork_replay_token_at),
+                state.current_model,
                 checked_optional_i64(
                     state.current_user_prompt.map(|range| range.start),
                     "暂存检查点用户问题起始位置",
@@ -2203,6 +2291,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 fork_replay_started_ns TEXT,
                 fork_replay_active INTEGER NOT NULL,
                 last_skipped_fork_replay_token_ns TEXT,
+                current_model TEXT,
                 current_user_prompt_start INTEGER,
                 current_user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
@@ -2223,6 +2312,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 input_tokens INTEGER NOT NULL,
                 cached_input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
+                model TEXT,
                 user_prompt_start INTEGER,
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
@@ -2283,6 +2373,7 @@ fn validated_staged_full_rebuild(
                 fork_replay_started_ns,
                 fork_replay_active,
                 last_skipped_fork_replay_token_ns,
+                current_model,
                 current_user_prompt_start,
                 current_user_prompt_end,
                 assistant_response_start,
@@ -2310,13 +2401,14 @@ fn validated_staged_full_rebuild(
                     fork_replay_started_ns: row.get(10)?,
                     fork_replay_active: row.get(11)?,
                     last_skipped_fork_replay_token_ns: row.get(12)?,
-                    current_user_prompt_start: row.get(13)?,
-                    current_user_prompt_end: row.get(14)?,
-                    assistant_response_start: row.get(15)?,
-                    assistant_response_end: row.get(16)?,
-                    event_count: row.get(17)?,
-                    fingerprint_count: row.get(18)?,
-                    chunk_count: row.get(19)?,
+                    current_model: row.get(13)?,
+                    current_user_prompt_start: row.get(14)?,
+                    current_user_prompt_end: row.get(15)?,
+                    assistant_response_start: row.get(16)?,
+                    assistant_response_end: row.get(17)?,
+                    event_count: row.get(18)?,
+                    fingerprint_count: row.get(19)?,
+                    chunk_count: row.get(20)?,
                 })
             },
         )
@@ -2406,6 +2498,7 @@ fn validated_staged_full_rebuild(
             fork_replay_started_at,
             fork_replay_active: manifest.fork_replay_active,
             last_skipped_fork_replay_token_at,
+            current_model: manifest.current_model,
             current_user_prompt: source_range_from_columns(
                 manifest.current_user_prompt_start,
                 manifest.current_user_prompt_end,
@@ -2506,6 +2599,7 @@ fn import_staged_full_rebuild(
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
@@ -2521,6 +2615,7 @@ fn import_staged_full_rebuild(
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
@@ -3555,6 +3650,7 @@ fn indexed_file_checkpoint(
                 fork_replay_started_ns,
                 fork_replay_active,
                 last_skipped_fork_replay_token_ns,
+                current_model,
                 current_user_prompt_start,
                 current_user_prompt_end,
                 assistant_response_start,
@@ -3580,13 +3676,14 @@ fn indexed_file_checkpoint(
                 let fork_replay_active = row.get::<_, bool>(7)?;
                 let last_skipped_fork_replay_token_at =
                     parse_timestamp_ns(row.get::<_, Option<String>>(8)?);
+                let current_model = row.get::<_, Option<String>>(9)?;
                 let current_user_prompt = source_range_from_columns(
-                    row.get::<_, Option<i64>>(9)?,
                     row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
                 );
                 let assistant_response = source_range_from_columns(
-                    row.get::<_, Option<i64>>(11)?,
                     row.get::<_, Option<i64>>(12)?,
+                    row.get::<_, Option<i64>>(13)?,
                 );
                 Ok(IndexedFileCheckpoint {
                     generation: row.get(0)?,
@@ -3598,10 +3695,11 @@ fn indexed_file_checkpoint(
                         fork_replay_started_at,
                         fork_replay_active,
                         last_skipped_fork_replay_token_at,
+                        current_model,
                         current_user_prompt,
                         assistant_response,
                     },
-                    audit_chunk_index: nonnegative_u64(row.get::<_, i64>(13)?),
+                    audit_chunk_index: nonnegative_u64(row.get::<_, i64>(14)?),
                 })
             },
         )
@@ -3703,7 +3801,7 @@ fn append_session_file(
         checkpoint.resume_offset,
         signature.size,
         Some(checkpoint.size),
-        checkpoint.parser_state,
+        checkpoint.parser_state.clone(),
         &session_id,
         &mut sink,
         warnings,
@@ -3802,6 +3900,7 @@ fn copy_append_checkpoint_rows(
                 fork_replay_started_ns,
                 fork_replay_active,
                 last_skipped_fork_replay_token_ns,
+                current_model,
                 current_user_prompt_start,
                 current_user_prompt_end,
                 assistant_response_start,
@@ -3825,6 +3924,7 @@ fn copy_append_checkpoint_rows(
                 fork_replay_started_ns,
                 fork_replay_active,
                 last_skipped_fork_replay_token_ns,
+                current_model,
                 current_user_prompt_start,
                 current_user_prompt_end,
                 assistant_response_start,
@@ -3852,6 +3952,7 @@ fn copy_append_checkpoint_rows(
                 input_tokens,
                 cached_input_tokens,
                 output_tokens,
+                model,
                 user_prompt_start,
                 user_prompt_end,
                 assistant_response_start,
@@ -3867,6 +3968,7 @@ fn copy_append_checkpoint_rows(
                 input_tokens,
                 cached_input_tokens,
                 output_tokens,
+                model,
                 user_prompt_start,
                 user_prompt_end,
                 assistant_response_start,
@@ -4132,11 +4234,12 @@ fn save_file_checkpoint(
                 fork_replay_started_ns = ?10,
                 fork_replay_active = ?11,
                 last_skipped_fork_replay_token_ns = ?12,
-                current_user_prompt_start = ?13,
-                current_user_prompt_end = ?14,
-                assistant_response_start = ?15,
-                assistant_response_end = ?16,
-                audit_chunk_index = ?17
+                current_model = ?13,
+                current_user_prompt_start = ?14,
+                current_user_prompt_end = ?15,
+                assistant_response_start = ?16,
+                assistant_response_end = ?17,
+                audit_chunk_index = ?18
             WHERE generation = ?1 AND path = ?2
             "#,
             params![
@@ -4152,6 +4255,7 @@ fn save_file_checkpoint(
                 timestamp_ns_text(state.fork_replay_started_at),
                 state.fork_replay_active,
                 timestamp_ns_text(state.last_skipped_fork_replay_token_at),
+                state.current_model,
                 current_user_prompt_start,
                 current_user_prompt_end,
                 assistant_response_start,
@@ -4888,6 +4992,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 fork_replay_started_ns TEXT,
                 fork_replay_active INTEGER NOT NULL DEFAULT 0,
                 last_skipped_fork_replay_token_ns TEXT,
+                current_model TEXT,
                 current_user_prompt_start INTEGER,
                 current_user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
@@ -4907,6 +5012,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 input_tokens INTEGER NOT NULL,
                 cached_input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
+                model TEXT,
                 user_prompt_start INTEGER,
                 user_prompt_end INTEGER,
                 assistant_response_start INTEGER,
