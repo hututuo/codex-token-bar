@@ -484,7 +484,7 @@ private struct RecentChartPlotData {
     }
 }
 
-let recentChartHoverBubbleVerticalOffset: CGFloat = 54
+let recentChartHoverBubbleVerticalOffset: CGFloat = 74
 
 struct RecentChartQuotaSeriesVisibility: Equatable {
     let showsFiveHour: Bool
@@ -889,6 +889,14 @@ struct RecentUsageChart: View, Equatable {
                         }
                         .scrollClipDisabled()
                         .mask(chartViewportMask)
+                        .overlay(alignment: .topLeading) {
+                            chartHoverBubbleOverlay(
+                                viewportWidth: viewportWidth,
+                                height: proxy.size.height,
+                                contentWidth: contentWidth,
+                                contentOffset: presentation.contentOffset
+                            )
+                        }
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("\(selectedRange.title) 曲线图")
                         .accessibilityValue(chartInteractionAccessibilityValue)
@@ -1164,21 +1172,6 @@ struct RecentUsageChart: View, Equatable {
                         .overlay(Circle().stroke(.green, lineWidth: Self.hoverRingLineWidth))
                         .position(sevenDayPoint)
                 }
-
-                ChartHoverBubble(
-                    bin: chartBins[activeIndex],
-                    cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
-                    fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
-                        ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
-                        : nil,
-                    sevenDayRemaining: quotaSeriesVisibility.showsSevenDay
-                        ? preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil
-                        : nil,
-                    bucketInterval: preparedData.bucketInterval,
-                    isHovering: true
-                )
-                    .chartBubblePlacement(tokenX: tokenPoint.x, plot: plot)
-                    .zIndex(10)
             }
 
             HoverTrackingArea(
@@ -1215,6 +1208,42 @@ struct RecentUsageChart: View, Equatable {
             .allowsHitTesting(false)
         }
         .frame(width: width, height: height)
+    }
+
+    @ViewBuilder
+    private func chartHoverBubbleOverlay(
+        viewportWidth: CGFloat,
+        height: CGFloat,
+        contentWidth: CGFloat,
+        contentOffset: CGFloat
+    ) -> some View {
+        let chartBins = preparedData.bins
+        let activeIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
+            ?? accessibilityCursorState.index.flatMap {
+                chartBins.indices.contains($0) ? $0 : nil
+            }
+
+        if let activeIndex {
+            let contentPlot = CGRect(x: 0, y: 18, width: contentWidth, height: max(height - 42, 1))
+            let viewportPlot = CGRect(x: 0, y: 18, width: viewportWidth, height: max(height - 42, 1))
+            let step = contentPlot.width / CGFloat(max(chartBins.count - 1, 1))
+            let viewportTokenX = contentPlot.minX + CGFloat(activeIndex) * step - contentOffset
+
+            ChartHoverBubble(
+                bin: chartBins[activeIndex],
+                cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
+                fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
+                    ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
+                    : nil,
+                sevenDayRemaining: quotaSeriesVisibility.showsSevenDay
+                    ? preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil
+                    : nil,
+                bucketInterval: preparedData.bucketInterval,
+                isHovering: true
+            )
+            .chartBubblePlacement(tokenX: viewportTokenX, plot: viewportPlot)
+            .zIndex(10)
+        }
     }
 
     private func scrollChart(

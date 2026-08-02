@@ -5,7 +5,7 @@ import XCTest
 
 final class RecentChartSelectionInteractionTests: XCTestCase {
     func testHoverBubbleClearsThePlotByAnExtraVerticalGutter() {
-        XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 54)
+        XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 74)
     }
 
     func testAccessibilityCursorMovesSelectsClampsAndResets() {

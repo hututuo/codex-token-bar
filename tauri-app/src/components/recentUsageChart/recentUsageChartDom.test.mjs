@@ -57,7 +57,8 @@ test("quota estimate keeps historical 5h beside 7d after the current 5h window d
 
         const estimate = container.querySelector('[role="dialog"][aria-label="额度估算"]');
         assert.ok(estimate);
-        assert.ok(estimate.closest(".recent-chart-overlay-layer"));
+        assert.equal(estimate.closest(".recent-chart-overlay-layer"), null);
+        assert.ok(estimate.closest(".chart-section"));
         assert.equal(estimate.closest(".recent-chart-scroll-content"), null);
         assert.match(estimate.textContent, /5h/);
         assert.match(estimate.textContent, /7d/);
@@ -283,14 +284,14 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   };
 }
 
-test("quota estimate card is positioned inside the visible chart viewport", async () => {
+test("quota estimate card follows the chart at the lower left like the Swift layout", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
   const cardRule = css.match(/\.chart-quota-estimate-card\s*\{(?<body>[\s\S]*?)\n\}/);
   assert.ok(cardRule?.groups?.body);
-  assert.match(cardRule.groups.body, /position:\s*absolute;/);
-  assert.match(cardRule.groups.body, /top:\s*12px;/);
-  assert.doesNotMatch(cardRule.groups.body, /top:\s*-/);
-  assert.match(cardRule.groups.body, /left:\s*14px;/);
+  assert.match(cardRule.groups.body, /position:\s*relative;/);
+  assert.match(cardRule.groups.body, /margin-top:\s*18px;/);
+  assert.doesNotMatch(cardRule.groups.body, /(?:^|\n)\s*top:/);
+  assert.doesNotMatch(cardRule.groups.body, /(?:^|\n)\s*left:/);
 })
 
 test("hover detail keeps a clear gutter above the chart plot", async () => {

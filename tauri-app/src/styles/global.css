@@ -6290,15 +6290,14 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .chart-quota-estimate-card {
-  position: absolute;
+  position: relative;
   z-index: 6;
-  top: 12px;
-  left: 14px;
   pointer-events: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 22px;
   gap: 8px;
   width: min(460px, calc(100% - 28px));
+  margin-top: 18px;
   padding: 9px 12px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 90%, var(--line));
   border-radius: 8px;

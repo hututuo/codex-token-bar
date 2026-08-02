@@ -289,18 +289,18 @@ export function RecentUsageChart({
               x={activeTokenPoint.x - chartScrollLeft}
             />
           ) : null}
-          {consumptionSelection ? (
-            <RecentChartQuotaEstimateOverlay
-              currentFiveHourQuotaPresent={fiveHourQuotaPresent}
-              currentSevenDayQuotaPresent={sevenDayQuotaPresent}
-              showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
-              selection={consumptionSelection}
-              showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
-              onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
-            />
-          ) : null}
         </div>
       </div>
+      {consumptionSelection ? (
+        <RecentChartQuotaEstimateOverlay
+          currentFiveHourQuotaPresent={fiveHourQuotaPresent}
+          currentSevenDayQuotaPresent={sevenDayQuotaPresent}
+          showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
+          selection={consumptionSelection}
+          showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
+          onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
+        />
+      ) : null}
     </section>
   );
 }
