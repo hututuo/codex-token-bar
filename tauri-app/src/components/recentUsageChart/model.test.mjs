@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  observedPointPath,
   clickQuotaSelection,
   hoverIndexForX,
   optionalSmoothPath,
@@ -178,12 +177,6 @@ test("smoothPath uses cubic commands and optionalSmoothPath breaks at missing qu
     2,
   );
   assert.match(optionalSmoothPath([{ x: 4, y: 6 }, null]), /^M 4 6 L /);
-});
-
-test("cache hit observations render as independent points", () => {
-  const path = observedPointPath([{ x: 0, y: 20 }, null, { x: 30, y: 10 }]);
-  assert.match(path, /M -1\.6 20 A 1\.6 1\.6 0 1 0 1\.6 20/);
-  assert.doesNotMatch(path, / L /);
 });
 
 test("smoothPath falls back to a full polyline when x positions are not increasing", () => {

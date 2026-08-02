@@ -369,17 +369,6 @@ export function optionalSmoothPath(points: Array<Point | null>): string {
   return segments.join(" ");
 }
 
-export function observedPointPath(points: Array<Point | null>, radius = 1.6): string {
-  return points
-    .filter((point): point is Point => point !== null)
-    .map((point) => [
-      `M ${formatNumber(point.x - radius)} ${formatNumber(point.y)}`,
-      `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(point.x + radius)} ${formatNumber(point.y)}`,
-      `A ${formatNumber(radius)} ${formatNumber(radius)} 0 1 0 ${formatNumber(point.x - radius)} ${formatNumber(point.y)}`,
-    ].join(" "))
-    .join(" ");
-}
-
 function optionalSegmentPath(points: Point[]): string {
   if (points.length !== 1) {
     return smoothPath(points);

@@ -35,6 +35,9 @@ test("quota estimate keeps historical 5h beside 7d after the current 5h window d
         assert.equal(container.querySelector('[role="dialog"]'), null);
         const chart = container.querySelector("svg.usage-chart");
         assert.ok(chart);
+        const cachePoints = chart.querySelectorAll("circle.chart-observation-point--hit");
+        assert.equal(cachePoints.length, 3);
+        assert.equal(cachePoints[0].getAttribute("r"), "1.6");
         chart.getBoundingClientRect = () => ({
           bottom: 185,
           height: 185,

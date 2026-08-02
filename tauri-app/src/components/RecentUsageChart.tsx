@@ -8,7 +8,6 @@ import {
 } from "../settings/quotaPriceModel";
 import {
   activeQuotaSelectionEndIndex,
-  observedPointPath,
   clickQuotaSelection,
   clampQuotaSelection,
   DEFAULT_SERIES_VISIBILITY,
@@ -240,7 +239,17 @@ export function RecentUsageChart({
                 <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
               ) : null}
               {visibility.cacheHitRate && data.hasCacheCalls ? (
-                <path className="chart-observation-points chart-observation-points--hit" d={offsetPath(observedPointPath(plotData.cachePoints))} />
+                <g className="chart-observation-points chart-observation-points--hit">
+                  {plotData.cachePoints.map((point, index) => point ? (
+                    <circle
+                      className="chart-observation-point chart-observation-point--hit"
+                      cx={point.x}
+                      cy={point.y + PLOT_TOP}
+                      key={index}
+                      r="1.6"
+                    />
+                  ) : null)}
+                </g>
               ) : null}
               {fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? (
                 <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />
