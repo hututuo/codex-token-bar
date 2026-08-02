@@ -68,12 +68,18 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
         case .currentOfficial:
             return model.currentPriceRates
         case .radar20260730:
+            // Public Codex Radar 2026-07-30 price card:
+            // https://codexradar.com/
             switch model {
             case .gpt56Sol:
                 return APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
             case .gpt56Terra:
                 return APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
             case .gpt56Luna:
+                return APIPriceRates(inputUSDPerMillion: 1.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 6.00)
+            case .gpt54Legacy:
+                return APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
+            case .gpt54MiniLegacy:
                 return APIPriceRates(inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.50)
             }
         case .unavailable:
@@ -1631,34 +1637,97 @@ enum SharedAccountUsageAttributionEstimator {
         radarDataStale: Bool = false
     ) -> SharedAccountUsageAttributionResult {
         let empty = TokenCacheBreakdown.empty
+        let priceRevision = radar.map {
+            SharedAccountRadarPriceRevision.compatible(with: $0)
+        } ?? .unavailable
+        let radarRow = radar.flatMap { tier.sevenDayRow(in: $0) }
+        let radarTotal = radarRow?.sevenD
         guard enabled else {
-            return unavailable(.disabled, tier: tier, model: model, breakdown: empty)
+            return unavailable(
+                .disabled,
+                tier: tier,
+                model: model,
+                priceRevision: priceRevision,
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
+            )
         }
         guard preciseUsageReady else {
-            return unavailable(.preciseUsagePending, tier: tier, model: model, breakdown: empty)
+            return unavailable(
+                .preciseUsagePending,
+                tier: tier,
+                model: model,
+                priceRevision: priceRevision,
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
+            )
         }
         guard persistenceHealthy else {
-            return unavailable(.attributionStorageUnavailable, tier: tier, model: model, breakdown: empty)
+            return unavailable(
+                .attributionStorageUnavailable,
+                tier: tier,
+                model: model,
+                priceRevision: priceRevision,
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
+            )
         }
         guard preciseUsageFresh else {
-            return unavailable(.preciseUsageStale, tier: tier, model: model, breakdown: empty)
+            return unavailable(
+                .preciseUsageStale,
+                tier: tier,
+                model: model,
+                priceRevision: priceRevision,
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
+            )
         }
         guard let sevenDayQuota else {
-            return unavailable(.missingSevenDayQuota, tier: tier, model: model, breakdown: empty)
+            return unavailable(
+                .missingSevenDayQuota,
+                tier: tier,
+                model: model,
+                priceRevision: priceRevision,
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
+            )
         }
         guard let observedResetAt = sevenDayQuota.resetsAt else {
-            return unavailable(.missingQuotaReset, tier: tier, model: model, breakdown: empty)
+            return unavailable(
+                .missingQuotaReset,
+                tier: tier,
+                model: model,
+                priceRevision: priceRevision,
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
+            )
         }
         guard let historyIdentity else {
             return unavailable(
                 .missingStableAccountIdentity,
                 tier: tier,
                 model: model,
+                priceRevision: priceRevision,
                 cycleStart: observedResetAt.addingTimeInterval(-sevenDayDuration),
                 cycleEnd: observedResetAt,
                 quotaUpdatedAt: quotaUpdatedAt,
                 accountUsedPercent: Double(sevenDayQuota.usedPercent),
-                breakdown: empty
+                breakdown: empty,
+                radarTotalUSD: radarTotal,
+                radarRow: radarRow,
+                radar: radar
             )
         }
 
@@ -1724,11 +1793,15 @@ enum SharedAccountUsageAttributionEstimator {
                     .preciseUsageStale,
                     tier: tier,
                     model: model,
+                    priceRevision: priceRevision,
                     cycleStart: cycleStart,
                     cycleEnd: resetAt,
                     quotaUpdatedAt: quotaUpdatedAt,
                     accountUsedPercent: Double(sevenDayQuota.usedPercent),
-                    breakdown: empty
+                    breakdown: empty,
+                    radarTotalUSD: radarTotal,
+                    radarRow: radarRow,
+                    radar: radar
                 )
             }
         }
@@ -1781,9 +1854,6 @@ enum SharedAccountUsageAttributionEstimator {
                     || bin.breakdown.reasoningOutputTokens > 0)
         }
 
-        let priceRevision = radar.map {
-            SharedAccountRadarPriceRevision.compatible(with: $0)
-        } ?? .unavailable
         let highWatermarkKey = makeHighWatermarkKey(
             identity: historyIdentity,
             resetAt: resetAt,

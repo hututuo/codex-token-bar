@@ -516,11 +516,7 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
     : attribution.state === "localEstimateExceedsAccountDrop"
       ? "本机估高"
       : attribution.allowsAttributionConclusion ? "差额" : "暂算差额";
-  const difference = attribution.state === "suspectedNonLocalUsage"
-    ? Math.max(attribution.nonLocalDifferencePercent, 0)
-    : attribution.state === "localEstimateExceedsAccountDrop"
-      ? Math.abs(attribution.nonLocalDifferencePercent)
-      : attribution.nonLocalDifferencePercent;
+  const difference = attribution.nonLocalDifferencePercent;
   return (
     <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
       <span>账号实降</span>
@@ -530,8 +526,8 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
       <strong>≈{oneDecimalPercent(attribution.localSharePercent)}</strong>
       <i aria-hidden="true">｜</i>
       <span>{differenceTitle}</span>
-      <strong>{attribution.state === "suspectedNonLocalUsage" || attribution.state === "localEstimateExceedsAccountDrop"
-        ? `≈${oneDecimalPercent(difference)}`
+      <strong>{attribution.allowsAttributionConclusion
+        ? `≈${signedOneDecimalPercent(difference)}`
         : signedOneDecimalPercent(difference)}</strong>
     </div>
   );

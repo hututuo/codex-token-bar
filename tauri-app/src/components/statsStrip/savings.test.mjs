@@ -43,7 +43,7 @@ test("calendar month count is inclusive and public plan mapping is conservative"
 
 test("lifetime savings uses recorded historical models before the fallback model", () => {
   const estimate = estimateLifetimeSavings({
-    breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000 },
+    breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000, calls: 2 },
     modelBreakdowns: [
       { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
       { model: "gpt-5.6-terra", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 } },
@@ -72,7 +72,7 @@ test("lifetime breakdown comes from full aggregate stats and clamps malformed ca
     totalThreads: 2,
   });
 
-  assert.deepEqual(combined, { inputTokens: 150, cachedInputTokens: 150, outputTokens: 15, totalTokens: 165 });
+  assert.deepEqual(combined, { inputTokens: 150, cachedInputTokens: 150, outputTokens: 15, totalTokens: 165, calls: 2 });
 });
 
 test("unknown plan shows API equivalent instead of inventing subscription cost", () => {

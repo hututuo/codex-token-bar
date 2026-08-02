@@ -244,7 +244,10 @@ export function estimateSharedAccountAttribution({
     ? scannedLocalRadar20260730EquivalentUSD
     : scannedLocalCurrentAPIEquivalentUSD;
   const accountRawUsedPercent = quotaValueToPercentagePoints(sevenDayQuota.usedPercent);
-  const accountUsedPercent = accountRawUsedPercent - segment.baselineAccountUsedPercent;
+  const accountUsedPercent = Math.max(
+    0,
+    accountRawUsedPercent - segment.baselineAccountUsedPercent,
+  );
   const localSharePercent = (localComparableUSD / tierRow.sevenD) * 100;
   const residualPercent = accountUsedPercent - localSharePercent;
   const effectiveUsagePendingQuotaRefresh = usagePendingQuotaRefresh
@@ -322,13 +325,13 @@ export function radarTierForRow(row: Pick<CodexRadarQuotaRow, "tier">): SharedAc
     .toLowerCase()
     .replace(/[×✕]/g, "x")
     .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "");
-  if ((normalized.includes("20x") || normalized.includes("pro20")) && normalized.includes("pro")) {
+  if (["20xpro", "pro20x", "chatgptpro20x", "20pro", "pro20"].includes(normalized)) {
     return "pro20x";
   }
-  if ((normalized.includes("5x") || normalized.includes("pro5")) && normalized.includes("pro")) {
+  if (["5xpro", "pro5x", "chatgptpro5x", "5pro", "pro5"].includes(normalized)) {
     return "pro5x";
   }
-  if (normalized.includes("plus") || normalized.includes("加享")) return "plus";
+  if (["plus", "chatgptplus", "plusplan", "加享"].includes(normalized)) return "plus";
   return null;
 }
 

@@ -37,6 +37,10 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("chartPlot(consumptionSelection: consumptionSelection)"))
         XCTAssertTrue(source.contains("activeSelectionAttribution(\n            for: consumptionSelection"))
+        XCTAssertTrue(
+            source.contains("consumptionSelectionState.fixedEndIndex != nil"),
+            "shared-account attribution must wait for the second click that fixes the range"
+        )
     }
 
     func testFixedTimeAnchorRelocatesAfterBinsArePrepended() throws {

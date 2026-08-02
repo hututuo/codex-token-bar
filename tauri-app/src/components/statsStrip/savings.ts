@@ -16,6 +16,7 @@ export interface LifetimeTokenBreakdown {
   cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  calls?: number;
 }
 
 export interface LifetimeSavingsEstimate {
@@ -44,6 +45,7 @@ export function lifetimeBreakdownFromStats(stats: DashboardStats): LifetimeToken
     cachedInputTokens: Math.max(0, Math.min(stats.totalCachedInputTokens ?? 0, inputTokens)),
     outputTokens: Math.max(0, stats.totalOutputTokens ?? 0),
     totalTokens: Math.max(0, stats.totalTokens),
+    calls: Math.max(0, stats.totalCalls),
   };
 }
 
@@ -72,7 +74,7 @@ export function estimateLifetimeSavings({
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
     outputTokens: breakdown.outputTokens,
-    calls: 0,
+    calls: Math.max(0, breakdown.calls ?? 0),
   }, priceModel);
   const apiEquivalentUSD = automaticPrice.costUSD;
   const monthlyPlanUSD = monthlyPlanPriceUSD(planLabel);
@@ -132,7 +134,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
     return {
       valueText: compactMoney(estimate.netSavingsUSD),
       labelText: "累计薅到（估）",
-      helpText: `${priceBasis}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐变化未计入。`,
+      helpText: `${priceBasis}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐或模型变化未计入。`,
     };
   }
 

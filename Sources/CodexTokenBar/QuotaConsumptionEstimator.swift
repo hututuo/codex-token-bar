@@ -73,6 +73,17 @@ enum ModelAwareAPIPriceEstimator {
                 rates: rates
             )
         }
+        let coveredBreakdown = modelBreakdowns.map(\.breakdown).combined
+        guard coveredBreakdown.inputTokens == fallbackBreakdown.inputTokens,
+              coveredBreakdown.cachedInputTokens == fallbackBreakdown.cachedInputTokens,
+              coveredBreakdown.outputTokens == fallbackBreakdown.outputTokens,
+              coveredBreakdown.calls == fallbackBreakdown.calls else {
+            return fallback(
+                breakdown: fallbackBreakdown,
+                model: fallbackModel,
+                rates: rates
+            )
+        }
         var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
         var fallbackBreakdowns: [TokenCacheBreakdown] = []
         for row in modelBreakdowns {
@@ -110,6 +121,14 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     case gpt56Sol
     case gpt56Terra
     case gpt56Luna
+    case gpt54Legacy
+    case gpt54MiniLegacy
+
+    static let selectableCases: [OfficialAPIPriceModel] = [
+        .gpt56Sol,
+        .gpt56Terra,
+        .gpt56Luna
+    ]
 
     var id: String { rawValue }
 
@@ -118,6 +137,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt56Sol: "GPT-5.6 Sol"
         case .gpt56Terra: "GPT-5.6 Terra"
         case .gpt56Luna: "GPT-5.6 Luna"
+        case .gpt54Legacy: "GPT-5.4"
+        case .gpt54MiniLegacy: "GPT-5.4 Mini"
         }
     }
 
@@ -129,6 +150,10 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
         case .gpt56Luna:
             APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
+        case .gpt54Legacy:
+            APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
+        case .gpt54MiniLegacy:
+            APIPriceRates(inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.50)
         }
     }
 
@@ -170,12 +195,16 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
         switch key {
-        case "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol", "gpt-5.5", "gpt55":
+        case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol", "gpt-5.5", "gpt55":
             return .gpt56Sol
-        case "gpt-5.6-terra", "gpt5.6-terra", "gpt56-terra", "gpt56terra", "gpt-5.4", "gpt54":
+        case "gpt-5.6-terra", "gpt5.6-terra", "gpt56-terra", "gpt56terra":
             return .gpt56Terra
-        case "gpt-5.6-luna", "gpt5.6-luna", "gpt56-luna", "gpt56luna", "gpt-5.4-mini", "gpt54mini":
+        case "gpt-5.6-luna", "gpt5.6-luna", "gpt56-luna", "gpt56luna":
             return .gpt56Luna
+        case "gpt-5.4", "gpt54":
+            return .gpt54Legacy
+        case "gpt-5.4-mini", "gpt54mini":
+            return .gpt54MiniLegacy
         default:
             return nil
         }

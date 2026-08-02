@@ -405,7 +405,7 @@ function SharedAccountAttributionDetail({
           额度通常只显示到整百分点，本机按 5 分钟分桶和所选模型估价。差额在 ±2 个百分点内不区分他人使用；差额不是其他账号的直接记录，也不会被截成 0。
         </div>
         <div className="shared-attribution-note">
-          金额按用户所选模型和标准短上下文估算。当前索引无法逐事件识别 cache write、超过 272K 的长上下文、Fast 附加项或混用模型，因此这些情况会带来额外误差。
+          金额会按历史记录中的真实模型自动估算，未知记录才使用所选回退模型。当前索引仍无法逐事件识别 cache write、超过 272K 的长上下文、Fast/service tier 或区域附加项，因此不是精确账单。
         </div>
         <div className="shared-attribution-note">
           本周期桶级高水位按原生层提供的匿名账号 scope、重置时间和账号切换分段隔离；原始 token 不随套餐或折算模型切换而丢失。scope 由稳定账户与额度 limit 哈希生成，不向前端暴露原始 ID。

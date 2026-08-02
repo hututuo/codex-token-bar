@@ -137,10 +137,19 @@ test("Radar tier matching tolerates punctuation and never borrows five-hour tota
   assert.equal(radarTierForRow({ tier: "PRO · 20×" }), "pro20x");
   assert.equal(radarTierForRow({ tier: "5 x Pro" }), "pro5x");
   assert.equal(radarTierForRow({ tier: "ChatGPT Plus" }), "plus");
+  assert.equal(radarTierForRow({ tier: "ChatGPT Plus 20x" }), null);
   const missingSevenDay = estimate({
     quotaRadar: radar({ rows: [{ tier: "20x Pro", basis: "measured", fiveH: 40, sevenD: null }] }),
   });
   assert.equal(missingSevenDay.status, "radarTierUnavailable");
+});
+
+test("account usage never becomes negative when a restored baseline is higher", () => {
+  const result = estimate({
+    sevenDayQuota: quota({ usedPercent: 0.01, remainingPercent: 0.99 }),
+    segment: segment({ baselineAccountUsedPercent: 2 }),
+  });
+  assert.equal(result.accountUsedPercent, 0);
 });
 
 test("a hidden or paused Radar seven-day policy rejects a retained positive row", () => {

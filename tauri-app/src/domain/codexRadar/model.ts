@@ -806,7 +806,8 @@ function valueForQuotaTier(point: CodexRadarQuotaTrendPoint, window: CodexRadarQ
 
 function quotaPolicyHidesWindow(policy: string | null | undefined): boolean {
   const normalized = policy?.toLowerCase() ?? "";
-  return normalized.includes("hidden") || normalized.includes("paused") || normalized.includes("disabled");
+  return ["hidden", "paused", "disabled", "cancelled", "canceled", "removed", "retired"]
+    .some((marker) => normalized.includes(marker));
 }
 
 function quotaRadarHasContent(quotaRadar: CodexRadarQuotaRadar): boolean {

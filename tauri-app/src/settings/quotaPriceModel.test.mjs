@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  detectedOfficialAPIPriceModel,
   modelAwareAPICostUSD,
   normalizeOfficialAPIPriceModel,
   officialAPICostUSD,
@@ -41,8 +42,34 @@ test("GPT-5.6 current price cards use the official Sol, Terra and Luna rates", (
 test("Radar 2026-07-30 price basis stays separate from current official API value", () => {
   assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Terra", "radar20260730"), 2.5);
   assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Terra", "current"), 2);
-  assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Luna", "radar20260730"), 0.75);
+  assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Luna", "radar20260730"), 1);
   assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Luna", "current"), 0.2);
+});
+
+test("official aliases and legacy models keep their own price cards", () => {
+  assert.equal(detectedOfficialAPIPriceModel("gpt-5.6"), "gpt56Sol");
+  assert.equal(detectedOfficialAPIPriceModel("gpt-5.4"), "gpt54Legacy");
+  assert.equal(detectedOfficialAPIPriceModel("gpt-5.4-mini"), "gpt54MiniLegacy");
+  assert.equal(officialAPICostUSD(1_000_000, 0, 100_000, "gpt54Legacy"), 4);
+  assert.equal(officialAPICostUSD(1_000_000, 0, 100_000, "gpt54MiniLegacy"), 1.2);
+});
+
+test("incomplete or duplicate model rows fall back as one complete breakdown", () => {
+  const fallback = { inputTokens: 2_000_000, cachedInputTokens: 500_000, outputTokens: 300_000, calls: 2 };
+  const incomplete = modelAwareAPICostUSD([
+    { model: "gpt-5.6-sol", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 100_000, calls: 1 } },
+  ], fallback, "gpt56Sol");
+  assert.equal(incomplete.costUSD, 16.75);
+  assert.deepEqual(incomplete.detectedModels, []);
+  assert.equal(incomplete.fallbackCalls, 2);
+
+  const duplicate = modelAwareAPICostUSD([
+    { model: "gpt-5.6-sol", breakdown: fallback },
+    { model: "gpt-5.6-sol", breakdown: fallback },
+  ], fallback, "gpt56Terra");
+  assert.equal(duplicate.costUSD, 6.7);
+  assert.deepEqual(duplicate.detectedModels, []);
+  assert.equal(duplicate.fallbackCalls, 2);
 });
 
 test("legacy recentChartQuotaEstimateModel values migrate in place", () => {

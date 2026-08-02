@@ -531,7 +531,7 @@ struct AppSettingsView: View {
                         "未知模型回退",
                         systemImage: "cpu",
                         selection: sharedAccountPriceModelBinding,
-                        options: OfficialAPIPriceModel.allCases.map { ($0.rawValue, $0.title) }
+                        options: OfficialAPIPriceModel.selectableCases.map { ($0.rawValue, $0.title) }
                     )
                     .settingsRowDivider()
                     settingsInfoRow(

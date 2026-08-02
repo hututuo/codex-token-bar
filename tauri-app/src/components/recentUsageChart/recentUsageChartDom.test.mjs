@@ -339,6 +339,16 @@ test("fixed 24h selection renders shared-account attribution in the lower result
         assert.match(attribution.textContent, /账号实降3%/);
         assert.match(attribution.textContent, /本机折算≈1\.5%/);
         assert.match(attribution.textContent, /差额\+1\.5%/);
+
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h: [point(0, 0.8, 0.90), point(300, 0.78, 0.88), point(600, 0.76, 0.87)],
+          recentUsage7d: [],
+          recentUsage30d: [],
+          sharedAccountAttribution: { ...attributionContext, radarPlanTotalUSD: 10 },
+        })));
+        const negative = container.querySelector('[aria-label="选区共享账号归因"]');
+        assert.ok(negative);
+        assert.match(negative.textContent, /暂算差额-12%/);
       } finally {
         await React.act(async () => root.unmount());
       }

@@ -1003,7 +1003,8 @@ struct CodexRadarQuotaRadar: Decodable, Equatable, Sendable {
 
     private static func policyHidesWindow(_ policy: String?) -> Bool {
         let normalized = policy?.lowercased() ?? ""
-        return normalized.contains("hidden") || normalized.contains("paused") || normalized.contains("disabled")
+        return ["hidden", "paused", "disabled", "cancelled", "canceled", "removed", "retired"]
+            .contains { normalized.contains($0) }
     }
 }
 

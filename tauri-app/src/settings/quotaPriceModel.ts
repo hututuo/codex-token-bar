@@ -1,4 +1,9 @@
-export type OfficialAPIPriceModel = "gpt56Sol" | "gpt56Terra" | "gpt56Luna";
+export type OfficialAPIPriceModel =
+  | "gpt56Sol"
+  | "gpt56Terra"
+  | "gpt56Luna"
+  | "gpt54Legacy"
+  | "gpt54MiniLegacy";
 
 export type QuotaPriceBasis = "current" | "radar20260730";
 
@@ -40,14 +45,19 @@ const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
   gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
+  gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
+  gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
 };
 
-// The 2026-07-30 Radar quota total was calibrated with this then-published price card.
-// Attribution must use the same basis on both sides of the division.
+// Codex Radar's public 2026-07-30 quota basis uses the then-published model
+// price card. Keep this separate from current OpenAI prices so both sides of
+// the attribution division use one vintage. Source: https://codexradar.com/
 const RADAR_2026_07_30_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
   gpt56Terra: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
-  gpt56Luna: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
+  gpt56Luna: { inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 6 },
+  gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
+  gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
 };
 
 const LEGACY_PRICE_MODEL_MIGRATIONS: Record<string, OfficialAPIPriceModel> = {
@@ -57,14 +67,22 @@ const LEGACY_PRICE_MODEL_MIGRATIONS: Record<string, OfficialAPIPriceModel> = {
 };
 
 export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPriceModel | null {
-  if (value === "gpt56Sol" || value === "gpt56Terra" || value === "gpt56Luna") {
+  if (value === "gpt56Sol"
+    || value === "gpt56Terra"
+    || value === "gpt56Luna"
+    || value === "gpt54Legacy"
+    || value === "gpt54MiniLegacy") {
     return value;
   }
   return typeof value === "string" ? LEGACY_PRICE_MODEL_MIGRATIONS[value] ?? null : null;
 }
 
 export function isOfficialAPIPriceModel(value: unknown): value is OfficialAPIPriceModel {
-  return value === "gpt56Sol" || value === "gpt56Terra" || value === "gpt56Luna";
+  return value === "gpt56Sol"
+    || value === "gpt56Terra"
+    || value === "gpt56Luna"
+    || value === "gpt54Legacy"
+    || value === "gpt54MiniLegacy";
 }
 
 export function readStoredQuotaPriceModel(storage?: Pick<Storage, "getItem" | "setItem"> | null): OfficialAPIPriceModel {
@@ -115,6 +133,9 @@ export function officialAPICostUSD(
 export function detectedOfficialAPIPriceModel(value: string | null | undefined): OfficialAPIPriceModel | null {
   const key = value?.trim().toLowerCase().replaceAll("_", "-");
   switch (key) {
+    case "gpt-5.6":
+    case "gpt5.6":
+    case "gpt56":
     case "gpt-5.6-sol":
     case "gpt5.6-sol":
     case "gpt56-sol":
@@ -126,16 +147,18 @@ export function detectedOfficialAPIPriceModel(value: string | null | undefined):
     case "gpt5.6-terra":
     case "gpt56-terra":
     case "gpt56terra":
-    case "gpt-5.4":
-    case "gpt54":
       return "gpt56Terra";
     case "gpt-5.6-luna":
     case "gpt5.6-luna":
     case "gpt56-luna":
     case "gpt56luna":
+      return "gpt56Luna";
+    case "gpt-5.4":
+    case "gpt54":
+      return "gpt54Legacy";
     case "gpt-5.4-mini":
     case "gpt54mini":
-      return "gpt56Luna";
+      return "gpt54MiniLegacy";
     default:
       return null;
   }
@@ -152,6 +175,34 @@ export function modelAwareAPICostUSD(
       costUSD: officialAPICostUSD(fallback.inputTokens, fallback.cachedInputTokens, fallback.outputTokens, fallbackModel, basis),
       detectedModels: [],
       fallbackCalls: fallback.calls,
+    };
+  }
+  const covered = rows.reduce((total, row) => ({
+    inputTokens: total.inputTokens + finiteNonnegative(row.breakdown.inputTokens),
+    cachedInputTokens: total.cachedInputTokens + finiteNonnegative(row.breakdown.cachedInputTokens),
+    outputTokens: total.outputTokens + finiteNonnegative(row.breakdown.outputTokens),
+    calls: total.calls + finiteNonnegative(row.breakdown.calls),
+  }), { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 });
+  const expected = {
+    inputTokens: finiteNonnegative(fallback.inputTokens),
+    cachedInputTokens: finiteNonnegative(fallback.cachedInputTokens),
+    outputTokens: finiteNonnegative(fallback.outputTokens),
+    calls: finiteNonnegative(fallback.calls),
+  };
+  if (covered.inputTokens !== expected.inputTokens
+    || covered.cachedInputTokens !== expected.cachedInputTokens
+    || covered.outputTokens !== expected.outputTokens
+    || covered.calls !== expected.calls) {
+    return {
+      costUSD: officialAPICostUSD(
+        expected.inputTokens,
+        expected.cachedInputTokens,
+        expected.outputTokens,
+        fallbackModel,
+        basis,
+      ),
+      detectedModels: [],
+      fallbackCalls: expected.calls,
     };
   }
   const grouped = new Map<OfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
@@ -173,7 +224,13 @@ export function modelAwareAPICostUSD(
   }
   return {
     costUSD,
-    detectedModels: QUOTA_PRICE_MODEL_OPTIONS.map((option) => option.value).filter((model) => grouped.has(model)),
+    detectedModels: ([
+      "gpt56Sol",
+      "gpt56Terra",
+      "gpt56Luna",
+      "gpt54Legacy",
+      "gpt54MiniLegacy",
+    ] satisfies OfficialAPIPriceModel[]).filter((model) => grouped.has(model)),
     fallbackCalls: unknown.calls,
   };
 }
@@ -183,6 +240,8 @@ export function priceModelTitle(model: OfficialAPIPriceModel): string {
     case "gpt56Sol": return "GPT-5.6 Sol";
     case "gpt56Terra": return "GPT-5.6 Terra";
     case "gpt56Luna": return "GPT-5.6 Luna";
+    case "gpt54Legacy": return "GPT-5.4";
+    case "gpt54MiniLegacy": return "GPT-5.4 Mini";
   }
 }
 

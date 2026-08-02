@@ -85,6 +85,9 @@ export interface QuotaConsumptionEstimate {
   calls: number;
   cacheHitRate: number;
   quotaDropAvailable: boolean;
+  comparisonBreakdown: ModelTokenCostRow["breakdown"] & { totalTokens: number };
+  comparisonStartUnix: number | null;
+  comparisonEndUnix: number | null;
   confidence: QuotaConsumptionConfidence;
 }
 
@@ -103,6 +106,7 @@ export interface QuotaConsumptionSelection {
   calls: number;
   cacheHitRate: number;
   modelBreakdowns: ModelTokenCostRow[];
+  sevenDayModelBreakdowns: ModelTokenCostRow[];
   fiveHour: QuotaConsumptionEstimate;
   sevenDay: QuotaConsumptionEstimate;
   sevenDayToFiveHourBudgetRatio: number | null;
@@ -482,10 +486,45 @@ export function quotaConsumptionSelection(
     breakdown,
     priceModel,
   ).costUSD;
-  const fiveHourDrop = cumulativeQuotaDrop(selectedPoints.map((point) => point.fiveHourRemainingPercent));
-  const sevenDayDrop = cumulativeQuotaDrop(selectedPoints.map((point) => point.sevenDayRemainingPercent));
-  const fiveHour = quotaConsumptionEstimate(breakdown, fiveHourDrop, selectedCostUSD);
-  const sevenDay = quotaConsumptionEstimate(breakdown, sevenDayDrop, selectedCostUSD);
+  const fiveHourDrop = quotaDropResolution(selectedPoints.map((point) => point.fiveHourRemainingPercent));
+  const sevenDayDrop = quotaDropResolution(selectedPoints.map((point) => point.sevenDayRemainingPercent));
+  const fiveHourComparisonPoints = fiveHourDrop.comparisonStartOffset === null
+    ? []
+    : selectedPoints.slice(fiveHourDrop.comparisonStartOffset);
+  const sevenDayComparisonPoints = sevenDayDrop.comparisonStartOffset === null
+    ? []
+    : selectedPoints.slice(sevenDayDrop.comparisonStartOffset);
+  const fiveHourComparisonBreakdown = combineTokenBreakdown(fiveHourComparisonPoints);
+  const sevenDayComparisonBreakdown = combineTokenBreakdown(sevenDayComparisonPoints);
+  const fiveHourComparisonCost = modelAwareAPICostUSD(
+    fiveHourComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []),
+    fiveHourComparisonBreakdown,
+    priceModel,
+  ).costUSD;
+  const sevenDayModelBreakdowns = sevenDayComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []);
+  const sevenDayComparisonCost = modelAwareAPICostUSD(
+    sevenDayModelBreakdowns,
+    sevenDayComparisonBreakdown,
+    priceModel,
+  ).costUSD;
+  const fiveHour = quotaConsumptionEstimate(
+    breakdown,
+    fiveHourDrop,
+    selectedCostUSD,
+    fiveHourComparisonCost,
+    fiveHourComparisonBreakdown,
+    selectedPoints,
+    data.bucketSeconds,
+  );
+  const sevenDay = quotaConsumptionEstimate(
+    breakdown,
+    sevenDayDrop,
+    selectedCostUSD,
+    sevenDayComparisonCost,
+    sevenDayComparisonBreakdown,
+    selectedPoints,
+    data.bucketSeconds,
+  );
   const ratio = fiveHour.impliedWindowBudgetUSD && sevenDay.impliedWindowBudgetUSD
     ? sevenDay.impliedWindowBudgetUSD / fiveHour.impliedWindowBudgetUSD
     : null;
@@ -505,6 +544,7 @@ export function quotaConsumptionSelection(
     calls: breakdown.calls,
     cacheHitRate: breakdown.cacheHitRate,
     modelBreakdowns: selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
+    sevenDayModelBreakdowns,
     fiveHour,
     sevenDay,
     sevenDayToFiveHourBudgetRatio: ratio,
@@ -601,7 +641,10 @@ function weightedCacheHitRate(points: RecentUsagePoint[]): number {
 function combineTokenBreakdown(points: RecentUsagePoint[]) {
   const inputTokens = points.reduce((total, point) => total + point.inputTokens, 0);
   const cachedInputTokens = points.reduce((total, point) => total + point.cachedInputTokens, 0);
-  const outputTokens = points.reduce((total, point) => total + (point.outputTokens ?? Math.max(point.tokens - point.inputTokens, 0)), 0);
+  // Native exact history exposes output tokens directly. Do not reinterpret
+  // total-minus-input as output: total may include non-billable or separately
+  // classified token dimensions.
+  const outputTokens = points.reduce((total, point) => total + finiteNonnegative(point.outputTokens), 0);
   const calls = points.reduce((total, point) => total + point.calls, 0);
   const costUSD = officialAPICostUSD(inputTokens, cachedInputTokens, outputTokens, "gpt56Sol");
   return {
@@ -617,11 +660,17 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
 
 function quotaConsumptionEstimate(
   breakdown: ReturnType<typeof combineTokenBreakdown>,
-  quotaDropPercent: number | null,
+  resolution: QuotaDropResolution,
   selectedCostUSD: number,
+  comparisonCostUSD: number,
+  comparisonBreakdown: ReturnType<typeof combineTokenBreakdown>,
+  selectedPoints: RecentUsagePoint[],
+  bucketSeconds: number,
 ): QuotaConsumptionEstimate {
-  const drop = Math.max(quotaDropPercent ?? 0, 0);
-  const hasTokenUsage = breakdown.totalTokens > 0 || breakdown.inputTokens > 0 || breakdown.outputTokens > 0;
+  const drop = Math.max(resolution.percent ?? 0, 0);
+  const hasTokenUsage = comparisonBreakdown.totalTokens > 0
+    || comparisonBreakdown.inputTokens > 0
+    || comparisonBreakdown.outputTokens > 0;
   let confidence: QuotaConsumptionConfidence = "measured";
   let impliedWindowBudgetUSD: number | null = null;
   if (!hasTokenUsage) {
@@ -629,7 +678,7 @@ function quotaConsumptionEstimate(
   } else if (drop <= 0.0001) {
     confidence = "insufficientQuotaMovement";
   } else {
-    impliedWindowBudgetUSD = selectedCostUSD / (drop / 100);
+    impliedWindowBudgetUSD = comparisonCostUSD / (drop / 100);
   }
   return {
     selectedCostUSD,
@@ -640,7 +689,14 @@ function quotaConsumptionEstimate(
     outputTokens: breakdown.outputTokens,
     calls: breakdown.calls,
     cacheHitRate: breakdown.cacheHitRate,
-    quotaDropAvailable: quotaDropPercent !== null,
+    quotaDropAvailable: resolution.percent !== null,
+    comparisonBreakdown,
+    comparisonStartUnix: resolution.comparisonStartOffset === null
+      ? null
+      : selectedPoints[resolution.comparisonStartOffset]?.startUnix ?? null,
+    comparisonEndUnix: resolution.comparisonStartOffset === null || selectedPoints.length === 0
+      ? null
+      : selectedPoints[selectedPoints.length - 1].startUnix + bucketSeconds,
     confidence,
   };
 }
@@ -659,12 +715,12 @@ export function quotaSelectionAttribution(
   }
 
   const localComparableCostUSD = modelAwareAPICostUSD(
-    selection.modelBreakdowns,
+    selection.sevenDayModelBreakdowns,
     {
-      inputTokens: selection.inputTokens,
-      cachedInputTokens: selection.cachedInputTokens,
-      outputTokens: selection.outputTokens,
-      calls: selection.calls,
+      inputTokens: selection.sevenDay.comparisonBreakdown.inputTokens,
+      cachedInputTokens: selection.sevenDay.comparisonBreakdown.cachedInputTokens,
+      outputTokens: selection.sevenDay.comparisonBreakdown.outputTokens,
+      calls: selection.sevenDay.comparisonBreakdown.calls,
     },
     selection.priceModel,
     context.priceBasis,
@@ -684,6 +740,7 @@ export function quotaSelectionAttribution(
     && !context.radarDataStale
     && !context.usagePendingQuotaRefresh
     && !context.historyChangedLowConfidence
+    && selection.sevenDay.comparisonStartUnix === selection.startUnix
     && (context.cycleStartUnix === null || selection.startUnix >= context.cycleStartUnix)
     && (context.cycleEndUnix === null || selection.endUnix <= context.cycleEndUnix)
     && (context.segmentStartUnix === null || selection.startUnix >= context.segmentStartUnix)
@@ -707,28 +764,44 @@ export function quotaSelectionAttribution(
   };
 }
 
-function cumulativeQuotaDrop(values: Array<number | null>): number | null {
-  const availableValues = sanitizedQuotaDropValues(values.flatMap((value) => {
+interface QuotaDropResolution {
+  percent: number | null;
+  comparisonStartOffset: number | null;
+}
+
+function quotaDropResolution(values: Array<number | null>): QuotaDropResolution {
+  const availableSamples = values.flatMap((value, index) => {
     if (value === null || !Number.isFinite(value)) {
       return [];
     }
-    return [quotaPercentValue(value)];
-  }));
-  if (availableValues.length < 2) {
-    return null;
-  }
-  return availableValues.slice(1).reduce((total, value, index) => {
-    const previous = availableValues[index];
-    return total + Math.max(previous - value, 0);
-  }, 0);
-}
-
-function sanitizedQuotaDropValues(values: number[]): number[] {
-  return values.filter((value, index) => {
-    const previous = index > 0 ? values[index - 1] : null;
-    const next = index + 1 < values.length ? values[index + 1] : null;
-    return !isZeroRemainingSpike(value, previous, next) && !isFullRemainingSpike(value, previous, next);
+    return [{ value: quotaPercentValue(value), index }];
   });
+  const sanitizedSamples = availableSamples.filter((sample, index) => {
+    const previous = index > 0 ? availableSamples[index - 1].value : null;
+    const next = index + 1 < availableSamples.length ? availableSamples[index + 1].value : null;
+    return !isZeroRemainingSpike(sample.value, previous, next)
+      && !isFullRemainingSpike(sample.value, previous, next);
+  });
+  if (sanitizedSamples.length < 2) {
+    return { percent: null, comparisonStartOffset: values.length > 0 ? 0 : null };
+  }
+  let currentCycleStart = 0;
+  for (let index = 1; index < sanitizedSamples.length; index += 1) {
+    if (sanitizedSamples[index].value > sanitizedSamples[index - 1].value + 5) {
+      currentCycleStart = index;
+    }
+  }
+  const currentCycleValues = sanitizedSamples.slice(currentCycleStart);
+  if (currentCycleValues.length < 2) {
+    return { percent: null, comparisonStartOffset: currentCycleValues[0]?.index ?? null };
+  }
+  return {
+    percent: currentCycleValues.slice(1).reduce((total, sample, index) => {
+      const previous = currentCycleValues[index].value;
+      return total + Math.max(previous - sample.value, 0);
+    }, 0),
+    comparisonStartOffset: currentCycleValues[0].index,
+  };
 }
 
 function isZeroRemainingSpike(value: number, previous: number | null, next: number | null): boolean {
@@ -736,7 +809,11 @@ function isZeroRemainingSpike(value: number, previous: number | null, next: numb
 }
 
 function isFullRemainingSpike(value: number, previous: number | null, next: number | null): boolean {
-  return value >= 99 && previous !== null && next !== null && previous <= 95 && next <= 95;
+  return value >= 99
+    && previous !== null
+    && next !== null
+    && previous <= 95
+    && next <= previous + 1;
 }
 
 function quotaPercentValue(value: number): number {

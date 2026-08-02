@@ -122,11 +122,11 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
         }
         switch result.state {
         case .suspectedNonLocalUsage:
-            return "本≈\(Self.compactPercent(local))·他≈\(Self.compactPercent(max(difference, 0)))"
+            return "本≈\(Self.compactPercent(local))·差\(Self.compactSignedPercent(difference))"
         case .withinTolerance:
             return "本≈\(Self.compactPercent(local))·差<2%"
         case .localEstimateExceedsAccountDrop:
-            return "本机估高\(Self.compactPercent(abs(difference)))"
+            return "本机估高\(Self.compactSignedPercent(difference))"
         case .awaitingQuotaRefresh:
             return "本≈\(Self.compactPercent(local))·待刷新"
         case .disabled, .preciseUsagePending, .preciseUsageStale, .attributionStorageUnavailable,

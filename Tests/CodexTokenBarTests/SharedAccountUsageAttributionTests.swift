@@ -34,7 +34,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(result.state, .suspectedNonLocalUsage)
         XCTAssertEqual(
             SharedAccountUsageAttributionPresentation(result: result).compactSummaryLine,
-            "本≈10%·他≈3%"
+            "本≈10%·差+3%"
         )
     }
 
@@ -188,7 +188,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(result.state, .localEstimateExceedsAccountDrop)
         XCTAssertEqual(
             SharedAccountUsageAttributionPresentation(result: result).compactSummaryLine,
-            "本机估高5%"
+            "本机估高-5%"
         )
     }
 
@@ -271,7 +271,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
         XCTAssertEqual(
             try XCTUnwrap(SharedAccountRadarPriceRevision.radar20260730.rates(for: .gpt56Luna)).costUSD(for: breakdown),
-            1.38,
+            1.84,
             accuracy: 0.0001
         )
         XCTAssertEqual(
@@ -349,6 +349,9 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(result.state, .disabled)
         XCTAssertNil(result.localSharePercent)
         XCTAssertNil(result.highWatermarkKey)
+        XCTAssertEqual(result.radarSevenDayTotalUSD, 100)
+        XCTAssertEqual(result.priceRevision, .radar20260730)
+        XCTAssertEqual(result.radarPricingBasisDate, "2026-07-30")
     }
 
     func testPendingAndMissingInputStatesRemainDistinct() throws {

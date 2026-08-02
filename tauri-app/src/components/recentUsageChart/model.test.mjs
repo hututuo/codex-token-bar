@@ -220,6 +220,53 @@ test("quotaConsumptionSelection uses cumulative quota drop instead of start-end 
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD?.toFixed(4), "40.0000");
 });
 
+test("quotaConsumptionSelection keeps only the latest quota cycle after a reset", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.20 }),
+      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.10 }),
+      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 1.00 }),
+      point(900, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.90 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 3, "gpt56Sol");
+  assert.equal(selection?.sevenDay.quotaDropPercent, 10);
+  assert.equal(selection?.sevenDay.comparisonBreakdown.inputTokens, 200_000);
+  assert.equal(selection?.sevenDay.impliedWindowBudgetUSD, 10);
+  const attribution = quotaSelectionAttribution(selection, {
+    status: "indistinguishable",
+    priceBasis: "radar20260730",
+    radarPlanTotalUSD: 100,
+    quotaDataStale: false,
+    radarDataStale: false,
+    usagePendingQuotaRefresh: false,
+    historyChangedLowConfidence: false,
+    cycleStartUnix: 0,
+    cycleEndUnix: 604_800,
+    segmentStartUnix: 0,
+    quotaUpdatedAtUnix: 1_200,
+  });
+  assert.equal(attribution?.state, "provisional");
+  assert.equal(attribution?.allowsAttributionConclusion, false);
+});
+
+test("quotaConsumptionSelection never invents output from total minus input", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 600_000, outputTokens: undefined, tokens: 1_000_000, calls: 1 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 0, "gpt56Sol");
+  assert.equal(selection?.outputTokens, 0);
+  assert.equal(selection?.selectedCostUSD, 3);
+});
+
 test("24h selection attribution compares observed account drop with Radar-priced local usage", () => {
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [

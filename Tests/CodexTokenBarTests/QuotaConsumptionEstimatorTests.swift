@@ -233,6 +233,64 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.cacheHitRate, 0.4, accuracy: 0.0001)
     }
 
+    func testOfficialAliasAndLegacyModelsUseDistinctCurrentPrices() throws {
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6"), .gpt56Sol)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4"), .gpt54Legacy)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4-mini"), .gpt54MiniLegacy)
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_100_000,
+            calls: 1
+        )
+        XCTAssertEqual(OfficialAPIPriceModel.gpt54Legacy.currentPriceRates.costUSD(for: breakdown), 4, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt54MiniLegacy.currentPriceRates.costUSD(for: breakdown), 1.2, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt56Sol, .gpt56Terra, .gpt56Luna])
+    }
+
+    func testIncompleteOrDuplicateModelRowsFallBackToTheCompleteBreakdown() {
+        let fallback = TokenCacheBreakdown(
+            inputTokens: 2_000_000,
+            cachedInputTokens: 500_000,
+            outputTokens: 300_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 2_300_000,
+            calls: 2
+        )
+        let partial = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_100_000,
+            calls: 1
+        )
+        let incomplete = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: [ModelTokenBreakdown(model: "gpt-5.6-sol", breakdown: partial)],
+            fallbackBreakdown: fallback,
+            fallbackModel: .gpt56Sol,
+            rates: { $0.currentPriceRates }
+        )
+        XCTAssertEqual(incomplete.costUSD, 16.75, accuracy: 0.0001)
+        XCTAssertEqual(incomplete.detectedModels, [])
+        XCTAssertEqual(incomplete.fallbackCalls, 2)
+
+        let duplicate = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: [
+                ModelTokenBreakdown(model: "gpt-5.6-sol", breakdown: fallback),
+                ModelTokenBreakdown(model: "gpt-5.6-sol", breakdown: fallback),
+            ],
+            fallbackBreakdown: fallback,
+            fallbackModel: .gpt56Terra,
+            rates: { $0.currentPriceRates }
+        )
+        XCTAssertEqual(duplicate.costUSD, 6.7, accuracy: 0.0001)
+        XCTAssertEqual(duplicate.detectedModels, [])
+        XCTAssertEqual(duplicate.fallbackCalls, 2)
+    }
+
     func testEstimateIsUnavailableWhenQuotaDidNotDrop() {
         let estimate = QuotaConsumptionEstimator.estimate(
             breakdown: TokenCacheBreakdown(
@@ -271,7 +329,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.accountText, "13%")
         XCTAssertEqual(presentation.localText, "≈10%")
         XCTAssertEqual(presentation.differenceTitle, "疑似他人")
-        XCTAssertEqual(presentation.differenceText, "≈3%")
+        XCTAssertEqual(presentation.differenceText, "≈+3%")
     }
 
     func testSelectionAttributionAutomaticallyPricesMixedModelsForCurrentAndRadarRevisions() throws {
@@ -332,7 +390,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), -5, accuracy: 0.0001)
         XCTAssertEqual(
             QuotaSelectionAttributionPresentation(result: result).differenceText,
-            "5%"
+            "-5%"
         )
     }
 

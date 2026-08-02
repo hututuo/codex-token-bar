@@ -151,6 +151,24 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(sevenDayValues[0], 97.2415, accuracy: 0.000_001)
         XCTAssertEqual(sevenDayValues[1], 486.2075, accuracy: 0.000_001)
         XCTAssertEqual(sevenDayValues[2], 1944.83, accuracy: 0.000_001)
+
+        for policy in ["cancelled", "removed", "retired"] {
+            var variantRoot = root
+            var variantModelIQ = modelIQ
+            var variantQuota = try XCTUnwrap(variantModelIQ["quota_radar"] as? [String: Any])
+            variantQuota["five_hour_policy"] = policy
+            variantQuota["rows"] = [[
+                "tier": "20x Pro",
+                "basis": "distributed radar",
+                "five_h": 100,
+                "seven_d": 1944.83,
+            ]]
+            variantModelIQ["quota_radar"] = variantQuota
+            variantRoot["model_iq"] = variantModelIQ
+            let variantData = try JSONSerialization.data(withJSONObject: variantRoot)
+            let variant = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: variantData)
+            XCTAssertEqual(variant.modelIQ.quotaRadar?.availableWindows, [.sevenDay])
+        }
     }
 
     func testDecodesFormattingOnlyKeyVariantsAndNumericStrings() throws {

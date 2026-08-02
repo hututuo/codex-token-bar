@@ -310,6 +310,14 @@ test("normalizeCodexRadarSnapshot keeps the current seven-day-only quota schema 
   assert.equal(quotaRadar.rows[0].fiveH, null);
   assert.deepEqual(quotaChartSeries(quotaRadar, "fiveHour"), []);
   assert.deepEqual(quotaChartSeries(quotaRadar, "sevenDay").map((item) => item.points[0].value), [97.2415, 486.2075, 1944.83]);
+
+  for (const policy of ["cancelled", "removed", "retired"]) {
+    assert.deepEqual(quotaRadarAvailableWindows({
+      ...quotaRadar,
+      fiveHourPolicy: policy,
+      rows: quotaRadar.rows.map((row) => ({ ...row, fiveH: 123 })),
+    }), ["sevenDay"]);
+  }
 });
 
 test("Radar normalization matches formatting-only key variants and numeric strings", () => {

@@ -204,7 +204,7 @@ struct QuotaSelectionAttributionPresentation: Equatable {
         case .suspectedNonLocalUsage:
             differenceTitle = "疑似他人"
             differenceText = result.nonLocalDifferencePercent
-                .map { "≈\(Self.percent(max($0, 0)))" } ?? "--"
+                .map { "≈\(Self.signedPercent($0))" } ?? "--"
             stateText = "正差超过 2 个百分点"
         case .withinTolerance:
             differenceTitle = "差额"
@@ -213,7 +213,7 @@ struct QuotaSelectionAttributionPresentation: Equatable {
         case .localEstimateExceedsAccountDrop:
             differenceTitle = "本机估高"
             differenceText = result.nonLocalDifferencePercent
-                .map { Self.percent(abs($0)) } ?? "--"
+                .map(Self.signedPercent) ?? "--"
             stateText = "本机估值高于账号实降"
         case .provisional:
             differenceTitle = "暂算差额"
@@ -285,6 +285,8 @@ extension OfficialAPIPriceModel {
         case .gpt56Sol: "Sol"
         case .gpt56Terra: "Terra"
         case .gpt56Luna: "Luna"
+        case .gpt54Legacy: "5.4"
+        case .gpt54MiniLegacy: "5.4 Mini"
         }
     }
 }
