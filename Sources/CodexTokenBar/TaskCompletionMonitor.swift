@@ -123,36 +123,18 @@ struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
         async let runningThreadResultTask = runningThreadScanner.scan(request: request)
         let unreadThreadRead = await unreadThreadReadTask
         let runningThreadResult = await runningThreadResultTask
-        switch unreadThreadRead {
-        case let .available(threadIDs):
-            let reactivationThreadIDs = request.suppressedOfficialThreadIDs.intersection(threadIDs)
-            guard !reactivationThreadIDs.isEmpty else {
-                return TaskCompletionPollOutput(
-                    result: nil,
-                    runningThreadResult: runningThreadResult,
-                    unreadThreadRead: unreadThreadRead,
-                    officialReadBoundary: request.pollStartedAt
-                )
-            }
-            let result = await scanner.scan(request: request)
-            return TaskCompletionPollOutput(
-                result: TaskCompletionScanResult(
-                    states: result.states,
-                    events: result.events.filter { reactivationThreadIDs.contains($0.threadID) },
-                    fileCount: result.fileCount
-                ),
-                runningThreadResult: runningThreadResult,
-                unreadThreadRead: unreadThreadRead,
-                officialReadBoundary: request.pollStartedAt
-            )
-        case .unavailable:
-            let result = await scanner.scan(request: request)
-            return TaskCompletionPollOutput(
-                result: result,
-                runningThreadResult: runningThreadResult,
-                unreadThreadRead: unreadThreadRead
-            )
-        }
+        // Codex Desktop's unread atom is the only source of truth for this
+        // indicator.  A completed turn, an active rollout, or a stale local
+        // scanner event is not equivalent to a sidebar unread marker.  Keep
+        // the scanner dependency for source compatibility with older test and
+        // composition code, but never use it to manufacture an unread state.
+        _ = scanner
+        return TaskCompletionPollOutput(
+            result: nil,
+            runningThreadResult: runningThreadResult,
+            unreadThreadRead: unreadThreadRead,
+            officialReadBoundary: request.pollStartedAt
+        )
     }
 }
 
@@ -395,55 +377,17 @@ final class TaskCompletionMonitor: ObservableObject {
         unreadThreadRead: CodexUnreadThreadReadResult,
         officialReadBoundary: Date?
     ) {
+        // `result` and `officialReadBoundary` are retained in the poll
+        // protocol for compatibility, but completion events are deliberately
+        // ignored.  Only the desktop sidebar unread atom may change this
+        // indicator.
+        _ = result
+        _ = officialReadBoundary
         applyRunningThreadResult(runningThreadResult)
         applyCodexUnreadRead(unreadThreadRead)
-        unreadThreadCountAvailable = hasCodexUnreadState || result != nil
-
-        if hasCodexUnreadState, result == nil {
-            prepareFallbackForOfficialAvailability(boundary: officialReadBoundary ?? now())
-        }
-
-        if hasCodexUnreadState {
-            completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
-                officialUnreadThreadIDs.contains(threadID)
-            }
-        }
-
-        guard let result else {
-            applyReadBaselineToFallbackEvents()
-            refreshActiveOfficialUnreadState()
-            recomputeUnreadThreadCount()
-            updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
-            return
-        }
-
-        fileStates = result.states
-        seeded = true
-
-        if result.fileCount == 0 {
-            setStatusText("未发现会话日志", detail: "等待 Codex 写入 sessions")
-        } else if result.events.isEmpty {
-            updateStatusText(fileCount: result.fileCount)
-        }
-
-        var didAddUnread = false
-        for event in result.events {
-            guard rememberCompletedEvent(event) else { continue }
-            guard !hasCodexUnreadState || officialUnreadThreadIDs.contains(event.threadID) else { continue }
-            setLastCompletedTitle(event.title)
-            completedTaskThreadIDs[event.id] = event.threadID
-            didAddUnread = true
-        }
-
-        applyReadBaselineToFallbackEvents()
         refreshActiveOfficialUnreadState()
         recomputeUnreadThreadCount()
-        if didAddUnread, !hasCodexUnreadState, unreadThreadCount > 0 {
-            statusText = "有任务完成"
-            detailText = lastCompletedTitle
-        } else {
-            updateStatusText(fileCount: result.fileCount)
-        }
+        updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
     }
 
     private func applyRunningThreadResult(_ result: RunningThreadScanResult?) {
@@ -477,11 +421,17 @@ final class TaskCompletionMonitor: ObservableObject {
         case let .available(threadIDs):
             officialUnreadThreadIDs = threadIDs
             hasCodexUnreadState = true
+            unreadThreadCountAvailable = true
             refreshActiveOfficialUnreadState()
         case .unavailable:
-            officialUnreadThreadIDs.removeAll()
-            unreadThreadState = CodexUnreadThreadState()
-            hasCodexUnreadState = false
+            // A transient read failure must not create a new unread state (or
+            // erase the last trusted one).  Keep the previous official value
+            // until the desktop publishes the next successful atom snapshot.
+            if !hasCodexUnreadState {
+                officialUnreadThreadIDs.removeAll()
+                unreadThreadState = CodexUnreadThreadState()
+                unreadThreadCountAvailable = false
+            }
         }
     }
 

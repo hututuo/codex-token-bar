@@ -152,7 +152,7 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         )
     }
 
-    func testUninitializedSidebarStateFailsOpenToExistingVisibilityChecks() throws {
+    func testUninitializedSidebarStateFailsClosedWithoutHistoricalVisibilityFallback() throws {
         let codexHome = try makeCodexHome()
         let unreadID = "019edaaa-6666-7777-8888-ffffffffffff"
 
@@ -164,13 +164,12 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         )
         try seedVisibleStateDatabase(at: codexHome, threadIDs: [unreadID])
 
-        XCTAssertEqual(
-            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
-            [unreadID]
-        )
+        guard case .unavailable = CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome) else {
+            return XCTFail("An uninitialized sidebar snapshot must not expose historical IDs")
+        }
     }
 
-    func testMalformedSidebarStateFailsOpenToExistingVisibilityChecks() throws {
+    func testMalformedSidebarStateFailsClosedWithoutHistoricalVisibilityFallback() throws {
         let codexHome = try makeCodexHome()
         let unreadID = "019edaaa-6777-7888-8999-aaaaaaaaaaaa"
         let object: [String: Any] = [
@@ -186,10 +185,9 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
         try data.write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
         try seedVisibleStateDatabase(at: codexHome, threadIDs: [unreadID])
 
-        XCTAssertEqual(
-            availableIDs(CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)),
-            [unreadID]
-        )
+        guard case .unavailable = CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome) else {
+            return XCTFail("A malformed sidebar snapshot must not expose historical IDs")
+        }
     }
 
     func testSessionVisibilityIndexOnlyParsesNewOrReplacedSessionMetas() throws {
@@ -275,8 +273,20 @@ final class CodexUnreadThreadReaderTests: XCTestCase {
             "electron-persisted-atom-state": [
                 "unread-thread-ids-by-host-v1": [
                     "local": ids
+                ],
+                "flat-project-sidebar-preferences-v1": [
+                    "initialized": true,
+                    "mode": "project"
                 ]
-            ]
+            ],
+            "sidebar-project-thread-orders": [
+                "local-project": [
+                    "sortKey": "updated_at",
+                    "threadIds": ids
+                ]
+            ],
+            "pinned-thread-ids": [],
+            "projectless-thread-ids": []
         ]
         let data = try JSONSerialization.data(withJSONObject: object)
         try data.write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
