@@ -448,7 +448,7 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   };
 }
 
-test("24h points and fixed selection preview expose model colors and shares", async () => {
+test("24h hover and fixed selection preview expose model shares without persistent point clutter", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -472,7 +472,7 @@ test("24h points and fixed selection preview expose model colors and shares", as
 
         const chart = container.querySelector("svg.usage-chart");
         assert.ok(chart);
-        assert.equal(chart.querySelectorAll(".chart-model-points circle").length, 2);
+        assert.equal(chart.querySelectorAll(".chart-model-points circle").length, 0);
         chart.getBoundingClientRect = () => ({
           bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
           toJSON: () => ({}),

@@ -6260,11 +6260,6 @@ input[type="range"]::-moz-range-thumb {
   transform: translate(-50%, -100%);
 }
 
-.chart-model-points {
-  opacity: 0.96;
-  pointer-events: none;
-}
-
 .chart-hover-bubble .model-usage-inline {
   display: flex;
   flex-wrap: wrap;

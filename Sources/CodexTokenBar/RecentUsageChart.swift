@@ -1103,20 +1103,6 @@ struct RecentUsageChart: View, Equatable {
                 linePath(points: plotData.tokenPoints)
                     .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
 
-                if selectedRange == .twentyFourHours {
-                    ForEach(plotData.tokenPoints.indices, id: \.self) { index in
-                        if chartBins[safe: index]?.tokens ?? 0 > 0,
-                           let color = ModelUsagePresentation.dominantColor(
-                            from: preparedData.modelBreakdowns[safe: index] ?? []
-                           ) {
-                            Circle()
-                                .fill(color)
-                                .frame(width: 3.5, height: 3.5)
-                                .position(plotData.tokenPoints[index])
-                                .allowsHitTesting(false)
-                        }
-                    }
-                }
             }
 
             if showCalls {

@@ -34,7 +34,7 @@ import {
   type SeriesVisibility,
 } from "./recentUsageChart/model";
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
-import { dominantModelColor, modelUsageSlices } from "./modelUsagePresentation.ts";
+import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 interface RecentUsageChartProps {
   recentUsage24h: RecentUsagePoint[];
@@ -245,22 +245,6 @@ export function RecentUsageChart({
                 <>
                   <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, chartWidth, PLOT_HEIGHT))} />
                   <path className="chart-line chart-line--token" d={offsetPath(smoothPath(plotData.tokenPoints))} />
-                  {range === "24h" ? (
-                    <g className="chart-model-points" aria-hidden="true">
-                      {plotData.tokenPoints.map((tokenPoint, index) => {
-                        const color = dominantModelColor(data.points[index]?.modelBreakdowns);
-                        return color && data.points[index]?.tokens > 0 ? (
-                          <circle
-                            cx={tokenPoint.x}
-                            cy={tokenPoint.y + PLOT_TOP}
-                            fill={color}
-                            key={index}
-                            r="1.75"
-                          />
-                        ) : null;
-                      })}
-                    </g>
-                  ) : null}
                 </>
               ) : null}
               {visibility.calls ? (
