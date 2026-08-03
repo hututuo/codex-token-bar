@@ -274,7 +274,8 @@ final class DashboardRuntime: ObservableObject {
         quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(),
         radarStore: CodexRadarStore = CodexRadarStore(),
         providerSyncStore: ProviderSyncStore = ProviderSyncStore(),
-        taskCompletionMonitor: TaskCompletionMonitor = TaskCompletionMonitor(),
+        taskCompletionMonitor: TaskCompletionMonitor? = nil,
+        unreadThreadReader: (any CodexUnreadThreadReading)? = nil,
         liveMonitor: LiveRateMonitor = LiveRateMonitor(),
         sourceTransitionCoordinator: DashboardSourceTransitionCoordinator = DashboardSourceTransitionCoordinator(),
         floatingPanel: FloatingTokenPanelController = FloatingTokenPanelController(),
@@ -293,7 +294,11 @@ final class DashboardRuntime: ObservableObject {
         self.quotaHistoryStore = quotaHistoryStore
         self.radarStore = radarStore
         self.providerSyncStore = providerSyncStore
-        self.taskCompletionMonitor = taskCompletionMonitor
+        self.taskCompletionMonitor = taskCompletionMonitor ?? TaskCompletionMonitor(
+            pollLoader: LiveTaskCompletionPollLoader(
+                unreadReader: unreadThreadReader ?? UnavailableCodexUnreadThreadReader()
+            )
+        )
         self.liveMonitor = liveMonitor
         self.sourceTransitionCoordinator = sourceTransitionCoordinator
         self.floatingPanel = floatingPanel

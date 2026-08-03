@@ -32,6 +32,7 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 static RECONNECT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static MESSAGE_ID: AtomicU64 = AtomicU64::new(100);
 static STATUS: OnceLock<Mutex<ThreadDeleteBridgeStatus>> = OnceLock::new();
+static SIDEBAR_UNREAD_SNAPSHOT: OnceLock<Mutex<Option<SidebarUnreadSnapshot>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +52,11 @@ struct CdpTarget {
     #[serde(default)]
     url: String,
     web_socket_debugger_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SidebarUnreadSnapshot {
+    thread_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +117,7 @@ pub fn start_supervisor() {
                     supervisor_loop(&mut bootstrap_registrations)
                 }));
                 if outcome.is_err() {
+                    clear_sidebar_unread_snapshot();
                     set_status(false, None, "Codex 会话增强监督器异常，正在自动恢复");
                     eprintln!(
                         "Codex Token Bar: thread-delete supervisor recovered after panic"
@@ -134,6 +141,38 @@ pub fn bridge_status() -> ThreadDeleteBridgeStatus {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone()
+}
+
+/// Returns the last successful read-only snapshot from the official Codex
+/// sidebar DOM.  A missing value means there is no connected/validated CDP
+/// page, so callers must fail closed rather than use the persisted atom.
+pub(crate) fn sidebar_unread_thread_ids() -> Option<std::collections::HashSet<String>> {
+    let snapshot = sidebar_unread_snapshot_store()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()?;
+    Some(snapshot.thread_ids.into_iter().collect())
+}
+
+fn clear_sidebar_unread_snapshot() {
+    *sidebar_unread_snapshot_store()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+}
+
+fn publish_sidebar_unread_snapshot(health: &InjectionHealth) {
+    let snapshot = health
+        .sidebar_snapshot_ready
+        .then(|| SidebarUnreadSnapshot {
+            thread_ids: health.sidebar_unread_thread_ids.clone(),
+        });
+    *sidebar_unread_snapshot_store()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = snapshot;
+}
+
+fn sidebar_unread_snapshot_store() -> &'static Mutex<Option<SidebarUnreadSnapshot>> {
+    SIDEBAR_UNREAD_SNAPSHOT.get_or_init(|| Mutex::new(None))
 }
 
 pub fn request_reconnect() -> ThreadDeleteBridgeStatus {
@@ -182,6 +221,7 @@ fn supervisor_loop(
     loop {
         RECONNECT_REQUESTED.store(false, Ordering::Release);
         let Some((port, websocket_url)) = find_target(&client) else {
+            clear_sidebar_unread_snapshot();
             set_status(false, None, "等待 Codex 调试连接（需以调试模式启动 Codex）");
             wait_for_reconnect_or_timeout(PROBE_INTERVAL);
             continue;
@@ -192,14 +232,20 @@ fn supervisor_loop(
             bootstrap_registrations,
         ) {
             Ok(SessionExit::Closed) => {
+                clear_sidebar_unread_snapshot();
                 set_status(false, None, "Codex 调试连接已关闭");
                 false
             }
             Ok(SessionExit::Reconnect) => {
+                // A reconnect is a real loss of the page that supplied the
+                // snapshot.  Do not let the previous sidebar state survive
+                // the gap and keep a stale unread dot flashing.
+                clear_sidebar_unread_snapshot();
                 set_status(false, Some(port), "正在重新连接 Codex 会话增强");
                 true
             }
             Err(error) => {
+                clear_sidebar_unread_snapshot();
                 set_status(
                     false,
                     Some(port),
@@ -537,6 +583,8 @@ struct InjectionHealth {
     eligible_rows: u64,
     delete_buttons: u64,
     more_buttons: u64,
+    sidebar_snapshot_ready: bool,
+    sidebar_unread_thread_ids: Vec<String>,
 }
 
 fn verify_injection_health(
@@ -606,6 +654,27 @@ fn parse_injection_health(value: &Value) -> Result<InjectionHealth, String> {
         .get("moreButtonCount")
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let sidebar_snapshot_ready = session
+        .get("sidebarSnapshotReady")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "CDP 会话增强健康检查缺少侧栏未读快照状态".to_string())?;
+    let sidebar_unread_thread_ids = session
+        .get("sidebarUnreadThreadIDs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "CDP 会话增强健康检查缺少侧栏未读会话列表".to_string())?
+        .iter()
+        .map(|value| {
+            let id = value
+                .as_str()
+                .map(str::trim)
+                .filter(|id| is_uuid_thread_id(id))
+                .ok_or_else(|| "CDP 侧栏未读会话列表包含无效 thread ID".to_string())?;
+            Ok(id.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if !sidebar_snapshot_ready && !sidebar_unread_thread_ids.is_empty() {
+        return Err("CDP 侧栏未读快照在未就绪时返回了会话 ID".to_string());
+    }
     let session_settings = session.get("settings").unwrap_or(&Value::Null);
     let expects_more = session_settings
         .get("markdownExport")
@@ -629,10 +698,28 @@ fn parse_injection_health(value: &Value) -> Result<InjectionHealth, String> {
         eligible_rows,
         delete_buttons,
         more_buttons,
+        sidebar_snapshot_ready,
+        sidebar_unread_thread_ids,
     })
 }
 
+fn is_uuid_thread_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && [8, 13, 18, 23]
+            .into_iter()
+            .all(|index| bytes.get(index) == Some(&b'-'))
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                true
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
 fn publish_health_status(port: u16, health: &InjectionHealth) {
+    publish_sidebar_unread_snapshot(health);
     if health.ready {
         set_status(
             true,
@@ -1116,6 +1203,7 @@ mod tests {
 
     #[test]
     fn combined_page_health_requires_matching_runtime_and_more_button_counts() {
+        let unread_id = "019f5a7c-0001-7abc-8def-0123456789ab";
         let value = json!({
             "expectedSessionRuntimeVersion": 3,
             "deleteHealth": {
@@ -1127,6 +1215,8 @@ mod tests {
             "sessionHealth": {
                 "runtimeVersion": 3,
                 "moreButtonCount": 2,
+                "sidebarSnapshotReady": true,
+                "sidebarUnreadThreadIDs": [unread_id],
                 "settings": {
                     "sessionDelete": false,
                     "markdownExport": true,
@@ -1142,6 +1232,8 @@ mod tests {
                 eligible_rows: 2,
                 delete_buttons: 0,
                 more_buttons: 2,
+                sidebar_snapshot_ready: true,
+                sidebar_unread_thread_ids: vec![unread_id.into()],
             }
         );
 
@@ -1156,6 +1248,28 @@ mod tests {
         assert!(parse_injection_health(&missing)
             .unwrap_err()
             .contains("数量不一致"));
+    }
+
+    #[test]
+    fn published_sidebar_snapshot_is_replaced_and_cleared_with_the_page() {
+        let unread_id = "019f5a7c-0001-7abc-8def-0123456789ab";
+        let health = InjectionHealth {
+            ready: true,
+            waiting_for_rows: false,
+            eligible_rows: 1,
+            delete_buttons: 1,
+            more_buttons: 0,
+            sidebar_snapshot_ready: true,
+            sidebar_unread_thread_ids: vec![unread_id.into()],
+        };
+        publish_sidebar_unread_snapshot(&health);
+        assert_eq!(
+            sidebar_unread_thread_ids(),
+            Some(std::collections::HashSet::from([unread_id.to_string()]))
+        );
+
+        clear_sidebar_unread_snapshot();
+        assert_eq!(sidebar_unread_thread_ids(), None);
     }
 
     #[test]

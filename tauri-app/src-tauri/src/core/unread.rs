@@ -15,11 +15,29 @@ mod sequence_tests;
 mod session_files;
 mod state;
 
+#[cfg(not(test))]
+use state::read_sidebar_unread_thread_ids;
+#[cfg(test)]
 use state::read_unread_thread_ids;
 
 static ACKNOWLEDGEMENT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TRUSTED_SUMMARIES: OnceLock<Mutex<HashMap<String, UnreadSummary>>> = OnceLock::new();
 const PINNED_RECENT_COMPLETION_MARKER_LIMIT: usize = 4_096;
+
+// Unit tests exercise the persisted-state parser without a running Codex
+// desktop page.  Production must always use the read-only CDP snapshot; the
+// test-only atom path keeps the existing parser/transaction fixtures useful
+// without weakening the runtime fail-closed rule.
+fn current_sidebar_unread_thread_ids(codex_home: &Path) -> Option<HashSet<String>> {
+    #[cfg(test)]
+    {
+        read_unread_thread_ids(codex_home)
+    }
+    #[cfg(not(test))]
+    {
+        read_sidebar_unread_thread_ids(codex_home)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct UnreadObservation {
@@ -156,11 +174,13 @@ pub fn try_read_unread_summary_for_source(
 
 pub fn try_read_unread_summary_for_observation(
     observation: &UnreadObservation,
+    observation_home: &Path,
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
     let summary = try_read_unread_summary_for_observation_at(
         observation,
+        observation_home,
         source_scope_key,
         validate_before_write,
     )?;
@@ -169,16 +189,27 @@ pub fn try_read_unread_summary_for_observation(
 }
 
 fn try_read_unread_summary_for_observation_at<V>(
-    observation: &UnreadObservation,
+    _observation: &UnreadObservation,
+    observation_home: &Path,
     source_scope_key: &str,
     validate_before_write: V,
 ) -> Result<UnreadSummary, String>
 where
     V: FnOnce() -> Result<(), String>,
 {
-    let native_thread_ids = observation.native_thread_ids.as_ref().ok_or_else(|| {
-        "native unread state is unavailable; refusing completion fallback".to_string()
+    let native_thread_ids = current_sidebar_unread_thread_ids(observation_home).ok_or_else(|| {
+        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
+            .to_string()
     })?;
+    #[cfg(not(test))]
+    {
+        let _ = (source_scope_key, &native_thread_ids);
+        validate_before_write()?;
+        // Codex Desktop owns the read marker.  Never subtract a Token Bar
+        // acknowledgement baseline from the live sidebar snapshot.
+        return Ok(unread_state_summary(native_thread_ids.len()));
+    }
+    #[cfg(test)]
     acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
@@ -289,9 +320,19 @@ where
     S: FnOnce(&Path) -> Result<(), String>,
     V: FnOnce() -> Result<(), String>,
 {
-    let native_thread_ids = read_unread_thread_ids(codex_home).ok_or_else(|| {
-        "native unread state is unavailable; refusing completion fallback".to_string()
+    let native_thread_ids = current_sidebar_unread_thread_ids(codex_home).ok_or_else(|| {
+        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
+            .to_string()
     })?;
+    #[cfg(not(test))]
+    {
+        let _ = (&prepare, &sync_parent, source_scope_key, &native_thread_ids);
+        validate_before_write()?;
+        // The current DOM snapshot is already the official sidebar state;
+        // local acknowledgement files are diagnostic history only.
+        return Ok(unread_state_summary(native_thread_ids.len()));
+    }
+    #[cfg(test)]
     acknowledgement_transaction_with_io(
         prepare,
         sync_parent,
@@ -326,8 +367,9 @@ pub fn acknowledge_current_unread_for_source(
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
-    let native_thread_ids = read_unread_thread_ids(observation_home).ok_or_else(|| {
-        "native unread state is unavailable; refusing completion fallback".to_string()
+    let native_thread_ids = current_sidebar_unread_thread_ids(observation_home).ok_or_else(|| {
+        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
+            .to_string()
     })?;
     let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
@@ -633,10 +675,18 @@ fn retained_or_failed_summary(source_scope_key: &str, error: &str) -> UnreadSumm
     let cache = TRUSTED_SUMMARIES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(guard) = cache.lock() {
         if let Some(summary) = guard.get(source_scope_key) {
-            let mut retained = summary.clone();
-            retained.detail = format!("{} · 读取失败，保留上次可信结果：{error}", retained.detail);
-            retained.source = format!("{}_stale", retained.source);
-            return retained;
+            // The persisted atom is only a diagnostic candidate.  Once the
+            // current CDP sidebar snapshot is unavailable, retaining a prior
+            // active value would make a stale reminder keep flashing after the
+            // user has already read it in Codex.  Fail closed to an inactive
+            // degraded summary instead.
+            return UnreadSummary {
+                active: false,
+                count: 0,
+                label: "未读状态暂不可用".into(),
+                detail: format!("当前侧栏未读快照不可用，已隐藏上次状态：{error}"),
+                source: format!("{}_hidden", summary.source),
+            };
         }
     }
     UnreadSummary {
@@ -842,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn read_failure_retains_last_trusted_sidebar_summary_without_completion_fallback() {
+    fn read_failure_hides_last_trusted_sidebar_summary_without_completion_fallback() {
         let root = temp_root("read-failure-retention");
         let support = root.join("tauri-support");
         let thread_id = "019eaaaa-0000-0000-0000-000000000015";
@@ -858,10 +908,10 @@ mod tests {
 
         fs::write(root.join(".codex-global-state.json"), b"{not-json").unwrap();
         let retained = read_unread_summary(&root);
-        assert!(retained.active);
-        assert_eq!(retained.count, 1);
-        assert_eq!(retained.source, "codex_unread_state_stale");
-        assert!(retained.detail.contains("读取失败，保留上次可信结果"));
+        assert!(!retained.active);
+        assert_eq!(retained.count, 0);
+        assert_eq!(retained.source, "codex_unread_state_hidden");
+        assert!(retained.detail.contains("当前侧栏未读快照不可用"));
         assert!(!retained.detail.contains("task_complete"));
 
         let _ = fs::remove_dir_all(root);

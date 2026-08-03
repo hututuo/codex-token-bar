@@ -123,19 +123,17 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
   });
 });
 
-test("LiveRateCard keeps the unread acknowledgement action visible when unread is idle", async () => {
+test("LiveRateCard does not expose a local unread acknowledgement action when unread is idle", async () => {
   await withSsrModules(async (load) => {
     const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
     const html = renderComponent(LiveRateCard, cardProps());
 
-    assert.match(html, /一键已读/);
-    assert.match(html, /unread-ack-button unread-ack-button--idle/);
-    assert.match(html, /当前没有未读会话/);
-    assert.doesNotMatch(html, /标记已读/);
+    assert.doesNotMatch(html, /一键已读/);
+    assert.doesNotMatch(html, /unread-ack-button/);
   });
 });
 
-test("LiveRateCard exposes active unread acknowledgement with blue tone when unread is active", async () => {
+test("LiveRateCard does not expose a local unread acknowledgement action when unread is active", async () => {
   await withSsrModules(async (load) => {
     const { LiveRateCard } = await load("/src/components/LiveRateCard.tsx");
     const html = renderComponent(LiveRateCard, cardProps({
@@ -150,10 +148,8 @@ test("LiveRateCard exposes active unread acknowledgement with blue tone when unr
       }),
     }));
 
-    assert.match(html, /一键已读/);
-    assert.match(html, /unread-ack-button unread-ack-button--active/);
-    assert.match(html, /拉基线/);
-    assert.doesNotMatch(html, /标记已读/);
+    assert.doesNotMatch(html, /一键已读/);
+    assert.doesNotMatch(html, /unread-ack-button/);
   });
 });
 

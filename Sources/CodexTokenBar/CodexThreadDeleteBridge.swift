@@ -66,7 +66,7 @@ final class CodexThreadDeleteBridgeController: ObservableObject {
     @Published private(set) var status: CodexThreadDeleteBridgeStatus = .idle
     @Published private(set) var enhancementSettings: CodexSessionEnhancementSettings
 
-    private let service: CodexThreadDeleteBridgeService
+    let service: CodexThreadDeleteBridgeService
     private let defaults: UserDefaults
     private var task: Task<Void, Never>?
     private var relaunchTask: Task<Void, Never>?
@@ -573,10 +573,12 @@ struct CodexThreadDeleteInjectionHealth: Decodable, Equatable, Sendable {
     let observerInstalled: Bool
     let scanError: String?
     let readiness: String
+    let sidebarSnapshotReady: Bool
+    let sidebarUnreadThreadIDs: [String]
 }
 
 enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
-    case ready(buttonCount: Int)
+    case ready(buttonCount: Int, sidebarUnreadThreadIDs: Set<String>)
     case waitingForRows
 
     static func verify(
@@ -629,6 +631,18 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
             }
             return .waitingForRows
         }
+        guard health.sidebarSnapshotReady else {
+            throw CodexThreadDeleteError.injectionVerificationFailed(
+                "侧栏未读快照尚未就绪，拒绝使用持久化候选"
+            )
+        }
+        guard health.sidebarUnreadThreadIDs.allSatisfy({
+            UUID(uuidString: $0) != nil && $0.count == 36
+        }) else {
+            throw CodexThreadDeleteError.injectionVerificationFailed(
+                "侧栏未读快照包含无效 thread ID"
+            )
+        }
         let expectedButtonCount = health.deleteEnabled ? health.eligibleRowCount : 0
         guard health.candidateRowCount == health.eligibleRowCount,
               health.attachedRowCount == expectedButtonCount,
@@ -642,12 +656,15 @@ enum CodexThreadDeleteInjectionVerification: Equatable, Sendable {
                 "检测到 \(health.eligibleRowCount) 条会话，但会话增强控件验收不完整"
             )
         }
-        return .ready(buttonCount: health.buttonCount)
+        return .ready(
+            buttonCount: health.buttonCount,
+            sidebarUnreadThreadIDs: Set(health.sidebarUnreadThreadIDs)
+        )
     }
 
     func bridgeStatus(debugPort: Int) -> CodexThreadDeleteBridgeStatus {
         switch self {
-        case let .ready(buttonCount):
+        case let .ready(buttonCount, _):
             return CodexThreadDeleteBridgeStatus(
                 connected: true,
                 debugPort: debugPort,
@@ -1001,6 +1018,7 @@ actor CodexThreadDeleteBridgeService {
     private var activeTransport: CodexThreadDeleteCDPTransport?
     private var bootstrapScriptRegistrations: [URL: String] = [:]
     private var lifecycleGeneration = 0
+    private var latestSidebarUnreadThreadIDs: Set<String>?
 
     init(
         ports: [Int] = [9229, 9222],
@@ -1016,6 +1034,14 @@ actor CodexThreadDeleteBridgeService {
 
     func updateEnhancementSettings(_ settings: CodexSessionEnhancementSettings) {
         enhancementSettings = settings.normalized
+    }
+
+    /// The only live unread source accepted by the Token Bar is the most
+    /// recent successful snapshot from Codex's own sidebar renderer.  A
+    /// disconnected or not-yet-ready bridge returns nil so callers hide the
+    /// indicator instead of retaining a stale atom-derived value.
+    func sidebarUnreadThreadIDsSnapshot() -> Set<String>? {
+        latestSidebarUnreadThreadIDs
     }
 
     nonisolated static var retiredDeleteBindingResult:
@@ -1035,6 +1061,7 @@ actor CodexThreadDeleteBridgeService {
         while !Task.isCancelled, generation == lifecycleGeneration {
             guard let target = await findTarget(ports: restrictedPorts ?? ports) else {
                 guard generation == lifecycleGeneration else { return }
+                latestSidebarUnreadThreadIDs = nil
                 if publishIdle {
                     await statusChanged(.idle)
                 }
@@ -1054,9 +1081,11 @@ actor CodexThreadDeleteBridgeService {
                     statusChanged: statusChanged
                 )
             } catch is CancellationError {
+                latestSidebarUnreadThreadIDs = nil
                 return
             } catch {
                 guard !Task.isCancelled, generation == lifecycleGeneration else { return }
+                latestSidebarUnreadThreadIDs = nil
                 await statusChanged(CodexThreadDeleteBridgeStatus(
                     connected: false,
                     debugPort: target.port,
@@ -1070,6 +1099,7 @@ actor CodexThreadDeleteBridgeService {
 
     func cancelActiveSession() async {
         lifecycleGeneration &+= 1
+        latestSidebarUnreadThreadIDs = nil
         if let activeTransport {
             await activeTransport.close()
         }
@@ -1252,6 +1282,12 @@ actor CodexThreadDeleteBridgeService {
         port: Int,
         statusChanged: @escaping @Sendable (CodexThreadDeleteBridgeStatus) async -> Void
     ) async {
+        switch verification {
+        case let .ready(_, sidebarUnreadThreadIDs):
+            latestSidebarUnreadThreadIDs = sidebarUnreadThreadIDs
+        case .waitingForRows:
+            latestSidebarUnreadThreadIDs = nil
+        }
         await statusChanged(verification.bridgeStatus(debugPort: port))
     }
 

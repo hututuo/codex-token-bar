@@ -286,7 +286,7 @@ test("status panel uses the Swift-aligned single-column popover hierarchy", asyn
   assert.equal(statusPanel.includes("status-summary-running-line"), true);
   assert.equal(statusPanel.includes("status-summary-unread-line"), true);
   assert.equal(statusPanel.includes("Codex 雷达"), true);
-  assert.equal(statusPanel.includes("全部已读"), true);
+  assert.equal(statusPanel.includes("全部已读"), false);
   assert.match(css, /\.status-panel-card\s*\{[^}]*padding:\s*14px;[^}]*border-radius:\s*16px;/s);
   assert.match(css, /\.status-panel-summary-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
   assert.match(css, /\.status-summary-card\s*\{[^}]*border-radius:\s*11px;/s);

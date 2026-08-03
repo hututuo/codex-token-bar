@@ -748,15 +748,6 @@ struct StatusBarTokenPopoverView: View {
                     Text("个未读")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Button {
-                        taskCompletionMonitor.markAllRead()
-                    } label: {
-                        Label("全部已读", systemImage: "checkmark.circle")
-                            .font(.system(size: 9.5, weight: .semibold))
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(unreadCount == nil || unreadCount == 0)
                 }
             }
         case .radar:

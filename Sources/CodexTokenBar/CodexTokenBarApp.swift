@@ -22,6 +22,9 @@ struct CodexTokenBarApp: App {
         let statusBarPanel = StatusBarTokenController()
         let threadDeleteBridge = CodexThreadDeleteBridgeController()
         let dashboardRuntime = DashboardRuntime(
+            unreadThreadReader: LiveCodexSidebarUnreadThreadReader(
+                bridge: threadDeleteBridge.service
+            ),
             floatingPanel: floatingPanel,
             statusBarPanel: statusBarPanel
         )
