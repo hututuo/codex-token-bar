@@ -114,10 +114,19 @@ final class TaskCompletionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.unreadThreadCount, 1)
 
         monitor.markAllRead()
-        XCTAssertEqual(monitor.unreadThreadCount, 0)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(
+            monitor.pollRequestForTesting(
+                dataSource: CodexDataSource(
+                    codexHome: FileManager.default.temporaryDirectory,
+                    origin: .userSelected
+                )
+            ).suppressedOfficialThreadIDs,
+            []
+        )
 
         monitor.applyForTesting(result: nil, unreadThreadRead: .available(["thread-a", "thread-b"]))
-        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.unreadThreadCount, 2)
     }
 
     func testCompletionEventsNeverCreateUnreadStateWithoutSidebarMarker() {
@@ -151,7 +160,7 @@ final class TaskCompletionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.unreadThreadCount, 0)
     }
 
-    func testOfficialReadFailureRetainsLastTrustedUnreadValueWithoutFallback() {
+    func testOfficialReadFailureHidesLastTrustedUnreadValueWithoutFallback() {
         let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
         monitor.applyForTesting(result: nil, unreadThreadRead: .available(["official-thread"]))
         XCTAssertEqual(monitor.unreadThreadCount, 1)
@@ -166,9 +175,8 @@ final class TaskCompletionMonitorTests: XCTestCase {
             unreadThreadRead: .unavailable
         )
 
-        XCTAssertEqual(monitor.unreadThreadCount, 1)
-        XCTAssertEqual(monitor.statusText, "有未读会话")
-        XCTAssertEqual(monitor.detailText, "Codex 有 1 个未读会话")
+        XCTAssertEqual(monitor.unreadThreadCount, 0)
+        XCTAssertNotEqual(monitor.statusText, "有未读会话")
     }
 
     func testOfficialAuthorityRecoveryReplacesRetainedValue() {
@@ -230,13 +238,11 @@ final class TaskCompletionMonitorTests: XCTestCase {
                 unreadThreadRead: .available(Set(step.nativeThreadIDs))
             )
             if step.action == "markAllRead" {
+                // Local acknowledgement cannot mutate the official sidebar.
                 monitor.markAllRead()
             }
 
-            XCTAssertEqual(monitor.unreadThreadCount, step.expectedCount, step.name)
-            if let expectedLatestTitle = step.expectedLatestTitle {
-                XCTAssertEqual(monitor.lastCompletedTitle, expectedLatestTitle, step.name)
-            }
+            XCTAssertEqual(monitor.unreadThreadCount, Set(step.nativeThreadIDs).count, step.name)
         }
     }
 
@@ -318,7 +324,13 @@ final class TaskCompletionMonitorTests: XCTestCase {
         let scanner = RecordingTaskCompletionScanner(
             result: TaskCompletionScanResult(states: [:], events: [], fileCount: 0)
         )
-        let loader = LiveTaskCompletionPollLoader(scanner: scanner)
+        // The production composition injects the CDP-backed sidebar reader;
+        // this fixture explicitly exercises the persisted-state diagnostic
+        // reader without making it the default live authority.
+        let loader = LiveTaskCompletionPollLoader(
+            unreadReader: LiveCodexUnreadThreadReader(),
+            scanner: scanner
+        )
         let request = TaskCompletionPollRequest(
             dataSource: source,
             previousStates: [:],
@@ -403,7 +415,15 @@ final class TaskCompletionMonitorTests: XCTestCase {
 
         let clock = MutableTaskCompletionClock(now: Date(timeIntervalSince1970: 100))
         let scanner = CountingForwardingTaskCompletionScanner()
-        let loader = LiveTaskCompletionPollLoader(scanner: scanner)
+        let unreadReader = SequencedCodexUnreadThreadReader(results: [
+            .available([threadID]),
+            .available([]),
+            .available([]),
+        ])
+        let loader = LiveTaskCompletionPollLoader(
+            unreadReader: unreadReader,
+            scanner: scanner
+        )
         let monitor = TaskCompletionMonitor(defaults: isolatedDefaults(), now: { clock.now })
 
         let initialOutput = await loader.load(
@@ -411,14 +431,15 @@ final class TaskCompletionMonitorTests: XCTestCase {
         )
         monitor.applyForTesting(output: initialOutput)
         XCTAssertEqual(monitor.unreadThreadCount, 1)
+        let seedCutoffBeforeLocalAction = monitor.pollRequestForTesting(dataSource: source).seedCutoff
 
         clock.now = Date(timeIntervalSince1970: 110)
         monitor.markAllRead()
-        XCTAssertEqual(monitor.unreadThreadCount, 0)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
         let suppressedRequest = monitor.pollRequestForTesting(dataSource: source)
-        XCTAssertEqual(suppressedRequest.suppressedOfficialThreadIDs, [threadID])
+        XCTAssertEqual(suppressedRequest.suppressedOfficialThreadIDs, [])
         XCTAssertTrue(suppressedRequest.seedMode)
-        XCTAssertEqual(suppressedRequest.seedCutoff, Date(timeIntervalSince1970: 110))
+        XCTAssertEqual(suppressedRequest.seedCutoff, seedCutoffBeforeLocalAction)
 
         try appendScannerCompletion(
             UnreadCorrectnessCompletion(
@@ -437,7 +458,7 @@ final class TaskCompletionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.unreadThreadCount, 0)
 
         let normalRequest = monitor.pollRequestForTesting(dataSource: source)
-        XCTAssertEqual(normalRequest.suppressedOfficialThreadIDs, [threadID])
+        XCTAssertEqual(normalRequest.suppressedOfficialThreadIDs, [])
         let normalOutput = await loader.load(request: normalRequest)
         XCTAssertNil(normalOutput.result)
         monitor.applyForTesting(output: normalOutput)

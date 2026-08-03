@@ -184,9 +184,9 @@ fn corrupt_acknowledgement_is_reported_and_never_overwritten() {
     assert!(try_read_unread_summary(&root).unwrap_err().contains("JSON"));
     assert!(acknowledge_current_unread(&root).unwrap_err().contains("JSON"));
     let retained = read_unread_summary(&root);
-    assert_eq!(retained.count, 1);
-    assert!(retained.source.ends_with("_stale"));
-    assert!(retained.detail.contains("保留上次可信结果"));
+    assert_eq!(retained.count, 0);
+    assert!(retained.source.ends_with("_hidden"));
+    assert!(retained.detail.contains("当前侧栏未读快照不可用"));
     assert_eq!(fs::read(&path).unwrap(), corrupt);
     let _ = fs::remove_dir_all(root);
 }

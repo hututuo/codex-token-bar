@@ -25,6 +25,17 @@ enum CodexUnreadThreadReader {
         return .available(visibleUserThreadIDs(from: threadIDs, codexHome: codexHome))
     }
 
+    /// Apply the same local-session visibility boundary to a live sidebar
+    /// snapshot.  The IDs have already been marked unread by Codex's renderer;
+    /// this only prevents a different CODEX_HOME or an archived/subagent row
+    /// from crossing into the current Token Bar source.
+    static func filterLiveSidebarThreadIDs(
+        _ threadIDs: Set<String>,
+        codexHome: URL
+    ) -> Set<String> {
+        visibleUserThreadIDs(from: threadIDs, codexHome: codexHome)
+    }
+
     private static func unreadStateValue(in object: [String: Any]) -> Any? {
         if let persistedState = object["electron-persisted-atom-state"] as? [String: Any],
            let value = persistedState["unread-thread-ids-by-host-v1"] {

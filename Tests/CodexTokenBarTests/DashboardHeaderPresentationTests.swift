@@ -24,12 +24,11 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertEqual(busy.accessibilityHint, "正在更新已读基线")
     }
 
-    func testDashboardModeProducesMarkAllReadActionAtZeroUnreadWhileExportProducesNone() {
+    func testDashboardModeDoesNotExposeLocalUnreadAcknowledgementWhileExportProducesNone() {
         XCTAssertTrue(DashboardHeaderPresentationMode.dashboard.showsActions)
         XCTAssertEqual(
             DashboardHeaderPresentationMode.dashboard.actions(unreadCount: 0),
             [
-                .markAllRead,
                 .refresh,
                 .changeDirectory,
                 .providerRepair,

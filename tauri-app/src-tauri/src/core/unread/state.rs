@@ -25,6 +25,17 @@ pub(super) fn read_unread_thread_ids(codex_home: &Path) -> Option<HashSet<String
     Some(visible_user_thread_ids(&thread_ids, codex_home))
 }
 
+/// Read the current left-sidebar state captured by the existing, loopback-only
+/// CDP supervisor.  The persisted atom remains available through
+/// `read_unread_thread_ids` for diagnostics and precise-source observations,
+/// but it is never allowed to drive the live unread indicator.
+pub(super) fn read_sidebar_unread_thread_ids(
+    codex_home: &Path,
+) -> Option<HashSet<String>> {
+    let thread_ids = crate::core::thread_delete::sidebar_unread_thread_ids()?;
+    Some(visible_user_thread_ids(&thread_ids, codex_home))
+}
+
 pub(super) fn parse_unread_thread_ids(data: &[u8]) -> Result<HashSet<String>, String> {
     let object: Value = serde_json::from_slice(data)
         .map_err(|error| format!("pinned native unread state JSON is invalid: {error}"))?;

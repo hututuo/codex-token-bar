@@ -112,6 +112,46 @@
       .slice(0, 160);
   }
 
+  // The official local sidebar renders an unread turn through `mAu -> j3l`.
+  // Keep this probe deliberately narrower than a generic `rounded-full` query:
+  // rows also contain project chips, status pills and action buttons that may
+  // use rounded elements.  Only the leading unread-dot/count shapes are
+  // accepted.  This is a read-only observation; it never changes the page.
+  function hasOfficialUnreadMarker(row) {
+    if (!row) return false;
+    const dot = row.querySelector(
+      "span.icon-xs.relative.scale-50 > span.absolute.inset-0.rounded-full",
+    );
+    if (dot) return true;
+
+    const countCandidates = row.querySelectorAll(
+      "span.flex.h-5.min-w-5.shrink-0.items-center.justify-center.rounded-full",
+    );
+    return [...countCandidates].some((candidate) => {
+      const text = String(candidate.textContent || "").trim();
+      return /^(?:[1-9]\d{0,2}|99\+)$/.test(text);
+    });
+  }
+
+  function sidebarUnreadSnapshot(rows = sidebarRows()) {
+    const unreadThreadIDs = [];
+    let complete = rows.length > 0;
+    for (const row of rows) {
+      const id = canonicalThreadId(rowReference(row));
+      if (!id) {
+        complete = false;
+        continue;
+      }
+      if (hasOfficialUnreadMarker(row)) unreadThreadIDs.push(id);
+    }
+    return {
+      // `complete` means every currently-rendered sidebar row is an official
+      // Codex thread row.  An empty/virtualized sidebar is not an authority.
+      sidebarSnapshotReady: complete,
+      sidebarUnreadThreadIDs: [...new Set(unreadThreadIDs)],
+    };
+  }
+
   function stopNavigation(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -882,7 +922,8 @@
 
   window.__codexTokenBarSessionEnhancementsHealth = () => {
     scan();
-    const rows = sidebarRows().filter((row) => canonicalThreadId(rowReference(row)));
+    const rows = sidebarRows();
+    const unread = sidebarUnreadSnapshot(rows);
     return {
       runtimeVersion,
       settings: { ...state.settings },
@@ -892,6 +933,7 @@
       pasteFixInstalled: Boolean(state.pasteListener),
       conversationElementCount: state.conversationElements.size,
       scrollRestoreInstalled: Boolean(state.scroll.listener),
+      ...unread,
     };
   };
 
