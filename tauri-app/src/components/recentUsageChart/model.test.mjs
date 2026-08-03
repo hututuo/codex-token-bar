@@ -314,9 +314,62 @@ test("24h selection attribution compares observed account drop with Radar-priced
   assert.ok(result);
   assert.equal(result.accountDropPercent, 3);
   assert.equal(result.localComparableCostUSD, 5);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
   assert.equal(result.localSharePercent, 5);
   assert.equal(result.nonLocalDifferencePercent, -2);
   assert.equal(result.state, "withinTolerance");
+});
+
+test("24h selection attribution keeps the local Radar conversion when quota history is unavailable", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, {
+        inputTokens: 1_000_000,
+        tokens: 1_000_000,
+        calls: 1,
+        modelBreakdowns: [{
+          model: "gpt-5.6-terra",
+          breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+        }],
+      }),
+      point(300, {
+        inputTokens: 1_000_000,
+        tokens: 1_000_000,
+        calls: 1,
+        modelBreakdowns: [{
+          model: "gpt-5.6-terra",
+          breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+        }],
+      }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+  assert.ok(selection);
+
+  const result = quotaSelectionAttribution(selection, {
+    status: "awaitingAccountSwitchBaseline",
+    priceBasis: "radar20260730",
+    radarPlanTotalUSD: 100,
+    quotaDataStale: false,
+    radarDataStale: false,
+    usagePendingQuotaRefresh: false,
+    historyChangedLowConfidence: false,
+    cycleStartUnix: 0,
+    cycleEndUnix: 604_800,
+    segmentStartUnix: 0,
+    quotaUpdatedAtUnix: 600,
+  });
+
+  assert.ok(result);
+  assert.equal(result.state, "missingQuotaHistory");
+  assert.equal(result.accountDropPercent, null);
+  assert.equal(result.localComparableCostUSD, 5);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localSharePercent, 5);
+  assert.equal(result.nonLocalDifferencePercent, null);
+  assert.equal(result.allowsAttributionConclusion, false);
 });
 
 test("quotaConsumptionSelection keeps a flat zero-quota range summary", () => {

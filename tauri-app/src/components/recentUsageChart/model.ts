@@ -117,15 +117,19 @@ export type QuotaSelectionAttributionState =
   | "withinTolerance"
   | "suspectedNonLocalUsage"
   | "localEstimateExceedsAccountDrop"
-  | "provisional";
+  | "provisional"
+  | "missingQuotaHistory"
+  | "missingRadarTierBaseline"
+  | "missingCompatiblePriceRevision";
 
 export interface QuotaSelectionAttributionResult {
   state: QuotaSelectionAttributionState;
-  accountDropPercent: number;
-  localSharePercent: number;
-  nonLocalDifferencePercent: number;
-  localComparableCostUSD: number;
-  radarSevenDayTotalUSD: number;
+  accountDropPercent: number | null;
+  localSharePercent: number | null;
+  nonLocalDifferencePercent: number | null;
+  localComparableCostUSD: number | null;
+  localCurrentAPIEquivalentUSD: number;
+  radarSevenDayTotalUSD: number | null;
   allowsAttributionConclusion: boolean;
 }
 
@@ -705,37 +709,55 @@ export function quotaSelectionAttribution(
   selection: QuotaConsumptionSelection,
   context: SharedAccountAttributionResult | null,
 ): QuotaSelectionAttributionResult | null {
-  if (!context
-    || !selection.sevenDay.quotaDropAvailable
-    || context.priceBasis === null
-    || context.radarPlanTotalUSD === null
-    || !Number.isFinite(context.radarPlanTotalUSD)
-    || context.radarPlanTotalUSD <= 0) {
+  if (!context) {
     return null;
   }
 
-  const localComparableCostUSD = modelAwareAPICostUSD(
-    selection.sevenDayModelBreakdowns,
-    {
-      inputTokens: selection.sevenDay.comparisonBreakdown.inputTokens,
-      cachedInputTokens: selection.sevenDay.comparisonBreakdown.cachedInputTokens,
-      outputTokens: selection.sevenDay.comparisonBreakdown.outputTokens,
-      calls: selection.sevenDay.comparisonBreakdown.calls,
-    },
+  const comparisonRows = selection.sevenDayModelBreakdowns;
+  const comparisonBreakdown = {
+    inputTokens: selection.sevenDay.comparisonBreakdown.inputTokens,
+    cachedInputTokens: selection.sevenDay.comparisonBreakdown.cachedInputTokens,
+    outputTokens: selection.sevenDay.comparisonBreakdown.outputTokens,
+    calls: selection.sevenDay.comparisonBreakdown.calls,
+  };
+  const localCurrentAPIEquivalentUSD = modelAwareAPICostUSD(
+    comparisonRows,
+    comparisonBreakdown,
     selection.priceModel,
-    context.priceBasis,
+    "current",
   ).costUSD;
-  const accountDropPercent = selection.sevenDay.quotaDropPercent;
-  const localSharePercent = localComparableCostUSD / context.radarPlanTotalUSD * 100;
-  const nonLocalDifferencePercent = accountDropPercent - localSharePercent;
+  const localComparableCostUSD = context.priceBasis === null
+    ? null
+    : modelAwareAPICostUSD(
+        selection.sevenDayModelBreakdowns,
+        comparisonBreakdown,
+        selection.priceModel,
+        context.priceBasis,
+      ).costUSD;
+  const radarSevenDayTotalUSD = context.radarPlanTotalUSD !== null
+    && Number.isFinite(context.radarPlanTotalUSD)
+    && context.radarPlanTotalUSD > 0
+    ? context.radarPlanTotalUSD
+    : null;
+  const accountDropPercent = selection.sevenDay.quotaDropAvailable
+    ? selection.sevenDay.quotaDropPercent
+    : null;
+  const localSharePercent = localComparableCostUSD !== null && radarSevenDayTotalUSD !== null
+    ? localComparableCostUSD / radarSevenDayTotalUSD * 100
+    : null;
+  const nonLocalDifferencePercent = accountDropPercent !== null && localSharePercent !== null
+    ? accountDropPercent - localSharePercent
+    : null;
   const quotaCoveredBoundary = context.quotaUpdatedAtUnix === null
     ? null
     : Math.floor(context.quotaUpdatedAtUnix / (5 * 60)) * (5 * 60);
-  const allowsAttributionConclusion = (
-    context.status === "positiveResidual"
-      || context.status === "negativeResidual"
-      || context.status === "indistinguishable"
-  )
+  const allowsAttributionConclusion = accountDropPercent !== null
+    && localSharePercent !== null
+    && (
+      context.status === "positiveResidual"
+        || context.status === "negativeResidual"
+        || context.status === "indistinguishable"
+    )
     && !context.quotaDataStale
     && !context.radarDataStale
     && !context.usagePendingQuotaRefresh
@@ -745,13 +767,19 @@ export function quotaSelectionAttribution(
     && (context.cycleEndUnix === null || selection.endUnix <= context.cycleEndUnix)
     && (context.segmentStartUnix === null || selection.startUnix >= context.segmentStartUnix)
     && (quotaCoveredBoundary === null || selection.endUnix <= quotaCoveredBoundary);
-  const state: QuotaSelectionAttributionState = !allowsAttributionConclusion
-    ? "provisional"
-    : Math.abs(nonLocalDifferencePercent) <= 2
-      ? "withinTolerance"
-      : nonLocalDifferencePercent > 0
-        ? "suspectedNonLocalUsage"
-        : "localEstimateExceedsAccountDrop";
+  const state: QuotaSelectionAttributionState = context.priceBasis === null
+    ? "missingCompatiblePriceRevision"
+    : radarSevenDayTotalUSD === null
+      ? "missingRadarTierBaseline"
+      : accountDropPercent === null
+        ? "missingQuotaHistory"
+        : !allowsAttributionConclusion
+          ? "provisional"
+          : Math.abs(nonLocalDifferencePercent ?? 0) <= 2
+            ? "withinTolerance"
+            : (nonLocalDifferencePercent ?? 0) > 0
+              ? "suspectedNonLocalUsage"
+              : "localEstimateExceedsAccountDrop";
 
   return {
     state,
@@ -759,7 +787,8 @@ export function quotaSelectionAttribution(
     localSharePercent,
     nonLocalDifferencePercent,
     localComparableCostUSD,
-    radarSevenDayTotalUSD: context.radarPlanTotalUSD,
+    localCurrentAPIEquivalentUSD,
+    radarSevenDayTotalUSD,
     allowsAttributionConclusion,
   };
 }

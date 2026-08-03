@@ -550,6 +550,7 @@ function RecentChartQuotaEstimateOverlay({
 }
 
 function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelectionAttributionResult }) {
+  const accountTitle = attribution.accountDropPercent === null ? "账号下降" : "账号实降";
   const differenceTitle = attribution.state === "suspectedNonLocalUsage"
     ? "疑似他人"
     : attribution.state === "localEstimateExceedsAccountDrop"
@@ -557,18 +558,24 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
       : attribution.allowsAttributionConclusion ? "差额" : "暂算差额";
   const difference = attribution.nonLocalDifferencePercent;
   return (
-    <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
-      <span>账号实降</span>
-      <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
-      <i aria-hidden="true">｜</i>
-      <span>本机折算</span>
-      <strong>≈{oneDecimalPercent(attribution.localSharePercent)}</strong>
-      <i aria-hidden="true">｜</i>
-      <span>{differenceTitle}</span>
-      <strong>{attribution.allowsAttributionConclusion
-        ? `≈${signedOneDecimalPercent(difference)}`
-        : signedOneDecimalPercent(difference)}</strong>
-    </div>
+    <>
+      <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
+        <span>{accountTitle}</span>
+        <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
+        <i aria-hidden="true">｜</i>
+        <span>本机折算</span>
+        <strong>{attribution.localSharePercent === null ? "--" : `≈${oneDecimalPercent(attribution.localSharePercent)}`}</strong>
+        <i aria-hidden="true">｜</i>
+        <span>{differenceTitle}</span>
+        <strong>{attribution.allowsAttributionConclusion && difference !== null
+          ? `≈${signedOneDecimalPercent(difference)}`
+          : signedOneDecimalPercent(difference)}</strong>
+      </div>
+      <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="选区本机 API 等价金额">
+        <span>本机同基准 {moneyText(attribution.localComparableCostUSD)}</span>
+        <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
+      </div>
+    </>
   );
 }
 
@@ -731,11 +738,13 @@ function moneyText(value: number | null): string {
   return `$${value.toFixed(2)}`;
 }
 
-function oneDecimalPercent(value: number): string {
+function oneDecimalPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "--";
   return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
-function signedOneDecimalPercent(value: number): string {
+function signedOneDecimalPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "--";
   const sign = value >= 0 ? "+" : "";
   return `${sign}${oneDecimalPercent(value)}`;
 }
