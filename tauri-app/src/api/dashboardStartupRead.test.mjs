@@ -87,7 +87,7 @@ test("a real startup dashboard rejection remains visible as a local failure", as
         "read_dashboard_snapshot",
         { stats: { totalTokens: 0 } },
         { sourceToken },
-        30_000,
+        null,
       );
 
       assert.equal(fallback.stats.totalTokens, 0);
@@ -95,49 +95,6 @@ test("a real startup dashboard rejection remains visible as a local failure", as
         (item) => item.command === "read_dashboard_snapshot",
       );
       assert.equal(diagnostic?.message, "state database unavailable");
-    });
-  } finally {
-    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
-    else delete globalThis.window;
-  }
-});
-
-test("startup dashboard reads still fail closed at the explicit 30 second boundary", async () => {
-  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-  let timeoutCallback;
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      __TAURI_INTERNALS__: {
-        invoke(command, args) {
-          assert.equal(command, "read_dashboard_snapshot");
-          assert.deepEqual(args, { sourceToken });
-          return new Promise(() => {});
-        },
-      },
-      clearTimeout: () => {},
-      setTimeout(callback, delay) {
-        assert.equal(delay, 30_000);
-        timeoutCallback = callback;
-        return 1;
-      },
-    },
-    writable: true,
-  });
-
-  try {
-    await withSsrModules(async (load) => {
-      const { STARTUP_DASHBOARD_COMMAND_TIMEOUT_MS, readDashboardSnapshot } = await load(
-        "/src/api/dashboardClient.ts",
-      );
-      assert.equal(STARTUP_DASHBOARD_COMMAND_TIMEOUT_MS, 30_000);
-
-      const pending = readDashboardSnapshot(sourceToken);
-      assert.equal(typeof timeoutCallback, "function");
-      timeoutCallback();
-
-      const fallback = await pending;
-      assert.equal(fallback.stats.totalTokens, 0);
     });
   } finally {
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);

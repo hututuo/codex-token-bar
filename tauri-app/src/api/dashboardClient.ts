@@ -13,12 +13,6 @@ import {
 } from "./fallback";
 import { callCommand, callCommandOptional, callCommandStrict } from "./command";
 
-// The cold local index read is still a startup operation, but it must have a
-// finite safety boundary. Four seconds is the generic IPC budget for small
-// commands; this longer bound covers one cold dashboard read without turning a
-// real hung native command into an endless loading state.
-export const STARTUP_DASHBOARD_COMMAND_TIMEOUT_MS = 30_000;
-
 export function getCodexHome(): Promise<CodexHomeSourceEnvelope | null> {
   return callCommandOptional("get_codex_home");
 }
@@ -40,16 +34,14 @@ export function readDashboardSnapshot(
 ): Promise<DashboardSnapshot> {
   // A cold local index can legitimately take longer than the generic 4 second
   // command budget. JavaScript cannot cancel the native IPC, so racing this
-  // read against that budget publishes the empty fallback as a false failure
-  // while the native command is still running. Keep the existing loading state
-  // until the native result arrives; a real native rejection, or a read that
-  // exceeds the explicit 30 second startup safety boundary, still records the
-  // command diagnostic and returns the empty fallback through callCommand.
+  // read against an arbitrary deadline publishes the empty fallback as a false
+  // failure while the native command is still running. Keep the existing
+  // loading state until the native operation itself succeeds or rejects.
   return callCommand(
     "read_dashboard_snapshot",
     emptyDashboardSnapshot(),
     { sourceToken },
-    STARTUP_DASHBOARD_COMMAND_TIMEOUT_MS,
+    null,
   );
 }
 
