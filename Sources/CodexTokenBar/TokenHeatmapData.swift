@@ -1,8 +1,20 @@
 import SwiftUI
 
 extension TokenHeatmap {
-    static func prepare(dailyUsage: [DayUsage], cacheDaily: [TokenCacheBucket], quotaDaily: [QuotaHistoryDailyBucket], mode: ActivityMode) -> HeatmapPreparedData {
-        let summaries = makeSummaries(dailyUsage: dailyUsage, cacheDaily: cacheDaily, quotaDaily: quotaDaily, mode: mode)
+    static func prepare(
+        dailyUsage: [DayUsage],
+        cacheDaily: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent] = [],
+        quotaDaily: [QuotaHistoryDailyBucket],
+        mode: ActivityMode
+    ) -> HeatmapPreparedData {
+        let summaries = makeSummaries(
+            dailyUsage: dailyUsage,
+            cacheDaily: cacheDaily,
+            attributionEvents: attributionEvents,
+            quotaDaily: quotaDaily,
+            mode: mode
+        )
         let columns = makeColumnIndices(dayCount: summaries.count)
         return HeatmapPreparedData(
             summaries: summaries,
@@ -18,7 +30,13 @@ extension TokenHeatmap {
         }
     }
 
-    private static func makeSummaries(dailyUsage: [DayUsage], cacheDaily: [TokenCacheBucket], quotaDaily: [QuotaHistoryDailyBucket], mode: ActivityMode) -> [HeatmapUsageSummary] {
+    private static func makeSummaries(
+        dailyUsage: [DayUsage],
+        cacheDaily: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent],
+        quotaDaily: [QuotaHistoryDailyBucket],
+        mode: ActivityMode
+    ) -> [HeatmapUsageSummary] {
         switch mode {
         case .daily:
             return dailyUsage.map { day in
@@ -44,10 +62,35 @@ extension TokenHeatmap {
                     iconName: "sum"
                 )
             }
+        case .modelShare:
+            return modelShareSummaries(dailyUsage: dailyUsage, attributionEvents: attributionEvents)
         case .cacheHitRate:
             return cacheHitRateSummaries(dailyUsage: dailyUsage, cacheDaily: cacheDaily)
         case .quotaRemaining:
             return quotaRemainingSummaries(dailyUsage: dailyUsage, quotaDaily: quotaDaily)
+        }
+    }
+
+    private static func modelShareSummaries(
+        dailyUsage: [DayUsage],
+        attributionEvents: [TokenCacheAttributionEvent]
+    ) -> [HeatmapUsageSummary] {
+        let calendar = Calendar.current
+        let eventsByDay = Dictionary(grouping: attributionEvents) {
+            calendar.startOfDay(for: $0.start)
+        }
+        return dailyUsage.map { day in
+            let rows = ModelUsagePresentation.rows(
+                from: eventsByDay[calendar.startOfDay(for: day.date)] ?? []
+            )
+            return HeatmapUsageSummary(
+                title: DateFormatter.fullDay.string(from: day.date),
+                tokens: day.tokens,
+                calls: day.calls,
+                iconName: "circle.grid.2x2.fill",
+                modelBreakdowns: rows,
+                isModelShare: true
+            )
         }
     }
 

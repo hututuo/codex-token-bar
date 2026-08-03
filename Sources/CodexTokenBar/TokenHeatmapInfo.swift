@@ -9,6 +9,8 @@ struct HeatmapUsageSummary {
     let isCacheRate: Bool
     let quotaRemainingPercent: Double?
     let isQuotaRemaining: Bool
+    let modelBreakdowns: [ModelTokenBreakdown]
+    let isModelShare: Bool
 
     init(
         title: String,
@@ -18,7 +20,9 @@ struct HeatmapUsageSummary {
         cacheBreakdown: TokenCacheBreakdown? = nil,
         isCacheRate: Bool = false,
         quotaRemainingPercent: Double? = nil,
-        isQuotaRemaining: Bool = false
+        isQuotaRemaining: Bool = false,
+        modelBreakdowns: [ModelTokenBreakdown] = [],
+        isModelShare: Bool = false
     ) {
         self.title = title
         self.tokens = tokens
@@ -28,6 +32,8 @@ struct HeatmapUsageSummary {
         self.isCacheRate = isCacheRate
         self.quotaRemainingPercent = quotaRemainingPercent
         self.isQuotaRemaining = isQuotaRemaining
+        self.modelBreakdowns = modelBreakdowns
+        self.isModelShare = isModelShare
     }
 
     var average: Int {
@@ -42,6 +48,25 @@ struct HeatmapRangeSummary {
     let calls: Int
     let cacheBreakdown: TokenCacheBreakdown?
     let quotaAverageRemainingPercent: Double?
+    let modelBreakdowns: [ModelTokenBreakdown]
+
+    init(
+        title: String,
+        dayCount: Int,
+        tokens: Int,
+        calls: Int,
+        cacheBreakdown: TokenCacheBreakdown?,
+        quotaAverageRemainingPercent: Double?,
+        modelBreakdowns: [ModelTokenBreakdown] = []
+    ) {
+        self.title = title
+        self.dayCount = dayCount
+        self.tokens = tokens
+        self.calls = calls
+        self.cacheBreakdown = cacheBreakdown
+        self.quotaAverageRemainingPercent = quotaAverageRemainingPercent
+        self.modelBreakdowns = modelBreakdowns
+    }
 
     var average: Int {
         calls > 0 ? tokens / calls : 0
@@ -116,6 +141,11 @@ struct HeatmapHoverInfo: View {
                     Text("\(summary.calls) samples")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
+                } else if summary.isModelShare {
+                    Text("\(summary.tokens.abbreviatedTokens) tokens")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? .secondary)
+                    ModelUsageInlineSummary(rows: summary.modelBreakdowns)
                 } else {
                     Text("\(summary.tokens.abbreviatedTokens) tokens")
                         .font(.system(size: 13, weight: .semibold))
@@ -177,6 +207,11 @@ struct HeatmapHoverInfo: View {
                     Text("\(rangeSummary.calls) samples")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
+                } else if !rangeSummary.modelBreakdowns.isEmpty {
+                    Text("\(rangeSummary.tokens.abbreviatedTokens) tokens")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(ModelUsagePresentation.dominantColor(from: rangeSummary.modelBreakdowns) ?? .secondary)
+                    ModelUsageInlineSummary(rows: rangeSummary.modelBreakdowns)
                 } else {
                     Text("\(rangeSummary.tokens.abbreviatedTokens) tokens")
                         .font(.system(size: 13, weight: .semibold))

@@ -1,6 +1,7 @@
 import type { ActivityDay } from "../../types/dashboard";
 import { clamp, formatPercent, formatTokens } from "../../utils/format";
 import type { ActivityMode, HeatmapDay } from "./types";
+import { dominantModelColor, modelUsageCompactText } from "../modelUsagePresentation.ts";
 
 export function buildHeatmapDays(days: ActivityDay[], mode: ActivityMode): HeatmapDay[] {
   let cumulative = 0;
@@ -15,6 +16,8 @@ export function buildHeatmapDays(days: ActivityDay[], mode: ActivityMode): Heatm
         return day.tokens > 0 ? day.cacheHitRate : null;
       case "quota":
         return day.sevenDayRemainingPercent ?? day.fiveHourRemainingPercent;
+      case "model":
+        return day.tokens > 0 ? day.tokens : null;
       case "daily":
       default:
         return day.tokens > 0 ? day.tokens : null;
@@ -47,6 +50,13 @@ export function cellColor(mode: ActivityMode, intensity: number): string {
   return `color-mix(in srgb, ${color} ${weight}%, var(--heatmap-empty))`;
 }
 
+export function modelCellColor(day: ActivityDay, intensity: number): string {
+  if (intensity <= 0) return "var(--heatmap-empty)";
+  const color = dominantModelColor(day.modelBreakdowns) ?? "#7a879e";
+  const weight = Math.round(24 + intensity * 72);
+  return `color-mix(in srgb, ${color} ${weight}%, var(--heatmap-empty))`;
+}
+
 export function cellLabel(day: ActivityDay, mode: ActivityMode): string {
   if (mode === "cache") {
     return `${day.date} · 命中率 ${formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
@@ -55,6 +65,9 @@ export function cellLabel(day: ActivityDay, mode: ActivityMode): string {
     return `${day.date} · 7d ${formatOptionalPercent(day.sevenDayRemainingPercent)} · 5h ${formatOptionalPercent(
       day.fiveHourRemainingPercent,
     )}`;
+  }
+  if (mode === "model") {
+    return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(day.modelBreakdowns) ?? "暂无模型明细"}`;
   }
   return `${day.date} · ${formatTokens(day.tokens)} tokens · ${day.calls} calls`;
 }

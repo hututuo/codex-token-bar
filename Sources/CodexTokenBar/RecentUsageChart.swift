@@ -336,6 +336,7 @@ struct RecentChartPreparedData: Equatable {
     let callTotal: Int
     let recentCacheBreakdown: TokenCacheBreakdown
     let cacheBreakdowns: [TokenCacheBreakdown]
+    let modelBreakdowns: [[ModelTokenBreakdown]]
     let observedCacheHitRates: [Double?]
     let fiveHourRemainingPercents: [Double?]
     let sevenDayRemainingPercents: [Double?]
@@ -359,6 +360,7 @@ struct RecentChartPreparedData: Equatable {
         callTotal: Int,
         recentCacheBreakdown: TokenCacheBreakdown,
         cacheBreakdowns: [TokenCacheBreakdown],
+        modelBreakdowns: [[ModelTokenBreakdown]] = [],
         observedCacheHitRates: [Double?],
         fiveHourRemainingPercents: [Double?],
         sevenDayRemainingPercents: [Double?],
@@ -381,6 +383,7 @@ struct RecentChartPreparedData: Equatable {
         self.callTotal = callTotal
         self.recentCacheBreakdown = recentCacheBreakdown
         self.cacheBreakdowns = cacheBreakdowns
+        self.modelBreakdowns = modelBreakdowns
         self.observedCacheHitRates = observedCacheHitRates
         self.fiveHourRemainingPercents = fiveHourRemainingPercents
         self.sevenDayRemainingPercents = sevenDayRemainingPercents
@@ -430,6 +433,7 @@ struct RecentChartPreparedData: Equatable {
         callTotal: 0,
         recentCacheBreakdown: .empty,
         cacheBreakdowns: [],
+        modelBreakdowns: [],
         observedCacheHitRates: [],
         fiveHourRemainingPercents: [],
         sevenDayRemainingPercents: [],
@@ -1098,6 +1102,21 @@ struct RecentUsageChart: View, Equatable {
 
                 linePath(points: plotData.tokenPoints)
                     .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+
+                if selectedRange == .twentyFourHours {
+                    ForEach(plotData.tokenPoints.indices, id: \.self) { index in
+                        if chartBins[safe: index]?.tokens ?? 0 > 0,
+                           let color = ModelUsagePresentation.dominantColor(
+                            from: preparedData.modelBreakdowns[safe: index] ?? []
+                           ) {
+                            Circle()
+                                .fill(color)
+                                .frame(width: 3.5, height: 3.5)
+                                .position(plotData.tokenPoints[index])
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
             }
 
             if showCalls {
@@ -1240,6 +1259,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartHoverBubble(
                         bin: chartBins[activeIndex],
                         cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
+                        modelBreakdowns: preparedData.modelBreakdowns[safe: activeIndex] ?? [],
                         fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
                             ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
                             : nil,
@@ -1404,6 +1424,7 @@ struct RecentUsageChart: View, Equatable {
             hourlyBins: hourlyBins,
             cacheRecentBins: cacheRecentBins,
             cacheHourlyBins: cacheHourlyBins,
+            attributionEvents: attributionEvents,
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )

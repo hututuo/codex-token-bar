@@ -6,7 +6,7 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
-import { cellColor, cellLabel, isInRange, type ActivityMode, type HeatmapDay, type MonthMarker } from "./model";
+import { cellColor, cellLabel, isInRange, modelCellColor, type ActivityMode, type HeatmapDay, type MonthMarker } from "./model";
 import {
   heatmapKeyboardAction,
   resolveHeatmapFocusDate,
@@ -144,7 +144,7 @@ export function HeatmapGrid({
                   cellRefs.current.delete(day.date);
                 }
               }}
-              style={{ backgroundColor: cellColor(mode, intensity) }}
+              style={{ backgroundColor: mode === "model" ? modelCellColor(day, intensity) : cellColor(mode, intensity) }}
               tabIndex={validFocusedDate === day.date ? 0 : -1}
               title={cellLabel(day, mode)}
               type="button"

@@ -5773,7 +5773,7 @@ input[type="range"]::-moz-range-thumb {
   color: var(--accent-strong);
 }
 
-.segmented--activity button:nth-last-child(-n + 2) {
+.segmented--activity button:nth-last-child(-n + 3) {
   outline: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
   outline-offset: -1px;
 }
@@ -6250,7 +6250,7 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   z-index: 4;
   top: -2px;
-  width: 184px;
+  width: 214px;
   padding: 9px 10px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 92%, transparent);
   border-radius: 8px;
@@ -6258,6 +6258,34 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text);
   pointer-events: none;
   transform: translate(-50%, -100%);
+}
+
+.chart-model-points {
+  opacity: 0.96;
+  pointer-events: none;
+}
+
+.chart-hover-bubble .model-usage-inline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 3px 9px;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.chart-hover-bubble .model-usage-inline span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.model-usage-inline i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: 0 0 auto;
 }
 
 .chart-observation-points--hit {

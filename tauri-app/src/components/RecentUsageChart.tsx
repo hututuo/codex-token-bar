@@ -34,6 +34,7 @@ import {
   type SeriesVisibility,
 } from "./recentUsageChart/model";
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
+import { dominantModelColor, modelUsageSlices } from "./modelUsagePresentation.ts";
 
 interface RecentUsageChartProps {
   recentUsage24h: RecentUsagePoint[];
@@ -244,6 +245,22 @@ export function RecentUsageChart({
                 <>
                   <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, chartWidth, PLOT_HEIGHT))} />
                   <path className="chart-line chart-line--token" d={offsetPath(smoothPath(plotData.tokenPoints))} />
+                  {range === "24h" ? (
+                    <g className="chart-model-points" aria-hidden="true">
+                      {plotData.tokenPoints.map((tokenPoint, index) => {
+                        const color = dominantModelColor(data.points[index]?.modelBreakdowns);
+                        return color && data.points[index]?.tokens > 0 ? (
+                          <circle
+                            cx={tokenPoint.x}
+                            cy={tokenPoint.y + PLOT_TOP}
+                            fill={color}
+                            key={index}
+                            r="1.75"
+                          />
+                        ) : null;
+                      })}
+                    </g>
+                  ) : null}
                 </>
               ) : null}
               {visibility.calls ? (
@@ -411,6 +428,7 @@ function HoverBubble({
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em>缓存命中 {percentText(point.cacheHitRate)}</em>
       ) : null}
+      <ModelUsageInline rows={point.modelBreakdowns} />
       {quotaParts.length > 0 ? <span>额度 {quotaParts.join(" · ")}</span> : null}
       <em>点击起点/终点可估算额度</em>
     </div>
@@ -437,7 +455,28 @@ function SelectionSummaryBubble({
       <b>{formatTokens(selection.totalTokens)}</b>
       <span>请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
       {selection.calls > 0 ? <em>缓存命中 {percentText(selection.cacheHitRate)}</em> : null}
+      <ModelUsageInline rows={selection.modelBreakdowns} />
       <span>{quotaSelectionDurationText(selection)}</span>
+    </div>
+  );
+}
+
+function ModelUsageInline({
+  rows,
+}: {
+  rows: RecentUsagePoint["modelBreakdowns"] | QuotaConsumptionSelection["modelBreakdowns"];
+}) {
+  const slices = modelUsageSlices(rows);
+  if (slices.length === 0) return null;
+  return (
+    <div className="model-usage-inline" aria-label={`模型占比 ${slices.map((slice) => `${slice.label} ${Math.round(slice.share * 100)}%`).join("，")}`}>
+      {slices.slice(0, 4).map((slice) => (
+        <span key={slice.key}>
+          <i style={{ backgroundColor: slice.color }} />
+          {slice.label} {Math.round(slice.share * 100)}%
+        </span>
+      ))}
+      {slices.length > 4 ? <span>+{slices.length - 4}</span> : null}
     </div>
   );
 }

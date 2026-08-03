@@ -2494,7 +2494,14 @@ fn parses_token_count_totals_as_deltas() {
     assert!(snapshot.stats.model_breakdowns.iter().any(|row| {
         row.model.as_deref() == Some("gpt-5.6-terra") && row.breakdown.calls == 1
     }));
-    assert!(snapshot.activity_days.iter().any(|day| day.tokens == 28));
+    let active_day = snapshot.activity_days.iter().find(|day| day.tokens == 28).unwrap();
+    assert_eq!(active_day.model_breakdowns.len(), 2);
+    assert!(active_day.model_breakdowns.iter().any(|row| {
+        row.model.as_deref() == Some("gpt-5.6-sol") && row.breakdown.calls == 1
+    }));
+    assert!(active_day.model_breakdowns.iter().any(|row| {
+        row.model.as_deref() == Some("gpt-5.6-terra") && row.breakdown.calls == 1
+    }));
     assert_eq!(snapshot.recent_usage_24h.len(), 30 * 24 * 12);
     assert_eq!(snapshot.recent_usage_7d.len(), 168);
     assert_eq!(snapshot.recent_usage_30d.len(), 120);

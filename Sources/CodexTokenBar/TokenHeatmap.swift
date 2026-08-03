@@ -22,6 +22,7 @@ struct HeatmapPreparedData {
 struct TokenHeatmap: View {
     let dailyUsage: [DayUsage]
     let cacheDaily: [TokenCacheBucket]
+    let attributionEvents: [TokenCacheAttributionEvent]
     let quotaDaily: [QuotaHistoryDailyBucket]
     let mode: ActivityMode
     @State private var hoveredIndex: Int?
@@ -33,9 +34,16 @@ struct TokenHeatmap: View {
     private let gap: CGFloat = 4
     private let trailingInset: CGFloat = 9
 
-    init(dailyUsage: [DayUsage], cacheDaily: [TokenCacheBucket], quotaDaily: [QuotaHistoryDailyBucket], mode: ActivityMode) {
+    init(
+        dailyUsage: [DayUsage],
+        cacheDaily: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent] = [],
+        quotaDaily: [QuotaHistoryDailyBucket],
+        mode: ActivityMode
+    ) {
         self.dailyUsage = dailyUsage
         self.cacheDaily = cacheDaily
+        self.attributionEvents = attributionEvents
         self.quotaDaily = quotaDaily
         self.mode = mode
         _preparedData = State(initialValue: .empty)
@@ -153,6 +161,10 @@ struct TokenHeatmap: View {
             clearRangeSelection()
             refreshPreparedData()
         }
+        .onChange(of: attributionEvents) { _, _ in
+            clearRangeSelection()
+            refreshPreparedData()
+        }
         .onChange(of: quotaDaily) { _, _ in
             clearRangeSelection()
             refreshPreparedData()
@@ -198,6 +210,10 @@ struct TokenHeatmap: View {
             }
             return "\(summary.title)，7 天额度剩余 \(Int(percent.rounded()))%，\(summary.calls) 个采样"
         }
+        if summary.isModelShare {
+            let models = ModelUsagePresentation.compactText(from: summary.modelBreakdowns) ?? "暂无模型明细"
+            return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，模型占比 \(models)"
+        }
         return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，\(summary.calls) 次调用，平均 \(summary.average.abbreviatedTokens)"
     }
 
@@ -207,6 +223,10 @@ struct TokenHeatmap: View {
         }
         if let quotaAverage = rangeSummary.quotaAverageRemainingPercent {
             return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，7 天额度平均剩余 \(Int(quotaAverage.rounded()))%，\(rangeSummary.calls) 个采样"
+        }
+        if !rangeSummary.modelBreakdowns.isEmpty {
+            let models = ModelUsagePresentation.compactText(from: rangeSummary.modelBreakdowns) ?? "暂无模型明细"
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.tokens.abbreviatedTokens) token，模型占比 \(models)"
         }
         return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，\(rangeSummary.tokens.abbreviatedTokens) token，\(rangeSummary.calls) 次调用，平均 \(rangeSummary.average.abbreviatedTokens)"
     }
@@ -261,6 +281,13 @@ struct TokenHeatmap: View {
             return AppTheme.quotaRemainingColor(percent: percent)
         }
 
+        if summary.isModelShare {
+            guard summary.tokens > 0 else { return AppTheme.emptyCell }
+            let ratio = min(1.0, Double(summary.tokens) / Double(max(maxTokens, 1)))
+            return (ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? AppTheme.emptyCell)
+                .opacity(0.24 + ratio * 0.76)
+        }
+
         let value = summary.tokens
         guard value > 0 else { return AppTheme.emptyCell }
         let ratio = min(1.0, Double(value) / Double(max(maxTokens, 1)))
@@ -268,7 +295,13 @@ struct TokenHeatmap: View {
     }
 
     private func refreshPreparedData() {
-        preparedData = Self.prepare(dailyUsage: dailyUsage, cacheDaily: cacheDaily, quotaDaily: quotaDaily, mode: mode)
+        preparedData = Self.prepare(
+            dailyUsage: dailyUsage,
+            cacheDaily: cacheDaily,
+            attributionEvents: attributionEvents,
+            quotaDaily: quotaDaily,
+            mode: mode
+        )
     }
 
     private func updateRangeSelection(_ index: Int) {
@@ -335,6 +368,23 @@ struct TokenHeatmap: View {
                 calls: values.count,
                 cacheBreakdown: nil,
                 quotaAverageRemainingPercent: values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
+            )
+        }
+
+        if mode == .modelShare {
+            let start = Calendar.current.startOfDay(for: firstDay.date)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: lastDay.date)) ?? lastDay.date
+            let rows = ModelUsagePresentation.rows(from: attributionEvents.filter {
+                $0.start >= start && $0.start < end
+            })
+            return HeatmapRangeSummary(
+                title: title,
+                dayCount: days.count,
+                tokens: days.reduce(0) { $0 + $1.tokens },
+                calls: days.reduce(0) { $0 + $1.calls },
+                cacheBreakdown: nil,
+                quotaAverageRemainingPercent: nil,
+                modelBreakdowns: rows
             )
         }
 

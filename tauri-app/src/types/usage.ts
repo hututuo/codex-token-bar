@@ -20,6 +20,7 @@ export interface ActivityDay {
   date: string;
   tokens: number;
   calls: number;
+  modelBreakdowns?: ModelTokenBreakdown[];
   cacheHitRate: number;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;

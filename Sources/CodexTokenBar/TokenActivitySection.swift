@@ -78,8 +78,23 @@ private final class ActivityModeAccessibilityButton: NSButton {
 struct ActivitySection: View {
     let dailyUsage: [DayUsage]
     let cacheDaily: [TokenCacheBucket]
+    let attributionEvents: [TokenCacheAttributionEvent]
     let quotaDaily: [QuotaHistoryDailyBucket]
     @Binding var selectedMode: ActivityMode
+
+    init(
+        dailyUsage: [DayUsage],
+        cacheDaily: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent] = [],
+        quotaDaily: [QuotaHistoryDailyBucket],
+        selectedMode: Binding<ActivityMode>
+    ) {
+        self.dailyUsage = dailyUsage
+        self.cacheDaily = cacheDaily
+        self.attributionEvents = attributionEvents
+        self.quotaDaily = quotaDaily
+        _selectedMode = selectedMode
+    }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -90,7 +105,13 @@ struct ActivitySection: View {
                 ActivityModeSelector(selectedMode: $selectedMode)
             }
 
-            TokenHeatmap(dailyUsage: dailyUsage, cacheDaily: cacheDaily, quotaDaily: quotaDaily, mode: selectedMode)
+            TokenHeatmap(
+                dailyUsage: dailyUsage,
+                cacheDaily: cacheDaily,
+                attributionEvents: attributionEvents,
+                quotaDaily: quotaDaily,
+                mode: selectedMode
+            )
         }
         .frame(maxWidth: 980)
     }
@@ -100,7 +121,7 @@ struct ActivityModeSelector: View {
     @Binding var selectedMode: ActivityMode
 
     private let regularModes: [ActivityMode] = [.daily, .weekly, .cumulative]
-    private let specialModes: [ActivityMode] = [.cacheHitRate, .quotaRemaining]
+    private let specialModes: [ActivityMode] = [.modelShare, .cacheHitRate, .quotaRemaining]
 
     var body: some View {
         HStack(spacing: 4) {

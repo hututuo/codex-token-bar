@@ -970,6 +970,7 @@ struct DashboardView: View {
             ActivitySection(
                 dailyUsage: store.snapshot.dailyUsage,
                 cacheDaily: store.snapshot.cacheUsage.daily,
+                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
                 quotaDaily: quotaHistoryStore.snapshot.daily,
                 selectedMode: $store.selectedMode
             )

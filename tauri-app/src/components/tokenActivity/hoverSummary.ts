@@ -1,5 +1,6 @@
 import type { ActivityDay } from "../../types/dashboard";
 import type { ActivityMode } from "./types";
+import { modelUsageCompactText } from "../modelUsagePresentation.ts";
 
 export function hoverSummary(day: ActivityDay, mode: ActivityMode): string {
   if (mode === "cache") {
@@ -10,6 +11,9 @@ export function hoverSummary(day: ActivityDay, mode: ActivityMode): string {
     return `${day.date} · 7d ${formatOptionalPercent(day.sevenDayRemainingPercent)} · 5h ${formatOptionalPercent(
       day.fiveHourRemainingPercent,
     )}`;
+  }
+  if (mode === "model") {
+    return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(day.modelBreakdowns) ?? "暂无模型明细"}`;
   }
 
   return `${day.date} · ${formatTokens(day.tokens)} tokens · ${day.calls} calls`;

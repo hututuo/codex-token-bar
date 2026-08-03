@@ -375,6 +375,73 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   };
 }
 
+test("24h points and fixed selection preview expose model colors and shares", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h: [
+            modelPoint(0, [["gpt-5.6-sol", 75_000], ["gpt-5.6-luna", 25_000]]),
+            modelPoint(300, [["gpt-5.6-sol", 25_000], ["gpt-5.6-luna", 75_000]]),
+          ],
+          recentUsage7d: [],
+          recentUsage30d: [],
+        })));
+
+        const chart = container.querySelector("svg.usage-chart");
+        assert.ok(chart);
+        assert.equal(chart.querySelectorAll(".chart-model-points circle").length, 2);
+        chart.getBoundingClientRect = () => ({
+          bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
+          toJSON: () => ({}),
+        });
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true, clientX: 0, clientY: 80, pointerId: 1,
+        })));
+        assert.match(container.querySelector(".chart-hover-bubble")?.textContent ?? "", /Sol 75%/);
+        assert.match(container.querySelector(".chart-hover-bubble")?.textContent ?? "", /Luna 25%/);
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, clientX: 0, clientY: 80, pointerId: 1,
+        })));
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, clientX: 980, clientY: 80, pointerId: 1,
+        })));
+        const selection = container.querySelector(".chart-selection-summary-bubble");
+        assert.ok(selection);
+        assert.match(selection.textContent, /Sol 50%/);
+        assert.match(selection.textContent, /Luna 50%/);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
+function modelPoint(startUnix, models) {
+  return {
+    ...point(startUnix, null, null),
+    modelBreakdowns: models.map(([model, totalTokens]) => ({
+      model,
+      breakdown: { inputTokens: totalTokens, cachedInputTokens: 0, outputTokens: 0, totalTokens, calls: 1 },
+    })),
+  };
+}
+
 test("quota estimate card follows the chart at the lower left like the Swift layout", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
   const cardRule = css.match(/\.chart-quota-estimate-card\s*\{(?<body>[\s\S]*?)\n\}/);

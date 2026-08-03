@@ -844,10 +844,29 @@ struct ChartBubblePlacementModifier: ViewModifier {
 struct ChartHoverBubble: View {
     let bin: BinUsage
     let cacheBreakdown: TokenCacheBreakdown?
+    let modelBreakdowns: [ModelTokenBreakdown]
     let fiveHourRemaining: Double?
     let sevenDayRemaining: Double?
     let bucketInterval: TimeInterval
     let isHovering: Bool
+
+    init(
+        bin: BinUsage,
+        cacheBreakdown: TokenCacheBreakdown?,
+        modelBreakdowns: [ModelTokenBreakdown] = [],
+        fiveHourRemaining: Double?,
+        sevenDayRemaining: Double?,
+        bucketInterval: TimeInterval,
+        isHovering: Bool
+    ) {
+        self.bin = bin
+        self.cacheBreakdown = cacheBreakdown
+        self.modelBreakdowns = modelBreakdowns
+        self.fiveHourRemaining = fiveHourRemaining
+        self.sevenDayRemaining = sevenDayRemaining
+        self.bucketInterval = bucketInterval
+        self.isHovering = isHovering
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -870,6 +889,7 @@ struct ChartHoverBubble: View {
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.accentCyan)
             }
+            ModelUsageInlineSummary(rows: modelBreakdowns)
             if let quotaSummary {
                 Text("额度 \(quotaSummary)")
                     .font(.system(size: 10))
@@ -916,6 +936,9 @@ struct ChartHoverBubble: View {
         if let cacheBreakdown, cacheBreakdown.calls > 0 {
             parts.append("缓存命中率 \(cacheBreakdown.cacheHitRate.percentString)")
             parts.append("命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
+        }
+        if let models = ModelUsagePresentation.compactText(from: modelBreakdowns) {
+            parts.append("模型占比 \(models)")
         }
         if let fiveHourRemaining { parts.append("5 小时额度 \(percentText(fiveHourRemaining))") }
         if let sevenDayRemaining { parts.append("7 天额度 \(percentText(sevenDayRemaining))") }
@@ -964,6 +987,9 @@ struct ChartSelectionSummaryBubble: View {
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.accentCyan)
             }
+            ModelUsageInlineSummary(
+                rows: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)
+            )
             Text("持续 \(durationText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -978,13 +1004,28 @@ struct ChartSelectionSummaryBubble: View {
         )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("曲线选中区间")
-        .accessibilityValue("\(timeRange)；\(selection.breakdown.totalTokens.abbreviatedTokens) token；\(selection.breakdown.calls) 次请求；缓存命中率 \(selection.breakdown.cacheHitRate.percentString)")
+        .accessibilityValue(accessibilitySummary)
     }
 
     private var average: Int {
         selection.breakdown.calls > 0
             ? selection.breakdown.totalTokens / selection.breakdown.calls
             : 0
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [
+            timeRange,
+            "\(selection.breakdown.totalTokens.abbreviatedTokens) token",
+            "\(selection.breakdown.calls) 次请求",
+            "缓存命中率 \(selection.breakdown.cacheHitRate.percentString)"
+        ]
+        if let models = ModelUsagePresentation.compactText(
+            from: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)
+        ) {
+            parts.append("模型占比 \(models)")
+        }
+        return parts.joined(separator: "；")
     }
 
     private var timeRange: String {

@@ -77,6 +77,7 @@ fn empty_activity_days(today: Date) -> Vec<ActivityDay> {
             date: format_date(start + Duration::days(index)),
             tokens: 0,
             calls: 0,
+            model_breakdowns: Vec::new(),
             cache_hit_rate: 0.0,
             five_hour_remaining_percent: None,
             seven_day_remaining_percent: None,

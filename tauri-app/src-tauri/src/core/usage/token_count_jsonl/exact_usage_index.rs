@@ -1032,12 +1032,56 @@ impl ExactUsageIndex {
             grouped.insert(date, (tokens, calls, input, cached));
         }
 
+        let mut model_grouped: HashMap<String, Vec<ModelTokenBreakdown>> = HashMap::new();
+        let mut model_statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    strftime('%Y-%m-%d', timestamp, 'unixepoch', printf('%+d seconds', ?1)),
+                    model,
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(tokens), 0),
+                    COUNT(*)
+                FROM published_events
+                WHERE timestamp >= ?2 AND timestamp < ?3
+                GROUP BY 1, model
+                ORDER BY 1
+                "#,
+            )
+            .map_err(|error| format!("无法准备 365 日逐模型 token 汇总：{error}"))?;
+        let model_rows = model_statement
+            .query_map(params![offset_seconds, start_unix, end_unix], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ModelTokenBreakdown {
+                        model: row.get(1)?,
+                        breakdown: TokenCacheBreakdown {
+                            input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
+                            cached_input_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                            output_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
+                            total_tokens: nonnegative_u64(row.get::<_, i64>(5)?),
+                            calls: saturating_u32(row.get::<_, i64>(6)?),
+                        },
+                    },
+                ))
+            })
+            .map_err(|error| format!("无法读取 365 日逐模型 token 汇总：{error}"))?;
+        for row in model_rows {
+            let (date, breakdown) = row
+                .map_err(|error| format!("无法解码 365 日逐模型 token 汇总：{error}"))?;
+            model_grouped.entry(date).or_default().push(breakdown);
+        }
+
         Ok((0..365)
             .map(|offset| {
                 let day = start_day + Duration::days(offset);
                 let date = format_date(day);
                 let (tokens, calls, input, cached) = grouped.remove(&date).unwrap_or((0, 0, 0, 0));
                 ActivityDay {
+                    model_breakdowns: model_grouped.remove(&date).unwrap_or_default(),
                     date,
                     tokens: nonnegative_u64(tokens),
                     calls: saturating_u32(calls),

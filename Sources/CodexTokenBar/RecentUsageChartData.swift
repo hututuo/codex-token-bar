@@ -7,6 +7,7 @@ extension RecentUsageChart {
         hourlyBins: [BinUsage],
         cacheRecentBins: [TokenCacheBucket],
         cacheHourlyBins: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket]
     ) -> RecentChartPreparedData {
@@ -18,6 +19,11 @@ extension RecentUsageChart {
             cacheHourlyBins: cacheHourlyBins
         )
         let observedRates = observedCacheHitRates(cacheBreakdowns: cacheBreakdowns)
+        let modelBreakdowns = modelBreakdowns(
+            bins: bins,
+            interval: range.bucketInterval,
+            attributionEvents: attributionEvents
+        )
         let quotaBuckets = quotaBuckets(
             for: range,
             bins: bins,
@@ -46,6 +52,7 @@ extension RecentUsageChart {
             callTotal: bins.reduce(0) { $0 + $1.calls },
             recentCacheBreakdown: cacheBreakdowns.combined,
             cacheBreakdowns: cacheBreakdowns,
+            modelBreakdowns: modelBreakdowns,
             observedCacheHitRates: observedRates,
             fiveHourRemainingPercents: fiveHourRemaining,
             sevenDayRemainingPercents: sevenDayRemaining,
@@ -59,6 +66,21 @@ extension RecentUsageChart {
             hasSevenDayQuota: sevenDayRemaining.contains { $0 != nil },
             markerIndices: markerIndices
         )
+    }
+
+    private static func modelBreakdowns(
+        bins: [BinUsage],
+        interval: TimeInterval,
+        attributionEvents: [TokenCacheAttributionEvent]
+    ) -> [[ModelTokenBreakdown]] {
+        let grouped = Dictionary(grouping: attributionEvents) {
+            timeBinKey($0.start, interval: interval)
+        }
+        return bins.map { bin in
+            ModelUsagePresentation.rows(
+                from: grouped[timeBinKey(bin.start, interval: interval)] ?? []
+            )
+        }
     }
 
     private static func usageBins(for range: RecentChartRange, recentBins: [BinUsage], hourlyBins: [BinUsage]) -> [BinUsage] {
