@@ -93,7 +93,7 @@ fn shared_unread_correctness_sequence() {
 }
 
 #[test]
-fn completion_rearm_persists_after_lookback_until_next_acknowledgement() {
+fn completion_markers_do_not_rearm_after_native_acknowledgement() {
     let root = temp_root();
     let support = root.join("tauri-support");
     let sessions = root.join("sessions");
@@ -109,19 +109,16 @@ fn completion_rearm_persists_after_lookback_until_next_acknowledgement() {
     assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
 
     append_task_complete(&session, now + 1.0, "turn-rearm");
-    assert_eq!(
-        read_unread_summary_at(&root, now + 1.0).unwrap().count,
-        1
-    );
+    assert_eq!(read_unread_summary_at(&root, now + 1.0).unwrap().count, 0);
     let persisted = fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
-    assert!(!persisted.contains(thread_id));
+    assert!(persisted.contains(thread_id));
 
     let after_lookback = now + lookback_seconds() + 5.0;
     assert_eq!(
         read_unread_summary_at(&root, after_lookback)
             .unwrap()
             .count,
-        1
+        0
     );
 
     assert_eq!(acknowledge_current_unread(&root).unwrap().count, 0);
@@ -136,7 +133,7 @@ fn completion_rearm_persists_after_lookback_until_next_acknowledgement() {
 }
 
 #[test]
-fn rearm_write_failure_returns_error_and_preserves_previous_file() {
+fn completion_marker_scan_is_not_part_of_unread_refresh_or_write() {
     let root = temp_root();
     let support = root.join("tauri-support");
     let sessions = root.join("sessions");
@@ -152,14 +149,14 @@ fn rearm_write_failure_returns_error_and_preserves_previous_file() {
     let before = fs::read(&acknowledgement_path).unwrap();
 
     append_task_complete(&session, now + 1.0, "turn-write-failure");
-    let error = try_read_unread_summary_at_with_prepare(
+    let summary = try_read_unread_summary_at_with_prepare(
         &root,
         now + 1.0,
         &|_, _| Err("injected unread write failure".into()),
     )
-    .unwrap_err();
+    .unwrap();
 
-    assert!(error.contains("injected unread write failure"));
+    assert_eq!(summary.count, 0);
     assert_eq!(fs::read(&acknowledgement_path).unwrap(), before);
     let _ = fs::remove_dir_all(root);
 }
@@ -470,7 +467,7 @@ fn post_commit_directory_sync_failure_reports_committed_summary() {
 }
 
 #[test]
-fn post_commit_failure_publishes_new_summary_with_durability_diagnostic() {
+fn post_commit_completion_does_not_change_unread_summary() {
     let root = temp_root();
     let support = root.join("tauri-support");
     let sessions = root.join("sessions");
@@ -491,9 +488,9 @@ fn post_commit_failure_publishes_new_summary_with_durability_diagnostic() {
     )
     .unwrap();
 
-    assert_eq!(summary.count, 1);
-    assert!(summary.source.ends_with("_durability_uncertain"));
-    assert!(summary.detail.contains("已提交"));
+    assert_eq!(summary.count, 0);
+    assert_eq!(summary.source, "codex_unread_state");
+    assert!(!summary.detail.contains("已提交"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -576,7 +573,7 @@ fn write_unread_state(root: &Path, ids: &[String]) {
     fs::write(
         root.join(".codex-global-state.json"),
         format!(
-            r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}}}}}}"#
+            r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}},"flat-project-sidebar-preferences-v1":{{"initialized":true,"mode":"project"}}}},"sidebar-project-thread-orders":{{"local-project":{{"sortKey":"updated_at","threadIds":[{values}]}}}},"pinned-thread-ids":[],"projectless-thread-ids":[]}}"#
         ),
     )
     .unwrap();

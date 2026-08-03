@@ -22,7 +22,7 @@
       "expectedCount": 0
     },
     {
-      "name": "new-completion-rearms-a",
+      "name": "new-completion-does-not-rearm-a",
       "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
       "appendCompletions": [
         {
@@ -34,16 +34,16 @@
         }
       ],
       "action": "observe",
-      "expectedCount": 1,
-      "expectedLatestTitle": "First completion"
+      "expectedCount": 0,
+      "expectedLatestTitle": null
     },
     {
       "name": "same-completion-does-not-recount",
       "nativeThreadIDs": ["019eaaaa-0000-0000-0000-0000000000aa"],
       "appendCompletions": [],
       "action": "observe",
-      "expectedCount": 1,
-      "expectedLatestTitle": "First completion"
+      "expectedCount": 0,
+      "expectedLatestTitle": null
     },
     {
       "name": "ack-first-completion",
@@ -72,8 +72,8 @@
         }
       ],
       "action": "observe",
-      "expectedCount": 1,
-      "expectedLatestTitle": "Latest completion"
+      "expectedCount": 0,
+      "expectedLatestTitle": null
     },
     {
       "name": "ack-latest-completions",

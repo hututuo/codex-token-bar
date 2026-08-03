@@ -1,7 +1,6 @@
 use super::session_files::{
     contains_subagent_text, jsonl_files, session_meta_payload, value_contains_subagent,
 };
-use crate::models::UnreadSummary;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -26,47 +25,6 @@ pub(super) fn collect_recent_completion_markers_at(
         .into_iter()
         .flat_map(|file| recent_completed_user_task_markers(&file, now))
         .collect()
-}
-
-pub(super) fn thread_ids_from_collected_markers(
-    collected: &[(String, String)],
-    acknowledged_markers: &HashSet<String>,
-) -> HashSet<String> {
-    collected
-        .iter()
-        .filter(|(_, marker)| !acknowledged_markers.contains(marker))
-        .map(|(thread_id, _)| thread_id.clone())
-        .collect()
-}
-
-pub(super) fn summary_from_collected_markers(
-    collected: &[(String, String)],
-    acknowledged_markers: &HashSet<String>,
-) -> UnreadSummary {
-    let count = thread_ids_from_collected_markers(collected, acknowledged_markers).len();
-    let active = count > 0;
-    UnreadSummary {
-        active,
-        count: count as u32,
-        label: if active {
-            "刚有任务完成".into()
-        } else {
-            "暂无未读完成会话".into()
-        },
-        detail: if active {
-            format!(
-                "Codex 未读状态不可用，按最近 {} 秒内完成的 {} 个会话兜底。",
-                RECENT_COMPLETION_LOOKBACK_SECONDS as u32,
-                count
-            )
-        } else {
-            format!(
-                "Codex 未读状态不可用，最近 {} 秒没有可见会话完成。",
-                RECENT_COMPLETION_LOOKBACK_SECONDS as u32
-            )
-        },
-        source: "recent_task_complete".into(),
-    }
 }
 
 pub(super) fn recent_completion_markers(codex_home: &Path) -> HashSet<String> {
