@@ -139,6 +139,25 @@ enum QuotaSelectionAttributionEstimator {
         let accountDrop = selection.sevenDay.quotaDropBasis != .unavailable
             ? selection.sevenDay.quotaDropPercent
             : nil
+        let radarTotal = context.radarSevenDayTotalUSD.flatMap { total in
+            total.isFinite && total > 0 ? total : nil
+        }
+        let comparableEstimate: ModelAwareAPIPriceEstimate? = if context.priceRevision != .unavailable {
+            ModelAwareAPIPriceEstimator.estimate(
+                events: selection.sevenDayAttributionEvents,
+                fallbackBreakdown: attributionBreakdown,
+                fallbackModel: model,
+                rates: { context.priceRevision.rates(for: $0) ?? $0.currentPriceRates }
+            )
+        } else {
+            nil
+        }
+        let radarComparableCost = comparableEstimate?.costUSD
+        let radarLocalShare: Double? = if let radarComparableCost, let radarTotal {
+            radarComparableCost / radarTotal * 100
+        } else {
+            nil
+        }
 
         guard let accountDrop else {
             return unavailable(
@@ -146,25 +165,27 @@ enum QuotaSelectionAttributionEstimator {
                 context: context,
                 model: model,
                 currentOfficialEstimate: currentOfficialEstimate,
+                comparableEstimate: comparableEstimate,
+                localSharePercent: radarLocalShare,
+                radarTotal: radarTotal,
                 caveats: ["选区内至少需要两个有效的 7 天额度观测点。"]
             )
         }
 
-        guard let radarTotal = context.radarSevenDayTotalUSD,
-              radarTotal.isFinite,
-              radarTotal > 0 else {
+        guard let radarTotal else {
             return unavailable(
                 .missingRadarTierBaseline,
                 context: context,
                 model: model,
                 currentOfficialEstimate: currentOfficialEstimate,
+                comparableEstimate: comparableEstimate,
                 accountDrop: accountDrop,
                 accountDropBasis: selection.sevenDay.quotaDropBasis,
                 caveats: ["Codex Radar 尚未提供所选套餐的 7 天总额。"]
             )
         }
 
-        guard context.priceRevision != .unavailable else {
+        guard let comparableEstimate else {
             return unavailable(
                 .missingCompatiblePriceRevision,
                 context: context,
@@ -177,12 +198,6 @@ enum QuotaSelectionAttributionEstimator {
             )
         }
 
-        let comparableEstimate = ModelAwareAPIPriceEstimator.estimate(
-            events: selection.sevenDayAttributionEvents,
-            fallbackBreakdown: attributionBreakdown,
-            fallbackModel: model,
-            rates: { context.priceRevision.rates(for: $0) ?? $0.currentPriceRates }
-        )
         let comparableCost = comparableEstimate.costUSD
         let localShare = comparableCost / radarTotal * 100
         let difference = accountDrop - localShare
@@ -206,8 +221,8 @@ enum QuotaSelectionAttributionEstimator {
             state: state,
             tier: context.tier,
             model: model,
-            detectedModels: currentOfficialEstimate.detectedModels,
-            fallbackModelCalls: currentOfficialEstimate.fallbackCalls,
+            detectedModels: comparableEstimate.detectedModels,
+            fallbackModelCalls: comparableEstimate.fallbackCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: selection.sevenDay.quotaDropBasis,
             accountDropPercent: accountDrop,
@@ -315,6 +330,8 @@ enum QuotaSelectionAttributionEstimator {
         context: QuotaSelectionAttributionContext,
         model: OfficialAPIPriceModel,
         currentOfficialEstimate: ModelAwareAPIPriceEstimate,
+        comparableEstimate: ModelAwareAPIPriceEstimate? = nil,
+        localSharePercent: Double? = nil,
         accountDrop: Double? = nil,
         accountDropBasis: QuotaConsumptionDropBasis = .unavailable,
         radarTotal: Double? = nil,
@@ -324,15 +341,15 @@ enum QuotaSelectionAttributionEstimator {
             state: state,
             tier: context.tier,
             model: model,
-            detectedModels: currentOfficialEstimate.detectedModels,
-            fallbackModelCalls: currentOfficialEstimate.fallbackCalls,
+            detectedModels: (comparableEstimate ?? currentOfficialEstimate).detectedModels,
+            fallbackModelCalls: (comparableEstimate ?? currentOfficialEstimate).fallbackCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: accountDropBasis,
             accountDropPercent: accountDrop,
-            localComparableCostUSD: nil,
+            localComparableCostUSD: comparableEstimate?.costUSD,
             localCurrentOfficialCostUSD: currentOfficialEstimate.costUSD,
             radarSevenDayTotalUSD: radarTotal,
-            localSharePercent: nil,
+            localSharePercent: localSharePercent,
             nonLocalDifferencePercent: nil,
             allowsAttributionConclusion: false,
             caveats: caveats,

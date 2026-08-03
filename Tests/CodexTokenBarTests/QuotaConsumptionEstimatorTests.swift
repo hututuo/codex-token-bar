@@ -451,6 +451,27 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertNil(unknownPrice.nonLocalDifferencePercent)
     }
 
+    func testSelectionAttributionKeepsLocalConversionWhenQuotaHistoryIsUnavailable() throws {
+        let selection = attributionSelection(sevenDayDrop: 13, quotaDropObserved: false)
+        let result = QuotaSelectionAttributionEstimator.estimate(
+            selection: selection,
+            context: attributionContext(for: selection, radarTotalUSD: 1_000)
+        )
+
+        XCTAssertEqual(result.state, .missingQuotaHistory)
+        XCTAssertFalse(result.allowsAttributionConclusion)
+        XCTAssertNil(result.accountDropPercent)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 100, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
+        XCTAssertNil(result.nonLocalDifferencePercent)
+
+        let presentation = QuotaSelectionAttributionPresentation(result: result)
+        XCTAssertEqual(presentation.accountText, "--")
+        XCTAssertEqual(presentation.localText, "≈10%")
+        XCTAssertEqual(presentation.differenceTitle, "差额")
+        XCTAssertEqual(presentation.differenceText, "--")
+    }
+
     func testUnsafeSelectionContextsRemainProvisionalInsteadOfAccusingOtherUsers() {
         let selection = attributionSelection(sevenDayDrop: 13, quotaDropObserved: true)
         let stale = QuotaSelectionAttributionEstimator.estimate(
