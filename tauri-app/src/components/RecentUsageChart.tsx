@@ -394,7 +394,7 @@ function HoverBubble({
   viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 92), Math.max(92, viewportWidth - 92));
+  const left = Math.min(Math.max(x, 150), Math.max(150, viewportWidth - 150));
   const average = point.calls > 0 ? Math.round(point.tokens / point.calls) : 0;
   const quotaParts = [
     fiveHourRemaining !== null ? `5h ${percentText(fiveHourRemaining)}` : null,
@@ -403,18 +403,20 @@ function HoverBubble({
 
   return (
     <div className="chart-hover-bubble" style={{ left: `${left}px` }}>
-      <div>
+      <div className="chart-hover-heading">
         <strong>当前点</strong>
         <span>{timeRange(point.startUnix, bucketSeconds)}</span>
       </div>
       <b>{formatTokens(point.tokens)}</b>
-      <span>请求 {point.calls} 次 · avg {formatTokens(average)}</span>
+      <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
-        <em>缓存命中 {percentText(point.cacheHitRate)}</em>
+        <em className="chart-hover-row chart-hover-row--cache">
+          缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
+        </em>
       ) : null}
       <ModelUsageInline rows={point.modelBreakdowns} />
-      {quotaParts.length > 0 ? <span>额度 {quotaParts.join(" · ")}</span> : null}
-      <em>点击起点/终点可估算额度</em>
+      {quotaParts.length > 0 ? <span className="chart-hover-row">额度 {quotaParts.join(" · ")}</span> : null}
+      <em className="chart-hover-row chart-hover-row--action">点击起点/终点可估算额度</em>
     </div>
   );
 }
@@ -428,19 +430,23 @@ function SelectionSummaryBubble({
   viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 112), Math.max(112, viewportWidth - 112));
+  const left = Math.min(Math.max(x, 150), Math.max(150, viewportWidth - 150));
   const average = selection.calls > 0 ? Math.round(selection.totalTokens / selection.calls) : 0;
   return (
     <div className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
-      <div>
+      <div className="chart-hover-heading">
         <strong>选中区间</strong>
         <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
-      <span>请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      {selection.calls > 0 ? <em>缓存命中 {percentText(selection.cacheHitRate)}</em> : null}
+      <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
+      {selection.calls > 0 ? (
+        <em className="chart-hover-row chart-hover-row--cache">
+          缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}
+        </em>
+      ) : null}
       <ModelUsageInline rows={selection.modelBreakdowns} />
-      <span>{quotaSelectionDurationText(selection)}</span>
+      <span className="chart-hover-row">{quotaSelectionDurationText(selection)}</span>
     </div>
   );
 }
@@ -453,14 +459,14 @@ function ModelUsageInline({
   const slices = modelUsageSlices(rows);
   if (slices.length === 0) return null;
   return (
-    <div className="model-usage-inline" aria-label={`模型占比 ${slices.map((slice) => `${slice.label} ${Math.round(slice.share * 100)}%`).join("，")}`}>
-      {slices.slice(0, 4).map((slice) => (
+    <div className="model-usage-inline chart-hover-row" aria-label={`模型占比 ${slices.map((slice) => `${slice.label} ${Math.round(slice.share * 100)}%`).join("，")}`}>
+      {slices.slice(0, 3).map((slice) => (
         <span key={slice.key}>
           <i style={{ backgroundColor: slice.color }} />
           {slice.label} {Math.round(slice.share * 100)}%
         </span>
       ))}
-      {slices.length > 4 ? <span>+{slices.length - 4}</span> : null}
+      {slices.length > 3 ? <span>+{slices.length - 3}</span> : null}
     </div>
   );
 }

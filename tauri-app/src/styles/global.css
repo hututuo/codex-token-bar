@@ -6250,7 +6250,11 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   z-index: 4;
   top: -2px;
-  width: 214px;
+  display: flex;
+  width: max-content;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
   padding: 9px 10px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 92%, transparent);
   border-radius: 8px;
@@ -6262,11 +6266,12 @@ input[type="range"]::-moz-range-thumb {
 
 .chart-hover-bubble .model-usage-inline {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-start;
-  gap: 3px 9px;
-  margin-top: 4px;
+  gap: 7px;
+  margin-top: 0;
   color: var(--muted);
+  white-space: nowrap;
 }
 
 .chart-hover-bubble .model-usage-inline span {
@@ -6289,11 +6294,16 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 
-.chart-hover-bubble div {
+.chart-hover-heading {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chart-hover-row {
+  display: block;
+  white-space: nowrap;
 }
 
 .chart-hover-bubble strong,
@@ -6304,7 +6314,7 @@ input[type="range"]::-moz-range-thumb {
   font-weight: var(--weight-medium);
 }
 
-.chart-hover-bubble div span,
+.chart-hover-heading span,
 .chart-hover-bubble > span,
 .chart-hover-bubble em {
   color: var(--muted);
@@ -6312,7 +6322,6 @@ input[type="range"]::-moz-range-thumb {
 
 .chart-hover-bubble b {
   display: block;
-  margin-top: 4px;
   color: var(--accent);
   font-size: 20px;
   line-height: 1;

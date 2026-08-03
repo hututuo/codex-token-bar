@@ -481,8 +481,11 @@ test("24h hover and fixed selection preview expose model shares without persiste
         await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
           bubbles: true, clientX: 0, clientY: 80, pointerId: 1,
         })));
-        assert.match(container.querySelector(".chart-hover-bubble")?.textContent ?? "", /Sol 75%/);
-        assert.match(container.querySelector(".chart-hover-bubble")?.textContent ?? "", /Luna 25%/);
+        const hover = container.querySelector(".chart-hover-bubble");
+        assert.match(hover?.textContent ?? "", /Sol 75%/);
+        assert.match(hover?.textContent ?? "", /Luna 25%/);
+        assert.equal(hover?.querySelectorAll(":scope > .chart-hover-row").length, 4);
+        assert.equal(hover?.querySelector(".chart-hover-row--cache")?.textContent?.trim(), "缓存命中 0% · 命中 0");
 
         await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
           bubbles: true, cancelable: true, clientX: 0, clientY: 80, pointerId: 1,
@@ -531,6 +534,20 @@ test("hover detail keeps a clear gutter above the chart plot", async () => {
   assert.ok(bubbleRule?.groups?.body);
   assert.match(bubbleRule.groups.body, /top:\s*-2px;/);
   assert.match(bubbleRule.groups.body, /transform:\s*translate\(-50%,\s*-100%\);/);
+});
+
+test("hover detail uses explicit single-line rows instead of automatic wrapping", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  const bubbleRule = css.match(/\.chart-hover-bubble\s*\{(?<body>[\s\S]*?)\n\}/);
+  const rowRule = css.match(/\.chart-hover-row\s*\{(?<body>[\s\S]*?)\n\}/);
+  const modelsRule = css.match(/\.chart-hover-bubble \.model-usage-inline\s*\{(?<body>[\s\S]*?)\n\}/);
+  assert.ok(bubbleRule?.groups?.body);
+  assert.ok(rowRule?.groups?.body);
+  assert.ok(modelsRule?.groups?.body);
+  assert.match(bubbleRule.groups.body, /flex-direction:\s*column;/);
+  assert.match(bubbleRule.groups.body, /width:\s*max-content;/);
+  assert.match(rowRule.groups.body, /white-space:\s*nowrap;/);
+  assert.match(modelsRule.groups.body, /flex-wrap:\s*nowrap;/);
 });
 
 function installDomGlobals(window) {
