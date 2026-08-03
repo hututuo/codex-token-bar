@@ -1,4 +1,5 @@
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
+use super::session_files::session_id_from_file;
 use super::*;
 use rusqlite::Connection;
 use std::fs;
@@ -378,6 +379,119 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
         105,
         "deleted sources remain in the durable sparse attribution ledger"
     );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_rebuild_recovers_orphaned_events_from_foreign_keys_disabled_storage() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eorphan-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+    let canonical_path = fs::canonicalize(&file).unwrap().to_string_lossy().into_owned();
+    let connection = Connection::open(&index_path).unwrap();
+    let published_generation = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let orphan_generation = published_generation + 1;
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    connection
+        .execute(
+            r#"
+            INSERT INTO events(
+                file_generation,
+                file_path,
+                ordinal,
+                timestamp,
+                session_id,
+                tokens,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                model,
+                user_prompt_start,
+                user_prompt_end,
+                assistant_response_start,
+                assistant_response_end
+            ) VALUES (?1, ?2, 1, 1, ?3, 120, 100, 20, 20, NULL, NULL, NULL, NULL, NULL)
+            "#,
+            rusqlite::params![
+                orphan_generation,
+                canonical_path,
+                session_id_from_file(&file),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM events e
+                LEFT JOIN files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE f.generation IS NULL
+                "#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    drop(connection);
+
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":125,"cached_input_tokens":20,"output_tokens":25,"total_tokens":150}}}}"#],
+    );
+
+    let repaired = dashboard_snapshot(&root).unwrap();
+    assert_eq!(repaired.stats.total_tokens, 150);
+    assert_eq!(repaired.stats.total_calls, 1);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                r#"
+                SELECT COUNT(*)
+                FROM events e
+                LEFT JOIN files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE f.generation IS NULL
+                "#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    drop(connection);
 
     fs::remove_dir_all(root).unwrap();
 }

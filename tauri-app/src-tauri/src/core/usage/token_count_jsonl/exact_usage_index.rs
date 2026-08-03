@@ -323,6 +323,10 @@ impl ExactUsageIndex {
             schema_version = None;
         }
         initialize_index_schema(&connection)?;
+        // Existing databases can contain child rows written while an older
+        // connection had foreign_keys=OFF. quick_check validates page/index
+        // structure, but it does not report those logical orphans.
+        repair_orphaned_index_rows(&mut connection)?;
         initialize_session_catalog_schema(&connection)?;
         if schema_version != Some(INDEX_SCHEMA_VERSION) {
             set_metadata(
@@ -2585,12 +2589,7 @@ fn import_staged_full_rebuild(
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("无法开始精确 token 暂存导入事务：{error}"))?;
         ensure_active_build_generation(&transaction, generation)?;
-        transaction
-            .execute(
-                "DELETE FROM files WHERE generation = ?1 AND path = ?2",
-                params![generation, &validated.job.path],
-            )
-            .map_err(|error| format!("无法清理本轮待重建会话版本：{error}"))?;
+        delete_file_version_rows(&transaction, generation, &validated.job.path)?;
         transaction
             .execute(
                 r#"
@@ -3581,12 +3580,7 @@ fn rebuild_session_file_direct(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始单文件精确 token 索引事务：{error}"))?;
     ensure_active_build_generation(&transaction, generation)?;
-    transaction
-        .execute(
-            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
-            params![generation, path],
-        )
-        .map_err(|error| format!("无法清理本轮变更会话的旧文件版本：{error}"))?;
+    delete_file_version_rows(&transaction, generation, path)?;
     transaction
         .execute(
             r#"
@@ -3918,12 +3912,7 @@ fn copy_append_checkpoint_rows(
     checkpoint_generation: i64,
     path: &str,
 ) -> Result<bool, String> {
-    transaction
-        .execute(
-            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
-            params![generation, path],
-        )
-        .map_err(|error| format!("无法清理本轮追加会话的旧文件版本：{error}"))?;
+    delete_file_version_rows(transaction, generation, path)?;
     let copied = transaction
         .execute(
             r#"
@@ -4351,6 +4340,7 @@ fn prune_obsolete_file_versions(connection: &Connection, path: &str) -> Result<(
     if !has_obsolete {
         return Ok(());
     }
+
     connection
         .execute(
             r#"
@@ -5012,7 +5002,99 @@ fn open_index_connection(path: &Path) -> Result<Connection, String> {
             "#,
         )
         .map_err(|error| format!("无法初始化精确 token 索引连接：{error}"))?;
+    let foreign_keys_enabled = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("无法确认精确 token 索引外键约束：{error}"))?;
+    if foreign_keys_enabled != 1 {
+        return Err("精确 token 索引外键约束未启用".into());
+    }
     Ok(connection)
+}
+
+fn repair_orphaned_index_rows(connection: &mut Connection) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始精确 token 孤儿行修复事务：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            DELETE FROM events
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM files
+                WHERE files.generation = events.file_generation
+                  AND files.path = events.file_path
+            )
+            "#,
+            [],
+        )
+        .map_err(|error| format!("无法清理精确 token 孤儿事件：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            DELETE FROM file_fingerprints
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM files
+                WHERE files.generation = file_fingerprints.file_generation
+                  AND files.path = file_fingerprints.file_path
+            )
+            "#,
+            [],
+        )
+        .map_err(|error| format!("无法清理精确 token 孤儿去重状态：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            DELETE FROM file_chunks
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM files
+                WHERE files.generation = file_chunks.file_generation
+                  AND files.path = file_chunks.file_path
+            )
+            "#,
+            [],
+        )
+        .map_err(|error| format!("无法清理精确 token 孤儿分块状态：{error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交精确 token 孤儿行修复：{error}"))
+}
+
+fn delete_file_version_rows(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    path: &str,
+) -> Result<(), String> {
+    // Keep replacement idempotent even for legacy databases whose DELETE did
+    // not run ON DELETE CASCADE. The child-first order is valid with FK ON and
+    // also removes stale rows when an old writer left an orphan behind.
+    transaction
+        .execute(
+            "DELETE FROM events WHERE file_generation = ?1 AND file_path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理精确 token 会话事件：{error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM file_fingerprints WHERE file_generation = ?1 AND file_path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理精确 token 会话去重状态：{error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM file_chunks WHERE file_generation = ?1 AND file_path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理精确 token 会话分块状态：{error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM files WHERE generation = ?1 AND path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理精确 token 会话文件版本：{error}"))?;
+    Ok(())
 }
 
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
