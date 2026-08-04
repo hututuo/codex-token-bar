@@ -1,5 +1,6 @@
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::session_files::session_id_from_file;
+use super::exact_usage_index::STAGED_FULL_REBUILD_PARSER_REVISION;
 use super::*;
 use rusqlite::{params, Connection};
 use std::fs;
@@ -1609,6 +1610,24 @@ fn exact_index_reuses_private_staging_after_an_interrupted_import() {
         inspected_stage,
         "the interrupted build must leave a durable stage"
     );
+    let staged_database = fs::read_dir(&staging_path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_file())
+        .expect("the interrupted build must leave a staged database");
+    let staged_connection = Connection::open(&staged_database).unwrap();
+    assert_eq!(
+        staged_connection
+            .query_row(
+                "SELECT parser_revision FROM manifest WHERE complete = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        STAGED_FULL_REBUILD_PARSER_REVISION,
+        "staged manifests must bind the exact parser semantics revision"
+    );
+    drop(staged_connection);
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let mut resumed = ExactUsageIndex::open(&root).unwrap();
@@ -1632,6 +1651,175 @@ fn exact_index_reuses_private_staging_after_an_interrupted_import() {
     );
     drop(resumed);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_rebuilds_staging_when_parser_revision_is_missing_or_mismatched() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    for (case_name, legacy_manifest) in [("legacy", true), ("mismatched", false)] {
+        let root = temp_root();
+        let session_dir = root.join("sessions");
+        let index_path = root
+            .join(".codex-token-bar-test-cache")
+            .join("exact-token-index.sqlite3");
+        fs::create_dir_all(&session_dir).unwrap();
+        let file = session_dir.join(format!(
+            "rollout-019estage-revision-{case_name}-0000-0000-exact.jsonl"
+        ));
+        let mut source = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+        source.write_all(br#"{"padding":""#).unwrap();
+        source
+            .write_all(&vec![b'p'; EXACT_INDEX_CHUNK_SIZE as usize])
+            .unwrap();
+        source.write_all(b"\"}\n").unwrap();
+        writeln!(
+            source,
+            "{}",
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#
+        )
+        .unwrap();
+        source.flush().unwrap();
+        drop(source);
+
+        ExactUsageIndex::fail_after_staging_once_for_testing();
+        let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+        let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
+        assert!(error.contains("injected interruption"), "{error}");
+        drop(interrupted);
+
+        let mut staging_path = index_path.as_os_str().to_os_string();
+        staging_path.push(".staging");
+        let staging_path = PathBuf::from(staging_path);
+        let staged_database = fs::read_dir(&staging_path)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().and_then(|value| value.to_str()) == Some("sqlite3"))
+            .expect("the interrupted build must leave a staged database");
+        let staged_connection = Connection::open(&staged_database).unwrap();
+        staged_connection
+            .execute(
+                "UPDATE events SET tokens = 999, input_tokens = 999, cached_input_tokens = 0, output_tokens = 999",
+                [],
+            )
+            .unwrap();
+        if legacy_manifest {
+            staged_connection
+                .execute_batch(
+                    r#"
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE manifest RENAME TO manifest_with_revision;
+                    CREATE TABLE manifest (
+                        complete INTEGER PRIMARY KEY CHECK(complete = 1),
+                        path TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        size INTEGER NOT NULL,
+                        modified_ns TEXT NOT NULL,
+                        device_id TEXT NOT NULL,
+                        file_id TEXT NOT NULL,
+                        changed_ns TEXT NOT NULL,
+                        prefix_sha256 BLOB NOT NULL,
+                        resume_offset INTEGER NOT NULL,
+                        previous_total_tokens INTEGER,
+                        fork_replay_started_ns TEXT,
+                        fork_replay_active INTEGER NOT NULL,
+                        is_explicit_subagent_fork INTEGER NOT NULL,
+                        last_skipped_fork_replay_token_ns TEXT,
+                        current_model TEXT,
+                        current_user_prompt_start INTEGER,
+                        current_user_prompt_end INTEGER,
+                        assistant_response_start INTEGER,
+                        assistant_response_end INTEGER,
+                        event_count INTEGER NOT NULL,
+                        fingerprint_count INTEGER NOT NULL,
+                        chunk_count INTEGER NOT NULL
+                    ) WITHOUT ROWID;
+                    INSERT INTO manifest(
+                        complete,
+                        path,
+                        session_id,
+                        size,
+                        modified_ns,
+                        device_id,
+                        file_id,
+                        changed_ns,
+                        prefix_sha256,
+                        resume_offset,
+                        previous_total_tokens,
+                        fork_replay_started_ns,
+                        fork_replay_active,
+                        is_explicit_subagent_fork,
+                        last_skipped_fork_replay_token_ns,
+                        current_model,
+                        current_user_prompt_start,
+                        current_user_prompt_end,
+                        assistant_response_start,
+                        assistant_response_end,
+                        event_count,
+                        fingerprint_count,
+                        chunk_count
+                    )
+                    SELECT
+                        complete,
+                        path,
+                        session_id,
+                        size,
+                        modified_ns,
+                        device_id,
+                        file_id,
+                        changed_ns,
+                        prefix_sha256,
+                        resume_offset,
+                        previous_total_tokens,
+                        fork_replay_started_ns,
+                        fork_replay_active,
+                        is_explicit_subagent_fork,
+                        last_skipped_fork_replay_token_ns,
+                        current_model,
+                        current_user_prompt_start,
+                        current_user_prompt_end,
+                        assistant_response_start,
+                        assistant_response_end,
+                        event_count,
+                        fingerprint_count,
+                        chunk_count
+                    FROM manifest_with_revision;
+                    DROP TABLE manifest_with_revision;
+                    COMMIT;
+                    "#,
+                )
+                .unwrap();
+        } else {
+            staged_connection
+                .execute(
+                    "UPDATE manifest SET parser_revision = ?1 WHERE complete = 1",
+                    ["legacy-parser-revision"],
+                )
+                .unwrap();
+        }
+        drop(staged_connection);
+
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        let mut resumed = ExactUsageIndex::open(&root).unwrap();
+        resumed.sync(&root, &mut Vec::new()).unwrap();
+        assert!(
+            ExactUsageIndex::scan_bytes_for_testing().0 > 0,
+            "{case_name} staging must be rebuilt from the source"
+        );
+        assert_eq!(
+            resumed
+                .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+                .unwrap()
+                .total_tokens,
+            120,
+            "{case_name} staging events must not be imported"
+        );
+        drop(resumed);
+        assert!(
+            !staging_path.exists(),
+            "{case_name} staging and its sidecars must be removed after rebuild"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[test]

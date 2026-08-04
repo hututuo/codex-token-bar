@@ -46,7 +46,12 @@ use uuid::Uuid;
 // be discarded because their incompatible fingerprint blobs can re-count data.
 const INDEX_SCHEMA_VERSION: i64 = 8;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 6;
-const FORK_REPLAY_BOUNDARY_REVISION: &str = "explicit-subagent-delayed-context-v3";
+// Bump this whenever exact-session parsing changes event or checkpoint
+// semantics. The fork-boundary name remains for the main-index migration;
+// private staged databases bind the broader parser revision below.
+const EXACT_SESSION_PARSER_REVISION: &str = "explicit-subagent-delayed-context-v3";
+const FORK_REPLAY_BOUNDARY_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
+pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -1920,6 +1925,7 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
 struct StageManifest {
     path: String,
     session_id: String,
+    parser_revision: String,
     size: i64,
     modified_ns: String,
     device_id: String,
@@ -2244,6 +2250,7 @@ fn build_staged_full_rebuild(
                 complete,
                 path,
                 session_id,
+                parser_revision,
                 size,
                 modified_ns,
                 device_id,
@@ -2264,11 +2271,12 @@ fn build_staged_full_rebuild(
                 event_count,
                 fingerprint_count,
                 chunk_count
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             "#,
             params![
                 &job.path,
                 &job.session_id,
+                STAGED_FULL_REBUILD_PARSER_REVISION,
                 checked_i64(committed_signature.size, "暂存会话文件大小")?,
                 committed_signature.modified_ns.to_string(),
                 committed_signature.identity.device_id.to_string(),
@@ -2354,6 +2362,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 complete INTEGER PRIMARY KEY CHECK(complete = 1),
                 path TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                parser_revision TEXT NOT NULL,
                 size INTEGER NOT NULL,
                 modified_ns TEXT NOT NULL,
                 device_id TEXT NOT NULL,
@@ -2437,6 +2446,7 @@ fn validated_staged_full_rebuild(
             SELECT
                 path,
                 session_id,
+                parser_revision,
                 size,
                 modified_ns,
                 device_id,
@@ -2466,26 +2476,27 @@ fn validated_staged_full_rebuild(
                 Ok(StageManifest {
                     path: row.get(0)?,
                     session_id: row.get(1)?,
-                    size: row.get(2)?,
-                    modified_ns: row.get(3)?,
-                    device_id: row.get(4)?,
-                    file_id: row.get(5)?,
-                    changed_ns: row.get(6)?,
-                    prefix_sha256: row.get(7)?,
-                    resume_offset: row.get(8)?,
-                    previous_total_tokens: row.get(9)?,
-                    fork_replay_started_ns: row.get(10)?,
-                    fork_replay_active: row.get(11)?,
-                    is_explicit_subagent_fork: row.get(12)?,
-                    last_skipped_fork_replay_token_ns: row.get(13)?,
-                    current_model: row.get(14)?,
-                    current_user_prompt_start: row.get(15)?,
-                    current_user_prompt_end: row.get(16)?,
-                    assistant_response_start: row.get(17)?,
-                    assistant_response_end: row.get(18)?,
-                    event_count: row.get(19)?,
-                    fingerprint_count: row.get(20)?,
-                    chunk_count: row.get(21)?,
+                    parser_revision: row.get(2)?,
+                    size: row.get(3)?,
+                    modified_ns: row.get(4)?,
+                    device_id: row.get(5)?,
+                    file_id: row.get(6)?,
+                    changed_ns: row.get(7)?,
+                    prefix_sha256: row.get(8)?,
+                    resume_offset: row.get(9)?,
+                    previous_total_tokens: row.get(10)?,
+                    fork_replay_started_ns: row.get(11)?,
+                    fork_replay_active: row.get(12)?,
+                    is_explicit_subagent_fork: row.get(13)?,
+                    last_skipped_fork_replay_token_ns: row.get(14)?,
+                    current_model: row.get(15)?,
+                    current_user_prompt_start: row.get(16)?,
+                    current_user_prompt_end: row.get(17)?,
+                    assistant_response_start: row.get(18)?,
+                    assistant_response_end: row.get(19)?,
+                    event_count: row.get(20)?,
+                    fingerprint_count: row.get(21)?,
+                    chunk_count: row.get(22)?,
                 })
             },
         )
@@ -2496,6 +2507,7 @@ fn validated_staged_full_rebuild(
     };
     if manifest.path != job.path
         || manifest.session_id != job.session_id
+        || manifest.parser_revision != STAGED_FULL_REBUILD_PARSER_REVISION
         || !job.signature.matches_stored(
             nonnegative_u64(manifest.size),
             &manifest.modified_ns,
