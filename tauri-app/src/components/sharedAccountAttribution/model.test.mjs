@@ -238,13 +238,48 @@ test("new direct quota-API measurements stay compatible while unknown future sou
   });
   assert.equal(old.status, "pricingVersionUnavailable");
 
+  const wrongSource = estimate({
+    quotaRadar: radar({
+      basisDate: "2026-08-03",
+      date: "2026-08-03",
+      sourceKind: "estimated",
+      sevenDayPolicy: "direct_quota_api",
+    }),
+  });
+  assert.equal(wrongSource.status, "pricingVersionUnavailable");
+  assert.equal(wrongSource.priceBasis, null);
+
+  const wrongPolicy = estimate({
+    quotaRadar: radar({
+      basisDate: "2026-08-03",
+      date: "2026-08-03",
+      sourceKind: "quota_api",
+      sevenDayPolicy: "estimated",
+    }),
+  });
+  assert.equal(wrongPolicy.status, "pricingVersionUnavailable");
+  assert.equal(wrongPolicy.priceBasis, null);
+
+  for (const invalidDate of ["2026-99-99", "2026-13-40"]) {
+    const invalid = estimate({
+      quotaRadar: radar({
+        basisDate: invalidDate,
+        date: invalidDate,
+        sourceKind: "quota_api",
+        sevenDayPolicy: "direct_quota_api",
+      }),
+    });
+    assert.equal(invalid.status, "pricingVersionUnavailable");
+    assert.equal(invalid.priceBasis, null);
+  }
+
   const missingBasis = estimate({
     quotaRadar: radar({ basisDate: "", date: "2026-07-31" }),
   });
   assert.equal(missingBasis.status, "pricingVersionUnavailable");
 });
 
-test("input signature explicitly changes for basis date, seven-day policy and identity plan", () => {
+test("input signature explicitly changes for basis date, source kind, seven-day policy and identity plan", () => {
   const base = sharedAccountAttributionInputSignature(radar(), { plan: "pro" });
   assert.notEqual(
     base,
@@ -254,7 +289,26 @@ test("input signature explicitly changes for basis date, seven-day policy and id
     base,
     sharedAccountAttributionInputSignature(radar({ sevenDayPolicy: "hidden" }), { plan: "pro" }),
   );
+  assert.notEqual(
+    base,
+    sharedAccountAttributionInputSignature(radar({ sourceKind: "quota_api" }), { plan: "pro" }),
+  );
   assert.notEqual(base, sharedAccountAttributionInputSignature(radar(), { plan: "plus" }));
+
+  const current = radar({
+    basisDate: "2026-08-03",
+    sourceKind: "quota_api",
+    sevenDayPolicy: "direct_quota_api",
+  });
+  const sourceMissing = radar({
+    basisDate: "2026-08-03",
+    sourceKind: null,
+    sevenDayPolicy: "direct_quota_api",
+  });
+  assert.notEqual(
+    sharedAccountAttributionInputSignature(current, { plan: "pro" }),
+    sharedAccountAttributionInputSignature(sourceMissing, { plan: "pro" }),
+  );
 });
 
 test("negative residual remains negative and the ±2 point band remains indistinguishable", () => {

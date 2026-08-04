@@ -357,11 +357,12 @@ export function radarCompatiblePriceBasis(
 
 /** Explicit invalidation signature for compatibility-sensitive Radar/account fields. */
 export function sharedAccountAttributionInputSignature(
-  quotaRadar: Pick<CodexRadarQuotaRadar, "basisDate" | "sevenDayPolicy"> | null,
+  quotaRadar: Pick<CodexRadarQuotaRadar, "basisDate" | "sourceKind" | "sevenDayPolicy"> | null,
   identity: Pick<QuotaAttributionIdentity, "plan"> | null | undefined,
 ): string {
   return JSON.stringify([
     quotaRadar?.basisDate ?? "",
+    quotaRadar?.sourceKind ?? "",
     quotaRadar?.sevenDayPolicy ?? "",
     identity?.plan ?? "",
   ]);
@@ -488,7 +489,15 @@ function emptyTokenBreakdown(): SharedAccountTokenBreakdown {
 }
 
 function normalizedRadarDate(value: string): string {
-  return /^(\d{4}-\d{2}-\d{2})/.exec(value.trim())?.[1] ?? "";
+  const candidate = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim())?.[1] ?? "";
+  if (!candidate) return "";
+  const [year, month, day] = candidate.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day
+    ? candidate
+    : "";
 }
 
 function normalizedSemanticKey(value: string | null | undefined): string {

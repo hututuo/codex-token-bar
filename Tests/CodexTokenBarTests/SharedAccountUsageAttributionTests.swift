@@ -314,6 +314,57 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             ),
             .unavailable
         )
+        XCTAssertEqual(
+            SharedAccountRadarPriceRevision.compatible(
+                with: try radar(
+                    date: "2026-08-03",
+                    tier: "20x Pro",
+                    fiveHour: nil,
+                    sevenDay: 1_948
+                )
+            ),
+            .unavailable
+        )
+        XCTAssertEqual(
+            SharedAccountRadarPriceRevision.compatible(
+                with: try radar(
+                    date: "2026-08-03",
+                    tier: "20x Pro",
+                    fiveHour: nil,
+                    sevenDay: 1_948,
+                    sourceKind: "estimated"
+                )
+            ),
+            .unavailable
+        )
+        XCTAssertEqual(
+            SharedAccountRadarPriceRevision.compatible(
+                with: try radar(
+                    date: "2026-08-03",
+                    tier: "20x Pro",
+                    fiveHour: nil,
+                    sevenDay: 1_948,
+                    sevenDayPolicy: "estimated",
+                    sourceKind: "quota_api"
+                )
+            ),
+            .unavailable
+        )
+        for invalidDate in ["2026-99-99", "2026-13-40"] {
+            XCTAssertEqual(
+                SharedAccountRadarPriceRevision.compatible(
+                    with: try radar(
+                        date: invalidDate,
+                        tier: "20x Pro",
+                        fiveHour: nil,
+                        sevenDay: 1_948,
+                        sourceKind: "quota_api"
+                    )
+                ),
+                .unavailable,
+                invalidDate
+            )
+        }
         let missingBasisData = try JSONSerialization.data(withJSONObject: [
             "date": "2026-07-31",
             "updated_at": "2026-07-31T08:20:35Z",
@@ -331,6 +382,36 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(
             SharedAccountRadarPriceRevision.compatible(with: missingBasis),
             .unavailable
+        )
+    }
+
+    func testCurrentRadarMeasurementUsesCurrentBasisEndToEnd() throws {
+        let result = SharedAccountUsageAttributionEstimator.estimate(
+            enabled: true,
+            preciseUsageReady: true,
+            recentBins: [bucket(at: cycleStart, input: 1_000_000, cached: 0, output: 0)],
+            sevenDayQuota: quota(used: 13, resetAt: resetAt),
+            quotaUpdatedAt: now,
+            historyIdentity: identity(),
+            radar: try radar(
+                date: "2026-08-03",
+                tier: "20x Pro",
+                fiveHour: nil,
+                sevenDay: 1_948,
+                sourceKind: "quota_api"
+            ),
+            tier: .twentyXPro,
+            model: .gpt56Terra,
+            now: now
+        )
+
+        XCTAssertEqual(result.priceRevision, .currentOfficial)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 2.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 2.5, accuracy: 0.0001)
+        XCTAssertEqual(
+            try XCTUnwrap(result.localSharePercent),
+            2.5 / 1_948 * 100,
+            accuracy: 0.0001
         )
     }
 

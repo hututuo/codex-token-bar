@@ -43,6 +43,17 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("refreshInterval: TimeInterval = 600"))
     }
 
+    func testSharedAccountRefreshSignatureIncludesRadarSourceKind() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("radar?.sourceKind ?? \"\""))
+    }
+
     func testRadarStripBalancesOfficialAndCrowdRadarsInMiddleColumns() {
         let widths = CodexRadarStrip.columnWidths(totalWidth: 800)
         let evenColumnWidth = 800 / 4.0

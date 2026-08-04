@@ -601,6 +601,7 @@ struct DashboardView: View {
             radar?.date ?? "",
             radar?.basisDate ?? "",
             radar?.updatedAt ?? "",
+            radar?.sourceKind ?? "",
             radar?.sevenDayPolicy ?? "",
             radarStore.staleDataDisplayed ? "radar-stale" : "radar-fresh",
             radarRows,

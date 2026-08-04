@@ -117,6 +117,19 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
         guard prefix.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
             return nil
         }
+        guard let year = Int(prefix.prefix(4)),
+              let month = Int(prefix.dropFirst(5).prefix(2)),
+              let day = Int(prefix.suffix(2)) else {
+            return nil
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? calendar.timeZone
+        let components = DateComponents(year: year, month: month, day: day)
+        guard let date = calendar.date(from: components) else { return nil }
+        let normalized = calendar.dateComponents([.year, .month, .day], from: date)
+        guard normalized.year == year, normalized.month == month, normalized.day == day else {
+            return nil
+        }
         return prefix
     }
 }
