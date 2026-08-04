@@ -78,7 +78,7 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
             calendar: utcCalendar
         ))
 
-        XCTAssertEqual(estimate.apiEquivalentUSD, 7.2, accuracy: 0.0001)
+        XCTAssertEqual(estimate.apiEquivalentUSD, 8.5, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(estimate.fallbackModelCalls, 1)
         XCTAssertTrue(SubscriptionSavingsPresentation(estimate: estimate).helpText.contains("未知记录"))
@@ -119,7 +119,7 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         ))
         let presentation = SubscriptionSavingsPresentation(estimate: estimate)
 
-        XCTAssertEqual(presentation.valueText, "$2.00")
+        XCTAssertEqual(presentation.valueText, "$2.50")
         XCTAssertEqual(presentation.labelText, "API 等值（估）")
         XCTAssertTrue(presentation.helpText.contains("暂不计算净节省"))
     }

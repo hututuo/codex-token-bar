@@ -216,7 +216,7 @@ export function estimateSharedAccountAttribution({
   }
 
   const radarPricingBasisDate = normalizedRadarDate(quotaRadar.basisDate);
-  const priceBasis = radarCompatiblePriceBasis(radarPricingBasisDate);
+  const priceBasis = radarCompatiblePriceBasis(quotaRadar);
   if (!priceBasis) {
     return { ...base, status: "pricingVersionUnavailable", radarPlanTotalUSD: tierRow.sevenD };
   }
@@ -340,9 +340,18 @@ export function quotaValueToPercentagePoints(value: number): number {
   return value >= 0 && value <= 1 ? value * 100 : value;
 }
 
-export function radarCompatiblePriceBasis(radarDate: string): QuotaPriceBasis | null {
+export function radarCompatiblePriceBasis(
+  radar: Pick<CodexRadarQuotaRadar, "basisDate" | "sourceKind" | "sevenDayPolicy"> | null,
+): QuotaPriceBasis | null {
+  if (!radar) return null;
+  const radarDate = normalizedRadarDate(radar.basisDate);
   if (radarDate === "2026-07-30") return "radar20260730";
   if (radarDate === "2026-07-31") return "current";
+  if (radarDate > "2026-07-31"
+    && normalizedSemanticKey(radar.sourceKind) === "quotaapi"
+    && normalizedSemanticKey(radar.sevenDayPolicy) === "directquotaapi") {
+    return "current";
+  }
   return null;
 }
 
@@ -432,7 +441,7 @@ function emptyResult(
     ? tierRow?.sevenD ?? null
     : null;
   const radarPricingBasisDate = normalizedRadarDate(quotaRadar?.basisDate || "");
-  const priceBasis = radarCompatiblePriceBasis(radarPricingBasisDate);
+  const priceBasis = radarCompatiblePriceBasis(quotaRadar);
   return {
     status: "radarUnavailable",
     pricingBasisStatus: priceBasis === "radar20260730"
@@ -480,6 +489,10 @@ function emptyTokenBreakdown(): SharedAccountTokenBreakdown {
 
 function normalizedRadarDate(value: string): string {
   return /^(\d{4}-\d{2}-\d{2})/.exec(value.trim())?.[1] ?? "";
+}
+
+function normalizedSemanticKey(value: string | null | undefined): string {
+  return (value ?? "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function finiteNonnegative(value: number): number {

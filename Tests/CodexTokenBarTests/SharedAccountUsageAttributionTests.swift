@@ -28,7 +28,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(result.breakdown.inputTokens, 1_000_000)
         XCTAssertEqual(result.priceRevision, .radar20260730)
         XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 4.6, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 3.68, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 4.6, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 3, accuracy: 0.0001)
         XCTAssertEqual(result.state, .suspectedNonLocalUsage)
@@ -69,7 +69,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.5, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 7.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 7.5, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(result.fallbackModelCalls, 0)
         XCTAssertEqual(
@@ -251,7 +251,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertNil(SharedAccountRadarTier.twentyXPro.sevenDayRow(in: radar))
     }
 
-    func testCurrentAndRadarPriceRevisionsRemainSeparate() throws {
+    func testCurrentAndRadarPriceRevisionsUsePublishedGPT56Rates() throws {
         let breakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
             cachedInputTokens: 400_000,
@@ -262,8 +262,8 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown), 9.2, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown), 3.68, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.gpt56Luna.currentPriceRates.costUSD(for: breakdown), 0.368, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown), 4.6, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt56Luna.currentPriceRates.costUSD(for: breakdown), 1.84, accuracy: 0.0001)
         XCTAssertEqual(
             try XCTUnwrap(SharedAccountRadarPriceRevision.radar20260730.rates(for: .gpt56Terra)).costUSD(for: breakdown),
             4.6,
@@ -276,6 +276,18 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
         XCTAssertEqual(
             SharedAccountRadarPriceRevision.compatible(with: try radar(date: "2026-07-31", tier: "20x Pro", fiveHour: nil, sevenDay: 100)),
+            .currentOfficial
+        )
+        XCTAssertEqual(
+            SharedAccountRadarPriceRevision.compatible(
+                with: try radar(
+                    date: "2026-08-03",
+                    tier: "20x Pro",
+                    fiveHour: nil,
+                    sevenDay: 1_948,
+                    sourceKind: "quota_api"
+                )
+            ),
             .currentOfficial
         )
         XCTAssertEqual(
@@ -2727,8 +2739,8 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             highWatermark: store.record(for: currentKey)
         )
 
-        XCTAssertEqual(try XCTUnwrap(currentRaw.localComparableCostUSD), 1.84, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(protected.localComparableCostUSD), 3.68, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(currentRaw.localComparableCostUSD), 2.3, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(protected.localComparableCostUSD), 4.6, accuracy: 0.0001)
         XCTAssertTrue(protected.usedHighWatermark)
     }
 
@@ -2832,7 +2844,8 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         tier: String,
         fiveHour: Double?,
         sevenDay: Double?,
-        sevenDayPolicy: String = "direct_quota_api"
+        sevenDayPolicy: String = "direct_quota_api",
+        sourceKind: String? = nil
     ) throws -> CodexRadarQuotaRadar {
         var row: [String: Any] = [
             "tier": tier,
@@ -2840,7 +2853,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         ]
         if let fiveHour { row["five_h"] = fiveHour }
         if let sevenDay { row["seven_d"] = sevenDay }
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "date": date,
             "source": "Codex Radar",
             "updated_at": "\(date)T08:20:35Z",
@@ -2851,6 +2864,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             "seven_day_policy": sevenDayPolicy,
             "rows": [row],
         ]
+        if let sourceKind { object["source_kind"] = sourceKind }
         return try JSONDecoder.codexRadar.decode(
             CodexRadarQuotaRadar.self,
             from: JSONSerialization.data(withJSONObject: object)

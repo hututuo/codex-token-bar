@@ -143,13 +143,16 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     }
 
     var currentPriceRates: APIPriceRates {
+        // Standard short-context prices published by OpenAI. Long-context,
+        // cache-write, priority/service-tier and regional multipliers remain
+        // outside this estimate.
         switch self {
         case .gpt56Sol:
             APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
         case .gpt56Terra:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
+            APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
         case .gpt56Luna:
-            APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
+            APIPriceRates(inputUSDPerMillion: 1.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 6.00)
         case .gpt54Legacy:
             APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
         case .gpt54MiniLegacy:

@@ -163,7 +163,7 @@ test("a hidden or paused Radar seven-day policy rejects a retained positive row"
   assert.equal(hidden.radarPlanTotalUSD, null);
 });
 
-test("Radar-compatible amount drives share while current API equivalent stays separate", () => {
+test("Radar-compatible amount and current API equivalent use the published GPT-5.6 rates", () => {
   const terraBucket = bucket(0, 1_000_000);
   const result = estimate({
     buckets: [terraBucket],
@@ -172,7 +172,7 @@ test("Radar-compatible amount drives share while current API equivalent stays se
   });
   assert.equal(result.pricingBasisStatus, "legacyRadarBasis");
   assert.equal(result.localComparableUSD, 2.5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 2);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 2.5);
   assert.equal(result.localSharePercent, 2.5);
   assert.equal(result.residualPercent, 10.5);
 });
@@ -192,7 +192,7 @@ test("shared-account API values use complete historical model rows before the fa
     priceModel: "gpt56Luna",
   });
 
-  assert.equal(result.localCurrentAPIEquivalentUSD, 7);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 7.5);
   assert.equal(result.localComparableUSD, 7.5);
 });
 
@@ -213,7 +213,18 @@ test("Radar basisDate controls pricing even when the outer feed date is newer", 
   assert.equal(result.localComparableUSD, 2.5);
 });
 
-test("unconfirmed or future Radar basis dates fail closed instead of using current prices", () => {
+test("new direct quota-API measurements stay compatible while unknown future sources fail closed", () => {
+  const live = estimate({
+    quotaRadar: radar({
+      basisDate: "2026-08-03",
+      date: "2026-08-03",
+      sourceKind: "quota_api",
+      sevenDayPolicy: "direct_quota_api",
+    }),
+  });
+  assert.equal(live.status, "positiveResidual");
+  assert.equal(live.priceBasis, "current");
+
   const future = estimate({
     quotaRadar: radar({ basisDate: "2026-08-01", date: "2026-08-01" }),
   });
@@ -443,6 +454,6 @@ test("current Radar price revision reprices the same raw bucket breakdown withou
     priceModel: "gpt56Terra",
   });
   assert.equal(result.priceBasis, "current");
-  assert.equal(result.localComparableUSD, 2);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 2);
+  assert.equal(result.localComparableUSD, 2.5);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 2.5);
 });

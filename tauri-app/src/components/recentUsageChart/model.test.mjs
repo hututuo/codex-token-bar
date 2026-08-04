@@ -314,7 +314,7 @@ test("24h selection attribution compares observed account drop with Radar-priced
   assert.ok(result);
   assert.equal(result.accountDropPercent, 3);
   assert.equal(result.localComparableCostUSD, 5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 5);
   assert.equal(result.localSharePercent, 5);
   assert.equal(result.nonLocalDifferencePercent, -2);
   assert.equal(result.state, "withinTolerance");
@@ -366,7 +366,7 @@ test("24h selection attribution keeps the local Radar conversion when quota hist
   assert.equal(result.state, "missingQuotaHistory");
   assert.equal(result.accountDropPercent, null);
   assert.equal(result.localComparableCostUSD, 5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 5);
   assert.equal(result.localSharePercent, 5);
   assert.equal(result.nonLocalDifferencePercent, null);
   assert.equal(result.allowsAttributionConclusion, false);

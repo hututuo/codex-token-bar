@@ -16,7 +16,7 @@ test("historical model rows are priced automatically and unknown rows use only t
     { model: "future-model", breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 4 } },
   ], { inputTokens: 3_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 9 }, "gpt56Luna");
 
-  assert.equal(estimate.costUSD, 7.2);
+  assert.equal(estimate.costUSD, 8.5);
   assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra"]);
   assert.equal(estimate.fallbackCalls, 4);
 });
@@ -28,22 +28,22 @@ test("GPT-5.6 current price cards use the official Sol, Terra and Luna rates", (
     outputUSDPerMillion: 30,
   });
   assert.deepEqual(officialAPIPrices("gpt56Terra"), {
-    inputUSDPerMillion: 2,
-    cachedInputUSDPerMillion: 0.2,
-    outputUSDPerMillion: 12,
+    inputUSDPerMillion: 2.5,
+    cachedInputUSDPerMillion: 0.25,
+    outputUSDPerMillion: 15,
   });
   assert.deepEqual(officialAPIPrices("gpt56Luna"), {
-    inputUSDPerMillion: 0.2,
-    cachedInputUSDPerMillion: 0.02,
-    outputUSDPerMillion: 1.2,
+    inputUSDPerMillion: 1,
+    cachedInputUSDPerMillion: 0.1,
+    outputUSDPerMillion: 6,
   });
 });
 
-test("Radar 2026-07-30 price basis stays separate from current official API value", () => {
+test("Radar 2026-07-30 price basis matches the currently published GPT-5.6 standard rates", () => {
   assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Terra", "radar20260730"), 2.5);
-  assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Terra", "current"), 2);
+  assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Terra", "current"), 2.5);
   assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Luna", "radar20260730"), 1);
-  assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Luna", "current"), 0.2);
+  assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt56Luna", "current"), 1);
 });
 
 test("official aliases and legacy models keep their own price cards", () => {
@@ -67,7 +67,7 @@ test("incomplete or duplicate model rows fall back as one complete breakdown", (
     { model: "gpt-5.6-sol", breakdown: fallback },
     { model: "gpt-5.6-sol", breakdown: fallback },
   ], fallback, "gpt56Terra");
-  assert.equal(duplicate.costUSD, 6.7);
+  assert.equal(duplicate.costUSD, 8.375);
   assert.deepEqual(duplicate.detectedModels, []);
   assert.equal(duplicate.fallbackCalls, 2);
 });

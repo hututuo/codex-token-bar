@@ -286,7 +286,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             fallbackModel: .gpt56Terra,
             rates: { $0.currentPriceRates }
         )
-        XCTAssertEqual(duplicate.costUSD, 6.7, accuracy: 0.0001)
+        XCTAssertEqual(duplicate.costUSD, 8.375, accuracy: 0.0001)
         XCTAssertEqual(duplicate.detectedModels, [])
         XCTAssertEqual(duplicate.fallbackCalls, 2)
     }
@@ -370,7 +370,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7, accuracy: 0.0001)
+        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7.5, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.5, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 7.5, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
@@ -653,9 +653,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             attributionEvents: events
         ))
 
-        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7, accuracy: 0.0001)
-        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7, accuracy: 0.0001)
-        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7, accuracy: 0.0001)
+        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7.5, accuracy: 0.0001)
         XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.detectedModels, [.gpt56Sol, .gpt56Terra])
     }
 

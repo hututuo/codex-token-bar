@@ -88,9 +88,12 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
     }
 
     static func compatible(with radar: CodexRadarQuotaRadar) -> SharedAccountRadarPriceRevision {
-        // `basisDate` describes the quota table's own pricing vintage. The
-        // outer snapshot date may advance independently when the feed refreshes,
-        // so it is never a safe fallback for converting local tokens.
+        // `basisDate` is the measurement date, not a fixed pricing revision.
+        // Keep the two historical dates that older payloads exposed, then accept
+        // later measurements only when Radar explicitly identifies the same
+        // direct quota-API pipeline. This avoids breaking the calculation every
+        // time a fresh measurement advances the date while still failing closed
+        // for an unknown or differently sourced quota table.
         guard let dateKey = Self.dateKey(radar.basisDate) else {
             return .unavailable
         }
@@ -98,10 +101,12 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
         case "2026-07-30": return .radar20260730
         case "2026-07-31": return .currentOfficial
         default:
-            // A later feed date does not prove that its quota total still uses
-            // the price card currently compiled into the app. Fail closed until
-            // Radar publishes a recognized pricing revision or we add it.
-            return .unavailable
+            guard dateKey > "2026-07-31",
+                  CodexRadarJSONKeyMatcher.canonical(radar.sourceKind ?? "") == "quotaapi",
+                  CodexRadarJSONKeyMatcher.canonical(radar.sevenDayPolicy ?? "") == "directquotaapi" else {
+                return .unavailable
+            }
+            return .currentOfficial
         }
     }
 

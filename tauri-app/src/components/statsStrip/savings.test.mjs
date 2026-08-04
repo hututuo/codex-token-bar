@@ -54,7 +54,7 @@ test("lifetime savings uses recorded historical models before the fallback model
     now: new Date("2026-07-07T00:00:00Z"),
   });
 
-  assert.equal(estimate?.apiEquivalentUSD, 7);
+  assert.equal(estimate?.apiEquivalentUSD, 7.5);
   assert.match(savingsPresentation(estimate).helpText, /历史真实模型/);
 });
 
@@ -85,7 +85,7 @@ test("unknown plan shows API equivalent instead of inventing subscription cost",
   });
   const presentation = savingsPresentation(estimate);
 
-  assert.equal(presentation.valueText, "$2.00");
+  assert.equal(presentation.valueText, "$2.50");
   assert.equal(presentation.labelText, "API 等值（估）");
   assert.match(presentation.helpText, /暂不计算净节省/);
 });

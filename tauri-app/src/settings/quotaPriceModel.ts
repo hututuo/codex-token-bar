@@ -41,10 +41,13 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
   { value: "gpt56Luna", label: "GPT-5.6 Luna" },
 ];
 
+// Standard short-context prices published by OpenAI. Long-context, cache-write,
+// priority/service-tier and regional multipliers remain outside this estimate.
+// https://developers.openai.com/api/docs/models/compare
 const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
-  gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
-  gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
+  gpt56Terra: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
+  gpt56Luna: { inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 6 },
   gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
   gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
 };
