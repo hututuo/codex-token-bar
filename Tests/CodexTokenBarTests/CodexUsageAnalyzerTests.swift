@@ -1003,6 +1003,222 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(snapshot.cacheUsage.total.cachedInputTokens, 0)
     }
 
+    func testExplicitSubagentForkCountsAfterChildTurnContextAndKeepsModel() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-subagent-boundary"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(sessionID).jsonl")
+        let forkedAt = Date()
+
+        let lines = [
+            explicitSubagentSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            spacedMessageLine(timestamp: forkedAt, type: "user_message", message: "Child task"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(0.5),
+                total: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120)
+            ),
+            turnContextLine(timestamp: forkedAt.addingTimeInterval(1), model: "gpt-5.6-luna"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(1.5),
+                total: Usage(input: 160, cachedInput: 90, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let first = try analyzer.load()
+
+        XCTAssertEqual(first.stats.totalTokens, 80)
+        XCTAssertEqual(first.stats.totalCalls, 1)
+        XCTAssertEqual(
+            first.cacheUsage.modelBreakdowns.compactMap(\.model),
+            ["gpt-5.6-luna"]
+        )
+        XCTAssertEqual(first.cacheUsage.modelBreakdowns.first?.breakdown.totalTokens, 80)
+
+        try appendLines([
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(2.5),
+                total: Usage(input: 200, cachedInput: 100, output: 40, reasoning: 0, total: 260),
+                last: Usage(input: 40, cachedInput: 10, output: 10, reasoning: 0, total: 60)
+            )
+        ], to: sessionFile)
+
+        let second = try analyzer.load()
+        XCTAssertEqual(second.stats.totalTokens, 140)
+        XCTAssertEqual(second.stats.totalCalls, 2)
+        XCTAssertEqual(
+            second.cacheUsage.modelBreakdowns.compactMap(\.model),
+            ["gpt-5.6-luna"]
+        )
+        XCTAssertEqual(second.cacheUsage.modelBreakdowns.first?.breakdown.totalTokens, 140)
+    }
+
+    func testExplicitSubagentForkPersistsReplayIdentityAcrossIncrementalAppend() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-subagent-incremental"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(sessionID).jsonl")
+        let forkedAt = Date()
+        try [
+            explicitSubagentSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(0.5),
+                total: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n").write(
+            to: sessionFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let synchronize: () throws -> CodexUsageHistoryIndex.SynchronizationResult = {
+            try index.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        }
+
+        let first = try synchronize()
+        XCTAssertEqual(first.indexedEvents, 0)
+        XCTAssertEqual(first.incrementallyParsedFiles, 0)
+
+        try appendLines([
+            turnContextLine(
+                timestamp: forkedAt.addingTimeInterval(1),
+                model: "gpt-5.6-luna"
+            ),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(1.5),
+                total: Usage(input: 160, cachedInput: 90, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ], to: sessionFile)
+
+        let second = try synchronize()
+        XCTAssertEqual(second.incrementallyParsedFiles, 1)
+        var events: [TokenEvent] = []
+        try index.forEachStoredEvent { events.append($0.event) }
+        XCTAssertEqual(events.map(\.tokens), [80])
+        XCTAssertEqual(events.first?.model, "gpt-5.6-luna")
+    }
+
+    func testOrdinaryForkTurnContextDoesNotEndReplay() throws {
+        let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-ordinary-fork-boundary"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(sessionID).jsonl")
+        let forkedAt = Date()
+
+        let lines = [
+            spacedSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(0.5),
+                total: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120)
+            ),
+            turnContextLine(timestamp: forkedAt.addingTimeInterval(1), model: "gpt-5.6-sol"),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(1.5),
+                total: Usage(input: 160, cachedInput: 90, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            ),
+            spacedMessageLine(
+                timestamp: forkedAt.addingTimeInterval(3.6),
+                type: "user_message",
+                message: "Actual prompt"
+            ),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(3.7),
+                total: Usage(input: 210, cachedInput: 100, output: 50, reasoning: 0, total: 250),
+                last: Usage(input: 30, cachedInput: 10, output: 10, reasoning: 0, total: 50)
+            )
+        ]
+        try lines.joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let snapshot = try analyzer.load()
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 50)
+        XCTAssertEqual(snapshot.stats.totalCalls, 1)
+        XCTAssertEqual(snapshot.cacheUsage.modelBreakdowns.first?.model, "gpt-5.6-sol")
+        XCTAssertEqual(snapshot.cacheUsage.modelBreakdowns.first?.breakdown.totalTokens, 50)
+    }
+
+    func testOrdinaryForkDoesNotPersistAnExplicitReplayBoundaryAcrossIncrementalAppend() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-ordinary-incremental"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-18-\(sessionID).jsonl")
+        let forkedAt = Date()
+        try [
+            spacedSessionMetaLine(timestamp: forkedAt, sessionID: sessionID),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(0.5),
+                total: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 80, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n").write(
+            to: sessionFile,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let synchronize: () throws -> CodexUsageHistoryIndex.SynchronizationResult = {
+            try index.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        }
+
+        _ = try synchronize()
+        try appendLines([
+            turnContextLine(
+                timestamp: forkedAt.addingTimeInterval(1),
+                model: "gpt-5.6-sol"
+            ),
+            try tokenCountLine(
+                timestamp: forkedAt.addingTimeInterval(1.5),
+                total: Usage(input: 160, cachedInput: 90, output: 30, reasoning: 0, total: 200),
+                last: Usage(input: 60, cachedInput: 10, output: 10, reasoning: 0, total: 80)
+            )
+        ], to: sessionFile)
+
+        let second = try synchronize()
+        XCTAssertEqual(second.incrementallyParsedFiles, 1)
+        var events: [TokenEvent] = []
+        try index.forEachStoredEvent { events.append($0.event) }
+        XCTAssertTrue(events.isEmpty)
+    }
+
     func testForkedSessionReplayExitGraceBoundaryIsStrictlyGreaterThanTwoSeconds() throws {
         // 跨端契约（review §3.10 4b）：恰好等于 2s 宽限的 user_message 仍视为重放，
         // 严格大于 2s 才退出——与 Rust FORK_REPLAY_EXIT_GRACE 的 `>` 语义一致。
@@ -3173,7 +3389,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.compactMap { $0 }.first
         )
-        XCTAssertEqual(schemaVersion, "4")
+        XCTAssertEqual(schemaVersion, "5")
 
         try appendLines([
             try tokenCountLine(
@@ -4115,6 +4331,28 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
     private func spacedSessionMetaLine(timestamp: Date, sessionID: String) -> String {
         "{ \"timestamp\" : \"\(iso8601String(from: timestamp))\", \"type\" : \"session_meta\", \"payload\" : { \"id\" : \"\(sessionID)\", \"forked_from_id\" : \"origin-session\" } }"
+    }
+
+    private func explicitSubagentSessionMetaLine(timestamp: Date, sessionID: String) -> String {
+        encodeLine([
+            "timestamp": iso8601String(from: timestamp),
+            "type": "session_meta",
+            "payload": [
+                "id": sessionID,
+                "forked_from_id": "origin-session",
+                "thread_source": "subagent",
+                "agent_role": "luna_worker",
+                "agent_path": "/root/luna_worker",
+                "source": [
+                    "subagent": [
+                        "thread_spawn": [
+                            "parent_thread_id": "origin-session",
+                            "agent_role": "luna_worker"
+                        ]
+                    ]
+                ]
+            ]
+        ])
     }
 
     private func parentThreadSessionMetaLine(timestamp: Date, sessionID: String, parentID: String) -> String {

@@ -169,6 +169,7 @@ extension CodexUsageAnalyzer {
         var currentModel = request.initialState.currentModel
         var forkReplayStartedAt = request.initialState.forkReplayStartedAt
         var isSkippingForkReplay = request.initialState.isSkippingForkReplay
+        var isExplicitSubagentFork = request.initialState.isExplicitSubagentFork
         var lastSkippedForkReplayTokenAt =
             request.initialState.lastSkippedForkReplayTokenAt
         var eventCount = 0
@@ -182,14 +183,24 @@ extension CodexUsageAnalyzer {
         ) { lineOffset, lineString in
             try autoreleasepool {
                 if forkReplayStartedAt == nil,
-                   let timestamp = parseSessionMetaForkTimestamp(lineString) {
-                    forkReplayStartedAt = timestamp
+                   let metadata = parseSessionMetaForkMetadata(lineString) {
+                    forkReplayStartedAt = metadata.timestamp
                     isSkippingForkReplay = true
+                    isExplicitSubagentFork = metadata.isExplicitSubagent
                     return
                 }
 
                 if let model = parseTurnContextModel(lineString) {
                     currentModel = model
+                    // Codex Desktop writes a child turn_context immediately
+                    // after inherited fork snapshots. Only explicit subagent
+                    // metadata may use this boundary; ordinary user forks keep
+                    // the conservative time-based replay rule.
+                    if isExplicitSubagentFork,
+                       isSkippingForkReplay,
+                       lastSkippedForkReplayTokenAt != nil {
+                        isSkippingForkReplay = false
+                    }
                     return
                 }
 
@@ -286,6 +297,7 @@ extension CodexUsageAnalyzer {
                 previousTotalTokens: previousTotal,
                 forkReplayStartedAt: forkReplayStartedAt,
                 isSkippingForkReplay: isSkippingForkReplay,
+                isExplicitSubagentFork: isExplicitSubagentFork,
                 lastSkippedForkReplayTokenAt: lastSkippedForkReplayTokenAt,
                 currentUserPromptOffset: currentUserPromptOffset,
                 assistantStartOffset: assistantStartOffset,
@@ -673,7 +685,12 @@ extension CodexUsageAnalyzer {
         return UsageSnapshotFingerprint(total: total, last: usageLine.last)
     }
 
-    private func parseSessionMetaForkTimestamp(_ line: String) -> Date? {
+    private struct ForkSessionMetadata {
+        let timestamp: Date
+        let isExplicitSubagent: Bool
+    }
+
+    private func parseSessionMetaForkMetadata(_ line: String) -> ForkSessionMetadata? {
         guard line.contains("session_meta"),
               line.contains("forked_from_id"),
               let data = line.data(using: .utf8),
@@ -685,15 +702,24 @@ extension CodexUsageAnalyzer {
             return nil
         }
 
-        if let timestampString = object["timestamp"] as? String,
-           let timestamp = parseDate(timestampString) {
-            return timestamp
-        }
-        if let timestampString = payload["timestamp"] as? String,
-           let timestamp = parseDate(timestampString) {
-            return timestamp
-        }
-        return nil
+        let timestamp = (object["timestamp"] as? String).flatMap(parseDate)
+            ?? (payload["timestamp"] as? String).flatMap(parseDate)
+        guard let timestamp else { return nil }
+
+        let source = payload["source"] as? [String: Any]
+        let subagent = source?["subagent"] as? [String: Any]
+        let hasThreadSpawn = subagent?["thread_spawn"] is [String: Any]
+        let threadSource = (payload["thread_source"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentRole = (payload["agent_role"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let agentPath = (payload["agent_path"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let isExplicitSubagent = hasThreadSpawn
+            || threadSource == "subagent"
+            || !(agentRole?.isEmpty ?? true)
+            || !(agentPath?.isEmpty ?? true)
+        return ForkSessionMetadata(timestamp: timestamp, isExplicitSubagent: isExplicitSubagent)
     }
 
     private func extractPayloadMessage(from line: String, expectedType: String) -> String? {

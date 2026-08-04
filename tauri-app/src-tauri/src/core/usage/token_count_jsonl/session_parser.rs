@@ -66,6 +66,12 @@ struct ParsedMessageLine {
     message: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ForkSessionMetadata {
+    timestamp: OffsetDateTime,
+    is_explicit_subagent: bool,
+}
+
 #[derive(Deserialize)]
 struct BorrowedMessageLine<'a> {
     #[serde(borrow)]
@@ -110,6 +116,7 @@ pub(super) struct ExactSessionParserState {
     pub(super) previous_total_tokens: Option<u64>,
     pub(super) fork_replay_started_at: Option<OffsetDateTime>,
     pub(super) fork_replay_active: bool,
+    pub(super) is_explicit_subagent_fork: bool,
     pub(super) last_skipped_fork_replay_token_at: Option<OffsetDateTime>,
     pub(super) current_user_prompt: Option<SourceByteRange>,
     pub(super) assistant_response: Option<SourceByteRange>,
@@ -219,6 +226,7 @@ pub(super) fn stream_session_file_exact_from(
     let mut line_bytes = Vec::new();
     let mut fork_replay_started_at = initial_state.fork_replay_started_at;
     let mut fork_replay_active = initial_state.fork_replay_active;
+    let mut is_explicit_subagent_fork = initial_state.is_explicit_subagent_fork;
     let mut last_skipped_fork_replay_token_at = initial_state.last_skipped_fork_replay_token_at;
     let mut previous_total = initial_state.previous_total_tokens;
     let mut current_user_prompt = initial_state.current_user_prompt;
@@ -258,16 +266,25 @@ pub(super) fn stream_session_file_exact_from(
         resume_offset = source_offset;
         let line = line.trim_end_matches(['\r', '\n']);
 
+        if fork_replay_started_at.is_none() {
+            if let Some(metadata) = forked_session_replay_metadata(line) {
+                fork_replay_started_at = Some(metadata.timestamp);
+                fork_replay_active = true;
+                is_explicit_subagent_fork = metadata.is_explicit_subagent;
+            }
+        }
         if let Some(model) = parse_turn_context_model(line) {
             current_model = Some(model);
-            continue;
-        }
-
-        if fork_replay_started_at.is_none() {
-            if let Some(timestamp) = forked_session_replay_started_at_line(line) {
-                fork_replay_started_at = Some(timestamp);
-                fork_replay_active = true;
+            // Codex Desktop writes a child turn_context immediately after
+            // inherited fork snapshots. Only explicit subagent metadata may
+            // use this boundary; ordinary user forks keep the time rule.
+            if is_explicit_subagent_fork
+                && fork_replay_active
+                && last_skipped_fork_replay_token_at.is_some()
+            {
+                fork_replay_active = false;
             }
+            continue;
         }
         if let Some(timestamp) = parse_payload_message_marker(line, "user_message") {
             if fork_replay_active {
@@ -384,6 +401,7 @@ pub(super) fn stream_session_file_exact_from(
             previous_total_tokens: previous_total,
             fork_replay_started_at,
             fork_replay_active,
+            is_explicit_subagent_fork,
             last_skipped_fork_replay_token_at,
             current_user_prompt,
             assistant_response,
@@ -882,7 +900,7 @@ fn append_excerpt(target: &mut String, next: &str, limit: usize) {
     target.push_str(&suffix);
 }
 
-fn forked_session_replay_started_at_line(line: &str) -> Option<OffsetDateTime> {
+fn forked_session_replay_metadata(line: &str) -> Option<ForkSessionMetadata> {
     if !line.contains("session_meta") || !line.contains("forked_from_id") {
         return None;
     }
@@ -892,15 +910,49 @@ fn forked_session_replay_started_at_line(line: &str) -> Option<OffsetDateTime> {
     if value.get("type").and_then(Value::as_str) != Some("session_meta") {
         return None;
     }
-    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
     let Some(payload) = value.get("payload") else {
         return None;
     };
-    payload
+    let timestamp = value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_timestamp)
+        .or_else(|| {
+            payload
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_timestamp)
+        })?;
+    let forked_from_id = payload
         .get("forked_from_id")
         .and_then(Value::as_str)
-        .is_some_and(|forked_from_id| !forked_from_id.trim().is_empty())
-        .then_some(timestamp)
+        .is_some_and(|forked_from_id| !forked_from_id.trim().is_empty());
+    if !forked_from_id {
+        return None;
+    }
+
+    let has_thread_spawn = payload
+        .get("source")
+        .and_then(|source| source.get("subagent"))
+        .and_then(|subagent| subagent.get("thread_spawn"))
+        .is_some();
+    let nonempty_string = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    let explicit_thread_source = payload
+        .get("thread_source")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim() == "subagent");
+    Some(ForkSessionMetadata {
+        timestamp,
+        is_explicit_subagent: has_thread_spawn
+            || explicit_thread_source
+            || nonempty_string("agent_role")
+            || nonempty_string("agent_path"),
+    })
 }
 
 fn parse_usage_line(line: &str) -> Option<ParsedUsageLine> {

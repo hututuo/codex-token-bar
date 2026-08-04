@@ -43,6 +43,7 @@ extension CodexUsageAnalyzer {
         var previousTotalTokens: Int?
         var forkReplayStartedAt: Date?
         var isSkippingForkReplay: Bool
+        var isExplicitSubagentFork: Bool
         var lastSkippedForkReplayTokenAt: Date?
         var currentUserPromptOffset: UInt64?
         var assistantStartOffset: UInt64?
@@ -52,6 +53,7 @@ extension CodexUsageAnalyzer {
             previousTotalTokens: nil,
             forkReplayStartedAt: nil,
             isSkippingForkReplay: false,
+            isExplicitSubagentFork: false,
             lastSkippedForkReplayTokenAt: nil,
             currentUserPromptOffset: nil,
             assistantStartOffset: nil,
@@ -274,7 +276,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let signature: SessionCatalogFileSignature
     }
 
-    private static let schemaVersion = "4"
+    // v5 rebuilds event rows because explicit subagent fork boundaries now
+    // retain child token_count events after inherited replay snapshots.
+    private static let schemaVersion = "5"
     private static let legacyAppendMigrationSchemaVersion = "2"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
@@ -1281,6 +1285,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     previous_total_tokens INTEGER,
                     fork_replay_started_at REAL,
                     is_skipping_fork_replay INTEGER NOT NULL DEFAULT 0,
+                    is_explicit_subagent_fork INTEGER NOT NULL DEFAULT 0,
                     last_skipped_fork_replay_token_at REAL,
                     current_user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
@@ -1953,6 +1958,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 previous_total_tokens,
                 fork_replay_started_at,
                 is_skipping_fork_replay,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_at,
                 current_user_prompt_offset,
                 assistant_start_offset,
@@ -1989,18 +1995,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             Date(timeIntervalSince1970: $0)
                         },
                         isSkippingForkReplay: row.int(12) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(13).map {
+                        isExplicitSubagentFork: row.int(13) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(14).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        currentUserPromptOffset: row.int64(14).flatMap {
+                        currentUserPromptOffset: row.int64(15).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        assistantStartOffset: row.int64(15).flatMap {
+                        assistantStartOffset: row.int64(16).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        currentModel: row.text(16)
+                        currentModel: row.text(17)
                     ),
-                    auditChunkIndex: row.int64(17).flatMap {
+                    auditChunkIndex: row.int64(18).flatMap {
                         $0 >= 0 ? UInt64($0) : nil
                     } ?? 0
                 )
@@ -2384,6 +2391,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 previous_total_tokens = ?,
                 fork_replay_started_at = ?,
                 is_skipping_fork_replay = ?,
+                is_explicit_subagent_fork = ?,
                 last_skipped_fork_replay_token_at = ?,
                 current_user_prompt_offset = ?,
                 assistant_start_offset = ?,
@@ -2405,6 +2413,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 state.previousTotalTokens.map(SQLiteBinding.int) ?? .null,
                 state.forkReplayStartedAt.map(SQLiteBinding.date) ?? .null,
                 .int(state.isSkippingForkReplay ? 1 : 0),
+                .int(state.isExplicitSubagentFork ? 1 : 0),
                 state.lastSkippedForkReplayTokenAt.map(SQLiteBinding.date) ?? .null,
                 try state.currentUserPromptOffset.map {
                     .int64(try sqliteInt64($0))
@@ -2567,6 +2576,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     previous_total_tokens INTEGER,
                     fork_replay_started_at REAL,
                     is_skipping_fork_replay INTEGER NOT NULL,
+                    is_explicit_subagent_fork INTEGER NOT NULL,
                     last_skipped_fork_replay_token_at REAL,
                     current_user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
@@ -2706,11 +2716,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         previous_total_tokens,
                         fork_replay_started_at,
                         is_skipping_fork_replay,
+                        is_explicit_subagent_fork,
                         last_skipped_fork_replay_token_at,
                         current_user_prompt_offset,
                         assistant_start_offset,
                         current_model
-                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .text(job.sessionID),
@@ -2726,6 +2737,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         .optionalInt(state.previousTotalTokens),
                         .optionalDate(state.forkReplayStartedAt),
                         .int(state.isSkippingForkReplay ? 1 : 0),
+                        .int(state.isExplicitSubagentFork ? 1 : 0),
                         .optionalDate(state.lastSkippedForkReplayTokenAt),
                         try optionalOffsetBinding(state.currentUserPromptOffset),
                         try optionalOffsetBinding(state.assistantStartOffset),
@@ -2781,6 +2793,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     previous_total_tokens,
                     fork_replay_started_at,
                     is_skipping_fork_replay,
+                    is_explicit_subagent_fork,
                     last_skipped_fork_replay_token_at,
                     current_user_prompt_offset,
                     assistant_start_offset,
@@ -2828,16 +2841,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             Date(timeIntervalSince1970: $0)
                         },
                         isSkippingForkReplay: row.int(12) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(13).map {
+                        isExplicitSubagentFork: row.int(13) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(14).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        currentUserPromptOffset: row.int64(14).flatMap {
+                        currentUserPromptOffset: row.int64(15).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        assistantStartOffset: row.int64(15).flatMap {
+                        assistantStartOffset: row.int64(16).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        currentModel: row.text(16)
+                        currentModel: row.text(17)
                     )
                 )
             }

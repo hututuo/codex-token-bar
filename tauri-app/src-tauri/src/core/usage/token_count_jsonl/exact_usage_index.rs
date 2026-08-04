@@ -43,7 +43,9 @@ use uuid::Uuid;
 // v6：重放指纹与 Swift 统一为 11 字段（含 reasoning）。旧版指纹是 9 字段 72 字节
 // blob，与新 88 字节 blob 永不相等，混存会让历史 snapshot 重新计数；因此 v6 起
 // 不再提供任何旧版原地迁移，非当前版本一律整库重建（索引可完整重建）。
-const INDEX_SCHEMA_VERSION: i64 = 7;
+// v8 rebuilds event rows because explicit subagent fork boundaries now retain
+// child token_count events after inherited replay snapshots.
+const INDEX_SCHEMA_VERSION: i64 = 8;
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -1907,6 +1909,7 @@ struct StageManifest {
     previous_total_tokens: Option<i64>,
     fork_replay_started_ns: Option<String>,
     fork_replay_active: bool,
+    is_explicit_subagent_fork: bool,
     last_skipped_fork_replay_token_ns: Option<String>,
     current_model: Option<String>,
     current_user_prompt_start: Option<i64>,
@@ -2230,6 +2233,7 @@ fn build_staged_full_rebuild(
                 previous_total_tokens,
                 fork_replay_started_ns,
                 fork_replay_active,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_ns,
                 current_model,
                 current_user_prompt_start,
@@ -2239,7 +2243,7 @@ fn build_staged_full_rebuild(
                 event_count,
                 fingerprint_count,
                 chunk_count
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
             "#,
             params![
                 &job.path,
@@ -2254,6 +2258,7 @@ fn build_staged_full_rebuild(
                 checked_optional_i64(state.previous_total_tokens, "暂存累计 token")?,
                 timestamp_ns_text(state.fork_replay_started_at),
                 state.fork_replay_active,
+                state.is_explicit_subagent_fork,
                 timestamp_ns_text(state.last_skipped_fork_replay_token_at),
                 state.current_model,
                 checked_optional_i64(
@@ -2338,6 +2343,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 previous_total_tokens INTEGER,
                 fork_replay_started_ns TEXT,
                 fork_replay_active INTEGER NOT NULL,
+                is_explicit_subagent_fork INTEGER NOT NULL,
                 last_skipped_fork_replay_token_ns TEXT,
                 current_model TEXT,
                 current_user_prompt_start INTEGER,
@@ -2420,6 +2426,7 @@ fn validated_staged_full_rebuild(
                 previous_total_tokens,
                 fork_replay_started_ns,
                 fork_replay_active,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_ns,
                 current_model,
                 current_user_prompt_start,
@@ -2448,15 +2455,16 @@ fn validated_staged_full_rebuild(
                     previous_total_tokens: row.get(9)?,
                     fork_replay_started_ns: row.get(10)?,
                     fork_replay_active: row.get(11)?,
-                    last_skipped_fork_replay_token_ns: row.get(12)?,
-                    current_model: row.get(13)?,
-                    current_user_prompt_start: row.get(14)?,
-                    current_user_prompt_end: row.get(15)?,
-                    assistant_response_start: row.get(16)?,
-                    assistant_response_end: row.get(17)?,
-                    event_count: row.get(18)?,
-                    fingerprint_count: row.get(19)?,
-                    chunk_count: row.get(20)?,
+                    is_explicit_subagent_fork: row.get(12)?,
+                    last_skipped_fork_replay_token_ns: row.get(13)?,
+                    current_model: row.get(14)?,
+                    current_user_prompt_start: row.get(15)?,
+                    current_user_prompt_end: row.get(16)?,
+                    assistant_response_start: row.get(17)?,
+                    assistant_response_end: row.get(18)?,
+                    event_count: row.get(19)?,
+                    fingerprint_count: row.get(20)?,
+                    chunk_count: row.get(21)?,
                 })
             },
         )
@@ -2545,6 +2553,7 @@ fn validated_staged_full_rebuild(
             previous_total_tokens: manifest.previous_total_tokens.map(nonnegative_u64),
             fork_replay_started_at,
             fork_replay_active: manifest.fork_replay_active,
+            is_explicit_subagent_fork: manifest.is_explicit_subagent_fork,
             last_skipped_fork_replay_token_at,
             current_model: manifest.current_model,
             current_user_prompt: source_range_from_columns(
@@ -3687,6 +3696,7 @@ fn indexed_file_checkpoint(
                 previous_total_tokens,
                 fork_replay_started_ns,
                 fork_replay_active,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_ns,
                 current_model,
                 current_user_prompt_start,
@@ -3712,16 +3722,17 @@ fn indexed_file_checkpoint(
                 let previous_total_tokens = row.get::<_, Option<i64>>(5)?.map(nonnegative_u64);
                 let fork_replay_started_at = parse_timestamp_ns(row.get::<_, Option<String>>(6)?);
                 let fork_replay_active = row.get::<_, bool>(7)?;
+                let is_explicit_subagent_fork = row.get::<_, bool>(8)?;
                 let last_skipped_fork_replay_token_at =
-                    parse_timestamp_ns(row.get::<_, Option<String>>(8)?);
-                let current_model = row.get::<_, Option<String>>(9)?;
+                    parse_timestamp_ns(row.get::<_, Option<String>>(9)?);
+                let current_model = row.get::<_, Option<String>>(10)?;
                 let current_user_prompt = source_range_from_columns(
-                    row.get::<_, Option<i64>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
                 );
                 let assistant_response = source_range_from_columns(
-                    row.get::<_, Option<i64>>(12)?,
                     row.get::<_, Option<i64>>(13)?,
+                    row.get::<_, Option<i64>>(14)?,
                 );
                 Ok(IndexedFileCheckpoint {
                     generation: row.get(0)?,
@@ -3732,12 +3743,13 @@ fn indexed_file_checkpoint(
                         previous_total_tokens,
                         fork_replay_started_at,
                         fork_replay_active,
+                        is_explicit_subagent_fork,
                         last_skipped_fork_replay_token_at,
                         current_model,
                         current_user_prompt,
                         assistant_response,
                     },
-                    audit_chunk_index: nonnegative_u64(row.get::<_, i64>(14)?),
+                    audit_chunk_index: nonnegative_u64(row.get::<_, i64>(15)?),
                 })
             },
         )
@@ -3932,6 +3944,7 @@ fn copy_append_checkpoint_rows(
                 previous_total_tokens,
                 fork_replay_started_ns,
                 fork_replay_active,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_ns,
                 current_model,
                 current_user_prompt_start,
@@ -3956,6 +3969,7 @@ fn copy_append_checkpoint_rows(
                 previous_total_tokens,
                 fork_replay_started_ns,
                 fork_replay_active,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_ns,
                 current_model,
                 current_user_prompt_start,
@@ -4266,13 +4280,14 @@ fn save_file_checkpoint(
                 previous_total_tokens = ?9,
                 fork_replay_started_ns = ?10,
                 fork_replay_active = ?11,
-                last_skipped_fork_replay_token_ns = ?12,
-                current_model = ?13,
-                current_user_prompt_start = ?14,
-                current_user_prompt_end = ?15,
-                assistant_response_start = ?16,
-                assistant_response_end = ?17,
-                audit_chunk_index = ?18
+                is_explicit_subagent_fork = ?12,
+                last_skipped_fork_replay_token_ns = ?13,
+                current_model = ?14,
+                current_user_prompt_start = ?15,
+                current_user_prompt_end = ?16,
+                assistant_response_start = ?17,
+                assistant_response_end = ?18,
+                audit_chunk_index = ?19
             WHERE generation = ?1 AND path = ?2
             "#,
             params![
@@ -4287,6 +4302,7 @@ fn save_file_checkpoint(
                 checked_optional_i64(state.previous_total_tokens, "检查点累计 token")?,
                 timestamp_ns_text(state.fork_replay_started_at),
                 state.fork_replay_active,
+                state.is_explicit_subagent_fork,
                 timestamp_ns_text(state.last_skipped_fork_replay_token_at),
                 state.current_model,
                 current_user_prompt_start,
@@ -5117,6 +5133,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 previous_total_tokens INTEGER,
                 fork_replay_started_ns TEXT,
                 fork_replay_active INTEGER NOT NULL DEFAULT 0,
+                is_explicit_subagent_fork INTEGER NOT NULL DEFAULT 0,
                 last_skipped_fork_replay_token_ns TEXT,
                 current_model TEXT,
                 current_user_prompt_start INTEGER,

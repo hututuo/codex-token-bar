@@ -1698,7 +1698,7 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
 }
 
 #[test]
-fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v7_model_events() {
+fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v8_model_events() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1734,7 +1734,7 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v7_model_events() {
         .unwrap();
     drop(connection);
 
-    // v4 指纹是 9 字段 72 字节布局，与 v7 的逐模型事件结构不可混存（混存会让
+    // v4 指纹是 9 字段 72 字节布局，与 v8 的逐模型事件结构不可混存（混存会让
     // 历史 snapshot 重新计数）：不再原地迁移，任何旧版本一律整库丢弃重建。
     let rebuilt = ExactUsageIndex::open(&root).unwrap();
     assert!(
@@ -1756,7 +1756,7 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v7_model_events() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "7"
+        "8"
     );
     assert_eq!(
         connection
@@ -2255,7 +2255,7 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "7"
+        "8"
     );
     drop(connection);
 
@@ -2876,6 +2876,172 @@ fn counts_new_call_after_fork_replay_user_message() {
         parse_session_file_full_result(&file, "019efork-new-0000-0000-eeeeffffffff", &mut warnings);
     assert_eq!(parsed.events[0].user_prompt, "新分支问题");
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn counts_explicit_subagent_after_child_turn_context_and_preserves_model() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019esubagent-boundary-0000-0000-luna.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019esubagent-boundary-0000-0000-luna","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker","source":{"subagent":{"thread_spawn":{"parent_thread_id":"origin-session","agent_role":"luna_worker"}}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"Child task"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":90,"output_tokens":30,"total_tokens":200},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#,
+        ],
+    );
+
+    let first = dashboard_snapshot(&root).unwrap();
+    assert_eq!(first.stats.total_tokens, 80);
+    assert_eq!(first.stats.total_calls, 1);
+    assert_eq!(first.stats.model_breakdowns.len(), 1);
+    assert_eq!(first.stats.model_breakdowns[0].model.as_deref(), Some("gpt-5.6-luna"));
+    assert_eq!(first.stats.model_breakdowns[0].breakdown.total_tokens, 80);
+
+    let mut append = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:02.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":40,"total_tokens":260},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":60}}}}"#
+    )
+    .unwrap();
+    append.flush().unwrap();
+
+    let second = dashboard_snapshot(&root).unwrap();
+    assert_eq!(second.stats.total_tokens, 140);
+    assert_eq!(second.stats.total_calls, 2);
+    assert_eq!(second.stats.model_breakdowns.len(), 1);
+    assert_eq!(second.stats.model_breakdowns[0].model.as_deref(), Some("gpt-5.6-luna"));
+    assert_eq!(second.stats.model_breakdowns[0].breakdown.total_tokens, 140);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn explicit_subagent_fork_persists_replay_identity_across_incremental_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019esubagent-incremental-0000-0000-luna.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019esubagent-incremental-0000-0000-luna","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker","source":{"subagent":{"thread_spawn":{"parent_thread_id":"origin-session","agent_role":"luna_worker"}}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index.sync(&root, &mut warnings).unwrap();
+
+    let mut append = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":90,"output_tokens":30,"total_tokens":200},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#
+    )
+    .unwrap();
+    append.flush().unwrap();
+
+    index.sync(&root, &mut warnings).unwrap();
+    let data = index
+        .dashboard_data(
+            &root,
+            OffsetDateTime::now_utc(),
+            UtcOffset::UTC,
+            &mut warnings,
+        )
+        .unwrap();
+    assert_eq!(data.stats.total_tokens, 80);
+    assert_eq!(data.stats.total_calls, 1);
+    assert_eq!(data.stats.model_breakdowns.len(), 1);
+    assert_eq!(data.stats.model_breakdowns[0].model.as_deref(), Some("gpt-5.6-luna"));
+
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ordinary_fork_turn_context_does_not_end_replay() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eordinary-fork-boundary-0000-0000-sol.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019eordinary-fork-boundary-0000-0000-sol","forked_from_id":"origin-session"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":200},"last_token_usage":{"total_tokens":80}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:03.600Z","type":"event_msg","payload":{"type":"user_message","message":"Actual prompt"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:03.700Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":250},"last_token_usage":{"total_tokens":50}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 50);
+    assert_eq!(snapshot.stats.total_calls, 1);
+    assert_eq!(snapshot.stats.model_breakdowns.len(), 1);
+    assert_eq!(snapshot.stats.model_breakdowns[0].model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(snapshot.stats.model_breakdowns[0].breakdown.total_tokens, 50);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ordinary_fork_does_not_persist_an_explicit_replay_boundary_across_incremental_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eordinary-incremental-0000-0000-sol.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019eordinary-incremental-0000-0000-sol","forked_from_id":"origin-session"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120},"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index.sync(&root, &mut warnings).unwrap();
+
+    let mut append = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":200},"last_token_usage":{"total_tokens":80}}}}"#
+    )
+    .unwrap();
+    append.flush().unwrap();
+
+    index.sync(&root, &mut warnings).unwrap();
+    assert!(index.is_empty().unwrap());
+
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
