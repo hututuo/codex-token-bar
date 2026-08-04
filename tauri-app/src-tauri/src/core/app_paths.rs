@@ -5,6 +5,7 @@ const TAURI_DIRECTORY_NAME: &str = "CodexTokenBarTauri";
 // Keep the established namespace so existing aggregate-cache cleanup and
 // migration behavior remain stable across this release.
 pub const TAURI_USAGE_CACHE_NAMESPACE: &str = "tauri-usage-cache-2026-07-v6";
+const TAURI_USAGE_CACHE_NAMESPACE_PREFIX: &str = "tauri-usage-cache-";
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
 pub fn home_dir() -> PathBuf {
@@ -102,11 +103,14 @@ pub fn discardable_usage_cache_cleanup_targets() -> Vec<PathBuf> {
         if let Ok(entries) = std::fs::read_dir(&tauri_cache_root) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                let is_current_namespace = path
+                let is_old_tauri_usage_cache_namespace = path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == TAURI_USAGE_CACHE_NAMESPACE);
-                if !is_current_namespace {
+                    .is_some_and(|name| {
+                        name.starts_with(TAURI_USAGE_CACHE_NAMESPACE_PREFIX)
+                            && name != TAURI_USAGE_CACHE_NAMESPACE
+                    });
+                if is_old_tauri_usage_cache_namespace {
                     targets.push(path);
                 }
             }

@@ -319,22 +319,47 @@ mod tests {
         let old_tauri = cache_base
             .join("CodexTokenBarTauri")
             .join("tauri-usage-cache-2026-06-v1");
+        let old_tauri_other_version = cache_base
+            .join("CodexTokenBarTauri")
+            .join("tauri-usage-cache-2026-05-v2");
+        let old_tauri_file = cache_base
+            .join("CodexTokenBarTauri")
+            .join("tauri-usage-cache-2026-04-v1.json");
         let current = app_paths::tauri_usage_cache_dir().unwrap();
+        let local_candidates = cache_base
+            .join("CodexTokenBarTauri")
+            .join("local-candidates");
+        let unknown_directory = cache_base
+            .join("CodexTokenBarTauri")
+            .join("other-cache");
+        let unknown_file = cache_base
+            .join("CodexTokenBarTauri")
+            .join("cache-index.json");
         let quota = support_base
             .join("CodexTokenBar")
             .join("quota-history.sqlite");
 
         fs::create_dir_all(&old_shared).unwrap();
         fs::create_dir_all(&old_tauri).unwrap();
+        fs::create_dir_all(&old_tauri_other_version).unwrap();
         fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&local_candidates).unwrap();
+        fs::create_dir_all(&unknown_directory).unwrap();
         fs::create_dir_all(quota.parent().unwrap()).unwrap();
+        fs::write(&old_tauri_file, b"old").unwrap();
+        fs::write(&unknown_file, b"unknown").unwrap();
         fs::write(&quota, b"quota").unwrap();
 
         cleanup_old_discardable_usage_caches_now();
 
         assert!(!old_shared.exists());
         assert!(!old_tauri.exists());
+        assert!(!old_tauri_other_version.exists());
+        assert!(!old_tauri_file.exists());
         assert!(current.exists());
+        assert!(local_candidates.exists());
+        assert!(unknown_directory.exists());
+        assert!(unknown_file.exists());
         assert!(quota.exists());
 
         let _ = fs::remove_dir_all(root);
