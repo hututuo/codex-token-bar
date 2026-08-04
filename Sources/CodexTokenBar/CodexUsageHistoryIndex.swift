@@ -1338,6 +1338,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON events(source_id, timestamp, source_offset);
                 CREATE INDEX IF NOT EXISTS sources_session
                     ON sources(session_id, source_id);
+                CREATE INDEX IF NOT EXISTS sources_session_nocase
+                    ON sources(session_id COLLATE NOCASE, source_id);
 
                 CREATE TABLE IF NOT EXISTS attribution_source_buckets (
                     provenance_epoch TEXT NOT NULL,
@@ -1714,7 +1716,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var sourcePredicate: String
         var bindings: [SQLiteBinding] = []
         if let canonicalSessionID = lineage.canonicalSessionID {
-            sourcePredicate = "lower(s.session_id) = ?"
+            // Canonical UUIDs are compared case-insensitively, while keeping
+            // the predicate sargable against sources_session_nocase. Applying
+            // lower() to the column would force SQLite to scan events first.
+            sourcePredicate = "s.session_id COLLATE NOCASE = ?"
             bindings.append(.text(canonicalSessionID))
         } else {
             sourcePredicate = "e.source_id = ?"

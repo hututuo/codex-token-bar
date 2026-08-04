@@ -3476,6 +3476,180 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
     }
 
+    func testAttributionBackfillUsesCaseInsensitiveSourceIndexWithoutScanningEvents() throws {
+        let sessionID = "019eaaaa-bbbb-4ccc-8ddd-0000000000ab"
+        let canonicalLineage = "session:\(sessionID)"
+
+        // GitHub's published schema v3 and the current schema v5 both migrate
+        // in place. Dropping the new index before each reopen proves that the
+        // normal schema path recreates it before attribution backfill runs.
+        for schemaVersion in ["3", "5"] {
+            let cacheRoot = try makeTemporaryDirectory(
+                named: "CodexUsageAnalyzerAttributionIndex-\(schemaVersion)"
+            )
+            let databaseURL = cacheRoot.appendingPathComponent("usage-index.sqlite")
+            do {
+                _ = try CodexUsageHistoryIndex(
+                    sessionCatalogTestingDatabaseURL: databaseURL
+                )
+            }
+            let database = SQLiteDatabaseDriver(url: databaseURL)
+            XCTAssertEqual(
+                try scalarInt(
+                    "SELECT COUNT(*) FROM pragma_index_list('sources') WHERE name = 'sources_session_nocase';",
+                    in: database
+                ),
+                1,
+                "fresh schema \(schemaVersion) must create the case-insensitive source index"
+            )
+
+            let uppercaseSessionID = sessionID.uppercased()
+            try database.execute(
+                """
+                INSERT INTO sources(
+                    source_id,
+                    path,
+                    session_id,
+                    size_bytes,
+                    modified_at,
+                    content_probe,
+                    device_id,
+                    inode,
+                    status_changed_seconds,
+                    status_changed_nanoseconds,
+                    last_seen_generation
+                ) VALUES (?, ?, ?, 0, 0, '', '0', '0', 0, 0, 'attribution-index-test');
+                """,
+                bindings: [
+                    .int64(1),
+                    .text(cacheRoot.appendingPathComponent("uppercase.jsonl").path),
+                    .text(uppercaseSessionID)
+                ]
+            )
+            try database.execute(
+                """
+                INSERT INTO events(
+                    source_id,
+                    source_offset,
+                    timestamp,
+                    tokens,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    reasoning_output_tokens,
+                    model
+                ) VALUES (?, 0, ?, 120, 100, 20, 20, 0, ?);
+                """,
+                bindings: [
+                    .int64(1),
+                    .double(1_700_000_000),
+                    .text("gpt-5.6-sol")
+                ]
+            )
+
+            try database.execute("DROP INDEX sources_session_nocase;")
+            try database.execute(
+                "UPDATE schema_meta SET value = ? WHERE key = 'schema_version';",
+                bindings: [.text(schemaVersion)]
+            )
+            try database.execute(
+                """
+                UPDATE schema_meta SET value = 'legacy-attribution-index-test'
+                    WHERE key = 'provenance_revision';
+                """
+            )
+
+            _ = try CodexUsageHistoryIndex(
+                sessionCatalogTestingDatabaseURL: databaseURL
+            )
+
+            XCTAssertEqual(
+                try scalarInt(
+                    "SELECT COUNT(*) FROM pragma_index_list('sources') WHERE name = 'sources_session_nocase';",
+                    in: database
+                ),
+                1,
+                "schema \(schemaVersion) migration must recreate the case-insensitive source index"
+            )
+            XCTAssertEqual(
+                try XCTUnwrap(
+                    database.readRows(
+                        "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+                    ) { $0.text(0) }.compactMap { $0 }.first
+                ),
+                "5"
+            )
+
+            let planDetails = try database.readRows(
+                """
+                EXPLAIN QUERY PLAN
+                WITH per_source AS (
+                    SELECT
+                        e.source_id,
+                        CAST(e.timestamp / 300 AS INTEGER) * 300 AS bucket_start,
+                        COALESCE(e.model, '') AS model,
+                        SUM(e.input_tokens) AS input_tokens,
+                        SUM(e.cached_input_tokens) AS cached_input_tokens,
+                        SUM(e.output_tokens) AS output_tokens,
+                        SUM(e.reasoning_output_tokens) AS reasoning_output_tokens,
+                        SUM(e.tokens) AS total_tokens,
+                        COUNT(*) AS calls
+                    FROM events e
+                    JOIN sources s ON s.source_id = e.source_id
+                    WHERE s.session_id COLLATE NOCASE = ?
+                    GROUP BY
+                        e.source_id,
+                        CAST(e.timestamp / 300 AS INTEGER),
+                        COALESCE(e.model, '')
+                )
+                SELECT * FROM per_source;
+                """,
+                bindings: [.text(sessionID)]
+            ) { $0.text(3) }.compactMap { $0 }
+            let sourceSearchIndex = try XCTUnwrap(
+                planDetails.firstIndex {
+                    $0.contains("SEARCH s USING")
+                        && $0.contains("sources_session_nocase")
+                },
+                "backfill plan must locate sources with sources_session_nocase: \(planDetails)"
+            )
+            let eventSearchIndex = try XCTUnwrap(
+                planDetails.firstIndex { $0.contains("SEARCH e USING") },
+                "backfill plan must look up events by source_id: \(planDetails)"
+            )
+            XCTAssertLessThan(sourceSearchIndex, eventSearchIndex, planDetails.joined(separator: " | "))
+            XCTAssertFalse(
+                planDetails.contains { $0.contains("SCAN e") },
+                "backfill must not scan events: \(planDetails)"
+            )
+            XCTAssertFalse(
+                planDetails.contains {
+                    $0.contains("SCAN e USING INDEX events_source_timestamp")
+                },
+                planDetails.joined(separator: " | ")
+            )
+
+            let ledgerRows = try database.readRows(
+                """
+                SELECT source_lineage, SUM(total_tokens), SUM(calls)
+                FROM attribution_source_buckets
+                GROUP BY source_lineage;
+                """
+            ) { row -> (String, Int64, Int64)? in
+                guard let lineage = row.text(0),
+                      let totalTokens = row.int64(1),
+                      let calls = row.int64(2) else {
+                    return nil
+                }
+                return (lineage, totalTokens, calls)
+            }.compactMap { $0 }
+            XCTAssertEqual(ledgerRows.count, 1)
+            XCTAssertEqual(ledgerRows.first?.0, canonicalLineage)
+            XCTAssertEqual(ledgerRows.first?.1, 120)
+            XCTAssertEqual(ledgerRows.first?.2, 1)
+        }
+    }
+
     func testPersistentExactHistoryIndexMigratesLegacyV3AndV4ColumnsInPlace() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerLegacyColumnMigration")
