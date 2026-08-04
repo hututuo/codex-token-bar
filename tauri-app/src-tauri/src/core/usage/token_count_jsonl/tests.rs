@@ -1,8 +1,11 @@
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::session_files::session_id_from_file;
-use super::exact_usage_index::STAGED_FULL_REBUILD_PARSER_REVISION;
+use super::exact_usage_index::{
+    open_index_for_testing, repair_orphaned_index_rows_for_testing, ORPHAN_REPAIR_REVISION,
+    ORPHAN_REPAIR_REVISION_KEY, STAGED_FULL_REBUILD_PARSER_REVISION,
+};
 use super::*;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -464,6 +467,14 @@ fn exact_index_rebuild_recovers_orphaned_events_from_foreign_keys_disabled_stora
             .unwrap(),
         1
     );
+    // Simulate a pre-marker legacy index: the orphan was written by an old
+    // foreign_keys=OFF connection, so the one-time repair marker is absent.
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            params![ORPHAN_REPAIR_REVISION_KEY],
+        )
+        .unwrap();
     drop(connection);
 
     write_lines(
@@ -492,8 +503,185 @@ fn exact_index_rebuild_recovers_orphaned_events_from_foreign_keys_disabled_stora
             .unwrap(),
         0
     );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![ORPHAN_REPAIR_REVISION_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .as_str(),
+        ORPHAN_REPAIR_REVISION
+    );
     drop(connection);
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn orphan_repair_marks_a_legacy_index_without_orphans() {
+    let root = temp_root();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    let mut connection = open_index_for_testing(&index_path).unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            params![ORPHAN_REPAIR_REVISION_KEY],
+        )
+        .unwrap();
+
+    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![ORPHAN_REPAIR_REVISION_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .as_str(),
+        ORPHAN_REPAIR_REVISION
+    );
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn orphan_repair_cleans_orphans_and_rewrites_a_wrong_marker() {
+    let root = temp_root();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    let mut connection = open_index_for_testing(&index_path).unwrap();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES (?1, 'old-revision')",
+            params![ORPHAN_REPAIR_REVISION_KEY],
+        )
+        .unwrap();
+
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    connection
+        .execute(
+            r#"
+            INSERT INTO events(
+                file_generation, file_path, ordinal, timestamp, session_id,
+                tokens, input_tokens, cached_input_tokens, output_tokens
+            ) VALUES (99, '/legacy-orphan.jsonl', 1, 1, 'legacy-orphan', 1, 1, 0, 0)
+            "#,
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"
+            INSERT INTO file_fingerprints(file_generation, file_path, fingerprint)
+            VALUES (99, '/legacy-orphan.jsonl', X'01')
+            "#,
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            r#"
+            INSERT INTO file_chunks(file_generation, file_path, chunk_index, byte_count, sha256)
+            VALUES (99, '/legacy-orphan.jsonl', 0, 1, X'02')
+            "#,
+            [],
+        )
+        .unwrap();
+
+    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![ORPHAN_REPAIR_REVISION_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .as_str(),
+        ORPHAN_REPAIR_REVISION
+    );
+    for table in ["events", "file_fingerprints", "file_chunks"] {
+        let count = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE file_generation = 99"),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+        .unwrap();
+        assert_eq!(count, 0, "legacy orphan rows remained in {table}");
+    }
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn orphan_repair_marker_hit_skips_writer_upgrade_under_another_immediate_lock() {
+    let root = temp_root();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    let mut connection = open_index_for_testing(&index_path).unwrap();
+    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+
+    let mut holder = open_index_for_testing(&index_path).unwrap();
+    let lock = holder
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    repair_orphaned_index_rows_for_testing(&mut connection).unwrap();
+    drop(lock);
+    drop(holder);
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn orphan_repair_marker_miss_fails_closed_when_writer_upgrade_is_busy() {
+    let root = temp_root();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(index_path.parent().unwrap()).unwrap();
+    let mut connection = open_index_for_testing(&index_path).unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = ?1",
+            params![ORPHAN_REPAIR_REVISION_KEY],
+        )
+        .unwrap();
+    connection
+        .busy_timeout(StdDuration::from_millis(0))
+        .unwrap();
+
+    let mut holder = open_index_for_testing(&index_path).unwrap();
+    let lock = holder
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let error = repair_orphaned_index_rows_for_testing(&mut connection).unwrap_err();
+    assert!(error.contains("database is locked"), "unexpected busy error: {error}");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM metadata WHERE key = ?1",
+                params![ORPHAN_REPAIR_REVISION_KEY],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    drop(lock);
+    drop(holder);
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 

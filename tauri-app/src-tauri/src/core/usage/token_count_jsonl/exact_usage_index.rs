@@ -52,6 +52,13 @@ const GITHUB_BASE_SCHEMA_VERSION: i64 = 6;
 const EXACT_SESSION_PARSER_REVISION: &str = "explicit-subagent-delayed-context-v3";
 const FORK_REPLAY_BOUNDARY_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
 pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
+// This marker is independent from the parser/schema revisions because it
+// records completion of a one-time logical repair for legacy databases that
+// were written with foreign-key enforcement disabled. Keep it separate so a
+// normal index open can skip the expensive orphan scans after the repair has
+// been verified.
+pub(super) const ORPHAN_REPAIR_REVISION_KEY: &str = "orphan_repair_revision";
+pub(super) const ORPHAN_REPAIR_REVISION: &str = "events-fingerprints-chunks-v1";
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -5061,54 +5068,148 @@ fn open_index_connection(path: &Path) -> Result<Connection, String> {
 }
 
 fn repair_orphaned_index_rows(connection: &mut Connection) -> Result<(), String> {
+    if metadata_text(connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
+        == Some(ORPHAN_REPAIR_REVISION)
+    {
+        return Ok(());
+    }
+
+    // Start read-first. A legacy database can be checked without reserving a
+    // writer slot; only a positive orphan result (or the marker write) needs
+    // to upgrade this deferred transaction. If another writer wins that
+    // upgrade, rusqlite returns SQLITE_BUSY and the missing marker makes the
+    // next open retry instead of claiming that repair completed.
     let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("无法开始精确 token 孤儿行修复事务：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            DELETE FROM events
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM files
-                WHERE files.generation = events.file_generation
-                  AND files.path = events.file_path
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(|error| format!("无法开始精确 token 孤儿行读取事务：{error}"))?;
+    if orphaned_index_rows_exist(&transaction)? {
+        transaction
+            .execute(
+                r#"
+                DELETE FROM events
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM files
+                    WHERE files.generation = events.file_generation
+                      AND files.path = events.file_path
+                )
+                "#,
+                [],
             )
-            "#,
-            [],
-        )
-        .map_err(|error| format!("无法清理精确 token 孤儿事件：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            DELETE FROM file_fingerprints
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM files
-                WHERE files.generation = file_fingerprints.file_generation
-                  AND files.path = file_fingerprints.file_path
+            .map_err(|error| format!("无法清理精确 token 孤儿事件：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                DELETE FROM file_fingerprints
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM files
+                    WHERE files.generation = file_fingerprints.file_generation
+                      AND files.path = file_fingerprints.file_path
+                )
+                "#,
+                [],
             )
-            "#,
-            [],
-        )
-        .map_err(|error| format!("无法清理精确 token 孤儿去重状态：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            DELETE FROM file_chunks
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM files
-                WHERE files.generation = file_chunks.file_generation
-                  AND files.path = file_chunks.file_path
+            .map_err(|error| format!("无法清理精确 token 孤儿去重状态：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                DELETE FROM file_chunks
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM files
+                    WHERE files.generation = file_chunks.file_generation
+                      AND files.path = file_chunks.file_path
+                )
+                "#,
+                [],
             )
-            "#,
-            [],
-        )
-        .map_err(|error| format!("无法清理精确 token 孤儿分块状态：{error}"))?;
+            .map_err(|error| format!("无法清理精确 token 孤儿分块状态：{error}"))?;
+        if orphaned_index_rows_exist(&transaction)? {
+            return Err("精确 token 孤儿行修复复核仍发现未清理的孤儿行".into());
+        }
+    }
+    set_metadata(
+        &transaction,
+        ORPHAN_REPAIR_REVISION_KEY,
+        ORPHAN_REPAIR_REVISION,
+    )?;
     transaction
         .commit()
-        .map_err(|error| format!("无法提交精确 token 孤儿行修复：{error}"))
+        .map_err(|error| format!("无法提交精确 token 孤儿行修复标记：{error}"))
+}
+
+fn orphaned_index_rows_exist(connection: &Connection) -> Result<bool, String> {
+    for (label, query) in [
+        (
+            "事件",
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM events
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM files
+                    WHERE files.generation = events.file_generation
+                      AND files.path = events.file_path
+                )
+            )
+            "#,
+        ),
+        (
+            "去重状态",
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM file_fingerprints
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM files
+                    WHERE files.generation = file_fingerprints.file_generation
+                      AND files.path = file_fingerprints.file_path
+                )
+            )
+            "#,
+        ),
+        (
+            "分块状态",
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM file_chunks
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM files
+                    WHERE files.generation = file_chunks.file_generation
+                      AND files.path = file_chunks.file_path
+                )
+            )
+            "#,
+        ),
+    ] {
+        let exists = connection
+            .query_row(query, [], |row| row.get::<_, i64>(0))
+            .map_err(|error| format!("无法检查精确 token 孤儿{label}：{error}"))?
+            != 0;
+        if exists {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+pub(super) fn repair_orphaned_index_rows_for_testing(
+    connection: &mut Connection,
+) -> Result<(), String> {
+    repair_orphaned_index_rows(connection)
+}
+
+#[cfg(test)]
+pub(super) fn open_index_for_testing(path: &Path) -> Result<Connection, String> {
+    let connection = open_index_connection(path)?;
+    initialize_index_schema(&connection)?;
+    Ok(connection)
 }
 
 fn delete_file_version_rows(
