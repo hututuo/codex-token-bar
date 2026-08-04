@@ -1,7 +1,7 @@
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::session_files::session_id_from_file;
 use super::*;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -1698,7 +1698,7 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
 }
 
 #[test]
-fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v8_model_events() {
+fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1706,7 +1706,7 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v8_model_events() {
         .join(".codex-token-bar-test-cache")
         .join("exact-token-index.sqlite3");
     fs::create_dir_all(&session_dir).unwrap();
-    let file = session_dir.join("rollout-019emigrate-v4-0000-0000-0000-exact.jsonl");
+    let file = session_dir.join("rollout-019emigrate-v6-0000-0000-0000-exact.jsonl");
     write_lines(
         &file,
         &[
@@ -1716,37 +1716,195 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v8_model_events() {
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
     let connection = Connection::open(&index_path).unwrap();
-    connection
-        .execute(
-            "UPDATE metadata SET value = '4' WHERE key = 'schema_version'",
+    let before = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
             [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
         )
-        .unwrap();
-    connection
-        .execute(
-            "UPDATE files SET append_ready = 0, resume_offset = NULL",
-            [],
-        )
-        .unwrap();
-    connection.execute("DROP TABLE file_chunks", []).unwrap();
-    connection
-        .execute("DROP TABLE file_fingerprints", [])
         .unwrap();
     drop(connection);
 
-    // v4 指纹是 9 字段 72 字节布局，与 v8 的逐模型事件结构不可混存（混存会让
-    // 历史 snapshot 重新计数）：不再原地迁移，任何旧版本一律整库丢弃重建。
-    let rebuilt = ExactUsageIndex::open(&root).unwrap();
-    assert!(
-        rebuilt.is_empty().unwrap(),
-        "旧版索引必须被丢弃而不是原地迁移"
+    for (legacy_version, missing_columns) in [
+        (
+            6_i64,
+            vec![
+                ("files", "current_model"),
+                ("files", "is_explicit_subagent_fork"),
+                ("events", "model"),
+            ],
+        ),
+        (7_i64, vec![("files", "is_explicit_subagent_fork")]),
+    ] {
+        let connection = Connection::open(&index_path).unwrap();
+        for (table, column) in missing_columns {
+            connection
+                .execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
+                .unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+                [legacy_version],
+            )
+            .unwrap();
+        drop(connection);
+
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        assert_eq!(
+            dashboard_snapshot(&root).unwrap().stats.total_tokens,
+            120,
+            "v{legacy_version} migration must leave the published dashboard immediately readable"
+        );
+        assert_eq!(
+            ExactUsageIndex::scan_bytes_for_testing(),
+            (0, 0),
+            "v{legacy_version} migration must not rescan the JSONL source"
+        );
+        let connection = Connection::open(&index_path).unwrap();
+        let after = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(after, before, "v{legacy_version} migration changed durable counts");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "8"
+        );
+        for (table, column) in [
+            ("files", "current_model"),
+            ("files", "is_explicit_subagent_fork"),
+            ("events", "model"),
+        ] {
+            let exists = connection
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"
+                    ),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "v{legacy_version} migration must add {table}.{column}");
+        }
+        drop(connection);
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019efuture-schema-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
     );
-    drop(rebuilt);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    let before = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '999' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("future schema must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.contains("高于当前支持版本"), "{error}");
+    let connection = Connection::open(&index_path).unwrap();
+    let after = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after, before);
     assert_eq!(
-        dashboard_snapshot(&root).unwrap().stats.total_tokens,
-        120,
-        "丢弃后必须能从会话源完整重建"
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "999"
     );
+    drop(connection);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = 'future-v9' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("non-numeric future schema must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.contains("未知或损坏"), "{error}");
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
@@ -1756,17 +1914,300 @@ fn exact_index_discards_legacy_v4_index_and_rebuilds_with_v8_model_events() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "8"
+        "future-v9"
+    );
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019etargeted-replay-0000-0000-luna.jsonl");
+    let unrelated_file = session_dir.join("rollout-019etargeted-replay-0000-0000-other.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019etargeted-replay-0000-0000-luna","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker","source":{"subagent":{"thread_spawn":{"parent_thread_id":"origin-session","agent_role":"luna_worker"}}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120},"last_token_usage":{"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:03.600Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":180},"last_token_usage":{"total_tokens":60}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":260},"last_token_usage":{"total_tokens":80}}}}"#,
+        ],
+    );
+    write_lines(
+        &unrelated_file,
+        &[r#"{"timestamp":"2026-06-18T01:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":25}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 165);
+
+    let relative_file = fs::canonicalize(&file).unwrap().display().to_string();
+    let relative_unrelated_file = fs::canonicalize(&unrelated_file).unwrap().display().to_string();
+
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    connection
+        .execute(
+            "DELETE FROM events WHERE file_path = ?1 AND tokens = 60",
+            params![relative_file],
+        )
+        .unwrap();
+    let before = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT changed_ns FROM files WHERE deleted = 0 LIMIT 1)",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    let unrelated_checkpoint_before = connection
+        .query_row(
+            "SELECT append_ready, resume_offset FROM files WHERE path = ?1 AND deleted = 0 ORDER BY generation DESC LIMIT 1",
+            params![relative_unrelated_file],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE files SET fork_replay_active = 1, is_explicit_subagent_fork = 0 WHERE path = ?1",
+            params![relative_file],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut migrated = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        105
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    let after = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'), (SELECT is_explicit_subagent_fork FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT append_ready FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT resume_offset FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1), (SELECT changed_ns FROM files WHERE path = ?1 AND deleted = 0 LIMIT 1)",
+            params![relative_file],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, bool>(4)?,
+                    row.get::<_, bool>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(after.0, before.0);
+    assert_eq!(after.1, before.1);
+    assert_eq!(after.2, before.2);
+    assert_eq!(after.3, before.3);
+    assert!(after.4);
+    assert!(!after.5);
+    assert_eq!(after.6, None);
+    assert!(after.7.starts_with("migration:"));
+    drop(connection);
+
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        105
+    );
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(
+            handle,
+            "{}",
+            r#"{"timestamp":"2026-06-18T01:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":300},"last_token_usage":{"total_tokens":40}}}}"#
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        105
+    );
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    migrated.sync(&root, &mut Vec::new()).unwrap();
+    let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert!(full_scan_bytes > 0);
+    assert_eq!(append_scan_bytes, 0);
+    assert_eq!(
+        migrated
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        205
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    let explicit_tokens = connection
+        .prepare("SELECT tokens FROM published_events WHERE file_path = ?1 ORDER BY ordinal")
+        .unwrap()
+        .query_map(params![relative_file], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(explicit_tokens, vec![60, 80, 40]);
+    let unrelated_tokens = connection
+        .prepare("SELECT tokens FROM published_events WHERE file_path = ?1 ORDER BY ordinal")
+        .unwrap()
+        .query_map(params![relative_unrelated_file], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(unrelated_tokens, vec![25]);
+    let unrelated_checkpoint_after = connection
+        .query_row(
+            "SELECT append_ready, resume_offset FROM files WHERE path = ?1 AND deleted = 0 ORDER BY generation DESC LIMIT 1",
+            params![relative_unrelated_file],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(unrelated_checkpoint_after, unrelated_checkpoint_before);
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_retries_unresolved_replay_candidate_without_persisting_marker() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019ereplay-retry-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE files SET fork_replay_active = 1, is_explicit_subagent_fork = 0",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'fork_replay_boundary_revision'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut oversized_first_line = String::from(
+        r#"{"type":"session_meta","payload":{"forked_from_id":"origin-session","agent_path":""#,
+    );
+    oversized_first_line.push_str(&"x".repeat(256 * 1024));
+    oversized_first_line.push_str("\"}");
+    fs::write(&file, oversized_first_line).unwrap();
+
+    let unresolved = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        unresolved
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM metadata WHERE key = 'fork_replay_boundary_revision'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
     );
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row
-                .get::<_, i64>(0))
+            .query_row(
+                "SELECT is_explicit_subagent_fork FROM files WHERE deleted = 0 LIMIT 1",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
             .unwrap(),
-        1
+        false
     );
     drop(connection);
 
+    let valid_first_line = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019ereplay-retry-0000-0000-exact","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker"}}"#;
+    fs::write(&file, format!("{valid_first_line}\n")).unwrap();
+    let retried = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        retried
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT is_explicit_subagent_fork FROM files WHERE deleted = 0 LIMIT 1",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap(),
+        true
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'fork_replay_boundary_revision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "explicit-subagent-delayed-context-v3"
+    );
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2890,35 +3331,42 @@ fn counts_explicit_subagent_after_child_turn_context_and_preserves_model() {
         &file,
         &[
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"session_meta","payload":{"id":"019esubagent-boundary-0000-0000-luna","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker","source":{"subagent":{"thread_spawn":{"parent_thread_id":"origin-session","agent_role":"luna_worker"}}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.200Z","type":"session_meta","payload":{"id":"inherited-parent-meta-1","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:00.300Z","type":"session_meta","payload":{"id":"inherited-parent-meta-2","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"Child task"}}"#,
             r#"{"timestamp":"2026-06-18T01:00:00.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120}}}}"#,
-            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01.300Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130,"cached_input_tokens":85,"output_tokens":25,"total_tokens":150},"last_token_usage":{"input_tokens":30,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
             r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":90,"output_tokens":30,"total_tokens":200},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:03.600Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":40,"total_tokens":260},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":60}}}}"#,
         ],
     );
 
     let first = dashboard_snapshot(&root).unwrap();
-    assert_eq!(first.stats.total_tokens, 80);
+    assert_eq!(first.stats.total_tokens, 60);
     assert_eq!(first.stats.total_calls, 1);
     assert_eq!(first.stats.model_breakdowns.len(), 1);
     assert_eq!(first.stats.model_breakdowns[0].model.as_deref(), Some("gpt-5.6-luna"));
-    assert_eq!(first.stats.model_breakdowns[0].breakdown.total_tokens, 80);
+    assert_eq!(first.stats.model_breakdowns[0].breakdown.total_tokens, 60);
 
     let mut append = fs::OpenOptions::new().append(true).open(&file).unwrap();
     writeln!(
         append,
         "{}",
-        r#"{"timestamp":"2026-06-18T01:00:02.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":40,"total_tokens":260},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":60}}}}"#
+        r#"{"timestamp":"2026-06-18T01:00:05Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":110,"output_tokens":50,"total_tokens":320},"last_token_usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":10,"total_tokens":60}}}}"#
     )
     .unwrap();
     append.flush().unwrap();
 
     let second = dashboard_snapshot(&root).unwrap();
-    assert_eq!(second.stats.total_tokens, 140);
+    assert_eq!(second.stats.total_tokens, 120);
     assert_eq!(second.stats.total_calls, 2);
     assert_eq!(second.stats.model_breakdowns.len(), 1);
     assert_eq!(second.stats.model_breakdowns[0].model.as_deref(), Some("gpt-5.6-luna"));
-    assert_eq!(second.stats.model_breakdowns[0].breakdown.total_tokens, 140);
+    assert_eq!(second.stats.model_breakdowns[0].breakdown.total_tokens, 120);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -2946,13 +3394,43 @@ fn explicit_subagent_fork_persists_replay_identity_across_incremental_append() {
     writeln!(
         append,
         "{}",
-        r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#
+        r#"{"timestamp":"2026-06-18T01:00:00.800Z","type":"session_meta","payload":{"id":"inherited-parent-meta-1","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker"}}"#
     )
     .unwrap();
     writeln!(
         append,
         "{}",
-        r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":90,"output_tokens":30,"total_tokens":200},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#
+        r#"{"timestamp":"2026-06-18T01:00:00.900Z","type":"session_meta","payload":{"id":"inherited-parent-meta-2","forked_from_id":"origin-session","thread_source":"subagent","agent_role":"luna_worker","agent_path":"/root/luna_worker"}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01.200Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:01.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130,"cached_input_tokens":85,"output_tokens":25,"total_tokens":150},"last_token_usage":{"input_tokens":30,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:03.600Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#
+    )
+    .unwrap();
+    writeln!(
+        append,
+        "{}",
+        r#"{"timestamp":"2026-06-18T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":190,"cached_input_tokens":95,"output_tokens":35,"total_tokens":230},"last_token_usage":{"input_tokens":60,"cached_input_tokens":10,"output_tokens":10,"total_tokens":80}}}}"#
     )
     .unwrap();
     append.flush().unwrap();

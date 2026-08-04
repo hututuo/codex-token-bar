@@ -276,16 +276,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let signature: SessionCatalogFileSignature
     }
 
-    // v5 rebuilds event rows because explicit subagent fork boundaries now
-    // retain child token_count events after inherited replay snapshots.
+    private enum ExplicitSubagentSessionFileProbe {
+        case explicit
+        case nonExplicit
+        case unresolved
+    }
+
     private static let schemaVersion = "5"
-    private static let legacyAppendMigrationSchemaVersion = "2"
+    private static let inPlaceSchemaVersions: Set<String> = ["2", "3", "4", "5"]
+    private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
-    private static let attributionProvenanceRevision = "source-bucket-v3-model-aware-parser-v1"
+    private static let attributionProvenanceRevision = "source-bucket-v4-fork-replay-boundary-v2"
     private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
+    private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
@@ -1202,9 +1208,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) { row in
                 row.text(0)
             }.first ?? nil
-            let destructiveRebuildRequired = currentVersion != nil
-                && currentVersion != Self.schemaVersion
-                && currentVersion != Self.legacyAppendMigrationSchemaVersion
+            let numericVersion = currentVersion.flatMap(Int.init)
+            let isLegacyDiscardableSchema = numericVersion.map { $0 < 2 } ?? false
+            let isKnownInPlaceSchema = currentVersion.map(Self.inPlaceSchemaVersions.contains) ?? true
+            if let currentVersion,
+               !isKnownInPlaceSchema,
+               !isLegacyDiscardableSchema {
+                throw SQLiteDatabaseError(
+                    operation: "Open exact usage history index",
+                    code: SQLITE_MISMATCH,
+                    message: "Index schema \(currentVersion) is newer or unknown; refusing to rewrite it",
+                    path: driver.url.path
+                )
+            }
+            let destructiveRebuildRequired = isLegacyDiscardableSchema
+
+            if !destructiveRebuildRequired,
+               currentVersion != nil {
+                try migrateV2SourcesForAppend(connection)
+                try migrateKnownEventColumns(connection)
+                try repairExplicitSubagentReplayBoundary(connection)
+            }
 
             // Capture all attribution evidence before any destructive schema
             // rebuild. A future/unknown schema version and a tombstoned ledger
@@ -1409,6 +1433,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
             }
             try migrateV2SourcesForAppend(connection)
+            try migrateKnownEventColumns(connection)
             try connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_fingerprints (
@@ -1856,6 +1881,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ("previous_total_tokens", "INTEGER"),
             ("fork_replay_started_at", "REAL"),
             ("is_skipping_fork_replay", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_explicit_subagent_fork", "INTEGER NOT NULL DEFAULT 0"),
             ("last_skipped_fork_replay_token_at", "REAL"),
             ("current_user_prompt_offset", "INTEGER"),
             ("assistant_start_offset", "INTEGER"),
@@ -1867,6 +1893,160 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 "ALTER TABLE sources ADD COLUMN \(column) \(definition);"
             )
         }
+    }
+
+    private func migrateKnownEventColumns(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        let tableExists = try connection.readRows(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'events';
+            """
+        ) { ($0.int(0) ?? 0) > 0 }.first ?? false
+        guard tableExists else { return }
+        let columns = Set(
+            try connection.readRows("PRAGMA table_info(events);") { row in
+                row.text(1) ?? ""
+            }
+        )
+        if !columns.contains("model") {
+            try connection.execute("ALTER TABLE events ADD COLUMN model TEXT;")
+        }
+    }
+
+    /// Marks only active replay sources whose first line proves an explicit
+    /// subagent fork for an atomic single-file replacement on the next normal
+    /// synchronization. The currently published rows remain readable until
+    /// that replacement is committed; migration never deletes token events or
+    /// rescans the full JSONL corpus.
+    private func repairExplicitSubagentReplayBoundary(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        let tableExists = try connection.readRows(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'sources';
+            """
+        ) { ($0.int(0) ?? 0) > 0 }.first ?? false
+        guard tableExists else { return }
+        let storedRevision = try connection.readRows(
+            """
+            SELECT value FROM schema_meta
+            WHERE key = 'fork_replay_boundary_revision' LIMIT 1;
+            """
+        ) { $0.text(0) }.first ?? nil
+        guard storedRevision != Self.forkReplayBoundaryRevision else { return }
+
+        let candidates = try connection.readRows(
+            """
+            SELECT source_id, path
+            FROM sources
+            WHERE is_skipping_fork_replay = 1
+              AND is_explicit_subagent_fork = 0;
+            """
+        ) { row in
+            (id: row.int64(0), path: row.text(1))
+        }
+        var unresolvedCandidate = false
+        for candidate in candidates {
+            guard let sourceID = candidate.id,
+                  let path = candidate.path else {
+                unresolvedCandidate = true
+                continue
+            }
+            switch probeExplicitSubagentSessionFile(URL(fileURLWithPath: path)) {
+            case .explicit:
+                // A mismatched probe schedules an atomic single-file rebuild
+                // while leaving the currently published rows available to
+                // readers.
+                try connection.execute(
+                    """
+                    UPDATE sources
+                    SET is_explicit_subagent_fork = 1,
+                        append_ready = 0,
+                        resume_offset = NULL,
+                        content_probe = ?
+                    WHERE source_id = ?;
+                    """,
+                    bindings: [
+                        .text("migration:\(Self.forkReplayBoundaryRevision)"),
+                        .int64(sourceID)
+                    ]
+                )
+            case .nonExplicit:
+                break
+            case .unresolved:
+                // Do not make an unreadable or incomplete candidate look
+                // migrated. A later startup must retry it without blocking
+                // the dashboard from using the already-published rows.
+                unresolvedCandidate = true
+            }
+        }
+
+        guard !unresolvedCandidate else {
+            return
+        }
+
+        try connection.execute(
+            """
+            INSERT INTO schema_meta(key, value)
+            VALUES ('fork_replay_boundary_revision', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [.text(Self.forkReplayBoundaryRevision)]
+        )
+    }
+
+    private func probeExplicitSubagentSessionFile(
+        _ file: URL
+    ) -> ExplicitSubagentSessionFileProbe {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return .unresolved }
+        defer { try? handle.close() }
+        var firstLine = Data()
+        while true {
+            let remaining = Self.explicitSubagentFirstLineLimit + 1 - firstLine.count
+            let chunk = handle.readData(ofLength: min(64 * 1_024, remaining))
+            guard !chunk.isEmpty else { return .unresolved }
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                guard firstLine.count + chunk.distance(from: chunk.startIndex, to: newline)
+                    <= Self.explicitSubagentFirstLineLimit else {
+                    return .unresolved
+                }
+                firstLine.append(contentsOf: chunk[..<newline])
+                break
+            }
+            firstLine.append(contentsOf: chunk)
+            guard firstLine.count <= Self.explicitSubagentFirstLineLimit else {
+                return .unresolved
+            }
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: firstLine) as? [String: Any] else {
+            return .unresolved
+        }
+        guard object["type"] as? String == "session_meta" else {
+            return .nonExplicit
+        }
+        guard let payload = object["payload"] as? [String: Any] else {
+            return .unresolved
+        }
+        guard let forkedFromID = payload["forked_from_id"] as? String,
+              !forkedFromID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .nonExplicit
+        }
+        let source = payload["source"] as? [String: Any]
+        let subagent = source?["subagent"] as? [String: Any]
+        if subagent?["thread_spawn"] is [String: Any] { return .explicit }
+        if (payload["thread_source"] as? String)?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) == "subagent" {
+            return .explicit
+        }
+        let hasExplicitAgentIdentity = ["agent_role", "agent_path"].contains { key in
+            guard let value = payload[key] as? String else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return hasExplicitAgentIdentity ? .explicit : .nonExplicit
     }
 
     // 决策口径：PRAGMA quick_check 是全库扫描，且在 single-flight 门内执行，

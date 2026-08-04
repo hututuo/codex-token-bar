@@ -1,9 +1,10 @@
 use super::session_files::session_id_from_file;
 use super::session_parser::{
-    read_event_excerpts, stream_session_file_exact, stream_session_file_exact_from, ExactChunkHash,
-    ExactEventSourceOffsets, ExactSessionEventSink, ExactSessionParserState, ExactTokenEvent,
-    SourceByteRange, UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
-    USAGE_SNAPSHOT_FINGERPRINT_BYTES,
+    probe_explicit_subagent_session_file, read_event_excerpts, stream_session_file_exact,
+    stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets,
+    ExactSessionEventSink, ExactSessionParserState, ExactTokenEvent,
+    ExplicitSubagentSessionFileProbe, SourceByteRange, UsageSnapshotFingerprint,
+    EXACT_INDEX_CHUNK_SIZE, USAGE_SNAPSHOT_FINGERPRINT_BYTES,
 };
 use super::{
     attribution_watch_root_physical_identity, IndexedSessionCatalogEntry,
@@ -40,12 +41,12 @@ use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
-// v6：重放指纹与 Swift 统一为 11 字段（含 reasoning）。旧版指纹是 9 字段 72 字节
-// blob，与新 88 字节 blob 永不相等，混存会让历史 snapshot 重新计数；因此 v6 起
-// 不再提供任何旧版原地迁移，非当前版本一律整库重建（索引可完整重建）。
-// v8 rebuilds event rows because explicit subagent fork boundaries now retain
-// child token_count events after inherited replay snapshots.
+// GitHub v0.8.3 ships schema v6 with the current 11-field fingerprint. Every
+// later known schema must migrate that index in place; only pre-v6 layouts may
+// be discarded because their incompatible fingerprint blobs can re-count data.
 const INDEX_SCHEMA_VERSION: i64 = 8;
+const GITHUB_BASE_SCHEMA_VERSION: i64 = 6;
+const FORK_REPLAY_BOUNDARY_REVISION: &str = "explicit-subagent-delayed-context-v3";
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -309,20 +310,36 @@ impl ExactUsageIndex {
         let existed_before = existing_regular_index(&path)?;
         let (mut connection, recovered_corrupt_index) =
             open_index_connection_with_recovery(&path, existed_before)?;
-        let mut schema_version = metadata_i64(&connection, "schema_version")?;
-        if existed_before
-            && !recovered_corrupt_index
-            && schema_version != Some(INDEX_SCHEMA_VERSION)
-        {
+        let raw_schema_version = metadata_text(&connection, "schema_version")?;
+        let mut has_schema_version = raw_schema_version.is_some();
+        let mut schema_version = raw_schema_version.and_then(|value| value.parse::<i64>().ok());
+        if existed_before && !recovered_corrupt_index {
+            if has_schema_version && schema_version.is_none() {
+                return Err("精确 token 索引 schema 版本未知或损坏，已拒绝覆盖".into());
+            }
+            if schema_version.is_some_and(|version| version > INDEX_SCHEMA_VERSION) {
+                return Err(format!(
+                    "精确 token 索引版本 {:?} 高于当前支持版本 {}，已拒绝覆盖",
+                    schema_version, INDEX_SCHEMA_VERSION
+                ));
+            }
+            if schema_version.is_some_and(|version| {
+                !(GITHUB_BASE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION).contains(&version)
+            }) {
             // The index is fully rebuildable. Replacing an obsolete database,
             // rather than dropping its text columns in place, guarantees that
             // deleted SQLite pages and WAL frames cannot retain conversation
             // plaintext from schema v1. Since v6 this also discards pre-v6
             // 9-field fingerprint blobs that would break deduplication.
-            drop(connection);
-            remove_index_storage(&path)?;
-            connection = managed_index_connection(&path, open_index_connection(&path)?)?;
-            schema_version = None;
+                drop(connection);
+                remove_index_storage(&path)?;
+                connection = managed_index_connection(&path, open_index_connection(&path)?)?;
+                schema_version = None;
+                has_schema_version = false;
+            } else if schema_version.is_some() {
+                migrate_github_base_index_schema(&connection)?;
+                repair_explicit_subagent_replay_boundary(&connection)?;
+            }
         }
         initialize_index_schema(&connection)?;
         // Existing databases can contain child rows written while an older
@@ -336,18 +353,22 @@ impl ExactUsageIndex {
                 "schema_version",
                 &INDEX_SCHEMA_VERSION.to_string(),
             )?;
-            set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
-            set_metadata(&connection, "published_generation", "0")?;
-            connection
-                .execute(
-                    "DELETE FROM metadata WHERE key IN (
-                        'building_generation',
-                        'building_changed',
-                        'building_attribution_provenance_rotate'
-                    )",
-                    [],
-                )
-                .map_err(|error| format!("无法初始化精确 token 同步状态：{error}"))?;
+            // Known GitHub v6/v7 databases are upgraded in place. Only a new
+            // or intentionally discarded pre-v6 database starts from zero.
+            if !has_schema_version {
+                set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
+                set_metadata(&connection, "published_generation", "0")?;
+                connection
+                    .execute(
+                        "DELETE FROM metadata WHERE key IN (
+                            'building_generation',
+                            'building_changed',
+                            'building_attribution_provenance_rotate'
+                        )",
+                        [],
+                    )
+                    .map_err(|error| format!("无法初始化精确 token 同步状态：{error}"))?;
+            }
         }
         if metadata_i64(&connection, "published_generation")?.is_none() {
             set_metadata(&connection, "published_generation", "0")?;
@@ -5111,6 +5132,133 @@ fn delete_file_version_rows(
         )
         .map_err(|error| format!("无法清理精确 token 会话文件版本：{error}"))?;
     Ok(())
+}
+
+fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), String> {
+    for (table, column, definition) in [
+        ("files", "current_model", "TEXT"),
+        (
+            "files",
+            "is_explicit_subagent_fork",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("events", "model", "TEXT"),
+    ] {
+        let table_exists = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("无法检查精确 token 表 {table}：{error}"))?
+            > 0;
+        if !table_exists {
+            continue;
+        }
+        if !column_exists_checked(connection, table, column)? {
+            connection
+                .execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                    [],
+                )
+                .map_err(|error| {
+                    format!("无法原位迁移精确 token 字段 {table}.{column}：{error}")
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<(), String> {
+    // Keep published rows readable while the normal per-file synchronization
+    // path stages and atomically publishes a corrected replacement. This
+    // migration only invalidates the physical checkpoint for files whose first
+    // line proves an explicit subagent fork; it never deletes token events or
+    // rescans the full JSONL corpus.
+    let files_table_exists = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'files'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("无法检查精确 token 文件表：{error}"))?
+        > 0;
+    if !files_table_exists {
+        return Ok(());
+    }
+    if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
+        == Some(FORK_REPLAY_BOUNDARY_REVISION)
+    {
+        return Ok(());
+    }
+
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT DISTINCT path
+            FROM files
+            WHERE deleted = 0
+              AND fork_replay_active = 1
+              AND is_explicit_subagent_fork = 0
+            "#,
+        )
+        .map_err(|error| format!("无法准备子 Agent replay 兼容迁移：{error}"))?;
+    let candidates = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("无法读取子 Agent replay 兼容候选：{error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("无法解码子 Agent replay 兼容候选：{error}"))?;
+    drop(statement);
+
+    let mut explicit_paths = Vec::new();
+    let mut unresolved_candidate = false;
+    for path in candidates {
+        match probe_explicit_subagent_session_file(Path::new(&path)) {
+            ExplicitSubagentSessionFileProbe::Explicit => explicit_paths.push(path),
+            ExplicitSubagentSessionFileProbe::NonExplicit => {}
+            ExplicitSubagentSessionFileProbe::Unresolved => {
+                // Do not make an unreadable or incomplete candidate look
+                // migrated. A later startup must retry it without blocking
+                // the dashboard from using the already-published rows.
+                unresolved_candidate = true;
+            }
+        }
+    }
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("无法开始子 Agent replay 原位迁移：{error}"))?;
+    for path in &explicit_paths {
+        // Deliberately invalidate only this file's physical checkpoint. The
+        // published generation remains readable until the corrected file is
+        // atomically replaced by the normal synchronization path.
+        transaction
+            .execute(
+                r#"
+                UPDATE files
+                SET is_explicit_subagent_fork = 1,
+                    append_ready = 0,
+                    resume_offset = NULL,
+                    changed_ns = ?1
+                WHERE path = ?2 AND deleted = 0
+                "#,
+                params![
+                    format!("migration:{FORK_REPLAY_BOUNDARY_REVISION}"),
+                    path
+                ],
+            )
+            .map_err(|error| format!("无法标记子 Agent replay 定向修复：{error}"))?;
+    }
+
+    if !unresolved_candidate {
+        set_metadata(
+            &transaction,
+            "fork_replay_boundary_revision",
+            FORK_REPLAY_BOUNDARY_REVISION,
+        )?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交子 Agent replay 原位迁移：{error}"))
 }
 
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {

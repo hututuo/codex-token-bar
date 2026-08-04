@@ -190,15 +190,20 @@ extension CodexUsageAnalyzer {
                     return
                 }
 
-                if let model = parseTurnContextModel(lineString) {
-                    currentModel = model
-                    // Codex Desktop writes a child turn_context immediately
-                    // after inherited fork snapshots. Only explicit subagent
-                    // metadata may use this boundary; ordinary user forks keep
-                    // the conservative time-based replay rule.
+                if let turnContext = parseTurnContext(lineString) {
+                    currentModel = turnContext.model
+                    // Forked rollout files replay the parent's turn_context
+                    // rows as well as its token snapshots. A turn_context is a
+                    // child boundary only after it has moved beyond the replay
+                    // grace window; using the first replayed turn_context here
+                    // counts the complete parent history once per subagent.
                     if isExplicitSubagentFork,
                        isSkippingForkReplay,
-                       lastSkippedForkReplayTokenAt != nil {
+                       let timestamp = turnContext.timestamp,
+                       let replayReference = lastSkippedForkReplayTokenAt
+                           ?? forkReplayStartedAt,
+                       timestamp.timeIntervalSince(replayReference)
+                           > Self.forkReplayExitGrace {
                         isSkippingForkReplay = false
                     }
                     return
@@ -772,7 +777,12 @@ extension CodexUsageAnalyzer {
         return ParsedTokenUsageLine(timestamp: timestamp, total: total, last: last)
     }
 
-    private func parseTurnContextModel(_ line: String) -> String? {
+    private struct ParsedTurnContext {
+        let model: String
+        let timestamp: Date?
+    }
+
+    private func parseTurnContext(_ line: String) -> ParsedTurnContext? {
         guard line.contains(#""turn_context""#),
               line.contains(#""model""#),
               let data = line.data(using: .utf8),
@@ -783,7 +793,11 @@ extension CodexUsageAnalyzer {
             return nil
         }
         let model = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        return model.isEmpty ? nil : model
+        guard !model.isEmpty else { return nil }
+        return ParsedTurnContext(
+            model: model,
+            timestamp: (object["timestamp"] as? String).flatMap(parseDate)
+        )
     }
 
     private func parseTokenUsage(_ raw: [String: Any]?) -> ParsedTokenUsage? {
