@@ -171,10 +171,10 @@ test("Radar-compatible amount and current API equivalent use the published GPT-5
     priceModel: "gpt56Terra",
   });
   assert.equal(result.pricingBasisStatus, "legacyRadarBasis");
-  assert.equal(result.localComparableUSD, 2.5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 2.5);
-  assert.equal(result.localSharePercent, 2.5);
-  assert.equal(result.residualPercent, 10.5);
+  assert.equal(result.localComparableUSD, 2);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 2);
+  assert.equal(result.localSharePercent, 2);
+  assert.equal(result.residualPercent, 11);
 });
 
 test("shared-account API values use complete historical model rows before the fallback", () => {
@@ -192,8 +192,30 @@ test("shared-account API values use complete historical model rows before the fa
     priceModel: "gpt56Luna",
   });
 
-  assert.equal(result.localCurrentAPIEquivalentUSD, 7.5);
-  assert.equal(result.localComparableUSD, 7.5);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 7);
+  assert.equal(result.localComparableUSD, 7);
+});
+
+test("shared-account Spark usage keeps tokens/calls but is excluded from local dollars", () => {
+  const sparkBucket = bucket(0, 2_000_000, {
+    calls: 2,
+    modelTrackingComplete: true,
+    modelBreakdowns: [
+      { model: "gpt-5.3-codex-spark", breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000, calls: 2 } },
+    ],
+  });
+  const result = estimate({
+    buckets: [sparkBucket],
+    scannedBuckets: [sparkBucket],
+    priceModel: "gpt56Sol",
+  });
+
+  assert.equal(result.tokens.inputTokens, 2_000_000);
+  assert.equal(result.tokens.calls, 2);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 0);
+  assert.equal(result.localComparableUSD, 0);
+  assert.deepEqual(result.excludedModels, ["gpt-5.3-codex-spark"]);
+  assert.equal(result.excludedCalls, 2);
 });
 
 test("Radar basisDate controls pricing even when the outer feed date is newer", () => {
@@ -210,7 +232,7 @@ test("Radar basisDate controls pricing even when the outer feed date is newer", 
   assert.equal(result.radarDate, "2026-08-15");
   assert.equal(result.radarPricingBasisDate, "2026-07-30");
   assert.equal(result.priceBasis, "radar20260730");
-  assert.equal(result.localComparableUSD, 2.5);
+  assert.equal(result.localComparableUSD, 2);
 });
 
 test("new direct quota-API measurements stay compatible while unknown future sources fail closed", () => {
@@ -508,6 +530,6 @@ test("current Radar price revision reprices the same raw bucket breakdown withou
     priceModel: "gpt56Terra",
   });
   assert.equal(result.priceBasis, "current");
-  assert.equal(result.localComparableUSD, 2.5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 2.5);
+  assert.equal(result.localComparableUSD, 2);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 2);
 });

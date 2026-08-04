@@ -34,6 +34,23 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     let costUSD: Double
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackCalls: Int
+    /// Models on an independent quota; retained in token/model stats but never priced.
+    let excludedModels: [String]
+    let excludedCalls: Int
+
+    init(
+        costUSD: Double,
+        detectedModels: [OfficialAPIPriceModel],
+        fallbackCalls: Int,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0
+    ) {
+        self.costUSD = costUSD
+        self.detectedModels = detectedModels
+        self.fallbackCalls = fallbackCalls
+        self.excludedModels = excludedModels
+        self.excludedCalls = excludedCalls
+    }
 }
 
 enum ModelAwareAPIPriceEstimator {
@@ -73,21 +90,39 @@ enum ModelAwareAPIPriceEstimator {
                 rates: rates
             )
         }
+        let independentRows = modelBreakdowns.compactMap { row -> (String, TokenCacheBreakdown)? in
+            guard let name = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) else {
+                return nil
+            }
+            return (name, row.breakdown)
+        }
+        let excludedBreakdown = independentRows.map(\.1).combined
+        let excludedModels = independentRows.reduce(into: [String]()) { names, row in
+            if !names.contains(row.0) { names.append(row.0) }
+        }
+        let excludedCalls = independentRows.reduce(0) { total, row in
+            total + max(row.1.calls, 0)
+        }
         let coveredBreakdown = modelBreakdowns.map(\.breakdown).combined
         guard coveredBreakdown.inputTokens == fallbackBreakdown.inputTokens,
               coveredBreakdown.cachedInputTokens == fallbackBreakdown.cachedInputTokens,
               coveredBreakdown.outputTokens == fallbackBreakdown.outputTokens,
               coveredBreakdown.calls == fallbackBreakdown.calls else {
             return fallback(
-                breakdown: fallbackBreakdown,
+                breakdown: fallbackBreakdown.subtracting(excludedBreakdown),
                 model: fallbackModel,
-                rates: rates
+                rates: rates,
+                excludedModels: excludedModels,
+                excludedCalls: excludedCalls
             )
         }
         var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
         var fallbackBreakdowns: [TokenCacheBreakdown] = []
         for row in modelBreakdowns {
-            if let detected = OfficialAPIPriceModel.detected(from: row.model) {
+            if OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil {
+                // Collected above so incomplete model rows can also fail closed
+                // without charging this independent quota to the fallback.
+            } else if let detected = OfficialAPIPriceModel.detected(from: row.model) {
                 grouped[detected, default: []].append(row.breakdown)
             } else {
                 fallbackBreakdowns.append(row.breakdown)
@@ -100,19 +135,38 @@ enum ModelAwareAPIPriceEstimator {
         return ModelAwareAPIPriceEstimate(
             costUSD: knownCost + rates(fallbackModel).costUSD(for: unknownBreakdown),
             detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
-            fallbackCalls: unknownBreakdown.calls
+            fallbackCalls: unknownBreakdown.calls,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
         )
     }
 
     private static func fallback(
         breakdown: TokenCacheBreakdown,
         model: OfficialAPIPriceModel,
-        rates: (OfficialAPIPriceModel) -> APIPriceRates
+        rates: (OfficialAPIPriceModel) -> APIPriceRates,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0
     ) -> ModelAwareAPIPriceEstimate {
         ModelAwareAPIPriceEstimate(
             costUSD: rates(model).costUSD(for: breakdown),
             detectedModels: [],
-            fallbackCalls: breakdown.calls
+            fallbackCalls: breakdown.calls,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
+        )
+    }
+}
+
+private extension TokenCacheBreakdown {
+    func subtracting(_ excluded: TokenCacheBreakdown) -> TokenCacheBreakdown {
+        TokenCacheBreakdown(
+            inputTokens: max(inputTokens - max(excluded.inputTokens, 0), 0),
+            cachedInputTokens: max(cachedInputTokens - max(excluded.cachedInputTokens, 0), 0),
+            outputTokens: max(outputTokens - max(excluded.outputTokens, 0), 0),
+            reasoningOutputTokens: max(reasoningOutputTokens - max(excluded.reasoningOutputTokens, 0), 0),
+            totalTokens: max(totalTokens - max(excluded.totalTokens, 0), 0),
+            calls: max(calls - max(excluded.calls, 0), 0)
         )
     }
 }
@@ -121,6 +175,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     case gpt56Sol
     case gpt56Terra
     case gpt56Luna
+    case gpt53Codex
+    case gpt52Codex
     case gpt54Legacy
     case gpt54MiniLegacy
 
@@ -137,6 +193,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt56Sol: "GPT-5.6 Sol"
         case .gpt56Terra: "GPT-5.6 Terra"
         case .gpt56Luna: "GPT-5.6 Luna"
+        case .gpt53Codex: "GPT-5.3 Codex"
+        case .gpt52Codex: "GPT-5.2 Codex"
         case .gpt54Legacy: "GPT-5.4"
         case .gpt54MiniLegacy: "GPT-5.4 Mini"
         }
@@ -150,9 +208,11 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt56Sol:
             APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
         case .gpt56Terra:
-            APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
+            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
         case .gpt56Luna:
-            APIPriceRates(inputUSDPerMillion: 1.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 6.00)
+            APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
+        case .gpt53Codex, .gpt52Codex:
+            APIPriceRates(inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14.00)
         case .gpt54Legacy:
             APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
         case .gpt54MiniLegacy:
@@ -204,6 +264,10 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             return .gpt56Terra
         case "gpt-5.6-luna", "gpt5.6-luna", "gpt56-luna", "gpt56luna":
             return .gpt56Luna
+        case "gpt-5.3-codex", "gpt5.3-codex", "gpt53-codex", "gpt53codex":
+            return .gpt53Codex
+        case "gpt-5.2-codex", "gpt5.2-codex", "gpt52-codex", "gpt52codex":
+            return .gpt52Codex
         case "gpt-5.4", "gpt54":
             return .gpt54Legacy
         case "gpt-5.4-mini", "gpt54mini":
@@ -211,6 +275,19 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         default:
             return nil
         }
+    }
+
+    /// Returns the canonical model name when the usage belongs to the
+    /// independent GPT-5.3 Codex Spark quota. Spark remains in token/model
+    /// analytics but is intentionally excluded from every API-dollar estimate.
+    static func independentQuotaModelName(from rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let key = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .filter { $0.isLetter || $0.isNumber }
+        return key == "gpt53codexspark" ? "gpt-5.3-codex-spark" : nil
     }
 
     // Source-compatible aliases for tests and integrations compiled against
@@ -252,6 +329,8 @@ struct QuotaConsumptionEstimate: Equatable {
     let calls: Int
     let cacheHitRate: Double
     let confidence: QuotaConsumptionConfidence
+    let excludedModels: [String]
+    let excludedCalls: Int
 
     var quotaDropObserved: Bool { quotaDropBasis == .observed }
     var quotaDropEstimated: Bool { quotaDropBasis == .estimated }
@@ -271,7 +350,9 @@ struct QuotaConsumptionEstimate: Equatable {
         outputTokens: Int,
         calls: Int,
         cacheHitRate: Double,
-        confidence: QuotaConsumptionConfidence
+        confidence: QuotaConsumptionConfidence,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0
     ) {
         self.selectedCostUSD = selectedCostUSD
         self.impliedWindowBudgetUSD = impliedWindowBudgetUSD
@@ -295,6 +376,8 @@ struct QuotaConsumptionEstimate: Equatable {
         self.calls = calls
         self.cacheHitRate = cacheHitRate
         self.confidence = confidence
+        self.excludedModels = excludedModels
+        self.excludedCalls = excludedCalls
     }
 }
 
@@ -325,6 +408,8 @@ enum QuotaConsumptionEstimator {
         comparisonCostUSD: Double? = nil,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
         comparisonBreakdown: TokenCacheBreakdown? = nil,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0,
         comparisonStartDate: Date? = nil,
         comparisonEndDate: Date? = nil,
         comparisonUsesConservativeBuckets: Bool = false
@@ -366,7 +451,9 @@ enum QuotaConsumptionEstimator {
             outputTokens: breakdown.outputTokens,
             calls: breakdown.calls,
             cacheHitRate: breakdown.cacheHitRate,
-            confidence: confidence
+            confidence: confidence,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
         )
     }
 }
@@ -584,6 +671,8 @@ extension RecentChartPreparedData {
                 comparisonCostUSD: fiveHourPrice.costUSD,
                 quotaDropBasis: fiveHourDrop.basis,
                 comparisonBreakdown: fiveHourDrop.comparisonBreakdown,
+                excludedModels: fiveHourPrice.excludedModels,
+                excludedCalls: fiveHourPrice.excludedCalls,
                 comparisonStartDate: fiveHourDrop.comparisonStartDate,
                 comparisonEndDate: fiveHourDrop.comparisonEndDate,
                 comparisonUsesConservativeBuckets: fiveHourDrop.comparisonUsesConservativeBuckets
@@ -596,6 +685,8 @@ extension RecentChartPreparedData {
                 comparisonCostUSD: sevenDayPrice.costUSD,
                 quotaDropBasis: sevenDayDrop.basis,
                 comparisonBreakdown: sevenDayDrop.comparisonBreakdown,
+                excludedModels: sevenDayPrice.excludedModels,
+                excludedCalls: sevenDayPrice.excludedCalls,
                 comparisonStartDate: sevenDayDrop.comparisonStartDate,
                 comparisonEndDate: sevenDayDrop.comparisonEndDate,
                 comparisonUsesConservativeBuckets: sevenDayDrop.comparisonUsesConservativeBuckets

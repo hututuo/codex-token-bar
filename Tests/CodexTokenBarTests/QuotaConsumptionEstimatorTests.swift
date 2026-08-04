@@ -246,6 +246,14 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             calls: 1
         )
         XCTAssertEqual(OfficialAPIPriceModel.gpt54Legacy.currentPriceRates.costUSD(for: breakdown), 4, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.3-codex"), .gpt53Codex)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.2-codex"), .gpt52Codex)
+        XCTAssertNil(OfficialAPIPriceModel.detected(from: "gpt-5.3-codex-spark"))
+        XCTAssertEqual(OfficialAPIPriceModel.independentQuotaModelName(from: "gpt-5.3-codex-spark"), "gpt-5.3-codex-spark")
+        XCTAssertEqual(OfficialAPIPriceModel.gpt53Codex.currentPriceRates.inputUSDPerMillion, 1.75, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt52Codex.currentPriceRates.outputUSDPerMillion, 14, accuracy: 0.0001)
+        XCTAssertEqual(1 / OfficialAPIPriceModel.gpt56Luna.currentPriceRates.inputUSDPerMillion, 5, accuracy: 0.0001)
+        XCTAssertEqual(2.5 / OfficialAPIPriceModel.gpt56Terra.currentPriceRates.inputUSDPerMillion, 1.25, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt54MiniLegacy.currentPriceRates.costUSD(for: breakdown), 1.2, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt56Sol, .gpt56Terra, .gpt56Luna])
     }
@@ -286,9 +294,107 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             fallbackModel: .gpt56Terra,
             rates: { $0.currentPriceRates }
         )
-        XCTAssertEqual(duplicate.costUSD, 8.375, accuracy: 0.0001)
+        XCTAssertEqual(duplicate.costUSD, 6.7, accuracy: 0.0001)
         XCTAssertEqual(duplicate.detectedModels, [])
         XCTAssertEqual(duplicate.fallbackCalls, 2)
+    }
+
+    func testMixedModelCoveragePricesCodexAliasesExcludesSparkAndKeepsUnknownFallback() {
+        let rows = [
+            ("gpt-5.6-sol", 1_000_000),
+            ("gpt-5.6-luna", 1_000_000),
+            ("gpt-5.6-terra", 1_000_000),
+            ("gpt-5.3-codex", 1_000_000),
+            ("gpt-5.2-codex", 1_000_000),
+            ("gpt-5.3-codex-spark", 1_000_000),
+            ("codex-auto-review", 1_000_000),
+        ].map { model, tokens in
+            ModelTokenBreakdown(
+                model: model,
+                breakdown: TokenCacheBreakdown(
+                    inputTokens: tokens,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    reasoningOutputTokens: 0,
+                    totalTokens: tokens,
+                    calls: 1
+                )
+            )
+        }
+        let fallback = TokenCacheBreakdown(
+            inputTokens: 7_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 7_000_000,
+            calls: 7
+        )
+
+        let estimate = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: rows,
+            fallbackBreakdown: fallback,
+            fallbackModel: .gpt56Terra,
+            rates: { $0.currentPriceRates }
+        )
+
+        XCTAssertEqual(estimate.costUSD, 12.7, accuracy: 0.0001)
+        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
+        XCTAssertEqual(estimate.fallbackCalls, 1)
+        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
+        XCTAssertEqual(estimate.excludedCalls, 1)
+    }
+
+    func testSparkOnlyEstimateIsZeroButRetainsIndependentQuotaMetadata() {
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 2_000_000,
+            cachedInputTokens: 1_000_000,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 2_100_000,
+            calls: 3
+        )
+        let estimate = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: [ModelTokenBreakdown(model: "gpt-5.3-codex-spark", breakdown: breakdown)],
+            fallbackBreakdown: breakdown,
+            fallbackModel: .gpt56Sol,
+            rates: { $0.currentPriceRates }
+        )
+
+        XCTAssertEqual(estimate.costUSD, 0, accuracy: 0.0001)
+        XCTAssertEqual(estimate.detectedModels, [])
+        XCTAssertEqual(estimate.fallbackCalls, 0)
+        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
+        XCTAssertEqual(estimate.excludedCalls, 3)
+    }
+
+    func testIncompleteSparkRowsNeverLeakIntoUnknownFallbackAmount() {
+        let spark = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let fallback = TokenCacheBreakdown(
+            inputTokens: 2_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 2_000_000,
+            calls: 2
+        )
+        let estimate = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: [ModelTokenBreakdown(model: "gpt-5.3-codex-spark", breakdown: spark)],
+            fallbackBreakdown: fallback,
+            fallbackModel: .gpt56Sol,
+            rates: { $0.currentPriceRates }
+        )
+
+        XCTAssertEqual(estimate.costUSD, 5, accuracy: 0.0001)
+        XCTAssertEqual(estimate.fallbackCalls, 1)
+        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
+        XCTAssertEqual(estimate.excludedCalls, 1)
     }
 
     func testEstimateIsUnavailableWhenQuotaDidNotDrop() {
@@ -370,9 +476,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7.5, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.5, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 7.5, accuracy: 0.0001)
+        XCTAssertEqual(result.localCurrentOfficialCostUSD, 7.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 7.0, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(result.fallbackModelCalls, 0)
         XCTAssertEqual(result.pricingModelText, "自动 · Sol/Terra")
@@ -653,9 +759,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             attributionEvents: events
         ))
 
-        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7.5, accuracy: 0.0001)
-        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7.5, accuracy: 0.0001)
-        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.costUSD, 7.0, accuracy: 0.0001)
+        XCTAssertEqual(selection.fiveHour.selectedCostUSD, 7.0, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 7.0, accuracy: 0.0001)
         XCTAssertEqual(selection.fullCurrentAPIPriceEstimate.detectedModels, [.gpt56Sol, .gpt56Terra])
     }
 

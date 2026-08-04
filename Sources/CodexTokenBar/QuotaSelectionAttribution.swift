@@ -107,6 +107,8 @@ struct QuotaSelectionAttributionResult: Equatable {
     let model: OfficialAPIPriceModel
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackModelCalls: Int
+    let excludedModels: [String]
+    let excludedCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let accountDropBasis: QuotaConsumptionDropBasis
     let accountDropPercent: Double?
@@ -223,6 +225,8 @@ enum QuotaSelectionAttributionEstimator {
             model: model,
             detectedModels: comparableEstimate.detectedModels,
             fallbackModelCalls: comparableEstimate.fallbackCalls,
+            excludedModels: comparableEstimate.excludedModels,
+            excludedCalls: comparableEstimate.excludedCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: selection.sevenDay.quotaDropBasis,
             accountDropPercent: accountDrop,
@@ -343,6 +347,8 @@ enum QuotaSelectionAttributionEstimator {
             model: model,
             detectedModels: (comparableEstimate ?? currentOfficialEstimate).detectedModels,
             fallbackModelCalls: (comparableEstimate ?? currentOfficialEstimate).fallbackCalls,
+            excludedModels: (comparableEstimate ?? currentOfficialEstimate).excludedModels,
+            excludedCalls: (comparableEstimate ?? currentOfficialEstimate).excludedCalls,
             priceRevision: context.priceRevision,
             accountDropBasis: accountDropBasis,
             accountDropPercent: accountDrop,

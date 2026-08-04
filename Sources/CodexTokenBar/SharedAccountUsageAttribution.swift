@@ -74,9 +74,11 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
             case .gpt56Sol:
                 return APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
             case .gpt56Terra:
-                return APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
+                return APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
             case .gpt56Luna:
-                return APIPriceRates(inputUSDPerMillion: 1.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 6.00)
+                return APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
+            case .gpt53Codex, .gpt52Codex:
+                return APIPriceRates(inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14.00)
             case .gpt54Legacy:
                 return APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
             case .gpt54MiniLegacy:
@@ -1542,6 +1544,8 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let model: OfficialAPIPriceModel
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackModelCalls: Int
+    let excludedModels: [String]
+    let excludedCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let cycleStart: Date?
     let cycleEnd: Date?
@@ -1955,6 +1959,8 @@ enum SharedAccountUsageAttributionEstimator {
                     model: model,
                     detectedModels: pendingComparableCost.detectedModels,
                     fallbackModelCalls: pendingComparableCost.fallbackCalls,
+                    excludedModels: pendingComparableCost.excludedModels,
+                    excludedCalls: pendingComparableCost.excludedCalls,
                     priceRevision: priceRevision,
                     cycleStart: cycleStart,
                     cycleEnd: resetAt,
@@ -2125,6 +2131,8 @@ enum SharedAccountUsageAttributionEstimator {
             model: model,
             detectedModels: localComparableEstimate.detectedModels,
             fallbackModelCalls: localComparableEstimate.fallbackCalls,
+            excludedModels: localComparableEstimate.excludedModels,
+            excludedCalls: localComparableEstimate.excludedCalls,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: resetAt,
@@ -2225,6 +2233,8 @@ enum SharedAccountUsageAttributionEstimator {
             model: model,
             detectedModels: [],
             fallbackModelCalls: breakdown.calls,
+            excludedModels: [],
+            excludedCalls: 0,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,

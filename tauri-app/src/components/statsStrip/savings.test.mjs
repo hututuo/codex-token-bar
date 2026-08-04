@@ -54,7 +54,7 @@ test("lifetime savings uses recorded historical models before the fallback model
     now: new Date("2026-07-07T00:00:00Z"),
   });
 
-  assert.equal(estimate?.apiEquivalentUSD, 7.5);
+  assert.equal(estimate?.apiEquivalentUSD, 7);
   assert.match(savingsPresentation(estimate).helpText, /历史真实模型/);
 });
 
@@ -85,7 +85,30 @@ test("unknown plan shows API equivalent instead of inventing subscription cost",
   });
   const presentation = savingsPresentation(estimate);
 
-  assert.equal(presentation.valueText, "$2.50");
+  assert.equal(presentation.valueText, "$2.00");
   assert.equal(presentation.labelText, "API 等值（估）");
   assert.match(presentation.helpText, /暂不计算净节省/);
+});
+
+test("lifetime savings excludes Spark while preserving its model calls", () => {
+  const estimate = estimateLifetimeSavings({
+    breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000, calls: 2 },
+    modelBreakdowns: [
+      { model: "gpt-5.3-codex-spark", breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000, calls: 2 } },
+    ],
+    firstUsageAt: "2026-07-01T00:00:00Z",
+    planLabel: "Enterprise",
+    priceModel: "gpt56Sol",
+    now: new Date("2026-07-07T00:00:00Z"),
+  });
+
+  assert.equal(estimate?.apiEquivalentUSD, 0);
+  assert.deepEqual(estimate?.detectedModels, []);
+  assert.equal(estimate?.fallbackModelCalls, 0);
+  assert.deepEqual(estimate?.excludedModels, ["gpt-5.3-codex-spark"]);
+  assert.equal(estimate?.excludedCalls, 2);
+  const helpText = savingsPresentation(estimate).helpText;
+  assert.match(helpText, /独立额度/);
+  assert.doesNotMatch(helpText, /缺少逐模型历史/);
+  assert.doesNotMatch(helpText, /未知模型回退/);
 });

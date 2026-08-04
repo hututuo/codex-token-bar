@@ -4,7 +4,10 @@ import {
   type CodexRadarQuotaRow,
 } from "../../domain/codexRadar/model.ts";
 import type { OfficialAPIPriceModel, QuotaPriceBasis } from "../../settings/quotaPriceModel";
-import { modelAwareAPICostUSD } from "../../settings/quotaPriceModel.ts";
+import {
+  modelAwareAPICostUSD,
+  type ModelAwareAPICostEstimate,
+} from "../../settings/quotaPriceModel.ts";
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
 import type { QuotaAttributionIdentity, QuotaLimit } from "../../types/dashboard";
 import { ATTRIBUTION_BUCKET_SECONDS, type AttributionTokenBucket } from "./highWater.ts";
@@ -66,6 +69,8 @@ export interface SharedAccountAttributionResult {
   localComparableUSD: number | null;
   scannedLocalComparableUSD: number | null;
   localCurrentAPIEquivalentUSD: number | null;
+  excludedModels: string[];
+  excludedCalls: number;
   scannedLocalCurrentAPIEquivalentUSD: number | null;
   scannedLocalRadar20260730EquivalentUSD: number | null;
   historyChangedLowConfidence: boolean;
@@ -223,20 +228,24 @@ export function estimateSharedAccountAttribution({
 
   const tokens = aggregateAttributionBuckets(buckets);
   const scannedTokens = aggregateAttributionBuckets(scannedBuckets);
-  const localRadar20260730EquivalentUSD = costForBreakdown(tokens, buckets, priceModel, "radar20260730");
-  const localCurrentAPIEquivalentUSD = costForBreakdown(tokens, buckets, priceModel, "current");
-  const scannedLocalRadar20260730EquivalentUSD = costForBreakdown(
+  const localRadarEstimate = costForBreakdown(tokens, buckets, priceModel, "radar20260730");
+  const localCurrentEstimate = costForBreakdown(tokens, buckets, priceModel, "current");
+  const scannedLocalRadarEstimate = costForBreakdown(
     scannedTokens,
     scannedBuckets,
     priceModel,
     "radar20260730",
   );
-  const scannedLocalCurrentAPIEquivalentUSD = costForBreakdown(
+  const scannedLocalCurrentEstimate = costForBreakdown(
     scannedTokens,
     scannedBuckets,
     priceModel,
     "current",
   );
+  const localRadar20260730EquivalentUSD = localRadarEstimate.costUSD;
+  const localCurrentAPIEquivalentUSD = localCurrentEstimate.costUSD;
+  const scannedLocalRadar20260730EquivalentUSD = scannedLocalRadarEstimate.costUSD;
+  const scannedLocalCurrentAPIEquivalentUSD = scannedLocalCurrentEstimate.costUSD;
   const localComparableUSD = priceBasis === "radar20260730"
     ? localRadar20260730EquivalentUSD
     : localCurrentAPIEquivalentUSD;
@@ -277,6 +286,8 @@ export function estimateSharedAccountAttribution({
     localComparableUSD,
     scannedLocalComparableUSD,
     localCurrentAPIEquivalentUSD,
+    excludedModels: localCurrentEstimate.excludedModels,
+    excludedCalls: localCurrentEstimate.excludedCalls,
     scannedLocalCurrentAPIEquivalentUSD,
     scannedLocalRadar20260730EquivalentUSD,
     historyChangedLowConfidence,
@@ -409,7 +420,7 @@ function costForBreakdown(
   buckets: AttributionTokenBucket[],
   priceModel: OfficialAPIPriceModel,
   basis: QuotaPriceBasis,
-): number {
+): ModelAwareAPICostEstimate {
   const modelBreakdowns = buckets.every((bucket) => (
     bucket.modelTrackingComplete === true && Array.isArray(bucket.modelBreakdowns)
   ))
@@ -425,7 +436,7 @@ function costForBreakdown(
     },
     priceModel,
     basis,
-  ).costUSD;
+  );
 }
 
 function emptyResult(
@@ -461,6 +472,8 @@ function emptyResult(
     localComparableUSD: null,
     scannedLocalComparableUSD: null,
     localCurrentAPIEquivalentUSD: null,
+    excludedModels: [],
+    excludedCalls: 0,
     scannedLocalCurrentAPIEquivalentUSD: null,
     scannedLocalRadar20260730EquivalentUSD: null,
     historyChangedLowConfidence: false,

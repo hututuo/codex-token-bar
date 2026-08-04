@@ -27,14 +27,14 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
 
         XCTAssertEqual(result.breakdown.inputTokens, 1_000_000)
         XCTAssertEqual(result.priceRevision, .radar20260730)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 4.6, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 4.6, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 3, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 3.68, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 3.68, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 8, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 5, accuracy: 0.0001)
         XCTAssertEqual(result.state, .suspectedNonLocalUsage)
         XCTAssertEqual(
             SharedAccountUsageAttributionPresentation(result: result).compactSummaryLine,
-            "本≈10%·差+3%"
+            "本≈8%·差+5%"
         )
     }
 
@@ -68,14 +68,43 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             now: now
         )
 
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.5, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 7.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 7.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 7.0, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(result.fallbackModelCalls, 0)
         XCTAssertEqual(
             SharedAccountUsageAttributionPresentation(result: result).modelLine,
             "自动：Sol/Terra"
         )
+    }
+
+    func testSparkSharedAccountUsageKeepsRawCallsButExcludesAPIEquivalent() throws {
+        let spark = attributionEvent(
+            id: "spark",
+            at: cycleStart,
+            input: 2_000_000,
+            model: "gpt-5.3-codex-spark"
+        )
+        let result = SharedAccountUsageAttributionEstimator.estimate(
+            enabled: true,
+            preciseUsageReady: true,
+            recentBins: [bucket(at: spark.start, input: 2_000_000, cached: 0, output: 0)],
+            recentAttributionEvents: [spark],
+            sevenDayQuota: quota(used: 8, resetAt: resetAt),
+            quotaUpdatedAt: now,
+            historyIdentity: identity(),
+            radar: try radar(date: "2026-07-30", tier: "20x Pro", fiveHour: nil, sevenDay: 100),
+            tier: .twentyXPro,
+            model: .gpt56Sol,
+            now: now
+        )
+
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 0, accuracy: 0.0001)
+        XCTAssertEqual(result.breakdown.inputTokens, 2_000_000)
+        XCTAssertEqual(result.breakdown.calls, 1)
+        XCTAssertEqual(result.excludedModels, ["gpt-5.3-codex-spark"])
+        XCTAssertEqual(result.excludedCalls, 1)
     }
 
     func testPendingRestartBaselineStillShowsLocalAutomaticEquivalent() throws {
@@ -126,7 +155,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
     func testDifferenceWithinTwoPercentagePointsIsNotLabeledNonLocal() throws {
         let result = estimate(
             accountUsed: 11,
-            radarTotal: 46,
+            radarTotal: 36.8,
             tier: .twentyXPro,
             rowTier: "PRO 20×",
             model: .gpt56Terra
@@ -178,7 +207,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
     func testNegativeDifferenceIsPreservedInsteadOfClampedToZero() throws {
         let result = estimate(
             accountUsed: 5,
-            radarTotal: 46,
+            radarTotal: 36.8,
             tier: .twentyXPro,
             rowTier: "20x-pro",
             model: .gpt56Terra
@@ -262,16 +291,16 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown), 9.2, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown), 4.6, accuracy: 0.0001)
-        XCTAssertEqual(OfficialAPIPriceModel.gpt56Luna.currentPriceRates.costUSD(for: breakdown), 1.84, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown), 3.68, accuracy: 0.0001)
+        XCTAssertEqual(OfficialAPIPriceModel.gpt56Luna.currentPriceRates.costUSD(for: breakdown), 0.368, accuracy: 0.0001)
         XCTAssertEqual(
             try XCTUnwrap(SharedAccountRadarPriceRevision.radar20260730.rates(for: .gpt56Terra)).costUSD(for: breakdown),
-            4.6,
+            3.68,
             accuracy: 0.0001
         )
         XCTAssertEqual(
             try XCTUnwrap(SharedAccountRadarPriceRevision.radar20260730.rates(for: .gpt56Luna)).costUSD(for: breakdown),
-            1.84,
+            0.368,
             accuracy: 0.0001
         )
         XCTAssertEqual(
@@ -406,11 +435,11 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(result.priceRevision, .currentOfficial)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 2.5, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 2.5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 2.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localCurrentOfficialCostUSD), 2.0, accuracy: 0.0001)
         XCTAssertEqual(
             try XCTUnwrap(result.localSharePercent),
-            2.5 / 1_948 * 100,
+            2.0 / 1_948 * 100,
             accuracy: 0.0001
         )
     }
@@ -881,10 +910,10 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             highWatermark: stored
         )
 
-        XCTAssertEqual(try XCTUnwrap(result.scannedComparableCostUSD), 4.6, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 6.9, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 15, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), -2, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.scannedComparableCostUSD), 3.68, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 5.52, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 12, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.nonLocalDifferencePercent), 1, accuracy: 0.0001)
         XCTAssertTrue(result.usedHighWatermark)
     }
 
@@ -2756,9 +2785,9 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
         let presentation = SharedAccountUsageAttributionPresentation(result: result)
 
-        XCTAssertTrue(presentation.localFormula.contains("$4.60 ÷ $46.00 × 100 = 10.0%"))
-        XCTAssertTrue(presentation.differenceFormula.contains("5.0% − 10.0% = -5.0%"))
-        XCTAssertTrue(presentation.summaryLine.contains("差 -5.0%"))
+        XCTAssertTrue(presentation.localFormula.contains("$3.68 ÷ $46.00 × 100 = 8.0%"))
+        XCTAssertTrue(presentation.differenceFormula.contains("5.0% − 8.0% = -3.0%"))
+        XCTAssertTrue(presentation.summaryLine.contains("差 -3.0%"))
     }
 
     func testHighWatermarkKeyChangesWithCycleAccountAndSegmentButSharesAcrossPricingChoices() {
@@ -2820,8 +2849,8 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
             highWatermark: store.record(for: currentKey)
         )
 
-        XCTAssertEqual(try XCTUnwrap(currentRaw.localComparableCostUSD), 2.3, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(protected.localComparableCostUSD), 4.6, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(currentRaw.localComparableCostUSD), 1.84, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(protected.localComparableCostUSD), 3.68, accuracy: 0.0001)
         XCTAssertTrue(protected.usedHighWatermark)
     }
 

@@ -285,6 +285,8 @@ extension OfficialAPIPriceModel {
         case .gpt56Sol: "Sol"
         case .gpt56Terra: "Terra"
         case .gpt56Luna: "Luna"
+        case .gpt53Codex: "5.3 Codex"
+        case .gpt52Codex: "5.2 Codex"
         case .gpt54Legacy: "5.4"
         case .gpt54MiniLegacy: "5.4 Mini"
         }
@@ -294,12 +296,17 @@ extension OfficialAPIPriceModel {
 extension ModelAwareAPIPriceEstimate {
     func pricingModelText(fallbackModel: OfficialAPIPriceModel) -> String {
         let detected = detectedModels.map(\.quotaEstimateShortTitle)
+        let excluded = excludedModels.isEmpty
+            ? nil
+            : "\(excludedModels.joined(separator: "/")) \(excludedCalls) 次独立额度，不参与 API 等值"
         guard !detected.isEmpty else {
-            return "未知回退 \(fallbackModel.quotaEstimateShortTitle)"
+            return excluded ?? "未知回退 \(fallbackModel.quotaEstimateShortTitle)"
         }
         let automatic = "自动 · \(detected.joined(separator: "/"))"
-        guard fallbackCalls > 0 else { return automatic }
-        return "\(automatic) + 未知→\(fallbackModel.quotaEstimateShortTitle)"
+        let fallbackText = fallbackCalls > 0
+            ? " + 未知→\(fallbackModel.quotaEstimateShortTitle)"
+            : ""
+        return automatic + fallbackText + (excluded.map { " · \($0)" } ?? "")
     }
 }
 
@@ -308,7 +315,9 @@ extension QuotaSelectionAttributionResult {
         ModelAwareAPIPriceEstimate(
             costUSD: localCurrentOfficialCostUSD,
             detectedModels: detectedModels,
-            fallbackCalls: fallbackModelCalls
+            fallbackCalls: fallbackModelCalls,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
         ).pricingModelText(fallbackModel: model)
     }
 }

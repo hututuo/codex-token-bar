@@ -503,6 +503,12 @@ function RecentChartQuotaEstimateOverlay({
           <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
           <b>命中 {percentText(selection.cacheHitRate)}</b>
         </div>
+        {selection.excludedModels.length > 0 ? (
+          <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+            <span>{selection.excludedModels.join("、")} {selection.excludedCalls} 次调用</span>
+            <em>独立额度，不参与 API 等值</em>
+          </div>
+        ) : null}
         <div className="quota-estimate-row">
           <span>反推总额度</span>
           {showsFiveHourQuota ? (
@@ -565,6 +571,12 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
         <span>本机同基准 {moneyText(attribution.localComparableCostUSD)}</span>
         <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
       </div>
+      {attribution.excludedModels.length > 0 ? (
+        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+          <span>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用</span>
+          <em>独立额度，不参与 API 等值</em>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -705,13 +717,14 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     return `无 ${title} 额度`;
   }
 
+  const excludedNote = estimate.excludedModels.length > 0 ? " · 独立额度不计入" : "";
   switch (estimate.confidence) {
     case "measured":
-      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}`;
+      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${excludedNote}`;
     case "insufficientQuotaMovement":
-      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推`;
+      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${excludedNote}`;
     case "noTokenUsage":
-      return "无 token";
+      return `无 token${excludedNote}`;
   }
 }
 

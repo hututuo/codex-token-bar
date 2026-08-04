@@ -313,10 +313,10 @@ test("24h selection attribution compares observed account drop with Radar-priced
 
   assert.ok(result);
   assert.equal(result.accountDropPercent, 3);
-  assert.equal(result.localComparableCostUSD, 5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 5);
-  assert.equal(result.localSharePercent, 5);
-  assert.equal(result.nonLocalDifferencePercent, -2);
+  assert.equal(result.localComparableCostUSD, 4);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localSharePercent, 4);
+  assert.equal(result.nonLocalDifferencePercent, -1);
   assert.equal(result.state, "withinTolerance");
 });
 
@@ -365,11 +365,38 @@ test("24h selection attribution keeps the local Radar conversion when quota hist
   assert.ok(result);
   assert.equal(result.state, "missingQuotaHistory");
   assert.equal(result.accountDropPercent, null);
-  assert.equal(result.localComparableCostUSD, 5);
-  assert.equal(result.localCurrentAPIEquivalentUSD, 5);
-  assert.equal(result.localSharePercent, 5);
+  assert.equal(result.localComparableCostUSD, 4);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 4);
+  assert.equal(result.localSharePercent, 4);
   assert.equal(result.nonLocalDifferencePercent, null);
   assert.equal(result.allowsAttributionConclusion, false);
+});
+
+test("Spark-only selected range keeps breakdown and calls while reporting independent quota", () => {
+  const sparkPoints = [0, 300].map((startUnix) => point(startUnix, {
+    inputTokens: 1_000_000,
+    tokens: 1_000_000,
+    calls: 1,
+    modelBreakdowns: [{
+      model: "gpt-5.3-codex-spark",
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+    }],
+  }));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: sparkPoints,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+
+  assert.ok(selection);
+  assert.equal(selection.selectedCostUSD, 0);
+  assert.equal(selection.totalTokens, 2_000_000);
+  assert.equal(selection.calls, 2);
+  assert.deepEqual(selection.excludedModels, ["gpt-5.3-codex-spark"]);
+  assert.equal(selection.excludedCalls, 2);
+  assert.equal(selection.fiveHour.excludedCalls, 2);
+  assert.equal(selection.sevenDay.excludedCalls, 2);
 });
 
 test("quotaConsumptionSelection keeps a flat zero-quota range summary", () => {

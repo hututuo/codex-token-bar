@@ -1,7 +1,6 @@
 import type { RecentUsagePoint } from "../../types/dashboard";
 import {
   modelAwareAPICostUSD,
-  officialAPICostUSD as calculateOfficialAPICostUSD,
   type ModelTokenCostRow,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
@@ -89,6 +88,8 @@ export interface QuotaConsumptionEstimate {
   comparisonStartUnix: number | null;
   comparisonEndUnix: number | null;
   confidence: QuotaConsumptionConfidence;
+  excludedModels: string[];
+  excludedCalls: number;
 }
 
 export interface QuotaConsumptionSelection {
@@ -107,6 +108,8 @@ export interface QuotaConsumptionSelection {
   cacheHitRate: number;
   modelBreakdowns: ModelTokenCostRow[];
   sevenDayModelBreakdowns: ModelTokenCostRow[];
+  excludedModels: string[];
+  excludedCalls: number;
   fiveHour: QuotaConsumptionEstimate;
   sevenDay: QuotaConsumptionEstimate;
   sevenDayToFiveHourBudgetRatio: number | null;
@@ -129,6 +132,8 @@ export interface QuotaSelectionAttributionResult {
   nonLocalDifferencePercent: number | null;
   localComparableCostUSD: number | null;
   localCurrentAPIEquivalentUSD: number;
+  excludedModels: string[];
+  excludedCalls: number;
   radarSevenDayTotalUSD: number | null;
   allowsAttributionConclusion: boolean;
 }
@@ -485,11 +490,11 @@ export function quotaConsumptionSelection(
 
   const selectedPoints = data.points.slice(lower, upper + 1);
   const breakdown = combineTokenBreakdown(selectedPoints);
-  const selectedCostUSD = modelAwareAPICostUSD(
+  const selectedEstimate = modelAwareAPICostUSD(
     selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
     breakdown,
     priceModel,
-  ).costUSD;
+  );
   const fiveHourDrop = quotaDropResolution(selectedPoints.map((point) => point.fiveHourRemainingPercent));
   const sevenDayDrop = quotaDropResolution(selectedPoints.map((point) => point.sevenDayRemainingPercent));
   const fiveHourComparisonPoints = fiveHourDrop.comparisonStartOffset === null
@@ -500,32 +505,34 @@ export function quotaConsumptionSelection(
     : selectedPoints.slice(sevenDayDrop.comparisonStartOffset);
   const fiveHourComparisonBreakdown = combineTokenBreakdown(fiveHourComparisonPoints);
   const sevenDayComparisonBreakdown = combineTokenBreakdown(sevenDayComparisonPoints);
-  const fiveHourComparisonCost = modelAwareAPICostUSD(
+  const fiveHourComparisonEstimate = modelAwareAPICostUSD(
     fiveHourComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []),
     fiveHourComparisonBreakdown,
     priceModel,
-  ).costUSD;
+  );
   const sevenDayModelBreakdowns = sevenDayComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []);
-  const sevenDayComparisonCost = modelAwareAPICostUSD(
+  const sevenDayComparisonEstimate = modelAwareAPICostUSD(
     sevenDayModelBreakdowns,
     sevenDayComparisonBreakdown,
     priceModel,
-  ).costUSD;
+  );
   const fiveHour = quotaConsumptionEstimate(
     breakdown,
     fiveHourDrop,
-    selectedCostUSD,
-    fiveHourComparisonCost,
+    selectedEstimate.costUSD,
+    fiveHourComparisonEstimate.costUSD,
     fiveHourComparisonBreakdown,
+    fiveHourComparisonEstimate,
     selectedPoints,
     data.bucketSeconds,
   );
   const sevenDay = quotaConsumptionEstimate(
     breakdown,
     sevenDayDrop,
-    selectedCostUSD,
-    sevenDayComparisonCost,
+    selectedEstimate.costUSD,
+    sevenDayComparisonEstimate.costUSD,
     sevenDayComparisonBreakdown,
+    sevenDayComparisonEstimate,
     selectedPoints,
     data.bucketSeconds,
   );
@@ -540,7 +547,7 @@ export function quotaConsumptionSelection(
     startUnix: data.points[lower].startUnix,
     endUnix: data.points[upper].startUnix + data.bucketSeconds,
     priceModel,
-    selectedCostUSD: fiveHour.selectedCostUSD,
+    selectedCostUSD: selectedEstimate.costUSD,
     totalTokens: breakdown.totalTokens,
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
@@ -549,6 +556,8 @@ export function quotaConsumptionSelection(
     cacheHitRate: breakdown.cacheHitRate,
     modelBreakdowns: selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
     sevenDayModelBreakdowns,
+    excludedModels: selectedEstimate.excludedModels,
+    excludedCalls: selectedEstimate.excludedCalls,
     fiveHour,
     sevenDay,
     sevenDayToFiveHourBudgetRatio: ratio,
@@ -650,7 +659,6 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
   // classified token dimensions.
   const outputTokens = points.reduce((total, point) => total + finiteNonnegative(point.outputTokens), 0);
   const calls = points.reduce((total, point) => total + point.calls, 0);
-  const costUSD = officialAPICostUSD(inputTokens, cachedInputTokens, outputTokens, "gpt56Sol");
   return {
     inputTokens,
     cachedInputTokens,
@@ -658,7 +666,6 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
     totalTokens: points.reduce((total, point) => total + point.tokens, 0),
     calls,
     cacheHitRate: inputTokens === 0 ? 0 : cachedInputTokens / inputTokens,
-    costUSD,
   };
 }
 
@@ -668,6 +675,7 @@ function quotaConsumptionEstimate(
   selectedCostUSD: number,
   comparisonCostUSD: number,
   comparisonBreakdown: ReturnType<typeof combineTokenBreakdown>,
+  comparisonEstimate: ReturnType<typeof modelAwareAPICostUSD>,
   selectedPoints: RecentUsagePoint[],
   bucketSeconds: number,
 ): QuotaConsumptionEstimate {
@@ -702,6 +710,8 @@ function quotaConsumptionEstimate(
       ? null
       : selectedPoints[selectedPoints.length - 1].startUnix + bucketSeconds,
     confidence,
+    excludedModels: comparisonEstimate.excludedModels,
+    excludedCalls: comparisonEstimate.excludedCalls,
   };
 }
 
@@ -720,20 +730,21 @@ export function quotaSelectionAttribution(
     outputTokens: selection.sevenDay.comparisonBreakdown.outputTokens,
     calls: selection.sevenDay.comparisonBreakdown.calls,
   };
-  const localCurrentAPIEquivalentUSD = modelAwareAPICostUSD(
+  const localCurrentAPIEquivalent = modelAwareAPICostUSD(
     comparisonRows,
     comparisonBreakdown,
     selection.priceModel,
     "current",
-  ).costUSD;
-  const localComparableCostUSD = context.priceBasis === null
+  );
+  const localComparableEstimate = context.priceBasis === null
     ? null
     : modelAwareAPICostUSD(
         selection.sevenDayModelBreakdowns,
         comparisonBreakdown,
         selection.priceModel,
         context.priceBasis,
-      ).costUSD;
+      );
+  const localComparableCostUSD = localComparableEstimate?.costUSD ?? null;
   const radarSevenDayTotalUSD = context.radarPlanTotalUSD !== null
     && Number.isFinite(context.radarPlanTotalUSD)
     && context.radarPlanTotalUSD > 0
@@ -787,7 +798,9 @@ export function quotaSelectionAttribution(
     localSharePercent,
     nonLocalDifferencePercent,
     localComparableCostUSD,
-    localCurrentAPIEquivalentUSD,
+    localCurrentAPIEquivalentUSD: localCurrentAPIEquivalent.costUSD,
+    excludedModels: localCurrentAPIEquivalent.excludedModels,
+    excludedCalls: localCurrentAPIEquivalent.excludedCalls,
     radarSevenDayTotalUSD,
     allowsAttributionConclusion,
   };
@@ -847,21 +860,6 @@ function isFullRemainingSpike(value: number, previous: number | null, next: numb
 
 function quotaPercentValue(value: number): number {
   return value <= 1 ? value * 100 : value;
-}
-
-export function officialAPICostUSD(
-  inputTokens: number,
-  cachedInputTokens: number,
-  outputTokens: number,
-  priceModel: OfficialAPIPriceModel,
-): number {
-  return calculateOfficialAPICostUSD(
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
-    priceModel,
-    "current",
-  );
 }
 
 function latestPresent(values: Array<number | null>): number | null {
