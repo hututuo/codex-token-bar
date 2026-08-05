@@ -367,6 +367,7 @@ private struct QuotaHistoryWindowObservation {
 final class QuotaHistoryDatabase: @unchecked Sendable {
     private let fileManager: FileManager
     private let databaseURL: URL?
+    private let peerDatabaseURL: URL?
     private let heartbeatInterval: TimeInterval = 60 * 60
     private let retentionDays = 45
     private let recentInterval: TimeInterval = 5 * 60
@@ -374,8 +375,15 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private let legacyBridgeMaxAge: TimeInterval = 45 * 24 * 60 * 60
     private let legacyBridgeMaxRows = 512
 
-    init(databaseURL: URL? = nil, fileManager: FileManager = .default) {
+    init(
+        databaseURL: URL? = nil,
+        peerDatabaseURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) {
         self.databaseURL = databaseURL
+        // Custom database URLs are used by tests and migrations. Do not silently
+        // read the user's live Tauri database in those isolated instances.
+        self.peerDatabaseURL = peerDatabaseURL ?? (databaseURL == nil ? Self.defaultPeerDatabaseURL : nil)
         self.fileManager = fileManager
     }
 
@@ -391,10 +399,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         guard quota.isAvailable, let row = Self.row(from: quota, createdAt: now) else {
             return false
         }
+        let peerRows = loadPeerRows(for: row, cutoff: nil)
 
         return try withDatabase { database in
             try ensureSchema(database)
-            let latest = try latestTrustedRow(database: database, row: row, now: now)
+            let latest = try latestTrustedRow(
+                database: database,
+                row: row,
+                now: now,
+                additionalRows: peerRows
+            )
             let normalizedRow = row.normalized(after: latest)
             if let latest,
                !shouldInsert(normalizedRow, after: latest, now: now) {
@@ -409,9 +423,15 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) throws -> AccountQuotaSnapshot {
         let now = Date()
         guard let row = Self.row(from: quota, createdAt: now) else { return quota }
+        let peerRows = loadPeerRows(for: row, cutoff: nil)
         return try withDatabase { database in
             try ensureSchema(database)
-            let latest = try latestTrustedRow(database: database, row: row, now: now)
+            let latest = try latestTrustedRow(
+                database: database,
+                row: row,
+                now: now,
+                additionalRows: peerRows
+            )
             let normalizedRow = row.normalized(after: latest)
             return Self.snapshot(from: normalizedRow, base: quota)
         }
@@ -419,16 +439,25 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     func loadSnapshot(for quota: AccountQuotaSnapshot, now: Date = Date()) throws -> QuotaHistorySnapshot {
         guard let row = Self.row(from: quota, createdAt: now) else { return .empty }
-        return try withDatabase { database in
+        let localRows = try withDatabase { database in
             try ensureSchema(database)
-            let rows = try matchingRows(
+            return try matchingRows(
                 database: database,
                 row: row,
                 cutoff: now.addingTimeInterval(-31 * 24 * 60 * 60),
                 now: now
             )
-            return Self.makeSnapshot(rows: rows, recentInterval: recentInterval, maxCarryGap: maxCarryGap, now: now)
         }
+        let peerRows = loadPeerRows(
+            for: row,
+            cutoff: now.addingTimeInterval(-31 * 24 * 60 * 60)
+        )
+        return Self.makeSnapshot(
+            rows: mergedRows(localRows + peerRows),
+            recentInterval: recentInterval,
+            maxCarryGap: maxCarryGap,
+            now: now
+        )
     }
 
     func recordedFiveHourUsedPercents(
@@ -437,15 +466,17 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         age: TimeInterval = 31 * 24 * 60 * 60
     ) throws -> [Int] {
         guard let row = Self.row(from: quota, createdAt: now) else { return [] }
-        return try withDatabase { database in
+        let localRows = try withDatabase { database in
             try ensureSchema(database)
             return try matchingRows(
                 database: database,
                 row: row,
                 cutoff: now.addingTimeInterval(-age),
                 now: now
-            ).compactMap(\.fiveHourUsedPercent)
+            )
         }
+        let peerRows = loadPeerRows(for: row, cutoff: now.addingTimeInterval(-age))
+        return mergedRows(localRows + peerRows).compactMap(\.fiveHourUsedPercent)
     }
 
     private func shouldInsert(_ row: QuotaHistoryRow, after latest: QuotaHistoryRow, now: Date) -> Bool {
@@ -914,6 +945,130 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return values.reduce(0, +) / Double(values.count)
     }
 
+    private struct MergeKey: Hashable {
+        let scope: String
+        let account: String
+        let plan: String
+        let limit: String
+        let createdAt: UInt64
+        let fiveHourUsedPercent: Int?
+        let fiveHourResetsAt: UInt64?
+        let sevenDayUsedPercent: Int?
+        let sevenDayResetsAt: UInt64?
+        let source: String
+    }
+
+    /// Merge the two independently written histories without treating a
+    /// different source or quota cycle as the same observation. Tauri's first
+    /// copy of the old shared database can contain byte-for-byte Swift rows;
+    /// those are removed by this key while genuinely separate observations are
+    /// retained and then sorted for the existing sanitizer/interpolator.
+    private func mergedRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
+        var unique: [MergeKey: QuotaHistoryRow] = [:]
+        for row in rows {
+            let hasStableIdentity = stableIdentity(from: row) != nil
+            let key = MergeKey(
+                scope: mergeScope(for: row),
+                // Stable identity is authoritative even if one runtime has a
+                // missing or differently formatted display name. Legacy rows
+                // still require the account/plan/limit fallback to stay safe.
+                account: hasStableIdentity ? "" : row.historyMatchKey,
+                plan: hasStableIdentity ? "" : canonicalMergeValue(row.planType),
+                limit: hasStableIdentity ? "" : canonicalMergeValue(row.limitName),
+                createdAt: row.createdAt.timeIntervalSince1970.bitPattern,
+                fiveHourUsedPercent: row.fiveHourUsedPercent,
+                fiveHourResetsAt: row.fiveHourResetsAt?.timeIntervalSince1970.bitPattern,
+                sevenDayUsedPercent: row.sevenDayUsedPercent,
+                sevenDayResetsAt: row.sevenDayResetsAt?.timeIntervalSince1970.bitPattern,
+                source: canonicalSource(row.source)
+            )
+            guard let previous = unique[key] else {
+                unique[key] = row
+                continue
+            }
+
+            // Prefer the row with useful descriptive metadata when duplicate
+            // snapshots disagree only in status or an optional display field.
+            if previous.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !row.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                unique[key] = row
+            }
+        }
+        return unique.values.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return canonicalSource($0.source) < canonicalSource($1.source)
+        }
+    }
+
+    private func mergeScope(for row: QuotaHistoryRow) -> String {
+        if let identity = stableIdentity(from: row) {
+            return [
+                "stable",
+                String(identity.version),
+                identity.homeIdentity,
+                identity.stableAccountKey,
+                identity.planType,
+                identity.limitID
+            ].joined(separator: "|")
+        }
+        return "legacy|\(row.historyMatchKey)"
+    }
+
+    private func canonicalMergeValue(_ value: String?) -> String {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private func canonicalSource(_ value: String?) -> String {
+        canonicalMergeValue(value)
+    }
+
+    /// Read only the stable-identity rows from the peer runtime. In particular,
+    /// do not call `ensureSchema`, legacy bridge claims, or any write-capable
+    /// transaction against the peer database.
+    private func loadPeerRows(for row: QuotaHistoryRow, cutoff: Date?) -> [QuotaHistoryRow] {
+        guard let peerURL = peerDatabaseURL,
+              let mainURL = databaseURL ?? Self.defaultDatabaseURL,
+              peerURL.standardizedFileURL.path != mainURL.standardizedFileURL.path,
+              let identity = stableIdentity(from: row),
+              fileManager.fileExists(atPath: peerURL.path) else {
+            return []
+        }
+
+        do {
+            // This is a fixed, append-only peer WAL. Let SQLite provide its
+            // normal read snapshot: an ordinary Tauri checkpoint/append may
+            // rotate sidecars legitimately, so externally-owned WAL identity
+            // checks would incorrectly discard an otherwise valid read.
+            let driver = SQLiteDatabaseDriver(
+                url: peerURL,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 250,
+                enableWAL: false,
+                fileManager: fileManager
+            )
+            guard try peerSupportsStableIdentitySchema(driver) else { return [] }
+            return try stableRows(database: driver, identity: identity, cutoff: cutoff)
+        } catch {
+            // Peer history is an optional supplement. Missing, locked, corrupt,
+            // or partially migrated peer state must never hide the main history.
+            return []
+        }
+    }
+
+    private func peerSupportsStableIdentitySchema(_ database: DatabaseAccessing) throws -> Bool {
+        let columns = try database.readRows("PRAGMA table_info(quota_snapshots);") { statement in
+            statement.text(1) ?? ""
+        }
+        let required = Set([
+            "created_at", "account_key", "source", "plan_type", "limit_name", "account_name",
+            "five_hour_used_percent", "five_hour_resets_at", "seven_day_used_percent",
+            "seven_day_resets_at", "status", "identity_version", "home_identity",
+            "stable_account_key", "identity_plan_type", "identity_limit_id"
+        ])
+        return required.isSubset(of: Set(columns))
+    }
+
     private struct LegacyBridge {
         let accountName: String
         let planType: String
@@ -1037,9 +1192,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private func latestTrustedRow(
         database: SQLiteDatabaseConnection,
         row: QuotaHistoryRow,
-        now: Date
+        now: Date,
+        additionalRows: [QuotaHistoryRow] = []
     ) throws -> QuotaHistoryRow? {
-        let rawRows = try matchingRows(database: database, row: row, cutoff: nil, now: now)
+        var rawRows = try matchingRows(database: database, row: row, cutoff: nil, now: now)
+        if !additionalRows.isEmpty {
+            rawRows = mergedRows(rawRows + additionalRows)
+        }
         return Self.sanitizedRows(rawRows).last
     }
 
@@ -1080,7 +1239,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private func stableRows(
-        database: SQLiteDatabaseConnection,
+        database: DatabaseAccessing,
         identity: QuotaHistoryIdentity,
         cutoff: Date?
     ) throws -> [QuotaHistoryRow] {
@@ -1324,7 +1483,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         }.first
     }
 
-    private func rows(database: SQLiteDatabaseConnection, sql: String, bindings: [SQLiteBinding] = []) throws -> [QuotaHistoryRow] {
+    private func rows(database: DatabaseAccessing, sql: String, bindings: [SQLiteBinding] = []) throws -> [QuotaHistoryRow] {
         try database.readRows(sql, bindings: bindings) { statement in
             QuotaHistoryRow(
                 createdAt: statement.date(0) ?? Date(timeIntervalSince1970: 0),
@@ -1378,6 +1537,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private static var defaultDatabaseURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("CodexTokenBar", isDirectory: true)
+            .appendingPathComponent("quota-history.sqlite")
+    }
+
+    private static var defaultPeerDatabaseURL: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("CodexTokenBarTauri", isDirectory: true)
             .appendingPathComponent("quota-history.sqlite")
     }
 
