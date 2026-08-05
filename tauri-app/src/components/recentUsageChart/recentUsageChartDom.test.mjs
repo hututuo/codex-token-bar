@@ -433,6 +433,145 @@ test("fixed 24h selection keeps local conversion visible when quota history is m
   }
 });
 
+test("fixed 7d and 30d selections render shared-account attribution", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      const attributionContext = {
+        status: "indistinguishable",
+        priceBasis: "radar20260730",
+        radarPlanTotalUSD: 100,
+        quotaDataStale: false,
+        radarDataStale: false,
+        usagePendingQuotaRefresh: false,
+        historyChangedLowConfidence: false,
+        cycleStartUnix: 0,
+        cycleEndUnix: 604_800,
+        segmentStartUnix: 0,
+        quotaUpdatedAtUnix: 24 * 60 * 60,
+      };
+
+      function rangePoint(startUnix, bucketSeconds) {
+        return point(startUnix, 0.90 - (startUnix / bucketSeconds) * 0.015, 0.90 - (startUnix / bucketSeconds) * 0.015);
+      }
+
+      try {
+        for (const [range, bucketSeconds, prop] of [["7d", 60 * 60, "recentUsage7d"], ["30d", 6 * 60 * 60, "recentUsage30d"]]) {
+          const points = [0, 1, 2].map((index) => rangePoint(index * bucketSeconds, bucketSeconds));
+          await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+            recentUsage24h: [],
+            recentUsage7d: prop === "recentUsage7d" ? points : [],
+            recentUsage30d: prop === "recentUsage30d" ? points : [],
+            sharedAccountAttribution: attributionContext,
+          })));
+          await React.act(async () => container.querySelector(`.recent-range-tabs button:nth-child(${range === "7d" ? 2 : 3})`).click());
+
+          const chart = container.querySelector("svg.usage-chart");
+          assert.ok(chart);
+          chart.getBoundingClientRect = () => ({
+            bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
+            toJSON: () => ({}),
+          });
+          for (const clientX of [0, 980]) {
+            await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+              bubbles: true,
+              cancelable: true,
+              clientX,
+              clientY: 80,
+              pointerId: 1,
+            })));
+          }
+
+          const attribution = container.querySelector('[aria-label="选区共享账号归因"]');
+          assert.ok(attribution, range);
+          assert.match(attribution.textContent, /账号实降3%/, range);
+          assert.match(attribution.textContent, /本机折算≈1\.5%/, range);
+        }
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
+test("top hover and fixed-selection previews can be dismissed without clearing the lower estimate", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h: [point(0, 0.82, 0.91), point(300, 0.78, 0.89), point(600, 0.74, 0.87)],
+          recentUsage7d: [],
+          recentUsage30d: [],
+        })));
+        const chart = container.querySelector("svg.usage-chart");
+        assert.ok(chart);
+        chart.getBoundingClientRect = () => ({
+          bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
+          toJSON: () => ({}),
+        });
+
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true, clientX: 120, clientY: 80, pointerId: 1,
+        })));
+        const hoverClose = container.querySelector('[aria-label="关闭当前点预览"]');
+        assert.ok(hoverClose);
+        await React.act(async () => hoverClose.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })));
+        assert.equal(container.querySelector(".chart-hover-bubble"), null);
+
+        // The same pointer state must stay dismissed; a different hovered point is
+        // a new interaction generation and may show the preview again.
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true, clientX: 120, clientY: 80, pointerId: 1,
+        })));
+        assert.equal(container.querySelector(".chart-hover-bubble"), null);
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true, clientX: 980, clientY: 80, pointerId: 1,
+        })));
+        assert.ok(container.querySelector('[aria-label="关闭当前点预览"]'));
+
+        for (const clientX of [0, 980]) {
+          await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+            bubbles: true, cancelable: true, clientX, clientY: 80, pointerId: 1,
+          })));
+        }
+        assert.ok(container.querySelector('[aria-label="关闭选中区间预览"]'));
+        assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+        const selectionClose = container.querySelector('[aria-label="关闭选中区间预览"]');
+        await React.act(async () => selectionClose.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })));
+        assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
+        assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   return {
     label: "00:00",

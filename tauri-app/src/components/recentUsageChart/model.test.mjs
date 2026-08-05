@@ -12,6 +12,8 @@ import {
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
+  recentChartScrollPresentation,
+  recentChartScrollTarget,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
   smoothPath,
@@ -250,6 +252,164 @@ test("quotaConsumptionSelection keeps only the latest quota cycle after a reset"
     quotaUpdatedAtUnix: 1_200,
   });
   assert.equal(attribution?.state, "provisional");
+  assert.equal(attribution?.allowsAttributionConclusion, false);
+});
+
+test("7d and 30d selections use the same complete model-aware attribution semantics", () => {
+  for (const [range, bucketSeconds, pointsKey] of [
+    ["7d", 60 * 60, "recentUsage7d"],
+    ["30d", 6 * 60 * 60, "recentUsage30d"],
+  ]) {
+    const points = [0, 1, 2].map((index) => point(index * bucketSeconds, {
+      inputTokens: 1_000_000,
+      tokens: 1_000_000,
+      calls: 1,
+      sevenDayRemainingPercent: [0.90, 0.87, 0.86][index],
+      modelBreakdowns: [{
+        model: "gpt-5.6-terra",
+        breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+      }],
+    }));
+    const data = prepareRecentChartData(range, {
+      recentUsage24h: [],
+      recentUsage7d: pointsKey === "recentUsage7d" ? points : [],
+      recentUsage30d: pointsKey === "recentUsage30d" ? points : [],
+    });
+    const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+    const attribution = quotaSelectionAttribution(selection, {
+      status: "indistinguishable",
+      priceBasis: "radar20260730",
+      radarPlanTotalUSD: 100,
+      quotaDataStale: false,
+      radarDataStale: false,
+      usagePendingQuotaRefresh: false,
+      historyChangedLowConfidence: false,
+      cycleStartUnix: 0,
+      cycleEndUnix: 7 * 24 * 60 * 60,
+      segmentStartUnix: 0,
+      quotaUpdatedAtUnix: 2 * bucketSeconds,
+    });
+
+    assert.ok(selection);
+    assert.ok(attribution);
+    assert.equal(attribution.accountDropPercent, 3);
+    assert.equal(attribution.localComparableCostUSD, 4);
+    assert.equal(attribution.localSharePercent, 4);
+    assert.equal(attribution.state, "withinTolerance");
+    assert.equal(attribution.allowsAttributionConclusion, true);
+  }
+});
+
+test("coarse 7d/30d reset boundaries stay provisional instead of attributing across cycles", () => {
+  for (const [range, bucketSeconds, pointsKey] of [
+    ["7d", 60 * 60, "recentUsage7d"],
+    ["30d", 6 * 60 * 60, "recentUsage30d"],
+  ]) {
+    const points = [0.20, 0.10, 1.00, 0.90].map((remaining, index) => point(index * bucketSeconds, {
+      inputTokens: 100_000,
+      tokens: 100_000,
+      calls: 1,
+      sevenDayRemainingPercent: remaining,
+    }));
+    const data = prepareRecentChartData(range, {
+      recentUsage24h: [],
+      recentUsage7d: pointsKey === "recentUsage7d" ? points : [],
+      recentUsage30d: pointsKey === "recentUsage30d" ? points : [],
+    });
+    const selection = quotaConsumptionSelection(data, 0, 3, "gpt56Sol");
+
+    assert.ok(selection);
+    assert.equal(selection.sevenDay.quotaDropPercent, 10);
+    assert.equal(selection.sevenDay.comparisonStartUnix, 2 * bucketSeconds);
+    const attribution = quotaSelectionAttribution(selection, {
+      status: "indistinguishable",
+      priceBasis: "radar20260730",
+      radarPlanTotalUSD: 100,
+      quotaDataStale: false,
+      radarDataStale: false,
+      usagePendingQuotaRefresh: false,
+      historyChangedLowConfidence: false,
+      cycleStartUnix: 0,
+      cycleEndUnix: 7 * 24 * 60 * 60,
+      segmentStartUnix: 0,
+      quotaUpdatedAtUnix: 4 * bucketSeconds,
+    });
+    assert.equal(attribution?.state, "provisional");
+    assert.equal(attribution?.allowsAttributionConclusion, false);
+  }
+});
+
+test("partial model rows fall back to complete selected tokens instead of inventing attribution", () => {
+  const data = prepareRecentChartData("7d", {
+    recentUsage24h: [],
+    recentUsage7d: [0, 3600].map((startUnix) => point(startUnix, {
+      inputTokens: 1_000_000,
+      tokens: 1_000_000,
+      calls: 1,
+      sevenDayRemainingPercent: startUnix === 0 ? 0.90 : 0.87,
+      // This deliberately covers only half of the point. The model-aware
+      // estimator must fall back to the full token breakdown.
+      modelBreakdowns: [{
+        model: "gpt-5.6-terra",
+        breakdown: { inputTokens: 500_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 500_000, calls: 1 },
+      }],
+    })),
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+  const attribution = quotaSelectionAttribution(selection, {
+    status: "indistinguishable",
+    priceBasis: "radar20260730",
+    radarPlanTotalUSD: 100,
+    quotaDataStale: false,
+    radarDataStale: false,
+    usagePendingQuotaRefresh: false,
+    historyChangedLowConfidence: false,
+    cycleStartUnix: 0,
+    cycleEndUnix: 604_800,
+    segmentStartUnix: 0,
+    quotaUpdatedAtUnix: 7_200,
+  });
+
+  assert.ok(selection);
+  assert.equal(selection.selectedCostUSD, 10);
+  assert.equal(attribution?.localComparableCostUSD, 10);
+  assert.equal(attribution?.localCurrentAPIEquivalentUSD, 10);
+});
+
+test("missing 7d snapshots keep local conversion visible but never conclude attribution", () => {
+  const data = prepareRecentChartData("7d", {
+    recentUsage24h: [],
+    recentUsage7d: [0, 3600].map((startUnix) => point(startUnix, {
+      inputTokens: 1_000_000,
+      tokens: 1_000_000,
+      calls: 1,
+      modelBreakdowns: [{
+        model: "gpt-5.6-terra",
+        breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+      }],
+    })),
+    recentUsage30d: [],
+  });
+  const selection = quotaConsumptionSelection(data, 0, 1, "gpt56Sol");
+  const attribution = quotaSelectionAttribution(selection, {
+    status: "indistinguishable",
+    priceBasis: "radar20260730",
+    radarPlanTotalUSD: 100,
+    quotaDataStale: false,
+    radarDataStale: false,
+    usagePendingQuotaRefresh: false,
+    historyChangedLowConfidence: false,
+    cycleStartUnix: 0,
+    cycleEndUnix: 604_800,
+    segmentStartUnix: 0,
+    quotaUpdatedAtUnix: 7_200,
+  });
+
+  assert.ok(selection);
+  assert.equal(attribution?.state, "missingQuotaHistory");
+  assert.equal(attribution?.localComparableCostUSD, 4);
+  assert.equal(attribution?.accountDropPercent, null);
   assert.equal(attribution?.allowsAttributionConclusion, false);
 });
 
@@ -524,8 +684,30 @@ test("recent chart gives the 24h viewport a 30-day horizontal history canvas", (
   assert.equal(layout.contentWidth > 20_000, true);
   assert.equal(layout.latestScrollLeft, layout.contentWidth - layout.viewportWidth);
   assert.equal(recentChartScrollLayout("24h", 289, 5 * 60, 980).contentWidth, 980);
-  assert.equal(recentChartScrollLayout("7d", 30 * 24 * 12, 5 * 60, 980).isHorizontal, false);
-  assert.equal(recentChartScrollLayout("30d", 30 * 24 * 12, 5 * 60, 980).isHorizontal, false);
+  assert.equal(recentChartScrollLayout("7d", 7 * 24 + 1, 60 * 60, 980).isHorizontal, false);
+  assert.equal(recentChartScrollLayout("30d", 30 * 4 + 1, 6 * 60 * 60, 980).isHorizontal, false);
+});
+
+test("24h/7d/30d page navigation has real offsets and disabled boundaries", () => {
+  const cases = [
+    ["24h", LONG_RECENT_POINT_COUNT, 5 * 60],
+    ["7d", 8 * 24 + 1, 60 * 60],
+    ["30d", 31 * 4 + 1, 6 * 60 * 60],
+  ];
+  for (const [range, pointCount, bucketSeconds] of cases) {
+    const layout = recentChartScrollLayout(range, pointCount, bucketSeconds, 980);
+    assert.equal(layout.isHorizontal, true, range);
+    assert.ok(layout.windowCount >= 2, range);
+    const oldest = recentChartScrollPresentation(layout, 0);
+    const latest = recentChartScrollPresentation(layout, layout.latestScrollLeft);
+    assert.equal(oldest.isAtOldest, true, range);
+    assert.equal(oldest.isAtLatest, false, range);
+    assert.equal(latest.isAtOldest, false, range);
+    assert.equal(latest.isAtLatest, true, range);
+    assert.equal(recentChartScrollTarget(layout, 0, "backward"), 0, range);
+    assert.ok(recentChartScrollTarget(layout, 0, "forward") > 0, range);
+    assert.equal(recentChartScrollTarget(layout, layout.latestScrollLeft, "forward"), layout.latestScrollLeft, range);
+  }
 });
 
 test("24h long chart time markers show one local date label per day", () => {
@@ -644,7 +826,13 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 185\)/s);
   assert.match(css, /\.chart-day-separator\s*{[^}]*stroke:/s);
   assert.match(css, /\.recent-chart-visible-window\s*{[^}]*position:\s*absolute/s);
+  assert.match(css, /\.recent-chart-page-button\s*{[^}]*pointer-events:\s*auto/s);
+  assert.match(css, /\.recent-chart-page-button\s*{[^}]*width:\s*30px/s);
   assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH)"), true);
+  assert.equal(source.includes("recentChartScrollTarget(scrollLayout, scrollElement.scrollLeft, direction)"), true);
+  assert.equal(source.includes("className=\"recent-chart-page-controls\""), true);
+  assert.equal(source.includes("aria-label=\"向前翻页\""), true);
+  assert.equal(source.includes("aria-label=\"向后翻页\""), true);
   assert.equal(source.includes("recentChartTimeMarkers(data, chartWidth)"), true);
   assert.equal(source.includes("recentChartVisibleWindowLabel(data, chartWidth, chartScrollLeft, chartViewportWidth)"), true);
   assert.equal(source.includes("\"--recent-chart-aspect-ratio\": `${chartWidth} / ${CHART_HEIGHT}`"), true);

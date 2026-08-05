@@ -6115,6 +6115,58 @@ input[type="range"]::-moz-range-thumb {
   pointer-events: none;
 }
 
+.recent-chart-page-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.recent-chart-page-button {
+  position: absolute;
+  top: 50%;
+  display: inline-flex;
+  width: 30px;
+  height: 58px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 82%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 24px;
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  pointer-events: auto;
+  transform: translateY(-50%);
+}
+
+.recent-chart-page-button--backward {
+  left: -17px;
+}
+
+.recent-chart-page-button--forward {
+  right: -17px;
+}
+
+.recent-chart-page-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 88%, var(--panel-solid));
+  color: var(--accent-strong);
+}
+
+.recent-chart-page-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: 2px;
+}
+
+.recent-chart-page-button:disabled {
+  cursor: default;
+  opacity: 0.28;
+}
+
 .recent-chart-visible-window {
   position: absolute;
   right: 10px;
@@ -6299,6 +6351,35 @@ input[type="range"]::-moz-range-thumb {
   align-items: baseline;
   gap: 6px;
   white-space: nowrap;
+}
+
+.chart-preview-close {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  margin-left: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  pointer-events: auto;
+}
+
+.chart-preview-close:hover {
+  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  color: var(--text);
+}
+
+.chart-preview-close:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  outline-offset: 1px;
 }
 
 .chart-hover-row {

@@ -21,6 +21,8 @@ import {
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
+  recentChartScrollPresentation,
+  recentChartScrollTarget,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
   smoothPath,
@@ -30,6 +32,7 @@ import {
   type QuotaConsumptionSelection,
   type QuotaSelectionAttributionResult,
   type QuotaSelectionState,
+  type RecentChartScrollDirection,
   type RecentChartRange,
   type SeriesVisibility,
 } from "./recentUsageChart/model";
@@ -63,6 +66,7 @@ export function RecentUsageChart({
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
   const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -75,6 +79,7 @@ export function RecentUsageChart({
   );
   const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH);
   const chartWidth = scrollLayout.contentWidth;
+  const scrollPresentation = recentChartScrollPresentation(scrollLayout, chartScrollLeft);
   const scrollContentStyle = {
     "--recent-chart-content-width": `${chartWidth}px`,
     "--recent-chart-aspect-ratio": `${chartWidth} / ${CHART_HEIGHT}`,
@@ -95,8 +100,7 @@ export function RecentUsageChart({
   const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
     ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
     : null;
-  const selectionAttribution = range === "24h"
-    && fixedSelectionEndIndex !== null
+  const selectionAttribution = fixedSelectionEndIndex !== null
     && consumptionSelection !== null
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
     : null;
@@ -125,6 +129,7 @@ export function RecentUsageChart({
   function updateRange(next: RecentChartRange) {
     setRange(next);
     setHoveredIndex(null);
+    setPreviewDismissed(false);
     setQuotaSelectionState({ startIndex: null, fixedEndIndex: null });
     window.localStorage.setItem(RANGE_STORAGE_KEY, next);
   }
@@ -148,7 +153,11 @@ export function RecentUsageChart({
       setHoveredIndex(null);
       return;
     }
-    setHoveredIndex(hoverIndexForX(x, chartWidth, data.points.length));
+    const nextIndex = hoverIndexForX(x, chartWidth, data.points.length);
+    if (nextIndex !== hoveredIndex) {
+      setPreviewDismissed(false);
+    }
+    setHoveredIndex(nextIndex);
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -165,8 +174,21 @@ export function RecentUsageChart({
     if (clickedIndex === null) {
       return;
     }
+    setPreviewDismissed(false);
     setHoveredIndex(clickedIndex);
     setQuotaSelectionState((current) => clickQuotaSelection(current, clickedIndex, data.points.length));
+  }
+
+  function scrollChart(direction: RecentChartScrollDirection) {
+    const scrollElement = scrollRef.current;
+    if (!scrollElement || !scrollLayout.isHorizontal) {
+      return;
+    }
+    const target = recentChartScrollTarget(scrollLayout, scrollElement.scrollLeft, direction);
+    if (Math.abs(target - scrollElement.scrollLeft) < 0.5) {
+      return;
+    }
+    scrollElement.scrollTo({ left: target, behavior: "smooth" });
   }
 
   return (
@@ -217,7 +239,7 @@ export function RecentUsageChart({
         <div
           className={scrollLayout.className}
           ref={scrollRef}
-          aria-label={scrollLayout.isHorizontal ? "最近 24 小时图表可左右滚动" : undefined}
+          aria-label={scrollLayout.isHorizontal ? `${data.title}图表可左右滚动` : undefined}
           onScroll={(event) => {
             setChartScrollLeft(event.currentTarget.scrollLeft);
             setChartViewportWidth(event.currentTarget.clientWidth || CHART_WIDTH);
@@ -287,22 +309,46 @@ export function RecentUsageChart({
           {visibleWindowLabel ? (
             <div className="recent-chart-visible-window">当前窗口：{visibleWindowLabel}</div>
           ) : null}
-          {fixedSelectionEndIndex !== null && consumptionSelection ? (
+          {!previewDismissed && fixedSelectionEndIndex !== null && consumptionSelection ? (
             <SelectionSummaryBubble
+              onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
               viewportWidth={chartViewportWidth}
               x={(plotData.tokenPoints[fixedSelectionEndIndex]?.x ?? 0) - chartScrollLeft}
             />
-          ) : activePoint && activeTokenPoint ? (
+          ) : !previewDismissed && activePoint && activeTokenPoint ? (
             <HoverBubble
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
               fiveHourRemaining={fiveHourQuotaPresent ? activePoint.fiveHourRemainingPercent : null}
+              onClose={() => setPreviewDismissed(true)}
               point={activePoint}
               sevenDayRemaining={sevenDayQuotaPresent ? activePoint.sevenDayRemainingPercent : null}
               viewportWidth={chartViewportWidth}
               x={activeTokenPoint.x - chartScrollLeft}
             />
+          ) : null}
+          {scrollLayout.isHorizontal ? (
+            <div className="recent-chart-page-controls" aria-label="曲线分页">
+              <button
+                aria-label="向前翻页"
+                className="recent-chart-page-button recent-chart-page-button--backward"
+                disabled={scrollPresentation.isAtOldest}
+                onClick={() => scrollChart("backward")}
+                type="button"
+              >
+                ‹
+              </button>
+              <button
+                aria-label="向后翻页"
+                className="recent-chart-page-button recent-chart-page-button--forward"
+                disabled={scrollPresentation.isAtLatest}
+                onClick={() => scrollChart("forward")}
+                type="button"
+              >
+                ›
+              </button>
+            </div>
           ) : null}
         </div>
       </div>
@@ -381,6 +427,7 @@ function HoverBubble({
   bucketSeconds,
   cacheVisible,
   fiveHourRemaining,
+  onClose,
   point,
   sevenDayRemaining,
   viewportWidth,
@@ -389,6 +436,7 @@ function HoverBubble({
   bucketSeconds: number;
   cacheVisible: boolean;
   fiveHourRemaining: number | null;
+  onClose: () => void;
   point: RecentUsagePoint;
   sevenDayRemaining: number | null;
   viewportWidth: number;
@@ -406,6 +454,7 @@ function HoverBubble({
       <div className="chart-hover-heading">
         <strong>当前点</strong>
         <span>{timeRange(point.startUnix, bucketSeconds)}</span>
+        <PreviewCloseButton ariaLabel="关闭当前点预览" onClose={onClose} />
       </div>
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
@@ -422,10 +471,12 @@ function HoverBubble({
 }
 
 function SelectionSummaryBubble({
+  onClose,
   selection,
   viewportWidth,
   x,
 }: {
+  onClose: () => void;
   selection: QuotaConsumptionSelection;
   viewportWidth: number;
   x: number;
@@ -437,6 +488,7 @@ function SelectionSummaryBubble({
       <div className="chart-hover-heading">
         <strong>选中区间</strong>
         <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>
+        <PreviewCloseButton ariaLabel="关闭选中区间预览" onClose={onClose} />
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
       <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
@@ -448,6 +500,22 @@ function SelectionSummaryBubble({
       <ModelUsageInline rows={selection.modelBreakdowns} />
       <span className="chart-hover-row">{quotaSelectionDurationText(selection)}</span>
     </div>
+  );
+}
+
+function PreviewCloseButton({ ariaLabel, onClose }: { ariaLabel: string; onClose: () => void }) {
+  return (
+    <button
+      aria-label={ariaLabel}
+      className="chart-preview-close"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClose();
+      }}
+      type="button"
+    >
+      ×
+    </button>
   );
 }
 

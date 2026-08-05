@@ -19,6 +19,18 @@ export interface RecentChartScrollLayout {
   className: string;
 }
 
+export type RecentChartScrollDirection = "backward" | "forward";
+
+export interface RecentChartScrollPresentation {
+  contentOffset: number;
+  maxOffset: number;
+  viewportWidth: number;
+  currentWindowIndex: number;
+  windowCount: number;
+  isAtOldest: boolean;
+  isAtLatest: boolean;
+}
+
 export interface RecentUsageChartSeries {
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
@@ -26,6 +38,12 @@ export interface RecentUsageChartSeries {
 }
 
 export const RECENT_CHART_24H_VIEWPORT_SECONDS = 24 * 60 * 60;
+
+const RECENT_CHART_WINDOW_SECONDS: Record<RecentChartRange, number> = {
+  "24h": 24 * 60 * 60,
+  "7d": 7 * 24 * 60 * 60,
+  "30d": 30 * 24 * 60 * 60,
+};
 
 export interface SeriesVisibility {
   tokens: boolean;
@@ -176,25 +194,16 @@ export function recentChartScrollLayout(
   viewportWidth = 980,
 ): RecentChartScrollLayout {
   const safeViewportWidth = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 980;
-  if (range !== "24h") {
-    return {
-      isHorizontal: false,
-      viewportWidth: safeViewportWidth,
-      contentWidth: safeViewportWidth,
-      latestScrollLeft: 0,
-      windowCount: 1,
-      className: "recent-chart-scroll",
-    };
-  }
-
   const intervalCount = Math.max(0, pointCount - 1);
-  const safeBucketSeconds = Number.isFinite(bucketSeconds) && bucketSeconds > 0 ? bucketSeconds : 5 * 60;
-  const viewportIntervalCount = Math.max(1, RECENT_CHART_24H_VIEWPORT_SECONDS / safeBucketSeconds);
+  const defaultBucketSeconds = range === "24h" ? 5 * 60 : range === "7d" ? 60 * 60 : 6 * 60 * 60;
+  const safeBucketSeconds = Number.isFinite(bucketSeconds) && bucketSeconds > 0 ? bucketSeconds : defaultBucketSeconds;
+  const viewportDurationSeconds = RECENT_CHART_WINDOW_SECONDS[range];
+  const contentDurationSeconds = Math.max(intervalCount * safeBucketSeconds, viewportDurationSeconds);
   const rawContentWidth = intervalCount > 0
-    ? Math.round((intervalCount / viewportIntervalCount) * safeViewportWidth)
+    ? Math.round((contentDurationSeconds / viewportDurationSeconds) * safeViewportWidth)
     : safeViewportWidth;
   const contentWidth = Math.max(safeViewportWidth, rawContentWidth);
-  const windowCount = Math.max(1, Math.ceil(Math.max(intervalCount, 1) / viewportIntervalCount));
+  const windowCount = Math.max(1, Math.ceil(contentDurationSeconds / viewportDurationSeconds));
 
   return {
     isHorizontal: contentWidth > safeViewportWidth,
@@ -202,8 +211,56 @@ export function recentChartScrollLayout(
     contentWidth,
     latestScrollLeft: Math.max(0, contentWidth - safeViewportWidth),
     windowCount,
-    className: "recent-chart-scroll recent-chart-scroll--horizontal",
+    className: contentWidth > safeViewportWidth
+      ? "recent-chart-scroll recent-chart-scroll--horizontal"
+      : "recent-chart-scroll",
   };
+}
+
+export function recentChartScrollPresentation(
+  layout: Pick<RecentChartScrollLayout, "contentWidth" | "viewportWidth" | "windowCount">,
+  contentOffset: number,
+  epsilon = 0.5,
+): RecentChartScrollPresentation {
+  const safeViewportWidth = Math.max(0, Number.isFinite(layout.viewportWidth) ? layout.viewportWidth : 0);
+  const safeContentWidth = Math.max(0, Number.isFinite(layout.contentWidth) ? layout.contentWidth : 0);
+  const maxOffset = Math.max(safeContentWidth - safeViewportWidth, 0);
+  const safeOffset = Number.isFinite(contentOffset) ? clamp(contentOffset, 0, maxOffset) : 0;
+  const safeWindowCount = Math.max(1, Math.floor(Number.isFinite(layout.windowCount) ? layout.windowCount : 1));
+  const safeEpsilon = Math.max(0, Number.isFinite(epsilon) ? epsilon : 0);
+  const upperWindowIndex = safeWindowCount - 1;
+  const currentWindowIndex = safeViewportWidth > 0
+    ? clamp(Math.floor((safeOffset + safeEpsilon) / safeViewportWidth), 0, upperWindowIndex)
+    : 0;
+  return {
+    contentOffset: safeOffset,
+    maxOffset,
+    viewportWidth: safeViewportWidth,
+    currentWindowIndex,
+    windowCount: safeWindowCount,
+    isAtOldest: safeOffset <= safeEpsilon,
+    isAtLatest: maxOffset - safeOffset <= safeEpsilon,
+  };
+}
+
+export function recentChartScrollTarget(
+  layout: Pick<RecentChartScrollLayout, "contentWidth" | "viewportWidth" | "windowCount">,
+  contentOffset: number,
+  direction: RecentChartScrollDirection,
+): number {
+  const presentation = recentChartScrollPresentation(layout, contentOffset);
+  if (presentation.windowCount <= 1 || presentation.viewportWidth <= 0) {
+    return presentation.contentOffset;
+  }
+  const delta = direction === "forward" ? 1 : -1;
+  const targetWindowIndex = clamp(
+    presentation.currentWindowIndex + delta,
+    0,
+    presentation.windowCount - 1,
+  );
+  return targetWindowIndex >= presentation.windowCount - 1
+    ? presentation.maxOffset
+    : Math.min(targetWindowIndex * presentation.viewportWidth, presentation.maxOffset);
 }
 
 export function prepareRecentChartData(
