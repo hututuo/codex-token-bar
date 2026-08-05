@@ -151,6 +151,16 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             quotaRecentBins: [],
             quotaHourlyBins: []
         )
+        let incompleteAttributionEvents = RecentUsageChart(
+            bins: [],
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            attributionEvents: [],
+            attributionEventsComplete: false,
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
         let selectionForContext = attributionSelection(
             sevenDayDrop: 13,
             quotaDropObserved: true
@@ -174,6 +184,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertNotEqual(baseline, changedUsage)
         XCTAssertNotEqual(baseline, changedQuotaAvailability)
         XCTAssertNotEqual(baseline, changedAttributionEvents)
+        XCTAssertNotEqual(baseline, incompleteAttributionEvents)
         XCTAssertNotEqual(baseline, changedAttributionContext)
     }
 
@@ -209,6 +220,134 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(prepared.observedCacheHitRates[0]), 0.51, accuracy: 0.0001)
         XCTAssertNil(prepared.observedCacheHitRates[1])
         XCTAssertEqual(try XCTUnwrap(prepared.observedCacheHitRates[2]), 0.91, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testThirtyDayQuotaAggregationKeepsAnUnknownBucketUnknown() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let hourlyBins = (0..<6).map { index in
+            BinUsage(
+                start: start.addingTimeInterval(Double(index) * 60 * 60),
+                tokens: 1_000,
+                calls: 1
+            )
+        }
+        let quotaHourlyBins = [
+            // This mirrors the real Swift gap around the reset: an old 18%
+            // remaining sample followed by two unknown hourly buckets.
+            QuotaHistoryRecentBucket(
+                start: hourlyBins[0].start,
+                fiveHourRemainingPercent: nil,
+                sevenDayRemainingPercent: 18,
+                sevenDayObservations: [
+                    QuotaHistoryObservation(
+                        observedAt: hourlyBins[0].start,
+                        remainingPercent: 18,
+                        resetsAt: hourlyBins[0].start.addingTimeInterval(7 * 24 * 60 * 60)
+                    )
+                ]
+            ),
+            QuotaHistoryRecentBucket(start: hourlyBins[1].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil),
+            QuotaHistoryRecentBucket(start: hourlyBins[2].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil),
+            QuotaHistoryRecentBucket(start: hourlyBins[3].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 80),
+            QuotaHistoryRecentBucket(start: hourlyBins[4].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 78),
+            QuotaHistoryRecentBucket(start: hourlyBins[5].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 76),
+        ]
+
+        let prepared = RecentUsageChart.prepare(
+            range: .thirtyDays,
+            recentBins: [],
+            hourlyBins: hourlyBins,
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: quotaHourlyBins
+        )
+
+        XCTAssertNil(prepared.sevenDayRemainingPercents[0])
+        XCTAssertEqual(try XCTUnwrap(prepared.sevenDayRemainingPercents[1]), 78, accuracy: 0.0001)
+        XCTAssertFalse(
+            prepared.sevenDayQuotaObservations.contains { $0.remainingPercent == 18 },
+            "an unknown coarse bucket must not contribute stale attribution observations"
+        )
+    }
+
+    @MainActor
+    func testSelectionAttributionSupportsSevenAndThirtyDayRangesWithModelEvents() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let modelBreakdown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+
+        for range in [RecentChartRange.sevenDays, .thirtyDays] {
+            let hourlyCount = range == .sevenDays ? 4 : 6
+            let hourlyBins = (0..<hourlyCount).map { index in
+                BinUsage(
+                    start: start.addingTimeInterval(Double(index) * 60 * 60),
+                    tokens: 1_000,
+                    calls: 1
+                )
+            }
+            let cacheHourlyBins = hourlyBins.map { bin in
+                TokenCacheBucket(start: bin.start, breakdown: modelBreakdown)
+            }
+            let quotaHourlyBins = hourlyBins.enumerated().map { index, bin in
+                let remaining = 90.0 - Double(index) * 2
+                return QuotaHistoryRecentBucket(
+                    start: bin.start,
+                    fiveHourRemainingPercent: nil,
+                    sevenDayRemainingPercent: remaining,
+                    sevenDayObservations: [
+                        QuotaHistoryObservation(
+                            observedAt: bin.start.addingTimeInterval(60 * 60 - 1),
+                            remainingPercent: remaining,
+                            resetsAt: reset
+                        )
+                    ]
+                )
+            }
+            let events = hourlyBins.enumerated().map { index, bin in
+                TokenCacheAttributionEvent(
+                    id: range.rawValue + "-" + String(index),
+                    start: bin.start,
+                    model: "gpt-5.6-sol",
+                    breakdown: modelBreakdown
+                )
+            }
+            let prepared = RecentUsageChart.prepare(
+                range: range,
+                recentBins: [],
+                hourlyBins: hourlyBins,
+                cacheRecentBins: [],
+                cacheHourlyBins: cacheHourlyBins,
+                attributionEvents: events,
+                quotaRecentBins: [],
+                quotaHourlyBins: quotaHourlyBins
+            )
+            let endIndex = range == .sevenDays ? 2 : 1
+            let selection = try XCTUnwrap(
+                prepared.quotaConsumptionSelection(
+                    startIndex: 0,
+                    endIndex: endIndex,
+                    priceCard: .officialAPI(.gpt56Terra),
+                    attributionEvents: events
+                )
+            )
+            let result = QuotaSelectionAttributionEstimator.estimate(
+                selection: selection,
+                context: attributionContext(for: selection, radarTotalUSD: 1_000)
+            )
+
+            XCTAssertEqual(result.accountDropBasis, .observed, range.rawValue)
+            XCTAssertNotNil(result.accountDropPercent, range.rawValue)
+            XCTAssertEqual(result.detectedModels, [.gpt56Sol], range.rawValue)
+        }
     }
 
     func testOfficialAPIPriceComputesSelectedWindowCostFromCacheAwareTokens() {

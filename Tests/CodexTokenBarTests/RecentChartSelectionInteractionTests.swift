@@ -25,6 +25,43 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertNil(cursor.resolvedIndex(validCount: 0))
     }
 
+    func testPreviewCloseIsGenerationScopedAndDoesNotClearSelectionState() {
+        var preview = RecentChartPreviewVisibilityState()
+        var selection = RecentChartConsumptionSelectionState()
+
+        selection.click(index: 2, validCount: 8)
+        preview.beginInteraction()
+        preview.dismissTopPreview()
+
+        XCTAssertFalse(preview.showsTopPreview)
+        XCTAssertTrue(preview.showsSelectionSummary)
+        XCTAssertEqual(selection.startIndex, 2)
+        XCTAssertNil(selection.fixedEndIndex)
+
+        // The next distinct interaction reopens both cards. The selected
+        // range remains owned by the two-click state rather than dismissal.
+        preview.beginInteraction()
+        XCTAssertTrue(preview.showsTopPreview)
+        XCTAssertTrue(preview.showsSelectionSummary)
+        XCTAssertEqual(selection.startIndex, 2)
+
+        selection.click(index: 5, validCount: 8)
+        preview.dismissSelectionSummary()
+        XCTAssertFalse(preview.showsSelectionSummary)
+        XCTAssertEqual(selection.fixedEndIndex, 5)
+    }
+
+    func testPreviewCardsExposeCloseActionsForPointAndFixedSelection() throws {
+        let source = try String(
+            contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("关闭当前点预览"))
+        XCTAssertTrue(source.contains("关闭选中区间预览"))
+        XCTAssertTrue(source.contains(".allowsHitTesting(true)"))
+        XCTAssertTrue(source.contains(".onKeyPress(.escape)"))
+    }
+
     func testProductionChartComputesSelectionOncePerBodyEvaluation() throws {
         let source = try String(
             contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift",
@@ -37,6 +74,10 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("chartPlot(consumptionSelection: consumptionSelection)"))
         XCTAssertTrue(source.contains("activeSelectionAttribution(\n            for: consumptionSelection"))
+        XCTAssertFalse(
+            source.contains("guard selectedRange == .twentyFourHours"),
+            "shared-account attribution must not be restricted to 24h"
+        )
         XCTAssertTrue(
             source.contains("consumptionSelectionState.fixedEndIndex != nil"),
             "shared-account attribution must wait for the second click that fixes the range"

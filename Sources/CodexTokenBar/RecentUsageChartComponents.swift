@@ -214,6 +214,7 @@ struct RecentChartQuotaEstimateOverlay: View {
     let showsSevenDayQuota: Bool
     let currentFiveHourQuotaPresent: Bool
     let currentSevenDayQuotaPresent: Bool
+    let attributionEventsComplete: Bool = true
     let onClose: () -> Void
     @State private var detailSnapshot: QuotaConsumptionSelectionDetailSnapshot?
 
@@ -316,6 +317,10 @@ struct RecentChartQuotaEstimateOverlay: View {
             HStack(spacing: 7) {
                 if let attribution {
                     QuotaSelectionAttributionSummaryRow(result: attribution)
+                } else if !attributionEventsComplete {
+                    Text("等待完整模型跟踪")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("共享归因未开启")
                         .font(.system(size: 9.5, weight: .medium))
@@ -827,6 +832,11 @@ struct ChartBubblePlacementModifier: ViewModifier {
         let tokenX = self.tokenX
         content
             .fixedSize(horizontal: true, vertical: false)
+            // Keep the hit-test region to the actual preview card. The
+            // alignment frame below spans the plot so the card can be placed
+            // above the selected x-position, but it must not swallow clicks
+            // intended for the chart itself.
+            .contentShape(Rectangle())
             .alignmentGuide(.leading) { dimensions in
                 let lower = plot.minX
                 let upper = max(lower, plot.maxX - dimensions.width)
@@ -837,7 +847,7 @@ struct ChartBubblePlacementModifier: ViewModifier {
                 -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
             }
             .frame(width: plot.width, height: plot.height, alignment: .topLeading)
-            .allowsHitTesting(false)
+            .allowsHitTesting(true)
     }
 }
 
@@ -849,6 +859,7 @@ struct ChartHoverBubble: View {
     let sevenDayRemaining: Double?
     let bucketInterval: TimeInterval
     let isHovering: Bool
+    let onClose: () -> Void
 
     init(
         bin: BinUsage,
@@ -857,7 +868,8 @@ struct ChartHoverBubble: View {
         fiveHourRemaining: Double?,
         sevenDayRemaining: Double?,
         bucketInterval: TimeInterval,
-        isHovering: Bool
+        isHovering: Bool,
+        onClose: @escaping () -> Void = {}
     ) {
         self.bin = bin
         self.cacheBreakdown = cacheBreakdown
@@ -866,17 +878,31 @@ struct ChartHoverBubble: View {
         self.sevenDayRemaining = sevenDayRemaining
         self.bucketInterval = bucketInterval
         self.isHovering = isHovering
+        self.onClose = onClose
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text(isHovering ? "当前点" : "最新点")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(isHovering ? AppTheme.accentBlue : .secondary)
-                Text(timeRange)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(isHovering ? "当前点" : "最新点")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(isHovering ? AppTheme.accentBlue : .secondary)
+                    Text(timeRange)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isHovering ? "关闭当前点预览" : "关闭最新点预览")
             }
             Text(bin.tokens.abbreviatedTokens)
                 .font(.system(size: 15, weight: .semibold))
@@ -909,7 +935,7 @@ struct ChartHoverBubble: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(isHovering ? "曲线当前点" : "曲线最新点")
         .accessibilityValue(accessibilitySummary)
     }
@@ -965,16 +991,38 @@ struct ChartHoverBubble: View {
 
 struct ChartSelectionSummaryBubble: View {
     let selection: QuotaConsumptionSelection
+    let onClose: () -> Void
+
+    init(
+        selection: QuotaConsumptionSelection,
+        onClose: @escaping () -> Void = {}
+    ) {
+        self.selection = selection
+        self.onClose = onClose
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text("选中区间")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(AppTheme.accentBlue)
-                Text(timeRange)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text("选中区间")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                    Text(timeRange)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭选中区间预览")
             }
             Text(selection.breakdown.totalTokens.abbreviatedTokens)
                 .font(.system(size: 15, weight: .semibold))
@@ -1002,7 +1050,7 @@ struct ChartSelectionSummaryBubble: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("曲线选中区间")
         .accessibilityValue(accessibilitySummary)
     }
