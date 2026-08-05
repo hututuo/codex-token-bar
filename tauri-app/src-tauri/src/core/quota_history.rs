@@ -10,7 +10,6 @@ use crate::models::RecentUsagePoint;
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, Result as SqlResult};
 use sha2::{Digest, Sha256};
-#[cfg(test)]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -20,7 +19,10 @@ use time::OffsetDateTime;
 mod database;
 mod series;
 
-use database::{ensure_schema, insert_row, latest_trusted_row, prune, rows_since_for_row};
+use database::{
+    ensure_schema, insert_row, latest_trusted_row, prune, rows_since_for_read_only_peer,
+    rows_since_for_row,
+};
 #[cfg(test)]
 use database::{recent_rows, rows_since};
 use series::{make_daily_history, make_interval_history, make_recent_history};
@@ -294,12 +296,43 @@ impl QuotaHistoryDatabase {
         let connection = self.open()?;
         ensure_schema(&connection)?;
         let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
-        let rows = rows_since_for_row(
+        let rows = self.history_rows_for_identity(
             &connection,
-            day_count.max(31) as f64 * 24.0 * 60.0 * 60.0,
+            identity,
             &filter_row,
+            day_count.max(31) as f64 * 24.0 * 60.0 * 60.0,
         )?;
         Ok(history_bundle_from_rows(rows, recent_count))
+    }
+
+    fn history_rows_for_identity(
+        &self,
+        connection: &Connection,
+        identity: &QuotaHistoryIdentity,
+        filter_row: &QuotaHistoryRow,
+        age_seconds: f64,
+    ) -> SqlResult<Vec<QuotaHistoryRow>> {
+        let local_rows = rows_since_for_row(connection, age_seconds, filter_row)?;
+        let peer_rows = self.read_peer_rows_for_identity(identity, age_seconds);
+        Ok(merge_history_rows(local_rows, peer_rows))
+    }
+
+    fn read_peer_rows_for_identity(
+        &self,
+        identity: &QuotaHistoryIdentity,
+        age_seconds: f64,
+    ) -> Vec<QuotaHistoryRow> {
+        let Some(peer_path) = app_paths::legacy_shared_quota_history_database_path() else {
+            return Vec::new();
+        };
+        if peer_path == self.path || !peer_path.exists() {
+            return Vec::new();
+        }
+
+        let Ok(connection) = sqlite::open_read_only(&peer_path, Duration::from_millis(250)) else {
+            return Vec::new();
+        };
+        rows_since_for_read_only_peer(&connection, age_seconds, identity).unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -334,6 +367,23 @@ impl QuotaHistoryDatabase {
         ensure_schema(&connection)?;
         let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
         rows_since_for_row(&connection, age_seconds, &filter_row)
+    }
+
+    #[cfg(test)]
+    fn merged_rows_for_identity_for_test(
+        &self,
+        identity: Option<&QuotaHistoryIdentity>,
+        bundle: &AccountQuotaBundle,
+        age_seconds: f64,
+    ) -> SqlResult<Vec<QuotaHistoryRow>> {
+        let Some(identity) = identity else {
+            return Ok(Vec::new());
+        };
+        let _database_guard = quota_history_database_guard();
+        let connection = self.open()?;
+        ensure_schema(&connection)?;
+        let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
+        self.history_rows_for_identity(&connection, identity, &filter_row, age_seconds)
     }
 
     fn open(&self) -> SqlResult<Connection> {
@@ -511,6 +561,149 @@ fn history_bundle_from_rows(
         recent_7d: make_interval_history(rows.clone(), 7 * 24, 60 * 60),
         recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
     }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct HistoryRowMergeKey {
+    created_at_bits: u64,
+    stable_identity: Option<QuotaHistoryIdentity>,
+    legacy_scope: Option<String>,
+}
+
+fn merge_history_rows(
+    local_rows: Vec<QuotaHistoryRow>,
+    peer_rows: Vec<QuotaHistoryRow>,
+) -> Vec<QuotaHistoryRow> {
+    let mut by_key = HashMap::<HistoryRowMergeKey, MergedHistoryRow>::new();
+
+    // A source-qualified Tauri row outranks a Swift peer row. If both rows have
+    // the same source (including an initial Swift-to-Tauri copy), the local
+    // database wins; duplicate rows within one database use a deterministic
+    // fingerprint tie-break. No values are synthesized during a conflict.
+    for row in local_rows {
+        let key = history_row_merge_key(&row);
+        match by_key.get(&key) {
+            Some(existing)
+                if !prefer_history_row(&row, true, &existing.row, existing.is_local) =>
+            {}
+            _ => {
+                by_key.insert(
+                    key,
+                    MergedHistoryRow {
+                        row,
+                        is_local: true,
+                    },
+                );
+            }
+        }
+    }
+    for row in peer_rows {
+        let key = history_row_merge_key(&row);
+        match by_key.get(&key) {
+            Some(existing)
+                if !prefer_history_row(&row, false, &existing.row, existing.is_local) =>
+            {}
+            _ => {
+                by_key.insert(
+                    key,
+                    MergedHistoryRow {
+                        row,
+                        is_local: false,
+                    },
+                );
+            }
+        }
+    }
+
+    let mut rows = by_key
+        .into_values()
+        .map(|merged| merged.row)
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.created_at
+            .partial_cmp(&right.created_at)
+            .unwrap_or_else(|| left.created_at.to_bits().cmp(&right.created_at.to_bits()))
+            .then_with(|| history_row_fingerprint(left).cmp(&history_row_fingerprint(right)))
+    });
+    rows
+}
+
+struct MergedHistoryRow {
+    row: QuotaHistoryRow,
+    is_local: bool,
+}
+
+fn history_row_merge_key(row: &QuotaHistoryRow) -> HistoryRowMergeKey {
+    let stable_identity = row.stable_identity();
+    let legacy_scope = if stable_identity.is_none() {
+        Some(
+            [
+                row.history_match_key(),
+                row.match_plan_type().unwrap_or_default(),
+                row.match_limit_name().unwrap_or_default(),
+            ]
+            .join("\u{1f}"),
+        )
+    } else {
+        None
+    };
+    HistoryRowMergeKey {
+        created_at_bits: row.created_at.to_bits(),
+        stable_identity,
+        legacy_scope,
+    }
+}
+
+fn prefer_history_row(
+    candidate: &QuotaHistoryRow,
+    candidate_is_local: bool,
+    existing: &QuotaHistoryRow,
+    existing_is_local: bool,
+) -> bool {
+    source_rank(candidate)
+        .cmp(&source_rank(existing))
+        .then_with(|| candidate_is_local.cmp(&existing_is_local))
+        .then_with(|| history_row_fingerprint(candidate).cmp(&history_row_fingerprint(existing)))
+        == std::cmp::Ordering::Greater
+}
+
+fn source_rank(row: &QuotaHistoryRow) -> u8 {
+    match row.source.as_deref().map(str::trim) {
+        Some(source) if source.eq_ignore_ascii_case("tauri") => 2,
+        Some(source) if source.eq_ignore_ascii_case("swift") => 1,
+        _ => 0,
+    }
+}
+
+fn history_row_fingerprint(row: &QuotaHistoryRow) -> String {
+    [
+        row.account_key.clone(),
+        row.plan_type.clone().unwrap_or_default(),
+        row.limit_name.clone().unwrap_or_default(),
+        row.account_name.clone().unwrap_or_default(),
+        row.source.clone().unwrap_or_default(),
+        row.five_hour_used_percent
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        row.five_hour_resets_at
+            .map(|value| value.to_bits().to_string())
+            .unwrap_or_default(),
+        row.seven_day_used_percent
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        row.seven_day_resets_at
+            .map(|value| value.to_bits().to_string())
+            .unwrap_or_default(),
+        row.status.clone(),
+        row.identity_version
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        row.home_identity.clone().unwrap_or_default(),
+        row.stable_account_key.clone().unwrap_or_default(),
+        row.identity_plan_type.clone().unwrap_or_default(),
+        row.identity_limit_id.clone().unwrap_or_default(),
+    ]
+    .join("\u{1f}")
 }
 
 fn same_reset_window(left: f64, right: f64) -> bool {

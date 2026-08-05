@@ -153,6 +153,35 @@ pub(super) fn rows_since_for_row(
     matching_rows(connection, &filter, Some(cutoff), "ASC")
 }
 
+/// Read a peer (Swift) database without touching its schema or its legacy
+/// bridge claims. A peer database is optional and may be from an older
+/// version, so the caller deliberately treats any error as an empty result.
+pub(super) fn rows_since_for_read_only_peer(
+    connection: &Connection,
+    age_seconds: f64,
+    identity: &QuotaHistoryIdentity,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let cutoff = now_unix() - age_seconds;
+    let rows = query_stable_identity_rows(connection, identity, Some(cutoff))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            // Reset timestamps stay attached to each historical sample: using
+            // the current bundle's reset as a filter would erase prior cycles.
+            // The stable identity already includes the account, plan, and
+            // limit; display names and derived account keys are not scope.
+            row.stable_identity().as_ref() == Some(identity)
+                && is_swift_source(row.source.as_deref())
+        })
+        .collect())
+}
+
+fn is_swift_source(source: Option<&str>) -> bool {
+    source
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("swift"))
+}
+
 fn matching_rows(
     connection: &Connection,
     filter: &AccountHistoryFilter,

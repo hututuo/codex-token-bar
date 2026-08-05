@@ -574,6 +574,239 @@ fn record_writes_canonical_codex_key_and_source() {
 }
 
 #[test]
+fn tauri_history_merges_swift_peer_rows_and_keeps_local_same_time_authority() {
+    let root = temp_dir_path("peer-merge");
+    let _env = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", root.join("support")),
+        (
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.join("support").join("CodexTokenBarTauri"),
+        ),
+    ]);
+    let local_path = app_paths::quota_history_database_path().unwrap();
+    let peer_path = app_paths::legacy_shared_quota_history_database_path().unwrap();
+    let database = QuotaHistoryDatabase {
+        path: local_path.clone(),
+    };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/peer-merge"),
+        Some("sub:peer-merge"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let bundle = bundle(
+        "tester",
+        0.10,
+        (now_unix() + 3_600.0) as i64,
+        0.20,
+        (now_unix() + 500_000.0) as i64,
+    );
+    let first_at = now_unix() - 900.0;
+    let conflict_at = now_unix() - 600.0;
+    let peer_only_at = now_unix() - 300.0;
+
+    std::fs::create_dir_all(local_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(peer_path.parent().unwrap()).unwrap();
+    let local = rusqlite::Connection::open(&local_path).unwrap();
+    ensure_schema(&local).unwrap();
+    insert_stable_history_row(
+        &local,
+        &stable_history_row(&identity, first_at, 20, "swift"),
+    );
+    insert_stable_history_row(
+        &local,
+        &stable_history_row(&identity, conflict_at, 30, "tauri"),
+    );
+    drop(local);
+
+    let peer = rusqlite::Connection::open(&peer_path).unwrap();
+    ensure_schema(&peer).unwrap();
+    insert_stable_history_row(
+        &peer,
+        &stable_history_row(&identity, first_at, 20, "swift"),
+    );
+    let mut renamed_peer_conflict = stable_history_row(&identity, conflict_at, 80, "swift");
+    renamed_peer_conflict.account_name = Some("Swift display name".into());
+    renamed_peer_conflict.account_key = "Swift display name|Pro|codex".into();
+    insert_stable_history_row(
+        &peer,
+        &renamed_peer_conflict,
+    );
+    insert_stable_history_row(
+        &peer,
+        &stable_history_row(&identity, peer_only_at, 40, "swift"),
+    );
+    drop(peer);
+
+    let rows = database
+        .merged_rows_for_identity_for_test(
+            Some(&identity),
+            &bundle,
+            31.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 3, "duplicate migration row must collapse");
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.five_hour_used_percent)
+            .collect::<Vec<_>>(),
+        vec![Some(20), Some(30), Some(40)],
+        "stable identity must merge display-name drift, then local Tauri wins same-time conflict"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn tauri_history_peer_missing_or_old_schema_degrades_to_local_rows() {
+    let root = temp_dir_path("peer-unavailable");
+    let _env = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", root.join("support")),
+        (
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.join("support").join("CodexTokenBarTauri"),
+        ),
+    ]);
+    let local_path = app_paths::quota_history_database_path().unwrap();
+    let peer_path = app_paths::legacy_shared_quota_history_database_path().unwrap();
+    let database = QuotaHistoryDatabase {
+        path: local_path.clone(),
+    };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/peer-unavailable"),
+        Some("sub:peer-unavailable"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let bundle = bundle(
+        "tester",
+        0.10,
+        (now_unix() + 3_600.0) as i64,
+        0.20,
+        (now_unix() + 500_000.0) as i64,
+    );
+    let local_row = stable_history_row(&identity, now_unix() - 300.0, 22, "tauri");
+
+    std::fs::create_dir_all(local_path.parent().unwrap()).unwrap();
+    let local = rusqlite::Connection::open(&local_path).unwrap();
+    ensure_schema(&local).unwrap();
+    insert_stable_history_row(&local, &local_row);
+    drop(local);
+
+    let missing_peer_rows = database
+        .merged_rows_for_identity_for_test(
+            Some(&identity),
+            &bundle,
+            31.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap();
+    assert_eq!(missing_peer_rows.len(), 1);
+    assert_eq!(missing_peer_rows[0].five_hour_used_percent, Some(22));
+
+    std::fs::create_dir_all(peer_path.parent().unwrap()).unwrap();
+    let old_peer = rusqlite::Connection::open(&peer_path).unwrap();
+    old_peer
+        .execute_batch(
+            "CREATE TABLE quota_snapshots (created_at REAL NOT NULL, account_key TEXT NOT NULL, plan_type TEXT, limit_name TEXT, account_name TEXT, source TEXT, five_hour_used_percent INTEGER, five_hour_resets_at REAL, seven_day_used_percent INTEGER, seven_day_resets_at REAL, status TEXT NOT NULL);",
+        )
+        .unwrap();
+    old_peer
+        .execute(
+            "INSERT INTO quota_snapshots (created_at, account_key, plan_type, limit_name, account_name, source, five_hour_used_percent, status) VALUES (?1, ?2, 'Pro', 'codex', 'tester', 'swift', 99, 'old');",
+            rusqlite::params![now_unix() - 200.0, "tester|Pro|codex"],
+        )
+        .unwrap();
+    drop(old_peer);
+
+    let old_schema_rows = database
+        .merged_rows_for_identity_for_test(
+            Some(&identity),
+            &bundle,
+            31.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap();
+    assert_eq!(old_schema_rows.len(), 1);
+    assert_eq!(old_schema_rows[0].five_hour_used_percent, Some(22));
+    let old_peer_check = rusqlite::Connection::open(&peer_path).unwrap();
+    let identity_columns: i64 = old_peer_check
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('quota_snapshots') WHERE name = 'identity_version';",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(identity_columns, 0, "peer read must not upgrade its schema");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn tauri_history_peer_identity_mismatch_is_not_read() {
+    let root = temp_dir_path("peer-identity-mismatch");
+    let _env = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", root.join("support")),
+        (
+            "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",
+            root.join("support").join("CodexTokenBarTauri"),
+        ),
+    ]);
+    let local_path = app_paths::quota_history_database_path().unwrap();
+    let peer_path = app_paths::legacy_shared_quota_history_database_path().unwrap();
+    let database = QuotaHistoryDatabase {
+        path: local_path.clone(),
+    };
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/peer-identity-mismatch"),
+        Some("sub:current-account"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let other_identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/peer-identity-mismatch"),
+        Some("sub:other-account"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let bundle = bundle(
+        "tester",
+        0.10,
+        (now_unix() + 3_600.0) as i64,
+        0.20,
+        (now_unix() + 500_000.0) as i64,
+    );
+    std::fs::create_dir_all(peer_path.parent().unwrap()).unwrap();
+    let peer = rusqlite::Connection::open(&peer_path).unwrap();
+    ensure_schema(&peer).unwrap();
+    insert_stable_history_row(
+        &peer,
+        &stable_history_row(&other_identity, now_unix() - 300.0, 99, "swift"),
+    );
+    insert_stable_history_row(
+        &peer,
+        &stable_history_row(&identity, now_unix() - 200.0, 88, "tauri"),
+    );
+    drop(peer);
+
+    let rows = database
+        .merged_rows_for_identity_for_test(
+            Some(&identity),
+            &bundle,
+            31.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "peer rows from another identity or non-Swift source must be ignored"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn record_uses_read_plan_label_instead_of_inventing_pro() {
     let path = temp_db_path("plan-label");
     let database = QuotaHistoryDatabase { path: path.clone() };
@@ -1858,6 +2091,65 @@ fn history_row(
         identity_plan_type: None,
         identity_limit_id: None,
     }
+}
+
+fn stable_history_row(
+    identity: &QuotaHistoryIdentity,
+    created_at: f64,
+    five_hour_used_percent: i32,
+    source: &str,
+) -> QuotaHistoryRow {
+    let mut row = history_row(
+        created_at,
+        "tester|Pro|codex",
+        "Pro",
+        Some("codex"),
+        five_hour_used_percent,
+        created_at + 3_600.0,
+        20,
+        created_at + 500_000.0,
+    );
+    row.source = Some(source.into());
+    row.identity_version = Some(identity.version);
+    row.home_identity = Some(identity.home_identity.clone());
+    row.stable_account_key = Some(identity.stable_account_key.clone());
+    row.identity_plan_type = Some(identity.plan_type.clone());
+    row.identity_limit_id = Some(identity.limit_id.clone());
+    row
+}
+
+fn insert_stable_history_row(connection: &rusqlite::Connection, row: &QuotaHistoryRow) {
+    connection
+        .execute(
+            r#"
+            INSERT INTO quota_snapshots (
+                created_at, account_key, plan_type, limit_name, account_name, source,
+                five_hour_used_percent, five_hour_resets_at,
+                seven_day_used_percent, seven_day_resets_at, status,
+                identity_version, home_identity, stable_account_key,
+                identity_plan_type, identity_limit_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);
+            "#,
+            rusqlite::params![
+                row.created_at,
+                row.account_key,
+                row.plan_type,
+                row.limit_name,
+                row.account_name,
+                row.source,
+                row.five_hour_used_percent,
+                row.five_hour_resets_at,
+                row.seven_day_used_percent,
+                row.seven_day_resets_at,
+                row.status,
+                row.identity_version,
+                row.home_identity,
+                row.stable_account_key,
+                row.identity_plan_type,
+                row.identity_limit_id,
+            ],
+        )
+        .unwrap();
 }
 
 fn insert_history_row_with_source(
