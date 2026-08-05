@@ -214,9 +214,31 @@ struct RecentChartQuotaEstimateOverlay: View {
     let showsSevenDayQuota: Bool
     let currentFiveHourQuotaPresent: Bool
     let currentSevenDayQuotaPresent: Bool
-    let attributionEventsComplete: Bool = true
+    let attributionEventsComplete: Bool
     let onClose: () -> Void
     @State private var detailSnapshot: QuotaConsumptionSelectionDetailSnapshot?
+
+    init(
+        selection: QuotaConsumptionSelection,
+        attribution: QuotaSelectionAttributionResult?,
+        isSelectionFixed: Bool,
+        showsFiveHourQuota: Bool,
+        showsSevenDayQuota: Bool,
+        currentFiveHourQuotaPresent: Bool,
+        currentSevenDayQuotaPresent: Bool,
+        attributionEventsComplete: Bool = true,
+        onClose: @escaping () -> Void = {}
+    ) {
+        self.selection = selection
+        self.attribution = attribution
+        self.isSelectionFixed = isSelectionFixed
+        self.showsFiveHourQuota = showsFiveHourQuota
+        self.showsSevenDayQuota = showsSevenDayQuota
+        self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
+        self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
+        self.attributionEventsComplete = attributionEventsComplete
+        self.onClose = onClose
+    }
 
     var body: some View {
         let presentation = QuotaConsumptionEstimatorOverlayPresentation(
