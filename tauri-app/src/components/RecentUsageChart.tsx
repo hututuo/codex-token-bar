@@ -26,6 +26,7 @@ import {
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
   smoothPath,
+  shouldReopenPreviewOnHoverMove,
   tokenAreaPath,
   type OfficialAPIPriceModel,
   type QuotaConsumptionEstimate,
@@ -154,7 +155,7 @@ export function RecentUsageChart({
       return;
     }
     const nextIndex = hoverIndexForX(x, chartWidth, data.points.length);
-    if (nextIndex !== hoveredIndex) {
+    if (shouldReopenPreviewOnHoverMove(fixedSelectionEndIndex, hoveredIndex, nextIndex)) {
       setPreviewDismissed(false);
     }
     setHoveredIndex(nextIndex);

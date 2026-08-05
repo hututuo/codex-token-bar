@@ -17,6 +17,7 @@ import {
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
   smoothPath,
+  shouldReopenPreviewOnHoverMove,
 } from "./model.ts";
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 import { LONG_RECENT_POINT_COUNT } from "../../timeSeriesTimeline.ts";
@@ -855,6 +856,13 @@ test("clickQuotaSelection previews on hover, pins on second click, resets on thi
 
   state = clickQuotaSelection(state, 2, 10);
   assert.deepEqual(state, { startIndex: 2, fixedEndIndex: null });
+});
+
+test("fixed selection keeps a dismissed preview closed while unpinned hover still reopens on a new point", () => {
+  assert.equal(shouldReopenPreviewOnHoverMove(7, 2, 4), false);
+  assert.equal(shouldReopenPreviewOnHoverMove(7, 4, 4), false);
+  assert.equal(shouldReopenPreviewOnHoverMove(null, 2, 4), true);
+  assert.equal(shouldReopenPreviewOnHoverMove(null, 4, 4), false);
 });
 
 test("RecentUsageChart exposes click-to-estimate quota UI", async () => {

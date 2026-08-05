@@ -561,6 +561,20 @@ test("top hover and fixed-selection previews can be dismissed without clearing t
         await React.act(async () => selectionClose.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })));
         assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
         assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+
+        // Moving across a pinned selection must not reopen its dismissed top card.
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
+          bubbles: true, clientX: 480, clientY: 80, pointerId: 1,
+        })));
+        assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
+
+        // A third click starts a new, unpinned selection and is an explicit
+        // interaction that reopens the point preview.
+        await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, clientX: 480, clientY: 80, pointerId: 1,
+        })));
+        assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
+        assert.ok(container.querySelector('[aria-label="关闭当前点预览"]'));
       } finally {
         await React.act(async () => root.unmount());
       }

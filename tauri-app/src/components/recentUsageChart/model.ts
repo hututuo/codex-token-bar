@@ -512,6 +512,14 @@ export function clickQuotaSelection(
   return { startIndex: state.startIndex, fixedEndIndex: index };
 }
 
+export function shouldReopenPreviewOnHoverMove(
+  fixedEndIndex: number | null,
+  previousHoveredIndex: number | null,
+  nextHoveredIndex: number | null,
+): boolean {
+  return fixedEndIndex === null && nextHoveredIndex !== previousHoveredIndex;
+}
+
 export function activeQuotaSelectionEndIndex(
   state: QuotaSelectionState,
   hoveredIndex: number | null,
