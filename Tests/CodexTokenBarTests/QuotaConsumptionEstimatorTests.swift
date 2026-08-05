@@ -274,7 +274,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
 
     @MainActor
     func testSelectionAttributionSupportsSevenAndThirtyDayRangesWithModelEvents() throws {
-        let start = Date(timeIntervalSince1970: 1_800)
+        // Keep the synthetic clock on exact hourly boundaries so observed
+        // quota boundaries and model events cover the same buckets.
+        let start = Date(timeIntervalSince1970: 0)
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let modelBreakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
@@ -290,7 +292,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             let hourlyBins = (0..<hourlyCount).map { index in
                 BinUsage(
                     start: start.addingTimeInterval(Double(index) * 60 * 60),
-                    tokens: 1_000,
+                    tokens: 1_000_000,
                     calls: 1
                 )
             }
@@ -343,9 +345,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 selection: selection,
                 context: attributionContext(for: selection, radarTotalUSD: 1_000)
             )
-
             XCTAssertEqual(result.accountDropBasis, .observed, range.rawValue)
             XCTAssertNotNil(result.accountDropPercent, range.rawValue)
+            XCTAssertFalse(selection.sevenDayAttributionEvents.isEmpty, range.rawValue)
+            XCTAssertEqual(result.fallbackModelCalls, 0, range.rawValue)
             XCTAssertEqual(result.detectedModels, [.gpt56Sol], range.rawValue)
         }
     }

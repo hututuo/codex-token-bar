@@ -52,14 +52,46 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
     }
 
     func testPreviewCardsExposeCloseActionsForPointAndFixedSelection() throws {
-        let source = try String(
+        let componentSource = try String(
             contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift",
             encoding: .utf8
         )
-        XCTAssertTrue(source.contains("关闭当前点预览"))
-        XCTAssertTrue(source.contains("关闭选中区间预览"))
-        XCTAssertTrue(source.contains(".allowsHitTesting(true)"))
-        XCTAssertTrue(source.contains(".onKeyPress(.escape)"))
+        let chartSource = try String(
+            contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift",
+            encoding: .utf8
+        )
+        XCTAssertTrue(componentSource.contains("关闭当前点预览"))
+        XCTAssertTrue(componentSource.contains("关闭选中区间预览"))
+        XCTAssertTrue(componentSource.contains(".allowsHitTesting(true)"))
+        XCTAssertTrue(chartSource.contains(".onKeyPress(.escape)"))
+    }
+
+    func testFixedSelectionHoverDoesNotReopenDismissedTopPreview() {
+        var preview = RecentChartPreviewVisibilityState()
+        var selection = RecentChartConsumptionSelectionState()
+
+        selection.click(index: 2, validCount: 8)
+        preview.beginInteraction()
+        selection.click(index: 5, validCount: 8)
+        preview.beginInteraction()
+        preview.dismissTopPreview()
+        XCTAssertFalse(preview.showsTopPreview)
+
+        preview.beginHoverInteraction(selectionIsFixed: selection.fixedEndIndex != nil)
+        XCTAssertFalse(
+            preview.showsTopPreview,
+            "hovering a fixed selection must not reopen a card explicitly closed by the user"
+        )
+
+        selection.click(index: 6, validCount: 8)
+        preview.beginInteraction()
+        XCTAssertTrue(preview.showsTopPreview, "a new click starts a new interaction generation")
+
+        var openHoverPreview = RecentChartPreviewVisibilityState()
+        openHoverPreview.beginInteraction()
+        openHoverPreview.dismissTopPreview()
+        openHoverPreview.beginHoverInteraction(selectionIsFixed: false)
+        XCTAssertTrue(openHoverPreview.showsTopPreview, "ordinary hover changes should reopen the point preview")
     }
 
     func testProductionChartComputesSelectionOncePerBodyEvaluation() throws {

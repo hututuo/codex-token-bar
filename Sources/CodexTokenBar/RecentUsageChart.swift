@@ -553,6 +553,11 @@ struct RecentChartPreviewVisibilityState: Equatable {
         interactionGeneration &+= 1
     }
 
+    mutating func beginHoverInteraction(selectionIsFixed: Bool) {
+        guard !selectionIsFixed else { return }
+        beginInteraction()
+    }
+
     mutating func dismissTopPreview() {
         topDismissedGeneration = interactionGeneration
     }
@@ -1578,7 +1583,9 @@ struct RecentUsageChart: View, Equatable {
         guard hoveredIndex != index else { return }
         hoveredIndex = index
         if index != nil {
-            previewVisibility.beginInteraction()
+            previewVisibility.beginHoverInteraction(
+                selectionIsFixed: consumptionSelectionState.fixedEndIndex != nil
+            )
         }
     }
 
