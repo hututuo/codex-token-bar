@@ -828,7 +828,7 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-visible-window\s*{[^}]*position:\s*absolute/s);
   assert.match(css, /\.recent-chart-page-button\s*{[^}]*pointer-events:\s*auto/s);
   assert.match(css, /\.recent-chart-page-button\s*{[^}]*width:\s*30px/s);
-  assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH)"), true);
+  assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth)"), true);
   assert.equal(source.includes("recentChartScrollTarget(scrollLayout, scrollElement.scrollLeft, direction)"), true);
   assert.equal(source.includes("className=\"recent-chart-page-controls\""), true);
   assert.equal(source.includes("aria-label=\"向前翻页\""), true);
@@ -862,7 +862,7 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
 
   for (const expected of [
     "点击起点/终点可估算额度",
-    "recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH)",
+    "recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth)",
     "recent-chart-scroll-content",
     "recent-chart-overlay-layer",
     "quotaConsumptionSelection",

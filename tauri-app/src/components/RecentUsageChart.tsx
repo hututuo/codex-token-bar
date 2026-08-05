@@ -77,7 +77,7 @@ export function RecentUsageChart({
     () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
     [range, recentUsage24h, recentUsage7d, recentUsage30d],
   );
-  const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH);
+  const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth);
   const chartWidth = scrollLayout.contentWidth;
   const scrollPresentation = recentChartScrollPresentation(scrollLayout, chartScrollLeft);
   const scrollContentStyle = {
