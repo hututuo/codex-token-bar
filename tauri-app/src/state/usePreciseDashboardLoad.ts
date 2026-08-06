@@ -28,7 +28,7 @@ interface PreciseDashboardLoadOptions {
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized?: () => void;
   onUsageCacheStatus?: (status: UsageCacheStatus) => void;
-  onPreciseRequestStarted?: (generation: number) => void;
+  onPreciseRequestStarted?: (generation: number, forced: boolean) => void;
   onLoadEnd?: () => void;
   onLoadStart?: () => void;
 }
@@ -157,7 +157,7 @@ export function usePreciseDashboardLoad({
         // period; marking it earlier would make the replacement effect believe
         // the exact scan had already run and permanently skip that generation.
         preciseGeneration.current = generation;
-        onPreciseRequestStarted?.(generation);
+        onPreciseRequestStarted?.(generation, forcePreciseRefresh);
         void loadPreciseSnapshot();
       }
     }, startDelayMs);

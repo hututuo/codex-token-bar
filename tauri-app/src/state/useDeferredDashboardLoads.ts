@@ -32,7 +32,7 @@ interface DeferredDashboardLoadsOptions {
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized: () => void;
   onUsageCacheStatus: (status: UsageCacheStatus) => void;
-  onPreciseRequestStarted?: (generation: number) => void;
+  onPreciseRequestStarted?: (generation: number, forced: boolean) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;

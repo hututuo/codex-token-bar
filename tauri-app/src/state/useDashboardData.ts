@@ -121,6 +121,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const attributionPreciseRefreshRef = useRef<string | null>(null);
   const latestPreciseCoverageRef = useRef<string | null>(null);
   const pendingForcedPreciseRefreshRef = useRef(false);
+  // Keep the force bit stable for the whole active generation. Clearing only
+  // the pending bit at timer start must not make a later unrelated render
+  // change the effect dependency and cancel the in-flight owner.
+  const activeForcedPreciseGenerationRef = useRef<number | null>(null);
   latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
 
@@ -136,7 +140,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
   }, []);
 
-  const markPreciseRequestStarted = useCallback(() => {
+  const markPreciseRequestStarted = useCallback((generation: number, forced: boolean) => {
+    activeForcedPreciseGenerationRef.current = forced ? generation : null;
     pendingForcedPreciseRefreshRef.current = false;
   }, []);
 
@@ -736,7 +741,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dashboardReady,
     loading: state.loading,
     generation: loadGeneration,
-    forcePreciseRefresh: pendingForcedPreciseRefreshRef.current,
+    forcePreciseRefresh: pendingForcedPreciseRefreshRef.current
+      || activeForcedPreciseGenerationRef.current === loadGeneration,
     quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
     sourceToken,
