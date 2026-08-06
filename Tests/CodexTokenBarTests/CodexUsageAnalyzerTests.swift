@@ -2343,24 +2343,134 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 """
                 SELECT
                     COUNT(*),
-                    COUNT(DISTINCT last_seen_generation),
                     (SELECT COUNT(*) FROM events),
-                    (SELECT SUM(tokens) FROM events)
+                    (SELECT SUM(tokens) FROM events),
+                    (SELECT CAST(value AS INTEGER) FROM schema_meta
+                        WHERE key = 'attribution_generation')
                 FROM sources;
                 """
             ) {
                 (
                     sourceCount: $0.int(0),
-                    generationCount: $0.int(1),
-                    eventCount: $0.int(2),
-                    totalTokens: $0.int(3)
+                    eventCount: $0.int(1),
+                    totalTokens: $0.int(2),
+                    attributionGeneration: $0.int64(3)
                 )
             }.first
         )
         XCTAssertEqual(finalState.sourceCount, 2)
-        XCTAssertEqual(finalState.generationCount, 1)
         XCTAssertEqual(finalState.eventCount, 3)
         XCTAssertEqual(finalState.totalTokens, 290)
+        XCTAssertGreaterThan(finalState.attributionGeneration ?? 0, 0)
+    }
+
+    func testExactHistoryIndexNoOpSyncRetainsGenerationAndSkipsUnchangedSourceWrites() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerNoOpGeneration")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionsRoot = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let archivedRoot = codexHome.appendingPathComponent("archived_sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: archivedRoot, withIntermediateDirectories: true)
+        let activeID = "019eaaaa-bbbb-4ccc-8ddd-0000000000c1"
+        let archivedID = "019eaaaa-bbbb-4ccc-8ddd-0000000000c2"
+        let activeFile = sessionsRoot.appendingPathComponent("2026-06-17-\(activeID).jsonl")
+        let archivedFile = archivedRoot.appendingPathComponent("2026-06-17-\(archivedID).jsonl")
+        let now = Date()
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 10, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 10, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: activeFile, atomically: true, encoding: .utf8)
+        try tokenCountLine(
+            timestamp: now.addingTimeInterval(-30),
+            total: Usage(input: 50, cachedInput: 5, output: 5, reasoning: 0, total: 60),
+            last: Usage(input: 50, cachedInput: 5, output: 5, reasoning: 0, total: 60)
+        ).appending("\n").write(to: archivedFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        func synchronize(_ files: [URL]) throws -> CodexUsageHistoryIndex.SynchronizationResult {
+            try index.synchronize(
+                files: files,
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        }
+
+        let first = try synchronize([activeFile, archivedFile])
+        XCTAssertEqual(first.changedFiles, 2)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let beforeRows = try database.readRows(
+            "SELECT path, last_seen_generation FROM sources ORDER BY path;"
+        ) { row -> String? in
+            guard let path = row.text(0), let generation = row.text(1) else { return nil }
+            return "\(path)\t\(generation)"
+        }.compactMap { $0 }
+
+        let noOp = try synchronize([activeFile, archivedFile])
+        XCTAssertEqual(noOp.changedFiles, 0)
+        XCTAssertEqual(noOp.unchangedFiles, 2)
+        XCTAssertEqual(noOp.removedFiles, 0)
+        XCTAssertEqual(noOp.attributionGeneration, first.attributionGeneration)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT path, last_seen_generation FROM sources ORDER BY path;"
+            ) { row -> String? in
+                guard let path = row.text(0), let generation = row.text(1) else { return nil }
+                return "\(path)\t\(generation)"
+            }.compactMap { $0 },
+            beforeRows
+        )
+
+        try FileManager.default.removeItem(at: archivedFile)
+        let removed = try synchronize([activeFile])
+        XCTAssertEqual(removed.removedFiles, 1)
+        XCTAssertGreaterThan(removed.attributionGeneration, noOp.attributionGeneration)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), 1)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 1)
+
+        try appendLines([
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 125, cachedInput: 12, output: 25, reasoning: 0, total: 150),
+                last: Usage(input: 25, cachedInput: 2, output: 5, reasoning: 0, total: 30)
+            )
+        ], to: activeFile)
+        let appended = try synchronize([activeFile])
+        XCTAssertEqual(appended.changedFiles, 1)
+        XCTAssertEqual(appended.incrementallyParsedFiles, 1)
+        XCTAssertEqual(appended.attributionGeneration, removed.attributionGeneration + 1)
+        let appendedNoOp = try synchronize([activeFile])
+        XCTAssertEqual(appendedNoOp.changedFiles, 0)
+        XCTAssertEqual(appendedNoOp.unchangedFiles, 1)
+        XCTAssertEqual(appendedNoOp.attributionGeneration, appended.attributionGeneration)
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        _ = try analyzer.load()
+        let buildCount = CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 150)
+        _ = try analyzer.load()
+        XCTAssertEqual(
+            CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting,
+            buildCount,
+            "a no-op compact sync must preserve the snapshot cache signature"
+        )
     }
 
     func testPreciseJSONLScanUpdatesTotalsForNewAndDeletedSessions() throws {

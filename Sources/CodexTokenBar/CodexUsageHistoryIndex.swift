@@ -206,6 +206,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let checkpoint: SourceCheckpoint?
     }
 
+    private struct SourceIdentity {
+        let id: Int64
+        let path: String
+    }
+
     private struct SourceCheckpoint {
         let resumeOffset: UInt64
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
@@ -775,6 +780,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
+        let canonicalFiles = files.map { $0.resolvingSymlinksInPath() }
+        let observedPaths = Set(canonicalFiles.map(\.path))
         var changedFiles = 0
         var unchangedFiles = 0
         var indexedEvents = 0
@@ -783,39 +790,35 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var removedFiles = 0
         var fullRebuildJobs: [FullRebuildJob] = []
         let canonicalLineageCounts = Dictionary(
-            grouping: files.compactMap { file in
-                canonicalSessionID(sessionID(file.resolvingSymlinksInPath()))
+            grouping: canonicalFiles.compactMap { file in
+                canonicalSessionID(sessionID(file))
             },
             by: { $0 }
         )
         var lineageAmbiguityDetected = canonicalLineageCounts.values.contains {
             $0.count > 1
         }
+        var sourceMutationDetected = false
 
         try driver.withConnection { connection in
             try configure(connection)
 
-            for file in files {
+            for file in canonicalFiles {
                 try autoreleasepool {
-                    let canonicalFile = file.resolvingSymlinksInPath()
-                    let path = canonicalFile.path
-                    let observed = try sourceSignature(for: canonicalFile)
+                    let path = file.path
+                    let observed = try sourceSignature(for: file)
                     let existing = try indexedSource(path: path, connection: connection)
                     if let existing,
                        existing.signature == observed {
-                        try connection.execute(
-                            "UPDATE sources SET last_seen_generation = ? WHERE source_id = ?;",
-                            bindings: [.text(generation), .int64(existing.id)]
-                        )
                         unchangedFiles += 1
                         return
                     }
 
-                    let parsedSessionID = sessionID(canonicalFile)
+                    let parsedSessionID = sessionID(file)
                     if let existing,
                        canAttemptAppend(from: existing, to: observed),
                        let appended = try appendSource(
-                           file: canonicalFile,
+                           file: file,
                            sessionID: parsedSessionID,
                            observedSignature: observed,
                            existing: existing,
@@ -823,6 +826,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                            connection: connection,
                            parser: parser
                        ) {
+                        sourceMutationDetected = true
                         changedFiles += 1
                         indexedEvents += appended.eventCount
                         incrementallyParsedFiles += 1
@@ -832,7 +836,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         }
                         fullRebuildJobs.append(
                             FullRebuildJob(
-                                file: canonicalFile,
+                                file: file,
                                 sessionID: parsedSessionID,
                                 observedSignature: observed
                             )
@@ -856,12 +860,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         var lineageReplacements: [String: LineageReplacement] = [:]
         var lineagesRequiringMaximumMerge = Set<String>()
+        var provenanceRotated = false
         let finalAttributionState = try driver.withConnection { connection in
             try configure(connection)
             for staged in stagedRebuilds {
                 let resolution = try lineageReplacement(
                     for: staged,
-                    generation: generation,
+                    observedPaths: observedPaths,
                     connection: connection
                 )
                 if let replacement = resolution.replacement {
@@ -886,6 +891,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 && !preRotationAttributionState.currentScanUnsafeCauseDetected
             if currentScanUnsafeCauseDetected
                 && !preRotationAttributionState.requiresSyntheticCutover {
+                provenanceRotated = true
                 _ = try rotateAttributionProvenance(
                     markUnsafe: true,
                     connection: connection
@@ -902,37 +908,68 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
                 changedFiles += 1
                 indexedEvents += staged.eventCount
+                sourceMutationDetected = true
                 removeStagingDatabase(at: staged.databaseURL)
             }
             return try connection.transaction { transaction in
-                try transaction.execute(
-                    """
-                    INSERT INTO schema_meta(key, value)
-                    VALUES ('attribution_current_scan_unsafe_cause', ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                    """,
-                    bindings: [.text(currentScanUnsafeCauseDetected ? "1" : "0")]
+                let currentScanUnsafeCauseBeforePublish =
+                    preRotationAttributionState.currentScanUnsafeCauseDetected
+                if currentScanUnsafeCauseDetected
+                    != currentScanUnsafeCauseBeforePublish {
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('attribution_current_scan_unsafe_cause', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [
+                            .text(currentScanUnsafeCauseDetected ? "1" : "0")
+                        ]
+                    )
+                }
+
+                // `last_seen_generation` is a publication marker for changed
+                // sources, not a heartbeat. Reading the current source paths
+                // and diffing against this round's observed canonical paths
+                // avoids rewriting every unchanged row and keeps deletion
+                // detection independent of SQLite's host parameter limit.
+                let currentSources = try indexedSourceIdentities(
+                    connection: transaction
                 )
-                removedFiles = try transaction.readRows(
-                    "SELECT COUNT(*) FROM sources WHERE last_seen_generation <> ?;",
-                    bindings: [.text(generation)]
-                ) { row in row.int(0) ?? 0 }.first ?? 0
-                try transaction.execute(
-                    "DELETE FROM sources WHERE last_seen_generation <> ?;",
-                    bindings: [.text(generation)]
-                )
+                let removedSourceIDs = currentSources
+                    .filter { !observedPaths.contains($0.path) }
+                    .map(\.id)
+                removedFiles = removedSourceIDs.count
+                sourceMutationDetected = sourceMutationDetected
+                    || !removedSourceIDs.isEmpty
+                for sourceID in removedSourceIDs {
+                    try transaction.execute(
+                        "DELETE FROM sources WHERE source_id = ?;",
+                        bindings: [.int64(sourceID)]
+                    )
+                }
                 let current = try currentAttributionState(connection: transaction)
                 try transaction.execute(
                     "DELETE FROM attribution_source_buckets WHERE provenance_epoch <> ?;",
                     bindings: [.text(current.provenanceEpoch)]
                 )
-                let nextGeneration = try bumpAttributionGeneration(
-                    connection: transaction
-                )
+
+                let unsafeCauseChanged = currentScanUnsafeCauseDetected
+                    != currentScanUnsafeCauseBeforePublish
+                let needsPublicationGeneration = sourceMutationDetected
+                    || (unsafeCauseChanged && !provenanceRotated)
+                let publishedGeneration: Int64
+                if needsPublicationGeneration {
+                    publishedGeneration = try bumpAttributionGeneration(
+                        connection: transaction
+                    )
+                } else {
+                    publishedGeneration = current.generation
+                }
                 if unsafeEpisodeBegan {
                     try markAttributionUnsafe(
                         provenanceEpoch: current.provenanceEpoch,
-                        sinceGeneration: nextGeneration,
+                        sinceGeneration: publishedGeneration,
                         connection: transaction
                     )
                 }
@@ -2216,6 +2253,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return rows.compactMap { $0 }.first
     }
 
+    private func indexedSourceIdentities(
+        connection: SQLiteDatabaseConnection
+    ) throws -> [SourceIdentity] {
+        try connection.readRows(
+            "SELECT source_id, path FROM sources ORDER BY source_id;"
+        ) { row -> SourceIdentity? in
+            guard let sourceID = row.int64(0),
+                  let path = row.text(1) else {
+                return nil
+            }
+            return SourceIdentity(id: sourceID, path: path)
+        }.compactMap { $0 }
+    }
+
     private func canAttemptAppend(
         from source: IndexedSource,
         to observed: SourceSignature
@@ -2393,7 +2444,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         replacing: false,
                         connection: transaction
                     )
-                    _ = try bumpAttributionGeneration(connection: transaction)
                 }
                 return result
             }
@@ -3053,7 +3103,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func lineageReplacement(
         for staged: StagedFullRebuild,
-        generation: String,
+        observedPaths: Set<String>,
         connection: SQLiteDatabaseConnection
     ) throws -> (
         replacement: LineageReplacement?,
@@ -3069,20 +3119,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         let candidates = try connection.readRows(
             """
-            SELECT source_id
+            SELECT source_id, path
             FROM sources
             WHERE lower(session_id) = ?
               AND path <> ?
-              AND last_seen_generation <> ?
             ORDER BY source_id;
             """,
             bindings: [
                 .text(canonicalSessionID),
-                .text(staged.job.file.path),
-                .text(generation),
+                .text(staged.job.file.path)
             ]
-        ) { row in row.int64(0) }.compactMap { $0 }
-        if candidates.count == 1, let sourceID = candidates.first {
+        ) { row -> SourceIdentity? in
+            guard let sourceID = row.int64(0),
+                  let path = row.text(1),
+                  !observedPaths.contains(path) else {
+                return nil
+            }
+            return SourceIdentity(id: sourceID, path: path)
+        }.compactMap { $0 }
+        let candidateIDs = candidates.map(\.id)
+        if candidateIDs.count == 1, let sourceID = candidateIDs.first {
             let contentMatches = try stagedContentMatchesSource(
                 staged,
                 sourceID: sourceID,
@@ -3094,7 +3150,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 false
             )
         }
-        guard candidates.isEmpty else {
+        guard candidateIDs.isEmpty else {
             return (nil, true, false)
         }
 
@@ -3411,7 +3467,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 preservingExistingMaximum: preserveExistingAttributionLedger,
                 connection: transaction
             )
-            _ = try bumpAttributionGeneration(connection: transaction)
         }
     }
 
