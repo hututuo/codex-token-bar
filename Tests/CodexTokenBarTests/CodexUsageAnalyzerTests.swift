@@ -2366,6 +2366,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 type: "agent_message",
                 message: secretAnswer
             ),
+            turnContextLine(
+                timestamp: now.addingTimeInterval(-65),
+                model: "gpt-5.6-sol"
+            ),
             try tokenCountLine(
                 timestamp: now.addingTimeInterval(-60),
                 total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
@@ -2405,6 +2409,30 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertNil(stagedCache.range(of: Data(secretAnswer.utf8)))
 
         let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute(
+            """
+            CREATE TRIGGER fail_staged_import
+            BEFORE INSERT ON events
+            BEGIN
+                SELECT RAISE(ABORT, 'injected staged import conflict');
+            END;
+            """
+        )
+        XCTAssertThrowsError(
+            try resumed.synchronize(
+                files: [file],
+                sessionID: analyzer.sessionID(from:),
+                parser: parser
+            )
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("injected staged import conflict"))
+        }
+        XCTAssertEqual(parseCount.value, 1)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), 0)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 0)
+        try database.execute("DROP TRIGGER fail_staged_import;")
+
         let result = try resumed.synchronize(
             files: [file],
             sessionID: analyzer.sessionID(from:),
@@ -2416,6 +2444,36 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var total = 0
         try resumed.forEachStoredEvent { total += $0.event.tokens }
         XCTAssertEqual(total, 120)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT model FROM events ORDER BY source_offset LIMIT 1;"
+            ) { $0.text(0) }.compactMap { $0 }.first,
+            "gpt-5.6-sol"
+        )
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM source_fingerprints;", in: database),
+            1
+        )
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM source_chunks;", in: database),
+            1
+        )
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM sources WHERE append_ready = 1;", in: database),
+            1
+        )
+        let checkpointRows = try database.readRows(
+            "SELECT resume_offset, size_bytes FROM sources WHERE path = ?;",
+            bindings: [.text(file.path)]
+        ) { row -> (Int64, Int64)? in
+            guard let resumeOffset = row.int64(0),
+                  let sizeBytes = row.int64(1) else {
+                return nil
+            }
+            return (resumeOffset, sizeBytes)
+        }
+        let checkpoint = try XCTUnwrap(checkpointRows.compactMap { $0 }.first)
+        XCTAssertEqual(checkpoint.0, checkpoint.1)
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath: swiftUsageCacheRoot(in: cacheRoot)
