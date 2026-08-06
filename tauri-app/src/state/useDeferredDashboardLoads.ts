@@ -4,6 +4,9 @@ import type {
   CodexHomeSourceToken,
   DashboardSnapshot,
   LiveThreadOption,
+  PreciseDashboardDedupeDomain,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardRequestRevision,
   UsageCacheStatus,
 } from "../types/dashboard";
 import { useDeferredQuotaLoad } from "./useDeferredQuotaLoad";
@@ -16,6 +19,10 @@ interface DeferredDashboardLoadsOptions {
   loading: boolean;
   generation: number;
   forcePreciseRefresh?: boolean;
+  preciseRefreshReason?: PreciseDashboardRefreshReason;
+  preciseRefreshRevision?: PreciseDashboardRequestRevision;
+  preciseRefreshDedupeDomain?: PreciseDashboardDedupeDomain;
+  preciseRefreshDedupeKey?: string;
   quotaGeneration: number;
   forceQuotaRefresh: boolean;
   sourceToken: CodexHomeSourceToken | null;
@@ -32,7 +39,14 @@ interface DeferredDashboardLoadsOptions {
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized: () => void;
   onUsageCacheStatus: (status: UsageCacheStatus) => void;
-  onPreciseRequestStarted?: (generation: number, forced: boolean) => void;
+  onPreciseRequestStarted?: (
+    generation: number,
+    forced: boolean,
+    reason: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;
@@ -46,6 +60,10 @@ export function useDeferredDashboardLoads({
   loading,
   generation,
   forcePreciseRefresh,
+  preciseRefreshReason,
+  preciseRefreshRevision,
+  preciseRefreshDedupeDomain,
+  preciseRefreshDedupeKey,
   quotaGeneration,
   forceQuotaRefresh,
   sourceToken,
@@ -67,6 +85,10 @@ export function useDeferredDashboardLoads({
     dashboardReady,
     generation,
     forcePreciseRefresh,
+    preciseRefreshReason,
+    preciseRefreshRevision,
+    preciseRefreshDedupeDomain,
+    preciseRefreshDedupeKey,
     loading,
     onPreciseDashboard,
     onPreciseDashboardFailure,

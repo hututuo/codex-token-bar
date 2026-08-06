@@ -1,9 +1,15 @@
 import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { CodexHomeSourceToken, DashboardSnapshot, UsageCacheStatus } from "../types/dashboard";
+import type {
+  PreciseDashboardDedupeDomain,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardRequestRevision,
+} from "../types/usage";
 import {
   loadPreciseDashboardSingleFlight,
   markPreciseDashboardSourceDirty,
+  preciseDashboardForceRequestCanReuseSettled,
   preciseDashboardFlightInProgress,
 } from "./preciseDashboardSingleFlight";
 import {
@@ -19,6 +25,10 @@ interface PreciseDashboardLoadOptions {
   loading: boolean;
   generation: number;
   forcePreciseRefresh?: boolean;
+  preciseRefreshReason?: PreciseDashboardRefreshReason;
+  preciseRefreshRevision?: PreciseDashboardRequestRevision;
+  preciseRefreshDedupeDomain?: PreciseDashboardDedupeDomain;
+  preciseRefreshDedupeKey?: string;
   sourceToken: CodexHomeSourceToken | null;
   source: Pick<
     DashboardDataSource,
@@ -29,7 +39,14 @@ interface PreciseDashboardLoadOptions {
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized?: () => void;
   onUsageCacheStatus?: (status: UsageCacheStatus) => void;
-  onPreciseRequestStarted?: (generation: number, forced: boolean) => void;
+  onPreciseRequestStarted?: (
+    generation: number,
+    forced: boolean,
+    reason: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => void;
   onLoadEnd?: () => void;
   onLoadStart?: () => void;
 }
@@ -40,6 +57,10 @@ export function usePreciseDashboardLoad({
   loading,
   generation,
   forcePreciseRefresh = true,
+  preciseRefreshReason,
+  preciseRefreshRevision,
+  preciseRefreshDedupeDomain,
+  preciseRefreshDedupeKey,
   sourceToken,
   source,
   onPreciseDashboard,
@@ -61,7 +82,15 @@ export function usePreciseDashboardLoad({
 
     let cancelled = false;
     let unsubscribePrecise: (() => void) | undefined;
-    if (forcePreciseRefresh && sourceToken !== null) {
+    const requestReason = preciseRefreshReason ?? (forcePreciseRefresh ? "unknown" : "cadence");
+    const canDeferDirtyMark = forcePreciseRefresh
+      && preciseDashboardForceRequestCanReuseSettled(
+        requestReason,
+        preciseRefreshRevision,
+        preciseRefreshDedupeDomain,
+        preciseRefreshDedupeKey,
+      );
+    if (forcePreciseRefresh && sourceToken !== null && !canDeferDirtyMark) {
       // Keep a failed explicit request retryable even when the optional
       // cache-status command rejects before the native precise loader starts.
       markPreciseDashboardSourceDirty(sourceToken);
@@ -139,14 +168,21 @@ export function usePreciseDashboardLoad({
         }
         const preciseFlight = loadPreciseDashboardSingleFlight(
           sourceToken,
-          () => source.readPreciseDashboardSnapshot(sourceToken),
+          () => source.readPreciseDashboardSnapshot(sourceToken, requestReason),
           (precise) => {
             if (!cancelled && precise !== null) {
               onPreciseDashboard(precise);
               onUsageCacheInitialized?.();
             }
           },
-          { force: effectiveForce, publishedGeneration },
+          {
+            force: effectiveForce,
+            publishedGeneration,
+            reason: requestReason,
+            revision: preciseRefreshRevision,
+            dedupeDomain: preciseRefreshDedupeDomain,
+            dedupeKey: preciseRefreshDedupeKey,
+          },
         );
         unsubscribePrecise = preciseFlight.unsubscribe;
         void preciseFlight.result.then(
@@ -164,6 +200,12 @@ export function usePreciseDashboardLoad({
         // enqueue another Rust scan; a late current result still publishes.
         await preciseFlight.waitForUiBudget(PRECISE_DASHBOARD_UI_WAIT_MS);
       } catch {
+        if (forcePreciseRefresh && sourceToken !== null && canDeferDirtyMark) {
+          // A coalescible force request that failed before single-flight was
+          // reached still needs a dirty marker so the next retry cannot reuse
+          // the previous settled snapshot.
+          markPreciseDashboardSourceDirty(sourceToken);
+        }
         reportFailure();
       } finally {
         onLoadEnd?.();
@@ -177,7 +219,14 @@ export function usePreciseDashboardLoad({
         // period; marking it earlier would make the replacement effect believe
         // the exact scan had already run and permanently skip that generation.
         preciseGeneration.current = generation;
-        onPreciseRequestStarted?.(generation, forcePreciseRefresh);
+        onPreciseRequestStarted?.(
+          generation,
+          forcePreciseRefresh,
+          requestReason,
+          preciseRefreshRevision,
+          preciseRefreshDedupeDomain,
+          preciseRefreshDedupeKey,
+        );
         void loadPreciseSnapshot();
       }
     }, startDelayMs);
@@ -201,6 +250,10 @@ export function usePreciseDashboardLoad({
     onUsageCacheInitialized,
     onUsageCacheStatus,
     onPreciseRequestStarted,
+    preciseRefreshReason,
+    preciseRefreshRevision,
+    preciseRefreshDedupeDomain,
+    preciseRefreshDedupeKey,
     source,
     sourceToken,
   ]);

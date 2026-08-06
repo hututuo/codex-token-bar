@@ -1477,8 +1477,13 @@ pub async fn read_precise_dashboard_snapshot(
     window: tauri::WebviewWindow,
     app: AppHandle,
     source_token: CodexHomeSourceToken,
+    request_reason: Option<String>,
 ) -> Result<DashboardSnapshot, String> {
     require_window_label(&window, "read_precise_dashboard_snapshot")?;
+    startup_trace::mark_performance(format!(
+        "precise_dashboard_request reason={}",
+        precise_dashboard_request_reason(request_reason.as_deref())
+    ));
     let started = Instant::now();
     let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
         crate::core::dashboard::LocalCodexDataSource::new(codex_home)
@@ -1491,6 +1496,20 @@ pub async fn read_precise_dashboard_snapshot(
         result_status(&result)
     ));
     result
+}
+
+fn precise_dashboard_request_reason(value: Option<&str>) -> &'static str {
+    match value {
+        Some("cadence") => "cadence",
+        Some("source-change") => "source-change",
+        Some("quota") => "quota",
+        Some("catch-up") => "catch-up",
+        Some("attribution") => "attribution",
+        Some("manual") => "manual",
+        Some("wake") => "wake",
+        Some("retry") => "retry",
+        _ => "unknown",
+    }
 }
 
 #[tauri::command]
@@ -2778,6 +2797,27 @@ mod tests {
             account_quota_result_status(&placeholder),
             "quota_placeholder"
         );
+    }
+
+    #[test]
+    fn precise_dashboard_request_trace_accepts_only_bounded_reasons() {
+        for reason in [
+            "cadence",
+            "source-change",
+            "quota",
+            "catch-up",
+            "attribution",
+            "manual",
+            "wake",
+            "retry",
+        ] {
+            assert_eq!(precise_dashboard_request_reason(Some(reason)), reason);
+        }
+        assert_eq!(
+            precise_dashboard_request_reason(Some("/private/source.jsonl")),
+            "unknown"
+        );
+        assert_eq!(precise_dashboard_request_reason(None), "unknown");
     }
 
     #[test]

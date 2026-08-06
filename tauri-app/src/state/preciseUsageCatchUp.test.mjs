@@ -8,7 +8,7 @@ function plan(overrides = {}) {
     quotaUpdatedAt: "2026-07-31T05:02:00Z",
     preciseCoveredAt: "2026-07-31T05:01:59Z",
     preciseFresh: true,
-    requestedForQuotaUpdatedAt: null,
+    requestedForQuotaBoundaryKey: null,
     ...overrides,
   });
 }
@@ -17,19 +17,36 @@ test("an in-flight scan older than a new quota schedules one catch-up only", () 
   const first = plan();
   assert.deepEqual(first, {
     shouldSchedule: true,
-    requestedForQuotaUpdatedAt: "2026-07-31T05:02:00Z",
+    requestedForQuotaBoundaryKey: "1785474120",
   });
 
-  const repeated = plan({ requestedForQuotaUpdatedAt: first.requestedForQuotaUpdatedAt });
+  const repeated = plan({ requestedForQuotaBoundaryKey: first.requestedForQuotaBoundaryKey });
   assert.equal(repeated.shouldSchedule, false);
 
   const nextQuota = plan({
     quotaUpdatedAt: "2026-07-31T05:07:00Z",
     preciseCoveredAt: "2026-07-31T05:06:59Z",
-    requestedForQuotaUpdatedAt: first.requestedForQuotaUpdatedAt,
+    requestedForQuotaBoundaryKey: first.requestedForQuotaBoundaryKey,
   });
   assert.equal(nextQuota.shouldSchedule, true);
-  assert.equal(nextQuota.requestedForQuotaUpdatedAt, "2026-07-31T05:07:00Z");
+  assert.equal(nextQuota.requestedForQuotaBoundaryKey, "1785474420");
+});
+
+test("millisecond renderings of one quota second schedule only one catch-up", () => {
+  const first = plan({ quotaUpdatedAt: "2026-07-31T05:02:00.123Z" });
+  assert.equal(first.shouldSchedule, true);
+  const repeated = plan({
+    quotaUpdatedAt: "2026-07-31T05:02:00.000Z",
+    requestedForQuotaBoundaryKey: first.requestedForQuotaBoundaryKey,
+  });
+  assert.equal(repeated.shouldSchedule, false);
+});
+
+test("coverage and quota renderings in one second are one semantic boundary", () => {
+  assert.equal(plan({
+    quotaUpdatedAt: "2026-07-31T05:02:00.999Z",
+    preciseCoveredAt: "2026-07-31T05:02:00.000Z",
+  }).shouldSchedule, false);
 });
 
 test("equal or newer full precise coverage never schedules a catch-up", () => {

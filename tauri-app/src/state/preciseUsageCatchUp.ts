@@ -1,44 +1,48 @@
+import { canonicalAttributionBoundaryKey } from "./attributionBoundary.ts";
+
 export interface PreciseUsageCatchUpInput {
   quotaUpdatedAt: string | null;
   preciseCoveredAt: string | null | undefined;
   preciseFresh: boolean | undefined;
-  requestedForQuotaUpdatedAt: string | null;
+  requestedForQuotaBoundaryKey: string | null;
 }
 
 export interface PreciseUsageCatchUpPlan {
   shouldSchedule: boolean;
-  requestedForQuotaUpdatedAt: string | null;
+  requestedForQuotaBoundaryKey: string | null;
 }
 
 /**
  * A quota refresh can finish while an older exact scan is already in flight.
  * The old scan publishes a conservative pre-sync coverage watermark, so it may
  * still trail the accepted quota. Schedule at most one post-settlement catch-up
- * for each distinct quota timestamp; never spin indefinitely on a bad clock or
+ * for each distinct quota second; never spin indefinitely on a bad clock or
  * malformed native snapshot.
  */
 export function planPreciseUsageCatchUp({
   quotaUpdatedAt,
   preciseCoveredAt,
   preciseFresh,
-  requestedForQuotaUpdatedAt,
+  requestedForQuotaBoundaryKey,
 }: PreciseUsageCatchUpInput): PreciseUsageCatchUpPlan {
   const quotaMilliseconds = parsedMilliseconds(quotaUpdatedAt);
-  if (quotaMilliseconds === null) {
-    return { shouldSchedule: false, requestedForQuotaUpdatedAt };
+  const quotaBoundaryKey = canonicalAttributionBoundaryKey(quotaUpdatedAt);
+  if (quotaMilliseconds === null || quotaBoundaryKey === undefined) {
+    return { shouldSchedule: false, requestedForQuotaBoundaryKey };
   }
-  const coveredMilliseconds = parsedMilliseconds(preciseCoveredAt ?? null);
+  const coveredBoundaryKey = canonicalAttributionBoundaryKey(preciseCoveredAt);
   if (preciseFresh === true
-    && coveredMilliseconds !== null
-    && coveredMilliseconds >= quotaMilliseconds) {
-    return { shouldSchedule: false, requestedForQuotaUpdatedAt };
+    && coveredBoundaryKey !== undefined
+    && Number(coveredBoundaryKey) >= Number(quotaBoundaryKey)) {
+    return { shouldSchedule: false, requestedForQuotaBoundaryKey };
   }
-  if (requestedForQuotaUpdatedAt === quotaUpdatedAt) {
-    return { shouldSchedule: false, requestedForQuotaUpdatedAt };
+  if (quotaBoundaryKey === undefined
+    || requestedForQuotaBoundaryKey === quotaBoundaryKey) {
+    return { shouldSchedule: false, requestedForQuotaBoundaryKey };
   }
   return {
     shouldSchedule: true,
-    requestedForQuotaUpdatedAt: quotaUpdatedAt,
+    requestedForQuotaBoundaryKey: quotaBoundaryKey,
   };
 }
 

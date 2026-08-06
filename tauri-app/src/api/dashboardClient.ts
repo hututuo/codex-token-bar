@@ -3,6 +3,7 @@ import type {
   CodexHomeSourceEnvelope,
   CodexHomeSourceToken,
   DashboardSnapshot,
+  PreciseDashboardRefreshReason,
   PreciseDashboardSourceProbe,
   PlatformCapabilities,
   UsageSummarySnapshot,
@@ -48,11 +49,16 @@ export function readDashboardSnapshot(
 
 export function readPreciseDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,
+  requestReason?: PreciseDashboardRefreshReason,
 ): Promise<DashboardSnapshot | null> {
   // This native read owns a serialized, potentially multi-minute index sync.
   // A JavaScript-only timeout cannot cancel it and only creates another queued
   // read on the next refresh, so wait for the real native outcome.
-  return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, null);
+  const args: Record<string, unknown> = { sourceToken };
+  if (requestReason !== undefined) {
+    args.requestReason = requestReason;
+  }
+  return callCommandOptional("read_precise_dashboard_snapshot", args, null);
 }
 
 export function readPreciseDashboardSourceProbe(

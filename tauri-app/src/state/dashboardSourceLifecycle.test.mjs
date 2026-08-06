@@ -58,6 +58,46 @@ test("fast and precise dashboard clients invoke production IPC with the exact so
   }
 });
 
+test("precise dashboard client forwards a bounded refresh reason without source details", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const calls = [];
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      __TAURI_INTERNALS__: {
+        invoke(command, args) {
+          calls.push({ command, args });
+          return Promise.resolve(null);
+        },
+      },
+    },
+    writable: true,
+  });
+
+  try {
+    await withSsrModules(async (load) => {
+      const { readPreciseDashboardSnapshot } = await load("/src/api/dashboardClient.ts");
+      const sourceToken = {
+        canonicalHomeKey: "/private/source",
+        physicalHomeKey: "unix:1:2",
+        transitionGeneration: 8,
+      };
+      await readPreciseDashboardSnapshot(sourceToken, "catch-up");
+      assert.deepEqual(calls, [{
+        command: "read_precise_dashboard_snapshot",
+        args: { sourceToken, requestReason: "catch-up" },
+      }]);
+      assert.equal(calls[0].args.requestReason, "catch-up");
+    });
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, "window", previousWindow);
+    } else {
+      delete globalThis.window;
+    }
+  }
+});
+
 test("mounted main forwards exact tokens and never publishes a delayed snapshot from source A", async () => {
   await withMountedDashboard(async ({ React, container, load, render }) => {
     const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");

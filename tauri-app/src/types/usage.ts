@@ -1,6 +1,27 @@
 import type { LocalDataWarning, QuotaDiagnostic } from "./diagnostics";
 import type { AccountInfo, QuotaAttributionIdentity, QuotaSnapshot } from "./quota";
 
+/**
+ * Stable, non-sensitive labels for the events that can request an exact
+ * dashboard refresh. These labels are also used in native performance trace
+ * entries; keep them closed so paths or user content can never leak into the
+ * trace.
+ */
+export type PreciseDashboardRefreshReason =
+  | "cadence"
+  | "source-change"
+  | "quota"
+  | "catch-up"
+  | "attribution"
+  | "manual"
+  | "wake"
+  | "retry"
+  | "unknown";
+
+export type PreciseDashboardDedupeDomain = "attribution-boundary" | "wake";
+
+export type PreciseDashboardRequestRevision = string | number;
+
 export interface DashboardStats {
   totalTokens: number;
   peakDayTokens: number;

@@ -104,6 +104,7 @@ test("periodic precise loads probe the source before reusing cache and fail safe
         transitionGeneration: 1,
       };
       let preciseReads = 0;
+      const preciseReasons = [];
       let probeState = "unchanged";
       let probeGenerationOverride = null;
       const source = {
@@ -119,8 +120,9 @@ test("periodic precise loads probe the source before reusing cache and fail safe
             publishedGeneration: probeGenerationOverride ?? String(preciseReads),
           };
         },
-        async readPreciseDashboardSnapshot() {
+        async readPreciseDashboardSnapshot(_sourceToken, reason) {
           preciseReads += 1;
+          preciseReasons.push(reason);
           return {
             revision: preciseReads,
             preciseRecentUsageFresh: true,
@@ -133,13 +135,15 @@ test("periodic precise loads probe the source before reusing cache and fail safe
       dom.document.body.append(container);
       const root = createRoot(container);
 
-      function Probe({ generation, force }) {
+      function Probe({ generation, force, reason, revision }) {
         usePreciseDashboardLoad({
           active: true,
           dashboardReady: true,
           generation,
           loading: false,
           forcePreciseRefresh: force,
+          preciseRefreshReason: reason,
+          preciseRefreshRevision: revision,
           source,
           sourceToken,
           onPreciseDashboard() {},
@@ -147,8 +151,10 @@ test("periodic precise loads probe the source before reusing cache and fail safe
         return null;
       }
 
-      const runGeneration = async (generation, force) => {
-        await React.act(async () => root.render(React.createElement(Probe, { generation, force })));
+      const runGeneration = async (generation, force, reason, revision) => {
+        await React.act(async () => root.render(
+          React.createElement(Probe, { generation, force, reason, revision }),
+        ));
         assert.equal(timers.pendingCount(), 1);
         await React.act(async () => {
           timers.runNext();
@@ -159,8 +165,9 @@ test("periodic precise loads probe the source before reusing cache and fail safe
       };
 
       try {
-        await runGeneration(1, true);
+        await runGeneration(1, true, "manual", "manual-1");
         assert.equal(preciseReads, 1, "the forced baseline should create one precise owner");
+        assert.deepEqual(preciseReasons, ["manual"]);
 
         await runGeneration(2, false);
         assert.equal(preciseReads, 1, "an unchanged probe should reuse the last-good snapshot");

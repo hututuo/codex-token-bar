@@ -5,7 +5,13 @@ import {
 } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
-import type { CodexHomeSourceEnvelope, ProviderRepairSnapshot } from "../types/dashboard";
+import type {
+  CodexHomeSourceEnvelope,
+  PreciseDashboardDedupeDomain,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardRequestRevision,
+  ProviderRepairSnapshot,
+} from "../types/dashboard";
 import {
   applyDashboardRefreshPlan,
   applyManualDashboardRefresh,
@@ -27,7 +33,13 @@ interface DashboardActionsOptions {
   >;
   providerRepairVisible: boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
-  requestPreciseRefresh: (force?: boolean) => void;
+  requestPreciseRefresh: (
+    force?: boolean,
+    reason?: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => void;
   setQuotaLoadGeneration: Dispatch<SetStateAction<number>>;
   setRadarRefreshGeneration: Dispatch<SetStateAction<number>>;
   setForceNextQuotaLoad: Dispatch<SetStateAction<boolean>>;
@@ -64,7 +76,7 @@ export function useDashboardActions({
     applyManualDashboardRefresh({
       providerRepairVisible,
       dispatchers: {
-        refreshPreciseUsage: () => requestPreciseRefresh(true),
+        refreshPreciseUsage: () => requestPreciseRefresh(true, "manual"),
         refreshQuota: () => {
           setForceNextQuotaLoad(true);
           setQuotaLoadGeneration((current) => current + 1);

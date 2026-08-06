@@ -21,6 +21,7 @@ import type {
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  PreciseDashboardRefreshReason,
   PreciseDashboardSourceProbe,
   PlatformCapabilities,
   ProviderRepairSnapshot,
@@ -41,6 +42,7 @@ export interface DashboardDataSource {
   readDashboardSnapshot: (sourceToken: CodexHomeSourceToken) => Promise<DashboardSnapshot>;
   readPreciseDashboardSnapshot: (
     sourceToken: CodexHomeSourceToken,
+    requestReason?: PreciseDashboardRefreshReason,
   ) => Promise<DashboardSnapshot | null>;
   readPreciseDashboardSourceProbe: (
     sourceToken: CodexHomeSourceToken,
