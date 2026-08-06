@@ -1043,15 +1043,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
         do {
             // This is a fixed, append-only peer WAL. Let SQLite provide its
-            // normal read snapshot: an ordinary Tauri checkpoint/append may
-            // rotate sidecars legitimately, so externally-owned WAL identity
-            // checks would incorrectly discard an otherwise valid read.
-            let driver = SQLiteDatabaseDriver(
+            // normal read snapshot while sidecars exist. If a completed
+            // checkpoint has already removed both sidecars, the peer reader
+            // may use an immutable main-file snapshot after rechecking the
+            // main identity and WAL family before and after the read.
+            let driver = SQLitePeerDatabaseReader(
                 url: peerURL,
-                readOnly: true,
-                createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 250,
-                enableWAL: false,
                 fileManager: fileManager
             )
             guard try peerSupportsStableIdentitySchema(driver) else { return [] }

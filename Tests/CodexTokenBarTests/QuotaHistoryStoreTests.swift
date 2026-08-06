@@ -331,6 +331,58 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertFalse(peerTables.contains("quota_history_legacy_claims"))
     }
 
+    func testPeerCheckpointedWALWithoutSidecarsMergesThroughImmutableReadOnlyFallback() throws {
+        let localURL = try makeDatabaseURL()
+        let peerURL = try makeDatabaseURL()
+        try createPeerQuotaSnapshotsTable(at: peerURL, includeStableIdentity: true, enableWAL: true)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let localQuota = identifiedSnapshot(
+            usedPercent: 82,
+            reset: reset,
+            homeIdentity: "/fixture/immutable-peer-home",
+            stableAccountKey: "sub:immutable-peer-account",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Immutable Peer User",
+            at: now.addingTimeInterval(-60)
+        )
+        let peerQuota = identifiedSnapshot(
+            usedPercent: 100,
+            reset: reset,
+            homeIdentity: "/fixture/immutable-peer-home",
+            stableAccountKey: "sub:immutable-peer-account",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Immutable Peer User",
+            at: now
+        )
+
+        let database = QuotaHistoryDatabase(databaseURL: localURL, peerDatabaseURL: peerURL)
+        XCTAssertTrue(try database.record(localQuota, createdAt: now.addingTimeInterval(-60)))
+        try insertStableIdentitySnapshot(
+            databaseURL: peerURL,
+            quota: peerQuota,
+            source: "tauri",
+            createdAt: now,
+            enableWAL: true
+        )
+        try SQLiteDatabaseDriver(url: peerURL, enableWAL: true)
+            .execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        try removeQuotaHistorySidecars(at: peerURL)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: peerURL.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: peerURL.path + "-shm"))
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(for: localQuota, now: now),
+            [82, 100],
+            "a checkpointed WAL main file remains a valid peer supplement without sidecars"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: peerURL.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: peerURL.path + "-shm"))
+    }
+
     func testPeerSidecarCandidatesResolveToTheQuotaHistoryMainDatabase() throws {
         let localURL = try makeDatabaseURL()
         let peerURL = try makeDatabaseURL()
@@ -1649,6 +1701,15 @@ final class QuotaHistoryStoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         temporaryDirectories.append(directory)
         return directory.appendingPathComponent("quota-history.sqlite")
+    }
+
+    private func removeQuotaHistorySidecars(at url: URL) throws {
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = URL(fileURLWithPath: url.path + suffix)
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                try FileManager.default.removeItem(at: sidecar)
+            }
+        }
     }
 
     private func createPeerQuotaSnapshotsTable(

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SQLite3
 
 enum SQLiteBinding {
@@ -193,6 +194,303 @@ enum SQLiteDatabasePath {
         return standardized
             .deletingLastPathComponent()
             .appendingPathComponent(mainName, isDirectory: false)
+    }
+}
+
+/// A peer WAL may be left in a checkpointed state with its `-wal`/`-shm`
+/// files already removed. Apple SQLite still tries to open the missing WAL
+/// sidecar for an ordinary read-only connection and reports `SQLITE_CANTOPEN`
+/// while preparing even though the main file is a complete snapshot. The
+/// immutable URI mode is safe only for that narrow state: it intentionally
+/// ignores WAL, so it must never be used while either sidecar exists.
+private struct SQLitePeerPathSignature: Equatable {
+    let deviceID: UInt64
+    let fileID: UInt64
+    let sizeBytes: Int64
+    let modifiedSeconds: Int64
+    let modifiedNanoseconds: Int64
+    let changedSeconds: Int64
+    let changedNanoseconds: Int64
+
+    init(_ status: stat) {
+        deviceID = UInt64(status.st_dev)
+        fileID = UInt64(status.st_ino)
+        sizeBytes = Int64(status.st_size)
+        modifiedSeconds = Int64(status.st_mtimespec.tv_sec)
+        modifiedNanoseconds = Int64(status.st_mtimespec.tv_nsec)
+        changedSeconds = Int64(status.st_ctimespec.tv_sec)
+        changedNanoseconds = Int64(status.st_ctimespec.tv_nsec)
+    }
+}
+
+private struct SQLitePeerImmutableSnapshot: Equatable {
+    let main: SQLitePeerPathSignature
+    let wal: SQLitePeerPathSignature?
+    let shm: SQLitePeerPathSignature?
+    let parentDirectory: SQLitePeerPathSignature
+    let isWALFormat: Bool
+
+    static func capture(mainURL: URL) throws -> SQLitePeerImmutableSnapshot {
+        let mainStatus = try metadata(at: mainURL, missingMessage: "database file is temporarily unavailable")
+        guard (mainStatus.st_mode & S_IFMT) == S_IFREG else {
+            throw SQLiteDatabaseError(
+                operation: "Inspect immutable SQLite peer",
+                code: SQLITE_CANTOPEN,
+                message: "database path is not a regular file",
+                path: mainURL.path
+            )
+        }
+
+        let parentURL = mainURL.deletingLastPathComponent()
+        let parentStatus = try metadata(at: parentURL, missingMessage: "database directory is temporarily unavailable")
+        guard (parentStatus.st_mode & S_IFMT) == S_IFDIR else {
+            throw SQLiteDatabaseError(
+                operation: "Inspect immutable SQLite peer",
+                code: SQLITE_CANTOPEN,
+                message: "database parent is not a directory",
+                path: parentURL.path
+            )
+        }
+
+        let wal = try optionalMetadata(at: URL(fileURLWithPath: mainURL.path + "-wal"))
+        let shm = try optionalMetadata(at: URL(fileURLWithPath: mainURL.path + "-shm"))
+        let isWALFormat = try Self.readsWALFormat(mainURL: mainURL)
+        return SQLitePeerImmutableSnapshot(
+            main: SQLitePeerPathSignature(mainStatus),
+            wal: wal.map(SQLitePeerPathSignature.init),
+            shm: shm.map(SQLitePeerPathSignature.init),
+            parentDirectory: SQLitePeerPathSignature(parentStatus),
+            isWALFormat: isWALFormat
+        )
+    }
+
+    func validateReadyForImmutableRead(path: String) throws {
+        guard isWALFormat else {
+            throw SQLiteDatabaseError(
+                operation: "Open immutable SQLite peer",
+                code: SQLITE_NOTADB,
+                message: "database is not in WAL format",
+                path: path
+            )
+        }
+        guard wal == nil, shm == nil else {
+            throw transientChange(path: path, message: "WAL sidecar appeared before immutable read")
+        }
+    }
+
+    func validateUnchanged(to next: SQLitePeerImmutableSnapshot, path: String) throws {
+        guard isWALFormat, next.isWALFormat else {
+            throw SQLiteDatabaseError(
+                operation: "Read immutable SQLite peer",
+                code: SQLITE_NOTADB,
+                message: "database WAL format changed while the read was in progress",
+                path: path
+            )
+        }
+        guard main == next.main,
+              wal == nil, next.wal == nil,
+              shm == nil, next.shm == nil,
+              parentDirectory == next.parentDirectory else {
+            throw transientChange(path: path, message: "database or WAL sidecar changed while the read was in progress")
+        }
+    }
+
+    private func transientChange(path: String, message: String) -> SQLiteDatabaseError {
+        SQLiteDatabaseError(
+            operation: "Read immutable SQLite peer",
+            code: SQLITE_PROTOCOL,
+            message: message,
+            path: path
+        )
+    }
+
+    private static func metadata(at url: URL, missingMessage: String) throws -> stat {
+        var value = stat()
+        let status = url.path.withCString { Darwin.lstat($0, &value) }
+        guard status == 0 else {
+            let errorCode = errno
+            throw SQLiteDatabaseError(
+                operation: "Inspect immutable SQLite peer",
+                code: errorCode == ENOENT ? SQLITE_CANTOPEN : SQLITE_IOERR,
+                message: errorCode == ENOENT ? missingMessage : String(cString: strerror(errorCode)),
+                path: url.path,
+                systemErrno: Int32(errorCode)
+            )
+        }
+        return value
+    }
+
+    private static func optionalMetadata(at url: URL) throws -> stat? {
+        var value = stat()
+        let status = url.path.withCString { Darwin.lstat($0, &value) }
+        guard status == 0 else {
+            let errorCode = errno
+            if errorCode == ENOENT { return nil }
+            throw SQLiteDatabaseError(
+                operation: "Inspect immutable SQLite peer",
+                code: SQLITE_IOERR,
+                message: String(cString: strerror(errorCode)),
+                path: url.path,
+                systemErrno: Int32(errorCode)
+            )
+        }
+        return value
+    }
+
+    private static func readsWALFormat(mainURL: URL) throws -> Bool {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: mainURL)
+        } catch {
+            throw SQLiteDatabaseError(
+                operation: "Inspect immutable SQLite peer",
+                code: SQLITE_IOERR,
+                message: error.localizedDescription,
+                path: mainURL.path
+            )
+        }
+        defer { try? handle.close() }
+
+        do {
+            try handle.seek(toOffset: 18)
+            let header = try handle.read(upToCount: 2) ?? Data()
+            return header.count == 2 && header[0] == 2 && header[1] == 2
+        } catch {
+            throw SQLiteDatabaseError(
+                operation: "Inspect immutable SQLite peer",
+                code: SQLITE_IOERR,
+                message: error.localizedDescription,
+                path: mainURL.path
+            )
+        }
+    }
+}
+
+/// A read-only peer wrapper. It first uses the normal SQLite WAL snapshot.
+/// Only the precise missing-sidecar failure can enter the immutable fallback;
+/// writes and transactions are rejected even if a caller accidentally passes
+/// this reader to a write path.
+final class SQLitePeerDatabaseReader: DatabaseAccessing, @unchecked Sendable {
+    let url: URL
+
+    private let busyTimeoutMilliseconds: Int32
+    private let fileManager: FileManager
+    private let beforeImmutableOpen: (@Sendable () -> Void)?
+    private let afterImmutableOpen: (@Sendable () -> Void)?
+
+    init(
+        url: URL,
+        busyTimeoutMilliseconds: Int32 = 250,
+        fileManager: FileManager = .default,
+        beforeImmutableOpen: (@Sendable () -> Void)? = nil,
+        afterImmutableOpen: (@Sendable () -> Void)? = nil
+    ) {
+        self.url = SQLiteDatabasePath.mainURL(for: url)
+        self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
+        self.fileManager = fileManager
+        self.beforeImmutableOpen = beforeImmutableOpen
+        self.afterImmutableOpen = afterImmutableOpen
+    }
+
+    func readRows<T>(
+        _ sql: String,
+        bindings: [SQLiteBinding] = [],
+        map: (SQLiteStatement) throws -> T
+    ) throws -> [T] {
+        let ordinary = SQLiteDatabaseDriver(
+            url: url,
+            readOnly: true,
+            createsFileIfMissing: false,
+            busyTimeoutMilliseconds: busyTimeoutMilliseconds,
+            enableWAL: false,
+            fileManager: fileManager
+        )
+        do {
+            return try ordinary.readRows(sql, bindings: bindings, map: map)
+        } catch let error as SQLiteDatabaseError where Self.shouldAttemptImmutableFallback(error, path: url.path) {
+            return try readImmutable(sql, bindings: bindings, map: map)
+        }
+    }
+
+    func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
+        throw readOnlyError()
+    }
+
+    func transaction<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        throw readOnlyError()
+    }
+
+    private func readImmutable<T>(
+        _ sql: String,
+        bindings: [SQLiteBinding],
+        map: (SQLiteStatement) throws -> T
+    ) throws -> [T] {
+        let initial = try SQLitePeerImmutableSnapshot.capture(mainURL: url)
+        try initial.validateReadyForImmutableRead(path: url.path)
+        beforeImmutableOpen?()
+
+        let beforeOpen = try SQLitePeerImmutableSnapshot.capture(mainURL: url)
+        try initial.validateUnchanged(to: beforeOpen, path: url.path)
+
+        var database: OpaquePointer?
+        let uri = url.absoluteString + "?immutable=1"
+        let status = sqlite3_open_v2(
+            uri,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard status == SQLITE_OK, let database else {
+            let message = database.map { SQLiteDatabaseDriver.message(from: $0) } ?? "Unable to open immutable database"
+            let errorCode = database.map {
+                SQLiteDatabaseDriver.extendedErrorCode(from: $0, fallback: status)
+            } ?? status
+            let systemErrno = database.flatMap(SQLiteDatabaseDriver.systemErrno(from:))
+            if let database { sqlite3_close(database) }
+            throw SQLiteDatabaseError(
+                operation: "Open immutable SQLite peer",
+                code: errorCode,
+                message: message,
+                path: url.path,
+                systemErrno: systemErrno
+            )
+        }
+        defer { sqlite3_close_v2(database) }
+
+        sqlite3_extended_result_codes(database, 1)
+        sqlite3_busy_timeout(database, busyTimeoutMilliseconds)
+        afterImmutableOpen?()
+
+        let connection = SQLiteDatabaseConnection(database: database, path: url.path)
+        let rows = try connection.readRows(sql, bindings: bindings, map: map)
+        let final = try SQLitePeerImmutableSnapshot.capture(mainURL: url)
+        try initial.validateUnchanged(to: final, path: url.path)
+        return rows
+    }
+
+    private func readOnlyError() -> SQLiteDatabaseError {
+        SQLiteDatabaseError(
+            operation: "Write SQLite peer",
+            code: SQLITE_READONLY,
+            message: "peer database reader is read-only",
+            path: url.path
+        )
+    }
+
+    private static func shouldAttemptImmutableFallback(_ error: SQLiteDatabaseError, path: String) -> Bool {
+        guard error.path == path,
+              error.operation == "Prepare SQLite query" || error.operation == "Step SQLite query",
+              error.primaryCode == SQLITE_CANTOPEN || error.primaryCode == SQLITE_READONLY else {
+            return false
+        }
+        if error.primaryCode == SQLITE_CANTOPEN {
+            return error.systemErrno == POSIXErrorCode.ENOENT.rawValue
+        }
+        let readOnlyDirectory = SQLITE_READONLY | (2 << 8)
+        let readOnlyCannotInitialize = SQLITE_READONLY | (5 << 8)
+        return error.systemErrno == POSIXErrorCode.ENOENT.rawValue
+            || error.code == readOnlyDirectory
+            || error.code == readOnlyCannotInitialize
     }
 }
 
