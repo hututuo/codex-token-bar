@@ -365,6 +365,37 @@ struct IndexedTurnCandidate {
     source_offsets: ExactEventSourceOffsets,
 }
 
+#[derive(Clone, Copy, Default)]
+struct UsageBinTotals {
+    tokens: u64,
+    calls: u32,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+}
+
+impl UsageBinTotals {
+    fn add_breakdown(&mut self, breakdown: UsageBinTotals) {
+        self.tokens = self.tokens.saturating_add(breakdown.tokens);
+        self.calls = self.calls.saturating_add(breakdown.calls);
+        self.input_tokens = self.input_tokens.saturating_add(breakdown.input_tokens);
+        self.cached_input_tokens = self
+            .cached_input_tokens
+            .saturating_add(breakdown.cached_input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(breakdown.output_tokens);
+    }
+
+    fn into_breakdown(self) -> TokenCacheBreakdown {
+        TokenCacheBreakdown {
+            total_tokens: self.tokens,
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            output_tokens: self.output_tokens,
+            calls: self.calls,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct StoredSessionCatalogEntry {
     entry: IndexedSessionCatalogEntry,
@@ -1162,25 +1193,10 @@ impl ExactUsageIndex {
     ) -> Result<ExactDashboardData, String> {
         self.prepare_dashboard_event_snapshot()?;
         let activity_days = self.activity_days(now_utc, local_offset)?;
-        let stats = self.stats(&activity_days, now_utc, local_offset)?;
-        let summary = self.summary(now_utc, local_offset)?;
-        let recent_usage_24h = self.usage_series(
+        let (stats, summary) = self.stats(&activity_days, now_utc, local_offset)?;
+        let (recent_usage_24h, recent_usage_7d, recent_usage_30d) = self.usage_series_bundle(
             now_utc,
             local_offset,
-            LONG_RECENT_INTERVAL_SECONDS,
-            LONG_RECENT_POINT_COUNT,
-        )?;
-        let recent_usage_7d = self.usage_series(
-            now_utc,
-            local_offset,
-            HOURLY_INTERVAL_SECONDS,
-            SEVEN_DAY_POINT_COUNT,
-        )?;
-        let recent_usage_30d = self.usage_series(
-            now_utc,
-            local_offset,
-            SIX_HOUR_INTERVAL_SECONDS,
-            THIRTY_DAY_POINT_COUNT,
         )?;
         let cache_hit_ranking = self.cache_hit_ranking(local_offset)?;
         let cache_usage = self.cache_usage(codex_home, warnings)?;
@@ -1201,7 +1217,6 @@ impl ExactUsageIndex {
         self.connection
             .execute_batch(
                 r#"
-                DROP TABLE IF EXISTS temp.dashboard_turn_positions;
                 DROP TABLE IF EXISTS temp.dashboard_session_rows;
                 DROP TABLE IF EXISTS temp.published_events;
                 DROP TABLE IF EXISTS temp.published_files;
@@ -1209,12 +1224,30 @@ impl ExactUsageIndex {
                 -- indexed event table directly. Selecting main.published_events
                 -- here would evaluate the published-files grouping a second time.
                 CREATE TEMP TABLE published_files AS
-                SELECT *
+                SELECT generation, path, size, modified_ns, device_id, file_id, changed_ns
                 FROM main.published_files;
                 CREATE UNIQUE INDEX published_files_path_snapshot_idx
                     ON published_files(path);
                 CREATE TEMP TABLE published_events AS
-                SELECT e.*
+                SELECT
+                    e.id,
+                    e.file_path,
+                    e.ordinal,
+                    e.timestamp,
+                    e.session_id,
+                    e.tokens,
+                    e.input_tokens,
+                    e.cached_input_tokens,
+                    e.output_tokens,
+                    e.model,
+                    e.user_prompt_start,
+                    e.user_prompt_end,
+                    e.assistant_response_start,
+                    e.assistant_response_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.session_id
+                        ORDER BY e.timestamp ASC, e.file_path ASC, e.ordinal ASC
+                    ) AS turn_index_in_session
                 FROM main.events e
                 JOIN published_files f
                   ON f.generation = e.file_generation
@@ -1223,16 +1256,6 @@ impl ExactUsageIndex {
                     ON published_events(timestamp);
                 CREATE INDEX published_events_session_snapshot_idx
                     ON published_events(session_id, timestamp, file_path, ordinal);
-                CREATE TEMP TABLE dashboard_turn_positions AS
-                SELECT
-                    id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY session_id
-                        ORDER BY timestamp ASC, file_path ASC, ordinal ASC
-                    ) AS turn_index_in_session
-                FROM published_events;
-                CREATE UNIQUE INDEX dashboard_turn_positions_id_idx
-                    ON dashboard_turn_positions(id);
                 CREATE TEMP TABLE dashboard_session_rows AS
                 SELECT
                     e.session_id,
@@ -1364,7 +1387,9 @@ impl ExactUsageIndex {
         days: &[ActivityDay],
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
-    ) -> Result<DashboardStats, String> {
+    ) -> Result<(DashboardStats, TokenUsageSummary), String> {
+        let today = now_utc.to_offset(local_offset).date();
+        let (today_start, today_end) = local_day_bounds(today, local_offset)?;
         let row = self
             .connection
             .query_row(
@@ -1376,10 +1401,12 @@ impl ExactUsageIndex {
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
                     COALESCE(SUM(output_tokens), 0),
-                    MIN(timestamp)
+                    MIN(timestamp),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
                 FROM published_events
                 "#,
-                [],
+                params![today_start, today_end],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
@@ -1389,6 +1416,8 @@ impl ExactUsageIndex {
                         row.get::<_, i64>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             )
@@ -1444,9 +1473,8 @@ impl ExactUsageIndex {
                 model_row.map_err(|error| format!("无法解码逐模型精确 token 总览：{error}"))?,
             );
         }
-        let today = now_utc.to_offset(local_offset).date();
 
-        Ok(DashboardStats {
+        let stats = DashboardStats {
             total_tokens: nonnegative_u64(row.0),
             peak_day_tokens: days.iter().map(|day| day.tokens).max().unwrap_or(0),
             peak_thread_tokens: nonnegative_u64(peak_thread),
@@ -1459,71 +1487,47 @@ impl ExactUsageIndex {
             total_output_tokens: nonnegative_u64(row.5),
             model_breakdowns,
             first_usage_at: row.6.and_then(format_rfc3339_unix),
-        })
+        };
+        Ok((
+            stats,
+            TokenUsageSummary {
+                total_tokens: nonnegative_u64(row.0),
+                today_tokens: nonnegative_u64(row.7),
+                today_requests: saturating_u32(row.8),
+            },
+        ))
     }
 
-    fn usage_series(
+    fn usage_series_bundle(
         &self,
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
-        interval_seconds: i64,
-        point_count: i64,
-    ) -> Result<Vec<RecentUsagePoint>, String> {
-        let bin_starts =
-            aligned_bin_starts(now_utc.unix_timestamp(), interval_seconds, point_count);
-        let start = *bin_starts.first().unwrap_or(&now_utc.unix_timestamp());
-        let end = bin_starts
+    ) -> Result<(
+        Vec<RecentUsagePoint>,
+        Vec<RecentUsagePoint>,
+        Vec<RecentUsagePoint>,
+    ), String> {
+        let five_minute_starts = aligned_bin_starts(
+            now_utc.unix_timestamp(),
+            LONG_RECENT_INTERVAL_SECONDS,
+            LONG_RECENT_POINT_COUNT,
+        );
+        let start = *five_minute_starts
+            .first()
+            .unwrap_or(&now_utc.unix_timestamp());
+        let end = five_minute_starts
             .last()
             .copied()
             .unwrap_or(now_utc.unix_timestamp())
-            .saturating_add(interval_seconds);
-        let source_contribution_epoch = if interval_seconds == LONG_RECENT_INTERVAL_SECONDS {
-            Some(
-                metadata_text(&self.connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
-                    .filter(|value| !value.trim().is_empty())
-                    .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?,
-            )
-        } else {
-            None
-        };
-        let mut grouped = HashMap::new();
-        let mut statement = self
-            .connection
-            .prepare(
-                r#"
-                SELECT
-                    timestamp - (timestamp % ?1),
-                    COALESCE(SUM(tokens), 0),
-                    COUNT(*),
-                    COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
-                    COALESCE(SUM(output_tokens), 0)
-                FROM published_events
-                WHERE timestamp >= ?2 AND timestamp < ?3
-                GROUP BY 1
-                "#,
-            )
-            .map_err(|error| format!("无法准备精确 token 时间序列：{error}"))?;
-        let rows = statement
-            .query_map(params![interval_seconds, start, end], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })
-            .map_err(|error| format!("无法读取精确 token 时间序列：{error}"))?;
-        for row in rows {
-            let (bin, tokens, calls, input, cached, output) =
-                row.map_err(|error| format!("无法解码精确 token 时间序列：{error}"))?;
-            grouped.insert(bin, (tokens, calls, input, cached, output));
-        }
+            .saturating_add(LONG_RECENT_INTERVAL_SECONDS);
 
-        let mut model_grouped: HashMap<i64, Vec<ModelTokenBreakdown>> = HashMap::new();
-        let mut model_statement = self
+        // Grouping by model is sufficient for both the model breakdown and
+        // the overall totals: every event belongs to exactly one model group,
+        // including the NULL model group. The three public series are then
+        // exact downsamplings of this one five-minute aggregate.
+        let mut grouped = HashMap::<i64, UsageBinTotals>::new();
+        let mut model_grouped = HashMap::<i64, Vec<ModelTokenBreakdown>>::new();
+        let mut statement = self
             .connection
             .prepare(
                 r#"
@@ -1541,9 +1545,9 @@ impl ExactUsageIndex {
                 ORDER BY 1
                 "#,
             )
-            .map_err(|error| format!("无法准备逐模型精确 token 时间序列：{error}"))?;
-        let model_rows = model_statement
-            .query_map(params![interval_seconds, start, end], |row| {
+            .map_err(|error| format!("无法准备精确 token 五分钟时间序列：{error}"))?;
+        let rows = statement
+            .query_map(params![LONG_RECENT_INTERVAL_SECONDS, start, end], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     ModelTokenBreakdown {
@@ -1558,93 +1562,110 @@ impl ExactUsageIndex {
                     },
                 ))
             })
-            .map_err(|error| format!("无法读取逐模型精确 token 时间序列：{error}"))?;
-        for model_row in model_rows {
-            let (bin, breakdown) = model_row
-                .map_err(|error| format!("无法解码逐模型精确 token 时间序列：{error}"))?;
-            model_grouped.entry(bin).or_default().push(breakdown);
+            .map_err(|error| format!("无法读取精确 token 五分钟时间序列：{error}"))?;
+        for row in rows {
+            let (bin, breakdown) = row
+                .map_err(|error| format!("无法解码精确 token 五分钟时间序列：{error}"))?;
+            let totals = UsageBinTotals {
+                tokens: breakdown.breakdown.total_tokens,
+                calls: breakdown.breakdown.calls,
+                input_tokens: breakdown.breakdown.input_tokens,
+                cached_input_tokens: breakdown.breakdown.cached_input_tokens,
+                output_tokens: breakdown.breakdown.output_tokens,
+            };
+            grouped.entry(bin).or_default().add_breakdown(totals);
+            add_model_usage_breakdown(
+                model_grouped.entry(bin).or_default(),
+                breakdown.model,
+                totals,
+            );
         }
 
-        let mut source_grouped: HashMap<i64, Vec<RecentUsageSourceContribution>> =
-            HashMap::new();
-        if let Some(provenance_epoch) = source_contribution_epoch.as_deref() {
-            let mut source_statement = self
-                .connection
-                .prepare(
-                    r#"
-                    SELECT
-                        bucket_start,
-                        source_id,
-                        tokens,
-                        calls,
-                        input_tokens,
-                        cached_input_tokens,
-                        output_tokens
-                    FROM attribution_source_buckets
-                    WHERE provenance_epoch = ?1
-                      AND bucket_start >= ?2
-                      AND bucket_start < ?3
-                    ORDER BY bucket_start, source_id
-                    "#,
-                )
-                .map_err(|error| format!("无法准备精确 token 匿名来源时间序列：{error}"))?;
-            let source_rows = source_statement
-                .query_map(params![provenance_epoch, start, end], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, i64>(6)?,
-                    ))
-                })
-                .map_err(|error| format!("无法读取精确 token 匿名来源时间序列：{error}"))?;
-            for row in source_rows {
-                let (bin, source_id, tokens, calls, input, cached, output) = row
-                    .map_err(|error| format!("无法解码精确 token 匿名来源时间序列：{error}"))?;
-                source_grouped
-                    .entry(bin)
-                    .or_default()
-                    .push(RecentUsageSourceContribution {
-                        source_id,
-                        tokens: nonnegative_u64(tokens),
-                        calls: saturating_u32(calls),
-                        input_tokens: nonnegative_u64(input),
-                        cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
-                        output_tokens: nonnegative_u64(output),
-                    });
-            }
-        }
-
-        Ok(bin_starts
-            .into_iter()
-            .map(|start_unix| {
-                let (tokens, calls, input, cached, output) =
-                    grouped.remove(&start_unix).unwrap_or((0, 0, 0, 0, 0));
-                let timestamp = OffsetDateTime::from_unix_timestamp(start_unix)
-                    .unwrap_or(OffsetDateTime::UNIX_EPOCH)
-                    .to_offset(local_offset);
-                RecentUsagePoint {
-                    label: timestamp
-                        .format(format_description!("[hour]:[minute]"))
-                        .unwrap_or_else(|_| "00:00".into()),
-                    start_unix,
+        let provenance_epoch = metadata_text(&self.connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
+        let mut source_grouped = HashMap::<i64, Vec<RecentUsageSourceContribution>>::new();
+        let mut source_statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    bucket_start,
+                    source_id,
+                    tokens,
+                    calls,
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens
+                FROM attribution_source_buckets
+                WHERE provenance_epoch = ?1
+                  AND bucket_start >= ?2
+                  AND bucket_start < ?3
+                ORDER BY bucket_start, source_id
+                "#,
+            )
+            .map_err(|error| format!("无法准备精确 token 匿名来源时间序列：{error}"))?;
+        let source_rows = source_statement
+            .query_map(params![&provenance_epoch, start, end], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|error| format!("无法读取精确 token 匿名来源时间序列：{error}"))?;
+        for row in source_rows {
+            let (bin, source_id, tokens, calls, input, cached, output) = row
+                .map_err(|error| format!("无法解码精确 token 匿名来源时间序列：{error}"))?;
+            source_grouped
+                .entry(bin)
+                .or_default()
+                .push(RecentUsageSourceContribution {
+                    source_id,
                     tokens: nonnegative_u64(tokens),
                     calls: saturating_u32(calls),
                     input_tokens: nonnegative_u64(input),
-                    cached_input_tokens: nonnegative_u64(cached),
+                    cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
                     output_tokens: nonnegative_u64(output),
-                    model_breakdowns: model_grouped.remove(&start_unix).unwrap_or_default(),
-                    cache_hit_rate: (input > 0).then(|| cache_hit_rate(input, cached)),
-                    five_hour_remaining_percent: None,
-                    seven_day_remaining_percent: None,
-                    source_contribution_epoch: source_contribution_epoch.clone(),
-                    source_contributions: source_grouped.remove(&start_unix).unwrap_or_default(),
-                }
-            })
-            .collect())
+                });
+        }
+
+        Ok((
+            usage_series_from_five_minute(
+                now_utc,
+                local_offset,
+                LONG_RECENT_INTERVAL_SECONDS,
+                LONG_RECENT_POINT_COUNT,
+                &grouped,
+                &model_grouped,
+                Some(&provenance_epoch),
+                &source_grouped,
+            ),
+            usage_series_from_five_minute(
+                now_utc,
+                local_offset,
+                HOURLY_INTERVAL_SECONDS,
+                SEVEN_DAY_POINT_COUNT,
+                &grouped,
+                &model_grouped,
+                None,
+                &HashMap::new(),
+            ),
+            usage_series_from_five_minute(
+                now_utc,
+                local_offset,
+                SIX_HOUR_INTERVAL_SECONDS,
+                THIRTY_DAY_POINT_COUNT,
+                &grouped,
+                &model_grouped,
+                None,
+                &HashMap::new(),
+            ),
+        ))
     }
 
     fn cache_hit_ranking(
@@ -1881,14 +1902,12 @@ impl ExactUsageIndex {
             WITH selected_turns AS (
                 SELECT
                     e.*,
-                    p.turn_index_in_session,
                     CASE WHEN e.input_tokens > 0
                         THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
                         ELSE 0
                     END AS hit_rate,
                     e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached
                 FROM published_events e
-                JOIN dashboard_turn_positions p ON p.id = e.id
                 WHERE e.input_tokens >= ?1 {turn_predicate}
                 {ordering}
                 LIMIT ?2
@@ -1974,6 +1993,125 @@ impl ExactUsageIndex {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法解码轮次缓存候选：{error}"))
     }
+}
+
+fn add_model_usage_breakdown(
+    grouped: &mut Vec<ModelTokenBreakdown>,
+    model: Option<String>,
+    totals: UsageBinTotals,
+) {
+    if let Some(existing) = grouped.iter_mut().find(|item| item.model == model) {
+        let current = UsageBinTotals {
+            tokens: existing.breakdown.total_tokens,
+            calls: existing.breakdown.calls,
+            input_tokens: existing.breakdown.input_tokens,
+            cached_input_tokens: existing.breakdown.cached_input_tokens,
+            output_tokens: existing.breakdown.output_tokens,
+        };
+        let mut combined = current;
+        combined.add_breakdown(totals);
+        existing.breakdown = combined.into_breakdown();
+    } else {
+        grouped.push(ModelTokenBreakdown {
+            model,
+            breakdown: totals.into_breakdown(),
+        });
+    }
+}
+
+fn usage_series_from_five_minute(
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+    interval_seconds: i64,
+    point_count: i64,
+    five_minute_grouped: &HashMap<i64, UsageBinTotals>,
+    five_minute_model_grouped: &HashMap<i64, Vec<ModelTokenBreakdown>>,
+    source_contribution_epoch: Option<&String>,
+    five_minute_source_grouped: &HashMap<i64, Vec<RecentUsageSourceContribution>>,
+) -> Vec<RecentUsagePoint> {
+    let bin_starts = aligned_bin_starts(now_utc.unix_timestamp(), interval_seconds, point_count);
+    let start = *bin_starts.first().unwrap_or(&now_utc.unix_timestamp());
+    let end = bin_starts
+        .last()
+        .copied()
+        .unwrap_or(now_utc.unix_timestamp())
+        .saturating_add(interval_seconds);
+    let mut grouped = HashMap::<i64, UsageBinTotals>::new();
+    for (&bin, &totals) in five_minute_grouped {
+        if bin < start || bin >= end {
+            continue;
+        }
+        grouped
+            .entry(align_usage_bin(bin, interval_seconds))
+            .or_default()
+            .add_breakdown(totals);
+    }
+
+    let mut model_grouped = HashMap::<i64, Vec<ModelTokenBreakdown>>::new();
+    let mut model_bins = five_minute_model_grouped.keys().copied().collect::<Vec<_>>();
+    model_bins.sort_unstable();
+    for bin in model_bins {
+        let model_breakdowns = &five_minute_model_grouped[&bin];
+        if bin < start || bin >= end {
+            continue;
+        }
+        let target = align_usage_bin(bin, interval_seconds);
+        let target_breakdowns = model_grouped.entry(target).or_default();
+        for breakdown in model_breakdowns {
+            let totals = UsageBinTotals {
+                tokens: breakdown.breakdown.total_tokens,
+                calls: breakdown.breakdown.calls,
+                input_tokens: breakdown.breakdown.input_tokens,
+                cached_input_tokens: breakdown.breakdown.cached_input_tokens,
+                output_tokens: breakdown.breakdown.output_tokens,
+            };
+            add_model_usage_breakdown(target_breakdowns, breakdown.model.clone(), totals);
+        }
+    }
+
+    bin_starts
+        .into_iter()
+        .map(|start_unix| {
+            let totals = grouped.remove(&start_unix).unwrap_or_default();
+            let timestamp = OffsetDateTime::from_unix_timestamp(start_unix)
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+                .to_offset(local_offset);
+            RecentUsagePoint {
+                label: timestamp
+                    .format(format_description!("[hour]:[minute]"))
+                    .unwrap_or_else(|_| "00:00".into()),
+                start_unix,
+                tokens: totals.tokens,
+                calls: totals.calls,
+                input_tokens: totals.input_tokens,
+                cached_input_tokens: totals.cached_input_tokens,
+                output_tokens: totals.output_tokens,
+                model_breakdowns: model_grouped.remove(&start_unix).unwrap_or_default(),
+                cache_hit_rate: (totals.input_tokens > 0)
+                    .then(|| {
+                        cache_hit_rate(
+                            i64::try_from(totals.input_tokens).unwrap_or(i64::MAX),
+                            i64::try_from(totals.cached_input_tokens).unwrap_or(i64::MAX),
+                        )
+                    }),
+                five_hour_remaining_percent: None,
+                seven_day_remaining_percent: None,
+                source_contribution_epoch: source_contribution_epoch.cloned(),
+                source_contributions: if source_contribution_epoch.is_some() {
+                    five_minute_source_grouped
+                        .get(&start_unix)
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect()
+}
+
+fn align_usage_bin(timestamp: i64, interval_seconds: i64) -> i64 {
+    timestamp - (timestamp % interval_seconds)
 }
 
 struct SqliteEventSink<'transaction> {

@@ -6,6 +6,7 @@ use super::exact_usage_index::{
     STAGED_FULL_REBUILD_PARSER_REVISION,
 };
 use super::*;
+use crate::models::RecentUsagePoint;
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
@@ -4087,6 +4088,245 @@ fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
         .recent_usage_24h
         .windows(2)
         .all(|window| window[1].start_unix - window[0].start_unix == 5 * 60));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let now = OffsetDateTime::parse("2026-06-18T12:34:56Z", &Rfc3339).unwrap();
+
+    let events = [
+        (
+            "019edownsample-0000-0000-000000000001",
+            "2026-06-18T12:01:00Z",
+            "gpt-a",
+            100_u64,
+            20_u64,
+            20_u64,
+            120_u64,
+        ),
+        (
+            "019edownsample-0000-0000-000000000002",
+            "2026-06-18T12:04:00Z",
+            "gpt-a",
+            70,
+            10,
+            10,
+            80,
+        ),
+        (
+            "019edownsample-0000-0000-000000000003",
+            "2026-06-18T12:07:00Z",
+            "gpt-b",
+            50,
+            40,
+            10,
+            60,
+        ),
+        (
+            "019edownsample-0000-0000-000000000004",
+            "2026-06-18T11:02:00Z",
+            "gpt-b",
+            30,
+            5,
+            5,
+            40,
+        ),
+    ];
+    for (session_id, timestamp, model, input_tokens, cached_input_tokens, output_tokens, tokens) in
+        events
+    {
+        let model_line = serde_json::json!({
+            "type": "turn_context",
+            "payload": {"model": model},
+        })
+        .to_string();
+        let token_line = serde_json::json!({
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": input_tokens,
+                        "cached_input_tokens": cached_input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": tokens,
+                    },
+                },
+            },
+        })
+        .to_string();
+        write_lines(
+            &session_dir.join(format!("{session_id}.jsonl")),
+            &[model_line, token_line],
+        );
+    }
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index.sync(&root, &mut warnings).unwrap();
+    let data = index
+        .dashboard_data(&root, now, UtcOffset::UTC, &mut warnings)
+        .unwrap();
+
+    assert_eq!(data.summary.total_tokens, 300);
+    assert_eq!(data.summary.today_tokens, 300);
+    assert_eq!(data.summary.today_requests, 4);
+
+    let align_bin = |timestamp: i64, interval_seconds: i64| {
+        timestamp - (timestamp % interval_seconds)
+    };
+    let five_minute_12 = align_bin(now.unix_timestamp() - 34 * 60, 300);
+    let five_minute_11 = align_bin(now.unix_timestamp() - 94 * 60, 300);
+    let hour_12 = align_bin(now.unix_timestamp() - 34 * 60, 3_600);
+    let hour_11 = align_bin(now.unix_timestamp() - 94 * 60, 3_600);
+    let six_hour_12 = align_bin(now.unix_timestamp() - 34 * 60, 21_600);
+    let six_hour_06 = align_bin(now.unix_timestamp() - 394 * 60, 21_600);
+
+    let assert_point = |point: &RecentUsagePoint,
+                        tokens: u64,
+                        calls: u32,
+                        input_tokens: u64,
+                        cached_input_tokens: u64,
+                        output_tokens: u64,
+                        models: &[(&str, u64, u32, u64, u64, u64)]| {
+        assert_eq!(point.tokens, tokens);
+        assert_eq!(point.calls, calls);
+        assert_eq!(point.input_tokens, input_tokens);
+        assert_eq!(point.cached_input_tokens, cached_input_tokens);
+        assert_eq!(point.output_tokens, output_tokens);
+        if input_tokens == 0 {
+            assert!(point.cache_hit_rate.is_none());
+        } else {
+            let expected_rate = cached_input_tokens as f64 / input_tokens as f64;
+            assert!((point.cache_hit_rate.unwrap() - expected_rate).abs() < 1e-12);
+        }
+        assert_eq!(point.model_breakdowns.len(), models.len());
+        for (model, model_tokens, model_calls, model_input, model_cached, model_output) in models {
+            let breakdown = point
+                .model_breakdowns
+                .iter()
+                .find(|candidate| candidate.model.as_deref() == Some(*model))
+                .unwrap();
+            assert_eq!(breakdown.breakdown.total_tokens, *model_tokens);
+            assert_eq!(breakdown.breakdown.calls, *model_calls);
+            assert_eq!(breakdown.breakdown.input_tokens, *model_input);
+            assert_eq!(breakdown.breakdown.cached_input_tokens, *model_cached);
+            assert_eq!(breakdown.breakdown.output_tokens, *model_output);
+        }
+    };
+
+    fn point_at<'a>(series: &'a [RecentUsagePoint], start: i64) -> &'a RecentUsagePoint {
+        series.iter().find(|point| point.start_unix == start).unwrap()
+    }
+    let assert_zero_points = |series: &[RecentUsagePoint], nonzero_starts: &[i64]| {
+        for point in series {
+            if nonzero_starts.contains(&point.start_unix) {
+                continue;
+            }
+            assert_eq!(point.tokens, 0);
+            assert_eq!(point.calls, 0);
+            assert_eq!(point.input_tokens, 0);
+            assert_eq!(point.cached_input_tokens, 0);
+            assert_eq!(point.output_tokens, 0);
+            assert!(point.cache_hit_rate.is_none());
+            assert!(point.model_breakdowns.is_empty());
+        }
+    };
+
+    let five_minute_12_point = point_at(&data.recent_usage_24h, five_minute_12);
+    assert_point(
+        five_minute_12_point,
+        200,
+        2,
+        170,
+        30,
+        30,
+        &[("gpt-a", 200, 2, 170, 30, 30)],
+    );
+    assert!(five_minute_12_point.source_contribution_epoch.is_some());
+    assert_eq!(
+        five_minute_12_point
+            .source_contributions
+            .iter()
+            .map(|contribution| contribution.tokens)
+            .sum::<u64>(),
+        200
+    );
+    assert_point(
+        point_at(&data.recent_usage_24h, five_minute_11),
+        40,
+        1,
+        30,
+        5,
+        5,
+        &[("gpt-b", 40, 1, 30, 5, 5)],
+    );
+    assert_point(
+        point_at(&data.recent_usage_24h, five_minute_12 + 300),
+        60,
+        1,
+        50,
+        40,
+        10,
+        &[("gpt-b", 60, 1, 50, 40, 10)],
+    );
+    assert_zero_points(
+        &data.recent_usage_24h,
+        &[five_minute_11, five_minute_12, five_minute_12 + 300],
+    );
+
+    assert_point(
+        point_at(&data.recent_usage_7d, hour_12),
+        260,
+        3,
+        220,
+        70,
+        40,
+        &[("gpt-a", 200, 2, 170, 30, 30), ("gpt-b", 60, 1, 50, 40, 10)],
+    );
+    assert_point(
+        point_at(&data.recent_usage_7d, hour_11),
+        40,
+        1,
+        30,
+        5,
+        5,
+        &[("gpt-b", 40, 1, 30, 5, 5)],
+    );
+    assert!(point_at(&data.recent_usage_7d, hour_12)
+        .source_contribution_epoch
+        .is_none());
+    assert!(point_at(&data.recent_usage_7d, hour_12)
+        .source_contributions
+        .is_empty());
+    assert_zero_points(&data.recent_usage_7d, &[hour_11, hour_12]);
+
+    assert_point(
+        point_at(&data.recent_usage_30d, six_hour_12),
+        260,
+        3,
+        220,
+        70,
+        40,
+        &[("gpt-a", 200, 2, 170, 30, 30), ("gpt-b", 60, 1, 50, 40, 10)],
+    );
+    assert_point(
+        point_at(&data.recent_usage_30d, six_hour_06),
+        40,
+        1,
+        30,
+        5,
+        5,
+        &[("gpt-b", 40, 1, 30, 5, 5)],
+    );
+    assert_zero_points(&data.recent_usage_30d, &[six_hour_06, six_hour_12]);
 
     fs::remove_dir_all(root).unwrap();
 }
