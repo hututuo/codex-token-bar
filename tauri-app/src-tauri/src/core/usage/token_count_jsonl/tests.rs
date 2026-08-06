@@ -389,6 +389,56 @@ fn precise_refresh_summary_promotes_to_full_without_second_sync() {
 }
 
 #[test]
+fn precise_refresh_full_after_promotion_cutoff_retries_without_missing_full_result() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ecutoff-refresh-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+
+    let (cutoff_tx, cutoff_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let release_rx_for_hook = Arc::clone(&release_rx);
+    set_precise_refresh_after_cutoff_hook_for_testing(Some(Arc::new(move || {
+        cutoff_tx
+            .send(())
+            .map_err(|error| format!("cutoff channel closed: {error}"))?;
+        let receiver = release_rx_for_hook
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| "cutoff release receiver already consumed".to_string())?;
+        receiver
+            .recv()
+            .map_err(|error| format!("cutoff release channel closed: {error}"))?;
+        Ok(())
+    })));
+
+    let summary_flight = request_precise_refresh(&root, PreciseRefreshIntent::Summary).unwrap();
+    let summary_handle = std::thread::spawn(move || summary_flight.wait().summary);
+    let reached_cutoff = cutoff_rx.recv_timeout(StdDuration::from_secs(5)).is_ok();
+
+    let full_root = root.clone();
+    let full_handle = std::thread::spawn(move || dashboard_snapshot(&full_root));
+    release_tx.send(()).unwrap();
+    let summary = summary_handle.join().unwrap();
+    let full = full_handle.join().unwrap();
+    set_precise_refresh_after_cutoff_hook_for_testing(None);
+
+    assert!(reached_cutoff);
+    assert_eq!(summary.unwrap().total_tokens, 120);
+    assert_eq!(full.unwrap().stats.total_tokens, 120);
+    assert_eq!(precise_refresh_sync_call_count_for_testing(), 2);
+    wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn precise_refresh_different_homes_enter_sync_in_parallel() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();

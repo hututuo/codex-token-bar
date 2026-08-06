@@ -55,6 +55,9 @@ static PRECISE_REFRESH_SYNC_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static PRECISE_REFRESH_SYNC_HOOK: OnceLock<Mutex<Option<PreciseRefreshSyncHook>>> =
     OnceLock::new();
 #[cfg(test)]
+static PRECISE_REFRESH_AFTER_CUTOFF_HOOK: OnceLock<Mutex<Option<PreciseRefreshCutoffHook>>> =
+    OnceLock::new();
+#[cfg(test)]
 static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
@@ -472,14 +475,15 @@ fn precise_refresh_home(codex_home: &Path) -> Result<PathBuf, String> {
 }
 
 impl PreciseRefreshFlight {
-    fn new(intent: PreciseRefreshIntent, request_home: &Path) -> Arc<Self> {
+    fn new(intent: PreciseRefreshIntent) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(PreciseRefreshFlightState {
                 full_requested: intent == PreciseRefreshIntent::Full,
+                full_build_started: false,
+                promotion_closed: false,
                 result: None,
             }),
             wake: Condvar::new(),
-            request_home: request_home.to_path_buf(),
         })
     }
 
@@ -496,11 +500,37 @@ impl PreciseRefreshFlight {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.result.is_some() {
+        if state.result.is_some() || state.promotion_closed {
             return false;
+        }
+        if state.full_build_started {
+            return true;
         }
         state.full_requested = true;
         true
+    }
+
+    fn has_full_result(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result
+            .as_ref()
+            .is_some_and(|result| result.full.is_some())
+    }
+
+    fn claim_full_build_or_close(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.full_requested {
+            state.full_build_started = true;
+            true
+        } else {
+            state.promotion_closed = true;
+            false
+        }
     }
 
     fn full_requested(&self) -> bool {
@@ -625,13 +655,16 @@ fn request_precise_refresh_inner(
 ) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
     let coordinator = precise_refresh_coordinator(codex_home)?;
     loop {
-        if let Some(existing) = coordinator
+        let existing = coordinator
             .flight
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-        {
+            .clone();
+        if let Some(existing) = existing {
             if existing.is_done() {
+                if intent == PreciseRefreshIntent::Full && existing.has_full_result() {
+                    return Ok(Some(existing));
+                }
                 let mut current = coordinator
                     .flight
                     .lock()
@@ -645,6 +678,7 @@ fn request_precise_refresh_inner(
                 continue;
             }
             if intent == PreciseRefreshIntent::Full && !existing.request_full() {
+                existing.wait();
                 continue;
             }
             return Ok(Some(existing));
@@ -673,7 +707,7 @@ fn request_precise_refresh_inner(
         if current.is_some() {
             continue;
         }
-        let flight = PreciseRefreshFlight::new(intent, codex_home);
+        let flight = PreciseRefreshFlight::new(intent);
         *current = Some(Arc::clone(&flight));
         drop(current);
         spawn_precise_refresh_owner(Arc::clone(&coordinator), Arc::clone(&flight));
@@ -733,7 +767,6 @@ fn spawn_precise_refresh_owner(
     }
 
     let key = coordinator.canonical_home.clone();
-    let request_home = flight.request_home.clone();
     let thread_owner = Arc::clone(&owner_state);
     let spawned = std::thread::Builder::new()
         .name("codex-precise-refresh".into())
@@ -742,7 +775,7 @@ fn spawn_precise_refresh_owner(
                 state: thread_owner,
             };
             let result = catch_unwind(AssertUnwindSafe(|| {
-                run_precise_refresh(&key, &request_home, &owner.state.flight)
+                run_precise_refresh(&key, &owner.state.flight)
             }));
             match result {
                 Ok(result) => owner.finish(result),
@@ -762,7 +795,6 @@ fn spawn_precise_refresh_owner(
 
 fn run_precise_refresh(
     canonical_home: &Path,
-    request_home: &Path,
     flight: &PreciseRefreshFlight,
 ) -> PreciseRefreshResult {
     let mut warnings = Vec::new();
@@ -787,12 +819,15 @@ fn run_precise_refresh(
         return PreciseRefreshResult::failure(error);
     }
 
-    let signature = dashboard_index_signature(request_home, revision);
+    let signature = dashboard_index_signature(canonical_home, revision);
     let summary = match summary_after_precise_sync(&index, &signature, &warnings) {
         Ok(summary) => Ok(summary),
         Err(error) => Err(error),
     };
-    if !flight.full_requested() {
+    if !flight.claim_full_build_or_close() {
+        if let Err(error) = run_precise_refresh_after_cutoff_hook_for_testing() {
+            return PreciseRefreshResult::failure(error);
+        }
         return PreciseRefreshResult {
             summary,
             full: None,
@@ -801,7 +836,7 @@ fn run_precise_refresh(
 
     match build_full_dashboard_after_precise_sync(
         &mut index,
-        request_home,
+        canonical_home,
         revision,
         precise_coverage_at,
         &mut warnings,
@@ -857,13 +892,14 @@ impl PreciseRefreshResult {
 
 struct PreciseRefreshFlightState {
     full_requested: bool,
+    full_build_started: bool,
+    promotion_closed: bool,
     result: Option<PreciseRefreshResult>,
 }
 
 struct PreciseRefreshFlight {
     state: Mutex<PreciseRefreshFlightState>,
     wake: Condvar,
-    request_home: PathBuf,
 }
 
 struct PreciseRefreshCoordinator {
@@ -883,6 +919,8 @@ struct PreciseRefreshOwnerGuard {
 
 #[cfg(test)]
 pub(crate) type PreciseRefreshSyncHook = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type PreciseRefreshCutoffHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 pub(crate) fn session_catalog_snapshot<F>(
     codex_home: &Path,
@@ -1087,11 +1125,13 @@ fn activity_days_and_stats_at(
 
 fn cached_dashboard_usage_summary_cache_only(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = crate::core::localtime::local_offset();
-    cached_dashboard_usage_summary_at(
-        codex_home,
-        OffsetDateTime::now_utc(),
-        local_offset,
-    )
+    let now_utc = OffsetDateTime::now_utc();
+    cached_dashboard_usage_summary_at(codex_home, now_utc, local_offset).or_else(|| {
+        let canonical_home = precise_refresh_home(codex_home).ok()?;
+        (canonical_home != codex_home)
+            .then(|| cached_dashboard_usage_summary_at(&canonical_home, now_utc, local_offset))
+            .flatten()
+    })
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
@@ -1108,9 +1148,25 @@ pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenU
 pub(crate) fn cached_dashboard_snapshot_for_startup(
     codex_home: &Path,
 ) -> Option<DashboardSnapshot> {
-    let index = ExactUsageIndex::open(codex_home).ok()?;
-    let signature = dashboard_index_signature(codex_home, index.revision().ok()?);
-    cached_dashboard_startup_snapshot(&signature).map(snapshot_with_generated_at)
+    if let Ok(index) = ExactUsageIndex::open(codex_home) {
+        if let Ok(revision) = index.revision() {
+            let signature = dashboard_index_signature(codex_home, revision);
+            if let Some(snapshot) = cached_dashboard_startup_snapshot(&signature) {
+                return Some(snapshot_with_generated_at(snapshot));
+            }
+        }
+    }
+
+    let canonical_home = precise_refresh_home(codex_home).ok()?;
+    if canonical_home == codex_home {
+        return None;
+    }
+    let canonical_index = ExactUsageIndex::open(&canonical_home).ok()?;
+    let canonical_signature = dashboard_index_signature(
+        &canonical_home,
+        canonical_index.revision().ok()?,
+    );
+    cached_dashboard_startup_snapshot(&canonical_signature).map(snapshot_with_generated_at)
 }
 
 #[cfg(test)]
@@ -1671,6 +1727,24 @@ fn run_precise_refresh_sync_hook_for_testing(_path: &Path) -> Result<(), String>
 }
 
 #[cfg(test)]
+fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
+    let hook = PRECISE_REFRESH_AFTER_CUTOFF_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook()?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
 pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     wait_for_usage_summary_refreshes_for_testing();
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1735,6 +1809,16 @@ pub(crate) fn set_precise_refresh_sync_hook_for_testing(
     hook: Option<PreciseRefreshSyncHook>,
 ) {
     let slot = PRECISE_REFRESH_SYNC_HOOK.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn set_precise_refresh_after_cutoff_hook_for_testing(
+    hook: Option<PreciseRefreshCutoffHook>,
+) {
+    let slot = PRECISE_REFRESH_AFTER_CUTOFF_HOOK.get_or_init(|| Mutex::new(None));
     *slot
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
