@@ -1217,6 +1217,7 @@ impl ExactUsageIndex {
         self.connection
             .execute_batch(
                 r#"
+                DROP TABLE IF EXISTS temp.dashboard_turn_positions;
                 DROP TABLE IF EXISTS temp.dashboard_session_rows;
                 DROP TABLE IF EXISTS temp.published_events;
                 DROP TABLE IF EXISTS temp.published_files;
@@ -1224,30 +1225,12 @@ impl ExactUsageIndex {
                 -- indexed event table directly. Selecting main.published_events
                 -- here would evaluate the published-files grouping a second time.
                 CREATE TEMP TABLE published_files AS
-                SELECT generation, path, size, modified_ns, device_id, file_id, changed_ns
+                SELECT *
                 FROM main.published_files;
                 CREATE UNIQUE INDEX published_files_path_snapshot_idx
                     ON published_files(path);
                 CREATE TEMP TABLE published_events AS
-                SELECT
-                    e.id,
-                    e.file_path,
-                    e.ordinal,
-                    e.timestamp,
-                    e.session_id,
-                    e.tokens,
-                    e.input_tokens,
-                    e.cached_input_tokens,
-                    e.output_tokens,
-                    e.model,
-                    e.user_prompt_start,
-                    e.user_prompt_end,
-                    e.assistant_response_start,
-                    e.assistant_response_end,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.session_id
-                        ORDER BY e.timestamp ASC, e.file_path ASC, e.ordinal ASC
-                    ) AS turn_index_in_session
+                SELECT e.*
                 FROM main.events e
                 JOIN published_files f
                   ON f.generation = e.file_generation
@@ -1256,6 +1239,16 @@ impl ExactUsageIndex {
                     ON published_events(timestamp);
                 CREATE INDEX published_events_session_snapshot_idx
                     ON published_events(session_id, timestamp, file_path, ordinal);
+                CREATE TEMP TABLE dashboard_turn_positions AS
+                SELECT
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY session_id
+                        ORDER BY timestamp ASC, file_path ASC, ordinal ASC
+                    ) AS turn_index_in_session
+                FROM published_events;
+                CREATE UNIQUE INDEX dashboard_turn_positions_id_idx
+                    ON dashboard_turn_positions(id);
                 CREATE TEMP TABLE dashboard_session_rows AS
                 SELECT
                     e.session_id,
@@ -1902,12 +1895,14 @@ impl ExactUsageIndex {
             WITH selected_turns AS (
                 SELECT
                     e.*,
+                    p.turn_index_in_session,
                     CASE WHEN e.input_tokens > 0
                         THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
                         ELSE 0
                     END AS hit_rate,
                     e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached
                 FROM published_events e
+                JOIN dashboard_turn_positions p ON p.id = e.id
                 WHERE e.input_tokens >= ?1 {turn_predicate}
                 {ordering}
                 LIMIT ?2
