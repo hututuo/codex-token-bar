@@ -121,6 +121,7 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
     let showsRatioWarning: Bool
     let ratioWarningText: String?
     let ratioWarningDetailText: String?
+    let comparisonScopeText: String?
     let accessibilityValue: String
 
     init(
@@ -162,14 +163,37 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         ratioWarningDetailText = showsRatioWarning
             ? "可能因 7d 下降太少、颗粒度太低或其他误差。"
             : nil
+        let narrowedWindows = [
+            showsFiveHourQuota && Self.usesNarrowerComparison(selection.fiveHour, than: selection)
+                ? "5h"
+                : nil,
+            showsSevenDayQuota && Self.usesNarrowerComparison(selection.sevenDay, than: selection)
+                ? "7d"
+                : nil,
+        ].compactMap { $0 }
+        comparisonScopeText = narrowedWindows.isEmpty
+            ? nil
+            : "\(narrowedWindows.joined(separator: "/")) 反推仅按同周期可比区间"
         var accessibilityParts = [
             "选区 \(timeRangeText)，\(durationText)",
             "本段消耗 \(costText)"
         ]
         if showsFiveHourQuota { accessibilityParts.append("5 小时 \(fiveHourChip.accessibilityText)") }
         if showsSevenDayQuota { accessibilityParts.append("7 天 \(sevenDayChip.accessibilityText)") }
+        if let comparisonScopeText { accessibilityParts.append(comparisonScopeText) }
         if showsBudgetRatio { accessibilityParts.append("倍率 \(budgetRatioText)") }
         accessibilityValue = accessibilityParts.joined(separator: "，")
+    }
+
+    private static func usesNarrowerComparison(
+        _ estimate: QuotaConsumptionEstimate,
+        than selection: QuotaConsumptionSelection
+    ) -> Bool {
+        guard estimate.quotaDropBasis != .unavailable,
+              let start = estimate.comparisonStartDate,
+              let end = estimate.comparisonEndDate else { return false }
+        return start.timeIntervalSince(selection.startDate) > 0.5
+            || selection.endDate.timeIntervalSince(end) > 0.5
     }
 }
 

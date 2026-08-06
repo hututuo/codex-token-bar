@@ -7,6 +7,7 @@ import {
   optionalSmoothPath,
   percentText,
   prepareRecentChartData,
+  quotaComparisonScopeText,
   quotaConsumptionSelection,
   quotaSelectionAttribution,
   quotaSelectionDurationText,
@@ -300,6 +301,11 @@ test("latest quota cycle suffix semantics cover 24h, 7d and 30d chart paths", ()
     assert.equal(selection.sevenDay.comparisonBreakdown.inputTokens, 200_000, range);
     assert.equal(selection.sevenDay.comparisonStartUnix, 2 * bucketSeconds, range);
     assert.equal(selection.sevenDay.impliedWindowBudgetUSD, 1.3888888888888888, range);
+    assert.equal(
+      quotaComparisonScopeText(selection, { fiveHour: false, sevenDay: true }),
+      "7d 反推仅按同周期可比区间",
+      range,
+    );
   }
 });
 

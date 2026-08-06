@@ -17,6 +17,7 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaComparisonScopeText,
   quotaSelectionAttribution,
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
@@ -561,6 +562,10 @@ function RecentChartQuotaEstimateOverlay({
     && showsSevenDayQuota
     && currentFiveHourQuotaPresent
     && currentSevenDayQuotaPresent;
+  const comparisonScopeText = quotaComparisonScopeText(selection, {
+    fiveHour: showsFiveHourQuota,
+    sevenDay: showsSevenDayQuota,
+  });
 
   return (
     <div className="chart-quota-estimate-card" role="dialog" aria-label="额度估算">
@@ -596,6 +601,7 @@ function RecentChartQuotaEstimateOverlay({
               title="7d"
             />
           ) : null}
+          {comparisonScopeText ? <em>{comparisonScopeText}</em> : null}
         </div>
         {showsBudgetRatio ? (
           <div className="quota-estimate-row">
