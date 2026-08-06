@@ -649,6 +649,30 @@ export function quotaSelectionDurationText(
   return `持续 ${parts.join("")}`;
 }
 
+export function quotaComparisonScopeText(
+  selection: QuotaConsumptionSelection,
+  visibility: QuotaEstimateWindowVisibility,
+): string | null {
+  const narrowedWindows = [
+    visibility.fiveHour && usesNarrowerComparison(selection.fiveHour, selection) ? "5h" : null,
+    visibility.sevenDay && usesNarrowerComparison(selection.sevenDay, selection) ? "7d" : null,
+  ].filter((value): value is string => value !== null);
+  return narrowedWindows.length === 0
+    ? null
+    : `${narrowedWindows.join("/")} 反推仅按同周期可比区间`;
+}
+
+function usesNarrowerComparison(
+  estimate: QuotaConsumptionEstimate,
+  selection: QuotaConsumptionSelection,
+): boolean {
+  return estimate.quotaDropAvailable
+    && estimate.comparisonStartUnix !== null
+    && estimate.comparisonEndUnix !== null
+    && (estimate.comparisonStartUnix > selection.startUnix + 0.5
+      || estimate.comparisonEndUnix < selection.endUnix - 0.5);
+}
+
 function pointsForRange(range: RecentChartRange, series: RecentUsageChartSeries): RecentUsagePoint[] {
   let points: RecentUsagePoint[];
   switch (range) {

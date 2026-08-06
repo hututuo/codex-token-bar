@@ -1080,6 +1080,13 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(selection.sevenDay.comparisonEndDate, bins[3].start.addingTimeInterval(300))
         XCTAssertEqual(selection.sevenDay.quotaDropPercent, 72, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 1.3888889, accuracy: 0.0001)
+        let presentation = QuotaConsumptionEstimatorOverlayPresentation(
+            selection: selection,
+            showsFiveHourQuota: false,
+            showsSevenDayQuota: true
+        )
+        XCTAssertEqual(presentation.comparisonScopeText, "7d 反推仅按同周期可比区间")
+        XCTAssertTrue(presentation.accessibilityValue.contains("7d 反推仅按同周期可比区间"))
     }
 
     @MainActor
