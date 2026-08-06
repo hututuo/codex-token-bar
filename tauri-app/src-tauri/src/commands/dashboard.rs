@@ -1,4 +1,4 @@
-use super::run_blocking_command;
+use super::{run_blocking_command, run_blocking_command_with_worker_start};
 use super::window_auth::require_window_label;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
@@ -20,6 +20,7 @@ pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-chan
 
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
 static PINNED_SQLITE_VIEW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static PRECISE_DASHBOARD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[cfg(unix)]
 static PINNED_SQLITE_DESCRIPTOR_VIEW: OnceLock<Mutex<Option<PinnedSqliteDescriptorView>>> =
     OnceLock::new();
@@ -1480,22 +1481,60 @@ pub async fn read_precise_dashboard_snapshot(
     request_reason: Option<String>,
 ) -> Result<DashboardSnapshot, String> {
     require_window_label(&window, "read_precise_dashboard_snapshot")?;
-    startup_trace::mark_performance(format!(
-        "precise_dashboard_request reason={}",
-        precise_dashboard_request_reason(request_reason.as_deref())
-    ));
+    let request_id = PRECISE_DASHBOARD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let request_reason = precise_dashboard_request_reason(request_reason.as_deref());
+    let queue_wait_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let queue_wait_for_worker = std::sync::Arc::clone(&queue_wait_ms);
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
-        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
-            .read_precise_dashboard_snapshot()
-    })
+    let result = run_source_bound_dashboard_read_with_worker_start(
+        &app,
+        source_token,
+        |codex_home| {
+            crate::core::dashboard::LocalCodexDataSource::new(codex_home)
+                .read_precise_dashboard_snapshot()
+        },
+        move |queue_wait| {
+            queue_wait_for_worker.store(queue_wait, Ordering::Relaxed);
+        },
+    )
     .await;
+    let queue_wait = queue_wait_ms.load(Ordering::Relaxed);
     startup_trace::mark_performance(format!(
-        "read_precise_dashboard_snapshot {}ms {}",
+        "precise_request id={} reason={} queue_wait_ms={} total_ms={} status={}",
+        request_id,
+        request_reason,
+        if queue_wait == u64::MAX {
+            "na".to_string()
+        } else {
+            queue_wait.to_string()
+        },
         started.elapsed().as_millis(),
         result_status(&result)
     ));
     result
+}
+
+async fn run_source_bound_dashboard_read_with_worker_start<T, Read, OnWorkerStart>(
+    app: &AppHandle,
+    expected: CodexHomeSourceToken,
+    read: Read,
+    on_worker_start: OnWorkerStart,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    Read: FnOnce(PathBuf) -> Result<T, String> + Send + 'static,
+    OnWorkerStart: FnOnce(u64) + Send + 'static,
+{
+    run_source_bound_dashboard_read_with(
+        &expected,
+        || emit_detected_source_transition(app).map(|_| ()),
+        |expected| capture_codex_home_source(Some(expected)),
+        |codex_home| {
+            run_blocking_command_with_worker_start(move || read(codex_home), on_worker_start)
+        },
+        validate_codex_home_source,
+    )
+    .await
 }
 
 fn precise_dashboard_request_reason(value: Option<&str>) -> &'static str {

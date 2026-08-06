@@ -1,5 +1,6 @@
 use super::cache_lifecycle;
 use crate::core::app_paths;
+use crate::core::startup_trace;
 use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
@@ -11,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use time::format_description::well_known::Rfc3339;
@@ -38,8 +40,9 @@ static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> 
 static SESSION_CATALOG_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
 static PRECISE_REFRESH_COORDINATORS:
-    OnceLock<Mutex<HashMap<PathBuf, Weak<PreciseRefreshCoordinator>>>> = OnceLock::new();
+    OnceLock<Mutex<HashMap<PathBuf, Arc<PreciseRefreshCoordinator>>>> = OnceLock::new();
 static PRECISE_REFRESH_RECENCY: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+static PRECISE_REFRESH_FLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
 static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<Mutex<HashMap<PathBuf, AttributionMutationWatcher>>> =
     OnceLock::new();
@@ -77,6 +80,7 @@ const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 19;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 const PRECISE_REFRESH_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
 const PRECISE_REFRESH_RECENCY_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
+const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -488,7 +492,12 @@ fn precise_refresh_home(codex_home: &Path) -> Result<PathBuf, String> {
 }
 
 impl PreciseRefreshFlight {
-    fn new(intent: PreciseRefreshIntent) -> Arc<Self> {
+    fn new(
+        intent: PreciseRefreshIntent,
+        after_summary_only: bool,
+        summary_gap_ms: Option<u64>,
+        summary_previous_flight_id: Option<u64>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(PreciseRefreshFlightState {
                 full_requested: intent == PreciseRefreshIntent::Full,
@@ -497,6 +506,13 @@ impl PreciseRefreshFlight {
                 result: None,
             }),
             wake: Condvar::new(),
+            trace: Mutex::new(PreciseRefreshTrace::new(
+                intent,
+                after_summary_only,
+                summary_gap_ms,
+                summary_previous_flight_id,
+            )),
+            trace_finished: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -519,7 +535,11 @@ impl PreciseRefreshFlight {
         if state.full_build_started {
             return true;
         }
+        let promoted_from_summary = self.trace_intent() == PreciseRefreshIntent::Summary;
         state.full_requested = true;
+        if promoted_from_summary {
+            self.mark_trace_promoted();
+        }
         true
     }
 
@@ -537,13 +557,64 @@ impl PreciseRefreshFlight {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.full_requested {
+        let claimed = if state.full_requested {
             state.full_build_started = true;
             true
         } else {
             state.promotion_closed = true;
             false
-        }
+        };
+        self.set_trace_claim(claimed);
+        claimed
+    }
+
+    fn trace_intent(&self) -> PreciseRefreshIntent {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .intent
+    }
+
+    fn mark_trace_promoted(&self) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .promoted_to_full = true;
+    }
+
+    fn set_trace_claim(&self, claimed: bool) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .claim_full = Some(claimed);
+    }
+
+    fn set_trace_status(&self, status: &'static str) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .status = status;
+    }
+
+    fn trace_status(&self) -> &'static str {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .status
+    }
+
+    fn record_trace_stage(&self, stage: PreciseRefreshTraceStage, elapsed: StdDuration) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record_stage(stage, elapsed);
+    }
+
+    fn render_trace(&self, result: &PreciseRefreshResult) -> String {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .render(result)
     }
 
     fn wait(&self) -> PreciseRefreshResult {
@@ -562,6 +633,54 @@ impl PreciseRefreshFlight {
             .as_ref()
             .expect("precise refresh result is published before waking waiters")
             .clone()
+    }
+
+    fn trace_flight_id(&self) -> u64 {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .flight_id
+    }
+}
+
+impl PreciseRefreshCoordinator {
+    fn record_completed_owner(
+        &self,
+        flight: &PreciseRefreshFlight,
+        result: &PreciseRefreshResult,
+        completed_at: Instant,
+    ) {
+        let owner = CompletedPreciseRefreshOwner {
+            flight_id: flight.trace_flight_id(),
+            summary_only: result.full.is_none(),
+            completed_at,
+        };
+        *self
+            .previous_completed_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(owner);
+    }
+
+    fn take_previous_completed_owner(
+        &self,
+        intent: PreciseRefreshIntent,
+    ) -> Option<(u64, u64)> {
+        let owner = self
+            .previous_completed_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()?;
+        if intent != PreciseRefreshIntent::Full || !owner.summary_only {
+            return None;
+        }
+        let gap = Instant::now().saturating_duration_since(owner.completed_at);
+        if gap >= PRECISE_REFRESH_COMPLETED_OWNER_WINDOW {
+            return None;
+        }
+        Some((
+            owner.flight_id,
+            u64::try_from(gap.as_millis()).unwrap_or(u64::MAX),
+        ))
     }
 }
 
@@ -595,15 +714,29 @@ fn finish_precise_refresh_flight(
     flight: &Arc<PreciseRefreshFlight>,
     result: PreciseRefreshResult,
 ) {
-    {
+    let published_result = {
         let mut state = flight
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.result.is_none() {
+        let publish_result = state.result.is_none();
+        if publish_result {
             state.result = Some(result);
         }
+        let published = state.result.clone().unwrap_or_else(|| {
+            PreciseRefreshResult::failure("精确 token refresh trace 无结果".into())
+        });
+        if publish_result {
+            coordinator.record_completed_owner(flight, &published, Instant::now());
+        }
         flight.wake.notify_all();
+        published
+    };
+    if !flight
+        .trace_finished
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        startup_trace::mark_performance(flight.render_trace(&published_result));
     }
     run_precise_refresh_finish_hook_for_testing();
     record_precise_refresh_attempt(&coordinator.canonical_home);
@@ -628,15 +761,30 @@ fn precise_refresh_coordinator(
     let mut registry = registry
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.retain(|_, coordinator| coordinator.strong_count() > 0);
-    if let Some(coordinator) = registry.get(&canonical_home).and_then(Weak::upgrade) {
-        return Ok(coordinator);
+    let now = Instant::now();
+    registry.retain(|_, coordinator| {
+        if Arc::strong_count(coordinator) > 1 {
+            return true;
+        }
+        coordinator
+            .previous_completed_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|owner| {
+                now.saturating_duration_since(owner.completed_at)
+                    < PRECISE_REFRESH_COMPLETED_OWNER_WINDOW
+            })
+    });
+    if let Some(coordinator) = registry.get(&canonical_home) {
+        return Ok(Arc::clone(coordinator));
     }
     let coordinator = Arc::new(PreciseRefreshCoordinator {
         canonical_home: canonical_home.clone(),
         flight: Mutex::new(None),
+        previous_completed_owner: Mutex::new(None),
     });
-    registry.insert(canonical_home, Arc::downgrade(&coordinator));
+    registry.insert(canonical_home, Arc::clone(&coordinator));
     Ok(coordinator)
 }
 
@@ -718,7 +866,17 @@ fn request_precise_refresh_inner(
         if current.is_some() {
             continue;
         }
-        let flight = PreciseRefreshFlight::new(intent);
+        let previous_summary = coordinator.take_previous_completed_owner(intent);
+        let (after_summary_only, summary_gap_ms, summary_previous_flight_id) =
+            previous_summary.map_or((false, None, None), |(flight_id, gap_ms)| {
+                (true, Some(gap_ms), Some(flight_id))
+            });
+        let flight = PreciseRefreshFlight::new(
+            intent,
+            after_summary_only,
+            summary_gap_ms,
+            summary_previous_flight_id,
+        );
         *current = Some(Arc::clone(&flight));
         drop(current);
         spawn_precise_refresh_owner(Arc::clone(&coordinator), Arc::clone(&flight));
@@ -769,6 +927,7 @@ fn spawn_precise_refresh_owner(
 
     #[cfg(test)]
     if FAIL_NEXT_PRECISE_REFRESH_SPAWN.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        flight.set_trace_status("spawn_error");
         finish_precise_refresh_flight(
             &coordinator,
             &flight,
@@ -794,8 +953,9 @@ fn spawn_precise_refresh_owner(
                     "精确 token refresh owner 执行异常".into(),
                 )),
             }
-        });
+    });
     if spawned.is_err() {
+        flight.set_trace_status("spawn_error");
         finish_precise_refresh_flight(
             &coordinator,
             &flight,
@@ -809,40 +969,93 @@ fn run_precise_refresh(
     flight: &PreciseRefreshFlight,
 ) -> PreciseRefreshResult {
     let mut warnings = Vec::new();
-    let mut index = match ExactUsageIndex::open(canonical_home) {
-        Ok(index) => index,
-        Err(error) => return PreciseRefreshResult::failure(error),
+    let open_result = {
+        let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Open);
+        ExactUsageIndex::open(canonical_home)
     };
-    #[cfg(not(test))]
-    if let Err(error) = ensure_attribution_mutation_watcher(canonical_home) {
+    let mut index = match open_result {
+        Ok(index) => index,
+        Err(error) => {
+            flight.set_trace_status("open_error");
+            return PreciseRefreshResult::failure(error);
+        }
+    };
+    let watcher_before: Result<(), String> = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::WatcherBefore);
+        #[cfg(not(test))]
+        {
+            ensure_attribution_mutation_watcher(canonical_home)
+        }
+        #[cfg(test)]
+        {
+            Ok(())
+        }
+    };
+    if let Err(error) = watcher_before {
+        flight.set_trace_status("watcher_before_error");
         return PreciseRefreshResult::failure(error);
     }
     let precise_coverage_at = OffsetDateTime::now_utc();
-    if let Err(error) = run_precise_refresh_sync_hook_for_testing(canonical_home) {
+    let sync_hook = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::SyncHook);
+        run_precise_refresh_sync_hook_for_testing(canonical_home)
+    };
+    if let Err(error) = sync_hook {
+        flight.set_trace_status("sync_hook_error");
         return PreciseRefreshResult::failure(error);
     }
-    let revision = match index.sync(canonical_home, &mut warnings) {
-        Ok(revision) => revision,
-        Err(error) => return PreciseRefreshResult::failure(error),
+    let sync_result = {
+        let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Sync);
+        index.sync(canonical_home, &mut warnings)
     };
-    #[cfg(not(test))]
-    if let Err(error) = ensure_attribution_mutation_watcher(canonical_home) {
+    let revision = match sync_result {
+        Ok(revision) => revision,
+        Err(error) => {
+            flight.set_trace_status("sync_error");
+            return PreciseRefreshResult::failure(error);
+        }
+    };
+    let watcher_after: Result<(), String> = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::WatcherAfter);
+        #[cfg(not(test))]
+        {
+            ensure_attribution_mutation_watcher(canonical_home)
+        }
+        #[cfg(test)]
+        {
+            Ok(())
+        }
+    };
+    if let Err(error) = watcher_after {
+        flight.set_trace_status("watcher_after_error");
         return PreciseRefreshResult::failure(error);
     }
 
-    let signature = dashboard_index_signature(canonical_home, revision);
-    let summary = match summary_after_precise_sync(
-        &index,
-        canonical_home,
-        &signature,
-        &warnings,
-    ) {
-        Ok(summary) => Ok(summary),
-        Err(error) => Err(error),
+    let summary = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::SignatureSummary);
+        let signature = dashboard_index_signature(canonical_home, revision);
+        summary_after_precise_sync(&index, canonical_home, &signature, &warnings, flight)
     };
-    if !flight.claim_full_build_or_close() {
+    let claim_full = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::ClaimFull);
+        flight.claim_full_build_or_close()
+    };
+    if !claim_full {
         if let Err(error) = run_precise_refresh_after_cutoff_hook_for_testing() {
+            flight.set_trace_status("cutoff_error");
             return PreciseRefreshResult::failure(error);
+        }
+        if summary.is_ok() {
+            if flight.trace_status() == "running" {
+                flight.set_trace_status("summary_only");
+            }
+        } else if flight.trace_status() == "running" {
+            flight.set_trace_status("summary_error");
         }
         return PreciseRefreshResult {
             summary,
@@ -851,20 +1064,35 @@ fn run_precise_refresh(
     }
 
     match build_full_dashboard_after_precise_sync(
+        flight,
         &mut index,
         canonical_home,
         revision,
         precise_coverage_at,
         &mut warnings,
     ) {
-        Ok((snapshot, full_summary)) => PreciseRefreshResult {
-            summary: if summary.is_ok() { summary } else { Ok(full_summary) },
-            full: Some(Ok(snapshot)),
-        },
-        Err(error) => PreciseRefreshResult {
-            summary,
-            full: Some(Err(error)),
-        },
+        Ok((snapshot, full_summary)) => {
+            if flight.trace_status().starts_with("summary_")
+                || flight.trace_status() == "running"
+            {
+                flight.set_trace_status("full_ok");
+            }
+            PreciseRefreshResult {
+                summary: if summary.is_ok() { summary } else { Ok(full_summary) },
+                full: Some(Ok(snapshot)),
+            }
+        }
+        Err(error) => {
+            if flight.trace_status().starts_with("summary_")
+                || flight.trace_status() == "running"
+            {
+                flight.set_trace_status("full_error");
+            }
+            PreciseRefreshResult {
+                summary,
+                full: Some(Err(error)),
+            }
+        }
     }
 }
 
@@ -873,10 +1101,23 @@ fn summary_after_precise_sync(
     canonical_home: &Path,
     signature: &DashboardScanSignature,
     warnings: &[LocalDataWarning],
+    flight: &PreciseRefreshFlight,
 ) -> Result<TokenUsageSummary, String> {
-    let attribution_safety = index.attribution_safety_state()?;
-    let physical_home_identity = attribution_watch_root_physical_identity(canonical_home)?;
-    if let Some(summary) = cached_dashboard_aggregate(signature)
+    let attribution_safety = match index.attribution_safety_state() {
+        Ok(state) => state,
+        Err(error) => {
+            flight.set_trace_status("summary_safety_error");
+            return Err(error);
+        }
+    };
+    let physical_home_identity = match attribution_watch_root_physical_identity(canonical_home) {
+        Ok(identity) => identity,
+        Err(error) => {
+            flight.set_trace_status("summary_identity_error");
+            return Err(error);
+        }
+    };
+    let cached = cached_dashboard_aggregate(signature)
         .filter(|cached| {
             cached.persistent_binding.as_ref().map_or(true, |binding| {
                 persistent_numeric_cache_binding_matches_current(
@@ -888,15 +1129,30 @@ fn summary_after_precise_sync(
                 )
             })
         })
-        .map(|cached| cached.summary)
-    {
+        .map(|cached| cached.summary);
+    if let Some(summary) = cached {
+        flight.set_trace_status("summary_cache_hit");
         return Ok(summary);
     }
-    if index.is_empty()? {
+    let empty = match index.is_empty() {
+        Ok(empty) => empty,
+        Err(error) => {
+            flight.set_trace_status("summary_empty_check_error");
+            return Err(error);
+        }
+    };
+    if empty {
+        flight.set_trace_status("summary_empty");
         return Err(no_token_events_error(warnings));
     }
     let local_offset = crate::core::localtime::local_offset();
-    let summary = index.summary(OffsetDateTime::now_utc(), local_offset)?;
+    let summary = match index.summary(OffsetDateTime::now_utc(), local_offset) {
+        Ok(summary) => summary,
+        Err(error) => {
+            flight.set_trace_status("summary_error");
+            return Err(error);
+        }
+    };
     store_usage_summary(signature.clone(), summary.clone());
     Ok(summary)
 }
@@ -922,6 +1178,364 @@ impl PreciseRefreshResult {
     }
 }
 
+const PRECISE_OWNER_TRACE_MAX_BYTES: usize = 1_024;
+
+#[derive(Clone, Copy)]
+enum PreciseRefreshTraceStage {
+    Open,
+    WatcherBefore,
+    SyncHook,
+    Sync,
+    WatcherAfter,
+    SignatureSummary,
+    ClaimFull,
+    FullSafety,
+    FullIdentity,
+    FullSignature,
+    FullCacheDecision,
+    FullEmptyCheck,
+    DashboardData,
+    PersistentBinding,
+    StorePublish,
+    FullTotal,
+}
+
+struct PreciseRefreshTrace {
+    flight_id: u64,
+    intent: PreciseRefreshIntent,
+    promoted_to_full: bool,
+    after_summary_only: bool,
+    summary_gap_ms: Option<u64>,
+    summary_previous_flight_id: Option<u64>,
+    claim_full: Option<bool>,
+    status: &'static str,
+    started: Instant,
+    open_ms: Option<u64>,
+    watcher_before_ms: Option<u64>,
+    sync_hook_ms: Option<u64>,
+    sync_ms: Option<u64>,
+    watcher_after_ms: Option<u64>,
+    signature_summary_ms: Option<u64>,
+    claim_full_ms: Option<u64>,
+    full_safety_ms: Option<u64>,
+    full_identity_ms: Option<u64>,
+    full_signature_ms: Option<u64>,
+    full_cache_decision_ms: Option<u64>,
+    full_empty_check_ms: Option<u64>,
+    dashboard_data_ms: Option<u64>,
+    persistent_binding_ms: Option<u64>,
+    store_publish_ms: Option<u64>,
+    full_total_ms: Option<u64>,
+}
+
+impl PreciseRefreshTrace {
+    fn new(
+        intent: PreciseRefreshIntent,
+        after_summary_only: bool,
+        summary_gap_ms: Option<u64>,
+        summary_previous_flight_id: Option<u64>,
+    ) -> Self {
+        Self {
+            flight_id: PRECISE_REFRESH_FLIGHT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            intent,
+            promoted_to_full: false,
+            after_summary_only,
+            summary_gap_ms,
+            summary_previous_flight_id,
+            claim_full: None,
+            status: "running",
+            started: Instant::now(),
+            open_ms: None,
+            watcher_before_ms: None,
+            sync_hook_ms: None,
+            sync_ms: None,
+            watcher_after_ms: None,
+            signature_summary_ms: None,
+            claim_full_ms: None,
+            full_safety_ms: None,
+            full_identity_ms: None,
+            full_signature_ms: None,
+            full_cache_decision_ms: None,
+            full_empty_check_ms: None,
+            dashboard_data_ms: None,
+            persistent_binding_ms: None,
+            store_publish_ms: None,
+            full_total_ms: None,
+        }
+    }
+
+    fn record_stage(&mut self, stage: PreciseRefreshTraceStage, elapsed: StdDuration) {
+        let millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        match stage {
+            PreciseRefreshTraceStage::Open => self.open_ms = Some(millis),
+            PreciseRefreshTraceStage::WatcherBefore => self.watcher_before_ms = Some(millis),
+            PreciseRefreshTraceStage::SyncHook => self.sync_hook_ms = Some(millis),
+            PreciseRefreshTraceStage::Sync => self.sync_ms = Some(millis),
+            PreciseRefreshTraceStage::WatcherAfter => self.watcher_after_ms = Some(millis),
+            PreciseRefreshTraceStage::SignatureSummary => {
+                self.signature_summary_ms = Some(millis)
+            }
+            PreciseRefreshTraceStage::ClaimFull => self.claim_full_ms = Some(millis),
+            PreciseRefreshTraceStage::FullSafety => self.full_safety_ms = Some(millis),
+            PreciseRefreshTraceStage::FullIdentity => self.full_identity_ms = Some(millis),
+            PreciseRefreshTraceStage::FullSignature => self.full_signature_ms = Some(millis),
+            PreciseRefreshTraceStage::FullCacheDecision => {
+                self.full_cache_decision_ms = Some(millis)
+            }
+            PreciseRefreshTraceStage::FullEmptyCheck => self.full_empty_check_ms = Some(millis),
+            PreciseRefreshTraceStage::DashboardData => self.dashboard_data_ms = Some(millis),
+            PreciseRefreshTraceStage::PersistentBinding => {
+                self.persistent_binding_ms = Some(millis)
+            }
+            PreciseRefreshTraceStage::StorePublish => self.store_publish_ms = Some(millis),
+            PreciseRefreshTraceStage::FullTotal => self.full_total_ms = Some(millis),
+        }
+    }
+
+    fn stage_value(value: Option<u64>) -> String {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "na".into())
+    }
+
+    fn result_status(&self, result: &PreciseRefreshResult) -> &'static str {
+        if self.status != "running" {
+            return self.status;
+        }
+        match (&result.summary, &result.full) {
+            (_, Some(Ok(_))) => "full_ok",
+            (_, Some(Err(_))) => "full_error",
+            (Ok(_), None) => "summary_only",
+            (Err(_), None) => "summary_error",
+        }
+    }
+
+    fn render(&self, result: &PreciseRefreshResult) -> String {
+        let claim = match self.claim_full {
+            Some(true) => "1",
+            Some(false) => "0",
+            None => "na",
+        };
+        let intent = match self.intent {
+            PreciseRefreshIntent::Summary => "summary",
+            PreciseRefreshIntent::Full => "full",
+        };
+        let mut line = format!(
+            "precise_owner flight={} intent={} promoted={} after_summary_only={} summary_prev_flight={} summary_gap_ms={} claim_full={} status={} open_ms={} watcher_before_ms={} sync_hook_ms={} sync_ms={} watcher_after_ms={} signature_summary_ms={} claim_full_ms={} full_safety_ms={} full_identity_ms={} full_signature_ms={} full_cache_decision_ms={} full_empty_check_ms={} dashboard_data_ms={} persistent_binding_ms={} store_publish_ms={} full_total_ms={} total_ms={}",
+            self.flight_id,
+            intent,
+            u8::from(self.promoted_to_full),
+            u8::from(self.after_summary_only),
+            Self::stage_value(self.summary_previous_flight_id),
+            Self::stage_value(self.summary_gap_ms),
+            claim,
+            self.result_status(result),
+            Self::stage_value(self.open_ms),
+            Self::stage_value(self.watcher_before_ms),
+            Self::stage_value(self.sync_hook_ms),
+            Self::stage_value(self.sync_ms),
+            Self::stage_value(self.watcher_after_ms),
+            Self::stage_value(self.signature_summary_ms),
+            Self::stage_value(self.claim_full_ms),
+            Self::stage_value(self.full_safety_ms),
+            Self::stage_value(self.full_identity_ms),
+            Self::stage_value(self.full_signature_ms),
+            Self::stage_value(self.full_cache_decision_ms),
+            Self::stage_value(self.full_empty_check_ms),
+            Self::stage_value(self.dashboard_data_ms),
+            Self::stage_value(self.persistent_binding_ms),
+            Self::stage_value(self.store_publish_ms),
+            Self::stage_value(self.full_total_ms),
+            Self::stage_value(Some(
+                self.started
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            )),
+        );
+        if line.len() > PRECISE_OWNER_TRACE_MAX_BYTES {
+            line.truncate(PRECISE_OWNER_TRACE_MAX_BYTES);
+        }
+        line
+    }
+}
+
+#[cfg(test)]
+mod precise_refresh_trace_tests {
+    use super::*;
+
+    fn empty_result() -> PreciseRefreshResult {
+        PreciseRefreshResult {
+            summary: Ok(TokenUsageSummary::default()),
+            full: None,
+        }
+    }
+
+    #[test]
+    fn owner_trace_has_fixed_order_bounded_fields_and_no_source_text() {
+        let mut trace = PreciseRefreshTrace::new(
+            PreciseRefreshIntent::Summary,
+            true,
+            Some(7),
+            Some(3),
+        );
+        trace.promoted_to_full = true;
+        trace.claim_full = Some(true);
+        trace.status = "summary_cache_hit";
+        trace.record_stage(PreciseRefreshTraceStage::Open, StdDuration::from_millis(3));
+        let line = trace.render(&empty_result());
+        let keys = line
+            .split_whitespace()
+            .map(|field| field.split_once('=').map_or(field, |(key, _)| key))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "precise_owner",
+                "flight",
+                "intent",
+                "promoted",
+                "after_summary_only",
+                "summary_prev_flight",
+                "summary_gap_ms",
+                "claim_full",
+                "status",
+                "open_ms",
+                "watcher_before_ms",
+                "sync_hook_ms",
+                "sync_ms",
+                "watcher_after_ms",
+                "signature_summary_ms",
+                "claim_full_ms",
+                "full_safety_ms",
+                "full_identity_ms",
+                "full_signature_ms",
+                "full_cache_decision_ms",
+                "full_empty_check_ms",
+                "dashboard_data_ms",
+                "persistent_binding_ms",
+                "store_publish_ms",
+                "full_total_ms",
+                "total_ms",
+            ]
+        );
+        assert!(line.len() <= PRECISE_OWNER_TRACE_MAX_BYTES);
+        assert!(line.contains("intent=summary"));
+        assert!(line.contains("promoted=1"));
+        assert!(line.contains("after_summary_only=1"));
+        assert!(line.contains("summary_prev_flight=3"));
+        assert!(line.contains("summary_gap_ms=7"));
+        assert!(line.contains("claim_full=1"));
+        assert!(!line.contains("/private/source.jsonl"));
+    }
+
+    #[test]
+    fn owner_trace_renders_explainable_terminal_statuses() {
+        let cases = [
+            ("summary_cache_hit", empty_result()),
+            ("summary_only", empty_result()),
+            (
+                "full_error",
+                PreciseRefreshResult {
+                    summary: Err("error contains /private/source.jsonl".into()),
+                    full: Some(Err("same error".into())),
+                },
+            ),
+            ("full_empty", empty_result()),
+        ];
+        for (status, result) in cases {
+            let mut trace = PreciseRefreshTrace::new(PreciseRefreshIntent::Full, false, None, None);
+            trace.status = status;
+            let line = trace.render(&result);
+            assert!(line.contains(&format!("status={status}")));
+            assert!(line.len() <= PRECISE_OWNER_TRACE_MAX_BYTES);
+            assert!(!line.contains("source.jsonl"));
+        }
+    }
+
+    #[test]
+    fn completed_owner_summary_metadata_survives_slot_clear_and_respects_window() {
+        let coordinator = Arc::new(PreciseRefreshCoordinator {
+            canonical_home: PathBuf::from("trace-only-home"),
+            flight: Mutex::new(None),
+            previous_completed_owner: Mutex::new(None),
+        });
+        let summary_flight = PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None);
+        let summary_result = empty_result();
+        coordinator.record_completed_owner(
+            &summary_flight,
+            &summary_result,
+            Instant::now() - StdDuration::from_millis(25),
+        );
+        // The coordinator slot is intentionally left empty: this models the
+        // real owner cleanup that used to lose the summary-cutoff lineage.
+        assert!(coordinator.flight.lock().unwrap().is_none());
+        let (previous_flight_id, summary_gap_ms) = coordinator
+            .take_previous_completed_owner(PreciseRefreshIntent::Full)
+            .expect("recent summary owner should be retained after slot cleanup");
+        let full_trace = PreciseRefreshTrace::new(
+            PreciseRefreshIntent::Full,
+            true,
+            Some(summary_gap_ms),
+            Some(previous_flight_id),
+        );
+        let line = full_trace.render(&PreciseRefreshResult {
+            summary: Ok(TokenUsageSummary::default()),
+            full: Some(Err("diagnostic-only".into())),
+        });
+        assert!(line.contains("after_summary_only=1"));
+        assert!(line.contains("summary_gap_ms="));
+
+        let stale_summary_flight =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None);
+        coordinator.record_completed_owner(
+            &stale_summary_flight,
+            &summary_result,
+            Instant::now() - PRECISE_REFRESH_COMPLETED_OWNER_WINDOW - StdDuration::from_millis(1),
+        );
+        assert!(coordinator
+            .take_previous_completed_owner(PreciseRefreshIntent::Full)
+            .is_none());
+
+        let full_owner = PreciseRefreshFlight::new(PreciseRefreshIntent::Full, false, None, None);
+        coordinator.record_completed_owner(
+            &full_owner,
+            &PreciseRefreshResult {
+                summary: Ok(TokenUsageSummary::default()),
+                full: Some(Err("full owner".into())),
+            },
+            Instant::now(),
+        );
+        assert!(coordinator
+            .take_previous_completed_owner(PreciseRefreshIntent::Full)
+            .is_none());
+    }
+}
+
+struct PreciseRefreshTraceStageGuard<'a> {
+    flight: &'a PreciseRefreshFlight,
+    stage: PreciseRefreshTraceStage,
+    started: Instant,
+}
+
+impl<'a> PreciseRefreshTraceStageGuard<'a> {
+    fn new(flight: &'a PreciseRefreshFlight, stage: PreciseRefreshTraceStage) -> Self {
+        Self {
+            flight,
+            stage,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for PreciseRefreshTraceStageGuard<'_> {
+    fn drop(&mut self) {
+        self.flight
+            .record_trace_stage(self.stage, self.started.elapsed());
+    }
+}
+
 struct PreciseRefreshFlightState {
     full_requested: bool,
     full_build_started: bool,
@@ -932,11 +1546,21 @@ struct PreciseRefreshFlightState {
 struct PreciseRefreshFlight {
     state: Mutex<PreciseRefreshFlightState>,
     wake: Condvar,
+    trace: Mutex<PreciseRefreshTrace>,
+    trace_finished: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+struct CompletedPreciseRefreshOwner {
+    flight_id: u64,
+    summary_only: bool,
+    completed_at: Instant,
 }
 
 struct PreciseRefreshCoordinator {
     canonical_home: PathBuf,
     flight: Mutex<Option<Arc<PreciseRefreshFlight>>>,
+    previous_completed_owner: Mutex<Option<CompletedPreciseRefreshOwner>>,
 }
 
 struct PreciseRefreshOwnerState {
@@ -1052,25 +1676,57 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
 }
 
 fn build_full_dashboard_after_precise_sync(
+    flight: &PreciseRefreshFlight,
     index: &mut ExactUsageIndex,
     codex_home: &Path,
     revision: u64,
     precise_coverage_at: OffsetDateTime,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<(DashboardSnapshot, TokenUsageSummary), String> {
-    let attribution_safety = index.attribution_safety_state()?;
-    let observer_identity = precise_observer_identity(codex_home)?;
-    let signature = dashboard_index_signature(codex_home, revision);
-    if let Some(snapshot) = cached_dashboard_snapshot_for_current(
-        &signature,
-        codex_home,
-        &attribution_safety,
-    ) {
-        let summary = cached_dashboard_aggregate(&signature)
-            .map(|cached| cached.summary)
-            .ok_or_else(|| {
-                "精确 token full refresh 缺少与完整快照对应的 summary".to_string()
-            })?;
+    let _full_total =
+        PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullTotal);
+    let attribution_safety = {
+        let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullSafety);
+        match index.attribution_safety_state() {
+            Ok(state) => state,
+            Err(error) => {
+                flight.set_trace_status("full_safety_error");
+                return Err(error);
+            }
+        }
+    };
+    let observer_identity = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullIdentity);
+        match precise_observer_identity(codex_home) {
+            Ok(identity) => identity,
+            Err(error) => {
+                flight.set_trace_status("full_identity_error");
+                return Err(error);
+            }
+        }
+    };
+    let signature = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullSignature);
+        dashboard_index_signature(codex_home, revision)
+    };
+    let cached_snapshot = {
+        let _stage = PreciseRefreshTraceStageGuard::new(
+            flight,
+            PreciseRefreshTraceStage::FullCacheDecision,
+        );
+        cached_dashboard_snapshot_for_current(&signature, codex_home, &attribution_safety)
+    };
+    if let Some(snapshot) = cached_snapshot {
+        let summary = match cached_dashboard_aggregate(&signature).map(|cached| cached.summary) {
+            Some(summary) => summary,
+            None => {
+                flight.set_trace_status("full_cache_error");
+                return Err("精确 token full refresh 缺少与完整快照对应的 summary".to_string());
+            }
+        };
+        flight.set_trace_status("full_cache_hit");
         let mut snapshot = snapshot_with_precise_coverage(
             snapshot,
             precise_coverage_at,
@@ -1081,14 +1737,36 @@ fn build_full_dashboard_after_precise_sync(
         merge_usage_cache_marker_warning(&mut snapshot);
         return Ok((snapshot, summary));
     }
-    if index.is_empty()? {
+    let empty = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullEmptyCheck);
+        match index.is_empty() {
+            Ok(empty) => empty,
+            Err(error) => {
+                flight.set_trace_status("full_empty_check_error");
+                return Err(error);
+            }
+        }
+    };
+    if empty {
+        flight.set_trace_status("full_empty");
         return Err(no_token_events_error(warnings));
     }
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
     let local_offset = crate::core::localtime::local_offset();
-    let data = index.dashboard_data(codex_home, now_utc, local_offset, warnings)?;
+    let data = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::DashboardData);
+        match index.dashboard_data(codex_home, now_utc, local_offset, warnings) {
+            Ok(data) => data,
+            Err(error) => {
+                flight.set_trace_status("dashboard_data_error");
+                return Err(error);
+            }
+        }
+    };
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
@@ -1134,30 +1812,42 @@ fn build_full_dashboard_after_precise_sync(
         diagnostics: Vec::new(),
     };
     let summary = data.summary;
-    let persistent_binding = match persistent_numeric_cache_binding(
-        codex_home,
-        signature.clone(),
-        &attribution_safety,
-    ) {
-        Ok(binding) => Some(binding),
-        Err(error) => {
-            snapshot.warnings.push(LocalDataWarning {
-                source: "usage-cache-persistence".into(),
-                message: error,
-            });
-            None
+    let persistent_binding = {
+        let _stage = PreciseRefreshTraceStageGuard::new(
+            flight,
+            PreciseRefreshTraceStage::PersistentBinding,
+        );
+        match persistent_numeric_cache_binding(
+            codex_home,
+            signature.clone(),
+            &attribution_safety,
+        ) {
+            Ok(binding) => Some(binding),
+            Err(error) => {
+                flight.set_trace_status("full_binding_warning");
+                snapshot.warnings.push(LocalDataWarning {
+                    source: "usage-cache-persistence".into(),
+                    message: error,
+                });
+                None
+            }
         }
     };
-    if let Some(warning) = store_dashboard_aggregate_with_binding(
-        signature,
-        Some(snapshot.clone()),
-        summary.clone(),
-        persistent_binding,
-    ) {
-        snapshot.warnings.push(warning);
+    {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::StorePublish);
+        if let Some(warning) = store_dashboard_aggregate_with_binding(
+            signature,
+            Some(snapshot.clone()),
+            summary.clone(),
+            persistent_binding,
+        ) {
+            flight.set_trace_status("full_store_warning");
+            snapshot.warnings.push(warning);
+        }
+        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+        merge_usage_cache_marker_warning(&mut snapshot);
     }
-    let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
-    merge_usage_cache_marker_warning(&mut snapshot);
     Ok((snapshot, summary))
 }
 
@@ -2390,7 +3080,7 @@ fn wait_for_usage_summary_refreshes_for_testing() {
             .map(|registry| {
                 registry
                     .values()
-                    .filter_map(Weak::upgrade)
+                    .cloned()
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -2463,8 +3153,28 @@ pub(crate) fn precise_refresh_coordinator_registry_len_for_testing() -> usize {
     let mut registry = registry
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.retain(|_, coordinator| coordinator.strong_count() > 0);
-    registry.len()
+    registry.retain(|_, coordinator| {
+        Arc::strong_count(coordinator) > 1
+            || coordinator
+                .previous_completed_owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .is_some_and(|owner| {
+                    Instant::now().saturating_duration_since(owner.completed_at)
+                        < PRECISE_REFRESH_COMPLETED_OWNER_WINDOW
+                })
+    });
+    registry
+        .values()
+        .filter(|coordinator| {
+            coordinator
+                .flight
+                .lock()
+                .map(|flight| flight.is_some())
+                .unwrap_or(false)
+        })
+        .count()
 }
 
 #[cfg(test)]
