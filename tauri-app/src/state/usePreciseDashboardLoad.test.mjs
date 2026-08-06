@@ -183,6 +183,113 @@ test("periodic precise loads probe the source before reusing cache and fail safe
   }
 });
 
+test("a cadence tick joins an in-flight owner without probing or scheduling a trailing run", async () => {
+  const dom = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(dom);
+  const timers = installManualWindowTimers(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { usePreciseDashboardLoad } = await load("/src/state/usePreciseDashboardLoad.ts");
+      const sourceToken = {
+        canonicalHomeKey: "canonical-in-flight-home",
+        physicalHomeKey: "physical-in-flight-home",
+        transitionGeneration: 1,
+      };
+      const owner = deferred();
+      let preciseReads = 0;
+      let probeReads = 0;
+      const source = {
+        async readUsageCacheStatus() {
+          return {};
+        },
+        async readPreciseDashboardSourceProbe() {
+          probeReads += 1;
+          return { state: "changed", publishedRevision: "late" };
+        },
+        readPreciseDashboardSnapshot() {
+          preciseReads += 1;
+          if (preciseReads === 1) {
+            return owner.promise;
+          }
+          return Promise.resolve({
+            revision: preciseReads,
+            preciseRecentUsageFresh: true,
+            preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+          });
+        },
+      };
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+
+      function Probe({ generation, force }) {
+        usePreciseDashboardLoad({
+          active: true,
+          dashboardReady: true,
+          generation,
+          loading: false,
+          forcePreciseRefresh: force,
+          source,
+          sourceToken,
+          onPreciseDashboard() {},
+        });
+        return null;
+      }
+
+      const runTimer = async (generation, force) => {
+        await React.act(async () => root.render(React.createElement(Probe, { generation, force })));
+        assert.equal(timers.pendingCount(), 1);
+        await React.act(async () => {
+          timers.runNext();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+
+      try {
+        await runTimer(1, true);
+        assert.equal(preciseReads, 1);
+
+        // The owner is still pending. The cadence generation joins it after
+        // status, but must not call the source probe or ask for a trailing run.
+        await runTimer(2, false);
+        assert.equal(probeReads, 0);
+        assert.equal(preciseReads, 1);
+
+        owner.resolve({
+          revision: 1,
+          preciseRecentUsageFresh: true,
+          preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+        });
+        await React.act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        assert.equal(preciseReads, 1);
+
+        // Once the owner has settled, the next cadence is allowed to probe;
+        // the changed result then starts one fresh precise owner.
+        await runTimer(3, false);
+        assert.equal(probeReads, 1);
+        assert.equal(preciseReads, 2);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    timers.restore();
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
 function installManualWindowTimers(dom) {
   const originalSetTimeout = dom.setTimeout.bind(dom);
   const originalClearTimeout = dom.clearTimeout.bind(dom);
@@ -210,6 +317,16 @@ function installManualWindowTimers(dom) {
       dom.clearTimeout = originalClearTimeout;
     },
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function installDomGlobals(dom) {

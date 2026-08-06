@@ -4,6 +4,7 @@ import type { CodexHomeSourceToken, DashboardSnapshot, UsageCacheStatus } from "
 import {
   loadPreciseDashboardSingleFlight,
   markPreciseDashboardSourceDirty,
+  preciseDashboardFlightInProgress,
 } from "./preciseDashboardSingleFlight";
 import {
   initialPreciseDashboardDeadlineMs,
@@ -98,7 +99,8 @@ export function usePreciseDashboardLoad({
         if (cancelled || sourceToken === null) {
           return;
         }
-        if (!forcePreciseRefresh) {
+        if (!forcePreciseRefresh
+          && !preciseDashboardFlightInProgress(sourceToken)) {
           // Cadence requests must prove that the source is unchanged before
           // reusing a last-good exact snapshot. A missing, changed, or failed
           // probe is deliberately fail-safe: keep the source dirty and enter
@@ -112,7 +114,12 @@ export function usePreciseDashboardLoad({
           if (cancelled) {
             return;
           }
-          if (sourceProbe?.state !== "unchanged") {
+          // A forced owner may have started while the probe was in flight. It
+          // now covers this cadence tick; join it without manufacturing a
+          // trailing run from the probe's transient `building_generation`.
+          if (preciseDashboardFlightInProgress(sourceToken)) {
+            effectiveForce = false;
+          } else if (sourceProbe?.state !== "unchanged") {
             effectiveForce = true;
             markPreciseDashboardSourceDirty(sourceToken);
           }

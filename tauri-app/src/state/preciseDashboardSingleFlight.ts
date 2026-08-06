@@ -54,6 +54,19 @@ export function markPreciseDashboardSourceDirty(sourceToken: CodexHomeSourceToke
   }
 }
 
+/**
+ * Read-only source-scoped join check for cadence callers. A cadence tick that
+ * observes an owner must join it before running any source probe; probing an
+ * index while it has a building generation would otherwise manufacture a
+ * dirty trailing request for the already-running owner.
+ */
+export function preciseDashboardFlightInProgress(
+  sourceToken: CodexHomeSourceToken,
+): boolean {
+  const flight = flightsBySource.get(preciseDashboardSourceKey(sourceToken));
+  return flight !== undefined && !flight.settled;
+}
+
 export function loadPreciseDashboardSingleFlight(
   sourceToken: CodexHomeSourceToken,
   loader: PreciseDashboardLoader,

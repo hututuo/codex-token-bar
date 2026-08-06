@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   loadPreciseDashboardSingleFlight,
   markPreciseDashboardSourceDirty,
+  preciseDashboardFlightInProgress,
 } from "./preciseDashboardSingleFlight.ts";
 
 test("precise dashboard requests coalesce and run at most one trailing refresh", async () => {
@@ -214,6 +215,21 @@ test("a periodic request arriving during an owner does not enqueue a trailing fu
   await Promise.all([owner.result, periodic.result]);
   await nextTurn();
   assert.equal(invocationCount, 1);
+});
+
+test("the source-scoped flight join check stays true only while the owner is active", async () => {
+  const token = sourceToken("flight-join-check");
+  const pending = deferred();
+  const owner = loadPreciseDashboardSingleFlight(
+    token,
+    () => pending.promise,
+    undefined,
+    { force: true },
+  );
+  assert.equal(preciseDashboardFlightInProgress(token), true);
+  pending.resolve(preciseSnapshot(55));
+  await owner.result;
+  assert.equal(preciseDashboardFlightInProgress(token), false);
 });
 
 test("a new dirty generation during an owner keeps one trailing precise run", async () => {
