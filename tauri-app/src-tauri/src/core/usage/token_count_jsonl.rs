@@ -58,6 +58,12 @@ static PRECISE_REFRESH_SYNC_HOOK: OnceLock<Mutex<Option<PreciseRefreshSyncHook>>
 static PRECISE_REFRESH_AFTER_CUTOFF_HOOK: OnceLock<Mutex<Option<PreciseRefreshCutoffHook>>> =
     OnceLock::new();
 #[cfg(test)]
+static PRECISE_REFRESH_PROMOTION_HOOK: OnceLock<Mutex<Option<PreciseRefreshPromotionHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static PRECISE_REFRESH_FINISH_HOOK: OnceLock<Mutex<Option<PreciseRefreshFinishHook>>> =
+    OnceLock::new();
+#[cfg(test)]
 static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
@@ -516,7 +522,7 @@ impl PreciseRefreshFlight {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .result
             .as_ref()
-            .is_some_and(|result| result.full.is_some())
+            .is_some_and(|result| matches!(result.full.as_ref(), Some(Ok(_))))
     }
 
     fn claim_full_build_or_close(&self) -> bool {
@@ -531,13 +537,6 @@ impl PreciseRefreshFlight {
             state.promotion_closed = true;
             false
         }
-    }
-
-    fn full_requested(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .full_requested
     }
 
     fn wait(&self) -> PreciseRefreshResult {
@@ -599,6 +598,7 @@ fn finish_precise_refresh_flight(
         }
         flight.wake.notify_all();
     }
+    run_precise_refresh_finish_hook_for_testing();
     record_precise_refresh_attempt(&coordinator.canonical_home);
 
     let mut current = coordinator
@@ -677,9 +677,13 @@ fn request_precise_refresh_inner(
                 }
                 continue;
             }
-            if intent == PreciseRefreshIntent::Full && !existing.request_full() {
-                existing.wait();
-                continue;
+            if intent == PreciseRefreshIntent::Full {
+                let promoted = existing.request_full();
+                run_precise_refresh_promotion_hook_for_testing(promoted)?;
+                if !promoted {
+                    existing.wait();
+                    continue;
+                }
             }
             return Ok(Some(existing));
         }
@@ -921,6 +925,11 @@ struct PreciseRefreshOwnerGuard {
 pub(crate) type PreciseRefreshSyncHook = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 #[cfg(test)]
 pub(crate) type PreciseRefreshCutoffHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type PreciseRefreshPromotionHook =
+    Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type PreciseRefreshFinishHook = Arc<dyn Fn() + Send + Sync>;
 
 pub(crate) fn session_catalog_snapshot<F>(
     codex_home: &Path,
@@ -1739,6 +1748,39 @@ fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+fn run_precise_refresh_promotion_hook_for_testing(promoted: bool) -> Result<(), String> {
+    let hook = PRECISE_REFRESH_PROMOTION_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook(promoted)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_promotion_hook_for_testing(_promoted: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_precise_refresh_finish_hook_for_testing() {
+    let hook = PRECISE_REFRESH_FINISH_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_finish_hook_for_testing() {}
+
 #[cfg(not(test))]
 fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
     Ok(())
@@ -1819,6 +1861,24 @@ pub(crate) fn set_precise_refresh_after_cutoff_hook_for_testing(
     hook: Option<PreciseRefreshCutoffHook>,
 ) {
     let slot = PRECISE_REFRESH_AFTER_CUTOFF_HOOK.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn set_precise_refresh_promotion_hook_for_testing(
+    hook: Option<PreciseRefreshPromotionHook>,
+) {
+    let slot = PRECISE_REFRESH_PROMOTION_HOOK.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn set_precise_refresh_finish_hook_for_testing(hook: Option<PreciseRefreshFinishHook>) {
+    let slot = PRECISE_REFRESH_FINISH_HOOK.get_or_init(|| Mutex::new(None));
     *slot
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;

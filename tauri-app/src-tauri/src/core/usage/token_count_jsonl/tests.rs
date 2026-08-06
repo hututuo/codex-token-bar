@@ -280,6 +280,108 @@ fn precise_refresh_owner_releases_flight_after_panic_and_can_retry() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[derive(Clone, Copy)]
+enum CompletedPreciseRefreshFailure {
+    Error,
+    Spawn,
+    Panic,
+}
+
+fn assert_full_retry_after_completed_failure_window(failure: CompletedPreciseRefreshFailure) {
+    reset_dashboard_aggregate_build_count_for_testing();
+    set_precise_refresh_sync_hook_for_testing(None);
+    set_precise_refresh_finish_hook_for_testing(None);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ecompleted-failure-window-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+
+    match failure {
+        CompletedPreciseRefreshFailure::Error => {
+            set_precise_refresh_sync_hook_for_testing(Some(Arc::new(|_| {
+                Err("injected completed precise refresh error".into())
+            })));
+        }
+        CompletedPreciseRefreshFailure::Spawn => fail_next_precise_refresh_spawn_for_testing(),
+        CompletedPreciseRefreshFailure::Panic => {
+            set_precise_refresh_sync_hook_for_testing(Some(Arc::new(|_| {
+                panic!("injected completed precise refresh panic")
+            })));
+        }
+    }
+
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Arc::new(Mutex::new(Some(release_rx)));
+    let release_rx_for_hook = Arc::clone(&release_rx);
+    let first_finish = Arc::new(Mutex::new(true));
+    let first_finish_for_hook = Arc::clone(&first_finish);
+    set_precise_refresh_finish_hook_for_testing(Some(Arc::new(move || {
+        let should_block = {
+            let mut first_finish = first_finish_for_hook.lock().unwrap();
+            let should_block = *first_finish;
+            *first_finish = false;
+            should_block
+        };
+        if !should_block {
+            return;
+        }
+        finished_tx.send(()).unwrap();
+        let receiver = release_rx_for_hook
+            .lock()
+            .unwrap()
+            .take()
+            .expect("completed failure finish release receiver already consumed");
+        receiver.recv().unwrap();
+    })));
+
+    let first_root = root.clone();
+    let first_handle = std::thread::spawn(move || dashboard_snapshot(&first_root));
+    assert!(finished_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
+
+    set_precise_refresh_sync_hook_for_testing(None);
+    set_precise_refresh_finish_hook_for_testing(None);
+    let retry = dashboard_snapshot(&root).unwrap();
+    assert_eq!(retry.stats.total_tokens, 120);
+
+    release_tx.send(()).unwrap();
+    let first_result = first_handle.join().unwrap();
+    match failure {
+        CompletedPreciseRefreshFailure::Error => assert!(first_result
+            .as_ref()
+            .is_err_and(|error| error.contains("injected completed precise refresh error"))),
+        CompletedPreciseRefreshFailure::Spawn => assert!(first_result
+            .as_ref()
+            .is_err_and(|error| error.contains("owner 线程启动失败"))),
+        CompletedPreciseRefreshFailure::Panic => assert!(first_result
+            .as_ref()
+            .is_err_and(|error| error.contains("owner 执行异常"))),
+    }
+    wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_refresh_retries_after_completed_error_before_owner_cleanup() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    assert_full_retry_after_completed_failure_window(CompletedPreciseRefreshFailure::Error);
+}
+
+#[test]
+fn precise_refresh_retries_after_completed_spawn_failure_before_owner_cleanup() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    assert_full_retry_after_completed_failure_window(CompletedPreciseRefreshFailure::Spawn);
+}
+
+#[test]
+fn precise_refresh_retries_after_completed_panic_before_owner_cleanup() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    assert_full_retry_after_completed_failure_window(CompletedPreciseRefreshFailure::Panic);
+}
+
 #[test]
 fn precise_refresh_same_home_mixed_requests_share_one_sync() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
@@ -365,11 +467,14 @@ fn precise_refresh_summary_promotes_to_full_without_second_sync() {
     assert!(started_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
 
     let (promoted_tx, promoted_rx) = mpsc::channel();
+    set_precise_refresh_promotion_hook_for_testing(Some(Arc::new(move |promoted| {
+        promoted_tx
+            .send(promoted)
+            .map_err(|error| format!("promotion channel closed: {error}"))
+    })));
     let full_root = root.clone();
     let full_handle = std::thread::spawn(move || {
         let full_flight = request_precise_refresh(&full_root, PreciseRefreshIntent::Full).unwrap();
-        let promoted = full_flight.full_requested();
-        promoted_tx.send(promoted).unwrap();
         full_flight.wait().full.unwrap()
     });
     let promoted = promoted_rx
@@ -379,12 +484,61 @@ fn precise_refresh_summary_promotes_to_full_without_second_sync() {
     let summary = summary_handle.join().unwrap().unwrap();
     let full = full_handle.join().unwrap().unwrap();
     set_precise_refresh_sync_hook_for_testing(None);
+    set_precise_refresh_promotion_hook_for_testing(None);
 
     assert!(promoted);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(summary.total_tokens, 120);
     assert_eq!(full.stats.total_tokens, 120);
     wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn precise_refresh_raw_and_symlink_alias_share_one_canonical_coordinator() {
+    use std::os::unix::fs::symlink;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let alias = root.with_extension("alias-home");
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    symlink(&root, &alias).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ealias-refresh-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+
+    let (started_rx, gate, calls) = install_blocking_precise_refresh_hook(&[root.clone()]);
+    let summary_root = root.clone();
+    let summary_handle = std::thread::spawn(move || dashboard_usage_summary(&summary_root));
+    assert!(started_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
+
+    let (promoted_tx, promoted_rx) = mpsc::channel();
+    set_precise_refresh_promotion_hook_for_testing(Some(Arc::new(move |promoted| {
+        promoted_tx
+            .send(promoted)
+            .map_err(|error| format!("alias promotion channel closed: {error}"))
+    })));
+    let full_alias = alias.clone();
+    let full_handle = std::thread::spawn(move || dashboard_snapshot(&full_alias));
+    let promoted = promoted_rx
+        .recv_timeout(StdDuration::from_secs(5))
+        .unwrap_or(false);
+    gate.release(20);
+    let summary = summary_handle.join().unwrap().unwrap();
+    let full = full_handle.join().unwrap().unwrap();
+    set_precise_refresh_promotion_hook_for_testing(None);
+
+    assert!(promoted);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(summary.total_tokens, 120);
+    assert_eq!(full.stats.total_tokens, 120);
+    assert_eq!(dashboard_aggregate_build_count_for_testing(&alias), 1);
+    wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_file(&alias).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -401,6 +555,7 @@ fn precise_refresh_full_after_promotion_cutoff_retries_without_missing_full_resu
     );
 
     let (cutoff_tx, cutoff_rx) = mpsc::channel();
+    let (rejected_tx, rejected_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let release_rx = Arc::new(Mutex::new(Some(release_rx)));
     let release_rx_for_hook = Arc::clone(&release_rx);
@@ -422,15 +577,26 @@ fn precise_refresh_full_after_promotion_cutoff_retries_without_missing_full_resu
     let summary_flight = request_precise_refresh(&root, PreciseRefreshIntent::Summary).unwrap();
     let summary_handle = std::thread::spawn(move || summary_flight.wait().summary);
     let reached_cutoff = cutoff_rx.recv_timeout(StdDuration::from_secs(5)).is_ok();
+    set_precise_refresh_promotion_hook_for_testing(Some(Arc::new(move |promoted| {
+        if promoted {
+            return Err("cutoff test unexpectedly promoted full request".into());
+        }
+        rejected_tx
+            .send(())
+            .map_err(|error| format!("promotion rejection channel closed: {error}"))
+    })));
 
     let full_root = root.clone();
     let full_handle = std::thread::spawn(move || dashboard_snapshot(&full_root));
+    let observed_rejection = rejected_rx.recv_timeout(StdDuration::from_secs(5)).is_ok();
     release_tx.send(()).unwrap();
     let summary = summary_handle.join().unwrap();
     let full = full_handle.join().unwrap();
     set_precise_refresh_after_cutoff_hook_for_testing(None);
+    set_precise_refresh_promotion_hook_for_testing(None);
 
     assert!(reached_cutoff);
+    assert!(observed_rejection);
     assert_eq!(summary.unwrap().total_tokens, 120);
     assert_eq!(full.unwrap().stats.total_tokens, 120);
     assert_eq!(precise_refresh_sync_call_count_for_testing(), 2);
