@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::unread::test_fixtures::write_initialized_sidebar_state;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::io::Write;
@@ -1516,7 +1517,7 @@ fn unread_acknowledgement_invalidates_live_rate_unread_cache() {
     let _support_env = TauriSupportEnvGuard::new(&support);
     let thread_id = "019eaaaa-0000-0000-0000-000000000099";
     write_visible_session_meta(&root, thread_id);
-    write_unread_state(&root, &[thread_id]);
+    write_initialized_sidebar_state(&root, &[thread_id]);
 
     let before = read_snapshot(&root, None);
     assert!(before.unread_summary.active);
@@ -1536,11 +1537,11 @@ fn scoped_monitor_snapshot_does_not_mutate_canonical_unread_baseline() {
     let _support_env = TauriSupportEnvGuard::new(&support);
     let thread_id = "019eaaaa-0000-0000-0000-000000000299";
     write_visible_session_meta(&root, thread_id);
-    write_unread_state(&root, &[thread_id]);
+    write_initialized_sidebar_state(&root, &[thread_id]);
     unread::acknowledge_current_unread(&root).unwrap();
     let acknowledgement_path = support.join("unread-acknowledgement.json");
     let before = fs::read(&acknowledgement_path).unwrap();
-    write_unread_state(&root, &[]);
+    write_initialized_sidebar_state(&root, &[]);
 
     let monitor = LiveRateMonitorService::new(root.clone());
     let injected = UnreadSummary {
@@ -1570,21 +1571,6 @@ fn temp_root(label: &str) -> std::path::PathBuf {
             .unwrap()
             .as_nanos()
     ))
-}
-
-fn write_unread_state(root: &Path, ids: &[&str]) {
-    let values = ids
-        .iter()
-        .map(|id| format!(r#""{id}""#))
-        .collect::<Vec<_>>()
-        .join(",");
-    fs::write(
-        root.join(".codex-global-state.json"),
-        format!(
-            r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}}}}}}"#
-        ),
-    )
-    .unwrap();
 }
 
 fn write_visible_session_meta(root: &Path, thread_id: &str) {

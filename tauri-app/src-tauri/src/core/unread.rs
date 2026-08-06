@@ -12,6 +12,8 @@ use std::sync::{Mutex, OnceLock};
 mod recent_completion;
 #[cfg(test)]
 mod sequence_tests;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 mod session_files;
 mod state;
 
