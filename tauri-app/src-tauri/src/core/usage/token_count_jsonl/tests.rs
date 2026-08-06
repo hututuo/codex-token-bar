@@ -1,8 +1,9 @@
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
 use super::session_files::session_id_from_file;
 use super::exact_usage_index::{
-    open_index_for_testing, repair_orphaned_index_rows_for_testing, ORPHAN_REPAIR_REVISION,
-    ORPHAN_REPAIR_REVISION_KEY, STAGED_FULL_REBUILD_PARSER_REVISION,
+    integrity_receipt_path_for_testing, open_index_for_testing,
+    repair_orphaned_index_rows_for_testing, ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY,
+    STAGED_FULL_REBUILD_PARSER_REVISION,
 };
 use super::*;
 use rusqlite::{params, Connection, TransactionBehavior};
@@ -4916,6 +4917,11 @@ fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signatur
     );
     dashboard_snapshot(&root).unwrap();
 
+    // Force the first post-restart open down the strict path. The successful
+    // close below must recreate the receipt, after which a state reset can
+    // reuse it without another quick_check.
+    let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    fs::remove_file(receipt).unwrap();
     ExactUsageIndex::clear_integrity_signature_for_testing(&root);
     ExactUsageIndex::reset_quick_check_count_for_testing();
     std::thread::scope(|scope| {
@@ -4926,6 +4932,11 @@ fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signatur
     });
     drop(ExactUsageIndex::open(&root).unwrap());
     assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
+
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
 
     let mut active_index = ExactUsageIndex::open(&root).unwrap();
     {
@@ -4939,12 +4950,85 @@ fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signatur
     let mut warnings = Vec::new();
     active_index.sync(&root, &mut warnings).unwrap();
     drop(ExactUsageIndex::open(&root).unwrap());
-    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
     drop(active_index);
     drop(ExactUsageIndex::open(&root).unwrap());
-    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1);
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_integrity_receipt_corruption_or_mismatch_rechecks_without_deleting_db() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    for (label, corrupt) in [("corrupt", true), ("mismatch", false)] {
+        let root = temp_root();
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        write_lines(
+            &session_dir.join(format!("rollout-019ereceipt-{label}-0000-0000-fast.jsonl")),
+            &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        );
+        dashboard_snapshot(&root).unwrap();
+        let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+        let original = fs::read(&receipt).unwrap();
+        if corrupt {
+            fs::write(&receipt, b"{not-json").unwrap();
+        } else {
+            let mut json: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            json["publishedGeneration"] = serde_json::json!(u64::MAX);
+            fs::write(&receipt, serde_json::to_vec(&json).unwrap()).unwrap();
+        }
+        ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+        ExactUsageIndex::reset_quick_check_count_for_testing();
+        drop(ExactUsageIndex::open(&root).unwrap());
+        assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 1, "{label}");
+        assert!(root
+            .join(".codex-token-bar-test-cache/exact-token-index.sqlite3")
+            .is_file());
+        let repaired_receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+        assert!(repaired_receipt.get("sessions").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn exact_index_integrity_checks_for_different_paths_do_not_share_gate() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root_a = temp_root();
+    let root_b = temp_root();
+    for (root, id) in [(&root_a, "a"), (&root_b, "b")] {
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        write_lines(
+            &session_dir.join(format!("rollout-019egate-{id}-0000-0000-fast.jsonl")),
+            &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+        );
+        dashboard_snapshot(root).unwrap();
+        fs::remove_file(integrity_receipt_path_for_testing(root).unwrap()).unwrap();
+        ExactUsageIndex::clear_integrity_signature_for_testing(root);
+    }
+
+    let path_a = super::exact_usage_index::database_path(&root_a).unwrap();
+    let path_b = super::exact_usage_index::database_path(&root_b).unwrap();
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    ExactUsageIndex::set_quick_check_barrier_for_testing(Some((
+        Arc::clone(&barrier),
+        [path_a, path_b].into_iter().collect(),
+    )));
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| drop(ExactUsageIndex::open(&root_a).unwrap()));
+        let second = scope.spawn(|| drop(ExactUsageIndex::open(&root_b).unwrap()));
+        first.join().unwrap();
+        second.join().unwrap();
+    });
+    ExactUsageIndex::set_quick_check_barrier_for_testing(None);
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 2);
+
+    fs::remove_dir_all(root_a).unwrap();
+    fs::remove_dir_all(root_b).unwrap();
 }
 
 #[test]

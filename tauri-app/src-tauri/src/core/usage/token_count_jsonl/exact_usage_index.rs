@@ -12,7 +12,7 @@ use super::{
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
-use crate::core::sqlite;
+use crate::core::{atomic_file, sqlite};
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
@@ -23,6 +23,7 @@ use crate::models::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -33,7 +34,9 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+#[cfg(test)]
+use std::sync::Barrier;
 use std::thread;
 use std::time::{Duration as StdDuration, SystemTime};
 use time::format_description::well_known::Rfc3339;
@@ -46,6 +49,8 @@ use uuid::Uuid;
 // be discarded because their incompatible fingerprint blobs can re-count data.
 const INDEX_SCHEMA_VERSION: i64 = 8;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 6;
+const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 1;
+const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
 // Bump this whenever exact-session parsing changes event or checkpoint
 // semantics. The fork-boundary name remains for the main-index migration;
 // private staged databases bind the broader parser revision below.
@@ -107,6 +112,7 @@ impl ExactScanCompleteness {
 struct ManagedIndexConnection {
     connection: Option<Connection>,
     path: PathBuf,
+    receipt_eligible: bool,
 }
 
 impl ManagedIndexConnection {
@@ -114,7 +120,16 @@ impl ManagedIndexConnection {
         Self {
             connection: Some(connection),
             path,
+            receipt_eligible: false,
         }
+    }
+
+    fn mark_receipt_eligible(&mut self) {
+        self.receipt_eligible = true;
+    }
+
+    fn mark_receipt_dirty(&mut self) {
+        self.receipt_eligible = false;
     }
 }
 
@@ -138,12 +153,31 @@ impl DerefMut for ManagedIndexConnection {
 
 impl Drop for ManagedIndexConnection {
     fn drop(&mut self) {
+        let receipt = if self.receipt_eligible {
+            self.connection
+                .as_ref()
+                .and_then(|connection| receipt_metadata(connection, &self.path).ok())
+        } else {
+            None
+        };
+        drop(self.connection.take());
+
+        // Receipt I/O and the post-close storage signature must stay outside
+        // INDEX_INTEGRITY_STATES. The per-path gate serializes concurrent
+        // close-time receipts without coupling different index paths.
+        let gate = index_integrity_gate(&self.path);
+        let _gate_guard = gate.enter();
+        let signature_after_close = index_storage_signature(&self.path).ok();
+        if let (Some(receipt), Some(signature)) = (receipt, signature_after_close) {
+            write_integrity_receipt_best_effort(&self.path, receipt, signature);
+        }
+        drop(_gate_guard);
+
         let states = index_integrity_states();
         let mut states = states
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        drop(self.connection.take());
-        finish_index_connection(&mut states, &self.path);
+        finish_index_connection(&mut states, &self.path, signature_after_close);
     }
 }
 
@@ -178,11 +212,53 @@ struct IndexStorageSignature {
     wal: Option<FileSignature>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexIntegrityReceipt {
+    version: u32,
+    canonical_index_path: String,
+    database: ReceiptFileSignature,
+    wal: Option<ReceiptFileSignature>,
+    schema_version: i64,
+    parser_revision: String,
+    published_generation: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptFileSignature {
+    size: u64,
+    modified_ns: String,
+    device_id: u64,
+    file_id: u64,
+    changed_ns: String,
+}
+
+#[derive(Clone, Debug)]
+struct ReceiptMetadata {
+    canonical_index_path: String,
+    schema_version: i64,
+    parser_revision: String,
+    published_generation: i64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IndexIntegrityState {
     signature: IndexStorageSignature,
     active_connections: usize,
 }
+
+struct IntegrityGate {
+    in_flight: Mutex<bool>,
+    released: Condvar,
+}
+
+struct IntegrityGateGuard {
+    gate: Arc<IntegrityGate>,
+}
+
+static INDEX_INTEGRITY_GATES: OnceLock<Mutex<HashMap<PathBuf, Weak<IntegrityGate>>>> =
+    OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct IndexedFileCheckpoint {
@@ -304,6 +380,9 @@ static STAGE_PEAK_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static QUICK_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static QUICK_CHECK_BARRIER: OnceLock<Mutex<Option<(Arc<Barrier>, HashSet<PathBuf>)>>> =
+    OnceLock::new();
 static INDEX_INTEGRITY_STATES: OnceLock<Mutex<HashMap<PathBuf, IndexIntegrityState>>> =
     OnceLock::new();
 
@@ -414,6 +493,7 @@ impl ExactUsageIndex {
             rotate_attribution_provenance_epoch(&connection)?;
         }
 
+        connection.mark_receipt_eligible();
         Ok(Self { connection })
     }
 
@@ -425,6 +505,7 @@ impl ExactUsageIndex {
     where
         F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
     {
+        self.connection.mark_receipt_dirty();
         let existing = load_stored_session_catalog(&self.connection)?;
         let observations = collect_session_catalog_observations(codex_home)?;
         let published_generation =
@@ -453,6 +534,7 @@ impl ExactUsageIndex {
             entries.push(entry);
         }
         if !catalog_changed {
+            self.connection.mark_receipt_eligible();
             return Ok(());
         }
 
@@ -545,7 +627,9 @@ impl ExactUsageIndex {
         )?;
         transaction
             .commit()
-            .map_err(|error| format!("无法原子发布会话目录索引：{error}"))
+            .map_err(|error| format!("无法原子发布会话目录索引：{error}"))?;
+        self.connection.mark_receipt_eligible();
+        Ok(())
     }
 
     pub(super) fn session_catalog_snapshot(
@@ -650,11 +734,22 @@ impl ExactUsageIndex {
         QUICK_CHECK_COUNT.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
+    pub(super) fn set_quick_check_barrier_for_testing(
+        barrier: Option<(Arc<Barrier>, HashSet<PathBuf>)>,
+    ) {
+        let slot = QUICK_CHECK_BARRIER.get_or_init(|| Mutex::new(None));
+        *slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = barrier;
+    }
+
     pub(super) fn sync(
         &mut self,
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
+        self.connection.mark_receipt_dirty();
         let mut scan_completeness = ExactScanCompleteness::default();
         let scan_start_home_identity =
             match attribution_watch_root_physical_identity(codex_home) {
@@ -731,6 +826,7 @@ impl ExactUsageIndex {
             scan_completeness,
         )?;
         remove_staging_directory(&index_path)?;
+        self.connection.mark_receipt_eligible();
         Ok(revision)
     }
 
@@ -751,6 +847,7 @@ impl ExactUsageIndex {
         unsafe_id: &str,
         through_generation: u64,
     ) -> Result<bool, String> {
+        self.connection.mark_receipt_dirty();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -767,6 +864,7 @@ impl ExactUsageIndex {
             transaction
                 .commit()
                 .map_err(|error| format!("无法结束未生效的精确 token 归因安全确认：{error}"))?;
+            self.connection.mark_receipt_eligible();
             return Ok(false);
         }
         transaction
@@ -786,6 +884,7 @@ impl ExactUsageIndex {
         transaction
             .commit()
             .map_err(|error| format!("无法提交精确 token 归因安全确认：{error}"))?;
+        self.connection.mark_receipt_eligible();
         Ok(true)
     }
 
@@ -2322,7 +2421,7 @@ fn build_staged_full_rebuild(
     transaction
         .commit()
         .map_err(|error| format!("无法耐久提交精确 token 单文件暂存：{error}"))?;
-    quick_check_index(&stage)?;
+    quick_check_index(&stage, None)?;
 
     Ok(StagedFullRebuild {
         job: FullRebuildJob {
@@ -2446,7 +2545,7 @@ fn validated_staged_full_rebuild(
     database_path: &Path,
     job: &FullRebuildJob,
 ) -> Result<Option<StagedFullRebuild>, String> {
-    quick_check_index(connection)?;
+    quick_check_index(connection, None)?;
     let manifest = connection
         .query_row(
             r#"
@@ -4858,43 +4957,70 @@ fn existing_regular_index(path: &Path) -> Result<bool, String> {
 
 fn open_index_connection_with_recovery(
     path: &Path,
-    existed_before: bool,
+    existed_before_hint: bool,
 ) -> Result<(ManagedIndexConnection, bool), String> {
+    let gate = index_integrity_gate(path);
+    let _gate_guard = gate.enter();
+    // The caller's existence probe can become stale while another open is
+    // waiting on this path gate. Recheck under the per-path gate, never under
+    // INDEX_INTEGRITY_STATES, so a newly created database is treated as such.
+    let existed_before = existing_regular_index(path)?;
+    let _ = existed_before_hint;
     if !existed_before {
         let connection = open_index_connection(path)?;
         return managed_index_connection(path, connection)
             .map(|connection| (connection, false));
     }
 
+    let signature_before_open = index_storage_signature(path).ok();
+    let signature_is_verified = signature_before_open.is_some_and(|signature| {
+        let states = index_integrity_states();
+        let states = states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        states.get(path).is_some_and(|state| {
+            state.active_connections > 0 || state.signature == signature
+        })
+    });
+    let receipt = signature_before_open.and_then(|signature| {
+        read_integrity_receipt(path).filter(|receipt| {
+            receipt_storage_matches(receipt, path, signature)
+        })
+    });
+
+    let integrity_failure = match open_index_connection(path) {
+        Ok(connection) if signature_is_verified => {
+            return managed_index_connection(path, connection)
+                .map(|connection| (connection, false));
+        }
+        Ok(connection) => {
+            let receipt_is_verified = receipt.as_ref().is_some_and(|receipt| {
+                receipt_connection_metadata_matches(receipt, &connection)
+            });
+            if receipt_is_verified {
+                return managed_index_connection(path, connection)
+                    .map(|connection| (connection, false));
+            }
+            match quick_check_index(&connection, Some(path)) {
+                Ok(()) => {
+                    return managed_index_connection(path, connection)
+                        .map(|connection| (connection, false));
+                }
+                Err(error) => {
+                    drop(connection);
+                    error
+                }
+            }
+        }
+        Err(error) => error,
+    };
+
+    // Recovery is intentionally unchanged: only a failed SQLite open or
+    // strict quick_check enters the destructive, rebuildable-index path.
     let states = index_integrity_states();
     let mut states = states
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let signature_before_open = index_storage_signature(path)?;
-    let signature_is_verified = states.get(path).is_some_and(|state| {
-        state.active_connections > 0 || state.signature == signature_before_open
-    });
-    let integrity_failure = match open_index_connection(path) {
-        Ok(connection) if signature_is_verified => {
-            let signature = index_storage_signature(path)?;
-            let connection =
-                register_index_connection(&mut states, path, connection, signature);
-            return Ok((connection, false));
-        }
-        Ok(connection) => match quick_check_index(&connection) {
-            Ok(()) => {
-                let signature = index_storage_signature(path)?;
-                let connection =
-                    register_index_connection(&mut states, path, connection, signature);
-                return Ok((connection, false));
-            }
-            Err(error) => {
-                drop(connection);
-                error
-            }
-        },
-        Err(error) => error,
-    };
     states.remove(path);
     drop(states);
 
@@ -4917,9 +5043,24 @@ fn open_index_connection_with_recovery(
         })
 }
 
-fn quick_check_index(connection: &Connection) -> Result<(), String> {
+fn quick_check_index(connection: &Connection, path: Option<&Path>) -> Result<(), String> {
     #[cfg(test)]
     QUICK_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
+    #[cfg(not(test))]
+    let _ = path;
+    #[cfg(test)]
+    if let Some(path) = path {
+        let barrier = QUICK_CHECK_BARRIER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .filter(|(_, paths)| paths.contains(path))
+            .map(|(barrier, _)| Arc::clone(barrier));
+        if let Some(barrier) = barrier {
+            barrier.wait();
+        }
+    }
     let result = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(|error| format!("无法完成 SQLite quick_check：{error}"))?;
@@ -4934,10 +5075,210 @@ fn index_integrity_states() -> &'static Mutex<HashMap<PathBuf, IndexIntegritySta
     INDEX_INTEGRITY_STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn index_integrity_gate(path: &Path) -> Arc<IntegrityGate> {
+    let gates = INDEX_INTEGRITY_GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut gates = gates
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    gates.retain(|_, gate| gate.strong_count() > 0);
+    if let Some(gate) = gates.get(path).and_then(Weak::upgrade) {
+        return gate;
+    }
+    let gate = Arc::new(IntegrityGate {
+        in_flight: Mutex::new(false),
+        released: Condvar::new(),
+    });
+    gates.insert(path.to_path_buf(), Arc::downgrade(&gate));
+    gate
+}
+
+impl IntegrityGate {
+    fn enter(self: &Arc<Self>) -> IntegrityGateGuard {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *in_flight {
+            in_flight = self
+                .released
+                .wait(in_flight)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *in_flight = true;
+        drop(in_flight);
+        IntegrityGateGuard {
+            gate: Arc::clone(self),
+        }
+    }
+}
+
+impl Drop for IntegrityGateGuard {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .gate
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *in_flight = false;
+        self.gate.released.notify_one();
+    }
+}
+
 fn index_storage_signature(path: &Path) -> Result<IndexStorageSignature, String> {
     Ok(IndexStorageSignature {
         database: file_signature(path)?,
         wal: optional_index_sidecar_signature(&sqlite_sidecar_path(path, "-wal"))?,
+    })
+}
+
+fn integrity_receipt_path(path: &Path) -> PathBuf {
+    let mut receipt = path.as_os_str().to_os_string();
+    receipt.push(INDEX_INTEGRITY_RECEIPT_SUFFIX);
+    PathBuf::from(receipt)
+}
+
+#[cfg(test)]
+pub(super) fn integrity_receipt_path_for_testing(codex_home: &Path) -> Result<PathBuf, String> {
+    Ok(integrity_receipt_path(&database_path(codex_home)?))
+}
+
+fn receipt_file_signature(signature: FileSignature) -> ReceiptFileSignature {
+    ReceiptFileSignature {
+        size: signature.size,
+        modified_ns: signature.modified_ns.to_string(),
+        device_id: signature.identity.device_id,
+        file_id: signature.identity.file_id,
+        changed_ns: signature.changed_ns.to_string(),
+    }
+}
+
+fn receipt_file_signature_matches(
+    stored: &ReceiptFileSignature,
+    current: FileSignature,
+) -> bool {
+    stored.size == current.size
+        && stored.modified_ns.parse::<u128>().ok() == Some(current.modified_ns)
+        && stored.device_id == current.identity.device_id
+        && stored.file_id == current.identity.file_id
+        && stored.changed_ns.parse::<i128>().ok() == Some(current.changed_ns)
+}
+
+fn receipt_storage_matches(
+    receipt: &IndexIntegrityReceipt,
+    path: &Path,
+    signature: IndexStorageSignature,
+) -> bool {
+    receipt.version == INDEX_INTEGRITY_RECEIPT_VERSION
+        && canonical_index_path(path)
+            .ok()
+            .is_some_and(|canonical| {
+                receipt.canonical_index_path == canonical.to_string_lossy()
+            })
+        && receipt_file_signature_matches(&receipt.database, signature.database)
+        && match (&receipt.wal, signature.wal) {
+            (None, None) => true,
+            (Some(stored), Some(current)) => receipt_file_signature_matches(stored, current),
+            _ => false,
+        }
+}
+
+fn receipt_connection_metadata_matches(
+    receipt: &IndexIntegrityReceipt,
+    connection: &Connection,
+) -> bool {
+    // The receipt was already matched against the pre-open signature. A
+    // connection open can create a WAL sidecar, so storage is deliberately
+    // checked before the open and metadata after it.
+    metadata_i64(connection, "schema_version")
+        .ok()
+        .flatten()
+        .is_some_and(|schema_version| schema_version == receipt.schema_version)
+        && metadata_text(connection, "published_generation")
+            .ok()
+            .flatten()
+            .and_then(|generation| generation.parse::<i64>().ok())
+            .is_some_and(|generation| generation == receipt.published_generation)
+        && receipt.parser_revision == EXACT_SESSION_PARSER_REVISION
+}
+
+fn receipt_metadata(
+    connection: &Connection,
+    path: &Path,
+) -> Result<ReceiptMetadata, String> {
+    let schema_version = metadata_i64(connection, "schema_version")?
+        .ok_or_else(|| "精确 token 完整性收据缺少 schema 版本".to_string())?;
+    let published_generation = metadata_i64(connection, "published_generation")?
+        .ok_or_else(|| "精确 token 完整性收据缺少已发布代次".to_string())?;
+    let canonical_index_path = canonical_index_path(path)?.to_string_lossy().into_owned();
+    Ok(ReceiptMetadata {
+        canonical_index_path,
+        schema_version,
+        parser_revision: EXACT_SESSION_PARSER_REVISION.into(),
+        published_generation,
+    })
+}
+
+fn read_integrity_receipt(path: &Path) -> Option<IndexIntegrityReceipt> {
+    let receipt_path = integrity_receipt_path(path);
+    let metadata = fs::symlink_metadata(&receipt_path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    let bytes = fs::read(receipt_path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn receipt_destination_is_safe(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "拒绝覆盖符号链接形式的精确 token 完整性收据：{}",
+            path.display()
+        )),
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "精确 token 完整性收据路径不是普通文件：{}",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "无法检查精确 token 完整性收据路径 {}：{}",
+            path.display(),
+            error
+        )),
+    }
+}
+
+fn write_integrity_receipt_best_effort(
+    path: &Path,
+    metadata: ReceiptMetadata,
+    signature: IndexStorageSignature,
+) {
+    let receipt_path = integrity_receipt_path(path);
+    if receipt_destination_is_safe(&receipt_path).is_err() {
+        return;
+    }
+    let receipt = IndexIntegrityReceipt {
+        version: INDEX_INTEGRITY_RECEIPT_VERSION,
+        canonical_index_path: metadata.canonical_index_path,
+        database: receipt_file_signature(signature.database),
+        wal: signature.wal.map(receipt_file_signature),
+        schema_version: metadata.schema_version,
+        parser_revision: metadata.parser_revision,
+        published_generation: metadata.published_generation,
+    };
+    let Ok(bytes) = serde_json::to_vec(&receipt) else {
+        return;
+    };
+    let _ = atomic_file::write_atomically(&receipt_path, &bytes);
+}
+
+fn canonical_index_path(path: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(path).map_err(|error| {
+        format!(
+            "无法确认精确 token 索引规范路径 {}：{}",
+            path.display(),
+            error
+        )
     })
 }
 
@@ -4965,11 +5306,14 @@ fn managed_index_connection(
     path: &Path,
     connection: Connection,
 ) -> Result<ManagedIndexConnection, String> {
+    // Read the post-open signature before entering the short-lived state
+    // mutex. A SQLite/WAL stat or receipt operation must never occupy the
+    // process-wide map lock.
+    let signature = index_storage_signature(path)?;
     let states = index_integrity_states();
     let mut states = states
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let signature = index_storage_signature(path)?;
     Ok(register_index_connection(
         &mut states,
         path,
@@ -5002,13 +5346,14 @@ fn register_index_connection(
 fn finish_index_connection(
     states: &mut HashMap<PathBuf, IndexIntegrityState>,
     path: &Path,
+    signature: Option<IndexStorageSignature>,
 ) {
     let remaining_connections = states
         .get(path)
         .map(|state| state.active_connections.saturating_sub(1))
         .unwrap_or(0);
-    match index_storage_signature(path) {
-        Ok(signature) => {
+    match (signature, remaining_connections) {
+        (Some(signature), remaining_connections) => {
             states.insert(
                 path.to_path_buf(),
                 IndexIntegrityState {
@@ -5017,10 +5362,10 @@ fn finish_index_connection(
                 },
             );
         }
-        Err(_) if remaining_connections == 0 => {
+        (None, 0) => {
             states.remove(path);
         }
-        Err(_) => {
+        (None, remaining_connections) => {
             if let Some(state) = states.get_mut(path) {
                 state.active_connections = remaining_connections;
             }
