@@ -120,8 +120,19 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const preciseCatchUpQuotaRef = useRef<string | null>(null);
   const attributionPreciseRefreshRef = useRef<string | null>(null);
   const latestPreciseCoverageRef = useRef<string | null>(null);
+  const forcePreciseGenerationRef = useRef(0);
   latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
+
+  const requestPreciseRefresh = useCallback((force = true) => {
+    setLoadGeneration((current) => {
+      const next = current + 1;
+      if (force) {
+        forcePreciseGenerationRef.current = next;
+      }
+      return next;
+    });
+  }, []);
 
   // 本地命令失败诊断接入 state.diagnostics（订阅即回放当前快照），
   // 否则 recordCommandFailure 记下的失败没有任何消费者、恒不可见。
@@ -179,7 +190,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       latestComparisonUpdatedAtRef.current = null;
       preciseCatchUpQuotaRef.current = null;
       attributionPreciseRefreshRef.current = null;
-      setLoadGeneration((current) => current + 1);
+      requestPreciseRefresh(true);
       setQuotaLoadGeneration((current) => current + 1);
       setRadarRefreshGeneration((current) => current + 1);
       setLiveRateRetryGeneration((current) => current + 1);
@@ -187,7 +198,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       void recordStartupEvent("codex home ready");
     }
     return true;
-  }, [isSourceTokenCurrent]);
+  }, [isSourceTokenCurrent, requestPreciseRefresh]);
   const refreshCurrentSource = useCallback((token: DashboardSourceToken) => {
     if (!isSourceTokenCurrent(token)) {
       return;
@@ -196,7 +207,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       ? { ...current, loading: true }
       : current);
     setSourceLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
-  }, [isSourceTokenCurrent]);
+    requestPreciseRefresh(true);
+  }, [isSourceTokenCurrent, requestPreciseRefresh]);
   const reconcileCodexHomeSource = useCallback(async () => {
     if (sourceReconcileInFlightRef.current !== null) {
       return sourceReconcileInFlightRef.current;
@@ -233,7 +245,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     source,
     providerRepairVisible,
     setState,
-    setLoadGeneration,
+    requestPreciseRefresh,
     setQuotaLoadGeneration,
     setRadarRefreshGeneration,
     setForceNextQuotaLoad,
@@ -262,9 +274,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
     preciseCatchUpQuotaRef.current = catchUp.requestedForQuotaUpdatedAt;
     if (catchUp.shouldSchedule) {
-      setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+      requestPreciseRefresh(true);
     }
-  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
+  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
 
   const markPreciseSnapshotStale = useCallback(() => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -314,9 +326,13 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     // up only after a substantive account/reset/used-percent transition.
     if (comparison.shouldRefreshPreciseUsage) {
       attributionPreciseRefreshRef.current = comparison.state?.comparisonUpdatedAt ?? quota.updatedAt;
-      setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+      // The first quota observation commonly arrives while the cold precise
+      // owner is already running. Coalesce that observation without asking the
+      // owner for a redundant trailing full scan; a coverage mismatch after
+      // settlement still schedules an explicit catch-up below.
+      requestPreciseRefresh(comparison.reason !== "initial");
     }
-  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
+  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
 
   const refreshAttributionPreciseUsage = useCallback((comparisonUpdatedAt: string) => {
     if (!isSourceTokenCurrent(sourceToken)
@@ -336,8 +352,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       latestComparisonUpdatedAtRef.current = comparisonUpdatedAt;
     }
     if (alreadyRequested) return;
-    setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
-  }, [isSourceTokenCurrent, sourceToken]);
+    requestPreciseRefresh(true);
+  }, [isSourceTokenCurrent, requestPreciseRefresh, sourceToken]);
 
   const acknowledgeAttributionSafety = useCallback(async (
     provenanceEpoch: string,
@@ -354,16 +370,16 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (acknowledged && isSourceTokenCurrent(sourceToken)) {
       // The acknowledgement changes native exact-index state. Only a fresh
       // precise snapshot without the episode token may advance the baseline.
-      setLoadGeneration((current) => current + 1);
+      requestPreciseRefresh(true);
     }
     return acknowledged;
-  }, [isSourceTokenCurrent, source, sourceToken]);
+  }, [isSourceTokenCurrent, requestPreciseRefresh, source, sourceToken]);
 
   const refreshAttributionSafety = useCallback(() => {
     if (isSourceTokenCurrent(sourceToken)) {
-      setLoadGeneration((current) => current + 1);
+      requestPreciseRefresh(true);
     }
-  }, [isSourceTokenCurrent, sourceToken]);
+  }, [isSourceTokenCurrent, requestPreciseRefresh, sourceToken]);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -694,7 +710,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
     const plan = makeDashboardRefreshPlan("systemWake", context);
     applyDashboardRefreshPlan(plan, {
-      refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+      refreshPreciseUsage: () => requestPreciseRefresh(true),
       refreshQuota: () => {
         setForceNextQuotaLoad(true);
         setQuotaLoadGeneration((current) => current + 1);
@@ -702,7 +718,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
       scanProviders: () => {},
     });
-  }, [dashboardVisible, state.dashboard?.generatedAt]);
+  }, [dashboardVisible, requestPreciseRefresh, state.dashboard?.generatedAt]);
 
   useWakeRefresh({
     active: fastSnapshotLoaded && dashboardReady && !state.loading,
@@ -714,6 +730,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dashboardReady,
     loading: state.loading,
     generation: loadGeneration,
+    forcePreciseRefresh: forcePreciseGenerationRef.current === loadGeneration,
     quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
     sourceToken,

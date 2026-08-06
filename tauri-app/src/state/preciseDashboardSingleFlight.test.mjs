@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { loadPreciseDashboardSingleFlight } from "./preciseDashboardSingleFlight.ts";
+import {
+  loadPreciseDashboardSingleFlight,
+  markPreciseDashboardSourceDirty,
+} from "./preciseDashboardSingleFlight.ts";
 
 test("precise dashboard requests coalesce and run at most one trailing refresh", async () => {
   const token = sourceToken("single-flight");
@@ -169,11 +172,110 @@ test("a subscriber can start a fresh same-source cycle during settlement", async
   ]);
 });
 
+test("a no-change periodic request reuses the last successful precise snapshot", async () => {
+  const token = sourceToken("recent-success");
+  let invocationCount = 0;
+  const loader = async () => {
+    invocationCount += 1;
+    return preciseSnapshot(41);
+  };
+
+  assert.equal(
+    (await loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true }).result).revision,
+    41,
+  );
+
+  const published = [];
+  const periodic = loadPreciseDashboardSingleFlight(
+    token,
+    loader,
+    (snapshot) => published.push(snapshot?.revision),
+    { force: false },
+  );
+  assert.equal(invocationCount, 1, "a clean cadence tick must not invoke native precise again");
+  assert.equal((await periodic.result).revision, 41);
+  await nextTurn();
+  assert.deepEqual(published, [41]);
+});
+
+test("a periodic request arriving during an owner does not enqueue a trailing full scan", async () => {
+  const token = sourceToken("in-flight-periodic");
+  const pending = deferred();
+  let invocationCount = 0;
+  const loader = () => {
+    invocationCount += 1;
+    return pending.promise;
+  };
+
+  const owner = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true });
+  const periodic = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: false });
+  assert.equal(invocationCount, 1);
+  pending.resolve(preciseSnapshot(42));
+  await Promise.all([owner.result, periodic.result]);
+  await nextTurn();
+  assert.equal(invocationCount, 1);
+});
+
+test("a failed forced refresh leaves the source dirty so the next periodic tick retries", async () => {
+  const token = sourceToken("retry-after-failure");
+  let invocationCount = 0;
+  const goodLoader = async () => {
+    invocationCount += 1;
+    return preciseSnapshot(43);
+  };
+  await loadPreciseDashboardSingleFlight(token, goodLoader, undefined, { force: true }).result;
+
+  const failing = loadPreciseDashboardSingleFlight(
+    token,
+    async () => {
+      invocationCount += 1;
+      throw new Error("native precise failed");
+    },
+    undefined,
+    { force: true },
+  );
+  await assert.rejects(failing.result, /native precise failed/);
+
+  const recovered = loadPreciseDashboardSingleFlight(
+    token,
+    async () => {
+      invocationCount += 1;
+      return preciseSnapshot(44);
+    },
+    undefined,
+    { force: false },
+  );
+  assert.equal((await recovered.result).revision, 44);
+  assert.equal(invocationCount, 3);
+});
+
+test("a source-dirty marker bypasses the periodic last-good snapshot", async () => {
+  const token = sourceToken("source-dirty");
+  let invocationCount = 0;
+  const loader = async () => {
+    invocationCount += 1;
+    return preciseSnapshot(50 + invocationCount);
+  };
+  await loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true }).result;
+  markPreciseDashboardSourceDirty(token);
+  const refreshed = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: false });
+  assert.equal((await refreshed.result).revision, 52);
+  assert.equal(invocationCount, 2);
+});
+
 function sourceToken(suffix) {
   return {
     transitionGeneration: 1,
     canonicalHomeKey: `/home/${suffix}`,
     physicalHomeKey: `device:${suffix}`,
+  };
+}
+
+function preciseSnapshot(revision) {
+  return {
+    revision,
+    preciseRecentUsageFresh: true,
+    preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
   };
 }
 

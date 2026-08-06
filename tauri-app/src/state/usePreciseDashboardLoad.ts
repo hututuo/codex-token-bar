@@ -1,7 +1,10 @@
 import { useEffect, useRef } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { CodexHomeSourceToken, DashboardSnapshot, UsageCacheStatus } from "../types/dashboard";
-import { loadPreciseDashboardSingleFlight } from "./preciseDashboardSingleFlight";
+import {
+  loadPreciseDashboardSingleFlight,
+  markPreciseDashboardSourceDirty,
+} from "./preciseDashboardSingleFlight";
 import {
   initialPreciseDashboardDeadlineMs,
   preciseDashboardStartDelayMs,
@@ -14,6 +17,7 @@ interface PreciseDashboardLoadOptions {
   dashboardReady: boolean;
   loading: boolean;
   generation: number;
+  forcePreciseRefresh?: boolean;
   sourceToken: CodexHomeSourceToken | null;
   source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot" | "readUsageCacheStatus">;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
@@ -30,6 +34,7 @@ export function usePreciseDashboardLoad({
   dashboardReady,
   loading,
   generation,
+  forcePreciseRefresh = true,
   sourceToken,
   source,
   onPreciseDashboard,
@@ -50,6 +55,11 @@ export function usePreciseDashboardLoad({
 
     let cancelled = false;
     let unsubscribePrecise: (() => void) | undefined;
+    if (forcePreciseRefresh && sourceToken !== null) {
+      // Keep a failed explicit request retryable even when the optional
+      // cache-status command rejects before the native precise loader starts.
+      markPreciseDashboardSourceDirty(sourceToken);
+    }
     const nowMs = window.performance.now();
     initialStartDeadlineMs.current = initialPreciseDashboardDeadlineMs(
       initialStartDeadlineMs.current,
@@ -91,6 +101,7 @@ export function usePreciseDashboardLoad({
               onUsageCacheInitialized?.();
             }
           },
+          { force: forcePreciseRefresh },
         );
         unsubscribePrecise = preciseFlight.unsubscribe;
         void preciseFlight.result.then(
@@ -133,6 +144,7 @@ export function usePreciseDashboardLoad({
   }, [
     active,
     dashboardReady,
+    forcePreciseRefresh,
     generation,
     loading,
     onLoadEnd,

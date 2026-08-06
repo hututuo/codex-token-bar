@@ -27,7 +27,7 @@ interface DashboardActionsOptions {
   >;
   providerRepairVisible: boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
-  setLoadGeneration: Dispatch<SetStateAction<number>>;
+  requestPreciseRefresh: (force?: boolean) => void;
   setQuotaLoadGeneration: Dispatch<SetStateAction<number>>;
   setRadarRefreshGeneration: Dispatch<SetStateAction<number>>;
   setForceNextQuotaLoad: Dispatch<SetStateAction<boolean>>;
@@ -42,7 +42,7 @@ export function useDashboardActions({
   source,
   providerRepairVisible,
   setState,
-  setLoadGeneration,
+  requestPreciseRefresh,
   setQuotaLoadGeneration,
   setRadarRefreshGeneration,
   setForceNextQuotaLoad,
@@ -64,7 +64,7 @@ export function useDashboardActions({
     applyManualDashboardRefresh({
       providerRepairVisible,
       dispatchers: {
-        refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+        refreshPreciseUsage: () => requestPreciseRefresh(true),
         refreshQuota: () => {
           setForceNextQuotaLoad(true);
           setQuotaLoadGeneration((current) => current + 1);
@@ -86,7 +86,7 @@ export function useDashboardActions({
     isSourceTokenCurrent,
     source,
     setForceNextQuotaLoad,
-    setLoadGeneration,
+    requestPreciseRefresh,
     setQuotaLoadGeneration,
     setRadarRefreshGeneration,
     updateProviderRepair,

@@ -15,6 +15,7 @@ interface DeferredDashboardLoadsOptions {
   dashboardReady: boolean;
   loading: boolean;
   generation: number;
+  forcePreciseRefresh?: boolean;
   quotaGeneration: number;
   forceQuotaRefresh: boolean;
   sourceToken: CodexHomeSourceToken | null;
@@ -42,6 +43,7 @@ export function useDeferredDashboardLoads({
   dashboardReady,
   loading,
   generation,
+  forcePreciseRefresh,
   quotaGeneration,
   forceQuotaRefresh,
   sourceToken,
@@ -61,6 +63,7 @@ export function useDeferredDashboardLoads({
     active,
     dashboardReady,
     generation,
+    forcePreciseRefresh,
     loading,
     onPreciseDashboard,
     onPreciseDashboardFailure,

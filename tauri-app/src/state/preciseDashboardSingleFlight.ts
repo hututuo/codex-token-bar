@@ -23,18 +23,38 @@ export interface PreciseDashboardFlightHandle {
   waitForUiBudget: (timeoutMs: number) => Promise<void>;
 }
 
+export interface PreciseDashboardRequestOptions {
+  /**
+   * Forced requests represent a manual action, source/data change, or retry.
+   * Background cadence requests may reuse an unchanged last-good snapshot.
+   */
+  force?: boolean;
+}
+
 const flightsBySource = new Map<string, PreciseDashboardFlight>();
+const lastSuccessfulSnapshotsBySource = new Map<string, DashboardSnapshot>();
+const dirtySources = new Set<string>();
+
+/** Mark a source dirty before an explicit request crosses the optional cache-status IPC. */
+export function markPreciseDashboardSourceDirty(sourceToken: CodexHomeSourceToken): void {
+  dirtySources.add(preciseDashboardSourceKey(sourceToken));
+}
 
 export function loadPreciseDashboardSingleFlight(
   sourceToken: CodexHomeSourceToken,
   loader: PreciseDashboardLoader,
   subscriber?: PreciseDashboardSubscriber,
+  options: PreciseDashboardRequestOptions = {},
 ): PreciseDashboardFlightHandle {
   const key = preciseDashboardSourceKey(sourceToken);
+  const force = options.force !== false;
   const existing = flightsBySource.get(key);
   if (existing && !existing.settled) {
     existing.latestLoader = loader;
-    if (!existing.rerunStarted) {
+    // A periodic callback that arrives while the owner is still running is
+    // already covered by that owner. Only an explicit/dirty request may ask
+    // the single-flight cycle for one trailing attempt.
+    if (force && !existing.rerunStarted) {
       existing.rerunRequested = true;
     }
     return flightHandle(existing, subscriber);
@@ -42,6 +62,12 @@ export function loadPreciseDashboardSingleFlight(
   if (existing) {
     flightsBySource.delete(key);
   }
+
+  const cached = lastSuccessfulSnapshotsBySource.get(key);
+  if (!force && !dirtySources.has(key) && cached) {
+    return cachedSnapshotHandle(cached, subscriber);
+  }
+  if (force) markPreciseDashboardSourceDirty(sourceToken);
 
   const flight: PreciseDashboardFlight = {
     latestLoader: loader,
@@ -55,6 +81,10 @@ export function loadPreciseDashboardSingleFlight(
   flight.promise = runPreciseDashboardFlight(flight)
     .then(
       (result) => {
+        if (isSuccessfulPreciseSnapshot(result)) {
+          lastSuccessfulSnapshotsBySource.set(key, result);
+          dirtySources.delete(key);
+        }
         settleFlight(flight, result);
         return result;
       },
@@ -125,6 +155,42 @@ function flightHandle(
     },
     waitForUiBudget: (timeoutMs) => waitForFlightUiBudget(flight, timeoutMs),
   };
+}
+
+function cachedSnapshotHandle(
+  snapshot: DashboardSnapshot,
+  subscriber?: PreciseDashboardSubscriber,
+): PreciseDashboardFlightHandle {
+  let cancelled = false;
+  if (subscriber) {
+    // Keep the cached path asynchronous like a native invoke, while still
+    // letting an effect cleanup cancel publication to an unmounted view.
+    queueMicrotask(() => {
+      if (!cancelled) {
+        try {
+          subscriber(snapshot);
+        } catch {
+          // View callbacks must not turn a cache hit into a refresh failure.
+        }
+      }
+    });
+  }
+  return {
+    result: Promise.resolve(snapshot),
+    unsubscribe() {
+      cancelled = true;
+    },
+    waitForUiBudget: () => Promise.resolve(),
+  };
+}
+
+function isSuccessfulPreciseSnapshot(
+  snapshot: DashboardSnapshot | null,
+): snapshot is DashboardSnapshot {
+  return snapshot !== null
+    && snapshot.preciseRecentUsageFresh === true
+    && typeof snapshot.preciseRecentUsageCoveredAt === "string"
+    && snapshot.preciseRecentUsageCoveredAt.length > 0;
 }
 
 function waitForFlightUiBudget(
