@@ -232,12 +232,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
     }
 
-    private struct StagedImportValidation {
-        let fingerprintCount: Int
-        let eventCount: Int
-        let chunkCount: Int
-    }
-
     private struct AttributionLineage {
         let key: String
         let canonicalSessionID: String?
@@ -3252,56 +3246,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return storedChunks == stagedChunks
     }
 
-    private func validateStagedFullRebuildForImport(
-        _ staged: StagedFullRebuild
-    ) throws -> StagedImportValidation {
-        let stage = SQLiteDatabaseDriver(
-            url: staged.databaseURL,
-            readOnly: true,
-            busyTimeoutMilliseconds: 1_000,
-            fileManager: fileManager
-        )
-        return try stage.withConnection { connection in
-            let counts = try connection.readRows(
-                """
-                SELECT
-                    (SELECT COUNT(*) FROM fingerprints),
-                    (SELECT COUNT(*) FROM events),
-                    (SELECT COUNT(*) FROM chunks);
-                """
-            ) { row -> (Int64, Int64, Int64)? in
-                guard let fingerprintCount = row.int64(0),
-                      let eventCount = row.int64(1),
-                      let chunkCount = row.int64(2),
-                      fingerprintCount >= 0,
-                      eventCount >= 0,
-                      chunkCount >= 0 else {
-                    return nil
-                }
-                return (fingerprintCount, eventCount, chunkCount)
-            }.compactMap { $0 }.first
-            guard let counts,
-                  counts.0 <= Int64(Int.max),
-                  counts.1 <= Int64(Int.max),
-                  counts.2 <= Int64(Int.max),
-                  counts.1 == Int64(staged.eventCount),
-                  counts.2 == Int64(chunkCount(for: staged.committedSignature.size)) else {
-                throw SQLiteDatabaseError(
-                    operation: "Validate exact usage staging row counts",
-                    code: SQLITE_CORRUPT,
-                    message: "Staging database row counts do not match its manifest",
-                    path: staged.databaseURL.path
-                )
-            }
-
-            return StagedImportValidation(
-                fingerprintCount: Int(counts.0),
-                eventCount: Int(counts.1),
-                chunkCount: Int(counts.2)
-            )
-        }
-    }
-
     private func importStagedFullRebuild(
         _ staged: StagedFullRebuild,
         generation: String,
@@ -3309,20 +3253,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         preserveExistingAttributionLedger: Bool,
         connection: SQLiteDatabaseConnection
     ) throws {
-        let validation = try validateStagedFullRebuildForImport(staged)
-        // This alias is intentionally fixed and never derived from a path or
-        // other user input. The stage path itself is always bound below.
-        try connection.execute(
-            "ATTACH DATABASE ? AS exact_stage_import;",
-            bindings: [.text(staged.databaseURL.path)]
+        let stage = SQLiteDatabaseDriver(
+            url: staged.databaseURL,
+            readOnly: true,
+            busyTimeoutMilliseconds: 1_000,
+            fileManager: fileManager
         )
-        var transactionError: Error?
-        do {
-            try connection.transaction { transaction in
-                if let existing = try indexedSource(
-                    path: staged.job.file.path,
-                    connection: transaction
-                ) {
+        try connection.transaction { transaction in
+            if let existing = try indexedSource(
+                path: staged.job.file.path,
+                connection: transaction
+            ) {
                 try transaction.execute(
                     """
                     UPDATE sources
@@ -3406,27 +3347,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 bindings: [.int64(source.id)]
             )
 
-            let importedFingerprints = try transaction.executeChangedRows(
-                """
-                INSERT INTO source_fingerprints(source_id, value)
-                SELECT ?, value
-                FROM exact_stage_import.fingerprints;
-                """,
-                bindings: [.int64(source.id)]
+            let fingerprintStatement = try transaction.prepare(
+                "INSERT INTO source_fingerprints(source_id, value) VALUES (?, ?);"
             )
-            guard importedFingerprints == validation.fingerprintCount else {
-                throw SQLiteDatabaseError(
-                    operation: "Import exact usage staging fingerprints",
-                    code: SQLITE_CORRUPT,
-                    message: "Staging fingerprint count mismatch: expected "
-                        + String(validation.fingerprintCount)
-                        + ", imported "
-                        + String(importedFingerprints),
-                    path: staged.databaseURL.path
-                )
+            try stage.forEachRow("SELECT value FROM fingerprints ORDER BY value;") { row in
+                guard let value = row.text(0) else { return }
+                _ = try fingerprintStatement.execute([
+                    .int64(source.id),
+                    .text(value)
+                ])
             }
-
-            let importedEvents = try transaction.executeChangedRows(
+            let eventStatement = try transaction.prepare(
                 """
                 INSERT INTO events(
                     source_id,
@@ -3440,9 +3371,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     model,
                     user_prompt_offset,
                     assistant_start_offset
-                )
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """
+            )
+            try stage.forEachRow(
+                """
                 SELECT
-                    ?,
                     source_offset,
                     timestamp,
                     tokens,
@@ -3453,43 +3387,53 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     model,
                     user_prompt_offset,
                     assistant_start_offset
-                FROM exact_stage_import.events
+                FROM events
                 ORDER BY source_offset;
-                """,
-                bindings: [.int64(source.id)]
-            )
-            guard importedEvents == validation.eventCount,
-                  importedEvents == staged.eventCount else {
-                throw SQLiteDatabaseError(
-                    operation: "Import exact usage staging events",
-                    code: SQLITE_CORRUPT,
-                    message: "Staging event count mismatch: expected "
-                        + String(staged.eventCount)
-                        + ", imported "
-                        + String(importedEvents),
-                    path: staged.databaseURL.path
-                )
+                """
+            ) { row in
+                guard let sourceOffset = row.int64(0),
+                      let timestamp = row.double(1),
+                      let tokens = row.int(2),
+                      let inputTokens = row.int(3),
+                      let cachedInputTokens = row.int(4),
+                      let outputTokens = row.int(5),
+                      let reasoningOutputTokens = row.int(6) else {
+                    return
+                }
+                _ = try eventStatement.execute([
+                    .int64(source.id),
+                    .int64(sourceOffset),
+                    .double(timestamp),
+                    .int(tokens),
+                    .int(inputTokens),
+                    .int(cachedInputTokens),
+                    .int(outputTokens),
+                    .int(reasoningOutputTokens),
+                    row.text(7).map(SQLiteBinding.text) ?? .null,
+                    row.int64(8).map(SQLiteBinding.int64) ?? .null,
+                    row.int64(9).map(SQLiteBinding.int64) ?? .null
+                ])
             }
-
-            let importedChunks = try transaction.executeChangedRows(
+            let chunkStatement = try transaction.prepare(
                 """
                 INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
-                SELECT ?, chunk_index, byte_count, sha256
-                FROM exact_stage_import.chunks
-                ORDER BY chunk_index;
-                """,
-                bindings: [.int64(source.id)]
+                VALUES (?, ?, ?, ?);
+                """
             )
-            guard importedChunks == validation.chunkCount else {
-                throw SQLiteDatabaseError(
-                    operation: "Import exact usage staging chunks",
-                    code: SQLITE_CORRUPT,
-                    message: "Staging chunk count mismatch: expected "
-                        + String(validation.chunkCount)
-                        + ", imported "
-                        + String(importedChunks),
-                    path: staged.databaseURL.path
-                )
+            try stage.forEachRow(
+                "SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index;"
+            ) { row in
+                guard let chunkIndex = row.int64(0),
+                      let byteCount = row.int64(1),
+                      let sha256 = row.text(2) else {
+                    return
+                }
+                _ = try chunkStatement.execute([
+                    .int64(source.id),
+                    .int64(chunkIndex),
+                    .int64(byteCount),
+                    .text(sha256)
+                ])
             }
             let parseResult = CodexUsageAnalyzer.IndexedSessionParseResult(
                 eventCount: staged.eventCount,
@@ -3523,32 +3467,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 preservingExistingMaximum: preserveExistingAttributionLedger,
                 connection: transaction
             )
-            }
-        } catch {
-            transactionError = error
-        }
-
-        var detachError: Error?
-        do {
-            // The transaction above has committed or rolled back before this
-            // point; SQLite forbids DETACH while it is active.
-            try connection.execute("DETACH DATABASE exact_stage_import;")
-        } catch {
-            detachError = error
-            // A second best-effort attempt keeps the connection reusable if a
-            // transient busy/schema condition affected the first DETACH.
-            do {
-                try connection.execute("DETACH DATABASE exact_stage_import;")
-                detachError = nil
-            } catch {
-                // Preserve the first DETACH error for the caller.
-            }
-        }
-        if let transactionError {
-            throw transactionError
-        }
-        if let detachError {
-            throw detachError
         }
     }
 
