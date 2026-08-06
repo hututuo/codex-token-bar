@@ -191,12 +191,99 @@ test("a no-change periodic request reuses the last successful precise snapshot",
     token,
     loader,
     (snapshot) => published.push(snapshot?.revision),
-    { force: false },
+    { force: false, publishedGeneration: "41" },
   );
   assert.equal(invocationCount, 1, "a clean cadence tick must not invoke native precise again");
   assert.equal((await periodic.result).revision, 41);
   await nextTurn();
   assert.deepEqual(published, [41]);
+});
+
+test("an unchanged probe with an advanced published generation forces native precise", async () => {
+  const token = sourceToken("advanced-generation");
+  let invocationCount = 0;
+  await loadPreciseDashboardSingleFlight(
+    token,
+    async () => {
+      invocationCount += 1;
+      return preciseSnapshot(42);
+    },
+    undefined,
+    { force: true },
+  ).result;
+
+  const refreshed = loadPreciseDashboardSingleFlight(
+    token,
+    async () => {
+      invocationCount += 1;
+      return preciseSnapshot(43);
+    },
+    undefined,
+    { force: false, publishedGeneration: "43" },
+  );
+  assert.equal((await refreshed.result).revision, 43);
+  assert.equal(invocationCount, 2);
+});
+
+test("missing or invalid published generation proofs fail safe to native precise", async () => {
+  for (const publishedGeneration of [undefined, "", "01", "not-a-generation"]) {
+    const token = sourceToken(`invalid-generation-${String(publishedGeneration)}`);
+    let invocationCount = 0;
+    await loadPreciseDashboardSingleFlight(
+      token,
+      async () => {
+        invocationCount += 1;
+        return preciseSnapshot(50);
+      },
+      undefined,
+      { force: true },
+    ).result;
+
+    const refreshed = loadPreciseDashboardSingleFlight(
+      token,
+      async () => {
+        invocationCount += 1;
+        return preciseSnapshot(51);
+      },
+      undefined,
+      { force: false, publishedGeneration },
+    );
+    assert.equal((await refreshed.result).revision, 51);
+    assert.equal(invocationCount, 2);
+  }
+});
+
+test("a published generation from another source cannot authorize this source cache", async () => {
+  const sourceA = sourceToken("generation-source-a");
+  const sourceB = sourceToken("generation-source-b");
+  let sourceALoads = 0;
+  await loadPreciseDashboardSingleFlight(
+    sourceA,
+    async () => {
+      sourceALoads += 1;
+      return preciseSnapshot(60);
+    },
+    undefined,
+    { force: true },
+  ).result;
+  await loadPreciseDashboardSingleFlight(
+    sourceB,
+    async () => preciseSnapshot(61),
+    undefined,
+    { force: true },
+  ).result;
+
+  const sourceARefresh = loadPreciseDashboardSingleFlight(
+    sourceA,
+    async () => {
+      sourceALoads += 1;
+      return preciseSnapshot(62);
+    },
+    undefined,
+    { force: false, publishedGeneration: "61" },
+  );
+  assert.equal((await sourceARefresh.result).revision, 62);
+  assert.equal(sourceALoads, 2);
 });
 
 test("a periodic request arriving during an owner does not enqueue a trailing full scan", async () => {
@@ -366,6 +453,7 @@ function preciseSnapshot(revision) {
     revision,
     preciseRecentUsageFresh: true,
     preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+    preciseAttributionGeneration: revision,
   };
 }
 

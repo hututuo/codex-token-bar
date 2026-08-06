@@ -84,6 +84,7 @@ export function usePreciseDashboardLoad({
       onPreciseDashboardStale?.();
       onLoadStart?.();
       let effectiveForce = forcePreciseRefresh;
+      let publishedGeneration: string | undefined;
       let failureReported = false;
       const reportFailure = () => {
         if (!cancelled && !failureReported) {
@@ -119,7 +120,19 @@ export function usePreciseDashboardLoad({
           // trailing run from the probe's transient `building_generation`.
           if (preciseDashboardFlightInProgress(sourceToken)) {
             effectiveForce = false;
+            publishedGeneration = undefined;
           } else if (sourceProbe?.state !== "unchanged") {
+            effectiveForce = true;
+            markPreciseDashboardSourceDirty(sourceToken);
+          } else if (
+            typeof sourceProbe?.publishedGeneration === "string"
+            && /^(0|[1-9]\d*)$/.test(sourceProbe.publishedGeneration)
+          ) {
+            publishedGeneration = sourceProbe.publishedGeneration;
+          } else {
+            // An unchanged source without a canonical published generation
+            // cannot prove that the in-memory dashboard belongs to the same
+            // exact index lineage. Fail safe to the native owner.
             effectiveForce = true;
             markPreciseDashboardSourceDirty(sourceToken);
           }
@@ -133,7 +146,7 @@ export function usePreciseDashboardLoad({
               onUsageCacheInitialized?.();
             }
           },
-          { force: effectiveForce },
+          { force: effectiveForce, publishedGeneration },
         );
         unsubscribePrecise = preciseFlight.unsubscribe;
         void preciseFlight.result.then(

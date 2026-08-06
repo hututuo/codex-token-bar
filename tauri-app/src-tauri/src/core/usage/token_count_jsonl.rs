@@ -1004,9 +1004,9 @@ pub struct TokenUsageSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PreciseDashboardSourceProbe {
     pub state: String,
-    /// Revisions are seeded from nanosecond timestamps and may exceed the
-    /// JavaScript safe-integer range, so preserve the value as text at IPC.
-    pub published_revision: String,
+    /// Published generations are authoritative dashboard lineage. Preserve
+    /// the u64 as text at IPC so the frontend never compares rounded values.
+    pub published_generation: String,
 }
 
 pub fn precise_dashboard_source_probe(
@@ -1014,7 +1014,7 @@ pub fn precise_dashboard_source_probe(
 ) -> Result<PreciseDashboardSourceProbe, String> {
     let canonical_home = precise_refresh_home(codex_home)?;
     let mut index = ExactUsageIndex::open(&canonical_home)?;
-    let published_revision = index.revision()?;
+    let published_generation = index.published_generation()?;
     let mut warnings = Vec::new();
     let changed = index.sources_changed(&canonical_home, &mut warnings)?;
     let state = if !warnings.is_empty() {
@@ -1026,7 +1026,7 @@ pub fn precise_dashboard_source_probe(
     };
     Ok(PreciseDashboardSourceProbe {
         state: state.into(),
-        published_revision: published_revision.to_string(),
+        published_generation: published_generation.to_string(),
     })
 }
 

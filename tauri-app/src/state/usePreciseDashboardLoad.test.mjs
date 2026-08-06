@@ -105,6 +105,7 @@ test("periodic precise loads probe the source before reusing cache and fail safe
       };
       let preciseReads = 0;
       let probeState = "unchanged";
+      let probeGenerationOverride = null;
       const source = {
         async readUsageCacheStatus() {
           return {};
@@ -113,7 +114,10 @@ test("periodic precise loads probe the source before reusing cache and fail safe
           if (probeState === "reject") {
             throw new Error("probe unavailable");
           }
-          return { state: probeState, publishedRevision: String(preciseReads) };
+          return {
+            state: probeState,
+            publishedGeneration: probeGenerationOverride ?? String(preciseReads),
+          };
         },
         async readPreciseDashboardSnapshot() {
           preciseReads += 1;
@@ -121,6 +125,7 @@ test("periodic precise loads probe the source before reusing cache and fail safe
             revision: preciseReads,
             preciseRecentUsageFresh: true,
             preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+            preciseAttributionGeneration: preciseReads,
           };
         },
       };
@@ -160,17 +165,22 @@ test("periodic precise loads probe the source before reusing cache and fail safe
         await runGeneration(2, false);
         assert.equal(preciseReads, 1, "an unchanged probe should reuse the last-good snapshot");
 
-        probeState = "changed";
+        probeGenerationOverride = "99";
         await runGeneration(3, false);
-        assert.equal(preciseReads, 2, "an append/changed probe must enter precise refresh");
+        assert.equal(preciseReads, 2, "an advanced generation must not reuse the old snapshot");
+
+        probeGenerationOverride = null;
+        probeState = "changed";
+        await runGeneration(4, false);
+        assert.equal(preciseReads, 3, "an append/changed probe must enter precise refresh");
 
         probeState = "unknown";
-        await runGeneration(4, false);
-        assert.equal(preciseReads, 3, "an unknown probe must fail safe to precise refresh");
+        await runGeneration(5, false);
+        assert.equal(preciseReads, 4, "an unknown probe must fail safe to precise refresh");
 
         probeState = "reject";
-        await runGeneration(5, false);
-        assert.equal(preciseReads, 4, "a probe failure must fail safe to precise refresh");
+        await runGeneration(6, false);
+        assert.equal(preciseReads, 5, "a probe failure must fail safe to precise refresh");
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -208,7 +218,7 @@ test("a cadence tick joins an in-flight owner without probing or scheduling a tr
         },
         async readPreciseDashboardSourceProbe() {
           probeReads += 1;
-          return { state: "changed", publishedRevision: "late" };
+          return { state: "changed", publishedGeneration: "late" };
         },
         readPreciseDashboardSnapshot() {
           preciseReads += 1;
@@ -219,6 +229,7 @@ test("a cadence tick joins an in-flight owner without probing or scheduling a tr
             revision: preciseReads,
             preciseRecentUsageFresh: true,
             preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+            preciseAttributionGeneration: preciseReads,
           });
         },
       };
@@ -265,6 +276,7 @@ test("a cadence tick joins an in-flight owner without probing or scheduling a tr
           revision: 1,
           preciseRecentUsageFresh: true,
           preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+          preciseAttributionGeneration: 1,
         });
         await React.act(async () => {
           await Promise.resolve();

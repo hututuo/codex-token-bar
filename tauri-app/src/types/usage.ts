@@ -139,7 +139,7 @@ export type PreciseDashboardSourceProbeState = "unchanged" | "changed" | "unknow
 
 export interface PreciseDashboardSourceProbe {
   state: PreciseDashboardSourceProbeState;
-  publishedRevision: string;
+  publishedGeneration: string;
 }
 
 export interface UsageSummarySnapshot {

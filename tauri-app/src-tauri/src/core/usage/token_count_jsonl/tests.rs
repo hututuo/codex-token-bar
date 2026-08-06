@@ -6108,7 +6108,18 @@ fn precise_dashboard_source_probe_reports_metadata_only_changes() {
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let unchanged = precise_dashboard_source_probe(&root).unwrap();
     assert_eq!(unchanged.state, "unchanged");
-    assert!(!unchanged.published_revision.is_empty());
+    assert!(!unchanged.published_generation.is_empty());
+    let index = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(
+        unchanged.published_generation,
+        index.published_generation().unwrap().to_string()
+    );
+    assert_ne!(
+        unchanged.published_generation,
+        index.revision().unwrap().to_string(),
+        "the probe lineage must use published_generation, not revision"
+    );
+    drop(index);
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
 
     let mut handle = fs::OpenOptions::new().append(true).open(&session).unwrap();
@@ -6120,7 +6131,7 @@ fn precise_dashboard_source_probe_reports_metadata_only_changes() {
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let changed = precise_dashboard_source_probe(&root).unwrap();
     assert_eq!(changed.state, "changed");
-    assert_eq!(changed.published_revision, unchanged.published_revision);
+    assert_eq!(changed.published_generation, unchanged.published_generation);
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
 
     fs::remove_dir_all(root).unwrap();

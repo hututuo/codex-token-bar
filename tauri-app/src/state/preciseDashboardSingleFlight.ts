@@ -27,9 +27,12 @@ export interface PreciseDashboardFlightHandle {
 export interface PreciseDashboardRequestOptions {
   /**
    * Forced requests represent a manual action, source/data change, or retry.
-   * Background cadence requests may reuse an unchanged last-good snapshot.
+   * Background cadence requests may reuse a last-good snapshot only when the
+   * source probe proves the same published exact-index generation.
    */
   force?: boolean;
+  /** Published exact-index generation proven by the cadence source probe. */
+  publishedGeneration?: string;
 }
 
 const flightsBySource = new Map<string, PreciseDashboardFlight>();
@@ -97,10 +100,19 @@ export function loadPreciseDashboardSingleFlight(
   }
 
   const cached = lastSuccessfulSnapshotsBySource.get(key);
-  if (!force && !dirtySources.has(key) && cached) {
+  if (!force
+    && !dirtySources.has(key)
+    && cached
+    && preciseSnapshotPublishedGenerationMatches(cached, options.publishedGeneration)) {
     return cachedSnapshotHandle(cached, subscriber);
   }
-  if (force) markPreciseDashboardSourceDirty(sourceToken);
+  // A periodic request without a valid published-generation proof must not
+  // reuse an in-memory snapshot, including when the cache is absent or its
+  // lineage field is missing/invalid. Keep the source dirty until a native
+  // owner publishes a fresh exact snapshot.
+  if (force || !preciseSnapshotPublishedGenerationMatches(cached, options.publishedGeneration)) {
+    markPreciseDashboardSourceDirty(sourceToken);
+  }
 
   const flight: PreciseDashboardFlight = {
     latestLoader: loader,
@@ -232,6 +244,24 @@ function isSuccessfulPreciseSnapshot(
     && snapshot.preciseRecentUsageFresh === true
     && typeof snapshot.preciseRecentUsageCoveredAt === "string"
     && snapshot.preciseRecentUsageCoveredAt.length > 0;
+}
+
+function preciseSnapshotPublishedGenerationMatches(
+  snapshot: DashboardSnapshot | undefined,
+  expectedPublishedGeneration: string | undefined,
+): boolean {
+  if (!snapshot || !isCanonicalPublishedGeneration(expectedPublishedGeneration)) {
+    return false;
+  }
+  const cachedGeneration = snapshot.preciseAttributionGeneration;
+  return typeof cachedGeneration === "number"
+    && Number.isSafeInteger(cachedGeneration)
+    && cachedGeneration >= 0
+    && String(cachedGeneration) === expectedPublishedGeneration;
+}
+
+function isCanonicalPublishedGeneration(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value);
 }
 
 function waitForFlightUiBudget(

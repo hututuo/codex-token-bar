@@ -955,6 +955,13 @@ impl ExactUsageIndex {
         Ok(u64::try_from(metadata_i64(&self.connection, "revision")?.unwrap_or(0)).unwrap_or(0))
     }
 
+    pub(super) fn published_generation(&self) -> Result<u64, String> {
+        let raw = metadata_text(&self.connection, "published_generation")?
+            .ok_or_else(|| "精确 token 索引已发布代次缺失".to_string())?;
+        raw.parse::<u64>()
+            .map_err(|_| "精确 token 索引已发布代次无效".to_string())
+    }
+
     pub(super) fn attribution_safety_state(&self) -> Result<AttributionSafetyState, String> {
         attribution_safety_state(&self.connection)
     }
