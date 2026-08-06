@@ -13,12 +13,65 @@ use std::io::{Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct PreciseRefreshGate {
+    permits: Mutex<usize>,
+    wake: Condvar,
+}
+
+impl PreciseRefreshGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            permits: Mutex::new(0),
+            wake: Condvar::new(),
+        })
+    }
+
+    fn acquire(&self) {
+        let mut permits = self.permits.lock().unwrap();
+        while *permits == 0 {
+            permits = self.wake.wait(permits).unwrap();
+        }
+        *permits -= 1;
+    }
+
+    fn release(&self, count: usize) {
+        let mut permits = self.permits.lock().unwrap();
+        *permits = permits.saturating_add(count);
+        self.wake.notify_all();
+    }
+}
+
+fn install_blocking_precise_refresh_hook(
+    homes: &[PathBuf],
+) -> (mpsc::Receiver<PathBuf>, Arc<PreciseRefreshGate>, Arc<AtomicU64>) {
+    let canonical_homes = homes
+        .iter()
+        .map(|home| fs::canonicalize(home).unwrap())
+        .collect::<Vec<_>>();
+    let (started_tx, started_rx) = mpsc::channel();
+    let gate = PreciseRefreshGate::new();
+    let calls = Arc::new(AtomicU64::new(0));
+    let gate_for_hook = Arc::clone(&gate);
+    let calls_for_hook = Arc::clone(&calls);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |path| {
+        if canonical_homes.iter().any(|home| home == path) {
+            calls_for_hook.fetch_add(1, Ordering::SeqCst);
+            started_tx
+                .send(path.to_path_buf())
+                .map_err(|error| format!("sync hook started channel closed: {error}"))?;
+            gate_for_hook.acquire();
+        }
+        Ok(())
+    })));
+    (started_rx, gate, calls)
+}
 
 #[test]
 fn attribution_mutation_classifier_ignores_append_but_rejects_delete_rename_and_overflow() {
@@ -193,31 +246,262 @@ fn attribution_mutation_watcher_rebinds_when_the_same_path_points_to_a_new_direc
 }
 
 #[test]
-fn usage_summary_refresh_owner_releases_claim_during_unwind() {
+fn precise_refresh_owner_releases_flight_after_panic_and_can_retry() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
-    let key = PathBuf::from(format!(
-        "/usage-summary-refresh-owner-{}",
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
-    assert!(in_flight.lock().unwrap().insert(key.clone()));
-    let owner = UsageSummaryRefreshOwner { key: key.clone() };
-
-    let unwind = std::panic::catch_unwind(|| {
-        let _owner = owner;
-        panic!("injected usage summary refresh panic");
-    });
-
-    assert!(unwind.is_err());
-    let mut guard = in_flight
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    assert!(
-        guard.insert(key.clone()),
-        "a panicked worker must not leave its refresh claim permanently occupied"
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019erefresh-panic-0000-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
     );
-    guard.remove(&key);
+    let first = Arc::new(Mutex::new(true));
+    let first_for_hook = Arc::clone(&first);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |_| {
+        let should_panic = {
+            let mut first = first_for_hook.lock().unwrap();
+            let should_panic = *first;
+            *first = false;
+            should_panic
+        };
+        if should_panic {
+            panic!("injected precise refresh panic");
+        }
+        Ok(())
+    })));
+
+    let error = dashboard_usage_summary(&root).unwrap_err();
+    assert!(error.contains("refresh owner 执行异常"));
+    set_precise_refresh_sync_hook_for_testing(None);
+    assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 120);
+    wait_for_usage_summary_refreshes_for_testing();
+    assert_eq!(precise_refresh_coordinator_registry_len_for_testing(), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_refresh_same_home_mixed_requests_share_one_sync() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    let line = serde_json::json!({
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {"last_token_usage": {"total_tokens": 120}}
+        }
+    })
+    .to_string();
+    write_lines(
+        &session_dir.join("rollout-019emixed-refresh-0000-summary.jsonl"),
+        &[line],
+    );
+    let (started_rx, gate, calls) = install_blocking_precise_refresh_hook(&[root.clone()]);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let mut handles = Vec::new();
+    for index in 0..20 {
+        let root = root.clone();
+        let entered_tx = entered_tx.clone();
+        handles.push(std::thread::spawn(move || {
+            entered_tx.send(()).unwrap();
+            if index % 2 == 0 {
+                dashboard_usage_summary(&root).map(|summary| summary.total_tokens)
+            } else {
+                dashboard_snapshot(&root).map(|snapshot| snapshot.stats.total_tokens)
+            }
+        }));
+    }
+    drop(entered_tx);
+
+    let all_entered = (0..20)
+        .all(|_| entered_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
+    let started = started_rx.recv_timeout(StdDuration::from_secs(5));
+    gate.release(20);
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    set_precise_refresh_sync_hook_for_testing(None);
+
+    assert!(all_entered);
+    assert!(started.is_ok());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(results
+        .into_iter()
+        .all(|result| result.is_ok_and(|total_tokens| total_tokens == 120)));
+    wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_refresh_summary_promotes_to_full_without_second_sync() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    let line = serde_json::json!({
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": {"last_token_usage": {"total_tokens": 120}}
+        }
+    })
+    .to_string();
+    write_lines(
+        &session_dir.join("rollout-019epromotion-refresh-0000-summary.jsonl"),
+        &[line],
+    );
+    let (started_rx, gate, calls) = install_blocking_precise_refresh_hook(&[root.clone()]);
+    let summary_flight = request_precise_refresh(&root, PreciseRefreshIntent::Summary).unwrap();
+    let summary_handle = std::thread::spawn(move || summary_flight.wait().summary);
+    assert!(started_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
+
+    let (promoted_tx, promoted_rx) = mpsc::channel();
+    let full_root = root.clone();
+    let full_handle = std::thread::spawn(move || {
+        let full_flight = request_precise_refresh(&full_root, PreciseRefreshIntent::Full).unwrap();
+        let promoted = full_flight.full_requested();
+        promoted_tx.send(promoted).unwrap();
+        full_flight.wait().full.unwrap()
+    });
+    let promoted = promoted_rx
+        .recv_timeout(StdDuration::from_secs(5))
+        .unwrap_or(false);
+    gate.release(20);
+    let summary = summary_handle.join().unwrap().unwrap();
+    let full = full_handle.join().unwrap().unwrap();
+    set_precise_refresh_sync_hook_for_testing(None);
+
+    assert!(promoted);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(summary.total_tokens, 120);
+    assert_eq!(full.stats.total_tokens, 120);
+    wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_refresh_different_homes_enter_sync_in_parallel() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let home_a = root.join("home-a");
+    let home_b = root.join("home-b");
+    fs::create_dir_all(home_a.join("sessions")).unwrap();
+    fs::create_dir_all(home_b.join("sessions")).unwrap();
+    let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    for (home, name, total) in [(&home_a, "a", 120_u64), (&home_b, "b", 30_u64)] {
+        let line = serde_json::json!({
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {"last_token_usage": {"total_tokens": total}}
+            }
+        })
+        .to_string();
+        write_lines(
+            &home.join("sessions").join(format!("rollout-019eparallel-{name}.jsonl")),
+            &[line],
+        );
+    }
+    let (started_rx, gate, calls) =
+        install_blocking_precise_refresh_hook(&[home_a.clone(), home_b.clone()]);
+    let first_home = home_a.clone();
+    let second_home = home_b.clone();
+    let first = std::thread::spawn(move || dashboard_usage_summary(&first_home));
+    let second = std::thread::spawn(move || dashboard_usage_summary(&second_home));
+    let mut started = Vec::new();
+    for _ in 0..2 {
+        if let Ok(path) = started_rx.recv_timeout(StdDuration::from_secs(5)) {
+            started.push(path);
+        }
+    }
+    gate.release(20);
+    let first_result = first.join().unwrap();
+    let second_result = second.join().unwrap();
+    set_precise_refresh_sync_hook_for_testing(None);
+
+    assert_eq!(started.len(), 2);
+    assert_ne!(started[0], started[1]);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(first_result.unwrap().total_tokens, 120);
+    assert_eq!(second_result.unwrap().total_tokens, 30);
+    wait_for_usage_summary_refreshes_for_testing();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_refresh_owner_error_releases_flight_and_can_retry() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eowner-error-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    let first = Arc::new(Mutex::new(true));
+    let first_for_hook = Arc::clone(&first);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |_| {
+        let mut first = first_for_hook.lock().unwrap();
+        if *first {
+            *first = false;
+            return Err("injected precise refresh error".into());
+        }
+        Ok(())
+    })));
+    let first_result = dashboard_usage_summary(&root);
+    set_precise_refresh_sync_hook_for_testing(None);
+    let second_result = dashboard_usage_summary(&root);
+
+    assert!(first_result
+        .unwrap_err()
+        .contains("injected precise refresh error"));
+    assert_eq!(second_result.unwrap().total_tokens, 120);
+    wait_for_usage_summary_refreshes_for_testing();
+    assert_eq!(precise_refresh_coordinator_registry_len_for_testing(), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn usage_summary_snapshot_returns_cache_before_background_sync_scans_sources() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ecache-first-0000-summary.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    reset_precise_refresh_recency_for_testing();
+    reset_dashboard_scan_signature_count_for_testing();
+    let (started_rx, gate, calls) = install_blocking_precise_refresh_hook(&[root.clone()]);
+
+    let cached = usage_summary_snapshot(&root);
+    let started = started_rx.recv_timeout(StdDuration::from_secs(5));
+    let scans_before_release = dashboard_scan_signature_count_for_testing();
+    gate.release(20);
+    wait_for_usage_summary_refreshes_for_testing();
+    set_precise_refresh_sync_hook_for_testing(None);
+
+    assert_eq!(cached.unwrap().total_tokens, 120);
+    assert!(started.is_ok());
+    assert_eq!(scans_before_release, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(dashboard_scan_signature_count_for_testing() > scans_before_release);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -945,7 +1229,7 @@ fn codex_home_replacement_during_precise_scan_marks_the_generation_unsafe() {
     let replacement_root = root.clone();
     let replacement_file_name = file.file_name().unwrap().to_owned();
     let retired_for_hook = retired_root.clone();
-    ExactUsageIndex::set_after_file_commit_hook_for_testing(move |_| {
+    let replacement_hook: Box<dyn FnOnce(&Path) -> Result<(), String> + Send> = Box::new(move |_| {
         fs::rename(&replacement_root, &retired_for_hook).map_err(|error| error.to_string())?;
         let replacement_sessions = replacement_root.join("sessions");
         fs::create_dir_all(&replacement_sessions).map_err(|error| error.to_string())?;
@@ -955,8 +1239,17 @@ fn codex_home_replacement_during_precise_scan_marks_the_generation_unsafe() {
         );
         Ok(())
     });
+    let replacement_hook = Arc::new(Mutex::new(Some(replacement_hook)));
+    let replacement_hook_for_refresh = Arc::clone(&replacement_hook);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |_| {
+        if let Some(hook) = replacement_hook_for_refresh.lock().unwrap().take() {
+            ExactUsageIndex::set_after_file_commit_hook_for_testing(hook);
+        }
+        Ok(())
+    })));
 
     let snapshot = dashboard_snapshot(&root).unwrap();
+    set_precise_refresh_sync_hook_for_testing(None);
     assert_eq!(snapshot.stats.total_tokens, 100);
     assert!(!snapshot.precise_recent_usage_fresh);
     assert!(snapshot.precise_attribution_current_scan_unsafe);
@@ -1268,7 +1561,6 @@ fn exact_index_retries_an_incomplete_tail_after_the_jsonl_line_is_completed() {
 #[test]
 fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
-    ExactUsageIndex::reset_prefix_rehash_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1280,7 +1572,10 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
         ],
     );
     let expected_file = fs::canonicalize(&file).unwrap();
-    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |scanned_file| {
+    let prefix_rehashes = Arc::new(AtomicU64::new(0));
+    let prefix_rehashes_for_hook = Arc::clone(&prefix_rehashes);
+    let prefix_hook: Box<dyn FnOnce(&Path) + Send> = Box::new(move |scanned_file| {
+        prefix_rehashes_for_hook.fetch_add(1, Ordering::SeqCst);
         assert_eq!(scanned_file, expected_file);
         let mut handle = fs::OpenOptions::new()
             .append(true)
@@ -1294,12 +1589,21 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
         .unwrap();
         handle.flush().unwrap();
     });
+    let prefix_hook = Arc::new(Mutex::new(Some(prefix_hook)));
+    let prefix_hook_for_refresh = Arc::clone(&prefix_hook);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |_| {
+        if let Some(hook) = prefix_hook_for_refresh.lock().unwrap().take() {
+            ExactUsageIndex::set_after_prefix_scan_hook_for_testing(hook);
+        }
+        Ok(())
+    })));
 
     let old_timepoint = dashboard_snapshot(&root).unwrap();
+    set_precise_refresh_sync_hook_for_testing(None);
     assert_eq!(old_timepoint.stats.total_tokens, 120);
     assert_eq!(old_timepoint.stats.total_calls, 1);
     assert_eq!(
-        ExactUsageIndex::prefix_rehash_count_for_testing(),
+        prefix_rehashes.load(Ordering::SeqCst),
         1,
         "an active append must still revalidate the complete scan-start prefix"
     );
@@ -1308,7 +1612,7 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     assert_eq!(after_append.stats.total_tokens, 170);
     assert_eq!(after_append.stats.total_calls, 2);
     assert_eq!(
-        ExactUsageIndex::prefix_rehash_count_for_testing(),
+        prefix_rehashes.load(Ordering::SeqCst),
         1,
         "a stable follow-up scan must not rehash an unchanged file"
     );
@@ -2962,14 +3266,23 @@ fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
     let before_revision = ExactUsageIndex::open(&root).unwrap().revision().unwrap();
 
     write_lines(&file, &[original, appended]);
-    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(|scanned_file| {
+    let prefix_hook: Box<dyn FnOnce(&Path) + Send> = Box::new(|scanned_file| {
         let before = fs::read_to_string(scanned_file).unwrap();
         let after = before.replacen("\"total_tokens\":30", "\"total_tokens\":31", 1);
         assert_eq!(before.len(), after.len());
         fs::write(scanned_file, after).unwrap();
     });
+    let prefix_hook = Arc::new(Mutex::new(Some(prefix_hook)));
+    let prefix_hook_for_refresh = Arc::clone(&prefix_hook);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |_| {
+        if let Some(hook) = prefix_hook_for_refresh.lock().unwrap().take() {
+            ExactUsageIndex::set_after_prefix_scan_hook_for_testing(hook);
+        }
+        Ok(())
+    })));
 
     let error = dashboard_snapshot(&root).unwrap_err();
+    set_precise_refresh_sync_hook_for_testing(None);
     assert!(error.contains("非追加变化"), "{error}");
     assert!(error.contains("既有字节被改写"), "{error}");
     let index = ExactUsageIndex::open(&root).unwrap();
@@ -4560,7 +4873,6 @@ fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
             today_requests: 1,
         },
     );
-
     assert_eq!(
         cached_dashboard_usage_summary_at(&root, now, offset)
             .expect("matching lightweight scope should reuse the trusted summary")

@@ -8,13 +8,14 @@ use notify::{
     Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 use uuid::Uuid;
@@ -34,12 +35,11 @@ use aggregates::{activity_days_at, stats_at};
 use exact_usage_index::ExactUsageIndex;
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
-static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static SESSION_CATALOG_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
-static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-static USAGE_SUMMARY_SOURCE_SCAN_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, bool)>>> =
-    OnceLock::new();
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
+static PRECISE_REFRESH_COORDINATORS:
+    OnceLock<Mutex<HashMap<PathBuf, Weak<PreciseRefreshCoordinator>>>> = OnceLock::new();
+static PRECISE_REFRESH_RECENCY: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
 static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<Mutex<HashMap<PathBuf, AttributionMutationWatcher>>> =
     OnceLock::new();
@@ -49,10 +49,18 @@ static ATTRIBUTION_WATCHER_FAILURES: OnceLock<Mutex<HashMap<PathBuf, String>>> =
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static PRECISE_REFRESH_SYNC_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static PRECISE_REFRESH_SYNC_HOOK: OnceLock<Mutex<Option<PreciseRefreshSyncHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
-const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
-const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
+const PRECISE_REFRESH_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
+const PRECISE_REFRESH_RECENCY_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -454,21 +462,427 @@ pub(crate) struct IndexedSessionCatalogSnapshot {
     pub(crate) warnings: Vec<String>,
 }
 
-struct UsageSummaryRefreshOwner {
-    key: PathBuf,
+fn precise_refresh_home(codex_home: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(codex_home).map_err(|error| {
+        format!(
+            "精确 token refresh 无法解析 canonical Home {}：{error}",
+            codex_home.display()
+        )
+    })
 }
 
-impl Drop for UsageSummaryRefreshOwner {
-    fn drop(&mut self) {
-        let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() else {
-            return;
-        };
-        let mut guard = in_flight
+impl PreciseRefreshFlight {
+    fn new(intent: PreciseRefreshIntent, request_home: &Path) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(PreciseRefreshFlightState {
+                full_requested: intent == PreciseRefreshIntent::Full,
+                result: None,
+            }),
+            wake: Condvar::new(),
+            request_home: request_home.to_path_buf(),
+        })
+    }
+
+    fn is_done(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result
+            .is_some()
+    }
+
+    fn request_full(&self) -> bool {
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.remove(&self.key);
+        if state.result.is_some() {
+            return false;
+        }
+        state.full_requested = true;
+        true
+    }
+
+    fn full_requested(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .full_requested
+    }
+
+    fn wait(&self) -> PreciseRefreshResult {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.result.is_none() {
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state
+            .result
+            .as_ref()
+            .expect("precise refresh result is published before waking waiters")
+            .clone()
     }
 }
+
+impl PreciseRefreshOwnerGuard {
+    fn finish(&self, result: PreciseRefreshResult) {
+        if self
+            .state
+            .finished
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        finish_precise_refresh_flight(
+            &self.state.coordinator,
+            &self.state.flight,
+            result,
+        );
+    }
+}
+
+impl Drop for PreciseRefreshOwnerGuard {
+    fn drop(&mut self) {
+        self.finish(PreciseRefreshResult::failure(
+            "精确 token refresh owner 未发布结果".into(),
+        ));
+    }
+}
+
+fn finish_precise_refresh_flight(
+    coordinator: &Arc<PreciseRefreshCoordinator>,
+    flight: &Arc<PreciseRefreshFlight>,
+    result: PreciseRefreshResult,
+) {
+    {
+        let mut state = flight
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.result.is_none() {
+            state.result = Some(result);
+        }
+        flight.wake.notify_all();
+    }
+    record_precise_refresh_attempt(&coordinator.canonical_home);
+
+    let mut current = coordinator
+        .flight
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if current
+        .as_ref()
+        .is_some_and(|candidate| Arc::ptr_eq(candidate, flight))
+    {
+        *current = None;
+    }
+}
+
+fn precise_refresh_coordinator(
+    codex_home: &Path,
+) -> Result<Arc<PreciseRefreshCoordinator>, String> {
+    let canonical_home = precise_refresh_home(codex_home)?;
+    let registry = PRECISE_REFRESH_COORDINATORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.retain(|_, coordinator| coordinator.strong_count() > 0);
+    if let Some(coordinator) = registry.get(&canonical_home).and_then(Weak::upgrade) {
+        return Ok(coordinator);
+    }
+    let coordinator = Arc::new(PreciseRefreshCoordinator {
+        canonical_home: canonical_home.clone(),
+        flight: Mutex::new(None),
+    });
+    registry.insert(canonical_home, Arc::downgrade(&coordinator));
+    Ok(coordinator)
+}
+
+fn request_precise_refresh(
+    codex_home: &Path,
+    intent: PreciseRefreshIntent,
+) -> Result<Arc<PreciseRefreshFlight>, String> {
+    request_precise_refresh_inner(codex_home, intent, false)?.ok_or_else(|| {
+        "精确 token refresh explicit request 未创建 flight".to_string()
+    })
+}
+
+fn schedule_precise_refresh(
+    codex_home: &Path,
+) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
+    request_precise_refresh_inner(codex_home, PreciseRefreshIntent::Summary, true)
+}
+
+fn request_precise_refresh_inner(
+    codex_home: &Path,
+    intent: PreciseRefreshIntent,
+    enforce_reuse_window: bool,
+) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
+    let coordinator = precise_refresh_coordinator(codex_home)?;
+    loop {
+        if let Some(existing) = coordinator
+            .flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            if existing.is_done() {
+                let mut current = coordinator
+                    .flight
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if current
+                    .as_ref()
+                    .is_some_and(|candidate| Arc::ptr_eq(candidate, &existing))
+                {
+                    *current = None;
+                }
+                continue;
+            }
+            if intent == PreciseRefreshIntent::Full && !existing.request_full() {
+                continue;
+            }
+            return Ok(Some(existing));
+        }
+
+        let current = coordinator
+            .flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            continue;
+        }
+        drop(current);
+        if enforce_reuse_window
+            && !record_precise_refresh_attempt_if_due(&coordinator.canonical_home)
+        {
+            return Ok(None);
+        }
+        if !enforce_reuse_window {
+            record_precise_refresh_attempt(&coordinator.canonical_home);
+        }
+        let mut current = coordinator
+            .flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            continue;
+        }
+        let flight = PreciseRefreshFlight::new(intent, codex_home);
+        *current = Some(Arc::clone(&flight));
+        drop(current);
+        spawn_precise_refresh_owner(Arc::clone(&coordinator), Arc::clone(&flight));
+        return Ok(Some(flight));
+    }
+}
+
+fn record_precise_refresh_attempt(canonical_home: &Path) {
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let mut recency = recency
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    recency.retain(|_, attempted_at| {
+        now.duration_since(*attempted_at) < PRECISE_REFRESH_RECENCY_RETENTION
+    });
+    recency.insert(canonical_home.to_path_buf(), now);
+}
+
+fn record_precise_refresh_attempt_if_due(canonical_home: &Path) -> bool {
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let mut recency = recency
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    recency.retain(|_, attempted_at| {
+        now.duration_since(*attempted_at) < PRECISE_REFRESH_RECENCY_RETENTION
+    });
+    if recency
+        .get(canonical_home)
+        .is_some_and(|attempted_at| now.duration_since(*attempted_at) < PRECISE_REFRESH_REUSE_INTERVAL)
+    {
+        return false;
+    }
+    recency.insert(canonical_home.to_path_buf(), now);
+    true
+}
+
+fn spawn_precise_refresh_owner(
+    coordinator: Arc<PreciseRefreshCoordinator>,
+    flight: Arc<PreciseRefreshFlight>,
+) {
+    let owner_state = Arc::new(PreciseRefreshOwnerState {
+        coordinator: Arc::clone(&coordinator),
+        flight: Arc::clone(&flight),
+        finished: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    #[cfg(test)]
+    if FAIL_NEXT_PRECISE_REFRESH_SPAWN.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        finish_precise_refresh_flight(
+            &coordinator,
+            &flight,
+            PreciseRefreshResult::failure("精确 token refresh owner 线程启动失败".into()),
+        );
+        return;
+    }
+
+    let key = coordinator.canonical_home.clone();
+    let request_home = flight.request_home.clone();
+    let thread_owner = Arc::clone(&owner_state);
+    let spawned = std::thread::Builder::new()
+        .name("codex-precise-refresh".into())
+        .spawn(move || {
+            let owner = PreciseRefreshOwnerGuard {
+                state: thread_owner,
+            };
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                run_precise_refresh(&key, &request_home, &owner.state.flight)
+            }));
+            match result {
+                Ok(result) => owner.finish(result),
+                Err(_) => owner.finish(PreciseRefreshResult::failure(
+                    "精确 token refresh owner 执行异常".into(),
+                )),
+            }
+        });
+    if spawned.is_err() {
+        finish_precise_refresh_flight(
+            &coordinator,
+            &flight,
+            PreciseRefreshResult::failure("精确 token refresh owner 线程启动失败".into()),
+        );
+    }
+}
+
+fn run_precise_refresh(
+    canonical_home: &Path,
+    request_home: &Path,
+    flight: &PreciseRefreshFlight,
+) -> PreciseRefreshResult {
+    let mut warnings = Vec::new();
+    let mut index = match ExactUsageIndex::open(canonical_home) {
+        Ok(index) => index,
+        Err(error) => return PreciseRefreshResult::failure(error),
+    };
+    #[cfg(not(test))]
+    if let Err(error) = ensure_attribution_mutation_watcher(canonical_home) {
+        return PreciseRefreshResult::failure(error);
+    }
+    let precise_coverage_at = OffsetDateTime::now_utc();
+    if let Err(error) = run_precise_refresh_sync_hook_for_testing(canonical_home) {
+        return PreciseRefreshResult::failure(error);
+    }
+    let revision = match index.sync(canonical_home, &mut warnings) {
+        Ok(revision) => revision,
+        Err(error) => return PreciseRefreshResult::failure(error),
+    };
+    #[cfg(not(test))]
+    if let Err(error) = ensure_attribution_mutation_watcher(canonical_home) {
+        return PreciseRefreshResult::failure(error);
+    }
+
+    let signature = dashboard_index_signature(request_home, revision);
+    let summary = match summary_after_precise_sync(&index, &signature, &warnings) {
+        Ok(summary) => Ok(summary),
+        Err(error) => Err(error),
+    };
+    if !flight.full_requested() {
+        return PreciseRefreshResult {
+            summary,
+            full: None,
+        };
+    }
+
+    match build_full_dashboard_after_precise_sync(
+        &mut index,
+        request_home,
+        revision,
+        precise_coverage_at,
+        &mut warnings,
+    ) {
+        Ok((snapshot, full_summary)) => PreciseRefreshResult {
+            summary: if summary.is_ok() { summary } else { Ok(full_summary) },
+            full: Some(Ok(snapshot)),
+        },
+        Err(error) => PreciseRefreshResult {
+            summary,
+            full: Some(Err(error)),
+        },
+    }
+}
+
+fn summary_after_precise_sync(
+    index: &ExactUsageIndex,
+    signature: &DashboardScanSignature,
+    warnings: &[LocalDataWarning],
+) -> Result<TokenUsageSummary, String> {
+    if let Some(summary) = cached_usage_summary(signature) {
+        return Ok(summary);
+    }
+    if index.is_empty()? {
+        return Err(no_token_events_error(warnings));
+    }
+    let local_offset = crate::core::localtime::local_offset();
+    let summary = index.summary(OffsetDateTime::now_utc(), local_offset)?;
+    store_usage_summary(signature.clone(), summary.clone());
+    Ok(summary)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreciseRefreshIntent {
+    Summary,
+    Full,
+}
+
+#[derive(Clone, Debug)]
+struct PreciseRefreshResult {
+    summary: Result<TokenUsageSummary, String>,
+    full: Option<Result<DashboardSnapshot, String>>,
+}
+
+impl PreciseRefreshResult {
+    fn failure(error: String) -> Self {
+        Self {
+            summary: Err(error.clone()),
+            full: Some(Err(error)),
+        }
+    }
+}
+
+struct PreciseRefreshFlightState {
+    full_requested: bool,
+    result: Option<PreciseRefreshResult>,
+}
+
+struct PreciseRefreshFlight {
+    state: Mutex<PreciseRefreshFlightState>,
+    wake: Condvar,
+    request_home: PathBuf,
+}
+
+struct PreciseRefreshCoordinator {
+    canonical_home: PathBuf,
+    flight: Mutex<Option<Arc<PreciseRefreshFlight>>>,
+}
+
+struct PreciseRefreshOwnerState {
+    coordinator: Arc<PreciseRefreshCoordinator>,
+    flight: Arc<PreciseRefreshFlight>,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+struct PreciseRefreshOwnerGuard {
+    state: Arc<PreciseRefreshOwnerState>,
+}
+
+#[cfg(test)]
+pub(crate) type PreciseRefreshSyncHook = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
 pub(crate) fn session_catalog_snapshot<F>(
     codex_home: &Path,
@@ -521,43 +935,47 @@ struct TokenEvent {
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
-    let build_gate = DASHBOARD_BUILD_GATE.get_or_init(|| Mutex::new(()));
-    let _build_guard = build_gate
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut warnings = Vec::new();
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    #[cfg(not(test))]
-    ensure_attribution_mutation_watcher(codex_home)?;
-    // This is a conservative coverage watermark, captured before the full sync
-    // starts. Events appended while sync/aggregation is running may or may not
-    // enter this generation, so publishing the return time would overclaim.
-    let precise_coverage_at = OffsetDateTime::now_utc();
-    let revision = index.sync(codex_home, &mut warnings)?;
-    #[cfg(not(test))]
-    ensure_attribution_mutation_watcher(codex_home)?;
+    let flight = request_precise_refresh(codex_home, PreciseRefreshIntent::Full)?;
+    flight
+        .wait()
+        .full
+        .unwrap_or_else(|| Err("精确 token full refresh 未发布结果".into()))
+}
+
+fn build_full_dashboard_after_precise_sync(
+    index: &mut ExactUsageIndex,
+    codex_home: &Path,
+    revision: u64,
+    precise_coverage_at: OffsetDateTime,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<(DashboardSnapshot, TokenUsageSummary), String> {
     let attribution_safety = index.attribution_safety_state()?;
     let observer_identity = precise_observer_identity(codex_home)?;
     let signature = dashboard_index_signature(codex_home, revision);
     if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
-        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+        let summary = cached_usage_summary(&signature)
+            .or_else(|| cached_dashboard_aggregate(&signature).map(|cached| cached.summary))
+            .ok_or_else(|| {
+                "精确 token full refresh 缺少与完整快照对应的 summary".to_string()
+            })?;
         let mut snapshot = snapshot_with_precise_coverage(
             snapshot,
             precise_coverage_at,
             &observer_identity,
             &attribution_safety,
         );
+        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
         merge_usage_cache_marker_warning(&mut snapshot);
-        return Ok(snapshot);
+        return Ok((snapshot, summary));
     }
     if index.is_empty()? {
-        return Err(no_token_events_error(&warnings));
+        return Err(no_token_events_error(warnings));
     }
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
     let local_offset = crate::core::localtime::local_offset();
-    let data = index.dashboard_data(codex_home, now_utc, local_offset, &mut warnings)?;
+    let data = index.dashboard_data(codex_home, now_utc, local_offset, warnings)?;
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
@@ -599,17 +1017,46 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         recent_usage_30d: data.recent_usage_30d,
         cache_hit_ranking: data.cache_hit_ranking,
         cache_usage: data.cache_usage,
-        warnings,
+        warnings: warnings.clone(),
         diagnostics: Vec::new(),
     };
+    let summary = data.summary;
     if let Some(warning) =
-        store_dashboard_aggregate(signature, Some(snapshot.clone()), data.summary)
+        store_dashboard_aggregate(signature, Some(snapshot.clone()), summary.clone())
     {
         snapshot.warnings.push(warning);
     }
     let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
     merge_usage_cache_marker_warning(&mut snapshot);
-    Ok(snapshot)
+    Ok((snapshot, summary))
+}
+
+fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    request_precise_refresh(codex_home, PreciseRefreshIntent::Summary)?
+        .wait()
+        .summary
+}
+
+pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    usage_summary(codex_home)
+}
+
+pub fn acknowledge_attribution_safety(
+    codex_home: &Path,
+    provenance_epoch: &str,
+    unsafe_id: &str,
+    through_generation: u64,
+) -> Result<bool, String> {
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)
+}
+
+pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    let cached = cached_dashboard_usage_summary_cache_only(codex_home);
+    if let Err(error) = schedule_precise_refresh(codex_home) {
+        return cached.ok_or(error);
+    }
+    cached.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
 }
 
 fn merge_usage_cache_marker_warning(snapshot: &mut DashboardSnapshot) {
@@ -638,113 +1085,24 @@ fn activity_days_and_stats_at(
     (days, stats)
 }
 
-fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let build_gate = DASHBOARD_BUILD_GATE.get_or_init(|| Mutex::new(()));
-    let _build_guard = build_gate
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut warnings = Vec::new();
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    let revision = index.sync(codex_home, &mut warnings)?;
-    let signature = dashboard_index_signature(codex_home, revision);
-    if let Some(summary) = cached_usage_summary(&signature) {
-        return Ok(summary);
-    }
-    if index.is_empty()? {
-        return Err(no_token_events_error(&warnings));
-    }
-
+fn cached_dashboard_usage_summary_cache_only(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = crate::core::localtime::local_offset();
-    let summary = index.summary(OffsetDateTime::now_utc(), local_offset)?;
-    store_usage_summary(signature, summary.clone());
-
-    Ok(summary)
-}
-
-pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    usage_summary(codex_home)
-}
-
-pub fn acknowledge_attribution_safety(
-    codex_home: &Path,
-    provenance_epoch: &str,
-    unsafe_id: &str,
-    through_generation: u64,
-) -> Result<bool, String> {
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)
-}
-
-pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    let signature = dashboard_index_signature(codex_home, index.revision()?);
-    let mut warnings = Vec::new();
-    if usage_summary_sources_changed(&mut index, codex_home, &mut warnings)? {
-        schedule_usage_summary_refresh(codex_home);
-    }
-    if let Some(summary) = cached_usage_summary(&signature) {
-        return Ok(summary);
-    }
-    if let Some(cached) = cached_dashboard_aggregate(&signature) {
-        return Ok(cached.summary);
-    }
-
-    let local_offset = crate::core::localtime::local_offset();
-    let last_trusted = if index.is_empty()? {
-        None
-    } else {
-        index.summary(OffsetDateTime::now_utc(), local_offset).ok()
-    };
-    if let Some(summary) = last_trusted.as_ref() {
-        store_usage_summary_cache(signature, summary.clone());
-    }
-    last_trusted.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
-}
-
-fn usage_summary_sources_changed(
-    index: &mut ExactUsageIndex,
-    codex_home: &Path,
-    warnings: &mut Vec<LocalDataWarning>,
-) -> Result<bool, String> {
-    let cache =
-        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let now = Instant::now();
-    cache.retain(|_, (scanned_at, _)| {
-        now.duration_since(*scanned_at) < USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION
-    });
-    if let Some((scanned_at, changed)) = cache.get(codex_home) {
-        if now.duration_since(*scanned_at) < USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL {
-            return Ok(*changed);
-        }
-    }
-
-    let changed = index.sources_changed(codex_home, warnings)?;
-    cache.insert(codex_home.to_path_buf(), (Instant::now(), changed));
-    Ok(changed)
-}
-
-fn mark_usage_summary_sources_synced(codex_home: &Path) {
-    let cache =
-        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(codex_home.to_path_buf(), (Instant::now(), false));
-    }
+    cached_dashboard_usage_summary_at(
+        codex_home,
+        OffsetDateTime::now_utc(),
+        local_offset,
+    )
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = crate::core::localtime::local_offset();
-    cached_dashboard_usage_summary_at(codex_home, OffsetDateTime::now_utc(), local_offset).or_else(
-        || {
-            let index = ExactUsageIndex::open(codex_home).ok()?;
-            if index.is_empty().ok()? {
-                return None;
-            }
-            index.summary(OffsetDateTime::now_utc(), local_offset).ok()
-        },
-    )
+    cached_dashboard_usage_summary_cache_only(codex_home).or_else(|| {
+        let index = ExactUsageIndex::open(codex_home).ok()?;
+        if index.is_empty().ok()? {
+            return None;
+        }
+        index.summary(OffsetDateTime::now_utc(), local_offset).ok()
+    })
 }
 
 pub(crate) fn cached_dashboard_snapshot_for_startup(
@@ -778,28 +1136,6 @@ fn usage_summary_from_events_at(
     }
 
     summary
-}
-
-fn schedule_usage_summary_refresh(codex_home: &Path) {
-    let key = codex_home.to_path_buf();
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = in_flight
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !guard.insert(key.clone()) {
-        return;
-    }
-    drop(guard);
-    let owner = UsageSummaryRefreshOwner { key: key.clone() };
-
-    let _ = std::thread::Builder::new()
-        .name("codex-usage-summary".into())
-        .spawn(move || {
-            let _owner = owner;
-            if usage_summary(&key).is_ok() {
-                mark_usage_summary_sources_synced(&key);
-            }
-        });
 }
 
 fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
@@ -1300,9 +1636,12 @@ fn snapshot_with_precise_coverage(
 fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
     #[cfg(test)]
     {
+        let Ok(canonical_home) = precise_refresh_home(_codex_home) else {
+            return;
+        };
         let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
         if let Ok(mut counts) = counts.lock() {
-            *counts.entry(_codex_home.to_path_buf()).or_default() += 1;
+            *counts.entry(canonical_home).or_default() += 1;
         }
     }
 }
@@ -1310,6 +1649,25 @@ fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
 fn record_dashboard_source_scan_for_testing() {
     #[cfg(test)]
     DASHBOARD_SCAN_SIGNATURE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn run_precise_refresh_sync_hook_for_testing(path: &Path) -> Result<(), String> {
+    PRECISE_REFRESH_SYNC_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+    let hook = PRECISE_REFRESH_SYNC_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_sync_hook_for_testing(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1328,27 +1686,43 @@ pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     if let Ok(mut guard) = summary_cache.lock() {
         *guard = None;
     }
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(mut guard) = in_flight.lock() {
-        guard.clear();
-    }
-    let source_scan_cache =
-        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = source_scan_cache.lock() {
-        guard.clear();
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut recency) = recency.lock() {
+        recency.clear();
     }
     DASHBOARD_SCAN_SIGNATURE_COUNT.store(0, Ordering::Relaxed);
+    PRECISE_REFRESH_SYNC_CALL_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_precise_refresh_recency_for_testing() {
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut recency) = recency.lock() {
+        recency.clear();
+    }
 }
 
 #[cfg(test)]
 fn wait_for_usage_summary_refreshes_for_testing() {
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
     for _ in 0..250 {
-        let is_empty = in_flight
+        let coordinators = PRECISE_REFRESH_COORDINATORS
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .map(|guard| guard.is_empty())
-            .unwrap_or(false);
-        if is_empty {
+            .map(|registry| {
+                registry
+                    .values()
+                    .filter_map(Weak::upgrade)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let idle = coordinators.iter().all(|coordinator| {
+            coordinator
+                .flight
+                .lock()
+                .map(|flight| flight.is_none())
+                .unwrap_or(false)
+        });
+        if idle {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1357,12 +1731,45 @@ fn wait_for_usage_summary_refreshes_for_testing() {
 }
 
 #[cfg(test)]
+pub(crate) fn set_precise_refresh_sync_hook_for_testing(
+    hook: Option<PreciseRefreshSyncHook>,
+) {
+    let slot = PRECISE_REFRESH_SYNC_HOOK.get_or_init(|| Mutex::new(None));
+    *slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn precise_refresh_sync_call_count_for_testing() -> usize {
+    PRECISE_REFRESH_SYNC_CALL_COUNT.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_precise_refresh_spawn_for_testing() {
+    FAIL_NEXT_PRECISE_REFRESH_SPAWN.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn precise_refresh_coordinator_registry_len_for_testing() -> usize {
+    let registry = PRECISE_REFRESH_COORDINATORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.retain(|_, coordinator| coordinator.strong_count() > 0);
+    registry.len()
+}
+
+#[cfg(test)]
 pub(crate) fn dashboard_aggregate_build_count_for_testing(codex_home: &Path) -> usize {
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(canonical_home) = precise_refresh_home(codex_home) else {
+        return 0;
+    };
     counts
         .lock()
         .ok()
-        .and_then(|counts| counts.get(codex_home).copied())
+        .and_then(|counts| counts.get(&canonical_home).copied())
         .unwrap_or(0)
 }
 
