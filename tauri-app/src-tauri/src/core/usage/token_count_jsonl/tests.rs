@@ -4876,46 +4876,38 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     assert!(full.precise_recent_usage_covered_at.is_some());
     let persisted = fs::read(&cache_path).unwrap();
     assert!(
-        persisted.len() < 512 * 1024,
-        "slim aggregate was {} bytes",
+        persisted.len() < 4 * 1024 * 1024,
+        "numeric aggregate was {} bytes",
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 18);
+    assert_eq!(json["version"], 19);
+    assert!(json.get("snapshot").is_none());
+    let persisted_text = String::from_utf8_lossy(&persisted);
+    assert!(!persisted_text.contains("sourceContribution"));
+    assert!(!persisted_text.contains("cacheHitRanking"));
+    assert!(!persisted_text.contains("cacheUsage"));
+    assert!(!persisted_text.contains("preciseObserver"));
     assert_eq!(
-        json["snapshot"]["recentUsage24h"].as_array().unwrap().len(),
-        0
+        json["recentUsage24h"].as_array().unwrap().len(),
+        full.recent_usage_24h.len()
     );
-    assert_eq!(json["snapshot"]["preciseRecentUsageFresh"], false);
+    assert!(json.get("preciseRecentUsageFresh").is_none());
     assert_eq!(
-        json["snapshot"]["preciseRecentUsageCoveredAt"].as_str(),
+        json["coverageAt"].as_str(),
         full.precise_recent_usage_covered_at.as_deref()
     );
-    assert_eq!(
-        json["snapshot"]["cacheHitRanking"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
-    assert_eq!(
-        json["snapshot"]["cacheUsage"]["sessions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
-    assert_eq!(
-        json["snapshot"]["cacheUsage"]["turns"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
+    assert!(json.get("account").is_none());
+    assert!(json.get("quota").is_none());
+    assert!(json.get("cacheHitRanking").is_none());
+    assert!(json.get("cacheUsage").is_none());
+    assert!(json.get("warnings").is_none());
+    assert!(json.get("diagnostics").is_none());
+    assert!(json.get("preciseObserverEpoch").is_none());
 
     reset_dashboard_aggregate_build_count_for_testing();
     let startup = cached_dashboard_snapshot_for_startup(&root).unwrap();
-    assert!(startup.recent_usage_24h.is_empty());
+    assert_eq!(startup.recent_usage_24h.len(), full.recent_usage_24h.len());
     assert!(startup.cache_usage.turns.is_empty());
     assert!(!startup.precise_recent_usage_fresh);
     assert_eq!(
@@ -4941,6 +4933,503 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
 }
 
 #[test]
+fn v18_sensitive_snapshot_is_sanitized_again_before_startup_use() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let signature = dashboard_scan_signature_at(
+        &root,
+        7,
+        OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap(),
+        UtcOffset::UTC,
+    );
+    let summary = TokenUsageSummary {
+        total_tokens: 42,
+        today_tokens: 42,
+        today_requests: 1,
+    };
+    let mut snapshot = persistent_numeric_test_snapshot(&summary);
+    snapshot.account.display_name = "secret-account".into();
+    snapshot.account.plan_label = "secret-plan".into();
+    snapshot.cache_hit_ranking.push(crate::models::CacheHitRankingItem {
+        rank: 1,
+        title: "secret-title".into(),
+        subtitle: "secret-subtitle".into(),
+        hit_rate: 0.5,
+        input_tokens: 100,
+        cached_tokens: 50,
+    });
+    snapshot.cache_usage.sessions.push(crate::models::SessionCacheUsage {
+        id: "secret-session".into(),
+        title: "secret-session-title".into(),
+        last_updated: None,
+        breakdown: Default::default(),
+    });
+    snapshot.cache_usage.turns.push(crate::models::TurnCacheUsage {
+        id: "secret-turn".into(),
+        session_id: "secret-session".into(),
+        session_title: "secret-session-title".into(),
+        timestamp: "2026-06-18T01:00:00Z".into(),
+        turn_index_in_session: 1,
+        user_prompt: "secret-prompt".into(),
+        assistant_response: "secret-answer".into(),
+        breakdown: Default::default(),
+    });
+    snapshot.warnings.push(LocalDataWarning {
+        source: "secret-warning-source".into(),
+        message: "secret-warning".into(),
+    });
+    snapshot.diagnostics.push(crate::models::QuotaDiagnostic {
+        source: "secret-diagnostic-source".into(),
+        category: "secret-category".into(),
+        severity: "error".into(),
+        message: "secret-diagnostic".into(),
+        raw_cause: Some("secret-cause".into()),
+        underlying_category: None,
+        attempts: Some(1),
+        http_status: Some(500),
+        retryable: false,
+        occurred_at: "2026-06-18T01:00:00Z".into(),
+        stale_data_displayed: true,
+    });
+    snapshot.precise_recent_usage_fresh = true;
+    snapshot.precise_observer_epoch = Some("secret-observer".into());
+    snapshot.precise_attribution_provenance_epoch = Some("secret-provenance".into());
+    snapshot.recent_usage_24h.push(crate::models::RecentUsagePoint {
+        label: "01:00".into(),
+        start_unix: 1_781_715_600,
+        tokens: 42,
+        calls: 1,
+        input_tokens: 40,
+        cached_input_tokens: 4,
+        output_tokens: 2,
+        model_breakdowns: Vec::new(),
+        cache_hit_rate: Some(0.1),
+        five_hour_remaining_percent: None,
+        seven_day_remaining_percent: None,
+        source_contribution_epoch: Some("secret-source-epoch".into()),
+        source_contributions: vec![crate::models::RecentUsageSourceContribution {
+            source_id: "secret-source-id".into(),
+            tokens: 42,
+            calls: 1,
+            input_tokens: 40,
+            cached_input_tokens: 4,
+            output_tokens: 2,
+        }],
+    });
+
+    let legacy = PersistentDashboardAggregateCache {
+        version: LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
+        signature,
+        snapshot: Some(snapshot),
+        summary,
+    };
+    let decoded = decode_persistent_dashboard_aggregate(&serde_json::to_vec(&legacy).unwrap())
+        .expect("V18 cache should remain readable as stale data");
+    let restored = decoded.snapshot.expect("legacy snapshot should be retained");
+    assert_eq!(restored.account.display_name, "账户待读取");
+    assert_eq!(restored.account.plan_label, "计划待读取");
+    assert!(restored.cache_hit_ranking.is_empty());
+    assert!(restored.cache_usage.sessions.is_empty());
+    assert!(restored.cache_usage.turns.is_empty());
+    assert!(restored.warnings.is_empty());
+    assert!(restored.diagnostics.is_empty());
+    assert!(!restored.precise_recent_usage_fresh);
+    assert!(restored.precise_observer_epoch.is_none());
+    assert!(restored.precise_attribution_provenance_epoch.is_none());
+    assert!(restored.recent_usage_24h[0].source_contribution_epoch.is_none());
+    assert!(restored.recent_usage_24h[0].source_contributions.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Build an envelope with the exact field surface used by the public v0.8.3
+/// tag (ee557fd1a47fe4cf35485cfd7f613db98f2fa1a0), then apply only the fields
+/// introduced by the later v17/v18 members. This keeps the compatibility test
+/// tied to the shipped DashboardSnapshot family instead of a hand-written
+/// replacement schema.
+fn public_legacy_dashboard_fixture(
+    version: u32,
+    signature: DashboardScanSignature,
+    snapshot: &DashboardSnapshot,
+    summary: TokenUsageSummary,
+) -> Vec<u8> {
+    let mut envelope = serde_json::to_value(PersistentDashboardAggregateCache {
+        version,
+        signature,
+        snapshot: Some(snapshot.clone()),
+        summary,
+    })
+    .unwrap();
+    let snapshot = envelope
+        .get_mut("snapshot")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("legacy fixture snapshot object");
+
+    // v17 added attribution fields; v16 is the public v0.8.3 shape and has
+    // none of them. V18 retains this envelope and adds model breakdowns.
+    if version == LEGACY_DASHBOARD_AGGREGATE_CACHE_V16 {
+        for field in [
+            "preciseRecentUsageCoveredAt",
+            "preciseRecentUsageFresh",
+            "preciseObserverEpoch",
+            "preciseObserverStartedAtUnixMicros",
+            "preciseObserverSequence",
+            "preciseAttributionProvenanceEpoch",
+            "preciseAttributionGeneration",
+            "preciseAttributionUnsafeSinceGeneration",
+            "preciseAttributionUnsafeId",
+            "preciseAttributionCurrentScanUnsafe",
+        ] {
+            snapshot.remove(field);
+        }
+    }
+    if version <= LEGACY_DASHBOARD_AGGREGATE_CACHE_V17 {
+        snapshot
+            .get_mut("stats")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("legacy fixture stats object")
+            .remove("modelBreakdowns");
+        snapshot
+            .get_mut("activityDays")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("legacy fixture activity array")
+            .iter_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+            .for_each(|day| {
+                day.remove("modelBreakdowns");
+            });
+        for field in ["recentUsage24h", "recentUsage7d", "recentUsage30d"] {
+            snapshot
+                .get_mut(field)
+                .and_then(serde_json::Value::as_array_mut)
+                .expect("legacy fixture recent usage array")
+                .iter_mut()
+                .filter_map(serde_json::Value::as_object_mut)
+                .for_each(|point| {
+                    point.remove("modelBreakdowns");
+                });
+        }
+    }
+    if version == LEGACY_DASHBOARD_AGGREGATE_CACHE_V16 {
+        for field in ["recentUsage24h", "recentUsage7d", "recentUsage30d"] {
+            snapshot
+                .get_mut(field)
+                .and_then(serde_json::Value::as_array_mut)
+                .expect("legacy fixture recent usage array")
+                .iter_mut()
+                .filter_map(serde_json::Value::as_object_mut)
+                .for_each(|point| {
+                    point.remove("sourceContributionEpoch");
+                    point.remove("sourceContributions");
+                });
+        }
+    }
+    serde_json::to_vec(&envelope).unwrap()
+}
+
+#[test]
+fn legacy_dashboard_envelope_accepts_public_v16_v17_v18_and_sanitizes_stale_restore() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let signature = dashboard_scan_signature_at(
+        &root,
+        7,
+        OffsetDateTime::from_unix_timestamp(1_781_715_600).unwrap(),
+        UtcOffset::UTC,
+    );
+    let summary = TokenUsageSummary {
+        total_tokens: 42,
+        today_tokens: 42,
+        today_requests: 1,
+    };
+    let mut snapshot = persistent_numeric_test_snapshot(&summary);
+    snapshot.account.display_name = "legacy-secret-account".into();
+    snapshot.quota.pace_label = "legacy-secret-quota".into();
+    snapshot.cache_hit_ranking.push(crate::models::CacheHitRankingItem {
+        rank: 1,
+        title: "legacy-secret-title".into(),
+        subtitle: "legacy-secret-subtitle".into(),
+        hit_rate: 0.5,
+        input_tokens: 100,
+        cached_tokens: 50,
+    });
+    snapshot.cache_usage.turns.push(crate::models::TurnCacheUsage {
+        id: "legacy-secret-turn".into(),
+        session_id: "legacy-secret-session".into(),
+        session_title: "legacy-secret-session-title".into(),
+        timestamp: "2026-06-18T01:00:00Z".into(),
+        turn_index_in_session: 1,
+        user_prompt: "legacy-secret-prompt".into(),
+        assistant_response: "legacy-secret-answer".into(),
+        breakdown: Default::default(),
+    });
+    snapshot.warnings.push(LocalDataWarning {
+        source: "legacy-secret-warning".into(),
+        message: "legacy-secret-warning-message".into(),
+    });
+    snapshot.recent_usage_24h.push(crate::models::RecentUsagePoint {
+        label: "01:00".into(),
+        start_unix: 1_781_715_600,
+        tokens: 42,
+        calls: 1,
+        input_tokens: 40,
+        cached_input_tokens: 4,
+        output_tokens: 2,
+        model_breakdowns: vec![crate::models::ModelTokenBreakdown {
+            model: Some("legacy-model".into()),
+            breakdown: Default::default(),
+        }],
+        cache_hit_rate: Some(0.1),
+        five_hour_remaining_percent: None,
+        seven_day_remaining_percent: None,
+        source_contribution_epoch: Some("legacy-source-epoch".into()),
+        source_contributions: vec![crate::models::RecentUsageSourceContribution {
+            source_id: "legacy-source-id".into(),
+            tokens: 42,
+            calls: 1,
+            input_tokens: 40,
+            cached_input_tokens: 4,
+            output_tokens: 2,
+        }],
+    });
+
+    for version in [
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_V17,
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
+    ] {
+        let decoded = decode_persistent_dashboard_aggregate(&public_legacy_dashboard_fixture(
+            version,
+            signature.clone(),
+            &snapshot,
+            summary.clone(),
+        ))
+        .expect("public v16-v18 DashboardSnapshot envelope must decode");
+        assert_eq!(decoded.persistent_version, version);
+        let restored = decoded.snapshot.expect("legacy snapshot");
+        assert_eq!(restored.account.display_name, "账户待读取");
+        assert_eq!(restored.quota.pace_label, "额度待读取");
+        assert!(restored.cache_hit_ranking.is_empty());
+        assert!(restored.cache_usage.sessions.is_empty());
+        assert!(restored.cache_usage.turns.is_empty());
+        assert!(restored.warnings.is_empty());
+        assert!(!restored.precise_recent_usage_fresh);
+        assert!(restored.precise_observer_epoch.is_none());
+        assert!(restored
+            .recent_usage_24h
+            .iter()
+            .all(|point| point.source_contribution_epoch.is_none()
+                && point.source_contributions.is_empty()));
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn public_v16_stale_restore_migrates_schema6_to8_and_atomically_writes_v19_without_jsonl_scan() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019epublic-v16-upgrade.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    let full = dashboard_snapshot(&root).unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let index = ExactUsageIndex::open(&root).unwrap();
+    let signature = dashboard_index_signature(&root, index.revision().unwrap());
+    drop(index);
+    fs::write(
+        &cache_path,
+        public_legacy_dashboard_fixture(
+            LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
+            signature,
+            &full,
+            TokenUsageSummary {
+                total_tokens: 120,
+                today_tokens: 120,
+                today_requests: 1,
+            },
+        ),
+    )
+    .unwrap();
+
+    // Recreate the public v0.8.3 exact schema6 shape. The current index must
+    // migrate this in place to schema8; it must not cold-scan the JSONL.
+    let connection = Connection::open(&index_path).unwrap();
+    for (table, column) in [
+        ("files", "current_model"),
+        ("files", "is_explicit_subagent_fork"),
+        ("events", "model"),
+    ] {
+        connection
+            .execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
+            .unwrap();
+    }
+    connection
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    let stale = cached_dashboard_snapshot_for_startup(&root)
+        .expect("V16 stale snapshot should restore before the first full refresh");
+    assert!(!stale.precise_recent_usage_fresh);
+    assert!(stale.cache_usage.sessions.is_empty());
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert_eq!(rebuilt.stats.total_tokens, 120);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(&cache_path).unwrap())
+        .unwrap();
+    assert_eq!(upgraded["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
+    assert!(upgraded.get("snapshot").is_none());
+    assert!(fs::read_dir(cache_path.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .all(|entry| !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".dashboard-aggregate.json.codex-token-bar-")));
+    let connection = Connection::open(index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "8"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ev18-upgrade.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    let full = dashboard_snapshot(&root).unwrap();
+    let current =
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
+    let signature = serde_json::from_value::<DashboardScanSignature>(current["signature"].clone())
+        .expect("V19 signature should remain decodable by the legacy adapter");
+    let legacy = PersistentDashboardAggregateCache {
+        version: LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
+        signature,
+        snapshot: Some(full),
+        summary: TokenUsageSummary {
+            total_tokens: 120,
+            today_tokens: 120,
+            today_requests: 1,
+        },
+    };
+    fs::write(&cache_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert!(cached_dashboard_snapshot_for_startup(&root).is_some());
+    let rebuilt = dashboard_snapshot(&root).unwrap();
+    assert_eq!(rebuilt.stats.total_tokens, 120);
+    let upgraded = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
+        .unwrap();
+    assert_eq!(upgraded["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
+    assert!(upgraded.get("snapshot").is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ev19-mismatch.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let baseline = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
+        .expect("full dashboard should publish V19 JSON");
+    assert_eq!(baseline["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
+
+    let mut assert_miss = |candidate: serde_json::Value| {
+        fs::write(&cache_path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+        reset_dashboard_aggregate_build_count_for_testing();
+        assert!(
+            cached_dashboard_snapshot_for_startup(&root).is_none(),
+            "mismatched V19 binding must not hydrate startup numerics: {candidate}"
+        );
+    };
+
+    let mut revision = baseline.clone();
+    revision["signature"]["index_revision"] = serde_json::json!(u64::MAX);
+    assert_miss(revision);
+    let mut local_date = baseline.clone();
+    local_date["signature"]["local_date"] = serde_json::json!("2099-01-01");
+    assert_miss(local_date);
+    let mut utc_offset = baseline.clone();
+    utc_offset["signature"]["utc_offset_seconds"] = serde_json::json!(9 * 60 * 60);
+    assert_miss(utc_offset);
+    let mut canonical_home = baseline.clone();
+    canonical_home["canonicalHome"] = serde_json::json!(root.join("other-home"));
+    assert_miss(canonical_home);
+    let mut physical_home = baseline.clone();
+    physical_home["physicalHomeIdentity"] = serde_json::json!("not-the-same-home");
+    assert_miss(physical_home);
+    assert_miss(serde_json::json!({"version": 19, "truncated": true}));
+    fs::write(&cache_path, b"{").unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn v19_startup_rejects_symlink_cache_without_following_it() {
+    use std::os::unix::fs::symlink;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let target_path = root.join("real-cache.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ev19-symlink.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let baseline = fs::read(&cache_path).unwrap();
+    fs::rename(&cache_path, &target_path).unwrap();
+    symlink(&target_path, &cache_path).unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert!(load_persistent_dashboard_aggregate().is_none());
+    assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
+    assert_eq!(fs::read(&target_path).unwrap(), baseline);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -4960,19 +5449,19 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""snapshot":{"#));
+    assert!(aggregate_cache_text().contains(r#""stats":{"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
     let summary_after_restart = usage_summary(&root).unwrap();
     assert_eq!(summary_after_restart.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""snapshot":{"#));
+    assert!(aggregate_cache_text().contains(r#""stats":{"#));
     assert!(!aggregate_cache_text().contains(r#""snapshot":null"#));
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v17_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v19_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -5008,7 +5497,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v17_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":18"#));
+    assert!(aggregate_cache_text().contains(r#""version":19"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -5017,7 +5506,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v17_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v17 aggregate should be reused after memory state is cleared"
+        "current v19 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -5058,6 +5547,18 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     assert!(
         cached_dashboard_usage_summary(&home_b).is_none(),
         "home A aggregate must not become a trusted compact summary for home B"
+    );
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert_eq!(
+        cached_dashboard_snapshot_for_startup(&home_a)
+            .expect("home A should restore its own V19 startup numerics")
+            .stats
+            .total_tokens,
+        120
+    );
+    assert!(
+        cached_dashboard_snapshot_for_startup(&home_b).is_none(),
+        "home B must not hydrate home A's one-file V19 cache"
     );
 
     let snapshot_b = dashboard_snapshot(&home_b).unwrap();
@@ -5233,7 +5734,7 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
 }
 
 #[test]
-fn dashboard_aggregate_checkpoints_active_signature_changes_at_most_every_fifteen_minutes() {
+fn dashboard_aggregate_checkpoints_same_revision_at_most_every_fifteen_minutes() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -5272,7 +5773,7 @@ fn dashboard_aggregate_checkpoints_active_signature_changes_at_most_every_fiftee
             today_requests: 2,
         },
     );
-    assert_eq!(fs::read(&cache_path).unwrap(), initial);
+    assert_ne!(fs::read(&cache_path).unwrap(), initial);
     assert_eq!(
         cached_dashboard_aggregate(&active_signature)
             .unwrap()
@@ -5353,6 +5854,28 @@ fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
             1
         );
     }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn v19_atomic_replace_failure_keeps_last_good_cache_bytes() {
+    let root = temp_root();
+    let path = root.join("dashboard-aggregate.json");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(&path, b"last-good-v19").unwrap();
+    let result = crate::core::atomic_file::write_atomically_with_hook(
+        &path,
+        b"new-v19",
+        |stage, _| {
+            if stage == crate::core::atomic_file::AtomicWriteStage::Replace {
+                Err("injected replace failure".into())
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"last-good-v19");
     fs::remove_dir_all(root).unwrap();
 }
 

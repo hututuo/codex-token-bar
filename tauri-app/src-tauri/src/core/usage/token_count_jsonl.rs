@@ -66,7 +66,14 @@ static PRECISE_REFRESH_FINISH_HOOK: OnceLock<Mutex<Option<PreciseRefreshFinishHo
 #[cfg(test)]
 static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
+// v0.8.3 shipped the first stable DashboardSnapshot envelope (v16). v17 and
+// v18 only added serde-defaulted fields to that same envelope; keep one
+// isolated legacy decoder/sanitizer for all three versions and never write any
+// of them again.
+const LEGACY_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
+const LEGACY_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
+const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 19;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 const PRECISE_REFRESH_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
 const PRECISE_REFRESH_RECENCY_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
@@ -824,7 +831,12 @@ fn run_precise_refresh(
     }
 
     let signature = dashboard_index_signature(canonical_home, revision);
-    let summary = match summary_after_precise_sync(&index, &signature, &warnings) {
+    let summary = match summary_after_precise_sync(
+        &index,
+        canonical_home,
+        &signature,
+        &warnings,
+    ) {
         Ok(summary) => Ok(summary),
         Err(error) => Err(error),
     };
@@ -858,10 +870,26 @@ fn run_precise_refresh(
 
 fn summary_after_precise_sync(
     index: &ExactUsageIndex,
+    canonical_home: &Path,
     signature: &DashboardScanSignature,
     warnings: &[LocalDataWarning],
 ) -> Result<TokenUsageSummary, String> {
-    if let Some(summary) = cached_usage_summary(signature) {
+    let attribution_safety = index.attribution_safety_state()?;
+    let physical_home_identity = attribution_watch_root_physical_identity(canonical_home)?;
+    if let Some(summary) = cached_dashboard_aggregate(signature)
+        .filter(|cached| {
+            cached.persistent_binding.as_ref().map_or(true, |binding| {
+                persistent_numeric_cache_binding_matches_current(
+                    binding,
+                    canonical_home,
+                    signature,
+                    &physical_home_identity,
+                    &attribution_safety,
+                )
+            })
+        })
+        .map(|cached| cached.summary)
+    {
         return Ok(summary);
     }
     if index.is_empty()? {
@@ -999,9 +1027,13 @@ fn build_full_dashboard_after_precise_sync(
     let attribution_safety = index.attribution_safety_state()?;
     let observer_identity = precise_observer_identity(codex_home)?;
     let signature = dashboard_index_signature(codex_home, revision);
-    if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
-        let summary = cached_usage_summary(&signature)
-            .or_else(|| cached_dashboard_aggregate(&signature).map(|cached| cached.summary))
+    if let Some(snapshot) = cached_dashboard_snapshot_for_current(
+        &signature,
+        codex_home,
+        &attribution_safety,
+    ) {
+        let summary = cached_dashboard_aggregate(&signature)
+            .map(|cached| cached.summary)
             .ok_or_else(|| {
                 "精确 token full refresh 缺少与完整快照对应的 summary".to_string()
             })?;
@@ -1068,9 +1100,26 @@ fn build_full_dashboard_after_precise_sync(
         diagnostics: Vec::new(),
     };
     let summary = data.summary;
-    if let Some(warning) =
-        store_dashboard_aggregate(signature, Some(snapshot.clone()), summary.clone())
-    {
+    let persistent_binding = match persistent_numeric_cache_binding(
+        codex_home,
+        signature.clone(),
+        &attribution_safety,
+    ) {
+        Ok(binding) => Some(binding),
+        Err(error) => {
+            snapshot.warnings.push(LocalDataWarning {
+                source: "usage-cache-persistence".into(),
+                message: error,
+            });
+            None
+        }
+    };
+    if let Some(warning) = store_dashboard_aggregate_with_binding(
+        signature,
+        Some(snapshot.clone()),
+        summary.clone(),
+        persistent_binding,
+    ) {
         snapshot.warnings.push(warning);
     }
     let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
@@ -1146,7 +1195,8 @@ fn cached_dashboard_usage_summary_cache_only(codex_home: &Path) -> Option<TokenU
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = crate::core::localtime::local_offset();
     cached_dashboard_usage_summary_cache_only(codex_home).or_else(|| {
-        let index = ExactUsageIndex::open(codex_home).ok()?;
+        let canonical_home = precise_refresh_home(codex_home).ok()?;
+        let index = ExactUsageIndex::open(&canonical_home).ok()?;
         if index.is_empty().ok()? {
             return None;
         }
@@ -1157,25 +1207,44 @@ pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenU
 pub(crate) fn cached_dashboard_snapshot_for_startup(
     codex_home: &Path,
 ) -> Option<DashboardSnapshot> {
-    if let Ok(index) = ExactUsageIndex::open(codex_home) {
-        if let Ok(revision) = index.revision() {
-            let signature = dashboard_index_signature(codex_home, revision);
-            if let Some(snapshot) = cached_dashboard_startup_snapshot(&signature) {
-                return Some(snapshot_with_generated_at(snapshot));
-            }
-        }
+    let canonical_home = precise_refresh_home(codex_home).ok()?;
+    let canonical_index = ExactUsageIndex::open(&canonical_home).ok()?;
+    let revision = canonical_index.revision().ok()?;
+    let attribution_safety = canonical_index.attribution_safety_state().ok()?;
+    let physical_home_identity =
+        attribution_watch_root_physical_identity(&canonical_home).ok()?;
+    let canonical_signature = dashboard_index_signature(&canonical_home, revision);
+    if let Some(snapshot) = cached_dashboard_startup_snapshot(
+        &canonical_signature,
+        &canonical_home,
+        &attribution_safety,
+        &physical_home_identity,
+        false,
+    ) {
+        return Some(snapshot_with_generated_at(snapshot));
     }
 
-    let canonical_home = precise_refresh_home(codex_home).ok()?;
-    if canonical_home == codex_home {
-        return None;
+    // V18 wrote the pre-canonical request path. It is still safe to use only
+    // as a stale startup snapshot after the canonical index has been opened;
+    // never open an index at this raw alias path.
+    if canonical_home != codex_home {
+        let raw_signature = DashboardScanSignature {
+            codex_home: codex_home.to_path_buf(),
+            local_date: canonical_signature.local_date.clone(),
+            utc_offset_seconds: canonical_signature.utc_offset_seconds,
+            index_revision: revision,
+        };
+        if let Some(snapshot) = cached_dashboard_startup_snapshot(
+            &raw_signature,
+            &canonical_home,
+            &attribution_safety,
+            &physical_home_identity,
+            true,
+        ) {
+            return Some(snapshot_with_generated_at(snapshot));
+        }
     }
-    let canonical_index = ExactUsageIndex::open(&canonical_home).ok()?;
-    let canonical_signature = dashboard_index_signature(
-        &canonical_home,
-        canonical_index.revision().ok()?,
-    );
-    cached_dashboard_startup_snapshot(&canonical_signature).map(snapshot_with_generated_at)
+    None
 }
 
 #[cfg(test)]
@@ -1242,12 +1311,64 @@ fn placeholder_quota() -> QuotaSnapshot {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentNumericCacheBinding {
+    canonical_home: PathBuf,
+    physical_home_identity: String,
+    signature: DashboardScanSignature,
+    precise_attribution_provenance_epoch: String,
+    precise_attribution_generation: u64,
+    precise_attribution_unsafe_since_generation: Option<u64>,
+    precise_attribution_unsafe_id: Option<String>,
+    precise_attribution_current_scan_unsafe: bool,
+    precise_attribution_current_scan_incomplete: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentNumericDashboardCacheV19 {
+    version: u32,
+    #[serde(flatten)]
+    binding: PersistentNumericCacheBinding,
+    built_at: String,
+    coverage_at: Option<String>,
+    summary: TokenUsageSummary,
+    stats: crate::models::DashboardStats,
+    activity_days: Vec<crate::models::ActivityDay>,
+    recent_usage_24h: Vec<PersistentNumericRecentUsagePoint>,
+    recent_usage_7d: Vec<PersistentNumericRecentUsagePoint>,
+    recent_usage_30d: Vec<PersistentNumericRecentUsagePoint>,
+}
+
+/// Persistence DTO deliberately has no source attribution fields. Reusing
+/// `RecentUsagePoint` here would serialize nullable/empty provenance fields and
+/// make a future model-field addition an accidental cache privacy expansion.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentNumericRecentUsagePoint {
+    label: String,
+    start_unix: i64,
+    tokens: u64,
+    calls: u32,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    #[serde(default)]
+    model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
+    cache_hit_rate: Option<f64>,
+    five_hour_remaining_percent: Option<f64>,
+    seven_day_remaining_percent: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
 struct CachedDashboardAggregate {
     signature: DashboardScanSignature,
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
     snapshot_complete: bool,
+    persistent_version: u32,
+    persistent_binding: Option<PersistentNumericCacheBinding>,
 }
 
 #[derive(Default)]
@@ -1325,6 +1446,21 @@ fn cached_dashboard_usage_summary_at(
         .ok()
         .and_then(|guard| guard.aggregate.clone())
         .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .filter(|cached| {
+            let Some(binding) = cached.persistent_binding.as_ref() else {
+                return true;
+            };
+            let Ok(canonical_home) = precise_refresh_home(codex_home) else {
+                return false;
+            };
+            let Ok(physical_home_identity) =
+                attribution_watch_root_physical_identity(&canonical_home)
+            else {
+                return false;
+            };
+            binding.canonical_home == canonical_home
+                && binding.physical_home_identity == physical_home_identity
+        })
         .map(|cached| cached.summary)
 }
 
@@ -1335,6 +1471,117 @@ impl DashboardScanSignature {
             local_date: self.local_date.clone(),
             utc_offset_seconds: self.utc_offset_seconds,
         }
+    }
+}
+
+fn persistent_numeric_cache_binding(
+    canonical_home: &Path,
+    signature: DashboardScanSignature,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> Result<PersistentNumericCacheBinding, String> {
+    let canonical_home = precise_refresh_home(canonical_home)?;
+    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
+    Ok(PersistentNumericCacheBinding {
+        canonical_home: canonical_home.clone(),
+        physical_home_identity,
+        signature,
+        precise_attribution_provenance_epoch: attribution_safety.provenance_epoch.clone(),
+        precise_attribution_generation: attribution_safety.generation,
+        precise_attribution_unsafe_since_generation: attribution_safety.unsafe_since_generation,
+        precise_attribution_unsafe_id: attribution_safety.unsafe_id.clone(),
+        precise_attribution_current_scan_unsafe: attribution_safety
+            .current_scan_unsafe_cause_detected,
+        precise_attribution_current_scan_incomplete: attribution_safety.current_scan_incomplete,
+    })
+}
+
+fn persistent_numeric_cache_binding_is_well_formed(
+    binding: &PersistentNumericCacheBinding,
+) -> bool {
+    let Ok(canonical_home) = precise_refresh_home(&binding.canonical_home) else {
+        return false;
+    };
+    if canonical_home != binding.canonical_home
+        || binding.signature.codex_home != binding.canonical_home
+        || binding.signature.local_date.trim().is_empty()
+        || binding.physical_home_identity.trim().is_empty()
+        || binding.precise_attribution_provenance_epoch.trim().is_empty()
+    {
+        return false;
+    }
+    if binding
+        .precise_attribution_unsafe_id
+        .as_deref()
+        .is_some_and(|unsafe_id| Uuid::parse_str(unsafe_id).is_err())
+    {
+        return false;
+    }
+    attribution_watch_root_physical_identity(&binding.canonical_home)
+        .is_ok_and(|identity| identity == binding.physical_home_identity)
+}
+
+fn persistent_numeric_cache_binding_matches_current(
+    binding: &PersistentNumericCacheBinding,
+    canonical_home: &Path,
+    signature: &DashboardScanSignature,
+    physical_home_identity: &str,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> bool {
+    binding.canonical_home == canonical_home
+        && binding.physical_home_identity == physical_home_identity
+        && binding.signature == *signature
+        && binding.precise_attribution_provenance_epoch == attribution_safety.provenance_epoch
+        && binding.precise_attribution_generation == attribution_safety.generation
+        && binding.precise_attribution_unsafe_since_generation
+            == attribution_safety.unsafe_since_generation
+        && binding.precise_attribution_unsafe_id == attribution_safety.unsafe_id
+        && binding.precise_attribution_current_scan_unsafe
+            == attribution_safety.current_scan_unsafe_cause_detected
+        && binding.precise_attribution_current_scan_incomplete
+            == attribution_safety.current_scan_incomplete
+}
+
+fn sanitize_numeric_recent_usage_points(
+    points: &mut [crate::models::RecentUsagePoint],
+) {
+    for point in points {
+        point.source_contribution_epoch = None;
+        point.source_contributions.clear();
+    }
+}
+
+fn startup_snapshot_from_persistent_numeric(
+    cache: &PersistentNumericDashboardCacheV19,
+) -> DashboardSnapshot {
+    let recent_usage_24h = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_24h);
+    let recent_usage_7d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_7d);
+    let recent_usage_30d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_30d);
+    DashboardSnapshot {
+        generated_at: cache.built_at.clone(),
+        precise_recent_usage_covered_at: cache.coverage_at.clone(),
+        precise_recent_usage_fresh: false,
+        precise_observer_epoch: None,
+        precise_observer_started_at_unix_micros: None,
+        precise_observer_sequence: None,
+        precise_attribution_provenance_epoch: None,
+        precise_attribution_generation: None,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
+        account: AccountInfo {
+            display_name: "账户待读取".into(),
+            plan_label: "计划待读取".into(),
+        },
+        stats: cache.stats.clone(),
+        quota: placeholder_quota(),
+        activity_days: cache.activity_days.clone(),
+        recent_usage_24h,
+        recent_usage_7d,
+        recent_usage_30d,
+        cache_hit_ranking: Vec::new(),
+        cache_usage: Default::default(),
+        warnings: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -1369,8 +1616,34 @@ fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<Dashb
         .and_then(|cached| cached.snapshot)
 }
 
+fn cached_dashboard_snapshot_for_current(
+    signature: &DashboardScanSignature,
+    canonical_home: &Path,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> Option<DashboardSnapshot> {
+    let physical_home_identity = attribution_watch_root_physical_identity(canonical_home).ok()?;
+    cached_dashboard_aggregate(signature)
+        .filter(|cached| cached.snapshot_complete)
+        .filter(|cached| {
+            cached.persistent_binding.as_ref().map_or(true, |binding| {
+                persistent_numeric_cache_binding_matches_current(
+                    binding,
+                    canonical_home,
+                    signature,
+                    &physical_home_identity,
+                    attribution_safety,
+                )
+            })
+        })
+        .and_then(|cached| cached.snapshot)
+}
+
 fn cached_dashboard_startup_snapshot(
     signature: &DashboardScanSignature,
+    canonical_home: &Path,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+    physical_home_identity: &str,
+    _allow_legacy_raw_signature: bool,
 ) -> Option<DashboardSnapshot> {
     hydrate_dashboard_aggregate_cache_once();
     let expected_scope = signature.usage_scope();
@@ -1379,8 +1652,32 @@ fn cached_dashboard_startup_snapshot(
         .lock()
         .ok()
         .and_then(|guard| guard.aggregate.clone())
-        .filter(|cached| cached.signature.usage_scope() == expected_scope)
-        .and_then(|cached| cached.snapshot)
+        .filter(|cached| {
+            if cached.persistent_version == DASHBOARD_AGGREGATE_CACHE_VERSION
+                || cached.persistent_version == 0
+            {
+                cached.signature == *signature
+                    && cached.persistent_binding.as_ref().is_some_and(|binding| {
+                        persistent_numeric_cache_binding_matches_current(
+                            binding,
+                            canonical_home,
+                            signature,
+                            physical_home_identity,
+                            attribution_safety,
+                        )
+                    })
+            } else {
+                // Legacy V16-V18 have no physical/binding proof. They are
+                // allowed only as stale usage-scope matches. A raw alias is
+                // accepted only on the explicit alias fallback below; the
+                // canonical lookup must never accidentally consume an alias
+                // envelope.
+                (cached.signature.codex_home == signature.codex_home
+                    || _allow_legacy_raw_signature)
+                    && cached.signature.usage_scope() == expected_scope
+            }
+        })
+        .and_then(|cached| cached.snapshot.map(sanitize_legacy_snapshot_for_startup))
 }
 
 fn cached_dashboard_aggregate(
@@ -1428,6 +1725,38 @@ fn store_dashboard_aggregate(
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
 ) -> Option<LocalDataWarning> {
+    let existing_binding = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .aggregate
+                .as_ref()
+                .filter(|cached| cached.signature == signature)
+                .and_then(|cached| cached.persistent_binding.clone())
+        });
+    #[cfg(test)]
+    let needs_test_binding = snapshot.is_none();
+    #[cfg(test)]
+    let snapshot = snapshot.or_else(|| Some(persistent_numeric_test_snapshot(&summary)));
+    #[cfg(test)]
+    let persistent_binding = if needs_test_binding {
+        Some(persistent_numeric_test_binding(&signature))
+    } else {
+        existing_binding
+    };
+    #[cfg(not(test))]
+    let persistent_binding = existing_binding;
+    store_dashboard_aggregate_with_binding(signature, snapshot, summary, persistent_binding)
+}
+
+fn store_dashboard_aggregate_with_binding(
+    signature: DashboardScanSignature,
+    snapshot: Option<DashboardSnapshot>,
+    summary: TokenUsageSummary,
+    persistent_binding: Option<PersistentNumericCacheBinding>,
+) -> Option<LocalDataWarning> {
     store_usage_summary_cache(signature.clone(), summary.clone());
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
@@ -1445,6 +1774,8 @@ fn store_dashboard_aggregate(
         snapshot,
         summary,
         snapshot_complete,
+        persistent_version: 0,
+        persistent_binding,
     };
     let warning = save_persistent_dashboard_aggregate(&aggregate)
         .err()
@@ -1468,27 +1799,81 @@ fn store_dashboard_aggregate(
     warning
 }
 
-fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsageSummary> {
-    let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard.as_ref() {
-            if &cached.signature == signature {
-                return Some(cached.summary.clone());
-            }
-        }
+#[cfg(test)]
+fn persistent_numeric_test_binding(
+    signature: &DashboardScanSignature,
+) -> PersistentNumericCacheBinding {
+    let _ = fs::create_dir_all(&signature.codex_home);
+    let canonical_home = precise_refresh_home(&signature.codex_home)
+        .unwrap_or_else(|_| signature.codex_home.clone());
+    let mut canonical_signature = signature.clone();
+    canonical_signature.codex_home = canonical_home.clone();
+    let physical_home_identity =
+        attribution_watch_root_physical_identity(&canonical_home).unwrap_or_default();
+    PersistentNumericCacheBinding {
+        canonical_home,
+        physical_home_identity,
+        signature: canonical_signature,
+        precise_attribution_provenance_epoch: Uuid::nil().to_string(),
+        precise_attribution_generation: 0,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
+        precise_attribution_current_scan_incomplete: false,
     }
+}
 
-    if let Some(cached) = load_persistent_dashboard_aggregate() {
-        if &cached.signature == signature {
-            store_usage_summary_cache(cached.signature.clone(), cached.summary.clone());
-            return Some(cached.summary);
-        }
+#[cfg(test)]
+fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSnapshot {
+    DashboardSnapshot {
+        generated_at: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
+        precise_recent_usage_covered_at: None,
+        precise_recent_usage_fresh: false,
+        precise_observer_epoch: None,
+        precise_observer_started_at_unix_micros: None,
+        precise_observer_sequence: None,
+        precise_attribution_provenance_epoch: None,
+        precise_attribution_generation: None,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
+        account: AccountInfo {
+            display_name: "账户待读取".into(),
+            plan_label: "计划待读取".into(),
+        },
+        stats: crate::models::DashboardStats {
+            total_tokens: summary.total_tokens,
+            peak_day_tokens: summary.today_tokens,
+            peak_thread_tokens: summary.today_tokens,
+            current_streak_days: 0,
+            longest_streak_days: 0,
+            total_calls: summary.today_requests,
+            total_threads: 0,
+            total_input_tokens: 0,
+            total_cached_input_tokens: 0,
+            total_output_tokens: 0,
+            model_breakdowns: Vec::new(),
+            first_usage_at: None,
+        },
+        quota: placeholder_quota(),
+        activity_days: Vec::new(),
+        recent_usage_24h: Vec::new(),
+        recent_usage_7d: Vec::new(),
+        recent_usage_30d: Vec::new(),
+        cache_hit_ranking: Vec::new(),
+        cache_usage: Default::default(),
+        warnings: Vec::new(),
+        diagnostics: Vec::new(),
     }
-
-    None
 }
 
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
+    // A summary refresh may run after a full V19 publish. Hydrate first so the
+    // existing binding is carried forward instead of silently downgrading the
+    // in-memory aggregate to an unbound snapshot.
+    hydrate_dashboard_aggregate_cache_once();
     store_usage_summary_cache(signature.clone(), summary.clone());
 
     let memory_snapshot = DASHBOARD_AGGREGATE_CACHE
@@ -1522,24 +1907,85 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
 
 fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
     let path = app_paths::token_aggregate_cache_path()?;
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
     let data = fs::read(path).ok()?;
     decode_persistent_dashboard_aggregate(&data)
 }
 
 fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardAggregate> {
-    let cache = serde_json::from_slice::<PersistentDashboardAggregateCache>(data).ok()?;
-    (cache.version == DASHBOARD_AGGREGATE_CACHE_VERSION).then_some(CachedDashboardAggregate {
-        signature: cache.signature,
-        snapshot: cache.snapshot,
-        summary: cache.summary,
-        snapshot_complete: false,
-    })
+    let version = serde_json::from_slice::<serde_json::Value>(data)
+        .ok()?
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())?;
+    match version {
+        DASHBOARD_AGGREGATE_CACHE_VERSION => {
+            let cache = serde_json::from_slice::<PersistentNumericDashboardCacheV19>(data).ok()?;
+            if cache.version != DASHBOARD_AGGREGATE_CACHE_VERSION
+                || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
+                || !valid_persistent_cache_timestamp(&cache.built_at)
+                || cache
+                    .coverage_at
+                    .as_deref()
+                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+            {
+                return None;
+            }
+            let snapshot = startup_snapshot_from_persistent_numeric(&cache);
+            Some(CachedDashboardAggregate {
+                signature: cache.binding.signature.clone(),
+                snapshot: Some(snapshot),
+                summary: cache.summary,
+                snapshot_complete: false,
+                persistent_version: DASHBOARD_AGGREGATE_CACHE_VERSION,
+                persistent_binding: Some(cache.binding),
+            })
+        }
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_V16
+        | LEGACY_DASHBOARD_AGGREGATE_CACHE_V17
+        | LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION => {
+            let cache = serde_json::from_slice::<PersistentDashboardAggregateCache>(data).ok()?;
+            if !matches!(
+                cache.version,
+                LEGACY_DASHBOARD_AGGREGATE_CACHE_V16
+                    | LEGACY_DASHBOARD_AGGREGATE_CACHE_V17
+                    | LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION
+            ) {
+                return None;
+            }
+            Some(CachedDashboardAggregate {
+                signature: cache.signature,
+                snapshot: cache.snapshot.map(sanitize_legacy_snapshot_for_startup),
+                summary: cache.summary,
+                snapshot_complete: false,
+                persistent_version: cache.version,
+                persistent_binding: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn valid_persistent_cache_timestamp(value: &str) -> bool {
+    OffsetDateTime::parse(value, &Rfc3339).is_ok()
 }
 
 fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> Result<(), String> {
     let Some(path) = app_paths::token_aggregate_cache_path() else {
         return Ok(());
     };
+    let (Some(binding), Some(snapshot)) = (
+        aggregate.persistent_binding.as_ref(),
+        aggregate.snapshot.as_ref(),
+    ) else {
+        return Ok(());
+    };
+    if !persistent_numeric_cache_binding_is_well_formed(binding) {
+        return Err("persistent numeric dashboard cache binding is not trustworthy".into());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -1548,17 +1994,25 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
             )
         })?;
     }
-    if !aggregate_checkpoint_due(&path, &aggregate.signature, SystemTime::now()) {
+    if !aggregate_checkpoint_due_with_binding(
+        &path,
+        &binding.signature,
+        Some(binding),
+        SystemTime::now(),
+    ) {
         return Ok(());
     }
-    let payload = PersistentDashboardAggregateCache {
+    let payload = PersistentNumericDashboardCacheV19 {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
-        signature: aggregate.signature.clone(),
-        snapshot: aggregate
-            .snapshot
-            .clone()
-            .map(sanitize_snapshot_for_persistence),
+        binding: binding.clone(),
+        built_at: snapshot.generated_at.clone(),
+        coverage_at: snapshot.precise_recent_usage_covered_at.clone(),
         summary: aggregate.summary.clone(),
+        stats: snapshot.stats.clone(),
+        activity_days: snapshot.activity_days.clone(),
+        recent_usage_24h: persistent_numeric_recent_usage_points(&snapshot.recent_usage_24h),
+        recent_usage_7d: persistent_numeric_recent_usage_points(&snapshot.recent_usage_7d),
+        recent_usage_30d: persistent_numeric_recent_usage_points(&snapshot.recent_usage_30d),
     };
     let data = serde_json::to_vec(&payload)
         .map_err(|error| format!("serialize aggregate cache {}: {error}", path.display()))?;
@@ -1572,14 +2026,39 @@ fn aggregate_checkpoint_due(
     signature: &DashboardScanSignature,
     now: SystemTime,
 ) -> bool {
-    let Some(existing) = fs::read(path)
+    aggregate_checkpoint_due_with_binding(path, signature, None, now)
+}
+
+fn aggregate_checkpoint_due_with_binding(
+    path: &Path,
+    signature: &DashboardScanSignature,
+    binding: Option<&PersistentNumericCacheBinding>,
+    now: SystemTime,
+) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return true;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return true;
+    }
+    let Some(data) = fs::read(path).ok() else {
+        return true;
+    };
+    let Some(version) = serde_json::from_slice::<serde_json::Value>(&data)
         .ok()
-        .and_then(|data| serde_json::from_slice::<PersistentDashboardAggregateCache>(&data).ok())
+        .and_then(|value| value.get("version").and_then(serde_json::Value::as_u64))
+        .and_then(|version| u32::try_from(version).ok())
     else {
         return true;
     };
-    if existing.version != DASHBOARD_AGGREGATE_CACHE_VERSION
-        || existing.signature.usage_scope() != signature.usage_scope()
+    if version != DASHBOARD_AGGREGATE_CACHE_VERSION {
+        return true;
+    }
+    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCacheV19>(&data) else {
+        return true;
+    };
+    if existing.binding.signature != *signature
+        || binding.is_some_and(|binding| &existing.binding != binding)
     {
         return true;
     }
@@ -1598,7 +2077,10 @@ fn write_aggregate_if_changed(
     data: &[u8],
     writer: impl FnOnce(&Path, &[u8]) -> Result<(), crate::core::atomic_file::AtomicWriteError>,
 ) -> Result<(), String> {
-    if fs::read(path).is_ok_and(|existing| existing == data) {
+    let same_regular_file = fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        && fs::read(path).is_ok_and(|existing| existing == data);
+    if same_regular_file {
         return Ok(());
     }
     writer(path, data).map_err(|error| error.to_string())
@@ -1613,10 +2095,63 @@ struct PersistentDashboardAggregateCache {
     summary: TokenUsageSummary,
 }
 
-fn sanitize_snapshot_for_persistence(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
-    snapshot.recent_usage_24h.clear();
+fn persistent_numeric_recent_usage_points(
+    points: &[crate::models::RecentUsagePoint],
+) -> Vec<PersistentNumericRecentUsagePoint> {
+    points
+        .iter()
+        .map(|point| PersistentNumericRecentUsagePoint {
+            label: point.label.clone(),
+            start_unix: point.start_unix,
+            tokens: point.tokens,
+            calls: point.calls,
+            input_tokens: point.input_tokens,
+            cached_input_tokens: point.cached_input_tokens,
+            output_tokens: point.output_tokens,
+            model_breakdowns: point.model_breakdowns.clone(),
+            cache_hit_rate: point.cache_hit_rate,
+            five_hour_remaining_percent: point.five_hour_remaining_percent,
+            seven_day_remaining_percent: point.seven_day_remaining_percent,
+        })
+        .collect()
+}
+
+fn restore_persistent_numeric_recent_usage_points(
+    points: &[PersistentNumericRecentUsagePoint],
+) -> Vec<crate::models::RecentUsagePoint> {
+    points
+        .iter()
+        .map(|point| crate::models::RecentUsagePoint {
+            label: point.label.clone(),
+            start_unix: point.start_unix,
+            tokens: point.tokens,
+            calls: point.calls,
+            input_tokens: point.input_tokens,
+            cached_input_tokens: point.cached_input_tokens,
+            output_tokens: point.output_tokens,
+            model_breakdowns: point.model_breakdowns.clone(),
+            cache_hit_rate: point.cache_hit_rate,
+            five_hour_remaining_percent: point.five_hour_remaining_percent,
+            seven_day_remaining_percent: point.seven_day_remaining_percent,
+            source_contribution_epoch: None,
+            source_contributions: Vec::new(),
+        })
+        .collect()
+}
+
+fn sanitize_legacy_snapshot_for_startup(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
+    snapshot.account = AccountInfo {
+        display_name: "账户待读取".into(),
+        plan_label: "计划待读取".into(),
+    };
+    snapshot.quota = placeholder_quota();
+    sanitize_numeric_recent_usage_points(&mut snapshot.recent_usage_24h);
+    sanitize_numeric_recent_usage_points(&mut snapshot.recent_usage_7d);
+    sanitize_numeric_recent_usage_points(&mut snapshot.recent_usage_30d);
     snapshot.cache_hit_ranking.clear();
     snapshot.cache_usage = Default::default();
+    snapshot.warnings.clear();
+    snapshot.diagnostics.clear();
     snapshot.precise_recent_usage_fresh = false;
     snapshot.precise_observer_epoch = None;
     snapshot.precise_observer_started_at_unix_micros = None;
