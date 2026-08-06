@@ -266,6 +266,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             return .gpt56Luna
         case "gpt-5.3-codex", "gpt5.3-codex", "gpt53-codex", "gpt53codex":
             return .gpt53Codex
+        case "codex-auto-review", "codexautoreview":
+            return .gpt53Codex
         case "gpt-5.2-codex", "gpt5.2-codex", "gpt52-codex", "gpt52codex":
             return .gpt52Codex
         case "gpt-5.4", "gpt54":
@@ -612,8 +614,7 @@ extension RecentChartPreparedData {
             lower: lower,
             upper: upper,
             selectionStart: start,
-            selectionEnd: end,
-            fullSelectionBreakdown: breakdown
+            selectionEnd: end
         )
         let sevenDayDrop = quotaDropResolution(
             values: sevenDayRemainingPercents,
@@ -621,8 +622,7 @@ extension RecentChartPreparedData {
             lower: lower,
             upper: upper,
             selectionStart: start,
-            selectionEnd: end,
-            fullSelectionBreakdown: breakdown
+            selectionEnd: end
         )
         let fallbackModel = priceCard.officialAPIModel
         let fullEvents = attributionEvents.filter {
@@ -703,66 +703,74 @@ extension RecentChartPreparedData {
         lower: Int,
         upper: Int,
         selectionStart: Date,
-        selectionEnd: Date,
-        fullSelectionBreakdown: TokenCacheBreakdown
+        selectionEnd: Date
     ) -> RecentChartQuotaDropResolution {
-        if quotaObservationProvenanceAvailable,
-           let observed = observedQuotaDropResolution(
-               observations: observations,
-               lower: lower,
-               upper: upper,
-               selectionStart: selectionStart,
-               selectionEnd: selectionEnd
-           ) {
-            return observed
+        let selectedObservations = observationSlice(
+            observations,
+            from: selectionStart,
+            through: selectionEnd
+        )
+
+        // Persisted observations carry reset provenance. Once any such
+        // observation is present in the selected interval, do not fall back to
+        // display-value arithmetic when the cycle cannot be proven: doing so
+        // can combine the previous cycle's tokens with the latest cycle's drop.
+        if selectedObservations.contains(where: { $0.resetsAt != nil }) {
+            return observedQuotaDropResolution(
+                observations: Array(selectedObservations),
+                lower: lower,
+                upper: upper
+            ) ?? RecentChartQuotaDropResolution(
+                percent: nil,
+                basis: .unavailable,
+                comparisonBreakdown: .empty,
+                comparisonStartDate: nil,
+                comparisonEndDate: nil,
+                comparisonUsesConservativeBuckets: false
+            )
         }
 
-        // Display values are sampled at each bucket's end. Include the value
-        // immediately before the selected first bucket so this provisional drop
-        // spans the same full interval as `fullSelectionBreakdown`.
-        let boundaryLower = quotaObservationProvenanceAvailable && lower > 0
-            ? lower - 1
-            : lower
-        let estimatedDrop = cumulativeQuotaDrop(
+        // Without reset provenance, mirror the chart's product heuristic:
+        // remove isolated 0/100 glitches, find the latest sustained upward
+        // jump, and use only that cycle's suffix for the comparison. The full
+        // selection remains untouched by this comparison-only narrowing.
+        guard let estimatedDrop = cumulativeQuotaDrop(
             values,
-            lower: boundaryLower,
+            lower: lower,
             upper: upper
-        )
-        let estimatedComparisonBreakdown: TokenCacheBreakdown
-        let estimatedComparisonStart: Date?
-        let estimatedComparisonEnd: Date?
-        if quotaObservationProvenanceAvailable, let estimatedDrop {
-            let firstCoveredIndex = max(lower, estimatedDrop.firstBoundaryIndex + 1)
-            let lastCoveredIndex = min(upper, estimatedDrop.lastBoundaryIndex)
-            guard firstCoveredIndex <= lastCoveredIndex else {
-                return RecentChartQuotaDropResolution(
-                    percent: nil,
-                    basis: .unavailable,
-                    comparisonBreakdown: .empty,
-                    comparisonStartDate: nil,
-                    comparisonEndDate: nil,
-                    comparisonUsesConservativeBuckets: false
-                )
-            }
-            estimatedComparisonBreakdown = (firstCoveredIndex...lastCoveredIndex)
-                .map { cacheBreakdowns[safe: $0] ?? .empty }
-                .combined
-            estimatedComparisonStart = bins[safe: firstCoveredIndex]?.start
-            estimatedComparisonEnd = bins[safe: lastCoveredIndex]?.start
-                .addingTimeInterval(bucketInterval)
-        } else {
-            estimatedComparisonBreakdown = fullSelectionBreakdown
-            estimatedComparisonStart = estimatedDrop == nil ? nil : selectionStart
-            estimatedComparisonEnd = estimatedDrop == nil ? nil : selectionEnd
+        ) else {
+            return RecentChartQuotaDropResolution(
+                percent: nil,
+                basis: .unavailable,
+                comparisonBreakdown: .empty,
+                comparisonStartDate: nil,
+                comparisonEndDate: nil,
+                comparisonUsesConservativeBuckets: false
+            )
+        }
+
+        let firstCoveredIndex = max(lower, estimatedDrop.firstBoundaryIndex)
+        let lastCoveredIndex = min(upper, estimatedDrop.lastBoundaryIndex)
+        guard firstCoveredIndex <= lastCoveredIndex,
+              let estimatedComparisonStart = bins[safe: firstCoveredIndex]?.start,
+              let lastStart = bins[safe: lastCoveredIndex]?.start else {
+            return RecentChartQuotaDropResolution(
+                percent: nil,
+                basis: .unavailable,
+                comparisonBreakdown: .empty,
+                comparisonStartDate: nil,
+                comparisonEndDate: nil,
+                comparisonUsesConservativeBuckets: false
+            )
         }
         return RecentChartQuotaDropResolution(
-            percent: estimatedDrop?.percent,
-            basis: estimatedDrop == nil
-                ? .unavailable
-                : .estimated,
-            comparisonBreakdown: estimatedComparisonBreakdown,
+            percent: estimatedDrop.percent,
+            basis: .estimated,
+            comparisonBreakdown: (firstCoveredIndex...lastCoveredIndex)
+                .map { cacheBreakdowns[safe: $0] ?? .empty }
+                .combined,
             comparisonStartDate: estimatedComparisonStart,
-            comparisonEndDate: estimatedComparisonEnd,
+            comparisonEndDate: lastStart.addingTimeInterval(bucketInterval),
             comparisonUsesConservativeBuckets: false
         )
     }
@@ -770,25 +778,31 @@ extension RecentChartPreparedData {
     private func observedQuotaDropResolution(
         observations: [QuotaHistoryObservation],
         lower: Int,
-        upper: Int,
-        selectionStart: Date,
-        selectionEnd: Date
+        upper: Int
     ) -> RecentChartQuotaDropResolution? {
-        let observations = observationSlice(
-            observations,
-            from: selectionStart,
-            through: selectionEnd
-        )
-        let adjacentObservations = zip(observations, observations.dropFirst())
-        guard observations.count >= 2,
-              let first = observations.first,
-              observations.dropFirst().allSatisfy({
-                  sameQuotaCycle(first, $0)
-              }),
+        guard let authority = observations.last,
+              authority.resetsAt != nil else {
+            return nil
+        }
+
+        // The final reliable observation defines the cycle at the selection
+        // endpoint. Walk backwards only while reset provenance remains within
+        // the existing two-minute same-cycle tolerance; anything before the
+        // first mismatch belongs to an older cycle and is excluded.
+        var cycleSuffix = [authority]
+        for observation in observations.dropLast().reversed() {
+            guard sameQuotaCycle(observation, authority) else { break }
+            cycleSuffix.append(observation)
+        }
+        cycleSuffix.reverse()
+
+        let adjacentObservations = zip(cycleSuffix, cycleSuffix.dropFirst())
+        guard cycleSuffix.count >= 2,
               adjacentObservations.allSatisfy({ pair in
                   pair.1.remainingPercent <= pair.0.remainingPercent + 0.0001
               }),
-              let last = observations.last else {
+              let first = cycleSuffix.first,
+              let last = cycleSuffix.last else {
             return nil
         }
 
@@ -891,14 +905,26 @@ extension RecentChartPreparedData {
         let availableValues = sanitizedQuotaDropValues(indexedValues)
         guard availableValues.count >= 2 else { return nil }
 
-        let percent = zip(availableValues, availableValues.dropFirst())
+        // A sustained upward move is the only display-only reset evidence we
+        // accept. A suffix with fewer than two points cannot support a budget
+        // inversion, so it fails closed.
+        var currentCycleStart = 0
+        for index in 1..<availableValues.count {
+            if availableValues[index].value > availableValues[index - 1].value + 5 {
+                currentCycleStart = index
+            }
+        }
+        let currentCycleValues = Array(availableValues[currentCycleStart...])
+        guard currentCycleValues.count >= 2 else { return nil }
+
+        let percent = zip(currentCycleValues, currentCycleValues.dropFirst())
             .reduce(0) { partial, pair in
                 partial + max(pair.0.value - pair.1.value, 0)
             }
         return (
             percent: percent,
-            firstBoundaryIndex: availableValues[0].index,
-            lastBoundaryIndex: availableValues[availableValues.count - 1].index
+            firstBoundaryIndex: currentCycleValues[0].index,
+            lastBoundaryIndex: currentCycleValues[currentCycleValues.count - 1].index
         )
     }
 
@@ -908,15 +934,24 @@ extension RecentChartPreparedData {
         values.enumerated().compactMap { offset, item in
             let previous = offset > 0 ? values[offset - 1].value : nil
             let next = offset + 1 < values.count ? values[offset + 1].value : nil
-            if isFullUsageSpike(item.value, previous: previous, next: next) {
+            if isZeroRemainingSpike(item.value, previous: previous, next: next)
+                || isFullRemainingSpike(item.value, previous: previous, next: next) {
                 return nil
             }
             return item
         }
     }
 
-    private func isFullUsageSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
+    private func isZeroRemainingSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
         guard value <= 1, let previous, previous >= 95 else { return false }
         return next == nil || (next ?? 0) >= 95
+    }
+
+    private func isFullRemainingSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
+        value >= 99
+            && previous != nil
+            && next != nil
+            && (previous ?? 0) <= 95
+            && (next ?? 0) <= (previous ?? 0) + 1
     }
 }
