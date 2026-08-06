@@ -237,6 +237,7 @@ test("quotaConsumptionSelection keeps only the latest quota cycle after a reset"
 
   const selection = quotaConsumptionSelection(data, 0, 3, "gpt56Sol");
   assert.equal(selection?.sevenDay.quotaDropPercent, 10);
+  assert.equal(selection?.selectedCostUSD, 2);
   assert.equal(selection?.sevenDay.comparisonBreakdown.inputTokens, 200_000);
   assert.equal(selection?.sevenDay.impliedWindowBudgetUSD, 10);
   const attribution = quotaSelectionAttribution(selection, {
@@ -254,6 +255,52 @@ test("quotaConsumptionSelection keeps only the latest quota cycle after a reset"
   });
   assert.equal(attribution?.state, "provisional");
   assert.equal(attribution?.allowsAttributionConclusion, false);
+});
+
+test("latest quota cycle with one remaining point fails closed for the budget inversion", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.20 }),
+      point(300, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 0.10 }),
+      point(600, { inputTokens: 100_000, tokens: 100_000, calls: 1, sevenDayRemainingPercent: 1.00 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 2, "gpt56Sol");
+  assert.equal(selection?.selectedCostUSD, 1.5);
+  assert.equal(selection?.sevenDay.quotaDropAvailable, false);
+  assert.equal(selection?.sevenDay.quotaDropPercent, 0);
+  assert.equal(selection?.sevenDay.impliedWindowBudgetUSD, null);
+});
+
+test("latest quota cycle suffix semantics cover 24h, 7d and 30d chart paths", () => {
+  for (const [range, bucketSeconds, pointsKey] of [
+    ["24h", 5 * 60, "recentUsage24h"],
+    ["7d", 60 * 60, "recentUsage7d"],
+    ["30d", 6 * 60 * 60, "recentUsage30d"],
+  ]) {
+    const points = [0.90, 0.80, 0.95, 0.23].map((remaining, index) => point(index * bucketSeconds, {
+      inputTokens: 100_000,
+      tokens: 100_000,
+      calls: 1,
+      sevenDayRemainingPercent: remaining,
+    }));
+    const data = prepareRecentChartData(range, {
+      recentUsage24h: pointsKey === "recentUsage24h" ? points : [],
+      recentUsage7d: pointsKey === "recentUsage7d" ? points : [],
+      recentUsage30d: pointsKey === "recentUsage30d" ? points : [],
+    });
+    const selection = quotaConsumptionSelection(data, 0, 3, "gpt56Sol");
+
+    assert.ok(selection, range);
+    assert.equal(selection.selectedCostUSD, 2, range);
+    assert.equal(selection.sevenDay.quotaDropPercent, 72, range);
+    assert.equal(selection.sevenDay.comparisonBreakdown.inputTokens, 200_000, range);
+    assert.equal(selection.sevenDay.comparisonStartUnix, 2 * bucketSeconds, range);
+    assert.equal(selection.sevenDay.impliedWindowBudgetUSD, 1.3888888888888888, range);
+  }
 });
 
 test("7d and 30d selections use the same complete model-aware attribution semantics", () => {

@@ -379,6 +379,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6"), .gpt56Sol)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4"), .gpt54Legacy)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4-mini"), .gpt54MiniLegacy)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex-auto-review"), .gpt53Codex)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex_auto_review"), .gpt53Codex)
         let breakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
             cachedInputTokens: 0,
@@ -479,9 +481,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 12.7, accuracy: 0.0001)
+        XCTAssertEqual(estimate.costUSD, 12.45, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
-        XCTAssertEqual(estimate.fallbackCalls, 1)
+        XCTAssertEqual(estimate.fallbackCalls, 0)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 1)
     }
@@ -1017,6 +1019,171 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(selection.sevenDay.quotaDropPercent, 5, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(selection.fiveHour.impliedWindowBudgetUSD), 15.3846, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 40.0, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testObservedCrossResetUsesOnlyTheLatestCycleForComparisonAndKeepsFullSelection() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let oldReset = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let latestReset = oldReset.addingTimeInterval(7 * 24 * 60 * 60)
+        let bins = (0..<4).map { index in
+            BinUsage(
+                start: start.addingTimeInterval(Double(index) * 300),
+                tokens: index < 2 ? 50_000_000 : 100_000,
+                calls: 1
+            )
+        }
+        let cache = bins.enumerated().map { index, _ in
+            quotaBreakdown(input: index < 2 ? 50_000_000 : 100_000)
+        }
+        let observations = [
+            QuotaHistoryObservation(observedAt: bins[0].start, remainingPercent: 90, resetsAt: oldReset),
+            QuotaHistoryObservation(observedAt: bins[1].start, remainingPercent: 72, resetsAt: oldReset),
+            QuotaHistoryObservation(observedAt: bins[2].start.addingTimeInterval(60), remainingPercent: 100, resetsAt: latestReset),
+            QuotaHistoryObservation(observedAt: bins[3].start.addingTimeInterval(60), remainingPercent: 28, resetsAt: latestReset),
+        ]
+        let prepared = RecentChartPreparedData(
+            range: .twentyFourHours,
+            bins: bins,
+            bucketInterval: 300,
+            maxTokens: 50_000_000,
+            maxCalls: 1,
+            tokenTotal: bins.reduce(0) { $0 + $1.tokens },
+            callTotal: bins.count,
+            recentCacheBreakdown: cache.combined,
+            cacheBreakdowns: cache,
+            observedCacheHitRates: Array(repeating: 0, count: bins.count),
+            fiveHourRemainingPercents: Array(repeating: nil, count: bins.count),
+            sevenDayRemainingPercents: [90, 72, 100, 28],
+            sevenDayQuotaObservations: observations,
+            quotaObservationProvenanceAvailable: true,
+            latestFiveHourRemaining: nil,
+            latestSevenDayRemaining: 28,
+            hasCacheCalls: true,
+            hasFiveHourQuota: false,
+            hasSevenDayQuota: true,
+            markerIndices: []
+        )
+
+        let selection = try XCTUnwrap(
+            prepared.quotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 3,
+                priceCard: .officialAPI(.gpt56Sol)
+            )
+        )
+
+        XCTAssertEqual(selection.breakdown.inputTokens, 100_200_000)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 501, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.comparisonBreakdown.inputTokens, 200_000)
+        XCTAssertEqual(selection.sevenDay.comparisonStartDate, bins[2].start)
+        XCTAssertEqual(selection.sevenDay.comparisonEndDate, bins[3].start.addingTimeInterval(300))
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 72, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 1.3888889, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testObservedResetCycleAllowsTwoMinuteResetTimestampDrift() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let observations = [
+            QuotaHistoryObservation(observedAt: start, remainingPercent: 90, resetsAt: reset),
+            QuotaHistoryObservation(observedAt: start.addingTimeInterval(300), remainingPercent: 72, resetsAt: reset.addingTimeInterval(120)),
+        ]
+        let prepared = quotaPreparedData(
+            start: start,
+            sevenDayValues: [90, 72],
+            sevenDayObservations: observations
+        )
+
+        let selection = try XCTUnwrap(
+            prepared.quotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 1,
+                priceCard: .officialAPI(.gpt56Sol)
+            )
+        )
+
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .observed)
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 18, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testObservedLatestCycleWithOnePointFailsClosedWithoutClippingSelection() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let oldReset = start.addingTimeInterval(7 * 24 * 60 * 60)
+        let latestReset = oldReset.addingTimeInterval(7 * 24 * 60 * 60)
+        let observations = [
+            QuotaHistoryObservation(observedAt: start, remainingPercent: 90, resetsAt: oldReset),
+            QuotaHistoryObservation(observedAt: start.addingTimeInterval(300), remainingPercent: 72, resetsAt: oldReset),
+            QuotaHistoryObservation(observedAt: start.addingTimeInterval(600), remainingPercent: 100, resetsAt: latestReset),
+        ]
+        let prepared = quotaPreparedData(
+            start: start,
+            sevenDayValues: [90, 72, 100],
+            sevenDayObservations: observations
+        )
+
+        let selection = try XCTUnwrap(
+            prepared.quotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 2,
+                priceCard: .officialAPI(.gpt56Sol)
+            )
+        )
+
+        XCTAssertEqual(selection.breakdown.inputTokens, 600)
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .unavailable)
+        XCTAssertNil(selection.sevenDay.impliedWindowBudgetUSD)
+        XCTAssertEqual(selection.sevenDay.comparisonBreakdown, .empty)
+        XCTAssertNil(selection.sevenDay.comparisonStartDate)
+        XCTAssertNil(selection.sevenDay.comparisonEndDate)
+    }
+
+    @MainActor
+    func testDisplayOnlyResetUsesLatestSuffixAndIgnoresIsolatedFullSpike() throws {
+        let start = Date(timeIntervalSince1970: 1_800)
+        let bins = (0..<6).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 300), tokens: 100_000, calls: 1)
+        }
+        let cache = bins.map { _ in quotaBreakdown(input: 100_000) }
+        let prepared = RecentChartPreparedData(
+            range: .twentyFourHours,
+            bins: bins,
+            bucketInterval: 300,
+            maxTokens: 100_000,
+            maxCalls: 1,
+            tokenTotal: 600_000,
+            callTotal: 6,
+            recentCacheBreakdown: cache.combined,
+            cacheBreakdowns: cache,
+            observedCacheHitRates: Array(repeating: 0, count: bins.count),
+            fiveHourRemainingPercents: [90, 80, 100, 79, 90, 18],
+            sevenDayRemainingPercents: [90, 80, 100, 79, 90, 18],
+            latestFiveHourRemaining: 18,
+            latestSevenDayRemaining: 18,
+            hasCacheCalls: true,
+            hasFiveHourQuota: true,
+            hasSevenDayQuota: true,
+            markerIndices: []
+        )
+
+        let selection = try XCTUnwrap(
+            prepared.quotaConsumptionSelection(
+                startIndex: 0,
+                endIndex: 5,
+                priceCard: .officialAPI(.gpt56Sol)
+            )
+        )
+
+        // The isolated 100% point is not a reset. The real reset is the
+        // sustained 80% -> 90% jump, so only 90% -> 18% is inverted.
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .estimated)
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 72, accuracy: 0.0001)
+        XCTAssertEqual(selection.breakdown.inputTokens, 600_000)
+        XCTAssertEqual(selection.sevenDay.comparisonBreakdown.inputTokens, 200_000)
+        XCTAssertEqual(selection.sevenDay.comparisonStartDate, bins[4].start)
+        XCTAssertEqual(selection.sevenDay.comparisonEndDate, bins[5].start.addingTimeInterval(300))
     }
 
     func testPreparedDataIgnoresFullUsageSpikeWhenEstimatingQuotaDrop() throws {
@@ -1992,6 +2159,58 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             hasFinalAttributionConclusion: true
         )
     }
+}
+
+@MainActor
+private func quotaPreparedData(
+    start: Date,
+    sevenDayValues: [Double],
+    sevenDayObservations: [QuotaHistoryObservation]
+) -> RecentChartPreparedData {
+    let bins = sevenDayValues.indices.map { index in
+        BinUsage(
+            start: start.addingTimeInterval(Double(index) * 300),
+            tokens: (index + 1) * 100,
+            calls: 1
+        )
+    }
+    let cache = bins.indices.map { index in
+        TokenCacheBucket(
+            start: bins[index].start,
+            breakdown: quotaBreakdown(input: (index + 1) * 100)
+        )
+    }
+    let quota = bins.indices.map { index in
+        QuotaHistoryRecentBucket(
+            start: bins[index].start,
+            fiveHourRemainingPercent: nil,
+            sevenDayRemainingPercent: sevenDayValues[index],
+            sevenDayObservations: sevenDayObservations.filter { observation in
+                observation.observedAt >= bins[index].start
+                    && observation.observedAt < bins[index].start.addingTimeInterval(300)
+            }
+        )
+    }
+    return RecentUsageChart.prepare(
+        range: .twentyFourHours,
+        recentBins: bins,
+        hourlyBins: [],
+        cacheRecentBins: cache,
+        cacheHourlyBins: [],
+        quotaRecentBins: quota,
+        quotaHourlyBins: []
+    )
+}
+
+private func quotaBreakdown(input: Int) -> TokenCacheBreakdown {
+    TokenCacheBreakdown(
+        inputTokens: input,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: input,
+        calls: input > 0 ? 1 : 0
+    )
 }
 
 private struct HostedScrollCallback {

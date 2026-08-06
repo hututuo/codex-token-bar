@@ -174,6 +174,9 @@ export function detectedOfficialAPIPriceModel(value: string | null | undefined):
     case "gpt53-codex":
     case "gpt53codex":
       return "gpt53Codex";
+    case "codex-auto-review":
+    case "codexautoreview":
+      return "gpt53Codex";
     case "gpt-5.2-codex":
     case "gpt5.2-codex":
     case "gpt52-codex":
