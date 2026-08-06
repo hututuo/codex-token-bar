@@ -480,6 +480,257 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(snapshot.hourlyUsage.isEmpty)
     }
 
+    func testPersistentExactSnapshotRestoresFastNumericSurfaceAcrossRestartAndFullLoadHydratesDetails() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshot")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-persistent-exact"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try [
+            messageLine(timestamp: now.addingTimeInterval(-30), type: "user_message", message: "restart prompt"),
+            messageLine(timestamp: now.addingTimeInterval(-20), type: "agent_message", message: "restart answer"),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 1_200, cachedInput: 300, output: 100, reasoning: 20, total: 1_300),
+                last: Usage(input: 1_200, cachedInput: 300, output: 100, reasoning: 20, total: 1_300)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let initial = try analyzer.load()
+        XCTAssertTrue(initial.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(initial.cacheUsage.turns.count, 1)
+        XCTAssertGreaterThan(initial.stats.totalTokens, 0)
+        let parseCountBeforeRestart = CodexUsageAnalyzer.fullSessionParseCountForTesting
+
+        // Keep the durable exact index and snapshot, but discard all process
+        // memory that could make this a false warm-cache hit.
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+
+        let fast = try analyzer.loadFastSnapshot()
+        XCTAssertEqual(fast.usagePrecision, .precise)
+        XCTAssertEqual(fast.stats.totalTokens, initial.stats.totalTokens)
+        XCTAssertEqual(fast.stats.totalCalls, initial.stats.totalCalls)
+        XCTAssertEqual(fast.dailyUsage, initial.dailyUsage)
+        XCTAssertEqual(fast.recentBins, initial.recentBins)
+        XCTAssertEqual(fast.hourlyUsage, initial.hourlyUsage)
+        XCTAssertEqual(fast.cacheUsage.total, initial.cacheUsage.total)
+        XCTAssertEqual(fast.cacheUsage.modelBreakdowns, initial.cacheUsage.modelBreakdowns)
+        XCTAssertFalse(fast.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(fast.cacheUsage.sessions.isEmpty)
+        XCTAssertTrue(fast.cacheUsage.turns.isEmpty)
+        XCTAssertTrue(fast.cacheUsage.attributionEvents.isEmpty)
+        XCTAssertEqual(
+            CodexUsageAnalyzer.fullSessionParseCountForTesting,
+            parseCountBeforeRestart
+        )
+
+        // The fast projection is not accepted as a complete attribution
+        // result. The normal load must still recover exact turn/event detail.
+        let rebuilt = try analyzer.load()
+        XCTAssertEqual(rebuilt.stats.totalTokens, initial.stats.totalTokens)
+        XCTAssertEqual(rebuilt.stats.totalCalls, initial.stats.totalCalls)
+        XCTAssertTrue(rebuilt.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(rebuilt.cacheUsage.turns.count, 1)
+        XCTAssertEqual(rebuilt.cacheUsage.turns.first?.userPrompt, "restart prompt")
+        XCTAssertEqual(rebuilt.cacheUsage.turns.first?.assistantResponse, "restart answer")
+    }
+
+    func testPersistentExactSnapshotRejectsSignatureMismatchAndVersionOrCorruptPayload() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshotMismatch")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019faaaa-bbbb-cccc-dddd-persistent-mismatch",
+            timestamp: Date(timeIntervalSince1970: 1_800_000_000),
+            totalTokens: 321
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let precise = try analyzer.load()
+        let originalSessionData = try Data(contentsOf: sessionFile)
+        let snapshotURL = try XCTUnwrap(try persistentExactSnapshotFiles(in: cacheRoot).first)
+
+        // Any source-tree mutation changes the bound SessionTreeSignature.
+        try appendLines([
+            try tokenCountLine(
+                timestamp: Date(timeIntervalSince1970: 1_800_000_010),
+                total: Usage(input: 500, cachedInput: 0, output: 0, reasoning: 0, total: 500),
+                last: Usage(input: 179, cachedInput: 0, output: 0, reasoning: 0, total: 179)
+            )
+        ], to: sessionFile)
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let changed = try analyzer.loadFastSnapshot()
+        XCTAssertEqual(changed.usagePrecision, .metadataOnly)
+        XCTAssertNotEqual(changed.stats.totalTokens, precise.stats.totalTokens)
+
+        // Restore the source tree and run a complete exact refresh so the
+        // legal payload below is bound to the current file signature (rather
+        // than the intentionally mutated signature above).
+        try originalSessionData.write(to: sessionFile, options: [.atomic])
+        _ = try analyzer.load()
+        let validData = try Data(contentsOf: snapshotURL)
+        var wrongVersionObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        )
+        wrongVersionObject["payloadVersion"] = 999
+        let wrongVersionData = try JSONSerialization.data(
+            withJSONObject: wrongVersionObject,
+            options: [.sortedKeys]
+        )
+        let truncatedData = Data(validData.dropLast())
+        let malformedPayloads = [wrongVersionData, truncatedData, Data("not-json".utf8)]
+        for malformed in malformedPayloads {
+            try malformed.write(to: snapshotURL, options: [.atomic])
+            CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+            CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+            let fallback = try analyzer.loadFastSnapshot()
+            XCTAssertEqual(fallback.usagePrecision, .metadataOnly)
+            try validData.write(to: snapshotURL, options: [.atomic])
+        }
+
+        // A symlink payload is never followed as a trusted exact snapshot.
+        let outside = cacheRoot.appendingPathComponent("snapshot-outside.json")
+        try validData.write(to: outside, options: [.atomic])
+        try FileManager.default.removeItem(at: snapshotURL)
+        try FileManager.default.createSymbolicLink(at: snapshotURL, withDestinationURL: outside)
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let symlinkFallback = try analyzer.loadFastSnapshot()
+        XCTAssertEqual(symlinkFallback.usagePrecision, .metadataOnly)
+    }
+
+    func testPersistentExactSnapshotsAreIsolatedAndRestoredPerCanonicalHome() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshotIsolation")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let firstHome = try makeCodexHome()
+        let secondHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: firstHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019faaaa-bbbb-cccc-dddd-persistent-home-one",
+            timestamp: Date(timeIntervalSince1970: 1_800_000_000),
+            totalTokens: 111
+        )
+        _ = try writeTokenCountRollout(
+            in: secondHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019faaaa-bbbb-cccc-dddd-persistent-home-two",
+            timestamp: Date(timeIntervalSince1970: 1_800_000_000),
+            totalTokens: 222
+        )
+
+        let firstAnalyzer = CodexUsageAnalyzer(dataSource: dataSource(for: firstHome))
+        let secondAnalyzer = CodexUsageAnalyzer(dataSource: dataSource(for: secondHome))
+        let firstPrecise = try firstAnalyzer.load()
+        let secondPrecise = try secondAnalyzer.load()
+        XCTAssertEqual(firstPrecise.stats.totalTokens, 111)
+        XCTAssertEqual(secondPrecise.stats.totalTokens, 222)
+
+        let snapshotFiles = try persistentExactSnapshotFiles(in: cacheRoot)
+        XCTAssertEqual(snapshotFiles.count, 2)
+        XCTAssertNotEqual(snapshotFiles[0].lastPathComponent, snapshotFiles[1].lastPathComponent)
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let firstFast = try firstAnalyzer.loadFastSnapshot()
+        let secondFast = try secondAnalyzer.loadFastSnapshot()
+        XCTAssertEqual(firstFast.usagePrecision, .precise)
+        XCTAssertEqual(secondFast.usagePrecision, .precise)
+        XCTAssertEqual(firstFast.stats.totalTokens, 111)
+        XCTAssertEqual(secondFast.stats.totalTokens, 222)
+        XCTAssertFalse(firstFast.cacheUsage.attributionEventsComplete)
+        XCTAssertFalse(secondFast.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(firstFast.cacheUsage.turns.isEmpty)
+        XCTAssertTrue(secondFast.cacheUsage.turns.isEmpty)
+    }
+
+    func testPersistentExactSnapshotNeverPersistsConversationTextAndWriteFailureIsBestEffort() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshotPrivacy")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-persistent-privacy"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let secretPrompt = "persistent unique prompt 7A1D"
+        let secretAnswer = "persistent unique answer 9B2E"
+        try [
+            messageLine(timestamp: Date().addingTimeInterval(-30), type: "user_message", message: secretPrompt),
+            messageLine(timestamp: Date().addingTimeInterval(-20), type: "agent_message", message: secretAnswer),
+            try tokenCountLine(
+                timestamp: Date().addingTimeInterval(-10),
+                total: Usage(input: 200, cachedInput: 50, output: 20, reasoning: 3, total: 220),
+                last: Usage(input: 200, cachedInput: 50, output: 20, reasoning: 3, total: 220)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let initial = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+        XCTAssertTrue(initial.cacheUsage.turns.contains { $0.userPrompt == secretPrompt })
+        let snapshotURL = try XCTUnwrap(try persistentExactSnapshotFiles(in: cacheRoot).first)
+        let snapshotBytes = try Data(contentsOf: snapshotURL)
+        XCTAssertNil(snapshotBytes.range(of: Data(secretPrompt.utf8)))
+        XCTAssertNil(snapshotBytes.range(of: Data(secretAnswer.utf8)))
+        XCTAssertNil(snapshotBytes.range(of: Data("turns".utf8)))
+        XCTAssertNil(snapshotBytes.range(of: Data("attributionEvents".utf8)))
+
+        // A blocked snapshot directory must not make the exact load fail.
+        let blockedCacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshotWriteFailure")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", blockedCacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", blockedCacheRoot.path, 1)
+        let namespace = swiftUsageCacheRoot(in: blockedCacheRoot)
+        try FileManager.default.createDirectory(at: namespace, withIntermediateDirectories: true)
+        let blockedDirectory = namespace.appendingPathComponent(
+            "persistent-exact-snapshots-v1",
+            isDirectory: true
+        )
+        try Data("blocked".utf8).write(to: blockedDirectory, options: [.atomic])
+        let blockedSnapshot = try CodexUsageAnalyzer(
+            dataSource: dataSource(for: codexHome)
+        ).load()
+        XCTAssertTrue(blockedSnapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(blockedSnapshot.stats.totalTokens, initial.stats.totalTokens)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blockedDirectory.path))
+    }
+
     func testPreciseJSONLScanIncludesActiveStateRolloutPathsInsideSelectedHome() throws {
         let codexHome = try makeCodexHome()
         let rolloutRoot = codexHome.appendingPathComponent("active-rollouts", isDirectory: true)
@@ -5065,6 +5316,21 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         cacheRoot
             .appendingPathComponent(UsageCacheLifecycle.appDirectoryName, isDirectory: true)
             .appendingPathComponent(UsageCacheLifecycle.namespace, isDirectory: true)
+    }
+
+    private func persistentExactSnapshotFiles(in cacheRoot: URL) throws -> [URL] {
+        let directory = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("persistent-exact-snapshots-v1", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            return []
+        }
+        return try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ).filter { url in
+            url.pathExtension == "json"
+                && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
     }
 
     private func dataSource(for codexHome: URL) -> CodexDataSource {

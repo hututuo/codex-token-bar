@@ -153,7 +153,17 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             attributionProvenanceEpoch: attributionState.provenanceEpoch,
             attributionGeneration: attributionState.generation
         )
-        return Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature)
+        if let inMemory = Self.sessionEventCache.snapshot(
+            for: dataSource.codexHome.path,
+            signature: signature
+        ) {
+            return inMemory
+        }
+        return Self.sessionEventCache.persistentExactSnapshot(
+            for: dataSource.codexHome.path,
+            signature: signature,
+            attributionState: attributionState
+        )
     }
 
     private func loadFromTokenCountJSONL() throws -> DashboardSnapshot {
