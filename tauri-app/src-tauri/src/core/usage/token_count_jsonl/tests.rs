@@ -5355,6 +5355,141 @@ fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
 }
 
 #[test]
+fn legacy_startup_requires_exact_home_and_revision_signature() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let home_a = root.join("home-a");
+    let home_b = root.join("home-b");
+    fs::create_dir_all(&home_a).unwrap();
+    fs::create_dir_all(&home_b).unwrap();
+
+    let index_a = ExactUsageIndex::open(&home_a).unwrap();
+    let signature_a = dashboard_index_signature(&home_a, index_a.revision().unwrap());
+    let safety_a = index_a.attribution_safety_state().unwrap();
+    let physical_a = attribution_watch_root_physical_identity(&home_a).unwrap();
+    drop(index_a);
+    let snapshot = persistent_numeric_test_snapshot(&TokenUsageSummary {
+        total_tokens: 42,
+        today_tokens: 42,
+        today_requests: 1,
+    });
+    fs::write(
+        &cache_path,
+        public_legacy_dashboard_fixture(
+            LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
+            signature_a.clone(),
+            &snapshot,
+            TokenUsageSummary {
+                total_tokens: 42,
+                today_tokens: 42,
+                today_requests: 1,
+            },
+        ),
+    )
+    .unwrap();
+
+    // Deliberately keep date, offset, and revision equal while changing Home.
+    // Legacy startup must not treat a stale envelope from home A as home B.
+    let index_b = ExactUsageIndex::open(&home_b).unwrap();
+    let safety_b = index_b.attribution_safety_state().unwrap();
+    let physical_b = attribution_watch_root_physical_identity(&home_b).unwrap();
+    let mut other_home_signature = signature_a.clone();
+    other_home_signature.codex_home = home_b.clone();
+    assert!(cached_dashboard_startup_snapshot(
+        &other_home_signature,
+        &home_b,
+        &safety_b,
+        &physical_b,
+    )
+    .is_none());
+    drop(index_b);
+
+    // A matching Home/date/offset with a different revision must also miss.
+    let mut other_revision_signature = signature_a.clone();
+    other_revision_signature.index_revision = other_revision_signature
+        .index_revision
+        .saturating_add(1);
+    assert!(cached_dashboard_startup_snapshot(
+        &other_revision_signature,
+        &home_a,
+        &safety_a,
+        &physical_a,
+    )
+    .is_none());
+    assert!(cached_dashboard_startup_snapshot(
+        &signature_a,
+        &home_a,
+        &safety_a,
+        &physical_a,
+    )
+    .is_some());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_alias_startup_matches_raw_signature_but_uses_only_canonical_index() {
+    use std::os::unix::fs::symlink;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let canonical_home = root.join("canonical-home");
+    let alias_home = root.join("alias-home");
+    fs::create_dir_all(&canonical_home).unwrap();
+    symlink(&canonical_home, &alias_home).unwrap();
+
+    let index = ExactUsageIndex::open(&canonical_home).unwrap();
+    let revision = index.revision().unwrap();
+    drop(index);
+    let raw_signature = dashboard_index_signature(&alias_home, revision);
+    let snapshot = persistent_numeric_test_snapshot(&TokenUsageSummary {
+        total_tokens: 42,
+        today_tokens: 42,
+        today_requests: 1,
+    });
+    fs::write(
+        &cache_path,
+        public_legacy_dashboard_fixture(
+            LEGACY_DASHBOARD_AGGREGATE_CACHE_V16,
+            raw_signature,
+            &snapshot,
+            TokenUsageSummary {
+                total_tokens: 42,
+                today_tokens: 42,
+                today_requests: 1,
+            },
+        ),
+    )
+    .unwrap();
+
+    let restored = cached_dashboard_snapshot_for_startup(&alias_home)
+        .expect("matching raw alias signature should restore stale numerics");
+    assert!(!restored.precise_recent_usage_fresh);
+
+    let canonical_index_path = canonical_home
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let alias_index_path = alias_home
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    assert!(canonical_index_path.exists());
+    assert_eq!(
+        fs::canonicalize(&canonical_index_path).unwrap(),
+        fs::canonicalize(&alias_index_path).unwrap(),
+        "alias must resolve to the canonical index, not create a second database"
+    );
+    assert!(fs::symlink_metadata(&alias_home).unwrap().file_type().is_symlink());
+
+    fs::remove_file(&alias_home).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

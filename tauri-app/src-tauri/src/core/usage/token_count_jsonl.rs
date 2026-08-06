@@ -1219,7 +1219,6 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
         &canonical_home,
         &attribution_safety,
         &physical_home_identity,
-        false,
     ) {
         return Some(snapshot_with_generated_at(snapshot));
     }
@@ -1239,7 +1238,6 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             &canonical_home,
             &attribution_safety,
             &physical_home_identity,
-            true,
         ) {
             return Some(snapshot_with_generated_at(snapshot));
         }
@@ -1643,10 +1641,8 @@ fn cached_dashboard_startup_snapshot(
     canonical_home: &Path,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
     physical_home_identity: &str,
-    _allow_legacy_raw_signature: bool,
 ) -> Option<DashboardSnapshot> {
     hydrate_dashboard_aggregate_cache_once();
-    let expected_scope = signature.usage_scope();
     DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
         .lock()
@@ -1667,14 +1663,12 @@ fn cached_dashboard_startup_snapshot(
                         )
                     })
             } else {
-                // Legacy V16-V18 have no physical/binding proof. They are
-                // allowed only as stale usage-scope matches. A raw alias is
-                // accepted only on the explicit alias fallback below; the
-                // canonical lookup must never accidentally consume an alias
-                // envelope.
-                (cached.signature.codex_home == signature.codex_home
-                    || _allow_legacy_raw_signature)
-                    && cached.signature.usage_scope() == expected_scope
+                // Legacy V16-V18 have no physical/binding proof. The caller
+                // must supply the exact expected signature, including Home,
+                // local date, UTC offset, and index revision. The alias
+                // fallback constructs its raw signature explicitly, so this
+                // equality cannot bypass the Home or revision contract.
+                cached.signature == *signature
             }
         })
         .and_then(|cached| cached.snapshot.map(sanitize_legacy_snapshot_for_startup))
