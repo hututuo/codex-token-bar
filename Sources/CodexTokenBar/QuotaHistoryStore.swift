@@ -383,7 +383,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         self.databaseURL = databaseURL
         // Custom database URLs are used by tests and migrations. Do not silently
         // read the user's live Tauri database in those isolated instances.
-        self.peerDatabaseURL = peerDatabaseURL ?? (databaseURL == nil ? Self.defaultPeerDatabaseURL : nil)
+        let configuredPeerURL = peerDatabaseURL ?? (databaseURL == nil ? Self.defaultPeerDatabaseURL : nil)
+        self.peerDatabaseURL = configuredPeerURL.map { SQLitePeerDatabasePath.mainURL(for: $0) }
         self.fileManager = fileManager
     }
 
@@ -1026,25 +1027,29 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     /// do not call `ensureSchema`, legacy bridge claims, or any write-capable
     /// transaction against the peer database.
     private func loadPeerRows(for row: QuotaHistoryRow, cutoff: Date?) -> [QuotaHistoryRow] {
-        guard let peerURL = peerDatabaseURL,
-              let mainURL = databaseURL ?? Self.defaultDatabaseURL,
-              peerURL.standardizedFileURL.path != mainURL.standardizedFileURL.path,
-              let identity = stableIdentity(from: row),
+        guard let configuredPeerURL = peerDatabaseURL,
+              let configuredMainURL = databaseURL ?? Self.defaultDatabaseURL,
+              let identity = stableIdentity(from: row) else {
+            return []
+        }
+        // Re-apply the peer family rule at the read boundary so a future
+        // candidate resolver cannot hand SQLite a WAL/SHM path as `main`.
+        let peerURL = SQLitePeerDatabasePath.mainURL(for: configuredPeerURL)
+        let mainURL = SQLitePeerDatabasePath.mainURL(for: configuredMainURL)
+        guard peerURL.standardizedFileURL.path != mainURL.standardizedFileURL.path,
               fileManager.fileExists(atPath: peerURL.path) else {
             return []
         }
 
         do {
             // This is a fixed, append-only peer WAL. Let SQLite provide its
-            // normal read snapshot: an ordinary Tauri checkpoint/append may
-            // rotate sidecars legitimately, so externally-owned WAL identity
-            // checks would incorrectly discard an otherwise valid read.
-            let driver = SQLiteDatabaseDriver(
+            // normal read snapshot while sidecars exist. If a completed
+            // checkpoint has already removed both sidecars, the peer reader
+            // may use an immutable main-file snapshot after rechecking the
+            // main identity and WAL family before and after the read.
+            let driver = SQLitePeerDatabaseReader(
                 url: peerURL,
-                readOnly: true,
-                createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 250,
-                enableWAL: false,
                 fileManager: fileManager
             )
             guard try peerSupportsStableIdentitySchema(driver) else { return [] }
