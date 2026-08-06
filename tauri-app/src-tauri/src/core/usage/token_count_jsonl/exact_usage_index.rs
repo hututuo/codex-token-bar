@@ -115,6 +115,54 @@ struct ManagedIndexConnection {
     receipt_eligible: bool,
 }
 
+#[cfg(test)]
+fn run_integrity_gate_enter_hook_for_testing(path: &Path) {
+    let Some(slot) = INTEGRITY_GATE_ENTER_HOOK.get() else {
+        return;
+    };
+    let hook = slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(hook) = hook.as_ref() {
+        hook(path);
+    }
+}
+
+#[cfg(not(test))]
+fn run_integrity_gate_enter_hook_for_testing(_path: &Path) {}
+
+#[cfg(test)]
+fn run_integrity_gate_release_hook_for_testing(path: &Path) {
+    let Some(slot) = INTEGRITY_GATE_RELEASE_HOOK.get() else {
+        return;
+    };
+    let hook = slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(hook) = hook.as_ref() {
+        hook(path);
+    }
+}
+
+#[cfg(not(test))]
+fn run_integrity_gate_release_hook_for_testing(_path: &Path) {}
+
+#[cfg(test)]
+fn run_before_finish_index_connection_hook_for_testing(path: &Path) {
+    let Some(slot) = BEFORE_FINISH_INDEX_CONNECTION_HOOK.get() else {
+        return;
+    };
+    let hook = slot
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(hook) = hook.as_ref() {
+        hook(path);
+    }
+}
+
+#[cfg(not(test))]
+fn run_before_finish_index_connection_hook_for_testing(_path: &Path) {}
+
 impl ManagedIndexConnection {
     fn from_registered(connection: Connection, path: PathBuf) -> Self {
         Self {
@@ -166,18 +214,19 @@ impl Drop for ManagedIndexConnection {
         // INDEX_INTEGRITY_STATES. The per-path gate serializes concurrent
         // close-time receipts without coupling different index paths.
         let gate = index_integrity_gate(&self.path);
-        let _gate_guard = gate.enter();
+        let _gate_guard = gate.enter(&self.path);
         let signature_after_close = index_storage_signature(&self.path).ok();
         if let (Some(receipt), Some(signature)) = (receipt, signature_after_close) {
             write_integrity_receipt_best_effort(&self.path, receipt, signature);
         }
-        drop(_gate_guard);
-
+        run_before_finish_index_connection_hook_for_testing(&self.path);
         let states = index_integrity_states();
         let mut states = states
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        finish_index_connection(&mut states, &self.path, signature_after_close);
+        finish_index_connection(&mut states, &self.path);
+        drop(states);
+        drop(_gate_guard);
     }
 }
 
@@ -244,7 +293,6 @@ struct ReceiptMetadata {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IndexIntegrityState {
-    signature: IndexStorageSignature,
     active_connections: usize,
 }
 
@@ -255,6 +303,7 @@ struct IntegrityGate {
 
 struct IntegrityGateGuard {
     gate: Arc<IntegrityGate>,
+    path: PathBuf,
 }
 
 static INDEX_INTEGRITY_GATES: OnceLock<Mutex<HashMap<PathBuf, Weak<IntegrityGate>>>> =
@@ -351,6 +400,12 @@ type AfterPrefixScanHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
 type AfterFileCommitHook = Box<dyn FnOnce(&Path) -> Result<(), String>>;
 #[cfg(test)]
+pub(super) type IntegrityGateEnterHook = Box<dyn Fn(&Path) + Send + Sync>;
+#[cfg(test)]
+pub(super) type IntegrityGateReleaseHook = Box<dyn Fn(&Path) + Send + Sync>;
+#[cfg(test)]
+pub(super) type BeforeFinishIndexConnectionHook = Box<dyn Fn(&Path) + Send + Sync>;
+#[cfg(test)]
 struct BeforeStagingOpenHook {
     target: PathBuf,
     action: Box<dyn FnOnce(&Path) + Send>,
@@ -358,6 +413,15 @@ struct BeforeStagingOpenHook {
 
 #[cfg(test)]
 static BEFORE_STAGING_OPEN_HOOK: OnceLock<Mutex<Option<BeforeStagingOpenHook>>> = OnceLock::new();
+#[cfg(test)]
+static INTEGRITY_GATE_ENTER_HOOK: OnceLock<Mutex<Option<IntegrityGateEnterHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static INTEGRITY_GATE_RELEASE_HOOK: OnceLock<Mutex<Option<IntegrityGateReleaseHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static BEFORE_FINISH_INDEX_CONNECTION_HOOK:
+    OnceLock<Mutex<Option<BeforeFinishIndexConnectionHook>>> = OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -380,6 +444,8 @@ static STAGE_PEAK_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static QUICK_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static RECEIPT_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static QUICK_CHECK_BARRIER: OnceLock<Mutex<Option<(Arc<Barrier>, HashSet<PathBuf>)>>> =
     OnceLock::new();
@@ -662,9 +728,39 @@ impl ExactUsageIndex {
         *slot
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BeforeStagingOpenHook {
-                target,
-                action: Box::new(hook),
-            });
+            target,
+            action: Box::new(hook),
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_integrity_gate_enter_hook_for_testing(
+        hook: Option<IntegrityGateEnterHook>,
+    ) {
+        let slot = INTEGRITY_GATE_ENTER_HOOK.get_or_init(|| Mutex::new(None));
+        *slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_integrity_gate_release_hook_for_testing(
+        hook: Option<IntegrityGateReleaseHook>,
+    ) {
+        let slot = INTEGRITY_GATE_RELEASE_HOOK.get_or_init(|| Mutex::new(None));
+        *slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_before_finish_index_connection_hook_for_testing(
+        hook: Option<BeforeFinishIndexConnectionHook>,
+    ) {
+        let slot = BEFORE_FINISH_INDEX_CONNECTION_HOOK.get_or_init(|| Mutex::new(None));
+        *slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
     }
 
     #[cfg(test)]
@@ -725,6 +821,16 @@ impl ExactUsageIndex {
     }
 
     #[cfg(test)]
+    pub(super) fn active_integrity_connections_for_testing(path: &Path) -> usize {
+        index_integrity_states()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(path)
+            .map(|state| state.active_connections)
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
     pub(super) fn reset_quick_check_count_for_testing() {
         QUICK_CHECK_COUNT.store(0, Ordering::SeqCst);
     }
@@ -732,6 +838,21 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn quick_check_count_for_testing() -> u64 {
         QUICK_CHECK_COUNT.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_receipt_write_count_for_testing() {
+        RECEIPT_WRITE_COUNT.store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn receipt_write_count_for_testing() -> u64 {
+        RECEIPT_WRITE_COUNT.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn mark_receipt_dirty_for_testing(&mut self) {
+        self.connection.mark_receipt_dirty();
     }
 
     #[cfg(test)]
@@ -4960,7 +5081,7 @@ fn open_index_connection_with_recovery(
     existed_before_hint: bool,
 ) -> Result<(ManagedIndexConnection, bool), String> {
     let gate = index_integrity_gate(path);
-    let _gate_guard = gate.enter();
+    let _gate_guard = gate.enter(path);
     // The caller's existence probe can become stale while another open is
     // waiting on this path gate. Recheck under the per-path gate, never under
     // INDEX_INTEGRITY_STATES, so a newly created database is treated as such.
@@ -4972,16 +5093,16 @@ fn open_index_connection_with_recovery(
             .map(|connection| (connection, false));
     }
 
-    let signature_before_open = index_storage_signature(path).ok();
-    let signature_is_verified = signature_before_open.is_some_and(|signature| {
+    let state_has_active_connection = {
         let states = index_integrity_states();
         let states = states
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        states.get(path).is_some_and(|state| {
-            state.active_connections > 0 || state.signature == signature
-        })
-    });
+        states
+            .get(path)
+            .is_some_and(|state| state.active_connections > 0)
+    };
+    let signature_before_open = index_storage_signature(path).ok();
     let receipt = signature_before_open.and_then(|signature| {
         read_integrity_receipt(path).filter(|receipt| {
             receipt_storage_matches(receipt, path, signature)
@@ -4989,7 +5110,7 @@ fn open_index_connection_with_recovery(
     });
 
     let integrity_failure = match open_index_connection(path) {
-        Ok(connection) if signature_is_verified => {
+        Ok(connection) if state_has_active_connection => {
             return managed_index_connection(path, connection)
                 .map(|connection| (connection, false));
         }
@@ -5093,7 +5214,7 @@ fn index_integrity_gate(path: &Path) -> Arc<IntegrityGate> {
 }
 
 impl IntegrityGate {
-    fn enter(self: &Arc<Self>) -> IntegrityGateGuard {
+    fn enter(self: &Arc<Self>, path: &Path) -> IntegrityGateGuard {
         let mut in_flight = self
             .in_flight
             .lock()
@@ -5106,14 +5227,21 @@ impl IntegrityGate {
         }
         *in_flight = true;
         drop(in_flight);
+        run_integrity_gate_enter_hook_for_testing(path);
         IntegrityGateGuard {
             gate: Arc::clone(self),
+            path: path.to_path_buf(),
         }
     }
 }
 
 impl Drop for IntegrityGateGuard {
     fn drop(&mut self) {
+        // The release probe runs before the gate becomes available to a
+        // waiter. This keeps the test-only observation deterministic: the
+        // close path must have already published its state decrement before
+        // any new open can acquire this path gate.
+        run_integrity_gate_release_hook_for_testing(&self.path);
         let mut in_flight = self
             .gate
             .in_flight
@@ -5269,6 +5397,11 @@ fn write_integrity_receipt_best_effort(
     let Ok(bytes) = serde_json::to_vec(&receipt) else {
         return;
     };
+    if fs::read(&receipt_path).is_ok_and(|existing| existing == bytes) {
+        return;
+    }
+    #[cfg(test)]
+    RECEIPT_WRITE_COUNT.fetch_add(1, Ordering::SeqCst);
     let _ = atomic_file::write_atomically(&receipt_path, &bytes);
 }
 
@@ -5306,27 +5439,17 @@ fn managed_index_connection(
     path: &Path,
     connection: Connection,
 ) -> Result<ManagedIndexConnection, String> {
-    // Read the post-open signature before entering the short-lived state
-    // mutex. A SQLite/WAL stat or receipt operation must never occupy the
-    // process-wide map lock.
-    let signature = index_storage_signature(path)?;
     let states = index_integrity_states();
     let mut states = states
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    Ok(register_index_connection(
-        &mut states,
-        path,
-        connection,
-        signature,
-    ))
+    Ok(register_index_connection(&mut states, path, connection))
 }
 
 fn register_index_connection(
     states: &mut HashMap<PathBuf, IndexIntegrityState>,
     path: &Path,
     connection: Connection,
-    signature: IndexStorageSignature,
 ) -> ManagedIndexConnection {
     let active_connections = states
         .get(path)
@@ -5336,7 +5459,6 @@ fn register_index_connection(
     states.insert(
         path.to_path_buf(),
         IndexIntegrityState {
-            signature,
             active_connections,
         },
     );
@@ -5346,30 +5468,20 @@ fn register_index_connection(
 fn finish_index_connection(
     states: &mut HashMap<PathBuf, IndexIntegrityState>,
     path: &Path,
-    signature: Option<IndexStorageSignature>,
 ) {
     let remaining_connections = states
         .get(path)
         .map(|state| state.active_connections.saturating_sub(1))
         .unwrap_or(0);
-    match (signature, remaining_connections) {
-        (Some(signature), remaining_connections) => {
-            states.insert(
-                path.to_path_buf(),
-                IndexIntegrityState {
-                    signature,
-                    active_connections: remaining_connections,
-                },
-            );
-        }
-        (None, 0) => {
-            states.remove(path);
-        }
-        (None, remaining_connections) => {
-            if let Some(state) = states.get_mut(path) {
-                state.active_connections = remaining_connections;
-            }
-        }
+    if remaining_connections > 0 {
+        states.insert(
+            path.to_path_buf(),
+            IndexIntegrityState {
+                active_connections: remaining_connections,
+            },
+        );
+    } else {
+        states.remove(path);
     }
 }
 

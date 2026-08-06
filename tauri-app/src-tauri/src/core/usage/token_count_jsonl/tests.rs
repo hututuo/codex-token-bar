@@ -9,9 +9,11 @@ use super::*;
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -5029,6 +5031,152 @@ fn exact_index_integrity_checks_for_different_paths_do_not_share_gate() {
 
     fs::remove_dir_all(root_a).unwrap();
     fs::remove_dir_all(root_b).unwrap();
+}
+
+#[test]
+fn exact_index_close_publishes_state_before_a_waiting_open_can_enter() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019estate-gate-0000-0000-fast.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    let path = super::exact_usage_index::database_path(&root).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    // Model a connection whose work was not safe to publish. Its close must
+    // still decrement the active count while retaining the path gate.
+    index.mark_receipt_dirty_for_testing();
+
+    let (gate_enter_tx, gate_enter_rx) = mpsc::channel::<usize>();
+    let enter_target = path.clone();
+    ExactUsageIndex::set_integrity_gate_enter_hook_for_testing(Some(Box::new(
+        move |candidate| {
+            if candidate == enter_target {
+                gate_enter_tx
+                    .send(ExactUsageIndex::active_integrity_connections_for_testing(
+                        candidate,
+                    ))
+                    .unwrap();
+            }
+        },
+    )));
+
+    let (gate_release_tx, gate_release_rx) = mpsc::channel::<usize>();
+    let release_target = path.clone();
+    ExactUsageIndex::set_integrity_gate_release_hook_for_testing(Some(Box::new(
+        move |candidate| {
+            if candidate == release_target {
+                gate_release_tx
+                    .send(ExactUsageIndex::active_integrity_connections_for_testing(
+                        candidate,
+                    ))
+                    .unwrap();
+            }
+        },
+    )));
+
+    let (finish_started_tx, finish_started_rx) = mpsc::channel::<()>();
+    let (finish_release_tx, finish_release_rx) = mpsc::channel::<()>();
+    let finish_first = Arc::new(Mutex::new(true));
+    let finish_first_for_hook = Arc::clone(&finish_first);
+    let finish_release = Arc::new(Mutex::new(Some(finish_release_rx)));
+    let finish_release_for_hook = Arc::clone(&finish_release);
+    let finish_target = path.clone();
+    ExactUsageIndex::set_before_finish_index_connection_hook_for_testing(Some(Box::new(
+        move |candidate| {
+            if candidate != finish_target {
+                return;
+            }
+            let first = {
+                let mut first = finish_first_for_hook.lock().unwrap();
+                let first_call = *first;
+                *first = false;
+                first_call
+            };
+            if !first {
+                return;
+            }
+            finish_started_tx.send(()).unwrap();
+            let receiver = finish_release_for_hook
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap();
+            receiver.recv().unwrap();
+        },
+    )));
+
+    let drop_thread = std::thread::spawn(move || drop(index));
+    assert_eq!(gate_enter_rx.recv().unwrap(), 1);
+    finish_started_rx.recv().unwrap();
+
+    let (attempt_tx, attempt_rx) = mpsc::channel::<()>();
+    let (start_open_tx, start_open_rx) = mpsc::channel::<()>();
+    let open_root = root.clone();
+    let open_thread = std::thread::spawn(move || {
+        attempt_tx.send(()).unwrap();
+        start_open_rx.recv().unwrap();
+        drop(ExactUsageIndex::open(&open_root).unwrap());
+    });
+    attempt_rx.recv().unwrap();
+    start_open_tx.send(()).unwrap();
+    finish_release_tx.send(()).unwrap();
+
+    let state_at_gate_release = gate_release_rx.recv().unwrap();
+    let state_seen_by_waiting_open = gate_enter_rx.recv().unwrap();
+    drop_thread.join().unwrap();
+    open_thread.join().unwrap();
+    ExactUsageIndex::set_before_finish_index_connection_hook_for_testing(None);
+    ExactUsageIndex::set_integrity_gate_release_hook_for_testing(None);
+    ExactUsageIndex::set_integrity_gate_enter_hook_for_testing(None);
+
+    assert_eq!(state_at_gate_release, 0);
+    assert_eq!(state_seen_by_waiting_open, 0);
+    assert_eq!(ExactUsageIndex::active_integrity_connections_for_testing(&path), 0);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_readonly_reopen_does_not_rewrite_identical_integrity_receipt() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ereceipt-idempotent-0000-0000-fast.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    // Normalize one ordinary open/close cycle before capturing the receipt.
+    drop(ExactUsageIndex::open(&root).unwrap());
+
+    let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    let before_bytes = fs::read(&receipt).unwrap();
+    let before_metadata = fs::metadata(&receipt).unwrap();
+    #[cfg(unix)]
+    let before_identity = (before_metadata.dev(), before_metadata.ino());
+
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_receipt_write_count_for_testing();
+    drop(ExactUsageIndex::open(&root).unwrap());
+
+    assert_eq!(ExactUsageIndex::receipt_write_count_for_testing(), 0);
+    let after_bytes = fs::read(&receipt).unwrap();
+    let after_metadata = fs::metadata(&receipt).unwrap();
+    assert_eq!(after_bytes, before_bytes);
+    assert_eq!(
+        after_metadata.modified().unwrap(),
+        before_metadata.modified().unwrap()
+    );
+    #[cfg(unix)]
+    assert_eq!((after_metadata.dev(), after_metadata.ino()), before_identity);
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
