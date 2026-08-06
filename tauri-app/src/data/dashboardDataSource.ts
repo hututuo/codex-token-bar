@@ -8,6 +8,7 @@ import {
   acknowledgeUnreadSummary,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   scanProviderRepair,
   resetCodexHome,
@@ -20,6 +21,7 @@ import type {
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  PreciseDashboardSourceProbe,
   PlatformCapabilities,
   ProviderRepairSnapshot,
   UsageCacheStatus,
@@ -40,6 +42,9 @@ export interface DashboardDataSource {
   readPreciseDashboardSnapshot: (
     sourceToken: CodexHomeSourceToken,
   ) => Promise<DashboardSnapshot | null>;
+  readPreciseDashboardSourceProbe: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<PreciseDashboardSourceProbe | null>;
   readUsageCacheStatus: () => Promise<UsageCacheStatus>;
   readAccountQuota: (
     sourceToken: CodexHomeSourceToken,
@@ -61,6 +66,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPlatformCapabilities,
   readDashboardSnapshot,
   readPreciseDashboardSnapshot,
+  readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   readAccountQuota,
   readLiveRateSnapshot,

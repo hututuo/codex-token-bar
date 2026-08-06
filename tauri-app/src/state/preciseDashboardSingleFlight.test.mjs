@@ -216,6 +216,25 @@ test("a periodic request arriving during an owner does not enqueue a trailing fu
   assert.equal(invocationCount, 1);
 });
 
+test("a new dirty generation during an owner keeps one trailing precise run", async () => {
+  const token = sourceToken("dirty-during-owner");
+  const loads = [];
+  const loader = () => {
+    const pending = deferred();
+    loads.push(pending);
+    return pending.promise;
+  };
+
+  const owner = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true });
+  markPreciseDashboardSourceDirty(token);
+  assert.equal(loads.length, 1);
+  loads[0].resolve(preciseSnapshot(60));
+  await nextTurn();
+  assert.equal(loads.length, 2, "dirty observed before the owner settles needs one trailing run");
+  loads[1].resolve(preciseSnapshot(61));
+  assert.equal((await owner.result).revision, 61);
+});
+
 test("a failed forced refresh leaves the source dirty so the next periodic tick retries", async () => {
   const token = sourceToken("retry-after-failure");
   let invocationCount = 0;
@@ -261,6 +280,61 @@ test("a source-dirty marker bypasses the periodic last-good snapshot", async () 
   const refreshed = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: false });
   assert.equal((await refreshed.result).revision, 52);
   assert.equal(invocationCount, 2);
+});
+
+test("a failed trailing run keeps the source dirty for the next cadence retry", async () => {
+  const token = sourceToken("failed-trailing-retry");
+  const loads = [];
+  const loader = () => {
+    const pending = deferred();
+    loads.push(pending);
+    return pending.promise;
+  };
+
+  const first = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true });
+  const forced = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true });
+  loads[0].resolve(preciseSnapshot(70));
+  await nextTurn();
+  loads[1].reject(new Error("trailing probe refresh failed"));
+  assert.equal((await first.result).revision, 70);
+  assert.equal((await forced.result).revision, 70);
+
+  const retry = loadPreciseDashboardSingleFlight(
+    token,
+    async () => preciseSnapshot(71),
+    undefined,
+    { force: false },
+  );
+  assert.equal((await retry.result).revision, 71);
+});
+
+test("Home transition generations never reuse another source cache and old entries are bounded", async () => {
+  const tokens = [sourceToken("cache-a"), sourceToken("cache-b"), sourceToken("cache-c")];
+  const loads = new Map();
+  for (const [index, token] of tokens.entries()) {
+    loads.set(token.canonicalHomeKey, 0);
+    await loadPreciseDashboardSingleFlight(
+      token,
+      async () => {
+        loads.set(token.canonicalHomeKey, loads.get(token.canonicalHomeKey) + 1);
+        return preciseSnapshot(80 + index);
+      },
+      undefined,
+      { force: true },
+    ).result;
+  }
+
+  const switchedBack = loadPreciseDashboardSingleFlight(
+    tokens[0],
+    async () => {
+      loads.set(tokens[0].canonicalHomeKey, loads.get(tokens[0].canonicalHomeKey) + 1);
+      return preciseSnapshot(90);
+    },
+    undefined,
+    { force: false },
+  );
+  assert.equal((await switchedBack.result).revision, 90);
+  assert.equal(loads.get(tokens[0].canonicalHomeKey), 2);
 });
 
 function sourceToken(suffix) {

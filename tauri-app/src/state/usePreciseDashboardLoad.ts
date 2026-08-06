@@ -19,12 +19,16 @@ interface PreciseDashboardLoadOptions {
   generation: number;
   forcePreciseRefresh?: boolean;
   sourceToken: CodexHomeSourceToken | null;
-  source: Pick<DashboardDataSource, "readPreciseDashboardSnapshot" | "readUsageCacheStatus">;
+  source: Pick<
+    DashboardDataSource,
+    "readPreciseDashboardSnapshot" | "readPreciseDashboardSourceProbe" | "readUsageCacheStatus"
+  >;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
   onPreciseDashboardFailure?: () => void;
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized?: () => void;
   onUsageCacheStatus?: (status: UsageCacheStatus) => void;
+  onPreciseRequestStarted?: (generation: number) => void;
   onLoadEnd?: () => void;
   onLoadStart?: () => void;
 }
@@ -42,6 +46,7 @@ export function usePreciseDashboardLoad({
   onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
+  onPreciseRequestStarted,
   onLoadEnd,
   onLoadStart,
 }: PreciseDashboardLoadOptions) {
@@ -77,6 +82,7 @@ export function usePreciseDashboardLoad({
       // explicit false remains instead of trusting the previous canvas.
       onPreciseDashboardStale?.();
       onLoadStart?.();
+      let effectiveForce = forcePreciseRefresh;
       let failureReported = false;
       const reportFailure = () => {
         if (!cancelled && !failureReported) {
@@ -92,6 +98,25 @@ export function usePreciseDashboardLoad({
         if (cancelled || sourceToken === null) {
           return;
         }
+        if (!forcePreciseRefresh) {
+          // Cadence requests must prove that the source is unchanged before
+          // reusing a last-good exact snapshot. A missing, changed, or failed
+          // probe is deliberately fail-safe: keep the source dirty and enter
+          // the native precise owner.
+          let sourceProbe = null;
+          try {
+            sourceProbe = await source.readPreciseDashboardSourceProbe(sourceToken);
+          } catch {
+            sourceProbe = null;
+          }
+          if (cancelled) {
+            return;
+          }
+          if (sourceProbe?.state !== "unchanged") {
+            effectiveForce = true;
+            markPreciseDashboardSourceDirty(sourceToken);
+          }
+        }
         const preciseFlight = loadPreciseDashboardSingleFlight(
           sourceToken,
           () => source.readPreciseDashboardSnapshot(sourceToken),
@@ -101,7 +126,7 @@ export function usePreciseDashboardLoad({
               onUsageCacheInitialized?.();
             }
           },
-          { force: forcePreciseRefresh },
+          { force: effectiveForce },
         );
         unsubscribePrecise = preciseFlight.unsubscribe;
         void preciseFlight.result.then(
@@ -132,6 +157,7 @@ export function usePreciseDashboardLoad({
         // period; marking it earlier would make the replacement effect believe
         // the exact scan had already run and permanently skip that generation.
         preciseGeneration.current = generation;
+        onPreciseRequestStarted?.(generation);
         void loadPreciseSnapshot();
       }
     }, startDelayMs);
@@ -154,6 +180,7 @@ export function usePreciseDashboardLoad({
     onPreciseDashboardStale,
     onUsageCacheInitialized,
     onUsageCacheStatus,
+    onPreciseRequestStarted,
     source,
     sourceToken,
   ]);

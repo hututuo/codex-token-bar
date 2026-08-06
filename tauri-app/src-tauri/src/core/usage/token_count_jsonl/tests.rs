@@ -6090,6 +6090,43 @@ fn exact_index_source_change_check_detects_append_and_delete() {
 }
 
 #[test]
+fn precise_dashboard_source_probe_reports_metadata_only_changes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session = session_dir.join("rollout-019esource-probe-0000-0000-fast.jsonl");
+    write_lines(
+        &session,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    dashboard_snapshot(&root).unwrap();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let unchanged = precise_dashboard_source_probe(&root).unwrap();
+    assert_eq!(unchanged.state, "unchanged");
+    assert!(!unchanged.published_revision.is_empty());
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+
+    let mut handle = fs::OpenOptions::new().append(true).open(&session).unwrap();
+    writeln!(
+        handle,
+        r#"{{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+    )
+    .unwrap();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let changed = precise_dashboard_source_probe(&root).unwrap();
+    assert_eq!(changed.state, "changed");
+    assert_eq!(changed.published_revision, unchanged.published_revision);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_integrity_check_is_reused_and_trusted_sync_refreshes_its_signature() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

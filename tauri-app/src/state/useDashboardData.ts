@@ -120,18 +120,24 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const preciseCatchUpQuotaRef = useRef<string | null>(null);
   const attributionPreciseRefreshRef = useRef<string | null>(null);
   const latestPreciseCoverageRef = useRef<string | null>(null);
-  const forcePreciseGenerationRef = useRef(0);
+  const pendingForcedPreciseRefreshRef = useRef(false);
   latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
 
   const requestPreciseRefresh = useCallback((force = true) => {
+    if (force) {
+      pendingForcedPreciseRefreshRef.current = true;
+    }
     setLoadGeneration((current) => {
-      const next = current + 1;
-      if (force) {
-        forcePreciseGenerationRef.current = next;
-      }
-      return next;
+      // A cadence tick can batch with a forced/manual request. The pending
+      // force bit is consumed only when the exact effect actually starts, so
+      // the final batched generation cannot silently downgrade to periodic.
+      return current + 1;
     });
+  }, []);
+
+  const markPreciseRequestStarted = useCallback(() => {
+    pendingForcedPreciseRefreshRef.current = false;
   }, []);
 
   // 本地命令失败诊断接入 state.diagnostics（订阅即回放当前快照），
@@ -730,7 +736,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dashboardReady,
     loading: state.loading,
     generation: loadGeneration,
-    forcePreciseRefresh: forcePreciseGenerationRef.current === loadGeneration,
+    forcePreciseRefresh: pendingForcedPreciseRefreshRef.current,
     quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
     sourceToken,
@@ -740,6 +746,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     onPreciseDashboardStale: markPreciseSnapshotStale,
     onUsageCacheInitialized: markUsageCacheInitialized,
     onUsageCacheStatus: updateUsageCacheStatus,
+    onPreciseRequestStarted: markPreciseRequestStarted,
     onQuota: mergeQuotaSnapshot,
     onLiveThreadOptions: mergeThreadOptions,
     onForceQuotaRefreshConsumed: consumeForcedQuotaRefresh,

@@ -22,6 +22,7 @@ interface DeferredDashboardLoadsOptions {
   source: Pick<
     DashboardDataSource,
     | "readPreciseDashboardSnapshot"
+    | "readPreciseDashboardSourceProbe"
     | "readUsageCacheStatus"
     | "readAccountQuota"
     | "readLiveThreadOptions"
@@ -31,6 +32,7 @@ interface DeferredDashboardLoadsOptions {
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized: () => void;
   onUsageCacheStatus: (status: UsageCacheStatus) => void;
+  onPreciseRequestStarted?: (generation: number) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;
@@ -53,6 +55,7 @@ export function useDeferredDashboardLoads({
   onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
+  onPreciseRequestStarted,
   onQuota,
   onLiveThreadOptions,
   onForceQuotaRefreshConsumed,
@@ -70,6 +73,7 @@ export function useDeferredDashboardLoads({
     onPreciseDashboardStale,
     onUsageCacheInitialized,
     onUsageCacheStatus,
+    onPreciseRequestStarted,
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,

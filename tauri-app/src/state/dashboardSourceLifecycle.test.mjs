@@ -13,7 +13,12 @@ test("fast and precise dashboard clients invoke production IPC with the exact so
       __TAURI_INTERNALS__: {
         invoke(command, args) {
           calls.push({ args, command });
-          return Promise.resolve(command === "read_precise_dashboard_snapshot" ? null : { stats: {} });
+          return Promise.resolve(
+            command === "read_precise_dashboard_snapshot"
+              || command === "read_precise_dashboard_source_probe"
+              ? null
+              : { stats: {} },
+          );
         },
       },
       clearTimeout: globalThis.clearTimeout.bind(globalThis),
@@ -27,6 +32,7 @@ test("fast and precise dashboard clients invoke production IPC with the exact so
       const {
         readDashboardSnapshot,
         readPreciseDashboardSnapshot,
+        readPreciseDashboardSourceProbe,
       } = await load("/src/api/dashboardClient.ts");
       const sourceToken = {
         canonicalHomeKey: "/same/.codex",
@@ -36,9 +42,11 @@ test("fast and precise dashboard clients invoke production IPC with the exact so
 
       await readDashboardSnapshot(sourceToken);
       assert.equal(await readPreciseDashboardSnapshot(sourceToken), null);
+      assert.equal(await readPreciseDashboardSourceProbe(sourceToken), null);
       assert.deepEqual(calls, [
         { command: "read_dashboard_snapshot", args: { sourceToken } },
         { command: "read_precise_dashboard_snapshot", args: { sourceToken } },
+        { command: "read_precise_dashboard_source_probe", args: { sourceToken } },
       ]);
     });
   } finally {
@@ -322,6 +330,8 @@ function dashboardSource(options) {
     readPlatformCapabilities: () => Promise.resolve(options.fallbackPlatformCapabilities),
     readDashboardSnapshot: options.readDashboardSnapshot,
     readPreciseDashboardSnapshot: options.readPreciseDashboardSnapshot ?? (() => Promise.resolve(null)),
+    readPreciseDashboardSourceProbe: options.readPreciseDashboardSourceProbe
+      ?? (() => Promise.resolve(null)),
     readUsageCacheStatus: () => Promise.resolve({ namespace: "test", initialized: true, initializedAt: null }),
     readAccountQuota: () => Promise.resolve(null),
     readLiveRateSnapshot: () => Promise.resolve(null),

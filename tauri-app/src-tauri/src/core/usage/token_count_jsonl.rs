@@ -996,6 +996,40 @@ pub struct TokenUsageSummary {
     pub today_requests: u32,
 }
 
+/// Cheap source-change probe used by the dashboard cadence. The probe only
+/// enumerates the published session paths and compares filesystem metadata;
+/// it never reads JSONL bodies. A full precise refresh remains the authority
+/// whenever the probe cannot prove that the source is unchanged.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreciseDashboardSourceProbe {
+    pub state: String,
+    /// Revisions are seeded from nanosecond timestamps and may exceed the
+    /// JavaScript safe-integer range, so preserve the value as text at IPC.
+    pub published_revision: String,
+}
+
+pub fn precise_dashboard_source_probe(
+    codex_home: &Path,
+) -> Result<PreciseDashboardSourceProbe, String> {
+    let canonical_home = precise_refresh_home(codex_home)?;
+    let mut index = ExactUsageIndex::open(&canonical_home)?;
+    let published_revision = index.revision()?;
+    let mut warnings = Vec::new();
+    let changed = index.sources_changed(&canonical_home, &mut warnings)?;
+    let state = if !warnings.is_empty() {
+        "unknown"
+    } else if changed {
+        "changed"
+    } else {
+        "unchanged"
+    };
+    Ok(PreciseDashboardSourceProbe {
+        state: state.into(),
+        published_revision: published_revision.to_string(),
+    })
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug)]
 struct TokenEvent {

@@ -87,6 +87,102 @@ test("a render during the cold-start grace period cannot permanently skip the pr
   }
 });
 
+test("periodic precise loads probe the source before reusing cache and fail safe", async () => {
+  const dom = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(dom);
+  const timers = installManualWindowTimers(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { usePreciseDashboardLoad } = await load("/src/state/usePreciseDashboardLoad.ts");
+      const sourceToken = {
+        canonicalHomeKey: "canonical-periodic-home",
+        physicalHomeKey: "physical-periodic-home",
+        transitionGeneration: 1,
+      };
+      let preciseReads = 0;
+      let probeState = "unchanged";
+      const source = {
+        async readUsageCacheStatus() {
+          return {};
+        },
+        async readPreciseDashboardSourceProbe() {
+          if (probeState === "reject") {
+            throw new Error("probe unavailable");
+          }
+          return { state: probeState, publishedRevision: String(preciseReads) };
+        },
+        async readPreciseDashboardSnapshot() {
+          preciseReads += 1;
+          return {
+            revision: preciseReads,
+            preciseRecentUsageFresh: true,
+            preciseRecentUsageCoveredAt: "2026-08-06T00:00:00.000Z",
+          };
+        },
+      };
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+
+      function Probe({ generation, force }) {
+        usePreciseDashboardLoad({
+          active: true,
+          dashboardReady: true,
+          generation,
+          loading: false,
+          forcePreciseRefresh: force,
+          source,
+          sourceToken,
+          onPreciseDashboard() {},
+        });
+        return null;
+      }
+
+      const runGeneration = async (generation, force) => {
+        await React.act(async () => root.render(React.createElement(Probe, { generation, force })));
+        assert.equal(timers.pendingCount(), 1);
+        await React.act(async () => {
+          timers.runNext();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+
+      try {
+        await runGeneration(1, true);
+        assert.equal(preciseReads, 1, "the forced baseline should create one precise owner");
+
+        await runGeneration(2, false);
+        assert.equal(preciseReads, 1, "an unchanged probe should reuse the last-good snapshot");
+
+        probeState = "changed";
+        await runGeneration(3, false);
+        assert.equal(preciseReads, 2, "an append/changed probe must enter precise refresh");
+
+        probeState = "unknown";
+        await runGeneration(4, false);
+        assert.equal(preciseReads, 3, "an unknown probe must fail safe to precise refresh");
+
+        probeState = "reject";
+        await runGeneration(5, false);
+        assert.equal(preciseReads, 4, "a probe failure must fail safe to precise refresh");
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    timers.restore();
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
 function installManualWindowTimers(dom) {
   const originalSetTimeout = dom.setTimeout.bind(dom);
   const originalClearTimeout = dom.clearTimeout.bind(dom);

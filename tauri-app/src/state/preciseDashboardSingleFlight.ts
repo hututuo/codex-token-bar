@@ -11,6 +11,7 @@ interface PreciseDashboardFlight {
   };
   rerunRequested: boolean;
   rerunStarted: boolean;
+  trailingRefreshFailed: boolean;
   settled: boolean;
   settlementWaiters: Set<() => void>;
   subscriberSequence: number;
@@ -34,10 +35,23 @@ export interface PreciseDashboardRequestOptions {
 const flightsBySource = new Map<string, PreciseDashboardFlight>();
 const lastSuccessfulSnapshotsBySource = new Map<string, DashboardSnapshot>();
 const dirtySources = new Set<string>();
+const MAX_PRECISE_SOURCE_CACHE_ENTRIES = 2;
 
-/** Mark a source dirty before an explicit request crosses the optional cache-status IPC. */
+/** Mark a source dirty before a forced request crosses status/probe IPC. */
 export function markPreciseDashboardSourceDirty(sourceToken: CodexHomeSourceToken): void {
-  dirtySources.add(preciseDashboardSourceKey(sourceToken));
+  const key = preciseDashboardSourceKey(sourceToken);
+  dirtySources.add(key);
+  const existing = flightsBySource.get(key);
+  if (existing && !existing.settled) {
+    // A probe can observe a new append while the owner is still in flight. It
+    // must retain one trailing run rather than letting that generation vanish
+    // at the owner's stable boundary.
+    if (existing.rerunStarted) {
+      existing.trailingRefreshFailed = true;
+    } else {
+      existing.rerunRequested = true;
+    }
+  }
 }
 
 export function loadPreciseDashboardSingleFlight(
@@ -47,6 +61,7 @@ export function loadPreciseDashboardSingleFlight(
   options: PreciseDashboardRequestOptions = {},
 ): PreciseDashboardFlightHandle {
   const key = preciseDashboardSourceKey(sourceToken);
+  prunePreciseDashboardCaches(key);
   const force = options.force !== false;
   const existing = flightsBySource.get(key);
   if (existing && !existing.settled) {
@@ -54,8 +69,13 @@ export function loadPreciseDashboardSingleFlight(
     // A periodic callback that arrives while the owner is still running is
     // already covered by that owner. Only an explicit/dirty request may ask
     // the single-flight cycle for one trailing attempt.
-    if (force && !existing.rerunStarted) {
-      existing.rerunRequested = true;
+    if (force) {
+      dirtySources.add(key);
+      if (!existing.rerunStarted) {
+        existing.rerunRequested = true;
+      } else {
+        existing.trailingRefreshFailed = true;
+      }
     }
     return flightHandle(existing, subscriber);
   }
@@ -73,6 +93,7 @@ export function loadPreciseDashboardSingleFlight(
     latestLoader: loader,
     rerunRequested: false,
     rerunStarted: false,
+    trailingRefreshFailed: false,
     settled: false,
     settlementWaiters: new Set(),
     subscriberSequence: 0,
@@ -83,7 +104,9 @@ export function loadPreciseDashboardSingleFlight(
       (result) => {
         if (isSuccessfulPreciseSnapshot(result)) {
           lastSuccessfulSnapshotsBySource.set(key, result);
-          dirtySources.delete(key);
+          if (!flight.trailingRefreshFailed) {
+            dirtySources.delete(key);
+          }
         }
         settleFlight(flight, result);
         return result;
@@ -97,6 +120,7 @@ export function loadPreciseDashboardSingleFlight(
       if (flightsBySource.get(key) === flight) {
         flightsBySource.delete(key);
       }
+      prunePreciseDashboardCaches(key);
     });
   void flight.promise.catch(() => undefined);
   flightsBySource.set(key, flight);
@@ -120,8 +144,12 @@ async function runPreciseDashboardFlight(
     flight.rerunStarted = true;
     try {
       const trailingResult = await flight.latestLoader();
+      if (trailingResult === null) {
+        flight.trailingRefreshFailed = true;
+      }
       return trailingResult ?? firstResult;
     } catch (error) {
+      flight.trailingRefreshFailed = true;
       if (!firstFailed && firstResult !== null) {
         return firstResult;
       }
@@ -247,4 +275,29 @@ function preciseDashboardSourceKey(sourceToken: CodexHomeSourceToken): string {
     sourceToken.canonicalHomeKey,
     sourceToken.physicalHomeKey,
   ]);
+}
+
+function prunePreciseDashboardCaches(currentKey: string): void {
+  if (lastSuccessfulSnapshotsBySource.size > MAX_PRECISE_SOURCE_CACHE_ENTRIES) {
+    const protectedKeys = new Set([currentKey, ...flightsBySource.keys()]);
+    for (const key of lastSuccessfulSnapshotsBySource.keys()) {
+      if (lastSuccessfulSnapshotsBySource.size <= MAX_PRECISE_SOURCE_CACHE_ENTRIES) {
+        break;
+      }
+      if (!protectedKeys.has(key)) {
+        lastSuccessfulSnapshotsBySource.delete(key);
+      }
+    }
+  }
+
+  // A source token includes the transition generation, so an old dirty entry
+  // can never safely authorize a future Home. Keep only entries that still
+  // have a current last-good snapshot or an owner in flight.
+  for (const key of dirtySources) {
+    if (key !== currentKey
+      && !lastSuccessfulSnapshotsBySource.has(key)
+      && !flightsBySource.has(key)) {
+      dirtySources.delete(key);
+    }
+  }
 }

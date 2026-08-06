@@ -1592,6 +1592,26 @@ pub async fn read_usage_summary_snapshot(
 }
 
 #[tauri::command]
+pub async fn read_precise_dashboard_source_probe(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+) -> Result<token_count_jsonl::PreciseDashboardSourceProbe, String> {
+    require_window_label(&window, "read_precise_dashboard_source_probe")?;
+    let started = Instant::now();
+    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        token_count_jsonl::precise_dashboard_source_probe(&codex_home)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "read_precise_dashboard_source_probe {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
+#[tauri::command]
 pub fn read_usage_cache_status(window: tauri::WebviewWindow) -> Result<UsageCacheStatus, String> {
     require_window_label(&window, "read_usage_cache_status")?;
     Ok(cache_lifecycle::usage_cache_status())

@@ -135,6 +135,13 @@ export interface UsageCacheStatus {
   initializedAt: string | null;
 }
 
+export type PreciseDashboardSourceProbeState = "unchanged" | "changed" | "unknown";
+
+export interface PreciseDashboardSourceProbe {
+  state: PreciseDashboardSourceProbeState;
+  publishedRevision: string;
+}
+
 export interface UsageSummarySnapshot {
   totalTokens: number;
   todayTokens: number;

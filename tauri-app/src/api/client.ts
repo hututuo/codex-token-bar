@@ -11,6 +11,7 @@ export {
   readDashboardSnapshot,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   readUsageSummarySnapshot,
   resetCodexHome,

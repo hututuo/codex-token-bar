@@ -3,6 +3,7 @@ import type {
   CodexHomeSourceEnvelope,
   CodexHomeSourceToken,
   DashboardSnapshot,
+  PreciseDashboardSourceProbe,
   PlatformCapabilities,
   UsageSummarySnapshot,
   UsageCacheStatus,
@@ -52,6 +53,19 @@ export function readPreciseDashboardSnapshot(
   // A JavaScript-only timeout cannot cancel it and only creates another queued
   // read on the next refresh, so wait for the real native outcome.
   return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, null);
+}
+
+export function readPreciseDashboardSourceProbe(
+  sourceToken: CodexHomeSourceToken,
+): Promise<PreciseDashboardSourceProbe | null> {
+  // This probe only compares the published session-file metadata with the
+  // current source. It deliberately does not scan JSONL bodies; a changed,
+  // unknown, or failed probe falls back to the serialized precise owner.
+  return callCommandOptional(
+    "read_precise_dashboard_source_probe",
+    { sourceToken },
+    null,
+  );
 }
 
 export function acknowledgeAttributionSafety(
