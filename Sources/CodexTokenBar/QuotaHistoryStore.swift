@@ -380,10 +380,11 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         peerDatabaseURL: URL? = nil,
         fileManager: FileManager = .default
     ) {
-        self.databaseURL = databaseURL
+        self.databaseURL = databaseURL.map { SQLiteDatabasePath.mainURL(for: $0) }
         // Custom database URLs are used by tests and migrations. Do not silently
         // read the user's live Tauri database in those isolated instances.
-        self.peerDatabaseURL = peerDatabaseURL ?? (databaseURL == nil ? Self.defaultPeerDatabaseURL : nil)
+        let configuredPeerURL = peerDatabaseURL ?? (databaseURL == nil ? Self.defaultPeerDatabaseURL : nil)
+        self.peerDatabaseURL = configuredPeerURL.map { SQLiteDatabasePath.mainURL(for: $0) }
         self.fileManager = fileManager
     }
 
@@ -1026,10 +1027,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     /// do not call `ensureSchema`, legacy bridge claims, or any write-capable
     /// transaction against the peer database.
     private func loadPeerRows(for row: QuotaHistoryRow, cutoff: Date?) -> [QuotaHistoryRow] {
-        guard let peerURL = peerDatabaseURL,
-              let mainURL = databaseURL ?? Self.defaultDatabaseURL,
-              peerURL.standardizedFileURL.path != mainURL.standardizedFileURL.path,
-              let identity = stableIdentity(from: row),
+        guard let configuredPeerURL = peerDatabaseURL,
+              let configuredMainURL = databaseURL ?? Self.defaultDatabaseURL,
+              let identity = stableIdentity(from: row) else {
+            return []
+        }
+        // Re-apply the family rule at the read boundary as well as in init so
+        // a future candidate resolver cannot hand a sidecar to SQLite as main.
+        let peerURL = SQLiteDatabasePath.mainURL(for: configuredPeerURL)
+        let mainURL = SQLiteDatabasePath.mainURL(for: configuredMainURL)
+        guard peerURL.standardizedFileURL.path != mainURL.standardizedFileURL.path,
               fileManager.fileExists(atPath: peerURL.path) else {
             return []
         }

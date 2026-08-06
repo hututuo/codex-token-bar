@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import CodexTokenBar
 
@@ -328,6 +329,149 @@ final class QuotaHistoryStoreTests: XCTestCase {
             statement.text(0) ?? ""
         }
         XCTAssertFalse(peerTables.contains("quota_history_legacy_claims"))
+    }
+
+    func testPeerSidecarCandidatesResolveToTheQuotaHistoryMainDatabase() throws {
+        let localURL = try makeDatabaseURL()
+        let peerURL = try makeDatabaseURL()
+        try createPeerQuotaSnapshotsTable(at: peerURL, includeStableIdentity: true, enableWAL: true)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let localQuota = identifiedSnapshot(
+            usedPercent: 82,
+            reset: reset,
+            homeIdentity: "/fixture/sidecar-peer-home",
+            stableAccountKey: "sub:sidecar-peer-account",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Sidecar Peer User",
+            at: now.addingTimeInterval(-60)
+        )
+        let peerQuota = identifiedSnapshot(
+            usedPercent: 100,
+            reset: reset,
+            homeIdentity: "/fixture/sidecar-peer-home",
+            stableAccountKey: "sub:sidecar-peer-account",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Sidecar Peer User",
+            at: now
+        )
+
+        let localDatabase = QuotaHistoryDatabase(databaseURL: localURL, peerDatabaseURL: peerURL)
+        XCTAssertTrue(try localDatabase.record(localQuota, createdAt: now.addingTimeInterval(-60)))
+        try insertStableIdentitySnapshot(
+            databaseURL: peerURL,
+            quota: peerQuota,
+            source: "tauri",
+            createdAt: now,
+            enableWAL: true
+        )
+
+        let walURL = URL(fileURLWithPath: peerURL.path + "-wal")
+        let shmURL = URL(fileURLWithPath: peerURL.path + "-shm")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: walURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shmURL.path))
+
+        for candidateURL in [walURL, shmURL] {
+            let database = QuotaHistoryDatabase(
+                databaseURL: localURL,
+                peerDatabaseURL: candidateURL
+            )
+            XCTAssertEqual(
+                try database.recordedFiveHourUsedPercents(for: localQuota, now: now),
+                [82, 100],
+                "a sidecar candidate must resolve to quota-history.sqlite, not open as a second main database"
+            )
+        }
+
+        // A checkpoint may rotate or remove both sidecars. A stale candidate
+        // URL must still resolve to the surviving main database and retain the
+        // valid peer history.
+        try SQLiteDatabaseDriver(url: peerURL, enableWAL: true)
+            .execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        let afterRotation = QuotaHistoryDatabase(
+            databaseURL: localURL,
+            peerDatabaseURL: walURL
+        )
+        XCTAssertEqual(
+            try afterRotation.recordedFiveHourUsedPercents(for: localQuota, now: now),
+            [82, 100],
+            "sidecar rotation must not turn a stale WAL URL into the main database"
+        )
+    }
+
+    func testLockedPeerFallsBackQuicklyAndResumesAfterUnlock() throws {
+        let localURL = try makeDatabaseURL()
+        let peerURL = try makeDatabaseURL()
+        try createPeerQuotaSnapshotsTable(at: peerURL, includeStableIdentity: true)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reset = now.addingTimeInterval(3 * 60 * 60)
+        let localQuota = identifiedSnapshot(
+            usedPercent: 82,
+            reset: reset,
+            homeIdentity: "/fixture/locked-peer-home",
+            stableAccountKey: "sub:locked-peer-account",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Locked Peer User",
+            at: now.addingTimeInterval(-60)
+        )
+        let peerQuota = identifiedSnapshot(
+            usedPercent: 100,
+            reset: reset,
+            homeIdentity: "/fixture/locked-peer-home",
+            stableAccountKey: "sub:locked-peer-account",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Locked Peer User",
+            at: now
+        )
+
+        let database = QuotaHistoryDatabase(databaseURL: localURL, peerDatabaseURL: peerURL)
+        XCTAssertTrue(try database.record(localQuota, createdAt: now.addingTimeInterval(-60)))
+        try insertStableIdentitySnapshot(
+            databaseURL: peerURL,
+            quota: peerQuota,
+            source: "tauri",
+            createdAt: now
+        )
+
+        var locked: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                peerURL.path,
+                &locked,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                nil
+            ),
+            SQLITE_OK
+        )
+        defer {
+            if let locked {
+                sqlite3_exec(locked, "ROLLBACK;", nil, nil, nil)
+                sqlite3_close_v2(locked)
+            }
+        }
+        XCTAssertNotNil(locked)
+        XCTAssertEqual(sqlite3_exec(locked, "BEGIN EXCLUSIVE;", nil, nil, nil), SQLITE_OK)
+
+        let start = Date()
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(for: localQuota, now: now),
+            [82],
+            "a locked peer must not hide local history"
+        )
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0, "peer busy downgrade should stay bounded")
+
+        XCTAssertEqual(sqlite3_exec(locked, "ROLLBACK;", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(for: localQuota, now: now),
+            [82, 100],
+            "valid peer history should resume after the lock is released"
+        )
     }
 
     func testPeerMergeDropsExactMigrationDuplicateButRetainsOrderedIndependentSource() throws {

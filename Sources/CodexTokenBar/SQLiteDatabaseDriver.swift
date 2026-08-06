@@ -170,6 +170,32 @@ enum SQLiteConnectionConsistency: Equatable {
     case externallyOwnedWAL
 }
 
+/// SQLite opens the path passed to `sqlite3_open_v2` as the database's `main`
+/// file. A `-wal` or `-shm` file is not a second database: it is a sidecar
+/// selected by SQLite after the main path has been opened. Keep sidecars out of
+/// every main-path/pinned-path decision before handing a URL to SQLite.
+enum SQLiteDatabasePath {
+    private static let sidecarSuffixes = ["-wal", "-shm"]
+
+    static func mainURL(for url: URL) -> URL {
+        let standardized = url.standardizedFileURL
+        let name = standardized.lastPathComponent
+        guard let suffix = sidecarSuffixes.first(where: { name.hasSuffix($0) }) else {
+            return standardized
+        }
+
+        let mainName = String(name.dropLast(suffix.count))
+        guard mainName.hasSuffix(".sqlite") else {
+            // Do not reinterpret an unrelated file whose name merely happens
+            // to end in `-wal`/`-shm` as a database family member.
+            return standardized
+        }
+        return standardized
+            .deletingLastPathComponent()
+            .appendingPathComponent(mainName, isDirectory: false)
+    }
+}
+
 /// Only the Codex-owned state database opts into this gate. A single global
 /// non-recursive lock avoids path-alias holes and multi-database lock ordering:
 /// every opted-in connection fully closes before another one opens.
@@ -308,7 +334,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         fileManager: FileManager = .default,
         consistency: SQLiteConnectionConsistency = .ordinary
     ) {
-        self.url = url
+        self.url = SQLiteDatabasePath.mainURL(for: url)
         self.readOnly = readOnly
         self.createsFileIfMissing = createsFileIfMissing
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
@@ -478,7 +504,7 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
         busyTimeoutMilliseconds: Int32 = 100,
         consistency: SQLiteConnectionConsistency = .ordinary
     ) {
-        self.url = url
+        self.url = SQLiteDatabasePath.mainURL(for: url)
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
         self.consistency = consistency
     }

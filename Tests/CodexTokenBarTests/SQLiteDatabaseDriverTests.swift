@@ -42,6 +42,43 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(rows[1].score ?? 0, 2.25, accuracy: 0.001)
     }
 
+    func testWALAndSHMSidecarURLsResolveToTheMainDatabaseBeforePragma() throws {
+        let temporaryURL = try makeDatabaseURL()
+        let mainURL = temporaryURL.deletingLastPathComponent()
+            .appendingPathComponent("quota-history.sqlite")
+        let writer = SQLiteDatabaseDriver(url: mainURL, enableWAL: true)
+        try writer.execute("CREATE TABLE quota_snapshots (created_at REAL NOT NULL);")
+
+        // Keep the WAL family live while the peer-sidecar candidates are
+        // resolved. This proves the sidecars are present without ever opening
+        // either one as SQLite's `main` database.
+        let keeper = SQLitePersistentDatabaseReader(url: mainURL, busyTimeoutMilliseconds: 100)
+        _ = try keeper.readRows("SELECT name FROM sqlite_master;") { $0.text(0) ?? "" }
+        try writer.execute("INSERT INTO quota_snapshots (created_at) VALUES (1);")
+
+        let walURL = URL(fileURLWithPath: mainURL.path + "-wal")
+        let shmURL = URL(fileURLWithPath: mainURL.path + "-shm")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: walURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shmURL.path))
+
+        for candidateURL in [walURL, shmURL] {
+            let reader = SQLiteDatabaseDriver(
+                url: candidateURL,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 250
+            )
+            XCTAssertEqual(reader.url.path, mainURL.path)
+            XCTAssertTrue(reader.url.path.hasSuffix("quota-history.sqlite"))
+            XCTAssertFalse(reader.url.path.hasSuffix("-wal"))
+            XCTAssertFalse(reader.url.path.hasSuffix("-shm"))
+            let columns = try reader.readRows("PRAGMA table_info(quota_snapshots);") {
+                $0.text(1) ?? ""
+            }
+            XCTAssertEqual(columns, ["created_at"])
+        }
+    }
+
     func testExecuteChangedRowsReturnsChangedCount() throws {
         let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
         try driver.execute("CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);")
