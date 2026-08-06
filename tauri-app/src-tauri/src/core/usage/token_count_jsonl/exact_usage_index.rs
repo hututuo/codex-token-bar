@@ -12,7 +12,7 @@ use super::{
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
-use crate::core::{atomic_file, sqlite};
+use crate::core::{atomic_file, sqlite, startup_trace};
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
@@ -38,7 +38,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 #[cfg(test)]
 use std::sync::Barrier;
 use std::thread;
-use std::time::{Duration as StdDuration, SystemTime};
+use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
@@ -1191,15 +1191,43 @@ impl ExactUsageIndex {
         local_offset: UtcOffset,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
+        let dashboard_started = Instant::now();
+        let prepare_started = Instant::now();
         self.prepare_dashboard_event_snapshot()?;
+        let prepare_snapshot_ms = prepare_started.elapsed().as_millis();
+
+        let activity_started = Instant::now();
         let activity_days = self.activity_days(now_utc, local_offset)?;
+        let activity_days_ms = activity_started.elapsed().as_millis();
+
+        let stats_started = Instant::now();
         let (stats, summary) = self.stats(&activity_days, now_utc, local_offset)?;
+        let stats_ms = stats_started.elapsed().as_millis();
+
+        let usage_series_started = Instant::now();
         let (recent_usage_24h, recent_usage_7d, recent_usage_30d) = self.usage_series_bundle(
             now_utc,
             local_offset,
         )?;
+        let usage_series_ms = usage_series_started.elapsed().as_millis();
+
+        let cache_ranking_started = Instant::now();
         let cache_hit_ranking = self.cache_hit_ranking(local_offset)?;
+        let cache_ranking_ms = cache_ranking_started.elapsed().as_millis();
+
+        let cache_usage_started = Instant::now();
         let cache_usage = self.cache_usage(codex_home, warnings)?;
+        let cache_usage_ms = cache_usage_started.elapsed().as_millis();
+        let total_ms = dashboard_started.elapsed().as_millis();
+        startup_trace::mark_performance(format_precise_dashboard_phases(
+            prepare_snapshot_ms,
+            activity_days_ms,
+            stats_ms,
+            usage_series_ms,
+            cache_ranking_ms,
+            cache_usage_ms,
+            total_ms,
+        ));
 
         Ok(ExactDashboardData {
             summary,
@@ -1987,6 +2015,48 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法读取轮次缓存候选：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法解码轮次缓存候选：{error}"))
+    }
+}
+
+fn format_precise_dashboard_phases(
+    prepare_snapshot_ms: u128,
+    activity_days_ms: u128,
+    stats_ms: u128,
+    usage_series_ms: u128,
+    cache_ranking_ms: u128,
+    cache_usage_ms: u128,
+    total_ms: u128,
+) -> String {
+    format!(
+        "precise_dashboard_phases prepare_snapshot_ms={prepare_snapshot_ms} activity_days_ms={activity_days_ms} stats_ms={stats_ms} usage_series_ms={usage_series_ms} cache_ranking_ms={cache_ranking_ms} cache_usage_ms={cache_usage_ms} total_ms={total_ms} status=ok"
+    )
+}
+
+#[cfg(test)]
+mod precise_dashboard_phase_trace_tests {
+    use super::format_precise_dashboard_phases;
+
+    #[test]
+    fn phase_trace_label_is_fixed_bounded_and_non_sensitive() {
+        let label = format_precise_dashboard_phases(1, 2, 3, 4, 5, 6, 7);
+        assert!(label.len() < 512);
+        assert_eq!(
+            label.split_whitespace().collect::<Vec<_>>(),
+            vec![
+                "precise_dashboard_phases",
+                "prepare_snapshot_ms=1",
+                "activity_days_ms=2",
+                "stats_ms=3",
+                "usage_series_ms=4",
+                "cache_ranking_ms=5",
+                "cache_usage_ms=6",
+                "total_ms=7",
+                "status=ok",
+            ]
+        );
+        for forbidden in ["path", "home", "token", "model", "title", "prompt", "error", "/"] {
+            assert!(!label.contains(forbidden), "unexpected field: {forbidden}");
+        }
     }
 }
 
