@@ -43,6 +43,13 @@ extension CodexDataSourceResolver: CodexDataSourceResolving {}
 protocol DashboardSnapshotLoading: Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
+    /// Streams a single full precise refresh. The stream may yield a numeric
+    /// projection before the complete attribution/detail snapshot; the
+    /// default implementation preserves existing loaders by yielding only
+    /// their final result.
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error>
     // 紧凑 surface 的轻量刷新（只跑三条 SUM SQL）；返回 nil 表示该数据源
     // 不支持轻量路径，调用方回退全量 loadSnapshot。
     func loadCompactSummary(
@@ -56,6 +63,25 @@ protocol DashboardSnapshotLoading: Sendable {
 }
 
 extension DashboardSnapshotLoading {
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .utility) { [self] in
+                do {
+                    let snapshot = try await self.loadSnapshot(dataSource: dataSource)
+                    continuation.yield(snapshot)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
     func loadCompactSummary(
         dataSource: CodexDataSource
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
@@ -82,6 +108,29 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).load()
         }.value
+    }
+
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .utility) {
+                do {
+                    let final = try CodexUsageAnalyzer(dataSource: dataSource).load(
+                        onNumericPhase: { numeric in
+                            continuation.yield(numeric)
+                        }
+                    )
+                    continuation.yield(final)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 
     func loadCompactSummary(

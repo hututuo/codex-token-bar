@@ -608,6 +608,11 @@ struct DashboardSnapshot: Codable {
     }
 }
 
+// Snapshots are immutable value graphs crossing the detached precise-loader
+// task and the MainActor store. Their leaves are value types; keep the
+// existing model shape while making that ownership boundary explicit.
+extension DashboardSnapshot: @unchecked Sendable {}
+
 extension Int {
     var abbreviatedTokens: String {
         let value = Double(self)

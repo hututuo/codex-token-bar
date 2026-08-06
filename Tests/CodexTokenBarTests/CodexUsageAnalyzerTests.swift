@@ -182,6 +182,59 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(Set(snapshot.cacheUsage.turns.map(\.userPrompt)), ["First question", "Second question"])
     }
 
+    func testPreciseLoadPublishesNumericPhaseBeforeHydratedFinalPhase() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-phased-analyzer"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-07-22-\(sessionID).jsonl")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try [
+            messageLine(
+                timestamp: now.addingTimeInterval(-20),
+                type: "user_message",
+                message: "phase prompt"
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-10),
+                type: "agent_message",
+                message: "phase answer"
+            ),
+            try tokenCountLine(
+                timestamp: now,
+                total: Usage(input: 100, cachedInput: 20, output: 30, reasoning: 5, total: 130),
+                last: Usage(input: 100, cachedInput: 20, output: 30, reasoning: 5, total: 130)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let numericPhaseProbe = DashboardSnapshotPhaseProbe()
+        let final = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load(
+            onNumericPhase: { numeric in
+                numericPhaseProbe.append(numeric)
+            }
+        )
+
+        let numericPhases = numericPhaseProbe.values
+        XCTAssertEqual(numericPhases.count, 1)
+        let numeric = try XCTUnwrap(numericPhases.first)
+        XCTAssertEqual(numeric.stats.totalTokens, final.stats.totalTokens)
+        XCTAssertEqual(numeric.dailyUsage, final.dailyUsage)
+        XCTAssertEqual(numeric.recentBins, final.recentBins)
+        XCTAssertEqual(numeric.hourlyUsage, final.hourlyUsage)
+        XCTAssertEqual(numeric.cacheUsage.total, final.cacheUsage.total)
+        XCTAssertEqual(numeric.cacheUsage.modelBreakdowns, final.cacheUsage.modelBreakdowns)
+        XCTAssertFalse(numeric.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(numeric.cacheUsage.sessions.isEmpty)
+        XCTAssertTrue(numeric.cacheUsage.turns.isEmpty)
+        XCTAssertTrue(numeric.cacheUsage.attributionEvents.isEmpty)
+        XCTAssertNil(numeric.preciseTimeSeriesGeneratedAt)
+        XCTAssertTrue(final.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(final.cacheUsage.turns.count, 1)
+        XCTAssertEqual(final.cacheUsage.turns.first?.userPrompt, "phase prompt")
+        XCTAssertEqual(final.cacheUsage.turns.first?.assistantResponse, "phase answer")
+    }
+
     func testInterleavedCumulativeStreamsUseUniqueLastUsageSnapshots() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019faaaa-bbbb-cccc-dddd-interleaved"
@@ -5767,5 +5820,22 @@ private final class ConcurrentUsageIndexResultBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return result
+    }
+}
+
+private final class DashboardSnapshotPhaseProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [DashboardSnapshot] = []
+
+    func append(_ snapshot: DashboardSnapshot) {
+        lock.lock()
+        snapshots.append(snapshot)
+        lock.unlock()
+    }
+
+    var values: [DashboardSnapshot] {
+        lock.lock()
+        defer { lock.unlock() }
+        return snapshots
     }
 }

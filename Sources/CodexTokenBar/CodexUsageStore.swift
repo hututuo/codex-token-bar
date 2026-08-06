@@ -578,39 +578,72 @@ final class CodexUsageStore: ObservableObject {
                     }
                     if !compactSummaryApplied {
                         trace?.mark("preciseSnapshot.begin")
-                        let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
-                        guard self.isCurrentRefresh(
-                            generation: generation,
-                            bindingGeneration: bindingGeneration,
-                            sourceID: sourceID
-                        ) else {
-                            trace?.end("stale-after-preciseSnapshot")
-                            return
-                        }
-                        if loaded.hasPreciseTokenUsage {
-                            self.publish(loaded, sourceID: sourceID)
-                            self.preciseTimeSeriesFresh = loaded.preciseTimeSeriesGeneratedAt != nil
-                                && loaded.cacheUsage.attributionEventsComplete
-                            self.didRunPreciseScan = true
-                            UsageCacheLifecycle.markCurrentCachePrepared()
-                            self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
-                            trace?.mark("preciseSnapshot.end", metadata: [
-                                "tokens": String(loaded.stats.totalTokens),
-                                "calls": String(loaded.stats.totalCalls),
-                                "threads": String(loaded.stats.totalThreads)
-                            ])
-                        } else {
-                            self.preciseTimeSeriesFresh = false
-                            self.markPreciseTimeSeriesContinuityLoss(for: source)
-                            if !self.snapshot.hasPreciseTokenUsage {
-                                self.publish(loaded, sourceID: sourceID)
-                                self.status = self.metadataOnlyStatus(origin: source.originLabel)
-                            } else {
-                                self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
+                        var sawFinalPrecisePhase = false
+                        var sawNumericPrecisePhase = false
+                        for try await loaded in self.snapshotLoader.loadSnapshotPhases(
+                            dataSource: source
+                        ) {
+                            guard self.isCurrentRefresh(
+                                generation: generation,
+                                bindingGeneration: bindingGeneration,
+                                sourceID: sourceID
+                            ) else {
+                                trace?.end("stale-after-preciseSnapshot")
+                                return
                             }
-                            trace?.mark("preciseSnapshot.metadataOnly", metadata: [
-                                "threads": String(loaded.stats.totalThreads)
-                            ])
+                            if loaded.hasPreciseTokenUsage {
+                                self.publish(loaded, sourceID: sourceID)
+                                if loaded.cacheUsage.attributionEventsComplete {
+                                    sawFinalPrecisePhase = true
+                                    self.preciseTimeSeriesFresh =
+                                        loaded.preciseTimeSeriesGeneratedAt != nil
+                                            && loaded.cacheUsage.attributionEventsComplete
+                                    self.didRunPreciseScan = true
+                                    UsageCacheLifecycle.markCurrentCachePrepared()
+                                    self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                                    trace?.mark("preciseSnapshot.finalPhase", metadata: [
+                                        "tokens": String(loaded.stats.totalTokens),
+                                        "calls": String(loaded.stats.totalCalls),
+                                        "threads": String(loaded.stats.totalThreads)
+                                    ])
+                                } else {
+                                    // Numeric phase: keep the dashboard useful
+                                    // while making the attribution freshness
+                                    // boundary explicit until the final phase.
+                                    sawNumericPrecisePhase = true
+                                    self.preciseTimeSeriesFresh = false
+                                    self.status = "\(source.originLabel) · token_count · 正在补齐会话明细..."
+                                    trace?.mark("preciseSnapshot.numericPhase", metadata: [
+                                        "tokens": String(loaded.stats.totalTokens),
+                                        "calls": String(loaded.stats.totalCalls)
+                                    ])
+                                }
+                            } else {
+                                self.preciseTimeSeriesFresh = false
+                                self.markPreciseTimeSeriesContinuityLoss(for: source)
+                                if !self.snapshot.hasPreciseTokenUsage {
+                                    self.publish(loaded, sourceID: sourceID)
+                                    self.status = self.metadataOnlyStatus(origin: source.originLabel)
+                                } else {
+                                    self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
+                                }
+                                trace?.mark("preciseSnapshot.metadataOnly", metadata: [
+                                    "threads": String(loaded.stats.totalThreads)
+                                ])
+                            }
+                        }
+                        if sawNumericPrecisePhase && !sawFinalPrecisePhase {
+                            throw NSError(
+                                domain: "CodexTokenBar",
+                                code: 7,
+                                userInfo: [
+                                    NSLocalizedDescriptionKey:
+                                        "精确数值阶段已发布，但会话明细阶段未完成"
+                                ]
+                            )
+                        }
+                        if !sawFinalPrecisePhase {
+                            trace?.mark("preciseSnapshot.noFinalPhase")
                         }
                     }
                 }
