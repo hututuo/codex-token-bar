@@ -11,7 +11,7 @@ struct ModelUsageSlice: Identifiable, Equatable {
 
 enum ModelUsagePresentation {
     static func slices(from rows: [ModelTokenBreakdown]) -> [ModelUsageSlice] {
-        let combined = combine(rows)
+        let combined = combinedRows(rows)
         let total = combined.reduce(0) { $0 + $1.breakdown.totalTokens }
         guard total > 0 else { return [] }
 
@@ -33,7 +33,7 @@ enum ModelUsagePresentation {
     }
 
     static func rows(from events: [TokenCacheAttributionEvent]) -> [ModelTokenBreakdown] {
-        combine(events.map { ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown) })
+        combinedRows(events.map { ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown) })
     }
 
     static func compactText(from rows: [ModelTokenBreakdown], limit: Int = 3) -> String? {
@@ -56,6 +56,15 @@ enum ModelUsagePresentation {
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
         guard !normalized.isEmpty else { return "unknown" }
+        if OfficialAPIPriceModel.independentQuotaModelName(from: normalized) != nil {
+            return "gpt-5.3-codex-spark"
+        }
+        if OfficialAPIPriceModel.detected(from: normalized) == .gpt53Codex {
+            return "gpt-5.3-codex"
+        }
+        if OfficialAPIPriceModel.detected(from: normalized) == .gpt52Codex {
+            return "gpt-5.2-codex"
+        }
         if normalized.contains("gpt-5.6") {
             if normalized.contains("luna") { return "gpt-5.6-luna" }
             if normalized.contains("terra") { return "gpt-5.6-terra" }
@@ -73,6 +82,9 @@ enum ModelUsagePresentation {
         case "gpt-5.6-luna": "Luna"
         case "gpt-5.4-mini": "5.4 mini"
         case "gpt-5.4": "5.4"
+        case "gpt-5.3-codex": "5.3"
+        case "gpt-5.3-codex-spark": "Spark"
+        case "gpt-5.2-codex": "5.2"
         case "unknown": "未知模型"
         default: model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未知模型"
         }
@@ -82,7 +94,7 @@ enum ModelUsagePresentation {
         color(forKey: key(for: model))
     }
 
-    private static func combine(_ rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
+    static func combinedRows(_ rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
         var grouped: [String: (model: String?, breakdowns: [TokenCacheBreakdown])] = [:]
         for row in rows where row.breakdown.totalTokens > 0 {
             let modelKey = key(for: row.model)
@@ -105,6 +117,9 @@ enum ModelUsagePresentation {
         case "gpt-5.6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
         case "gpt-5.4": return Color(red: 0.95, green: 0.56, blue: 0.08)
         case "gpt-5.4-mini": return Color(red: 0.18, green: 0.70, blue: 0.36)
+        case "gpt-5.3-codex": return Color(red: 0.86, green: 0.27, blue: 0.46)
+        case "gpt-5.3-codex-spark": return Color(red: 0.96, green: 0.69, blue: 0.13)
+        case "gpt-5.2-codex": return Color(red: 0.24, green: 0.50, blue: 0.88)
         case "unknown": return Color(red: 0.48, green: 0.53, blue: 0.62)
         default:
             let palette: [Color] = [

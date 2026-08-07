@@ -5307,11 +5307,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         for entry in entries {
             let sessionID = "019eaaaa-bbbb-cccc-dddd-\(entry.suffix)"
             let file = sessionsDirectory.appendingPathComponent("2026-06-17-\(sessionID).jsonl")
-            try tokenCountLine(
+            let tokenLine = try tokenCountLine(
                 timestamp: now.addingTimeInterval(entry.offset),
                 total: Usage(input: entry.total, cachedInput: 0, output: 0, reasoning: 0, total: entry.total),
                 last: Usage(input: entry.total, cachedInput: 0, output: 0, reasoning: 0, total: entry.total)
-            ).appending("\n").write(to: file, atomically: true, encoding: .utf8)
+            )
+            let lines = entry.suffix == "today00000"
+                ? [turnContextLine(timestamp: now.addingTimeInterval(-2), model: "gpt-5.6-luna"), tokenLine]
+                : [tokenLine]
+            try lines.joined(separator: "\n").appending("\n")
+                .write(to: file, atomically: true, encoding: .utf8)
             files.append(file)
         }
 
@@ -5321,6 +5326,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(summary.totalTokens, 200)
         XCTAssertEqual(summary.todayTokens, 40)
         XCTAssertEqual(summary.todayCalls, 1)
+        XCTAssertEqual(summary.todayModelBreakdowns.count, 1)
+        XCTAssertEqual(summary.todayModelBreakdowns.first?.model, "gpt-5.6-luna")
+        XCTAssertEqual(summary.todayModelBreakdowns.first?.breakdown.inputTokens, 40)
+        XCTAssertEqual(summary.todayModelBreakdowns.first?.breakdown.totalTokens, 40)
+        XCTAssertEqual(summary.todayModelBreakdowns.first?.breakdown.calls, 1)
     }
 
     func testIntegrityQuickCheckRunsOncePerProcessPerPath() throws {

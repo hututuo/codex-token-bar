@@ -26,6 +26,67 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(slices.reduce(0) { $0 + $1.tokens }, 100)
     }
 
+    func testFloatingTodayModelUsagePricesDetectedModelsWithCacheAndExcludesSpark() throws {
+        let rows = [
+            ModelTokenBreakdown(
+                model: "gpt-5.6-sol",
+                breakdown: TokenCacheBreakdown(
+                    inputTokens: 1_000_000,
+                    cachedInputTokens: 800_000,
+                    outputTokens: 100_000,
+                    reasoningOutputTokens: 0,
+                    totalTokens: 1_100_000,
+                    calls: 1
+                )
+            ),
+            ModelTokenBreakdown(
+                model: "gpt-5.3-codex-spark",
+                breakdown: TokenCacheBreakdown(
+                    inputTokens: 250_000,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    reasoningOutputTokens: 0,
+                    totalTokens: 250_000,
+                    calls: 1
+                )
+            ),
+        ]
+
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: .gpt56Luna
+        )
+        let sol = try XCTUnwrap(items.first { $0.label == "Sol" })
+        let spark = try XCTUnwrap(items.first { $0.label == "Spark" })
+
+        XCTAssertEqual(sol.costUSD ?? -1, 4.4, accuracy: 0.0001)
+        XCTAssertFalse(sol.usesIndependentQuota)
+        XCTAssertEqual(spark.valueText(for: .cost), "独立")
+        XCTAssertNil(spark.costUSD)
+        XCTAssertTrue(spark.usesIndependentQuota)
+        XCTAssertEqual(items.reduce(0) { $0 + $1.share }, 1, accuracy: 0.0001)
+    }
+
+    func testFloatingTodayModelUsageUsesFallbackOnlyForUnknownModel() throws {
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let item = try XCTUnwrap(
+            FloatingTodayModelUsagePresentation.items(
+                from: [ModelTokenBreakdown(model: "future-model", breakdown: breakdown)],
+                fallbackModel: .gpt56Luna
+            ).first
+        )
+
+        XCTAssertEqual(item.costUSD ?? -1, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(item.label, "future-model")
+    }
+
     @MainActor
     func testRecentChartPreparationCarriesFiveMinuteModelBreakdownToPointPreview() throws {
         let start = Date(timeIntervalSince1970: 1_786_051_200)

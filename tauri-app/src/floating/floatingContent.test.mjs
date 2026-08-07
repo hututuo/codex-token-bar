@@ -5,8 +5,11 @@ import {
   floatingContentGap,
   floatingContentHeight,
   layoutFloatingContentGroups,
+  layoutFloatingContentRows,
   moveFloatingContent,
+  replaceFloatingPagePartner,
   sanitizeFloatingContentVisibility,
+  swapFloatingDefaultPage,
 } from "./floatingContent.ts";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette.ts";
 
@@ -18,6 +21,8 @@ test("layoutFloatingContentGroups embeds usage status into adjacent rate row", (
 
   assert.deepEqual(layoutFloatingContentGroups(visibility), [
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "rateAndBar",
     "radar",
     "crowdRadar",
@@ -34,6 +39,8 @@ test("layoutFloatingContentGroups keeps usage status standalone when it is not a
   assert.deepEqual(layoutFloatingContentGroups(visibility), [
     "rateAndBar",
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "usageStatus",
     "radar",
     "crowdRadar",
@@ -49,6 +56,8 @@ test("moveFloatingContent swaps adjacent groups in both directions", () => {
     "rateAndBar",
     "metrics",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "quota",
@@ -58,6 +67,8 @@ test("moveFloatingContent swaps adjacent groups in both directions", () => {
     "usageStatus",
     "runningThreads",
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "quota",
@@ -96,13 +107,15 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 134);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 158);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
   assert.deepEqual(layoutFloatingContentGroups(DEFAULT_FLOATING_CONTENT_VISIBILITY), [
     "rateAndBar",
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "quota",
@@ -117,6 +130,8 @@ test("adjacent running thread counts attach to the right of metrics", () => {
     "radar",
     "crowdRadar",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "quota",
     "rateAndBar",
   ]);
@@ -133,10 +148,38 @@ test("legacy floating order inserts running threads after metrics and enables it
     "quota",
     "metrics",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "rateAndBar",
     "usageStatus",
+  ]);
+  assert.deepEqual(migrated.pagePairs, [["todayModelShare", "todayModelCost"]]);
+});
+
+test("paged rows combine model share and cost without losing their configured default page", () => {
+  const rows = layoutFloatingContentRows(DEFAULT_FLOATING_CONTENT_VISIBILITY);
+  assert.deepEqual(rows.map((row) => row.groups), [
+    ["rateAndBar"],
+    ["metrics"],
+    ["todayModelShare", "todayModelCost"],
+    ["radar"],
+    ["crowdRadar"],
+    ["quota"],
+  ]);
+  const pairedRadar = replaceFloatingPagePartner(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.pagePairs,
+    "radar",
+    "crowdRadar",
+  );
+  assert.deepEqual(pairedRadar, [
+    ["todayModelShare", "todayModelCost"],
+    ["radar", "crowdRadar"],
+  ]);
+  assert.deepEqual(swapFloatingDefaultPage(pairedRadar, "crowdRadar"), [
+    ["todayModelShare", "todayModelCost"],
+    ["crowdRadar", "radar"],
   ]);
 });
 

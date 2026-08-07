@@ -282,7 +282,9 @@ impl AutoResumeTaskSettingsSnapshot {
 
 impl AutoResumeSettingsSnapshot {
     pub fn resolved_tasks(&self) -> Vec<AutoResumeTaskSettingsSnapshot> {
-        if self.task_collection_version >= AUTO_RESUME_TASK_COLLECTION_VERSION || !self.tasks.is_empty() {
+        if self.task_collection_version >= AUTO_RESUME_TASK_COLLECTION_VERSION
+            || !self.tasks.is_empty()
+        {
             return self.tasks.clone();
         }
         if self.thread_id.trim().is_empty() {
@@ -470,6 +472,10 @@ pub struct FloatingContentVisibilitySnapshot {
     #[serde(default = "default_enabled")]
     pub show_running_threads: bool,
     #[serde(default = "default_enabled")]
+    pub show_today_model_share: bool,
+    #[serde(default = "default_enabled")]
+    pub show_today_model_cost: bool,
+    #[serde(default = "default_enabled")]
     pub show_quota: bool,
     #[serde(default = "default_enabled")]
     pub show_radar: bool,
@@ -477,6 +483,8 @@ pub struct FloatingContentVisibilitySnapshot {
     pub show_crowd_radar: bool,
     #[serde(default = "default_floating_content_order")]
     pub order: Vec<String>,
+    #[serde(default = "default_floating_page_pairs")]
+    pub page_pairs: Vec<Vec<String>>,
 }
 
 impl Default for FloatingContentVisibilitySnapshot {
@@ -486,16 +494,36 @@ impl Default for FloatingContentVisibilitySnapshot {
             show_usage_status: default_enabled(),
             show_metrics: default_enabled(),
             show_running_threads: default_enabled(),
+            show_today_model_share: default_enabled(),
+            show_today_model_cost: default_enabled(),
             show_quota: default_enabled(),
             show_radar: default_enabled(),
             show_crowd_radar: default_enabled(),
             order: default_floating_content_order(),
+            page_pairs: default_floating_page_pairs(),
         }
     }
 }
 
 fn default_floating_content_order() -> Vec<String> {
-    ["rateAndBar", "usageStatus", "metrics", "runningThreads", "radar", "crowdRadar", "quota"].into_iter().map(String::from).collect()
+    [
+        "rateAndBar",
+        "usageStatus",
+        "metrics",
+        "runningThreads",
+        "todayModelShare",
+        "todayModelCost",
+        "radar",
+        "crowdRadar",
+        "quota",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
+
+fn default_floating_page_pairs() -> Vec<Vec<String>> {
+    vec![vec!["todayModelShare".into(), "todayModelCost".into()]]
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -536,20 +564,36 @@ impl Default for DisplaySurfaceSettingsSnapshot {
     }
 }
 
-pub const STATUS_METRIC_IDS: [&str; 9] = ["rate", "fiveHour", "sevenDay", "iq", "today", "total", "requests", "running", "unread"];
+pub const STATUS_METRIC_IDS: [&str; 9] = [
+    "rate", "fiveHour", "sevenDay", "iq", "today", "total", "requests", "running", "unread",
+];
 
 pub fn default_status_metric_order() -> Vec<String> {
-    ["rate", "fiveHour", "sevenDay", "iq"].into_iter().map(String::from).collect()
+    ["rate", "fiveHour", "sevenDay", "iq"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 pub fn default_status_metric_label_style() -> String {
     "compact".into()
 }
 
-pub const STATUS_SUMMARY_SECTION_IDS: [&str; 7] = ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"];
+pub const STATUS_SUMMARY_SECTION_IDS: [&str; 7] = [
+    "overview",
+    "usage",
+    "quota",
+    "running",
+    "unread",
+    "radar",
+    "crowdRadar",
+];
 
 pub fn default_status_summary_order() -> Vec<String> {
-    STATUS_SUMMARY_SECTION_IDS.into_iter().map(String::from).collect()
+    STATUS_SUMMARY_SECTION_IDS
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 fn default_enabled() -> bool {

@@ -167,4 +167,5 @@ export interface UsageSummarySnapshot {
   totalTokens: number;
   todayTokens: number;
   todayRequests: number;
+  todayModelBreakdowns?: ModelTokenBreakdown[];
 }

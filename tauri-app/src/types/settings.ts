@@ -26,6 +26,8 @@ export type FloatingContentGroup =
   | "usageStatus"
   | "metrics"
   | "runningThreads"
+  | "todayModelShare"
+  | "todayModelCost"
   | "quota"
   | "radar"
   | "crowdRadar";
@@ -35,11 +37,16 @@ export interface FloatingContentVisibility {
   showUsageStatus: boolean;
   showMetrics: boolean;
   showRunningThreads: boolean;
+  showTodayModelShare: boolean;
+  showTodayModelCost: boolean;
   showQuota: boolean;
   showRadar: boolean;
   showCrowdRadar: boolean;
   order: FloatingContentGroup[];
+  pagePairs: FloatingContentPagePair[];
 }
+
+export type FloatingContentPagePair = [FloatingContentGroup, FloatingContentGroup];
 
 export interface AppSettingsSnapshot {
   codexHome: string | null;

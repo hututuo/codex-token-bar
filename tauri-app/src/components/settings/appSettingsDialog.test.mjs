@@ -14,7 +14,7 @@ const SETTINGS_CATEGORIES = [
   "状态栏与托盘",
   "监控与额度",
   "悬浮窗",
-  "悬浮窗内容",
+  "内容与翻页",
   "提醒与更新",
   "数据与维护",
 ];
@@ -93,10 +93,40 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     assert.equal(tabName(selectedTab(container)), "常规");
     assert.equal(document.activeElement, generalTab);
 
-    await click(act, tabByName(container, "悬浮窗内容"), window);
-    assert.equal(tabName(selectedTab(container)), "悬浮窗内容");
+    await click(act, tabByName(container, "内容与翻页"), window);
+    assert.equal(tabName(selectedTab(container)), "内容与翻页");
     assert.match(activePanel(container).textContent, /速率|额度|雷达/);
     assert.match(activePanel(container).textContent, /运行线程/);
+  });
+});
+
+test("floating content settings expose model pages and persist free page pairs", async () => {
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "内容与翻页"), window);
+    const panel = activePanel(container);
+    assert.match(panel.textContent, /内容与顺序/);
+    assert.match(panel.textContent, /翻页组合/);
+    assert.match(panel.textContent, /今日模型占比/);
+    assert.match(panel.textContent, /今日模型费用/);
+
+    const sharePartner = panel.querySelector('select[aria-label="今日模型占比翻页搭档"]');
+    assert.ok(sharePartner);
+    assert.equal(sharePartner.value, "todayModelCost");
+    await click(act, buttonWithText(panel, "设为默认"), window);
+    assert.deepEqual(calls.floatingContentVisibilities.at(-1).pagePairs, [
+      ["todayModelCost", "todayModelShare"],
+    ]);
+
+    const radarPartner = panel.querySelector('select[aria-label="Radar翻页搭档"]');
+    assert.ok(radarPartner);
+    await setSelectValue(act, radarPartner, "crowdRadar", window);
+    const changed = calls.floatingContentVisibilities.at(-1);
+    assert.deepEqual(changed.pagePairs, [
+      ["todayModelShare", "todayModelCost"],
+      ["radar", "crowdRadar"],
+    ]);
+    assert.equal(changed.showRadar, true);
+    assert.equal(changed.showCrowdRadar, true);
   });
 });
 
@@ -593,6 +623,7 @@ async function withMountedSettings(run, initialOverrides = {}) {
         autoResumeRuns: 0,
         autoResumeSaves: [],
         close: 0,
+        floatingContentVisibilities: [],
         providerRepair: 0,
         sessionManagement: 0,
         threadDeleteReconnect: 0,
@@ -635,6 +666,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     autoResumeRuns: 0,
     autoResumeSaves: [],
     close: 0,
+    floatingContentVisibilities: [],
     providerRepair: 0,
     sessionManagement: 0,
     threadDeleteReconnect: 0,
@@ -684,7 +716,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onClose: () => { callLog.close += 1; },
     onCodexHomeChange: async () => {},
     onCodexHomeReset: async () => {},
-    onFloatingContentVisibilityChange: noop,
+    onFloatingContentVisibilityChange: (visibility) => {
+      callLog.floatingContentVisibilities.push(visibility);
+    },
     onFloatingGradientChange: noop,
     onFloatingOpacityChange: noop,
     onFloatingScaleChange: noop,

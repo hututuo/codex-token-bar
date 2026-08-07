@@ -998,6 +998,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let totalTokens: Int
         let todayTokens: Int
         let todayCalls: Int
+        let todayModelBreakdowns: [ModelTokenBreakdown]
     }
 
     func attributionSourceBuckets(
@@ -1074,8 +1075,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    // 决策口径：紧凑 surface 刷新只跑三条 SUM SQL（累计 token、今日 token、
-    // 今日调用数），不得顺带构建时间序列/排行/摘录。
+    // 决策口径：紧凑 surface 刷新只跑轻量聚合 SQL（累计 token、今日 token、
+    // 今日调用数、今日逐模型用量），不得顺带构建时间序列/排行/摘录。
     func compactTotals(todayStart: Date) throws -> CompactTotals {
         try withExclusiveAccess {
             try driver.withConnection { connection in
@@ -1091,10 +1092,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     "SELECT COUNT(*) FROM events WHERE timestamp >= ?;",
                     bindings: [.double(start)]
                 ) { row in row.int(0) ?? 0 }.first ?? 0
+                let todayModelBreakdowns = try connection.readRows(
+                    """
+                    SELECT
+                        model,
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COALESCE(SUM(reasoning_output_tokens), 0),
+                        COALESCE(SUM(tokens), 0),
+                        COUNT(*)
+                    FROM events
+                    WHERE timestamp >= ?
+                    GROUP BY model
+                    ORDER BY SUM(tokens) DESC;
+                    """,
+                    bindings: [.double(start)]
+                ) { row in
+                    ModelTokenBreakdown(
+                        model: row.text(0).flatMap { $0.isEmpty ? nil : $0 },
+                        breakdown: TokenCacheBreakdown(
+                            inputTokens: row.int(1) ?? 0,
+                            cachedInputTokens: row.int(2) ?? 0,
+                            outputTokens: row.int(3) ?? 0,
+                            reasoningOutputTokens: row.int(4) ?? 0,
+                            totalTokens: row.int(5) ?? 0,
+                            calls: row.int(6) ?? 0
+                        )
+                    )
+                }
                 return CompactTotals(
                     totalTokens: total,
                     todayTokens: todayTokens,
-                    todayCalls: todayCalls
+                    todayCalls: todayCalls,
+                    todayModelBreakdowns: todayModelBreakdowns
                 )
             }
         }

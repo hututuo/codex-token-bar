@@ -5,13 +5,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testDefaultVisibilityShowsAllFloatingPanelGroups() {
         let visibility = FloatingPanelContentVisibility.default
 
-        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .radar, .crowdRadar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .radar, .crowdRadar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,runningThreads,radar,crowdRadar,quota")
+        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,runningThreads,todayModelShare,todayModelCost,radar,crowdRadar,quota")
         XCTAssertTrue(visibility.shows(.rateAndBar))
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
         XCTAssertTrue(visibility.shows(.runningThreads))
+        XCTAssertTrue(visibility.shows(.todayModelShare))
+        XCTAssertTrue(visibility.shows(.todayModelCost))
         XCTAssertTrue(visibility.shows(.quota))
         XCTAssertTrue(visibility.shows(.radar))
         XCTAssertTrue(visibility.shows(.crowdRadar))
@@ -38,28 +40,30 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let height = FloatingTokenPanelMetrics.contentHeight(visibility: .default)
         let expectedHeight = FloatingTokenPanelMetrics.rateRowHeight
             + FloatingTokenPanelMetrics.metricRowHeight
+            + FloatingTokenPanelMetrics.todayModelRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
             + FloatingTokenPanelMetrics.crowdRadarRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 3
+            + FloatingTokenPanelMetrics.rowSpacing * 4
             + FloatingTokenPanelMetrics.radarCrowdRowSpacing
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 117, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 139, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.usageStatusRowHeight, 20, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.runningThreadsRowHeight, 14, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.todayModelRowHeight, 20, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 104.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 117, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 126.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 139, accuracy: 0.001)
     }
 
     func testDefaultMetricsEmbedMainAndSubagentCountsOnTheRight() {
@@ -68,7 +72,45 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(visibility.embedsRunningThreadsInMetricsRow)
         XCTAssertEqual(
             visibility.layoutGroups,
-            [.rateAndBar, .metrics, .radar, .crowdRadar, .quota]
+            [.rateAndBar, .metrics, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota]
+        )
+        XCTAssertEqual(
+            visibility.layoutRows.map(\.groups),
+            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.radar], [.crowdRadar], [.quota]]
+        )
+    }
+
+    func testPagePairsSanitizeConflictsAndCanChangeDefaultPage() {
+        let decoded = FloatingPanelContentVisibility.pagePairs(
+            from: "todayModelShare|todayModelCost,radar|crowdRadar,radar|quota,rateAndBar|metrics"
+        )
+
+        XCTAssertEqual(decoded, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .radar, second: .crowdRadar),
+        ])
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.swappingDefaultPage(in: decoded, for: .todayModelCost),
+            [
+                FloatingPanelPagePair(first: .todayModelCost, second: .todayModelShare),
+                FloatingPanelPagePair(first: .radar, second: .crowdRadar),
+            ]
+        )
+    }
+
+    func testReplacingPagePartnerRemovesPreviousPairOnBothSides() {
+        let pairs = [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .radar, second: .crowdRadar),
+        ]
+
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.replacingPagePartner(
+                in: pairs,
+                for: .todayModelShare,
+                with: .radar
+            ),
+            [FloatingPanelPagePair(first: .todayModelShare, second: .radar)]
         )
     }
 
@@ -168,8 +210,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
     func testFloatingPanelLayoutGroupsFollowStoredOrder() {
         let decoded = FloatingPanelContentVisibility.order(from: "radar,metrics,rateAndBar,unknown,radar")
-        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .runningThreads, .rateAndBar, .usageStatus, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,runningThreads,rateAndBar,usageStatus,quota")
+        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .rateAndBar, .usageStatus, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,runningThreads,todayModelShare,todayModelCost,rateAndBar,usageStatus,quota")
 
         let visibility = FloatingPanelContentVisibility(
             showRateAndBar: true,
@@ -362,7 +404,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .metrics,
                 placement: .after
             ),
-            [.usageStatus, .metrics, .rateAndBar, .runningThreads, .quota, .radar, .crowdRadar]
+            [.usageStatus, .metrics, .rateAndBar, .runningThreads, .todayModelShare, .todayModelCost, .quota, .radar, .crowdRadar]
         )
 
         XCTAssertEqual(
@@ -372,7 +414,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .usageStatus,
                 placement: .before
             ),
-            [.rateAndBar, .radar, .usageStatus, .metrics, .runningThreads, .quota, .crowdRadar]
+            [.rateAndBar, .radar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .quota, .crowdRadar]
         )
     }
 
@@ -756,6 +798,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.rateAndBarKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.usageStatusKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.metricsKey)"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.todayModelShareKey)"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.todayModelCostKey)"))
+        XCTAssertTrue(appSettingsSource.contains("@Binding var pagePairsRaw: String"))
+        XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.pagePairsKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.quotaKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.radarKey)"))
         XCTAssertTrue(settingsSource.contains("Image(systemName: \"line.3.horizontal\")"))
@@ -792,7 +838,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "悬浮窗内容", "提醒与更新", "数据与维护"] {
+        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "内容与翻页", "提醒与更新", "数据与维护"] {
             XCTAssertTrue(appSettingsSource.contains("return \"\(category)\""), category)
         }
         XCTAssertTrue(appSettingsSource.contains("ForEach(AppSettingsCategory.allCases)"))

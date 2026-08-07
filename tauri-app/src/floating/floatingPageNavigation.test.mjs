@@ -1,0 +1,158 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { Window } from "happy-dom";
+
+import { withSsrModules } from "../test/ssrHarness.mjs";
+
+test("floating model row switches share and cost without starting panel drag", async () => {
+  const dom = new Window({ url: "http://localhost/?surface=floating" });
+  const restoreGlobals = installDomGlobals(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { FloatingPanelSurface } = await load("/src/floating/FloatingPanelPreview.tsx");
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+      let dragStarts = 0;
+
+      try {
+        await React.act(async () => root.render(React.createElement(FloatingPanelSurface, {
+          onDragStart: () => {
+            dragStarts += 1;
+          },
+          priceModel: "gpt56Luna",
+          settings: floatingSettingsFixture(),
+          snapshot: floatingSnapshotFixture(),
+          unreadEffect: "off",
+        })));
+
+        const next = container.querySelector('button[aria-label="显示下一项"]');
+        const previous = container.querySelector('button[aria-label="显示上一项"]');
+        assert.ok(next);
+        assert.ok(previous);
+        assert.match(container.textContent, /占比/);
+        assert.match(container.textContent, /Sol50%/);
+        assert.doesNotMatch(container.textContent, /Sol\$3\.25/);
+
+        await React.act(async () => next.dispatchEvent(new dom.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        })));
+        assert.equal(dragStarts, 0);
+        await React.act(async () => next.click());
+        assert.match(container.textContent, /费用/);
+        assert.match(container.textContent, /Sol\$3\.25/);
+        assert.match(container.textContent, /Luna\$0\.32/);
+        assert.doesNotMatch(container.textContent, /Sol50%/);
+
+        await React.act(async () => previous.click());
+        assert.match(container.textContent, /占比/);
+        assert.match(container.textContent, /Sol50%/);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
+function floatingSettingsFixture() {
+  return {
+    opacity: 0.92,
+    scale: 1,
+    tokenRateFullScale: 200,
+    unreadEffect: "off",
+    gradientStart: "#ffffff",
+    gradientEnd: "#daefff",
+    gradientDirection: "135deg",
+    gradientType: "linear",
+    quotaColorMode: "adaptive",
+    quotaFixedColor: "#1469cc",
+    textTone: -1,
+    contentVisibility: {
+      showRateAndBar: false,
+      showUsageStatus: false,
+      showMetrics: false,
+      showRunningThreads: false,
+      showTodayModelShare: true,
+      showTodayModelCost: true,
+      showQuota: false,
+      showRadar: false,
+      showCrowdRadar: false,
+      order: ["todayModelShare", "todayModelCost"],
+      pagePairs: [["todayModelShare", "todayModelCost"]],
+    },
+  };
+}
+
+function floatingSnapshotFixture() {
+  return {
+    tokensPerSecond: 0,
+    maxTokensPerSecond: 200,
+    trendLabel: "",
+    resetCreditLabel: "",
+    totalTokensLabel: "总 220万",
+    todayTokensLabel: "今 220万",
+    requestsLabel: "次 2",
+    todayModelBreakdowns: [
+      {
+        model: "gpt-5.6-sol",
+        breakdown: {
+          inputTokens: 500_000,
+          cachedInputTokens: 500_000,
+          outputTokens: 100_000,
+          totalTokens: 1_100_000,
+          calls: 1,
+        },
+      },
+      {
+        model: "gpt-5.6-luna",
+        breakdown: {
+          inputTokens: 1_000_000,
+          cachedInputTokens: 0,
+          outputTokens: 100_000,
+          totalTokens: 1_100_000,
+          calls: 1,
+        },
+      },
+    ],
+    fiveHourLabel: "5h",
+    fiveHourAvailability: "unavailable",
+    fiveHourRemainingPercent: null,
+    fiveHourExpectedRemainingPercent: null,
+    sevenDayLabel: "7d",
+    sevenDayAvailability: "unavailable",
+    sevenDayRemainingPercent: null,
+    sevenDayExpectedRemainingPercent: null,
+    unread: false,
+    unreadSummary: { active: false, count: 0, label: "无未读", detail: "", source: "test" },
+  };
+}
+
+function installDomGlobals(dom) {
+  const previous = new Map();
+  for (const [key, value] of Object.entries({
+    window: dom,
+    document: dom.document,
+    navigator: dom.navigator,
+    HTMLElement: dom.HTMLElement,
+    Event: dom.Event,
+    MouseEvent: dom.MouseEvent,
+  })) {
+    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value, writable: true });
+  }
+  return () => {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  };
+}

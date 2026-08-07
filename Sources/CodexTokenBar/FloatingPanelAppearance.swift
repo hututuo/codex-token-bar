@@ -621,8 +621,8 @@ struct FloatingPanelAppearance: Equatable {
         scale: CGFloat,
         visibility: FloatingPanelContentVisibility
     ) -> [(FloatingPanelContentGroup, CGRect)] {
-        let groups = visibility.layoutGroups
-        guard !groups.isEmpty else { return [] }
+        let rows = visibility.layoutRows
+        guard !rows.isEmpty else { return [] }
 
         let scale = max(scale, 0.1)
         let horizontalPadding = FloatingTokenPanelMetrics.horizontalPadding * scale
@@ -637,24 +637,24 @@ struct FloatingPanelAppearance: Equatable {
         var y = verticalPadding + topInset + max(0, (contentAreaHeight - contentHeight) / 2)
 
         var previousGroup: FloatingPanelContentGroup?
-        return groups.map { group in
+        var results: [(FloatingPanelContentGroup, CGRect)] = []
+        for row in rows {
+            let group = row.primaryGroup
             if let previousGroup {
                 y += FloatingTokenPanelMetrics.spacing(between: previousGroup, and: group) * scale
             }
-            let height = FloatingTokenPanelMetrics.rowHeight(for: group) * scale
-            let result = (
-                group,
-                CGRect(
-                    x: horizontalPadding,
-                    y: y,
-                    width: cardWidth,
-                    height: height
-                )
+            let height = (row.groups.map(FloatingTokenPanelMetrics.rowHeight(for:)).max() ?? 0) * scale
+            let rect = CGRect(
+                x: horizontalPadding,
+                y: y,
+                width: cardWidth,
+                height: height
             )
+            results.append(contentsOf: row.groups.map { ($0, rect) })
             y += height
             previousGroup = group
-            return result
         }
+        return results
     }
 
     private func palette(

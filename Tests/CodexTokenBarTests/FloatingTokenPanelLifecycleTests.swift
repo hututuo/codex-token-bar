@@ -60,6 +60,16 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
             panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 250, y: 88)),
             .passThrough
         )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 8, y: 20)),
+            .passThrough,
+            "分页箭头使用整条左右交互带，不能被背景拖拽吞掉"
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 250, y: 20)),
+            .passThrough,
+            "分页箭头使用整条左右交互带，不能被背景拖拽吞掉"
+        )
 
         panel.allowsBackgroundDrag = false
         XCTAssertEqual(

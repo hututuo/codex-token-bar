@@ -50,6 +50,7 @@ private final class SharedAccountContinuityObserverToken: @unchecked Sendable {
 @MainActor
 final class CodexUsageStore: ObservableObject {
     @Published private(set) var snapshot: DashboardSnapshot = .empty
+    private(set) var todayModelBreakdowns: [ModelTokenBreakdown] = []
     @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
@@ -350,6 +351,7 @@ final class CodexUsageStore: ObservableObject {
 
         sourceIdentityGeneration += 1
         snapshot = .empty
+        todayModelBreakdowns = []
         snapshotSourceID = nil
         didRunPreciseScan = false
         status = nextDataSource == nil
@@ -429,6 +431,7 @@ final class CodexUsageStore: ObservableObject {
             activeRefreshCompactOnly = false
             pendingFullRefresh = false
             snapshot = .empty
+            todayModelBreakdowns = []
             snapshotSourceID = nil
             preciseTimeSeriesFresh = false
             status = "未找到本地 Codex 数据目录"
@@ -455,6 +458,7 @@ final class CodexUsageStore: ObservableObject {
         let sourceID = refreshSourceID(for: dataSource)
         if let snapshotSourceID, snapshotSourceID != sourceID {
             snapshot = .empty
+            todayModelBreakdowns = []
             self.snapshotSourceID = nil
             preciseTimeSeriesFresh = false
         }
@@ -563,6 +567,7 @@ final class CodexUsageStore: ObservableObject {
                         if let summary {
                             self.publish(
                                 Self.applyingCompactSummary(summary, to: self.snapshot),
+                                todayModelBreakdowns: summary.todayModelBreakdowns,
                                 sourceID: sourceID
                             )
                             self.preciseTimeSeriesFresh = false
@@ -661,6 +666,7 @@ final class CodexUsageStore: ObservableObject {
                     && self.hasDisplayableSnapshot(self.snapshot)
                 if !retainedTrustedSnapshot {
                     self.snapshot = .empty
+                    self.todayModelBreakdowns = []
                     self.snapshotSourceID = nil
                 }
                 self.preciseTimeSeriesFresh = false
@@ -746,9 +752,30 @@ final class CodexUsageStore: ObservableObject {
         dataSource.stableIdentityKey
     }
 
-    private func publish(_ snapshot: DashboardSnapshot, sourceID: String) {
+    private func publish(
+        _ snapshot: DashboardSnapshot,
+        todayModelBreakdowns: [ModelTokenBreakdown]? = nil,
+        sourceID: String
+    ) {
+        self.todayModelBreakdowns = todayModelBreakdowns
+            ?? Self.todayModelBreakdowns(in: snapshot, now: snapshot.generatedAt)
         self.snapshot = snapshot
         snapshotSourceID = sourceID
+    }
+
+    private static func todayModelBreakdowns(
+        in snapshot: DashboardSnapshot,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [ModelTokenBreakdown] {
+        guard snapshot.cacheUsage.attributionEventsComplete else { return [] }
+        let start = calendar.startOfDay(for: now)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
+        return ModelUsagePresentation.rows(
+            from: snapshot.cacheUsage.attributionEvents.filter {
+                $0.start >= start && $0.start < end
+            }
+        )
     }
 
     private func prepareAfterObserverTakeover(for source: CodexDataSource) {
@@ -1093,7 +1120,7 @@ final class CodexUsageStore: ObservableObject {
     }
 
     // 轻量 summary 只覆盖紧凑 surface 消费的字段（累计 token、今日 token/
-    // 调用数）；时间序列/排行/摘录保留上次全量构建结果，展开仪表盘时由
+    // 调用数与今日逐模型用量）；时间序列/排行/摘录保留上次全量构建结果，展开仪表盘时由
     // setOnlyCompactSurfaceVisible 触发的全量刷新补齐。
     static func applyingCompactSummary(
         _ summary: CodexUsageAnalyzer.CompactUsageSummary,

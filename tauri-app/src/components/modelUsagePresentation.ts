@@ -24,6 +24,9 @@ const FIXED_COLORS: Record<string, string> = {
   "gpt-5.6-luna": "#00a3ad",
   "gpt-5.4": "#f28f14",
   "gpt-5.4-mini": "#2eb35c",
+  "gpt-5.3-codex": "#db4575",
+  "gpt-5.3-codex-spark": "#f5b022",
+  "gpt-5.2-codex": "#3d7fe0",
   unknown: "#7a879e",
 };
 
@@ -74,6 +77,10 @@ export function dominantModelColor(rows: ModelUsageRowLike[] | null | undefined)
 export function modelUsageKey(model: string | null | undefined): string {
   const normalized = (model ?? "").trim().toLowerCase().replaceAll("_", "-");
   if (!normalized) return "unknown";
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
+  if (compact === "gpt53codexspark") return "gpt-5.3-codex-spark";
+  if (compact === "codexautoreview" || compact === "gpt53codex") return "gpt-5.3-codex";
+  if (compact === "gpt52codex") return "gpt-5.2-codex";
   if (normalized.includes("gpt-5.6")) {
     if (normalized.includes("luna")) return "gpt-5.6-luna";
     if (normalized.includes("terra")) return "gpt-5.6-terra";
@@ -91,6 +98,9 @@ export function modelUsageLabel(model: string | null | undefined): string {
     case "gpt-5.6-luna": return "Luna";
     case "gpt-5.4-mini": return "5.4 mini";
     case "gpt-5.4": return "5.4";
+    case "gpt-5.3-codex": return "5.3";
+    case "gpt-5.3-codex-spark": return "Spark";
+    case "gpt-5.2-codex": return "5.2";
     case "unknown": return "未知模型";
     default: return model?.trim() || "未知模型";
   }

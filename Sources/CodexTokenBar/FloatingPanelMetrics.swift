@@ -1,7 +1,7 @@
 import AppKit
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 258, height: 117)
+    static let baseSize = NSSize(width: 258, height: 139)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
@@ -13,6 +13,7 @@ enum FloatingTokenPanelMetrics {
     static let usageStatusRowHeight: CGFloat = 20
     static let metricRowHeight: CGFloat = 11
     static let runningThreadsRowHeight: CGFloat = 14
+    static let todayModelRowHeight: CGFloat = 20
     static let quotaRowHeight: CGFloat = 15.5
     static let radarRowHeight: CGFloat = 24
     static let crowdRadarRowHeight: CGFloat = 20
@@ -64,13 +65,13 @@ enum FloatingTokenPanelMetrics {
     }
 
     static func contentHeight(visibility: FloatingPanelContentVisibility) -> CGFloat {
-        let groups = visibility.layoutGroups
-        guard !groups.isEmpty else { return 0 }
-        let rowHeights = groups.reduce(CGFloat.zero) { partial, group in
-            partial + rowHeight(for: group)
+        let rows = visibility.layoutRows
+        guard !rows.isEmpty else { return 0 }
+        let rowHeights = rows.reduce(CGFloat.zero) { partial, row in
+            partial + (row.groups.map(rowHeight(for:)).max() ?? 0)
         }
-        let interRowSpacing = zip(groups, groups.dropFirst()).reduce(CGFloat.zero) { partial, pair in
-            partial + spacing(between: pair.0, and: pair.1)
+        let interRowSpacing = zip(rows, rows.dropFirst()).reduce(CGFloat.zero) { partial, pair in
+            partial + spacing(between: pair.0.primaryGroup, and: pair.1.primaryGroup)
         }
         return rowHeights + interRowSpacing
     }
@@ -95,6 +96,8 @@ enum FloatingTokenPanelMetrics {
             return metricRowHeight
         case .runningThreads:
             return runningThreadsRowHeight
+        case .todayModelShare, .todayModelCost:
+            return todayModelRowHeight
         case .quota:
             return quotaRowHeight
         case .radar:
@@ -106,7 +109,8 @@ enum FloatingTokenPanelMetrics {
 
     static func rowWidth(for group: FloatingPanelContentGroup) -> CGFloat {
         switch group {
-        case .rateAndBar, .runningThreads, .quota, .radar, .crowdRadar:
+        case .rateAndBar, .runningThreads, .todayModelShare, .todayModelCost,
+             .quota, .radar, .crowdRadar:
             return baseSize.width - horizontalPadding * 2
         case .usageStatus:
             return 174
@@ -116,10 +120,10 @@ enum FloatingTokenPanelMetrics {
     }
 
     private static func unscaledSize(visibility: FloatingPanelContentVisibility) -> NSSize {
-        let groups = visibility.layoutGroups
-        guard !groups.isEmpty else { return minimumControlSize }
+        let rows = visibility.layoutRows
+        guard !rows.isEmpty else { return minimumControlSize }
 
-        let contentWidth = groups.map(rowWidth(for:)).max() ?? 0
+        let contentWidth = rows.flatMap(\.groups).map(rowWidth(for:)).max() ?? 0
         let width = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
         let topInset = visibility.needsTopControlInset ? singleElementTopInset : 0
         let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + topInset + contentHeight(visibility: visibility))

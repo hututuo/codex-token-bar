@@ -1755,6 +1755,19 @@ final class CodexUsageStoreTests: XCTestCase {
                 totalTokens: 1_500,
                 todayTokens: 300,
                 todayCalls: 7,
+                todayModelBreakdowns: [
+                    ModelTokenBreakdown(
+                        model: "gpt-5.6-luna",
+                        breakdown: TokenCacheBreakdown(
+                            inputTokens: 260,
+                            cachedInputTokens: 200,
+                            outputTokens: 40,
+                            reasoningOutputTokens: 0,
+                            totalTokens: 300,
+                            calls: 7
+                        )
+                    )
+                ],
                 generatedAt: Date()
             )
         )
@@ -1788,6 +1801,8 @@ final class CodexUsageStoreTests: XCTestCase {
         }
         XCTAssertEqual(today?.tokens, 300)
         XCTAssertEqual(today?.calls, 7)
+        XCTAssertEqual(store.todayModelBreakdowns.first?.model, "gpt-5.6-luna")
+        XCTAssertEqual(store.todayModelBreakdowns.first?.breakdown.cachedInputTokens, 200)
         // 重字段（时间序列）保留上次全量构建结果：旧日条目仍在、bins 未动。
         XCTAssertEqual(store.snapshot.dailyUsage.count, 2)
         XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)

@@ -10,7 +10,7 @@ import {
 
 test("floating height separates Swift-style protection from the default expanded content", () => {
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 134);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 158);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
@@ -97,9 +97,12 @@ test("sanitizeFloatingSettings migrates legacy content order with running thread
     "quota",
     "metrics",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "rateAndBar",
     "usageStatus",
   ]);
+  assert.deepEqual(settings.contentVisibility.pagePairs, [["todayModelShare", "todayModelCost"]]);
 });

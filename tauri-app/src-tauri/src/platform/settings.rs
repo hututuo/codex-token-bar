@@ -2605,10 +2605,13 @@ fn sanitize_floating_content_visibility(
         show_usage_status: visibility.show_usage_status,
         show_metrics: visibility.show_metrics,
         show_running_threads: visibility.show_running_threads,
+        show_today_model_share: visibility.show_today_model_share,
+        show_today_model_cost: visibility.show_today_model_cost,
         show_quota: visibility.show_quota,
         show_radar: visibility.show_radar,
         show_crowd_radar: visibility.show_crowd_radar,
         order: sanitize_floating_content_order(visibility.order),
+        page_pairs: sanitize_floating_page_pairs(visibility.page_pairs),
     }
 }
 
@@ -2618,6 +2621,8 @@ fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
         "usageStatus",
         "metrics",
         "runningThreads",
+        "todayModelShare",
+        "todayModelCost",
         "radar",
         "crowdRadar",
         "quota",
@@ -2631,8 +2636,27 @@ fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
     for item in defaults {
         if !next.iter().any(|existing| existing == item) {
             if item == "runningThreads" {
-                if let Some(metrics_index) = next.iter().position(|existing| existing == "metrics") {
+                if let Some(metrics_index) = next.iter().position(|existing| existing == "metrics")
+                {
                     next.insert(metrics_index + 1, item.into());
+                    continue;
+                }
+            }
+            if item == "todayModelShare" {
+                if let Some(running_index) = next
+                    .iter()
+                    .position(|existing| existing == "runningThreads")
+                {
+                    next.insert(running_index + 1, item.into());
+                    continue;
+                }
+            }
+            if item == "todayModelCost" {
+                if let Some(share_index) = next
+                    .iter()
+                    .position(|existing| existing == "todayModelShare")
+                {
+                    next.insert(share_index + 1, item.into());
                     continue;
                 }
             }
@@ -2644,6 +2668,34 @@ fn sanitize_floating_content_order(order: Vec<String>) -> Vec<String> {
             }
             next.push(item.into());
         }
+    }
+    next
+}
+
+fn sanitize_floating_page_pairs(pairs: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let allowed = [
+        "metrics",
+        "runningThreads",
+        "todayModelShare",
+        "todayModelCost",
+        "radar",
+        "crowdRadar",
+        "quota",
+    ];
+    let mut used: Vec<String> = Vec::new();
+    let mut next: Vec<Vec<String>> = Vec::new();
+    for pair in pairs {
+        if pair.len() != 2
+            || pair[0] == pair[1]
+            || !allowed.contains(&pair[0].as_str())
+            || !allowed.contains(&pair[1].as_str())
+            || used.iter().any(|item| item == &pair[0] || item == &pair[1])
+        {
+            continue;
+        }
+        used.push(pair[0].clone());
+        used.push(pair[1].clone());
+        next.push(pair);
     }
     next
 }
@@ -2809,12 +2861,11 @@ mod tests {
         assert_eq!(explicit_invisible.invisible_resume_enabled, Some(true));
         assert_eq!(explicit_invisible.prompt, "按原计划继续");
 
-        let explicit_visible_continue =
-            sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
-                prompt: "继续".into(),
-                invisible_resume_enabled: Some(false),
-                ..AutoResumeSettingsSnapshot::default()
-            });
+        let explicit_visible_continue = sanitize_auto_resume_settings(AutoResumeSettingsSnapshot {
+            prompt: "继续".into(),
+            invisible_resume_enabled: Some(false),
+            ..AutoResumeSettingsSnapshot::default()
+        });
         assert_eq!(
             explicit_visible_continue.invisible_resume_enabled,
             Some(false)
@@ -2987,8 +3038,30 @@ mod tests {
         assert_eq!(sanitized.floating_window.quota_fixed_color, "#1469cc");
         assert_eq!(sanitized.floating_window.text_tone, 1.0);
         assert!(!sanitized.floating_window.content_visibility.show_radar);
-        assert!(sanitized.floating_window.content_visibility.show_crowd_radar);
-        assert!(sanitized.floating_window.content_visibility.show_running_threads);
+        assert!(
+            sanitized
+                .floating_window
+                .content_visibility
+                .show_crowd_radar
+        );
+        assert!(
+            sanitized
+                .floating_window
+                .content_visibility
+                .show_running_threads
+        );
+        assert!(
+            sanitized
+                .floating_window
+                .content_visibility
+                .show_today_model_share
+        );
+        assert!(
+            sanitized
+                .floating_window
+                .content_visibility
+                .show_today_model_cost
+        );
         assert_eq!(
             sanitized.floating_window.content_visibility.order,
             [
@@ -2997,9 +3070,18 @@ mod tests {
                 "usageStatus",
                 "metrics",
                 "runningThreads",
+                "todayModelShare",
+                "todayModelCost",
                 "radar",
                 "crowdRadar",
             ]
+        );
+        assert_eq!(
+            sanitized.floating_window.content_visibility.page_pairs,
+            [vec![
+                "todayModelShare".to_string(),
+                "todayModelCost".to_string()
+            ]]
         );
         assert!(sanitized.display_surfaces.floating_window_enabled);
         assert!(sanitized.display_surfaces.live_rate_enabled);

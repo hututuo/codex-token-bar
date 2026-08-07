@@ -160,6 +160,7 @@ struct TokenDisplaySnapshot {
     let consumedTokens: Int
     let todayTokens: Int
     let todayRequests: Int
+    let todayModelBreakdowns: [ModelTokenBreakdown]
     let usagePrecision: DashboardUsagePrecision
     let usageReadStatus: String
     let quota: AccountQuotaSnapshot
@@ -173,6 +174,7 @@ struct TokenDisplaySnapshot {
         consumedTokens: Int,
         todayTokens: Int,
         todayRequests: Int,
+        todayModelBreakdowns: [ModelTokenBreakdown] = [],
         usagePrecision: DashboardUsagePrecision = .precise,
         usageReadStatus: String = "",
         quota: AccountQuotaSnapshot,
@@ -185,6 +187,7 @@ struct TokenDisplaySnapshot {
         self.consumedTokens = consumedTokens
         self.todayTokens = todayTokens
         self.todayRequests = todayRequests
+        self.todayModelBreakdowns = todayModelBreakdowns
         self.usagePrecision = usagePrecision
         self.usageReadStatus = usageReadStatus
         self.quota = quota
@@ -210,6 +213,7 @@ struct TokenDisplaySnapshot {
             consumedTokens: store.snapshot.stats.totalTokens,
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
+            todayModelBreakdowns: store.todayModelBreakdowns,
             usagePrecision: store.snapshot.usagePrecision,
             usageReadStatus: store.status,
             quota: quota.snapshot,
@@ -304,6 +308,9 @@ struct TokenDisplayCard: View {
     var lockState: TokenDisplayLockState? = nil
     var lockTargetDescription: String? = nil
     var onToggleLock: (() -> Void)? = nil
+    @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)
+    private var fallbackPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
+    @State private var selectedPageIndexByRowID: [String: Int] = [:]
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayRowTextPalettes) private var rowTextPalettes
@@ -317,12 +324,14 @@ struct TokenDisplayCard: View {
             let presentation = FloatingPanelPresentationModel(
                 snapshot: snapshot,
                 visibility: visibility,
-                radarPresentation: radarPresentation
+                radarPresentation: radarPresentation,
+                fallbackPriceModel: fallbackPriceModel
             )
             let rateRowHeight = FloatingTokenPanelMetrics.rateRowHeight.scaled(by: displayScale)
             let usageStatusRowHeight = FloatingTokenPanelMetrics.usageStatusRowHeight.scaled(by: displayScale)
             let metricRowHeight = FloatingTokenPanelMetrics.metricRowHeight.scaled(by: displayScale)
             let runningThreadsRowHeight = FloatingTokenPanelMetrics.runningThreadsRowHeight.scaled(by: displayScale)
+            let todayModelRowHeight = FloatingTokenPanelMetrics.todayModelRowHeight.scaled(by: displayScale)
             let quotaRowHeight = FloatingTokenPanelMetrics.quotaRowHeight.scaled(by: displayScale)
             let radarRowHeight = FloatingTokenPanelMetrics.radarRowHeight.scaled(by: displayScale)
             let crowdRadarRowHeight = FloatingTokenPanelMetrics.crowdRadarRowHeight.scaled(by: displayScale)
@@ -336,38 +345,19 @@ struct TokenDisplayCard: View {
                             and: row.group
                         ).scaled(by: displayScale)
                         : 0
-                    Group {
-                        switch row.group {
-                        case .rateAndBar:
-                            rateRow(usageStatus: presentation.rateBarUsageStatus)
-                                .environment(\.tokenDisplayTextPalette, palette(for: .rateAndBar))
-                                .frame(height: rateRowHeight, alignment: .center)
-                        case .usageStatus:
-                            TokenDisplayUsageStatusLine(text: presentation.standaloneUsageStatus ?? snapshot.standaloneUsageStatus)
-                                .environment(\.tokenDisplayTextPalette, standaloneUsageStatusTextPalette ?? palette(for: .usageStatus))
-                                .frame(height: usageStatusRowHeight, alignment: .center)
-                        case .metrics:
-                            metricRow
-                                .environment(\.tokenDisplayTextPalette, palette(for: .metrics))
-                                .frame(height: metricRowHeight, alignment: .center)
-                        case .runningThreads:
-                            TokenDisplayRunningThreadsRow(summary: snapshot.runningThreads)
-                                .environment(\.tokenDisplayTextPalette, palette(for: .runningThreads))
-                                .frame(height: runningThreadsRowHeight, alignment: .center)
-                        case .quota:
-                            TokenQuotaMiniStrip(snapshot: snapshot.quota)
-                                .environment(\.tokenDisplayTextPalette, palette(for: .quota))
-                                .frame(height: quotaRowHeight, alignment: .center)
-                        case .radar:
-                            TokenDisplayRadarStrip(presentation: radarPresentation)
-                                .environment(\.tokenDisplayTextPalette, palette(for: .radar))
-                                .frame(height: radarRowHeight, alignment: .center)
-                        case .crowdRadar:
-                            TokenDisplayCrowdRadarRow(presentation: radarPresentation)
-                                .environment(\.tokenDisplayTextPalette, palette(for: .crowdRadar))
-                                .frame(height: crowdRadarRowHeight, alignment: .center)
-                        }
-                    }
+                    pagedContentRow(
+                        row,
+                        presentation: presentation,
+                        radarPresentation: radarPresentation,
+                        rateRowHeight: rateRowHeight,
+                        usageStatusRowHeight: usageStatusRowHeight,
+                        metricRowHeight: metricRowHeight,
+                        runningThreadsRowHeight: runningThreadsRowHeight,
+                        todayModelRowHeight: todayModelRowHeight,
+                        quotaRowHeight: quotaRowHeight,
+                        radarRowHeight: radarRowHeight,
+                        crowdRadarRowHeight: crowdRadarRowHeight
+                    )
                     .padding(.top, topSpacing)
                 }
             }
@@ -382,13 +372,18 @@ struct TokenDisplayCard: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Codex Token Bar 悬浮窗")
         .accessibilityValue(FloatingPanelPresentationModel(
             snapshot: snapshot,
             visibility: visibility,
-            radarPresentation: resolvedRadarPresentation
+            radarPresentation: resolvedRadarPresentation,
+            fallbackPriceModel: fallbackPriceModel
         ).accessibilityValue)
+    }
+
+    private var fallbackPriceModel: OfficialAPIPriceModel {
+        OfficialAPIPriceModel.storedValue(for: fallbackPriceModelRaw)
     }
 
     private var resolvedRadarPresentation: CodexRadarPresentationState {
@@ -401,6 +396,125 @@ struct TokenDisplayCard: View {
 
     private func metricPalette(for region: FloatingPanelMetricTextRegion) -> FloatingPanelReadableTextPalette {
         metricTextPalettes[region] ?? palette(for: .metrics)
+    }
+
+    @ViewBuilder
+    private func pagedContentRow(
+        _ row: FloatingPanelPresentationRow,
+        presentation: FloatingPanelPresentationModel,
+        radarPresentation: CodexRadarPresentationState,
+        rateRowHeight: CGFloat,
+        usageStatusRowHeight: CGFloat,
+        metricRowHeight: CGFloat,
+        runningThreadsRowHeight: CGFloat,
+        todayModelRowHeight: CGFloat,
+        quotaRowHeight: CGFloat,
+        radarRowHeight: CGFloat,
+        crowdRadarRowHeight: CGFloat
+    ) -> some View {
+        let selectedGroup = selectedGroup(in: row)
+        let rowHeight = row.groups.map { group -> CGFloat in
+            switch group {
+            case .rateAndBar: rateRowHeight
+            case .usageStatus: usageStatusRowHeight
+            case .metrics: metricRowHeight
+            case .runningThreads: runningThreadsRowHeight
+            case .todayModelShare, .todayModelCost: todayModelRowHeight
+            case .quota: quotaRowHeight
+            case .radar: radarRowHeight
+            case .crowdRadar: crowdRadarRowHeight
+            }
+        }.max() ?? metricRowHeight
+
+        ZStack {
+            content(
+                for: selectedGroup,
+                presentation: presentation,
+                radarPresentation: radarPresentation
+            )
+            .environment(\.tokenDisplayTextPalette, palette(for: selectedGroup))
+            .padding(.horizontal, row.isPaged ? 12.scaled(by: displayScale) : 0)
+
+            if row.isPaged {
+                HStack {
+                    pageButton(systemImage: "chevron.left", row: row, delta: -1)
+                    Spacer(minLength: 0)
+                    pageButton(systemImage: "chevron.right", row: row, delta: 1)
+                }
+            }
+        }
+        .frame(height: rowHeight, alignment: .center)
+        .animation(.easeOut(duration: 0.16), value: selectedGroup)
+    }
+
+    @ViewBuilder
+    private func content(
+        for group: FloatingPanelContentGroup,
+        presentation: FloatingPanelPresentationModel,
+        radarPresentation: CodexRadarPresentationState
+    ) -> some View {
+        switch group {
+        case .rateAndBar:
+            rateRow(usageStatus: presentation.rateBarUsageStatus)
+        case .usageStatus:
+            TokenDisplayUsageStatusLine(
+                text: presentation.standaloneUsageStatus ?? snapshot.standaloneUsageStatus
+            )
+            .environment(
+                \.tokenDisplayTextPalette,
+                standaloneUsageStatusTextPalette ?? palette(for: .usageStatus)
+            )
+        case .metrics:
+            metricRow
+        case .runningThreads:
+            TokenDisplayRunningThreadsRow(summary: snapshot.runningThreads)
+        case .todayModelShare:
+            FloatingTodayModelUsageRow(
+                page: .share,
+                rows: snapshot.todayModelBreakdowns,
+                fallbackModel: fallbackPriceModel
+            )
+        case .todayModelCost:
+            FloatingTodayModelUsageRow(
+                page: .cost,
+                rows: snapshot.todayModelBreakdowns,
+                fallbackModel: fallbackPriceModel
+            )
+        case .quota:
+            TokenQuotaMiniStrip(snapshot: snapshot.quota)
+        case .radar:
+            TokenDisplayRadarStrip(presentation: radarPresentation)
+        case .crowdRadar:
+            TokenDisplayCrowdRadarRow(presentation: radarPresentation)
+        }
+    }
+
+    private func selectedGroup(in row: FloatingPanelPresentationRow) -> FloatingPanelContentGroup {
+        let index = selectedPageIndexByRowID[row.id, default: 0]
+        return row.groups[index % row.groups.count]
+    }
+
+    private func pageButton(
+        systemImage: String,
+        row: FloatingPanelPresentationRow,
+        delta: Int
+    ) -> some View {
+        Button {
+            let current = selectedPageIndexByRowID[row.id, default: 0]
+            selectedPageIndexByRowID[row.id] = (current + delta + row.groups.count) % row.groups.count
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 7.6.scaled(by: displayScale), weight: .bold))
+                .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.48))
+                .frame(
+                    width: 20.scaled(by: displayScale),
+                    height: 20.scaled(by: displayScale)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(delta < 0 ? "上一项" : "下一项")
+        .accessibilityLabel(delta < 0 ? "显示上一项" : "显示下一项")
     }
 
     private func rateRow(usageStatus: String?) -> some View {

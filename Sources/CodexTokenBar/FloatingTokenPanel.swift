@@ -113,7 +113,10 @@ final class FloatingTokenPanelWindow: NSPanel {
     private func isInControlCorner(_ location: NSPoint) -> Bool {
         let bounds = contentView?.bounds ?? NSRect(origin: .zero, size: frame.size)
         let size = min(max(controlExclusionSize, 0), bounds.width / 2)
-        guard size > 0, location.y >= bounds.maxY - size else { return false }
+        guard size > 0 else { return false }
+        // The full left/right gutters are interactive. Besides the existing
+        // lock/close buttons, paged rows place their subtle navigation arrows
+        // here; the center remains a large uninterrupted drag surface.
         return location.x <= bounds.minX + size || location.x >= bounds.maxX - size
     }
 }

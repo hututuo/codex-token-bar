@@ -1,10 +1,9 @@
 use super::session_files::session_id_from_file;
 use super::session_parser::{
     probe_explicit_subagent_session_file, read_event_excerpts, stream_session_file_exact,
-    stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets,
-    ExactSessionEventSink, ExactSessionParserState, ExactTokenEvent,
-    ExplicitSubagentSessionFileProbe, SourceByteRange, UsageSnapshotFingerprint,
-    EXACT_INDEX_CHUNK_SIZE, USAGE_SNAPSHOT_FINGERPRINT_BYTES,
+    stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets, ExactSessionEventSink,
+    ExactSessionParserState, ExactTokenEvent, ExplicitSubagentSessionFileProbe, SourceByteRange,
+    UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE, USAGE_SNAPSHOT_FINGERPRINT_BYTES,
 };
 use super::{
     attribution_watch_root_physical_identity, IndexedSessionCatalogEntry,
@@ -12,18 +11,18 @@ use super::{
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
-use crate::core::{atomic_file, sqlite, startup_trace};
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
+use crate::core::{atomic_file, sqlite, startup_trace};
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
     RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
     TokenCacheUsage, TurnCacheUsage,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -34,9 +33,9 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 #[cfg(test)]
 use std::sync::Barrier;
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
@@ -73,8 +72,7 @@ const ATTRIBUTION_UNSAFE_GENERATION_KEY: &str = "attribution_unsafe_generation";
 const ATTRIBUTION_UNSAFE_ID_KEY: &str = "attribution_unsafe_id";
 const ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY: &str = "attribution_current_scan_unsafe";
 const ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY: &str = "attribution_current_scan_incomplete";
-const BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY: &str =
-    "building_attribution_provenance_rotate";
+const BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY: &str = "building_attribution_provenance_rotate";
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -120,9 +118,7 @@ fn run_integrity_gate_enter_hook_for_testing(path: &Path) {
     let Some(slot) = INTEGRITY_GATE_ENTER_HOOK.get() else {
         return;
     };
-    let hook = slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let hook = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(hook) = hook.as_ref() {
         hook(path);
     }
@@ -136,9 +132,7 @@ fn run_integrity_gate_release_hook_for_testing(path: &Path) {
     let Some(slot) = INTEGRITY_GATE_RELEASE_HOOK.get() else {
         return;
     };
-    let hook = slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let hook = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(hook) = hook.as_ref() {
         hook(path);
     }
@@ -152,9 +146,7 @@ fn run_before_finish_index_connection_hook_for_testing(path: &Path) {
     let Some(slot) = BEFORE_FINISH_INDEX_CONNECTION_HOOK.get() else {
         return;
     };
-    let hook = slot
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let hook = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(hook) = hook.as_ref() {
         hook(path);
     }
@@ -445,14 +437,14 @@ struct BeforeStagingOpenHook {
 #[cfg(test)]
 static BEFORE_STAGING_OPEN_HOOK: OnceLock<Mutex<Option<BeforeStagingOpenHook>>> = OnceLock::new();
 #[cfg(test)]
-static INTEGRITY_GATE_ENTER_HOOK: OnceLock<Mutex<Option<IntegrityGateEnterHook>>> =
-    OnceLock::new();
+static INTEGRITY_GATE_ENTER_HOOK: OnceLock<Mutex<Option<IntegrityGateEnterHook>>> = OnceLock::new();
 #[cfg(test)]
 static INTEGRITY_GATE_RELEASE_HOOK: OnceLock<Mutex<Option<IntegrityGateReleaseHook>>> =
     OnceLock::new();
 #[cfg(test)]
-static BEFORE_FINISH_INDEX_CONNECTION_HOOK:
-    OnceLock<Mutex<Option<BeforeFinishIndexConnectionHook>>> = OnceLock::new();
+static BEFORE_FINISH_INDEX_CONNECTION_HOOK: OnceLock<
+    Mutex<Option<BeforeFinishIndexConnectionHook>>,
+> = OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -514,11 +506,11 @@ impl ExactUsageIndex {
             if schema_version.is_some_and(|version| {
                 !(GITHUB_BASE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION).contains(&version)
             }) {
-            // The index is fully rebuildable. Replacing an obsolete database,
-            // rather than dropping its text columns in place, guarantees that
-            // deleted SQLite pages and WAL frames cannot retain conversation
-            // plaintext from schema v1. Since v6 this also discards pre-v6
-            // 9-field fingerprint blobs that would break deduplication.
+                // The index is fully rebuildable. Replacing an obsolete database,
+                // rather than dropping its text columns in place, guarantees that
+                // deleted SQLite pages and WAL frames cannot retain conversation
+                // plaintext from schema v1. Since v6 this also discards pre-v6
+                // 9-field fingerprint blobs that would break deduplication.
                 drop(connection);
                 remove_index_storage(&path)?;
                 connection = managed_index_connection(&path, open_index_connection(&path)?)?;
@@ -606,8 +598,7 @@ impl ExactUsageIndex {
         let existing = load_stored_session_catalog(&self.connection)?;
         let observations = collect_session_catalog_observations(codex_home)?;
         let published_generation =
-            metadata_i64(&self.connection, "session_catalog_published_generation")?
-                .unwrap_or(0);
+            metadata_i64(&self.connection, "session_catalog_published_generation")?.unwrap_or(0);
         let generation = published_generation
             .checked_add(1)
             .ok_or_else(|| "会话目录索引代次溢出".to_string())?;
@@ -729,9 +720,7 @@ impl ExactUsageIndex {
         Ok(())
     }
 
-    pub(super) fn session_catalog_snapshot(
-        &self,
-    ) -> Result<IndexedSessionCatalogSnapshot, String> {
+    pub(super) fn session_catalog_snapshot(&self) -> Result<IndexedSessionCatalogSnapshot, String> {
         let mut entries: Vec<_> = load_stored_session_catalog(&self.connection)?
             .into_values()
             .map(|entry| entry.entry)
@@ -756,22 +745,17 @@ impl ExactUsageIndex {
         hook: impl FnOnce(&Path) + Send + 'static,
     ) {
         let slot = BEFORE_STAGING_OPEN_HOOK.get_or_init(|| Mutex::new(None));
-        *slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BeforeStagingOpenHook {
-            target,
-            action: Box::new(hook),
-        });
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(BeforeStagingOpenHook {
+                target,
+                action: Box::new(hook),
+            });
     }
 
     #[cfg(test)]
-    pub(super) fn set_integrity_gate_enter_hook_for_testing(
-        hook: Option<IntegrityGateEnterHook>,
-    ) {
+    pub(super) fn set_integrity_gate_enter_hook_for_testing(hook: Option<IntegrityGateEnterHook>) {
         let slot = INTEGRITY_GATE_ENTER_HOOK.get_or_init(|| Mutex::new(None));
-        *slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
     }
 
     #[cfg(test)]
@@ -779,9 +763,7 @@ impl ExactUsageIndex {
         hook: Option<IntegrityGateReleaseHook>,
     ) {
         let slot = INTEGRITY_GATE_RELEASE_HOOK.get_or_init(|| Mutex::new(None));
-        *slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
     }
 
     #[cfg(test)]
@@ -789,9 +771,7 @@ impl ExactUsageIndex {
         hook: Option<BeforeFinishIndexConnectionHook>,
     ) {
         let slot = BEFORE_FINISH_INDEX_CONNECTION_HOOK.get_or_init(|| Mutex::new(None));
-        *slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
     }
 
     #[cfg(test)]
@@ -891,9 +871,7 @@ impl ExactUsageIndex {
         barrier: Option<(Arc<Barrier>, HashSet<PathBuf>)>,
     ) {
         let slot = QUICK_CHECK_BARRIER.get_or_init(|| Mutex::new(None));
-        *slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = barrier;
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = barrier;
     }
 
     pub(super) fn sync(
@@ -903,17 +881,16 @@ impl ExactUsageIndex {
     ) -> Result<u64, String> {
         self.connection.mark_receipt_dirty();
         let mut scan_completeness = ExactScanCompleteness::default();
-        let scan_start_home_identity =
-            match attribution_watch_root_physical_identity(codex_home) {
-                Ok(identity) => Some(identity),
-                Err(error) => {
-                    scan_completeness.mark_incomplete();
-                    warnings.push(scan_warning(format!(
-                        "精确 token 扫描开始时无法固定 Codex Home 物理身份：{error}"
-                    )));
-                    None
-                }
-            };
+        let scan_start_home_identity = match attribution_watch_root_physical_identity(codex_home) {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                scan_completeness.mark_incomplete();
+                warnings.push(scan_warning(format!(
+                    "精确 token 扫描开始时无法固定 Codex Home 物理身份：{error}"
+                )));
+                None
+            }
+        };
         prune_published_tombstone_versions(&self.connection)?;
         prepare_scan_temp_tables(&self.connection)?;
         let generation = begin_or_resume_generation(&mut self.connection)?;
@@ -1074,13 +1051,7 @@ impl ExactUsageIndex {
                 let signature = file_signature(file)?;
                 let unchanged = published_files.get(&path).is_some_and(
                     |(size, modified_ns, device_id, file_id, changed_ns)| {
-                        signature.matches_stored(
-                            *size,
-                            modified_ns,
-                            device_id,
-                            file_id,
-                            changed_ns,
-                        )
+                        signature.matches_stored(*size, modified_ns, device_id, file_id, changed_ns)
                     },
                 );
                 changed |= !unchanged;
@@ -1181,7 +1152,49 @@ impl ExactUsageIndex {
             total_tokens: nonnegative_u64(total),
             today_tokens: nonnegative_u64(today_tokens),
             today_requests: saturating_u32(today_requests),
+            today_model_breakdowns: self.model_breakdowns_between(start, end)?,
         })
+    }
+
+    fn model_breakdowns_between(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<ModelTokenBreakdown>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+            SELECT
+                model,
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(tokens), 0),
+                COUNT(*)
+            FROM published_events
+            WHERE timestamp >= ?1 AND timestamp < ?2
+            GROUP BY model
+            ORDER BY SUM(tokens) DESC
+            "#,
+            )
+            .map_err(|error| format!("无法准备今日逐模型 token 汇总：{error}"))?;
+        let rows = statement
+            .query_map(params![start, end], |row| {
+                Ok(ModelTokenBreakdown {
+                    model: row.get(0)?,
+                    breakdown: TokenCacheBreakdown {
+                        input_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
+                        cached_input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
+                        output_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                        total_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
+                        calls: saturating_u32(row.get::<_, i64>(5)?),
+                    },
+                })
+            })
+            .map_err(|error| format!("无法读取今日逐模型 token 汇总：{error}"))?;
+        rows.map(|row| row.map_err(|error| format!("无法解码今日逐模型 token 汇总：{error}")))
+            .collect()
     }
 
     pub(super) fn dashboard_data(
@@ -1205,10 +1218,8 @@ impl ExactUsageIndex {
         let stats_ms = stats_started.elapsed().as_millis();
 
         let usage_series_started = Instant::now();
-        let (recent_usage_24h, recent_usage_7d, recent_usage_30d) = self.usage_series_bundle(
-            now_utc,
-            local_offset,
-        )?;
+        let (recent_usage_24h, recent_usage_7d, recent_usage_30d) =
+            self.usage_series_bundle(now_utc, local_offset)?;
         let usage_series_ms = usage_series_started.elapsed().as_millis();
 
         let cache_ranking_started = Instant::now();
@@ -1380,8 +1391,8 @@ impl ExactUsageIndex {
             })
             .map_err(|error| format!("无法读取 365 日逐模型 token 汇总：{error}"))?;
         for row in model_rows {
-            let (date, breakdown) = row
-                .map_err(|error| format!("无法解码 365 日逐模型 token 汇总：{error}"))?;
+            let (date, breakdown) =
+                row.map_err(|error| format!("无法解码 365 日逐模型 token 汇总：{error}"))?;
             model_grouped.entry(date).or_default().push(breakdown);
         }
 
@@ -1515,6 +1526,7 @@ impl ExactUsageIndex {
                 total_tokens: nonnegative_u64(row.0),
                 today_tokens: nonnegative_u64(row.7),
                 today_requests: saturating_u32(row.8),
+                today_model_breakdowns: self.model_breakdowns_between(today_start, today_end)?,
             },
         ))
     }
@@ -1523,11 +1535,14 @@ impl ExactUsageIndex {
         &self,
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
-    ) -> Result<(
-        Vec<RecentUsagePoint>,
-        Vec<RecentUsagePoint>,
-        Vec<RecentUsagePoint>,
-    ), String> {
+    ) -> Result<
+        (
+            Vec<RecentUsagePoint>,
+            Vec<RecentUsagePoint>,
+            Vec<RecentUsagePoint>,
+        ),
+        String,
+    > {
         let five_minute_starts = aligned_bin_starts(
             now_utc.unix_timestamp(),
             LONG_RECENT_INTERVAL_SECONDS,
@@ -1585,8 +1600,8 @@ impl ExactUsageIndex {
             })
             .map_err(|error| format!("无法读取精确 token 五分钟时间序列：{error}"))?;
         for row in rows {
-            let (bin, breakdown) = row
-                .map_err(|error| format!("无法解码精确 token 五分钟时间序列：{error}"))?;
+            let (bin, breakdown) =
+                row.map_err(|error| format!("无法解码精确 token 五分钟时间序列：{error}"))?;
             let totals = UsageBinTotals {
                 tokens: breakdown.breakdown.total_tokens,
                 calls: breakdown.breakdown.calls,
@@ -1640,8 +1655,8 @@ impl ExactUsageIndex {
             })
             .map_err(|error| format!("无法读取精确 token 匿名来源时间序列：{error}"))?;
         for row in source_rows {
-            let (bin, source_id, tokens, calls, input, cached, output) = row
-                .map_err(|error| format!("无法解码精确 token 匿名来源时间序列：{error}"))?;
+            let (bin, source_id, tokens, calls, input, cached, output) =
+                row.map_err(|error| format!("无法解码精确 token 匿名来源时间序列：{error}"))?;
             source_grouped
                 .entry(bin)
                 .or_default()
@@ -2054,7 +2069,9 @@ mod precise_dashboard_phase_trace_tests {
                 "status=ok",
             ]
         );
-        for forbidden in ["path", "home", "token", "model", "title", "prompt", "error", "/"] {
+        for forbidden in [
+            "path", "home", "token", "model", "title", "prompt", "error", "/",
+        ] {
             assert!(!label.contains(forbidden), "unexpected field: {forbidden}");
         }
     }
@@ -2113,7 +2130,10 @@ fn usage_series_from_five_minute(
     }
 
     let mut model_grouped = HashMap::<i64, Vec<ModelTokenBreakdown>>::new();
-    let mut model_bins = five_minute_model_grouped.keys().copied().collect::<Vec<_>>();
+    let mut model_bins = five_minute_model_grouped
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
     model_bins.sort_unstable();
     for bin in model_bins {
         let model_breakdowns = &five_minute_model_grouped[&bin];
@@ -2152,13 +2172,12 @@ fn usage_series_from_five_minute(
                 cached_input_tokens: totals.cached_input_tokens,
                 output_tokens: totals.output_tokens,
                 model_breakdowns: model_grouped.remove(&start_unix).unwrap_or_default(),
-                cache_hit_rate: (totals.input_tokens > 0)
-                    .then(|| {
-                        cache_hit_rate(
-                            i64::try_from(totals.input_tokens).unwrap_or(i64::MAX),
-                            i64::try_from(totals.cached_input_tokens).unwrap_or(i64::MAX),
-                        )
-                    }),
+                cache_hit_rate: (totals.input_tokens > 0).then(|| {
+                    cache_hit_rate(
+                        i64::try_from(totals.input_tokens).unwrap_or(i64::MAX),
+                        i64::try_from(totals.cached_input_tokens).unwrap_or(i64::MAX),
+                    )
+                }),
                 five_hour_remaining_percent: None,
                 seven_day_remaining_percent: None,
                 source_contribution_epoch: source_contribution_epoch.cloned(),
@@ -3540,12 +3559,8 @@ fn finalize_generation(
     if sync_thread_metadata(&transaction, codex_home, warnings)? {
         set_metadata(&transaction, "building_changed", "1")?;
     }
-    let rotate_attribution_provenance = metadata_i64(
-        &transaction,
-        BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
-    )?
-    .unwrap_or(0)
-        != 0;
+    let rotate_attribution_provenance =
+        metadata_i64(&transaction, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY)?.unwrap_or(0) != 0;
     let source_index_changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
     let safety_before = attribution_safety_state(&transaction)?;
     let lineage_ambiguity_detected = visible_duplicate_session_lineage(&transaction, generation)?;
@@ -3557,8 +3572,8 @@ fn finalize_generation(
     // One unresolved incident owns one provenance rotation. A file that is
     // truncated/replaced on every normal poll, or a duplicate UUID that stays
     // present, must remain sticky unsafe without creating an epoch/WAL storm.
-    let rotate_for_new_unsafe_incident = current_scan_unsafe_cause_detected
-        && safety_before.unsafe_since_generation.is_none();
+    let rotate_for_new_unsafe_incident =
+        current_scan_unsafe_cause_detected && safety_before.unsafe_since_generation.is_none();
     if synchronize_attribution_ledger(
         &transaction,
         generation,
@@ -3589,27 +3604,23 @@ fn finalize_generation(
         )?;
         set_metadata(&transaction, "building_changed", "1")?;
     }
-    let previous_current_scan_unsafe = metadata_i64(
-        &transaction,
-        ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
-    )?
-    .unwrap_or(0)
-        != 0;
+    let previous_current_scan_unsafe =
+        metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?.unwrap_or(0) != 0;
     if previous_current_scan_unsafe != current_scan_unsafe_cause_detected {
         set_metadata(&transaction, "building_changed", "1")?;
     }
     set_metadata(
         &transaction,
         ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
-        if current_scan_unsafe_cause_detected { "1" } else { "0" },
+        if current_scan_unsafe_cause_detected {
+            "1"
+        } else {
+            "0"
+        },
     )?;
     let current_scan_incomplete = scan_completeness.incomplete_source_scan;
-    let previous_current_scan_incomplete = metadata_i64(
-        &transaction,
-        ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
-    )?
-    .unwrap_or(0)
-        != 0;
+    let previous_current_scan_incomplete =
+        metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?.unwrap_or(0) != 0;
     if previous_current_scan_incomplete != current_scan_incomplete {
         set_metadata(&transaction, "building_changed", "1")?;
     }
@@ -3713,8 +3724,8 @@ fn synchronize_attribution_ledger(
         .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
     let ledger_epoch = metadata_text(transaction, ATTRIBUTION_LEDGER_EPOCH_KEY)?;
     let stored_integrity = metadata_text(transaction, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?;
-    let integrity_missing = ledger_epoch.as_deref() == Some(previous_epoch.as_str())
-        && stored_integrity.is_none();
+    let integrity_missing =
+        ledger_epoch.as_deref() == Some(previous_epoch.as_str()) && stored_integrity.is_none();
     // A logically missing ledger row is not reported by SQLite quick_check.
     // Rotate and rebuild instead of silently accepting a smaller local total;
     // consumers will see the new epoch and keep ambiguity sticky for the old
@@ -3782,7 +3793,11 @@ fn synchronize_attribution_ledger(
         ORDER BY 1, 2
     "#;
     let mut source_rows = transaction
-        .prepare(if rebuild { full_query } else { incremental_query })
+        .prepare(if rebuild {
+            full_query
+        } else {
+            incremental_query
+        })
         .map_err(|error| format!("无法准备精确 token 归因来源账本：{error}"))?;
     let mut rows = source_rows
         .query(params![generation, LONG_RECENT_INTERVAL_SECONDS])
@@ -3851,11 +3866,7 @@ fn synchronize_attribution_ledger(
     }
     drop(rows);
     drop(source_rows);
-    set_metadata(
-        transaction,
-        ATTRIBUTION_LEDGER_EPOCH_KEY,
-        &provenance_epoch,
-    )?;
+    set_metadata(transaction, ATTRIBUTION_LEDGER_EPOCH_KEY, &provenance_epoch)?;
     set_metadata(
         transaction,
         ATTRIBUTION_LEDGER_INTEGRITY_KEY,
@@ -4015,11 +4026,7 @@ fn process_session_file(
     // have reordered or replaced events. Rotate only when this generation is
     // atomically published; new files and deletions keep the current lineage.
     if had_existing_source {
-        set_metadata(
-            connection,
-            BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
-            "1",
-        )?;
+        set_metadata(connection, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY, "1")?;
     }
 
     if signature.size < PARALLEL_STAGING_MIN_BYTES {
@@ -4968,12 +4975,9 @@ fn visit_session_files(
                     .extension()
                     .is_some_and(|extension| extension == "jsonl")
                 {
-                    if let Some(file) = resolve_file_within_codex_home(
-                        &canonical_home,
-                        &path,
-                        "会话目录",
-                        warnings,
-                    ) {
+                    if let Some(file) =
+                        resolve_file_within_codex_home(&canonical_home, &path, "会话目录", warnings)
+                    {
                         visit(connection, &file, warnings, scan_completeness)?;
                     } else {
                         scan_completeness.mark_incomplete();
@@ -5001,10 +5005,7 @@ fn visit_session_files(
 
 /// 把 root（文件或目录）下所有已索引路径补进 exact_seen_files：不可读条目本轮
 /// 未真正扫描，finalize_generation 不得把它们当作已删除的会话打墓碑。
-fn suppress_missing_tombstones_under(
-    connection: &Connection,
-    root: &Path,
-) -> Result<(), String> {
+fn suppress_missing_tombstones_under(connection: &Connection, root: &Path) -> Result<(), String> {
     let exact = root.to_string_lossy().into_owned();
     // 前缀比较用 substr 而非 LIKE：路径里的 % 与 _ 不能被当作通配符。
     let prefix = format!("{exact}/");
@@ -5299,8 +5300,7 @@ fn open_index_connection_with_recovery(
     let _ = existed_before_hint;
     if !existed_before {
         let connection = open_index_connection(path)?;
-        return managed_index_connection(path, connection)
-            .map(|connection| (connection, false));
+        return managed_index_connection(path, connection).map(|connection| (connection, false));
     }
 
     let state_has_active_connection = {
@@ -5314,9 +5314,8 @@ fn open_index_connection_with_recovery(
     };
     let signature_before_open = index_storage_signature(path).ok();
     let receipt = signature_before_open.and_then(|signature| {
-        read_integrity_receipt(path).filter(|receipt| {
-            receipt_storage_matches(receipt, path, signature)
-        })
+        read_integrity_receipt(path)
+            .filter(|receipt| receipt_storage_matches(receipt, path, signature))
     });
 
     let integrity_failure = match open_index_connection(path) {
@@ -5325,9 +5324,9 @@ fn open_index_connection_with_recovery(
                 .map(|connection| (connection, false));
         }
         Ok(connection) => {
-            let receipt_is_verified = receipt.as_ref().is_some_and(|receipt| {
-                receipt_connection_metadata_matches(receipt, &connection)
-            });
+            let receipt_is_verified = receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt_connection_metadata_matches(receipt, &connection));
             if receipt_is_verified {
                 return managed_index_connection(path, connection)
                     .map(|connection| (connection, false));
@@ -5490,10 +5489,7 @@ fn receipt_file_signature(signature: FileSignature) -> ReceiptFileSignature {
     }
 }
 
-fn receipt_file_signature_matches(
-    stored: &ReceiptFileSignature,
-    current: FileSignature,
-) -> bool {
+fn receipt_file_signature_matches(stored: &ReceiptFileSignature, current: FileSignature) -> bool {
     stored.size == current.size
         && stored.modified_ns.parse::<u128>().ok() == Some(current.modified_ns)
         && stored.device_id == current.identity.device_id
@@ -5509,9 +5505,7 @@ fn receipt_storage_matches(
     receipt.version == INDEX_INTEGRITY_RECEIPT_VERSION
         && canonical_index_path(path)
             .ok()
-            .is_some_and(|canonical| {
-                receipt.canonical_index_path == canonical.to_string_lossy()
-            })
+            .is_some_and(|canonical| receipt.canonical_index_path == canonical.to_string_lossy())
         && receipt_file_signature_matches(&receipt.database, signature.database)
         && match (&receipt.wal, signature.wal) {
             (None, None) => true,
@@ -5539,10 +5533,7 @@ fn receipt_connection_metadata_matches(
         && receipt.parser_revision == EXACT_SESSION_PARSER_REVISION
 }
 
-fn receipt_metadata(
-    connection: &Connection,
-    path: &Path,
-) -> Result<ReceiptMetadata, String> {
+fn receipt_metadata(connection: &Connection, path: &Path) -> Result<ReceiptMetadata, String> {
     let schema_version = metadata_i64(connection, "schema_version")?
         .ok_or_else(|| "精确 token 完整性收据缺少 schema 版本".to_string())?;
     let published_generation = metadata_i64(connection, "published_generation")?
@@ -5668,17 +5659,12 @@ fn register_index_connection(
         .saturating_add(1);
     states.insert(
         path.to_path_buf(),
-        IndexIntegrityState {
-            active_connections,
-        },
+        IndexIntegrityState { active_connections },
     );
     ManagedIndexConnection::from_registered(connection, path.to_path_buf())
 }
 
-fn finish_index_connection(
-    states: &mut HashMap<PathBuf, IndexIntegrityState>,
-    path: &Path,
-) {
+fn finish_index_connection(states: &mut HashMap<PathBuf, IndexIntegrityState>, path: &Path) {
     let remaining_connections = states
         .get(path)
         .map(|state| state.active_connections.saturating_sub(1))
@@ -6021,10 +6007,7 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<(
                     changed_ns = ?1
                 WHERE path = ?2 AND deleted = 0
                 "#,
-                params![
-                    format!("migration:{FORK_REPLAY_BOUNDARY_REVISION}"),
-                    path
-                ],
+                params![format!("migration:{FORK_REPLAY_BOUNDARY_REVISION}"), path],
             )
             .map_err(|error| format!("无法标记子 Agent replay 定向修复：{error}"))?;
     }
@@ -6406,10 +6389,7 @@ fn collect_session_catalog_observations(
         let mut pending = vec![canonical_root];
         while let Some(directory) = pending.pop() {
             let entries = fs::read_dir(&directory).map_err(|error| {
-                format!(
-                    "会话目录增量扫描无法读取 {}：{error}",
-                    directory.display()
-                )
+                format!("会话目录增量扫描无法读取 {}：{error}", directory.display())
             })?;
             for entry in entries {
                 let entry = entry.map_err(|error| {
@@ -6435,9 +6415,7 @@ fn collect_session_catalog_observations(
                 {
                     continue;
                 }
-                observations.push(session_catalog_observation(
-                    path, archived, &metadata,
-                )?);
+                observations.push(session_catalog_observation(path, archived, &metadata)?);
             }
         }
     }
@@ -6452,8 +6430,7 @@ fn session_catalog_observation(
 ) -> Result<SessionCatalogObservation, String> {
     let modified = metadata.modified().ok();
     let created = metadata.created().ok();
-    let (stat_device_id, stat_file_id, stat_changed_ns) =
-        session_catalog_stat_identity(metadata);
+    let (stat_device_id, stat_file_id, stat_changed_ns) = session_catalog_stat_identity(metadata);
     Ok(SessionCatalogObservation {
         path,
         archived,
@@ -6492,8 +6469,7 @@ where
 {
     let mut file = open_session_catalog_rollout(&observation.path)?;
     let before = file_signature_from_handle(&file, &observation.path)?;
-    if before.size != observation.size
-        || before.modified_ns.to_string() != observation.modified_ns
+    if before.size != observation.size || before.modified_ns.to_string() != observation.modified_ns
     {
         return Err(format!(
             "会话文件在索引读取前发生变化，请重试：{}",
@@ -6503,14 +6479,12 @@ where
     let mut first_line = Vec::new();
     {
         let mut reader = BufReader::new(&mut file);
-        reader
-            .read_until(b'\n', &mut first_line)
-            .map_err(|error| {
-                format!(
-                    "读取会话文件首行失败：{}（{error}）",
-                    observation.path.display()
-                )
-            })?;
+        reader.read_until(b'\n', &mut first_line).map_err(|error| {
+            format!(
+                "读取会话文件首行失败：{}（{error}）",
+                observation.path.display()
+            )
+        })?;
     }
     if first_line.last().copied() != Some(b'\n') {
         return Err(format!(
@@ -6532,8 +6506,11 @@ where
         )
     })?;
     reject_session_catalog_reparse_point(&observation.path, &path_metadata)?;
-    let path_observation =
-        session_catalog_observation(observation.path.clone(), observation.archived, &path_metadata)?;
+    let path_observation = session_catalog_observation(
+        observation.path.clone(),
+        observation.archived,
+        &path_metadata,
+    )?;
     if !session_catalog_observation_values_match(&observation, &path_observation) {
         return Err(format!(
             "会话文件路径在首行校验期间被替换，请重试：{}",
@@ -6664,12 +6641,7 @@ fn open_session_catalog_rollout(path: &Path) -> Result<fs::File, String> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .map_err(|error| {
-            format!(
-                "无法打开会话目录索引源 {}：{error}",
-                path.display()
-            )
-        })
+        .map_err(|error| format!("无法打开会话目录索引源 {}：{error}", path.display()))
 }
 
 #[cfg(windows)]
@@ -6682,12 +6654,7 @@ fn open_session_catalog_rollout(path: &Path) -> Result<fs::File, String> {
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(|error| {
-            format!(
-                "无法打开会话目录索引源 {}：{error}",
-                path.display()
-            )
-        })?;
+        .map_err(|error| format!("无法打开会话目录索引源 {}：{error}", path.display()))?;
     let metadata = file
         .metadata()
         .map_err(|error| format!("无法读取会话目录索引源属性：{error}"))?;
@@ -6732,10 +6699,7 @@ fn reject_session_catalog_reparse_point(
     metadata: &fs::Metadata,
 ) -> Result<(), String> {
     if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "会话目录增量索引拒绝符号链接：{}",
-            path.display()
-        ));
+        return Err(format!("会话目录增量索引拒绝符号链接：{}", path.display()));
     }
     Ok(())
 }
@@ -7139,13 +7103,8 @@ fn run_after_file_commit_hook_for_testing(_path: &Path) -> Result<(), String> {
 fn run_before_staging_open_hook_for_testing(path: &Path) {
     let slot = BEFORE_STAGING_OPEN_HOOK.get_or_init(|| Mutex::new(None));
     let hook = {
-        let mut guard = slot
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if guard
-            .as_ref()
-            .is_some_and(|pending| pending.target == path)
-        {
+        let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.as_ref().is_some_and(|pending| pending.target == path) {
             guard.take()
         } else {
             None
@@ -7182,18 +7141,15 @@ fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, Strin
     Ok(metadata_text(connection, key)?.and_then(|value| value.parse().ok()))
 }
 
-fn attribution_safety_state(
-    connection: &Connection,
-) -> Result<AttributionSafetyState, String> {
+fn attribution_safety_state(connection: &Connection) -> Result<AttributionSafetyState, String> {
     let provenance_epoch = metadata_text(connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
-    let generation = nonnegative_u64(
-        metadata_i64(connection, "published_generation")?.unwrap_or(0),
-    );
+    let generation =
+        nonnegative_u64(metadata_i64(connection, "published_generation")?.unwrap_or(0));
     let unsafe_epoch = metadata_text(connection, ATTRIBUTION_UNSAFE_EPOCH_KEY)?;
-    let unsafe_generation = metadata_i64(connection, ATTRIBUTION_UNSAFE_GENERATION_KEY)?
-        .map(nonnegative_u64);
+    let unsafe_generation =
+        metadata_i64(connection, ATTRIBUTION_UNSAFE_GENERATION_KEY)?.map(nonnegative_u64);
     let unsafe_id = metadata_text(connection, ATTRIBUTION_UNSAFE_ID_KEY)?;
     let current_scan_unsafe_cause_detected =
         metadata_i64(connection, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?.unwrap_or(0) != 0;
@@ -7207,7 +7163,9 @@ fn attribution_safety_state(
     Ok(AttributionSafetyState {
         provenance_epoch,
         generation,
-        unsafe_since_generation: unresolved_matches_current.then_some(unsafe_generation).flatten(),
+        unsafe_since_generation: unresolved_matches_current
+            .then_some(unsafe_generation)
+            .flatten(),
         unsafe_id: unresolved_matches_current.then_some(unsafe_id).flatten(),
         current_scan_unsafe_cause_detected,
         current_scan_incomplete,

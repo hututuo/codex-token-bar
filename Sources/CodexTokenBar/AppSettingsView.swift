@@ -26,7 +26,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .statusBar: return "状态栏"
         case .monitoring: return "监控与额度"
         case .floatingPanel: return "悬浮窗"
-        case .content: return "悬浮窗内容"
+        case .content: return "内容与翻页"
         case .alertsAndUpdates: return "提醒与更新"
         case .dataAndMaintenance: return "数据与维护"
         }
@@ -42,7 +42,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .statusBar: return "顶部指标、顺序与紧凑显示"
         case .monitoring: return "实时速率、统计与刷新"
         case .floatingPanel: return "位置、尺寸与视觉样式"
-        case .content: return "悬浮窗信息和排列顺序"
+        case .content: return "显示、顺序、组合与默认页"
         case .alertsAndUpdates: return "未读反馈与版本检查"
         case .dataAndMaintenance: return "目录与修复工具"
         }
@@ -119,10 +119,13 @@ struct AppSettingsView: View {
     @Binding var showUsageStatus: Bool
     @Binding var showMetrics: Bool
     @Binding var showRunningThreads: Bool
+    @Binding var showTodayModelShare: Bool
+    @Binding var showTodayModelCost: Bool
     @Binding var showQuota: Bool
     @Binding var showRadar: Bool
     @Binding var showCrowdRadar: Bool
     @Binding var contentOrderRaw: String
+    @Binding var pagePairsRaw: String
     let defaultCodexHome: URL?
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -589,9 +592,22 @@ struct AppSettingsView: View {
     }
 
     private var contentSettings: some View {
-        settingsSection(title: "显示内容", subtitle: "选择悬浮窗信息，并用箭头调整从上到下的顺序") {
-            ForEach(orderedGroups) { group in
-                contentRow(group)
+        Group {
+            settingsSection(title: "内容与顺序", subtitle: "先选择显示项目，再调整它们从上到下的位置") {
+                ForEach(orderedGroups) { group in
+                    contentRow(group)
+                }
+            }
+
+            settingsSection(title: "翻页组合", subtitle: "任意两项可合成一行；左右淡箭头在悬浮窗内切换") {
+                ForEach(pageCapableGroups) { group in
+                    pagePairRow(group)
+                }
+                settingsInfoRow(
+                    "费用口径",
+                    systemImage: "dollarsign.circle",
+                    detail: "已识别模型按真实模型与缓存价格计算；未知模型使用“监控与额度”中的回退模型，Spark 标为独立额度。"
+                )
             }
         }
     }
@@ -872,6 +888,14 @@ struct AppSettingsView: View {
         FloatingPanelContentVisibility.order(from: contentOrderRaw)
     }
 
+    private var pageCapableGroups: [FloatingPanelContentGroup] {
+        orderedGroups.filter(\.supportsPaging)
+    }
+
+    private var pagePairs: [FloatingPanelPagePair] {
+        FloatingPanelContentVisibility.pagePairs(from: pagePairsRaw)
+    }
+
     private var statusBarMetricConfiguration: StatusBarMetricConfiguration {
         StatusBarMetricConfiguration(
             orderRaw: statusBarMetricOrderRaw,
@@ -1113,6 +1137,54 @@ struct AppSettingsView: View {
         .settingsRowDivider()
     }
 
+    private func pagePairRow(_ group: FloatingPanelContentGroup) -> some View {
+        let pair = pagePairs.first { $0.contains(group) }
+        let isDefault = pair?.first == group
+        return HStack(spacing: 9) {
+            Image(systemName: group.systemImage)
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(group.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                    if pair != nil {
+                        Text(isDefault ? "默认页" : "第二页")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(isDefault ? AppTheme.accentBlue : Color.secondary)
+                    }
+                }
+                Text(pair == nil ? "单独占一行" : "与 \(pair?.partner(of: group)?.title ?? "--") 共用一行")
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            Picker("翻页搭档", selection: pagePartnerBinding(for: group)) {
+                Text("单独显示").tag("")
+                ForEach(pageCapableGroups.filter { $0 != group }) { candidate in
+                    Text(candidate.title).tag(candidate.rawValue)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+            if pair?.second == group {
+                Button("设为默认") {
+                    pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(
+                        FloatingPanelContentVisibility.swappingDefaultPage(
+                            in: pagePairs,
+                            for: group
+                        )
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .settingsRowDivider()
+    }
+
     private func statusBarMetricRow(_ metric: StatusBarMetricID) -> some View {
         let order = orderedStatusBarMetrics
         let index = order.firstIndex(of: metric) ?? 0
@@ -1234,10 +1306,31 @@ struct AppSettingsView: View {
         case .usageStatus: return $showUsageStatus
         case .metrics: return $showMetrics
         case .runningThreads: return $showRunningThreads
+        case .todayModelShare: return $showTodayModelShare
+        case .todayModelCost: return $showTodayModelCost
         case .quota: return $showQuota
         case .radar: return $showRadar
         case .crowdRadar: return $showCrowdRadar
         }
+    }
+
+    private func pagePartnerBinding(for group: FloatingPanelContentGroup) -> Binding<String> {
+        Binding(
+            get: { pagePairs.first(where: { $0.contains(group) })?.partner(of: group)?.rawValue ?? "" },
+            set: { rawValue in
+                let partner = FloatingPanelContentGroup(rawValue: rawValue)
+                let next = FloatingPanelContentVisibility.replacingPagePartner(
+                    in: pagePairs,
+                    for: group,
+                    with: partner
+                )
+                pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(next)
+                if partner != nil {
+                    visibilityBinding(for: group).wrappedValue = true
+                    visibilityBinding(for: partner!).wrappedValue = true
+                }
+            }
+        )
     }
 
     private func move(_ group: FloatingPanelContentGroup, by delta: Int) {

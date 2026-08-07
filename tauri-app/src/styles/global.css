@@ -5443,6 +5443,58 @@ button.quota-side-card:hover {
   background: linear-gradient(90deg, transparent, var(--accent));
 }
 
+.app-settings-page-pairs {
+  display: grid;
+  gap: 5px;
+}
+
+.app-settings-page-pair-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px 72px;
+  align-items: center;
+  gap: 8px;
+  min-height: 43px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  padding: 0 12px;
+}
+
+.app-settings-page-pair-row > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.app-settings-page-pair-row strong {
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: var(--weight-semibold);
+}
+
+.app-settings-page-pair-row em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: var(--weight-medium);
+}
+
+.app-settings-page-pair-row select,
+.app-settings-page-pair-row button {
+  height: 27px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel-solid) 82%, transparent);
+  color: var(--text);
+  font-size: 10.5px;
+}
+
+.app-settings-page-pair-row button {
+  cursor: pointer;
+  font-weight: var(--weight-semibold);
+}
+
+.app-settings-page-pair-placeholder {
+  display: block;
+}
+
 .settings-callout {
   position: fixed;
   z-index: 40;
@@ -6980,6 +7032,58 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   margin-top: calc(-2px * var(--floating-scale));
 }
 
+.floating-page-layout-row {
+  position: relative;
+  min-width: 0;
+}
+
+.floating-page-layout-row[data-floating-group="radar"] +
+.floating-page-layout-row[data-floating-group="crowdRadar"] {
+  margin-top: calc(-2px * var(--floating-scale));
+}
+
+.floating-page-layout-row.is-paged > .floating-row {
+  box-sizing: border-box;
+  width: 100%;
+  padding-right: calc(14px * var(--floating-scale));
+  padding-left: calc(14px * var(--floating-scale));
+}
+
+.floating-page-switch {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: calc(20px * var(--floating-scale));
+  border: 0;
+  background: transparent;
+  color: var(--floating-secondary);
+  cursor: pointer;
+  font-size: calc(15px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  opacity: 0.28;
+  padding: 0;
+  transition: opacity 140ms ease-out, color 140ms ease-out;
+  -webkit-app-region: no-drag;
+}
+
+.floating-page-switch:hover,
+.floating-page-switch:focus-visible {
+  color: var(--floating-primary);
+  opacity: 0.68;
+}
+
+.floating-page-switch--previous {
+  left: calc(-5px * var(--floating-scale));
+}
+
+.floating-page-switch--next {
+  right: calc(-5px * var(--floating-scale));
+}
+
 .floating-row {
   color: var(--floating-primary);
 }
@@ -7199,6 +7303,70 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-running-threads span:only-child {
   grid-column: 1 / -1;
   color: var(--floating-secondary);
+}
+
+.floating-model-usage {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: calc(20px * var(--floating-scale));
+  border-top: 1px solid var(--floating-divider);
+  color: var(--floating-primary);
+  font-size: calc(8.4px * var(--floating-scale));
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-medium);
+}
+
+.floating-model-usage-title {
+  flex: 0 0 calc(25px * var(--floating-scale));
+  color: var(--floating-muted);
+  font-size: calc(7.8px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+}
+
+.floating-model-usage-empty {
+  flex: 1 1 auto;
+  color: var(--floating-secondary);
+  text-align: center;
+}
+
+.floating-model-usage-items {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6px * var(--floating-scale));
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.floating-model-usage-item {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(2px * var(--floating-scale));
+  min-width: 0;
+}
+
+.floating-model-usage-item i {
+  width: calc(4px * var(--floating-scale));
+  height: calc(4px * var(--floating-scale));
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.floating-model-usage-item em {
+  color: var(--floating-secondary);
+  font-style: normal;
+}
+
+.floating-model-usage-item strong {
+  color: var(--floating-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.floating-model-usage-items small {
+  color: var(--floating-muted);
+  font-size: calc(7.6px * var(--floating-scale));
 }
 
 .floating-running-threads--stale,

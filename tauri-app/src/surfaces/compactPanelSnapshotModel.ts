@@ -15,6 +15,7 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   totalTokensLabel: "总 待读取",
   todayTokensLabel: "今 待读取",
   requestsLabel: "次 待读取",
+  todayModelBreakdowns: [],
   fiveHourLabel: "5h 待读取",
   fiveHourAvailability: "unavailable",
   fiveHourRemainingPercent: null,
@@ -116,6 +117,7 @@ export function mergeFloatingUsageSummary(
     totalTokensLabel: `总 ${compactTokens(summary.totalTokens)}`,
     todayTokensLabel: `今 ${compactTokens(summary.todayTokens)}`,
     requestsLabel: `次 ${summary.todayRequests}`,
+    todayModelBreakdowns: summary.todayModelBreakdowns ?? [],
   };
 }
 

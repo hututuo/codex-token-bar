@@ -100,10 +100,25 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let totalTokens: Int
         let todayTokens: Int
         let todayCalls: Int
+        let todayModelBreakdowns: [ModelTokenBreakdown]
         let generatedAt: Date
+
+        init(
+            totalTokens: Int,
+            todayTokens: Int,
+            todayCalls: Int,
+            todayModelBreakdowns: [ModelTokenBreakdown] = [],
+            generatedAt: Date
+        ) {
+            self.totalTokens = totalTokens
+            self.todayTokens = todayTokens
+            self.todayCalls = todayCalls
+            self.todayModelBreakdowns = todayModelBreakdowns
+            self.generatedAt = generatedAt
+        }
     }
 
-    // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑三条 SUM SQL，
+    // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑轻量聚合 SQL，
     // 不重放历史事件、不构建时间序列/排行/摘录，也不写 snapshot 缓存。
     // 无 token JSONL 文件时返回 nil，调用方回退全量路径。
     func loadCompactSummary() throws -> CompactUsageSummary? {
@@ -136,6 +151,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     totalTokens: totals.totalTokens,
                     todayTokens: totals.todayTokens,
                     todayCalls: totals.todayCalls,
+                    todayModelBreakdowns: totals.todayModelBreakdowns,
                     generatedAt: Date()
                 )
             }
