@@ -10,6 +10,33 @@ export interface CodexCrowdRadarModel {
   latestGradedAt: string | null;
 }
 
+export interface CodexCrowdRadarSourceProvenance {
+  source: string | null;
+  endpoint: string | null;
+  attempts: number | null;
+  fresh: boolean | null;
+  stale: boolean | null;
+  freshnessBasis: string | null;
+  fallbackUsed: boolean | null;
+  sourceFailures: string[];
+  attemptErrors: string[];
+  serverDate: string | null;
+  lastModified: string | null;
+  cacheStatus: string | null;
+  etag: string | null;
+  cacheControl: string | null;
+  serverAgeSeconds: number | null;
+  codexCache: string | null;
+  codexCacheAgeSeconds: number | null;
+  codexFetchedAt: string | null;
+}
+
+export interface CodexCrowdRadarProvenance {
+  observedAt: string | null;
+  table: CodexCrowdRadarSourceProvenance | null;
+  leaderboard: CodexCrowdRadarSourceProvenance | null;
+}
+
 export type CodexCrowdRadarMode = "realtime" | "recent";
 
 export interface CodexCrowdRadarSnapshot {
@@ -22,6 +49,10 @@ export interface CodexCrowdRadarSnapshot {
   models: CodexCrowdRadarModel[];
   recentModels: CodexCrowdRadarModel[];
   realtimeAvailable: boolean;
+  /** Present for native payloads that identify their network source/freshness. */
+  provenance?: CodexCrowdRadarProvenance;
+  /** Endpoint/fallback errors remain inspectable even when one source is usable. */
+  endpointErrors?: string[];
 }
 
 const CROWD_RADAR_COMMAND = "read_codex_crowd_radar_payload";
@@ -42,6 +73,19 @@ export async function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnap
 
 export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSnapshot {
   const nativePayload = asRecord(raw);
+  const provenance: CodexCrowdRadarProvenance = {
+    observedAt: firstString(nativePayload, ["observedAt"]) || null,
+    table: parseSourceProvenance(valueFor(nativePayload, ["tableProvenance"])),
+    leaderboard: parseSourceProvenance(valueFor(nativePayload, ["leaderboardProvenance"])),
+  };
+  const endpointErrors = [
+    stringValue(valueFor(nativePayload, ["tableError"])),
+    stringValue(valueFor(nativePayload, ["leaderboardError"])),
+    ...provenance.table?.sourceFailures ?? [],
+    ...provenance.table?.attemptErrors ?? [],
+    ...provenance.leaderboard?.sourceFailures ?? [],
+    ...provenance.leaderboard?.attemptErrors ?? [],
+  ].filter((error, index, values) => error && values.indexOf(error) === index);
   const table = findPayload(
     valueFor(nativePayload, ["table"]) ?? raw,
     [
@@ -69,8 +113,7 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
     : recentModels;
   if (!models.some((model) => model.scoreSamples > 0)) {
     const nativeError = [
-      stringValue(valueFor(nativePayload, ["tableError"])),
-      stringValue(valueFor(nativePayload, ["leaderboardError"])),
+      ...endpointErrors,
       stringValue(valueFor(nativePayload, ["error", "message"])),
     ].find(Boolean);
     throw new Error(nativeError || "众测雷达没有可排名的模型数据");
@@ -121,7 +164,39 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
     models,
     recentModels,
     realtimeAvailable: tableAggregation.realtimeModels.length > 0,
+    provenance,
+    endpointErrors,
   };
+}
+
+function parseSourceProvenance(value: unknown): CodexCrowdRadarSourceProvenance | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    source: firstString(record, ["source"]) || null,
+    endpoint: firstString(record, ["endpoint"]) || null,
+    attempts: firstInteger(record, ["attempts"]),
+    fresh: booleanValue(valueFor(record, ["fresh"])),
+    stale: booleanValue(valueFor(record, ["stale"])),
+    freshnessBasis: firstString(record, ["freshnessBasis"]) || null,
+    fallbackUsed: booleanValue(valueFor(record, ["fallbackUsed"])),
+    sourceFailures: stringArrayValue(valueFor(record, ["sourceFailures"])),
+    attemptErrors: stringArrayValue(valueFor(record, ["attemptErrors"])),
+    serverDate: firstString(record, ["serverDate"]) || null,
+    lastModified: firstString(record, ["lastModified"]) || null,
+    cacheStatus: firstString(record, ["cacheStatus"]) || null,
+    etag: firstString(record, ["etag"]) || null,
+    cacheControl: firstString(record, ["cacheControl"]) || null,
+    serverAgeSeconds: firstInteger(record, ["serverAgeSeconds"]),
+    codexCache: firstString(record, ["codexCache"]) || null,
+    codexCacheAgeSeconds: firstInteger(record, ["codexCacheAgeSeconds"]),
+    codexFetchedAt: firstString(record, ["codexFetchedAt"]) || null,
+  };
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()));
 }
 
 export function bestCodexCrowdRadarModel(

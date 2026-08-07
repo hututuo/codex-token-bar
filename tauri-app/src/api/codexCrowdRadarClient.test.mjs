@@ -298,6 +298,61 @@ test("crowd radar accepts the published intelligence-efficiency points fallback"
   assert.deepEqual(snapshot.recentModels, snapshot.models);
 });
 
+test("crowd radar keeps source freshness and fallback errors visible", () => {
+  const snapshot = normalizeCodexCrowdRadarPayload({
+    observedAt: "2026-08-08T09:00:00Z",
+    table: null,
+    tableError: "Crowd Radar table sources failed: site timeout",
+    tableProvenance: {
+      source: "legacy-api",
+      endpoint: "https://api.codexradar.com/api/v1/table",
+      attempts: 1,
+      fresh: true,
+      stale: false,
+      freshness_basis: "network_observation",
+      fallbackUsed: true,
+      sourceFailures: ["Crowd Radar table/site timeout"],
+      attemptErrors: [],
+      server_date: "Fri, 08 Aug 2026 09:00:00 GMT",
+      server_age_seconds: "2",
+    },
+    leaderboard: {
+      points: [{
+        model: "gpt-5.6-luna",
+        effort: "max",
+        iq: 120,
+        passed: 8,
+        valid_tasks: 10,
+      }],
+    },
+    leaderboardProvenance: {
+      source: "published",
+      endpoint: "https://codexradar.com/data/intelligence-efficiency.json",
+      attempts: 2,
+      fresh: true,
+      stale: false,
+      fallback_used: false,
+      source_failures: [],
+      attempt_errors: ["attempt 1: temporary transport failure"],
+      server_age_seconds: 3,
+    },
+  });
+
+  assert.equal(snapshot.provenance?.observedAt, "2026-08-08T09:00:00Z");
+  assert.equal(snapshot.provenance?.table?.source, "legacy-api");
+  assert.equal(snapshot.provenance?.table?.fresh, true);
+  assert.equal(snapshot.provenance?.table?.stale, false);
+  assert.equal(snapshot.provenance?.table?.freshnessBasis, "network_observation");
+  assert.equal(snapshot.provenance?.table?.fallbackUsed, true);
+  assert.equal(snapshot.provenance?.table?.serverAgeSeconds, 2);
+  assert.equal(snapshot.provenance?.leaderboard?.attempts, 2);
+  assert.equal(snapshot.provenance?.leaderboard?.attemptErrors.length, 1);
+  assert.equal(snapshot.endpointErrors?.length, 3);
+  assert.match(snapshot.endpointErrors?.[0] ?? "", /table sources failed/);
+  assert.match(snapshot.endpointErrors?.[1] ?? "", /table\/site timeout/);
+  assert.match(snapshot.endpointErrors?.[2] ?? "", /temporary transport failure/);
+});
+
 test("crowd radar tie order ignores cumulative graded totals", () => {
   const snapshot = {
     generatedAt: "",

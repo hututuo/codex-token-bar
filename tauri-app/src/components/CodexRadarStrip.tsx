@@ -80,13 +80,20 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       crowdRadarRef.current = next;
       startTransition(() => {
         setCrowdRadar(next);
-        setCrowdRadarStatus("众测数据已更新");
+        const serverStale = [next.provenance?.table, next.provenance?.leaderboard]
+          .some((source) => source?.stale === true);
+        setCrowdRadarStatus(serverStale
+          ? "众测数据已更新（服务端标记陈旧，详见诊断）"
+          : next.endpointErrors?.length
+            ? "众测数据已更新（部分来源失败，详见诊断）"
+            : "众测数据已更新");
       });
-    } catch {
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       startTransition(() => {
         setCrowdRadarStatus(crowdRadarRef.current
-          ? "众测刷新失败，继续显示上次数据"
-          : "众测雷达暂不可用");
+          ? `众测刷新失败，继续显示上次数据：${detail}`
+          : `众测雷达暂不可用：${detail}`);
       });
     } finally {
       crowdRefreshingRef.current = false;
@@ -233,7 +240,11 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   );
   const crowdLeaders = useMemo(() => rankedCodexCrowdRadarModels(crowdRadar, 3), [crowdRadar]);
   const crowdBest = crowdLeaders[0] ?? null;
-  const crowdRadarStale = crowdRadar !== null && crowdRadarStatus.startsWith("众测刷新失败");
+  const crowdRadarStale = crowdRadar !== null && (
+    crowdRadarStatus.startsWith("众测刷新失败")
+    || [crowdRadar.provenance?.table, crowdRadar.provenance?.leaderboard]
+      .some((source) => source?.stale === true)
+  );
   const summaryQuotaRadar = snapshot?.modelIq.quotaRadar ?? null;
   const quotaRows = summaryQuotaRadar?.rows ?? [];
   const hasFiveHourQuota = summaryQuotaRadar
@@ -745,7 +756,11 @@ function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnaps
   const [mode, setMode] = useState<CodexCrowdRadarMode>("realtime");
   const rows = rankedCodexCrowdRadarModels(snapshot, 8, mode);
   const best = bestCodexCrowdRadarModel(snapshot, mode);
-  const staleDataDisplayed = snapshot !== null && status.startsWith("众测刷新失败");
+  const staleDataDisplayed = snapshot !== null && (
+    status.startsWith("众测刷新失败")
+    || [snapshot.provenance?.table, snapshot.provenance?.leaderboard]
+      .some((source) => source?.stale === true)
+  );
   const modeTitle = mode === "realtime" ? "实时监控" : "近期表现";
   const modeExplanation = mode === "realtime"
     ? "每格取最新 1 次有效结果"
@@ -755,6 +770,11 @@ function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnaps
       {snapshot ? (
         <>
           {staleDataDisplayed ? <p className="codex-radar-stale-note" role="status">{status}</p> : null}
+          {snapshot.endpointErrors?.length ? (
+            <p className="codex-radar-fallback-note" role="status">
+              众测来源诊断：{snapshot.endpointErrors.join("；")}
+            </p>
+          ) : null}
           <div className="codex-crowd-radar-mode-row">
             <div aria-label="众测雷达统计口径" className="segmented codex-crowd-radar-mode" role="group">
               {(["realtime", "recent"] as const).map((option) => (
