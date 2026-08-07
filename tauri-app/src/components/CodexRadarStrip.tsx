@@ -11,6 +11,7 @@ import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadar
 import {
   bestCodexCrowdRadarModel,
   crowdRadarModelLabel,
+  nextCodexCrowdRadarRecoveryDelayMs,
   rankedCodexCrowdRadarModels,
   readCodexCrowdRadarSnapshot,
   type CodexCrowdRadarMode,
@@ -54,6 +55,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [crowdRadar, setCrowdRadar] = useState<CodexCrowdRadarSnapshot | null>(null);
   const [crowdRadarStatus, setCrowdRadarStatus] = useState("众测雷达待读取");
+  const [crowdRadarError, setCrowdRadarError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [detailSnapshot, setDetailSnapshot] = useState<CodexRadarSnapshot | null>(null);
   const [detailStatus, setDetailStatus] = useState("详细信息待读取");
@@ -61,6 +63,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const lastExternalRefreshGeneration = useRef(0);
   const refreshingRef = useRef(false);
   const crowdRefreshingRef = useRef(false);
+  const crowdRecoveryAttemptRef = useRef(0);
+  const crowdRecoveryTimerRef = useRef<number | null>(null);
   const detailRefreshingRef = useRef(false);
   const snapshotRef = useRef<CodexRadarSnapshot | null>(null);
   const crowdRadarRef = useRef<CodexCrowdRadarSnapshot | null>(null);
@@ -78,6 +82,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     try {
       const next = await readCodexCrowdRadarSnapshot();
       crowdRadarRef.current = next;
+      crowdRecoveryAttemptRef.current = 0;
+      setCrowdRadarError(null);
+      if (crowdRecoveryTimerRef.current !== null) {
+        window.clearTimeout(crowdRecoveryTimerRef.current);
+        crowdRecoveryTimerRef.current = null;
+      }
       startTransition(() => {
         setCrowdRadar(next);
         const serverStale = [next.provenance?.table, next.provenance?.leaderboard]
@@ -90,11 +100,22 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
+      setCrowdRadarError(detail);
       startTransition(() => {
         setCrowdRadarStatus(crowdRadarRef.current
-          ? `众测刷新失败，继续显示上次数据：${detail}`
-          : `众测雷达暂不可用：${detail}`);
+          ? "众测刷新失败，继续显示上次数据"
+          : "众测雷达暂不可用");
       });
+      if (!crowdRadarRef.current && crowdRecoveryTimerRef.current === null) {
+        const delay = nextCodexCrowdRadarRecoveryDelayMs(crowdRecoveryAttemptRef.current);
+        if (delay !== null) {
+          crowdRecoveryAttemptRef.current += 1;
+          crowdRecoveryTimerRef.current = window.setTimeout(() => {
+            crowdRecoveryTimerRef.current = null;
+            void refreshCrowdRadar();
+          }, delay);
+        }
+      }
     } finally {
       crowdRefreshingRef.current = false;
     }
@@ -188,10 +209,17 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       });
     });
     void refresh(true);
-    const timer = window.setInterval(() => void refresh(true), RADAR_REFRESH_INTERVAL_MS);
+    const timer = window.setInterval(() => {
+      if (!crowdRadarRef.current) crowdRecoveryAttemptRef.current = 0;
+      void refresh(true);
+    }, RADAR_REFRESH_INTERVAL_MS);
     return () => {
       unsubscribe();
       window.clearInterval(timer);
+      if (crowdRecoveryTimerRef.current !== null) {
+        window.clearTimeout(crowdRecoveryTimerRef.current);
+        crowdRecoveryTimerRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -357,6 +385,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         <CodexRadarDetailOverlay
           allModels={allModels}
           crowdRadar={crowdRadar}
+          crowdRadarError={crowdRadarError}
           crowdRadarStatus={crowdRadarStatus}
           diagnostics={diagnostics}
           detailSnapshot={detailSnapshot}
@@ -382,6 +411,7 @@ export const CodexRadarStrip = memo(CodexRadarStripView);
 export function CodexRadarDetailOverlay({
   allModels,
   crowdRadar = null,
+  crowdRadarError = null,
   crowdRadarStatus = "众测雷达待读取",
   diagnostics,
   detailSnapshot,
@@ -399,6 +429,7 @@ export function CodexRadarDetailOverlay({
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
   crowdRadar?: CodexCrowdRadarSnapshot | null;
+  crowdRadarError?: string | null;
   crowdRadarStatus?: string;
   diagnostics: CodexRadarDiagnostic[];
   detailSnapshot: CodexRadarSnapshot | null;
@@ -462,6 +493,7 @@ export function CodexRadarDetailOverlay({
               quotaRows={displayQuotaRows}
               snapshot={displaySnapshot}
               crowdRadar={crowdRadar}
+              crowdRadarError={crowdRadarError}
               crowdRadarStatus={crowdRadarStatus}
             />
           ) : (
@@ -516,6 +548,7 @@ function writeLastDetailAttemptedSlotAt(value: string): void {
 const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   allModels,
   crowdRadar,
+  crowdRadarError,
   crowdRadarStatus,
   primary,
   probability24h,
@@ -525,6 +558,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
   crowdRadar: CodexCrowdRadarSnapshot | null;
+  crowdRadarError: string | null;
   crowdRadarStatus: string;
   primary: CodexRadarModelIQComparisonRow | null;
   probability24h: number | undefined;
@@ -553,7 +587,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   return (
     <div className="codex-radar-detail-stack">
       <CodexRadarDiagnosticsNotice snapshot={snapshot} />
-      <CrowdRadarDetail snapshot={crowdRadar} status={crowdRadarStatus} />
+      <CrowdRadarDetail error={crowdRadarError} snapshot={crowdRadar} status={crowdRadarStatus} />
       <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
         <RadarDetailSubsection title="窗口摘要">
           <RadarKeyValueGrid rows={[
@@ -752,7 +786,15 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   );
 });
 
-function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnapshot | null; status: string }) {
+function CrowdRadarDetail({
+  error,
+  snapshot,
+  status,
+}: {
+  error?: string | null;
+  snapshot: CodexCrowdRadarSnapshot | null;
+  status: string;
+}) {
   const [mode, setMode] = useState<CodexCrowdRadarMode>("realtime");
   const rows = rankedCodexCrowdRadarModels(snapshot, 8, mode);
   const best = bestCodexCrowdRadarModel(snapshot, mode);
@@ -767,6 +809,9 @@ function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnaps
     : "每格汇总最近 3 次有效结果";
   return (
     <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">
+      {error ? (
+        <p className="codex-radar-fallback-note" role="status">众测来源诊断：{error}</p>
+      ) : null}
       {snapshot ? (
         <>
           {staleDataDisplayed ? <p className="codex-radar-stale-note" role="status">{status}</p> : null}
@@ -793,7 +838,7 @@ function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnaps
           </div>
           {mode === "realtime" && !snapshot.realtimeAvailable ? (
             <p className="codex-radar-fallback-note" role="status">
-              实时表格暂不可用，当前以近期结果安全兜底
+              实时表格暂不可用，实时排名暂不显示；可切换“近期表现”查看已发布结果
             </p>
           ) : null}
           <RadarDetailSubsection title="众测覆盖">

@@ -489,7 +489,7 @@ private struct CodexCrowdRadarDetail: View {
                     .foregroundStyle(.secondary)
 
                 if mode == .realtime, !snapshot.realtimeAvailable {
-                    Label("实时表格暂不可用，当前以近期结果安全兜底", systemImage: "clock.arrow.circlepath")
+                    Label("实时表格暂不可用，实时排名暂不显示；可切换近期表现查看已发布结果", systemImage: "clock.arrow.circlepath")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.orange)
                 }

@@ -33,7 +33,7 @@ enum CodexCrowdRadarParser {
         let table = findPayload(
             tableObject,
             signalKeys: [
-                "baselineGeneratedAt", "generatedAt", "updatedAt", "monitoredAt",
+                "baselineGeneratedAt", "generatedAt", "updatedAt", "monitoredAt", "sourceUpdatedAt",
                 "tasks", "taskRows", "taskList", "taskCount",
                 "cells", "cellMap", "cellRows", "cellCount"
             ]
@@ -41,7 +41,7 @@ enum CodexCrowdRadarParser {
         let leaderboard = findPayload(
             leaderboardObject,
             signalKeys: [
-                "models", "rankings", "modelStats", "modelSummaries", "rows",
+                "models", "points", "rankings", "modelStats", "modelSummaries", "rows",
                 "contributors", "volunteers", "contributorRows", "contributorCount", "volunteerCount",
                 "pendingGrades", "pending", "pendingCount", "queuedGrades",
                 "errorGrades", "errors", "errorCount", "failedGrades"
@@ -53,17 +53,16 @@ enum CodexCrowdRadarParser {
         let recentModels = tableAggregation.recentModels.isEmpty
             ? leaderboardModels
             : tableAggregation.recentModels
-        let models = realtimeModels.isEmpty ? recentModels : realtimeModels
-        guard models.contains(where: { $0.scoreSamples > 0 }) else {
+        guard (realtimeModels + recentModels).contains(where: { $0.scoreSamples > 0 }) else {
             throw CodexRadarReaderError.emptyPayload
         }
         return CodexCrowdRadarSnapshot(
             generatedAt: tableAggregation.latestGradedAt ?? firstString(
                 table,
-                aliases: ["baselineGeneratedAt", "generatedAt", "updatedAt", "monitoredAt"]
+                aliases: ["baselineGeneratedAt", "generatedAt", "updatedAt", "monitoredAt", "sourceUpdatedAt"]
             ) ?? firstString(
                 leaderboard,
-                aliases: ["generatedAt", "updatedAt", "monitoredAt"]
+                aliases: ["generatedAt", "updatedAt", "monitoredAt", "sourceUpdatedAt"]
             ) ?? "",
             taskCount: firstCollectionCount(
                 table,
@@ -90,7 +89,7 @@ enum CodexCrowdRadarParser {
                 leaderboard,
                 aliases: ["errorGrades", "errors", "errorCount", "failedGrades"]
             ) ?? 0,
-            models: models,
+            models: realtimeModels,
             recentModels: recentModels,
             realtimeAvailable: !realtimeModels.isEmpty
         )
@@ -99,7 +98,7 @@ enum CodexCrowdRadarParser {
     private static func parseModels(_ leaderboard: JSONObject?) -> [CodexCrowdRadarModel] {
         let container = value(
             in: leaderboard,
-            aliases: ["models", "rankings", "modelStats", "modelSummaries", "rows"]
+            aliases: ["models", "points", "rankings", "modelStats", "modelSummaries", "rows"]
         )
         if let rows = container as? [Any] {
             return rows.compactMap { parseModel($0, fallbackKey: "") }
@@ -138,7 +137,7 @@ enum CodexCrowdRadarParser {
         let graded = firstInteger(
             row,
             aliases: [
-                "graded", "gradedCount", "judged", "judgedCount", "sampleCount", "samples", "attempts"
+                "graded", "gradedCount", "judged", "judgedCount", "sampleCount", "samples", "attempts", "validTasks"
             ]
         ) ?? derivedVotes
         let passed = firstInteger(
@@ -163,7 +162,7 @@ enum CodexCrowdRadarParser {
         guard let passRate else { return nil }
         let cells = firstInteger(
             row,
-            aliases: ["cells", "cellCount", "coveredCells", "taskCount", "coveredTasks"]
+            aliases: ["cells", "cellCount", "coveredCells", "taskCount", "coveredTasks", "validTasks"]
         ) ?? taskStats?.count ?? 0
         let scorePassed = firstInteger(
             row,

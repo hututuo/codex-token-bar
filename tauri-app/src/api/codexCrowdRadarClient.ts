@@ -58,17 +58,38 @@ export interface CodexCrowdRadarSnapshot {
 const CROWD_RADAR_COMMAND = "read_codex_crowd_radar_payload";
 const CROWD_RADAR_COMMAND_TIMEOUT_MS = 22_000;
 const WRAPPER_KEYS = ["data", "result", "snapshot", "payload", "response", "body"];
+const CROWD_RADAR_RECOVERY_DELAYS_MS = [2_000, 8_000] as const;
 
-export async function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> {
+let crowdRadarReadInFlight: Promise<CodexCrowdRadarSnapshot> | null = null;
+
+export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> {
+  if (crowdRadarReadInFlight) {
+    return crowdRadarReadInFlight;
+  }
   // Keep the compatibility parser independently executable in Node tests while
   // loading the Tauri bridge only on the real network-read path.
-  const { callCommandStrict } = await import("./command");
-  const raw = await callCommandStrict<unknown>(
-    CROWD_RADAR_COMMAND,
-    undefined,
-    CROWD_RADAR_COMMAND_TIMEOUT_MS,
+  const promise = (async () => {
+    const { callCommandStrict } = await import("./command");
+    const raw = await callCommandStrict<unknown>(
+      CROWD_RADAR_COMMAND,
+      undefined,
+      CROWD_RADAR_COMMAND_TIMEOUT_MS,
+    );
+    return normalizeCodexCrowdRadarPayload(raw);
+  })();
+  crowdRadarReadInFlight = promise;
+  void promise.then(
+    () => { if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null; },
+    () => { if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null; },
   );
-  return normalizeCodexCrowdRadarPayload(raw);
+  return promise;
+}
+
+export function nextCodexCrowdRadarRecoveryDelayMs(attempt: number): number | null {
+  const index = Math.floor(attempt);
+  return Number.isInteger(index) && index >= 0 && index < CROWD_RADAR_RECOVERY_DELAYS_MS.length
+    ? CROWD_RADAR_RECOVERY_DELAYS_MS[index]
+    : null;
 }
 
 export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSnapshot {
@@ -108,10 +129,8 @@ export function normalizeCodexCrowdRadarPayload(raw: unknown): CodexCrowdRadarSn
   const recentModels = tableAggregation.recentModels.length > 0
     ? tableAggregation.recentModels
     : leaderboardModels;
-  const models = tableAggregation.realtimeModels.length > 0
-    ? tableAggregation.realtimeModels
-    : recentModels;
-  if (!models.some((model) => model.scoreSamples > 0)) {
+  const models = tableAggregation.realtimeModels;
+  if (![...models, ...recentModels].some((model) => model.scoreSamples > 0)) {
     const nativeError = [
       ...endpointErrors,
       stringValue(valueFor(nativePayload, ["error", "message"])),
@@ -211,10 +230,11 @@ export function rankedCodexCrowdRadarModels(
   limit = Number.MAX_SAFE_INTEGER,
   mode: CodexCrowdRadarMode = "realtime",
 ): CodexCrowdRadarModel[] {
-  const requestedModels = mode === "recent" ? snapshot?.recentModels : snapshot?.models;
+  const realtimeModels = snapshot?.realtimeAvailable === false ? [] : snapshot?.models;
+  const requestedModels = mode === "recent" ? snapshot?.recentModels : realtimeModels;
   const fallbackModels = requestedModels && requestedModels.length > 0
     ? requestedModels
-    : snapshot?.models ?? snapshot?.recentModels ?? [];
+    : mode === "recent" ? snapshot?.models ?? [] : [];
   return [...fallbackModels]
     .filter((row) => scoreSampleCount(row) > 0)
     .sort(compareCrowdRadarModels)

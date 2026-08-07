@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadarClient";
 import type { CodexRadarSnapshot } from "../domain/codexRadar/model";
-import { readCodexCrowdRadarSnapshot, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
+import {
+  nextCodexCrowdRadarRecoveryDelayMs,
+  readCodexCrowdRadarSnapshot,
+  type CodexCrowdRadarSnapshot,
+} from "../api/codexCrowdRadarClient";
 
 const FLOATING_RADAR_REFRESH_INTERVAL_MS = 600_000;
 
@@ -65,19 +69,57 @@ export function useFloatingCrowdRadar(
   }: FloatingCrowdRadarOptions = {},
 ): CodexCrowdRadarSnapshot | null {
   const [snapshot, setSnapshot] = useState<CodexCrowdRadarSnapshot | null>(null);
+  const snapshotRef = useRef<CodexCrowdRadarSnapshot | null>(null);
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
-    const refresh = () => void readCrowdRadar()
-      .then((next) => { if (!cancelled) setSnapshot(next); })
-      .catch(() => {
-        if (!cancelled && clearOnError) {
-          setSnapshot(null);
-        }
-      });
+    let refreshing = false;
+    let recoveryAttempt = 0;
+    let recoveryTimer: number | null = null;
+    const scheduleRecovery = () => {
+      if (cancelled || snapshotRef.current || recoveryTimer !== null) return;
+      const delay = nextCodexCrowdRadarRecoveryDelayMs(recoveryAttempt);
+      if (delay === null) return;
+      recoveryAttempt += 1;
+      recoveryTimer = window.setTimeout(() => {
+        recoveryTimer = null;
+        refresh();
+      }, delay);
+    };
+    const refresh = () => {
+      if (cancelled || refreshing) return;
+      refreshing = true;
+      void readCrowdRadar()
+        .then((next) => {
+          if (cancelled) return;
+          snapshotRef.current = next;
+          recoveryAttempt = 0;
+          if (recoveryTimer !== null) {
+            window.clearTimeout(recoveryTimer);
+            recoveryTimer = null;
+          }
+          setSnapshot(next);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (clearOnError) {
+            snapshotRef.current = null;
+            setSnapshot(null);
+          }
+          scheduleRecovery();
+        })
+        .finally(() => { refreshing = false; });
+    };
     refresh();
-    const timer = window.setInterval(refresh, FLOATING_RADAR_REFRESH_INTERVAL_MS);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const timer = window.setInterval(() => {
+      if (!snapshotRef.current) recoveryAttempt = 0;
+      refresh();
+    }, FLOATING_RADAR_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      if (recoveryTimer !== null) window.clearTimeout(recoveryTimer);
+    };
   }, [active, clearOnError, readCrowdRadar]);
   return snapshot;
 }

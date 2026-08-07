@@ -21,8 +21,7 @@ const CODEX_CROWD_RADAR_TIMEOUT: Duration = Duration::from_secs(18);
 const CODEX_CROWD_RADAR_PRIMARY_TIMEOUT: Duration = Duration::from_secs(12);
 const CODEX_CROWD_RADAR_LEGACY_TIMEOUT: Duration = Duration::from_secs(6);
 const CODEX_CROWD_RADAR_MAX_BYTES: u64 = 8 * 1024 * 1024;
-const CODEX_CROWD_RADAR_MAX_ATTEMPTS: usize = 2;
-const CODEX_CROWD_RADAR_RETRY_DELAY: Duration = Duration::from_millis(200);
+const CODEX_CROWD_RADAR_MAX_ATTEMPTS: usize = 3;
 const KEY_CIPHER: [u8; 57] = [
     94, 228, 121, 185, 168, 72, 126, 255, 5, 110, 24, 99, 74, 39, 157, 134, 100, 135, 125, 94,
     135, 210, 1, 144, 13, 46, 200, 43, 156, 101, 161, 236, 160, 80, 7, 176, 218, 251, 217,
@@ -133,6 +132,12 @@ fn fetch_public_json_from_sources(
     for (source_index, (source, endpoint, timeout)) in sources.iter().enumerate() {
         match fetch_public_json(client, endpoint, &format!("{label}/{source}"), *timeout) {
             Ok(mut fetched) => {
+                if !public_payload_has_signal(&fetched.value, label) {
+                    errors.push(format!(
+                        "Crowd Radar {label} endpoint {endpoint}: unsupported payload shape"
+                    ));
+                    continue;
+                }
                 let provenance = fetched
                     .provenance
                     .as_object_mut()
@@ -178,11 +183,13 @@ fn fetch_public_json(
                 provenance.insert("attempts".into(), json!(attempt));
                 provenance.insert(
                     "fresh".into(),
-                    Value::Bool(cache_fresh.unwrap_or(true)),
+                    cache_fresh.map(Value::Bool).unwrap_or(Value::Null),
                 );
                 provenance.insert(
                     "stale".into(),
-                    Value::Bool(cache_fresh.map(|fresh| !fresh).unwrap_or(false)),
+                    cache_fresh
+                        .map(|fresh| Value::Bool(!fresh))
+                        .unwrap_or(Value::Null),
                 );
                 provenance.insert(
                     "freshnessBasis".into(),
@@ -209,11 +216,12 @@ fn fetch_public_json(
                 if !error.retryable || attempt >= CODEX_CROWD_RADAR_MAX_ATTEMPTS {
                     break;
                 }
+                let retry_delay = crowd_radar_retry_delay(attempt);
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining <= CODEX_CROWD_RADAR_RETRY_DELAY {
+                if remaining <= retry_delay {
                     break;
                 }
-                thread::sleep(CODEX_CROWD_RADAR_RETRY_DELAY);
+                thread::sleep(retry_delay);
             }
         }
     }
@@ -222,6 +230,48 @@ fn fetch_public_json(
         errors.len(),
         errors.join("; ")
     ))
+}
+
+fn crowd_radar_retry_delay(attempt: usize) -> Duration {
+    match attempt {
+        1 => Duration::from_millis(250),
+        2 => Duration::from_millis(750),
+        _ => Duration::ZERO,
+    }
+}
+
+fn public_payload_has_signal(value: &Value, label: &str) -> bool {
+    let signal_keys: &[&str] = match label {
+        "table" => &["combos", "tasks", "cells", "baseline_generated_at"],
+        "leaderboard" => &["points", "models", "rankings", "model_stats"],
+        _ => &[],
+    };
+    fn contains_signal(value: &Value, signal_keys: &[&str], depth: usize) -> bool {
+        let Some(object) = value.as_object() else { return false };
+        if object.keys().any(|key| {
+            let canonical = key
+                .chars()
+                .filter(|character| character.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>();
+            signal_keys.iter().any(|signal| {
+                let signal_canonical = signal
+                    .chars()
+                    .filter(|character| character.is_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                canonical == signal_canonical
+            })
+        }) {
+            return true;
+        }
+        if depth >= 4 { return false }
+        ["data", "result", "snapshot", "payload", "response", "body"]
+            .iter()
+            .filter_map(|wrapper| object.get(*wrapper))
+            .any(|nested| contains_signal(nested, signal_keys, depth + 1))
+    }
+    contains_signal(value, signal_keys, 0)
 }
 
 #[derive(Debug)]
@@ -534,6 +584,19 @@ mod tests {
     }
 
     #[test]
+    fn crowd_radar_recognizes_current_official_table_and_published_points_shapes() {
+        assert!(public_payload_has_signal(
+            &json!({"schema": 1, "combos": [], "tasks": [], "cells": {}}),
+            "table"
+        ));
+        assert!(public_payload_has_signal(
+            &json!({"schema": 2, "source_updated_at": "2026-08-08T04:50:48+08:00", "points": []}),
+            "leaderboard"
+        ));
+        assert!(!public_payload_has_signal(&json!({"ok": true}), "leaderboard"));
+    }
+
+    #[test]
     fn crowd_radar_source_chain_uses_the_next_source_after_failure() {
         let (primary_url, primary_server) = spawn_http_response("503 Service Unavailable", "{}");
         let (fallback_url, fallback_server) =
@@ -565,6 +628,7 @@ mod tests {
     fn crowd_radar_retries_a_transient_http_failure_within_the_source_budget() {
         let (endpoint, server) = spawn_http_sequence(vec![
             Some(("503 Service Unavailable", "{}")),
+            Some(("503 Service Unavailable", "{}")),
             Some(("200 OK", r#"{"points":[{"model":"gpt-5.6-sol"}]}"#)),
         ]);
         let client = reqwest::blocking::Client::builder()
@@ -585,7 +649,7 @@ mod tests {
         );
         assert_eq!(
             fetched.provenance.get("attempts").and_then(Value::as_u64),
-            Some(2)
+            Some(3)
         );
         assert_eq!(
             fetched
@@ -593,17 +657,54 @@ mod tests {
                 .get("attemptErrors")
                 .and_then(Value::as_array)
                 .map(Vec::len),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             fetched.provenance.get("fresh").and_then(Value::as_bool),
-            Some(true)
+            None
         );
         assert_eq!(
             fetched.provenance.get("stale").and_then(Value::as_bool),
-            Some(false)
+            None
         );
         server.join().expect("server");
+    }
+
+    #[test]
+    fn crowd_radar_skips_an_http_success_with_an_unrecognized_shape() {
+        let (primary_url, primary_server) = spawn_http_response("200 OK", r#"{"ok":true}"#);
+        let (fallback_url, fallback_server) =
+            spawn_http_response("200 OK", r#"{"points":[{"model":"gpt-5.6-sol"}]}"#);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_gzip()
+            .build()
+            .expect("client");
+        let sources = [
+            ("site", primary_url.as_str(), Duration::from_secs(2)),
+            ("published", fallback_url.as_str(), Duration::from_secs(2)),
+        ];
+
+        let fetched = fetch_public_json_from_sources(&client, "leaderboard", &sources)
+            .expect("schema fallback");
+        assert_eq!(
+            fetched
+                .value
+                .pointer("/points/0/model")
+                .and_then(Value::as_str),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(fetched.provenance.get("source").and_then(Value::as_str), Some("published"));
+        assert_eq!(
+            fetched
+                .provenance
+                .get("sourceFailures")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        primary_server.join().expect("primary server");
+        fallback_server.join().expect("fallback server");
     }
 
     #[test]
@@ -752,6 +853,50 @@ mod tests {
         .expect_err("both endpoints must fail");
         assert!(error.contains("table unavailable"));
         assert!(error.contains("leaderboard unavailable"));
+    }
+
+    #[test]
+    fn crowd_radar_all_sources_failed_error_keeps_each_source_diagnostic() {
+        let (table_site, table_site_server) = spawn_http_response("503 Service Unavailable", "{}");
+        let (table_legacy, table_legacy_server) =
+            spawn_http_response("503 Service Unavailable", "{}");
+        let (leaderboard_site, leaderboard_site_server) =
+            spawn_http_response("503 Service Unavailable", "{}");
+        let (leaderboard_legacy, leaderboard_legacy_server) =
+            spawn_http_response("503 Service Unavailable", "{}");
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_gzip()
+            .build()
+            .expect("client");
+        let table = fetch_public_json_from_sources(
+            &client,
+            "table",
+            &[
+                ("site", table_site.as_str(), Duration::from_secs(2)),
+                ("legacy-api", table_legacy.as_str(), Duration::from_secs(2)),
+            ],
+        )
+        .expect_err("table should fail");
+        let leaderboard = fetch_public_json_from_sources(
+            &client,
+            "leaderboard",
+            &[
+                ("published", leaderboard_site.as_str(), Duration::from_secs(2)),
+                ("legacy-api", leaderboard_legacy.as_str(), Duration::from_secs(2)),
+            ],
+        )
+        .expect_err("leaderboard should fail");
+        let error = combine_crowd_radar_payload(Err(table), Err(leaderboard))
+            .expect_err("both source groups should fail");
+        assert!(error.contains("table/site"), "{error}");
+        assert!(error.contains("table/legacy-api"), "{error}");
+        assert!(error.contains("leaderboard/published"), "{error}");
+        assert!(error.contains("leaderboard/legacy-api"), "{error}");
+        table_site_server.join().expect("table site server");
+        table_legacy_server.join().expect("table legacy server");
+        leaderboard_site_server.join().expect("leaderboard site server");
+        leaderboard_legacy_server.join().expect("leaderboard legacy server");
     }
 
     #[test]
