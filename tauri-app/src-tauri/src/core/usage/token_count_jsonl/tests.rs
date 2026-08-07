@@ -6158,6 +6158,7 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
         "unchanged active rollout should reuse the trusted aggregate summary"
     );
 
+    let (started_rx, gate, calls) = install_blocking_precise_refresh_hook(&[root.clone()]);
     {
         let mut handle = fs::OpenOptions::new()
             .append(true)
@@ -6181,6 +6182,10 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
         120,
         "signature drift should return stale-safe trusted totals while scheduling one rebuild"
     );
+    assert!(started_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    gate.release(1);
+    set_precise_refresh_sync_hook_for_testing(None);
 
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
