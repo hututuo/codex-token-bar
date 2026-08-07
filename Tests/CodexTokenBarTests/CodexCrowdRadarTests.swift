@@ -2,6 +2,22 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexCrowdRadarTests: XCTestCase {
+    func testLiveReaderKeepsPerSourceBudgetsAndCancellationGuard() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexCrowdRadar.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("(URL(string: \"https://codexradar.com/api/intelligence-efficiency\")!, 12)"))
+        XCTAssertTrue(source.contains("(URL(string: \"https://api.codexradar.com/api/v1/table\")!, 6)"))
+        XCTAssertTrue(source.contains("(URL(string: \"https://codexradar.com/data/intelligence-efficiency.json\")!, 12)"))
+        XCTAssertTrue(source.contains("(URL(string: \"https://api.codexradar.com/api/v1/leaderboard\")!, 6)"))
+        XCTAssertTrue(source.contains("try Task.checkCancellation()"))
+        XCTAssertTrue(source.contains("private static func isCancellation"))
+    }
+
     func testBestModelUsesPassRateAndConvertsToIQ() {
         let snapshot = CodexCrowdRadarSnapshot(
             generatedAt: "2026-07-16T00:00:00Z",

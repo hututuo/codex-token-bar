@@ -168,16 +168,15 @@ protocol CodexCrowdRadarReading: Sendable {
 struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
     private static let maxResponseBytes = 8 * 1024 * 1024
     private static let sourceAttemptLimit = 3
-    private static let sourceBudget: TimeInterval = 18
     private static let retryDelays: [TimeInterval] = [0.25, 0.75]
 
-    private static let tableSources = [
-        URL(string: "https://codexradar.com/api/intelligence-efficiency")!,
-        URL(string: "https://api.codexradar.com/api/v1/table")!
+    private static let tableSources: [(url: URL, budget: TimeInterval)] = [
+        (URL(string: "https://codexradar.com/api/intelligence-efficiency")!, 12),
+        (URL(string: "https://api.codexradar.com/api/v1/table")!, 6)
     ]
-    private static let leaderboardSources = [
-        URL(string: "https://codexradar.com/data/intelligence-efficiency.json")!,
-        URL(string: "https://api.codexradar.com/api/v1/leaderboard")!
+    private static let leaderboardSources: [(url: URL, budget: TimeInterval)] = [
+        (URL(string: "https://codexradar.com/data/intelligence-efficiency.json")!, 12),
+        (URL(string: "https://api.codexradar.com/api/v1/leaderboard")!, 6)
     ]
 
     func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
@@ -190,6 +189,7 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
             signalKeys: ["points", "models", "rankings", "modelStats"]
         )
         let payloads = await (tableData, leaderboardData)
+        try Task.checkCancellation()
         guard payloads.0 != nil || payloads.1 != nil else {
             throw CodexRadarReaderError.invalidResponse
         }
@@ -199,22 +199,33 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
         )
     }
 
-    private func readFirstAvailable(_ urls: [URL], signalKeys: [String]) async throws -> Data {
+    private func readFirstAvailable(
+        _ sources: [(url: URL, budget: TimeInterval)],
+        signalKeys: [String]
+    ) async throws -> Data {
         var lastError: Error = CodexRadarReaderError.invalidResponse
-        for url in urls {
+        for source in sources {
+            try Task.checkCancellation()
             do {
-                let data = try await readWithRetries(url)
+                let data = try await readWithRetries(source.url, budget: source.budget)
                 guard Self.payloadContainsSignal(data, signalKeys: signalKeys) else {
+                    try Task.checkCancellation()
                     lastError = CodexRadarReaderError.invalidResponse
                     continue
                 }
                 return data
             } catch {
-                if Task.isCancelled { throw error }
+                if Self.isCancellation(error) { throw error }
                 lastError = error
             }
         }
         throw lastError
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled
+            || error is CancellationError
+            || (error as? URLError)?.code == .cancelled
     }
 
     private static func payloadContainsSignal(_ data: Data, signalKeys: [String]) -> Bool {
@@ -241,8 +252,8 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
             .lowercased()
     }
 
-    private func readWithRetries(_ url: URL) async throws -> Data {
-        let deadline = Date().addingTimeInterval(Self.sourceBudget)
+    private func readWithRetries(_ url: URL, budget: TimeInterval) async throws -> Data {
+        let deadline = Date().addingTimeInterval(budget)
         var lastError: Error = CodexRadarReaderError.invalidResponse
         for attempt in 0..<Self.sourceAttemptLimit {
             let remaining = deadline.timeIntervalSinceNow
@@ -250,6 +261,7 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
             do {
                 return try await read(url, timeoutInterval: min(6, remaining))
             } catch {
+                if Self.isCancellation(error) { throw error }
                 lastError = error
                 guard attempt + 1 < Self.sourceAttemptLimit else { break }
                 let delay = Self.retryDelays[attempt]
