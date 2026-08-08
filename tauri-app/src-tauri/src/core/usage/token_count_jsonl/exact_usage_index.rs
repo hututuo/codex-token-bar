@@ -1327,22 +1327,56 @@ impl ExactUsageIndex {
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path;
+
+                -- Events are physically ordered by file generation/path. Fold
+                -- them to one small row per file first, then join the published
+                -- selector and group the roughly file-count-sized result by
+                -- session. Grouping the published_events view directly makes
+                -- SQLite revisit events once per file and spill every event into
+                -- a session GROUP BY temp B-tree on large indexes.
                 CREATE TEMP TABLE dashboard_session_rows AS
+                WITH file_rows AS MATERIALIZED (
+                    SELECT
+                        e.file_generation,
+                        e.file_path,
+                        COUNT(*) AS calls,
+                        SUM(e.tokens) AS total_tokens,
+                        SUM(e.input_tokens) AS input_tokens,
+                        SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
+                        SUM(e.output_tokens) AS output_tokens,
+                        MAX(e.timestamp) AS updated_at
+                    FROM main.events e
+                    GROUP BY e.file_generation, e.file_path
+                ),
+                session_rows AS (
+                    SELECT
+                        f.session_id,
+                        SUM(fr.calls) AS calls,
+                        SUM(fr.total_tokens) AS total_tokens,
+                        SUM(fr.input_tokens) AS input_tokens,
+                        SUM(fr.cached_tokens) AS cached_tokens,
+                        SUM(fr.output_tokens) AS output_tokens,
+                        MAX(fr.updated_at) AS updated_at
+                    FROM file_rows fr
+                    JOIN published_files f
+                      ON f.generation = fr.file_generation
+                     AND f.path = fr.file_path
+                    GROUP BY f.session_id
+                )
                 SELECT
-                    e.session_id,
-                    COUNT(*) AS calls,
-                    SUM(e.tokens) AS total_tokens,
-                    SUM(e.input_tokens) AS input_tokens,
-                    SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
-                    SUM(e.output_tokens) AS output_tokens,
-                    COALESCE(m.updated_at, MAX(e.timestamp)) AS updated_at,
+                    s.session_id,
+                    s.calls,
+                    s.total_tokens,
+                    s.input_tokens,
+                    s.cached_tokens,
+                    s.output_tokens,
+                    COALESCE(m.updated_at, s.updated_at) AS updated_at,
                     COALESCE(
                         NULLIF(TRIM(m.title), ''),
-                        '会话 ' || SUBSTR(e.session_id, 1, 8)
+                        '会话 ' || SUBSTR(s.session_id, 1, 8)
                     ) AS title
-                FROM published_events e
-                LEFT JOIN session_metadata m ON m.session_id = e.session_id
-                GROUP BY e.session_id;
+                FROM session_rows s
+                LEFT JOIN session_metadata m ON m.session_id = s.session_id;
                 "#,
             )
             .map_err(|error| format!("无法建立精确 token 聚合快照：{error}"))

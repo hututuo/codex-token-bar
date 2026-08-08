@@ -5114,6 +5114,45 @@ fn ranks_sessions_by_low_cache_hit_rate_with_thread_titles() {
 }
 
 #[test]
+fn dashboard_session_rollup_combines_multiple_published_files_for_one_session() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let sessions_dir = root.join("sessions");
+    let archived_dir = root.join("archived_sessions");
+    fs::create_dir_all(&sessions_dir).unwrap();
+    fs::create_dir_all(&archived_dir).unwrap();
+    let session_id = "019emulti-0000-0000-0000-000000000001";
+    write_lines(
+        &sessions_dir.join(format!("rollout-2026-06-18T01-00-00-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1200,"cached_input_tokens":200,"output_tokens":50,"total_tokens":1250}}}}"#,
+        ],
+    );
+    write_lines(
+        &archived_dir.join(format!("rollout-2026-06-18T02-00-00-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-06-18T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1400,"cached_input_tokens":300,"output_tokens":70,"total_tokens":1470}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    let session = snapshot
+        .cache_usage
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .unwrap();
+    assert_eq!(snapshot.stats.total_threads, 1);
+    assert_eq!(session.breakdown.calls, 2);
+    assert_eq!(session.breakdown.total_tokens, 2_720);
+    assert_eq!(session.breakdown.input_tokens, 2_600);
+    assert_eq!(session.breakdown.cached_input_tokens, 500);
+    assert_eq!(session.breakdown.output_tokens, 120);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
