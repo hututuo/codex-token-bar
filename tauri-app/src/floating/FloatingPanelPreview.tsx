@@ -47,6 +47,9 @@ interface FloatingPanelSurfaceProps {
   onClose?: () => void;
   onDragStart?: (event: MouseEvent<HTMLElement>) => void;
   onOpenDashboard?: () => void;
+  previewMode?: boolean;
+  selectedPreviewRowId?: string | null;
+  onPreviewRowSelect?: (rowId: string) => void;
 }
 
 const PENDING_FLOATING_RUNNING_THREADS: RunningThreadSummary = {
@@ -205,6 +208,9 @@ export function FloatingPanelSurface({
   onClose,
   onDragStart,
   onOpenDashboard,
+  previewMode = false,
+  selectedPreviewRowId = null,
+  onPreviewRowSelect,
 }: FloatingPanelSurfaceProps) {
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
   const rows = layoutFloatingContentRows(settings.contentVisibility);
@@ -224,24 +230,26 @@ export function FloatingPanelSurface({
 
   return (
     <aside
-      className="floating-panel-surface"
+      className={`floating-panel-surface${previewMode ? " floating-panel-surface--preview" : ""}`}
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
-      onMouseDown={onDragStart}
-      onDoubleClick={onOpenDashboard}
+      onMouseDown={previewMode ? undefined : onDragStart}
+      onDoubleClick={previewMode ? undefined : onOpenDashboard}
       style={rootStyle}
       title={snapshot.unreadSummary.detail}
     >
       {shouldShowUnreadEffect ? <UnreadEffect effect={unreadEffect} effectRgb={effectRgb} /> : null}
-      <button
-        className="floating-close-button"
-        type="button"
-        aria-label="关闭悬浮窗"
-        onMouseDown={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => event.stopPropagation()}
-        onClick={onClose}
-      >
-        ×
-      </button>
+      {!previewMode ? (
+        <button
+          className="floating-close-button"
+          type="button"
+          aria-label="关闭悬浮窗"
+          onMouseDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onClick={onClose}
+        >
+          ×
+        </button>
+      ) : null}
       <div className="floating-content">
         {rows.map((row, index) => (
           <FloatingPagedContentRow
@@ -257,6 +265,9 @@ export function FloatingPanelSurface({
             settings={settings}
             snapshot={snapshot}
             total={rows.length}
+            previewMode={previewMode}
+            selectedPreviewRowId={selectedPreviewRowId}
+            onPreviewRowSelect={onPreviewRowSelect}
           />
         ))}
       </div>
@@ -280,9 +291,18 @@ interface FloatingContentRowProps {
 
 interface FloatingPagedContentRowProps extends Omit<FloatingContentRowProps, "group"> {
   row: FloatingContentLayoutRow;
+  previewMode?: boolean;
+  selectedPreviewRowId?: string | null;
+  onPreviewRowSelect?: (rowId: string) => void;
 }
 
-function FloatingPagedContentRow({ row, ...props }: FloatingPagedContentRowProps) {
+function FloatingPagedContentRow({
+  row,
+  previewMode = false,
+  selectedPreviewRowId = null,
+  onPreviewRowSelect,
+  ...props
+}: FloatingPagedContentRowProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const safeIndex = selectedIndex % row.groups.length;
   const group = row.groups[safeIndex];
@@ -292,8 +312,13 @@ function FloatingPagedContentRow({ row, ...props }: FloatingPagedContentRowProps
   ) % row.groups.length);
   return (
     <div
-      className={`floating-page-layout-row${paged ? " is-paged" : ""}`}
+      className={`floating-page-layout-row${paged ? " is-paged" : ""}${selectedPreviewRowId === row.id ? " is-preview-selected" : ""}`}
       data-floating-group={row.primaryGroup}
+      data-floating-row-id={row.id}
+      onClick={previewMode ? (event) => {
+        event.stopPropagation();
+        onPreviewRowSelect?.(row.id);
+      } : undefined}
     >
       <FloatingContentRow {...props} group={group} />
       {paged ? (

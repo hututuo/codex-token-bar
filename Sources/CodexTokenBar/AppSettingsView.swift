@@ -126,6 +126,8 @@ struct AppSettingsView: View {
     @Binding var showCrowdRadar: Bool
     @Binding var contentOrderRaw: String
     @Binding var pagePairsRaw: String
+    let floatingPreviewSnapshot: TokenDisplaySnapshot
+    let floatingPreviewRadarPresentation: CodexRadarPresentationState
     let defaultCodexHome: URL?
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -592,24 +594,19 @@ struct AppSettingsView: View {
     }
 
     private var contentSettings: some View {
-        Group {
-            settingsSection(title: "内容与顺序", subtitle: "先选择显示项目，再调整它们从上到下的位置") {
-                ForEach(orderedGroups) { group in
-                    contentRow(group)
-                }
-            }
-
-            settingsSection(title: "翻页组合", subtitle: "任意两项可合成一行；左右淡箭头在悬浮窗内切换") {
-                ForEach(pageCapableGroups) { group in
-                    pagePairRow(group)
-                }
-                settingsInfoRow(
-                    "费用口径",
-                    systemImage: "dollarsign.circle",
-                    detail: "已识别模型按真实模型与缓存价格计算；未知模型使用“监控与额度”中的回退模型，Spark 标为独立额度。"
-                )
-            }
-        }
+        FloatingPanelStructureEditor(
+            visibility: floatingContentVisibilityBinding,
+            snapshot: floatingPreviewSnapshot,
+            radarPresentation: floatingPreviewRadarPresentation,
+            opacity: floatingPanelOpacity,
+            scale: floatingPanelScale,
+            appearance: FloatingPanelAppearance(
+                startHex: gradientStartHex,
+                endHex: gradientEndHex,
+                directionRaw: gradientDirection,
+                styleRaw: gradientStyle
+            )
+        )
     }
 
     private var statusBarPreview: some View {
@@ -894,6 +891,39 @@ struct AppSettingsView: View {
 
     private var pagePairs: [FloatingPanelPagePair] {
         FloatingPanelContentVisibility.pagePairs(from: pagePairsRaw)
+    }
+
+    private var floatingContentVisibilityBinding: Binding<FloatingPanelContentVisibility> {
+        Binding(
+            get: {
+                FloatingPanelContentVisibility(
+                    showRateAndBar: showRateAndBar,
+                    showUsageStatus: showUsageStatus,
+                    showMetrics: showMetrics,
+                    showRunningThreads: showRunningThreads,
+                    showTodayModelShare: showTodayModelShare,
+                    showTodayModelCost: showTodayModelCost,
+                    showQuota: showQuota,
+                    showRadar: showRadar,
+                    showCrowdRadar: showCrowdRadar,
+                    groupOrder: orderedGroups,
+                    pagePairs: pagePairs
+                )
+            },
+            set: { next in
+                showRateAndBar = next.showRateAndBar
+                showUsageStatus = next.showUsageStatus
+                showMetrics = next.showMetrics
+                showRunningThreads = next.showRunningThreads
+                showTodayModelShare = next.showTodayModelShare
+                showTodayModelCost = next.showTodayModelCost
+                showQuota = next.showQuota
+                showRadar = next.showRadar
+                showCrowdRadar = next.showCrowdRadar
+                contentOrderRaw = FloatingPanelContentVisibility.encodedOrder(next.groupOrder)
+                pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(next.pagePairs)
+            }
+        )
     }
 
     private var statusBarMetricConfiguration: StatusBarMetricConfiguration {

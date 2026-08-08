@@ -469,6 +469,8 @@ struct DashboardView: View {
                 showCrowdRadar: $floatingPanelShowCrowdRadar,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
                 pagePairsRaw: $floatingPanelPagePairsRaw,
+                floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
+                floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
                 defaultCodexHome: store.currentDataSource?.codexHome,
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
@@ -1094,6 +1096,26 @@ struct DashboardView: View {
             radar: radar,
             rateAvailable: liveMonitor.monitoringEnabled && liveMonitor.currentDataSourceIdentity != nil,
             unreadThreadCount: taskCompletionMonitor.statusBarUnreadThreadCount
+        )
+    }
+
+    private var floatingPanelPreviewSnapshot: TokenDisplaySnapshot {
+        TokenDisplaySnapshot.make(
+            store: store,
+            monitor: liveMonitor,
+            quota: quotaStore,
+            runningThreads: taskCompletionMonitor.runningThreadSummary
+        )
+    }
+
+    private var floatingPanelPreviewRadarPresentation: CodexRadarPresentationState {
+        CodexRadarPresentationState(
+            snapshot: radarStore.snapshot,
+            status: radarStore.status,
+            diagnostics: radarStore.diagnostics,
+            staleDataDisplayed: radarStore.staleDataDisplayed,
+            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
+            crowdSnapshot: radarStore.crowdSnapshot
         )
     }
 

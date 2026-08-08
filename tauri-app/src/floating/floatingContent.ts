@@ -78,6 +78,8 @@ export interface FloatingContentLayoutRow {
   primaryGroup: FloatingContentGroup;
 }
 
+export type FloatingContentRowPlacement = "before" | "after";
+
 export function layoutFloatingContentRows(visibility: FloatingContentVisibility): FloatingContentLayoutRow[] {
   const groups = layoutFloatingContentGroups(visibility);
   const available = new Set(groups);
@@ -145,6 +147,21 @@ export function swapFloatingDefaultPage(
   return sanitizeFloatingPagePairs(pairs).map(([first, second]) => (
     second === group ? [second, first] : [first, second]
   ));
+}
+
+export function splitFloatingPage(
+  pairs: FloatingContentPagePair[],
+  group: FloatingContentGroup,
+): FloatingContentPagePair[] {
+  return sanitizeFloatingPagePairs(pairs).filter((pair) => !pair.includes(group));
+}
+
+export function mergeFloatingPage(
+  pairs: FloatingContentPagePair[],
+  group: FloatingContentGroup,
+  target: FloatingContentGroup,
+): FloatingContentPagePair[] {
+  return replaceFloatingPagePartner(pairs, target, group);
 }
 
 export function layoutFloatingContentGroups(visibility: FloatingContentVisibility): FloatingContentGroup[] {
@@ -230,11 +247,106 @@ export function moveFloatingContent(
   return sanitizeContentOrder(next);
 }
 
+export function editorGroupsForFloatingRow(
+  visibility: FloatingContentVisibility,
+  row: FloatingContentLayoutRow,
+): FloatingContentGroup[] {
+  if (row.groups.length !== 1) return [...row.groups];
+  if (row.primaryGroup === "rateAndBar" && embedsUsageStatusInRateRow(visibility)) {
+    return ["rateAndBar", "usageStatus"];
+  }
+  if (row.primaryGroup === "metrics" && embedsRunningThreadsInMetricsRow(visibility)) {
+    return ["metrics", "runningThreads"];
+  }
+  return [...row.groups];
+}
+
+export function moveFloatingRow(
+  order: FloatingContentGroup[],
+  movingGroups: FloatingContentGroup[],
+  targetGroups: FloatingContentGroup[],
+  placement: FloatingContentRowPlacement,
+): FloatingContentGroup[] {
+  const normalized = sanitizeContentOrder(order);
+  const moving = new Set(movingGroups);
+  const targets = new Set(targetGroups);
+  if (
+    moving.size === 0
+    || [...moving].some((group) => targets.has(group) || !normalized.includes(group))
+    || [...targets].some((group) => !normalized.includes(group))
+  ) return normalized;
+
+  const movingBlock = normalized.filter((group) => moving.has(group));
+  const remaining = normalized.filter((group) => !moving.has(group));
+  const targetIndices = remaining.flatMap((group, index) => targets.has(group) ? [index] : []);
+  if (targetIndices.length === 0) return normalized;
+  const insertionIndex = placement === "before"
+    ? targetIndices[0]
+    : targetIndices[targetIndices.length - 1] + 1;
+  remaining.splice(insertionIndex, 0, ...movingBlock);
+  return sanitizeContentOrder(remaining);
+}
+
+export function placeFloatingPageAfterTarget(
+  order: FloatingContentGroup[],
+  group: FloatingContentGroup,
+  target: FloatingContentGroup,
+): FloatingContentGroup[] {
+  const normalized = sanitizeContentOrder(order).filter((item) => item !== group);
+  const targetIndex = normalized.indexOf(target);
+  if (targetIndex < 0) return sanitizeContentOrder(order);
+  normalized.splice(targetIndex + 1, 0, group);
+  return sanitizeContentOrder(normalized);
+}
+
+export function isFloatingGroupVisible(
+  visibility: FloatingContentVisibility,
+  group: FloatingContentGroup,
+): boolean {
+  switch (group) {
+    case "rateAndBar": return visibility.showRateAndBar;
+    case "usageStatus": return visibility.showUsageStatus;
+    case "metrics": return visibility.showMetrics;
+    case "runningThreads": return visibility.showRunningThreads;
+    case "todayModelShare": return visibility.showTodayModelShare;
+    case "todayModelCost": return visibility.showTodayModelCost;
+    case "quota": return visibility.showQuota;
+    case "radar": return visibility.showRadar;
+    case "crowdRadar": return visibility.showCrowdRadar;
+  }
+}
+
+export type FloatingVisibilityKey = Exclude<keyof FloatingContentVisibility, "order" | "pagePairs">;
+
+export function floatingVisibilityKey(group: FloatingContentGroup): FloatingVisibilityKey {
+  switch (group) {
+    case "rateAndBar": return "showRateAndBar";
+    case "usageStatus": return "showUsageStatus";
+    case "metrics": return "showMetrics";
+    case "runningThreads": return "showRunningThreads";
+    case "todayModelShare": return "showTodayModelShare";
+    case "todayModelCost": return "showTodayModelCost";
+    case "quota": return "showQuota";
+    case "radar": return "showRadar";
+    case "crowdRadar": return "showCrowdRadar";
+  }
+}
+
+export function setFloatingGroupsVisible(
+  visibility: FloatingContentVisibility,
+  groups: FloatingContentGroup[],
+  visible: boolean,
+): FloatingContentVisibility {
+  const next: FloatingContentVisibility = { ...visibility };
+  for (const group of groups) next[floatingVisibilityKey(group)] = visible;
+  return sanitizeFloatingContentVisibility(next);
+}
+
 export function floatingContentGap(
   upperGroup: FloatingContentGroup,
   lowerGroup: FloatingContentGroup,
 ): number {
-  return upperGroup === "radar" && lowerGroup === "crowdRadar" ? 2 : 4;
+  return upperGroup === "radar" && lowerGroup === "crowdRadar" ? 0 : 2;
 }
 
 export function floatingContentHeight(visibility: FloatingContentVisibility): number {
@@ -246,25 +358,25 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
   const rowHeights = rows.map((row) => Math.max(...row.groups.map((group) => {
     switch (group) {
       case "rateAndBar":
-        return 30;
+        return 28;
       case "usageStatus":
-        return 11;
+        return 20;
       case "metrics":
         return 13;
       case "runningThreads":
-        return 13;
+        return 14;
       case "todayModelShare":
       case "todayModelCost":
         return 20;
       case "radar":
-        return 26;
+        return 24;
       case "crowdRadar":
         return 20;
       case "quota":
-        return 16.5;
+        return 15.5;
     }
   })));
-  const verticalPadding = 14;
+  const verticalPadding = 12;
   const gaps = rows.slice(1).reduce(
     (sum, row, index) => sum + floatingContentGap(rows[index].primaryGroup, row.primaryGroup),
     0,

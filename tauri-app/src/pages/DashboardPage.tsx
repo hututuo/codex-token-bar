@@ -34,6 +34,7 @@ import type { CommandFailureDiagnostic } from "../api/client";
 import { buildLocalCommandNoticeLines } from "../state/localCommandNotice";
 import { desktopPlatform } from "../platform/desktop";
 import type { SharedAccountAttributionResult } from "../components/sharedAccountAttribution/model";
+import { floatingSnapshotForDashboardPreview } from "../surfaces/compactPanelSnapshotModel";
 
 const SessionManagementWorkspace = lazy(async () => {
   const module = await import("./SessionManagementWorkspace");
@@ -334,6 +335,8 @@ export function DashboardPage({
         codexHome={codexHome}
         displaySurfaces={displaySurfaces}
         floatingSettings={floatingSettings}
+        floatingPreviewSnapshot={floatingSnapshotForDashboardPreview(liveRate, dashboard)}
+        floatingPreviewRunningThreads={runningThreads}
         initialCategory={settingsCategory}
         liveRateEnabled={liveRateEnabled}
         onCheckForUpdate={onCheckForUpdate}

@@ -1,4 +1,5 @@
 import type {
+  DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
   UsageSummarySnapshot,
@@ -53,6 +54,39 @@ export function floatingSnapshotForLiveRate(
     unreadSummary: liveRate.unreadSummary,
   };
   return usageSummary ? mergeFloatingUsageSummary(snapshot, usageSummary) : snapshot;
+}
+
+export function floatingSnapshotForDashboardPreview(
+  liveRate: LiveRateSnapshot,
+  dashboard: DashboardSnapshot,
+): FloatingPanelSnapshot {
+  const generatedDate = new Date(dashboard.generatedAt);
+  const dayKey = Number.isNaN(generatedDate.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(generatedDate);
+  const today = dashboard.activityDays.find((day) => day.date === dayKey)
+    ?? dashboard.activityDays.at(-1);
+  const snapshot = floatingSnapshotForLiveRate(liveRate, {
+    totalTokens: dashboard.stats.totalTokens,
+    todayTokens: today?.tokens ?? liveRate.totalTokensToday,
+    todayRequests: today?.calls ?? liveRate.requestsToday,
+    todayModelBreakdowns: today?.modelBreakdowns ?? [],
+  });
+  return {
+    ...snapshot,
+    fiveHourLabel: dashboard.quota.fiveHour.label || "5h",
+    fiveHourAvailability: dashboard.quota.fiveHour.availability,
+    fiveHourRemainingPercent: dashboard.quota.fiveHour.remainingPercent,
+    fiveHourExpectedRemainingPercent: null,
+    sevenDayLabel: dashboard.quota.sevenDay.label || "7d",
+    sevenDayAvailability: dashboard.quota.sevenDay.availability,
+    sevenDayRemainingPercent: dashboard.quota.sevenDay.remainingPercent,
+    sevenDayExpectedRemainingPercent: null,
+  };
 }
 
 export function disabledFloatingLiveSnapshot(

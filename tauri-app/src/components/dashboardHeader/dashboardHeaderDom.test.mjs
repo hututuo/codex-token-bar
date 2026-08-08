@@ -4,39 +4,49 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 
-test("DashboardHeader exposes every primary action without a secondary menu", async () => {
+test("DashboardHeader keeps three primary actions and groups lower-frequency actions in More", async () => {
   await withMountedHeader(async ({ act, container, document, render, window, calls }) => {
     assert.deepEqual(visibleButtonNames(container), [
       "立即刷新",
-      "检查更新",
-      "开机自启：关",
-      "更改目录",
-      "会话消失修复",
-      "会话管理",
-      "会话增强",
-      "自动续跑",
       "设置",
-      "导出 CSV",
-      "导出 PNG",
+      "更多操作",
     ]);
-    assert.equal(buttonByNameOrNull(container, "更多操作"), null);
     assert.equal(container.querySelector('[role="menu"]'), null);
 
+    await click(act, buttonByName(container, "更多操作"), window);
+    assert.ok(container.querySelector('[role="menu"]'));
+    assert.deepEqual([...container.querySelectorAll('[role="menuitem"]')].map((button) => button.textContent.trim()), [
+      "会话管理",
+      "会话消失修复",
+      "会话增强",
+      "自动续跑",
+      "更改目录",
+      "导出 CSV",
+      "导出 PNG",
+      "检查更新",
+      "开机自启：关",
+    ]);
     await click(act, buttonByName(container, "检查更新"), window);
     assert.equal(calls.update, 1);
     await click(act, buttonByName(container, "设置"), window);
     assert.deepEqual(calls.settings, ["general"]);
+    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "会话管理"), window);
     assert.equal(calls.sessionManagement, 1);
+    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "会话增强"), window);
+    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "自动续跑"), window);
     assert.deepEqual(calls.settings, ["general", "session", "automation"]);
+    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "导出 CSV"), window);
+    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "导出 PNG"), window);
     assert.equal(calls.csv, 1);
     assert.equal(calls.png, 1);
 
     await render({ appUpdateState: { kind: "available", message: "发现新版本 v0.7.4" } });
+    await click(act, buttonByName(container, "更多操作"), window);
     assert.equal(buttonByName(container, "安装更新").title, "发现新版本 v0.7.4");
 
     assert.equal(buttonByName(container, "会话增强").title, "等待 Codex 调试连接（需以调试模式启动 Codex）");
@@ -45,7 +55,8 @@ test("DashboardHeader exposes every primary action without a secondary menu", as
 });
 
 test("DashboardHeader keeps primary autostart visible, disabled, and explained", async () => {
-  await withMountedHeader(async ({ container }) => {
+  await withMountedHeader(async ({ act, container, window }) => {
+    await click(act, buttonByName(container, "更多操作"), window);
     const autostart = buttonByName(container, "开机自启：关");
     assert.equal(autostart.disabled, true);
     assert.equal(autostart.getAttribute("aria-pressed"), "false");
@@ -189,6 +200,6 @@ function buttonByNameOrNull(container, name) {
 }
 
 function visibleButtonNames(container) {
-  return [...container.querySelectorAll(".header-primary-actions button")]
+  return [...container.querySelectorAll(".dash-head__actions > button, .dash-head__more > button")]
     .map((button) => button.getAttribute("aria-label") || button.textContent.trim());
 }

@@ -10,9 +10,8 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         XCTAssertEqual(scale.value, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.effectiveScale, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.size.width, 336, accuracy: 0.001)
-        // The default layout now includes one 20pt paged model row plus its
-        // 2pt inter-row gap: 139pt base height × 1.3, rounded once.
-        XCTAssertEqual(layout.size.height, 181, accuracy: 0.001)
+        // The shared 13pt metrics row keeps both clients on a 141pt base height.
+        XCTAssertEqual(layout.size.height, 184, accuracy: 0.001)
         XCTAssertEqual(layout.cornerRadius, 18.2, accuracy: 0.001)
     }
 

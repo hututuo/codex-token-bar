@@ -308,6 +308,8 @@ struct TokenDisplayCard: View {
     var lockState: TokenDisplayLockState? = nil
     var lockTargetDescription: String? = nil
     var onToggleLock: (() -> Void)? = nil
+    var selectedPreviewRowID: String? = nil
+    var onPreviewRowSelect: ((String) -> Void)? = nil
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)
     private var fallbackPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var selectedPageIndexByRowID: [String: Int] = [:]
@@ -359,6 +361,17 @@ struct TokenDisplayCard: View {
                         crowdRadarRowHeight: crowdRadarRowHeight
                     )
                     .padding(.top, topSpacing)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        onPreviewRowSelect?(row.id)
+                    }
+                    .overlay {
+                        if selectedPreviewRowID == row.id {
+                            RoundedRectangle(cornerRadius: 4.scaled(by: displayScale), style: .continuous)
+                                .stroke(palette(for: row.group).primaryColor.opacity(0.34), lineWidth: 1)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 }
             }
             .frame(width: proxy.size.width, height: max(0, proxy.size.height - topSafetyInset), alignment: .center)
@@ -433,7 +446,6 @@ struct TokenDisplayCard: View {
                 radarPresentation: radarPresentation
             )
             .environment(\.tokenDisplayTextPalette, palette(for: selectedGroup))
-            .padding(.horizontal, row.isPaged ? 12.scaled(by: displayScale) : 0)
 
             if row.isPaged {
                 HStack {
@@ -505,7 +517,7 @@ struct TokenDisplayCard: View {
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 7.6.scaled(by: displayScale), weight: .bold))
-                .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.48))
+                .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
                 .frame(
                     width: 20.scaled(by: displayScale),
                     height: 20.scaled(by: displayScale)

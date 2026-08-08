@@ -51,19 +51,19 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 139, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 141, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.usageStatusRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 13, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.runningThreadsRowHeight, 14, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.todayModelRowHeight, 20, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 126.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 139, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 128.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 141, accuracy: 0.001)
     }
 
     func testDefaultMetricsEmbedMainAndSubagentCountsOnTheRight() {
@@ -416,6 +416,54 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             ),
             [.rateAndBar, .radar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .quota, .crowdRadar]
         )
+    }
+
+    func testStructureEditorMovesWholePagedAndInlineRows() {
+        let visibility = FloatingPanelContentVisibility.default
+        let rows = visibility.layoutRows
+        let metrics = rows.first { $0.primaryGroup == .metrics }!
+        let model = rows.first { $0.primaryGroup == .todayModelShare }!
+
+        XCTAssertEqual(visibility.editorGroups(for: metrics), [.metrics, .runningThreads])
+        XCTAssertEqual(visibility.editorGroups(for: model), [.todayModelShare, .todayModelCost])
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.movingRow(
+                in: visibility.groupOrder,
+                groups: visibility.editorGroups(for: model),
+                relativeTo: visibility.editorGroups(for: metrics),
+                placement: .before
+            ),
+            [.rateAndBar, .usageStatus, .todayModelShare, .todayModelCost, .metrics, .runningThreads, .radar, .crowdRadar, .quota]
+        )
+    }
+
+    func testStructureEditorMergeSplitAndGroupedVisibilityPreserveV01Pairs() {
+        var visibility = FloatingPanelContentVisibility.default
+        visibility.pagePairs = FloatingPanelContentVisibility.mergingPage(
+            in: visibility.pagePairs,
+            group: .radar,
+            into: .crowdRadar
+        )
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .crowdRadar, second: .radar),
+        ])
+
+        visibility.setVisible(false, for: [.crowdRadar, .radar])
+        XCTAssertFalse(visibility.shows(.crowdRadar))
+        XCTAssertFalse(visibility.shows(.radar))
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .crowdRadar, second: .radar),
+        ])
+
+        visibility.pagePairs = FloatingPanelContentVisibility.splittingPage(
+            in: visibility.pagePairs,
+            group: .radar
+        )
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+        ])
     }
 
     func testAdaptiveSizeKeepsControlsReachableWhenAllGroupsAreHidden() {
@@ -777,12 +825,14 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let appSettingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AppSettingsView.swift")
+        let structureEditor = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift")
         let quotaViews = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaViews.swift")
         let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
         let visibilitySource = try String(contentsOf: visibilityModel, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
+        let structureEditorSource = try String(contentsOf: structureEditor, encoding: .utf8)
         let quotaViewsSource = try String(contentsOf: quotaViews, encoding: .utf8)
         let liveRateControls = try XCTUnwrap(sourceBlock(
             named: "LiveRateControls",
@@ -822,7 +872,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(liveRateControls.contains("FloatingPanelContentSettingsButton("))
         XCTAssertTrue(liveRateControls.contains("Label(\"总体设置\", systemImage: \"gearshape\")"))
         XCTAssertTrue(appSettingsSource.contains("settingsToggle(\"精确 token 统计\""))
-        XCTAssertTrue(appSettingsSource.contains("ForEach(orderedGroups)"))
+        XCTAssertTrue(appSettingsSource.contains("FloatingPanelStructureEditor("))
+        XCTAssertTrue(structureEditorSource.contains("结构编辑器"))
+        XCTAssertTrue(structureEditorSource.contains("实时预览"))
+        XCTAssertTrue(structureEditorSource.contains("已隐藏"))
+        XCTAssertTrue(structureEditorSource.contains("恢复默认布局"))
+        XCTAssertTrue(structureEditorSource.contains(".onDrag"))
+        XCTAssertTrue(structureEditorSource.contains(".onDrop"))
         XCTAssertFalse(liveRateControls.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertFalse(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertTrue(quotaViewsSource.contains("AccountQuotaRefreshCadencePicker()"))

@@ -120,7 +120,7 @@ test("ripple atlas ignores stale async render results", () => {
 });
 
 test("floating panel keeps muted pace text black metrics rounded corners and corner close button", () => {
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(12px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(14px \* var\(--floating-scale\)\);/);
   assert.match(previewSource, /className="floating-rate-readout"/);
   assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(86px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?padding-right: calc\(17px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(58px \* var\(--floating-scale\)\) calc\(20px \* var\(--floating-scale\)\);/);
@@ -139,7 +139,7 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?font-size: calc\(10\.3px \* var\(--floating-scale\)\);[\s\S]*?text-overflow: clip;[\s\S]*?white-space: nowrap;/);
   assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?font-size: calc\(13\.1px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.9px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(7px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(6px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface > :not\(\.unread-effect\):not\(\.floating-close-button\)\s*{/);
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
 });

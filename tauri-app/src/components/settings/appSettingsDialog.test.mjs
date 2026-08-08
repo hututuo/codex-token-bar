@@ -100,33 +100,26 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
   });
 });
 
-test("floating content settings expose model pages and persist free page pairs", async () => {
+test("floating content settings expose the WYSIWYG row editor and real preview", async () => {
   await withMountedSettings(async ({ act, calls, container, window }) => {
     await click(act, tabByName(container, "内容与翻页"), window);
     const panel = activePanel(container);
-    assert.match(panel.textContent, /内容与顺序/);
-    assert.match(panel.textContent, /翻页组合/);
+    assert.match(panel.textContent, /结构编辑器/);
+    assert.match(panel.textContent, /实时预览/);
     assert.match(panel.textContent, /今日模型占比/);
     assert.match(panel.textContent, /今日模型费用/);
+    assert.match(panel.textContent, /默认页/);
+    assert.equal(panel.querySelectorAll(".floating-panel-surface--preview").length, 1);
+    assert.equal(panel.querySelectorAll("select").length, 0);
 
-    const sharePartner = panel.querySelector('select[aria-label="今日模型占比翻页搭档"]');
-    assert.ok(sharePartner);
-    assert.equal(sharePartner.value, "todayModelCost");
-    await click(act, buttonWithText(panel, "设为默认"), window);
-    assert.deepEqual(calls.floatingContentVisibilities.at(-1).pagePairs, [
-      ["todayModelCost", "todayModelShare"],
-    ]);
-
-    const radarPartner = panel.querySelector('select[aria-label="Radar翻页搭档"]');
-    assert.ok(radarPartner);
-    await setSelectValue(act, radarPartner, "crowdRadar", window);
+    const hideModelRow = panel.querySelector('button[aria-label="隐藏今日模型占比 · 今日模型费用"]');
+    assert.ok(hideModelRow);
+    await click(act, hideModelRow, window);
     const changed = calls.floatingContentVisibilities.at(-1);
-    assert.deepEqual(changed.pagePairs, [
-      ["todayModelShare", "todayModelCost"],
-      ["radar", "crowdRadar"],
-    ]);
-    assert.equal(changed.showRadar, true);
-    assert.equal(changed.showCrowdRadar, true);
+    assert.equal(changed.showTodayModelShare, false);
+    assert.equal(changed.showTodayModelCost, false);
+    assert.deepEqual(changed.pagePairs, [["todayModelShare", "todayModelCost"]]);
+    assert.match(panel.textContent, /撤销/);
   });
 });
 
@@ -698,6 +691,36 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
       statusSummaryOrder: ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"],
     },
     floatingSettings,
+    floatingPreviewSnapshot: {
+      tokensPerSecond: 12.4,
+      maxTokensPerSecond: 200,
+      liveRateAvailable: true,
+      trendLabel: "稳定",
+      resetCreditLabel: "",
+      totalTokensLabel: "3.2亿",
+      todayTokensLabel: "420万",
+      requestsLabel: "36",
+      todayModelBreakdowns: [],
+      fiveHourLabel: "5h 42%",
+      fiveHourAvailability: "measured",
+      fiveHourRemainingPercent: 42,
+      fiveHourExpectedRemainingPercent: 40,
+      sevenDayLabel: "7d 76%",
+      sevenDayAvailability: "measured",
+      sevenDayRemainingPercent: 76,
+      sevenDayExpectedRemainingPercent: 72,
+      unread: false,
+      unreadSummary: { active: false, count: 0, label: "无未读", detail: "", source: "sidebar" },
+    },
+    floatingPreviewRunningThreads: {
+      total: 3,
+      mainThreads: 2,
+      subagents: 1,
+      status: "ready",
+      updatedAt: 1,
+      detail: "test",
+      livenessLeaseHours: 24,
+    },
     liveRateEnabled: true,
     open: true,
     platform: platformCapabilities(),

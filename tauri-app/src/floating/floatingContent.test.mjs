@@ -2,13 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_FLOATING_CONTENT_VISIBILITY,
+  editorGroupsForFloatingRow,
   floatingContentGap,
   floatingContentHeight,
   layoutFloatingContentGroups,
   layoutFloatingContentRows,
+  mergeFloatingPage,
   moveFloatingContent,
+  moveFloatingRow,
+  placeFloatingPageAfterTarget,
   replaceFloatingPagePartner,
   sanitizeFloatingContentVisibility,
+  setFloatingGroupsVisible,
+  splitFloatingPage,
   swapFloatingDefaultPage,
 } from "./floatingContent.ts";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette.ts";
@@ -107,7 +113,7 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 158);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 141);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
@@ -183,8 +189,68 @@ test("paged rows combine model share and cost without losing their configured de
   ]);
 });
 
+test("structure editor moves whole paged and inline rows", () => {
+  const rows = layoutFloatingContentRows(DEFAULT_FLOATING_CONTENT_VISIBILITY);
+  const metrics = rows.find((row) => row.primaryGroup === "metrics");
+  const model = rows.find((row) => row.primaryGroup === "todayModelShare");
+  assert.ok(metrics);
+  assert.ok(model);
+  assert.deepEqual(editorGroupsForFloatingRow(DEFAULT_FLOATING_CONTENT_VISIBILITY, metrics), [
+    "metrics",
+    "runningThreads",
+  ]);
+  assert.deepEqual(editorGroupsForFloatingRow(DEFAULT_FLOATING_CONTENT_VISIBILITY, model), [
+    "todayModelShare",
+    "todayModelCost",
+  ]);
+  assert.deepEqual(moveFloatingRow(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.order,
+    ["todayModelShare", "todayModelCost"],
+    ["metrics", "runningThreads"],
+    "before",
+  ), [
+    "rateAndBar",
+    "usageStatus",
+    "todayModelShare",
+    "todayModelCost",
+    "metrics",
+    "runningThreads",
+    "radar",
+    "crowdRadar",
+    "quota",
+  ]);
+});
+
+test("structure editor merge split and grouped visibility preserve V01 pairs", () => {
+  const mergedPairs = mergeFloatingPage(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.pagePairs,
+    "radar",
+    "crowdRadar",
+  );
+  assert.deepEqual(mergedPairs, [
+    ["todayModelShare", "todayModelCost"],
+    ["crowdRadar", "radar"],
+  ]);
+  assert.deepEqual(placeFloatingPageAfterTarget(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.order,
+    "radar",
+    "crowdRadar",
+  ).slice(-3), ["crowdRadar", "radar", "quota"]);
+
+  const hidden = setFloatingGroupsVisible({
+    ...DEFAULT_FLOATING_CONTENT_VISIBILITY,
+    pagePairs: mergedPairs,
+  }, ["crowdRadar", "radar"], false);
+  assert.equal(hidden.showCrowdRadar, false);
+  assert.equal(hidden.showRadar, false);
+  assert.deepEqual(hidden.pagePairs, mergedPairs);
+  assert.deepEqual(splitFloatingPage(hidden.pagePairs, "radar"), [
+    ["todayModelShare", "todayModelCost"],
+  ]);
+});
+
 test("radar crowd spacing tightens without changing the crowd quota gap", () => {
-  assert.equal(floatingContentGap("radar", "crowdRadar"), 2);
-  assert.equal(floatingContentGap("crowdRadar", "quota"), 4);
-  assert.equal(floatingContentGap("metrics", "radar"), 4);
+  assert.equal(floatingContentGap("radar", "crowdRadar"), 0);
+  assert.equal(floatingContentGap("crowdRadar", "quota"), 2);
+  assert.equal(floatingContentGap("metrics", "radar"), 2);
 });

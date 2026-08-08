@@ -9,14 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ThreadDeleteBridgeStatus } from "../../api/threadDeleteClient";
-import {
-  FLOATING_PAGE_CAPABLE_GROUPS,
-  FLOATING_CONTENT_LABELS,
-  moveFloatingContent,
-  replaceFloatingPagePartner,
-  sanitizeFloatingContentVisibility,
-  swapFloatingDefaultPage,
-} from "../../floating/floatingContent";
+import { sanitizeFloatingContentVisibility } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import { floatingGradientBackground } from "../../floating/floatingSettings";
 import { floatingTextPaletteForGroup } from "../../floating/floatingTextPalette";
@@ -58,11 +51,12 @@ import type {
   AutoResumeThreadOption,
   CodexHomeStatus,
   DisplaySurfaceSettings,
-  FloatingContentGroup,
   FloatingContentVisibility,
+  FloatingPanelSnapshot,
   FloatingPalettePatch,
   FloatingUnreadEffect,
   PlatformCapabilities,
+  RunningThreadSummary,
   SessionEnhancementSettings,
   StatusMetricId,
   StatusMetricLabelStyle,
@@ -71,6 +65,7 @@ import type {
 import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
 import { CodexInstancesSettings } from "./CodexInstancesSettings";
+import { FloatingStructureEditor } from "./FloatingStructureEditor";
 
 export type AppSettingsCategory =
   | "general"
@@ -124,6 +119,8 @@ interface AppSettingsDialogProps {
   codexHome: CodexHomeStatus;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
+  floatingPreviewSnapshot: FloatingPanelSnapshot;
+  floatingPreviewRunningThreads: RunningThreadSummary;
   initialCategory?: AppSettingsCategory;
   liveRateEnabled: boolean;
   open: boolean;
@@ -174,6 +171,8 @@ export function AppSettingsDialog({
   codexHome,
   displaySurfaces,
   floatingSettings,
+  floatingPreviewSnapshot,
+  floatingPreviewRunningThreads,
   initialCategory = "general",
   liveRateEnabled,
   open,
@@ -449,6 +448,8 @@ export function AppSettingsDialog({
               {selectedCategory === "content" ? (
                 <ContentSettings
                   floatingSettings={floatingSettings}
+                  floatingPreviewSnapshot={floatingPreviewSnapshot}
+                  floatingPreviewRunningThreads={floatingPreviewRunningThreads}
                   onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
                 />
               ) : null}
@@ -1948,93 +1949,24 @@ function FloatingAppearanceSettings({
 
 function ContentSettings({
   floatingSettings,
+  floatingPreviewSnapshot,
+  floatingPreviewRunningThreads,
   onFloatingContentVisibilityChange,
-}: Pick<AppSettingsDialogProps, "floatingSettings" | "onFloatingContentVisibilityChange">) {
+}: Pick<AppSettingsDialogProps,
+  | "floatingSettings"
+  | "floatingPreviewSnapshot"
+  | "floatingPreviewRunningThreads"
+  | "onFloatingContentVisibilityChange"
+>) {
   const visibility = sanitizeFloatingContentVisibility(floatingSettings.contentVisibility);
   return (
-    <>
-      <SettingsGroup title="内容与顺序" description="先选择显示项目，再调整它们从上到下的位置。">
-        <div className="app-settings-content-list">
-          {visibility.order.map((group, index) => {
-            const label = FLOATING_CONTENT_LABELS[group];
-            const visible = isFloatingGroupVisible(visibility, group);
-            const updateVisibility = (checked: boolean) => {
-              onFloatingContentVisibilityChange(sanitizeFloatingContentVisibility({
-                ...visibility,
-                [visibilityKey(group)]: checked,
-              }));
-            };
-            const move = (delta: -1 | 1) => {
-              onFloatingContentVisibilityChange(sanitizeFloatingContentVisibility({
-                ...visibility,
-                order: moveFloatingContent(visibility.order, group, delta),
-              }));
-            };
-            return (
-              <div className="app-settings-content-row" key={group}>
-                <label>
-                  <input checked={visible} onChange={(event) => updateVisibility(event.currentTarget.checked)} type="checkbox" />
-                  <span><strong>{label.title}</strong>{label.subtitle ? <em>{label.subtitle}</em> : null}</span>
-                </label>
-                <div>
-                  <button aria-label={`向上移动${label.title}`} disabled={index === 0} onClick={() => move(-1)} type="button">上移</button>
-                  <button aria-label={`向下移动${label.title}`} disabled={index === visibility.order.length - 1} onClick={() => move(1)} type="button">下移</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="app-settings-note">趣味话与速率、运行线程与总今次相邻时仍会自动吸附，保持紧凑。</div>
-      </SettingsGroup>
-
-      <SettingsGroup title="翻页组合" description="任意两项合成一行；悬浮窗两侧的淡箭头负责切换。">
-        <div className="app-settings-page-pairs">
-          {visibility.order.filter((group) => FLOATING_PAGE_CAPABLE_GROUPS.includes(group)).map((group) => {
-            const pair = visibility.pagePairs.find((item) => item.includes(group));
-            const partner = pair?.find((item) => item !== group) ?? "";
-            const isDefault = pair?.[0] === group;
-            const updatePartner = (rawValue: string) => {
-              const nextPartner = FLOATING_PAGE_CAPABLE_GROUPS.includes(rawValue as FloatingContentGroup)
-                ? rawValue as FloatingContentGroup
-                : null;
-              const next = {
-                ...visibility,
-                pagePairs: replaceFloatingPagePartner(visibility.pagePairs, group, nextPartner),
-              };
-              if (nextPartner) {
-                next[visibilityKey(group)] = true;
-                next[visibilityKey(nextPartner)] = true;
-              }
-              onFloatingContentVisibilityChange(sanitizeFloatingContentVisibility(next));
-            };
-            return (
-              <div className="app-settings-page-pair-row" key={group}>
-                <span>
-                  <strong>{FLOATING_CONTENT_LABELS[group].title}</strong>
-                  <em>{pair ? (isDefault ? "默认页" : "第二页") : "单独占一行"}</em>
-                </span>
-                <select aria-label={`${FLOATING_CONTENT_LABELS[group].title}翻页搭档`} onChange={(event) => updatePartner(event.currentTarget.value)} value={partner}>
-                  <option value="">单独显示</option>
-                  {FLOATING_PAGE_CAPABLE_GROUPS.filter((candidate) => candidate !== group).map((candidate) => (
-                    <option key={candidate} value={candidate}>{FLOATING_CONTENT_LABELS[candidate].title}</option>
-                  ))}
-                </select>
-                {pair?.[1] === group ? (
-                  <button
-                    onClick={() => onFloatingContentVisibilityChange(sanitizeFloatingContentVisibility({
-                      ...visibility,
-                      pagePairs: swapFloatingDefaultPage(visibility.pagePairs, group),
-                    }))}
-                    type="button"
-                  >设为默认</button>
-                ) : <span className="app-settings-page-pair-placeholder" />}
-              </div>
-            );
-          })}
-        </div>
-        <div className="app-settings-note">今日模型占比与费用默认成组。已识别模型按真实模型与缓存价格计算；未知模型使用额度设置中的回退模型，Spark 显示为独立额度。</div>
-      </SettingsGroup>
-    </>
+    <FloatingStructureEditor
+      onChange={onFloatingContentVisibilityChange}
+      runningThreads={floatingPreviewRunningThreads}
+      settings={floatingSettings}
+      snapshot={floatingPreviewSnapshot}
+      visibility={visibility}
+    />
   );
 }
 
@@ -2274,34 +2206,4 @@ function shortErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   return fallback;
-}
-
-function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: FloatingContentGroup): boolean {
-  switch (group) {
-    case "rateAndBar": return visibility.showRateAndBar;
-    case "usageStatus": return visibility.showUsageStatus;
-    case "metrics": return visibility.showMetrics;
-    case "runningThreads": return visibility.showRunningThreads;
-    case "todayModelShare": return visibility.showTodayModelShare;
-    case "todayModelCost": return visibility.showTodayModelCost;
-    case "quota": return visibility.showQuota;
-    case "radar": return visibility.showRadar;
-    case "crowdRadar": return visibility.showCrowdRadar;
-  }
-}
-
-type FloatingVisibilityKey = Exclude<keyof FloatingContentVisibility, "order" | "pagePairs">;
-
-function visibilityKey(group: FloatingContentGroup): FloatingVisibilityKey {
-  switch (group) {
-    case "rateAndBar": return "showRateAndBar";
-    case "usageStatus": return "showUsageStatus";
-    case "metrics": return "showMetrics";
-    case "runningThreads": return "showRunningThreads";
-    case "todayModelShare": return "showTodayModelShare";
-    case "todayModelCost": return "showTodayModelCost";
-    case "quota": return "showQuota";
-    case "radar": return "showRadar";
-    case "crowdRadar": return "showCrowdRadar";
-  }
 }

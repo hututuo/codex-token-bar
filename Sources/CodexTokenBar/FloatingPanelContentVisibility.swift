@@ -240,6 +240,42 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         return rows
     }
 
+    func editorGroups(for row: FloatingPanelLayoutRow) -> [FloatingPanelContentGroup] {
+        guard row.groups.count == 1 else { return row.groups }
+        if row.primaryGroup == .rateAndBar, embedsUsageStatusInRateRow {
+            return [.rateAndBar, .usageStatus]
+        }
+        if row.primaryGroup == .metrics, embedsRunningThreadsInMetricsRow {
+            return [.metrics, .runningThreads]
+        }
+        return row.groups
+    }
+
+    mutating func setVisible(_ isVisible: Bool, for groups: [FloatingPanelContentGroup]) {
+        for group in groups {
+            switch group {
+            case .rateAndBar:
+                showRateAndBar = isVisible
+            case .usageStatus:
+                showUsageStatus = isVisible
+            case .metrics:
+                showMetrics = isVisible
+            case .runningThreads:
+                showRunningThreads = isVisible
+            case .todayModelShare:
+                showTodayModelShare = isVisible
+            case .todayModelCost:
+                showTodayModelCost = isVisible
+            case .quota:
+                showQuota = isVisible
+            case .radar:
+                showRadar = isVisible
+            case .crowdRadar:
+                showCrowdRadar = isVisible
+            }
+        }
+    }
+
     private static func collapsingAdjacentPair(
         in groups: [FloatingPanelContentGroup],
         first: FloatingPanelContentGroup,
@@ -389,6 +425,21 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         }
     }
 
+    static func splittingPage(
+        in pairs: [FloatingPanelPagePair],
+        group: FloatingPanelContentGroup
+    ) -> [FloatingPanelPagePair] {
+        sanitizedPagePairs(pairs).filter { !$0.contains(group) }
+    }
+
+    static func mergingPage(
+        in pairs: [FloatingPanelPagePair],
+        group: FloatingPanelContentGroup,
+        into target: FloatingPanelContentGroup
+    ) -> [FloatingPanelPagePair] {
+        replacingPagePartner(in: pairs, for: target, with: group)
+    }
+
     private static func sanitizedPagePairs(
         _ pairs: [FloatingPanelPagePair]
     ) -> [FloatingPanelPagePair] {
@@ -430,5 +481,32 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         }
         order.insert(dragged, at: insertionIndex)
         return order
+    }
+
+    static func movingRow(
+        in currentOrder: [FloatingPanelContentGroup],
+        groups movingGroups: [FloatingPanelContentGroup],
+        relativeTo targetGroups: [FloatingPanelContentGroup],
+        placement: FloatingPanelContentDropPlacement
+    ) -> [FloatingPanelContentGroup] {
+        let normalized = order(from: encodedOrder(currentOrder))
+        let movingSet = Set(movingGroups)
+        let targetSet = Set(targetGroups)
+        guard !movingSet.isEmpty,
+              movingSet.isDisjoint(with: targetSet),
+              movingSet.isSubset(of: Set(normalized)),
+              targetSet.isSubset(of: Set(normalized))
+        else { return normalized }
+
+        let movingBlock = normalized.filter(movingSet.contains)
+        var remaining = normalized.filter { !movingSet.contains($0) }
+        let targetIndices = remaining.indices.filter { targetSet.contains(remaining[$0]) }
+        guard let firstTarget = targetIndices.first,
+              let lastTarget = targetIndices.last else {
+            return normalized
+        }
+        let insertionIndex = placement == .before ? firstTarget : lastTarget + 1
+        remaining.insert(contentsOf: movingBlock, at: min(insertionIndex, remaining.count))
+        return order(from: encodedOrder(remaining))
     }
 }
