@@ -411,99 +411,78 @@ struct StatusBarTokenItemChanges: Equatable {
 
 @MainActor
 enum StatusBarAttributedTitleBuilder {
-    static let primaryFontSize: CGFloat = 7
-    static let secondaryFontSize: CGFloat = 6.25
-    static let upperBaselineOffset: CGFloat = 4.25
-    static let lowerBaselineOffset: CGFloat = -4.25
+    static let fontSize: CGFloat = 8.75
+    static let lineSpacing: CGFloat = -1
     static let columnSpacing: CGFloat = 6
 
-    private static let primaryFont = NSFont.monospacedSystemFont(
-        ofSize: primaryFontSize,
-        weight: .semibold
-    )
-    private static let secondaryFont = NSFont.monospacedSystemFont(
-        ofSize: secondaryFontSize,
+    private static let font = NSFont.monospacedSystemFont(
+        ofSize: fontSize,
         weight: .semibold
     )
 
     static func make(_ presentation: StatusBarMetricsPresentation) -> NSAttributedString {
-        let result = NSMutableAttributedString(string: "")
         let columns = presentation.columns
-        for (index, column) in columns.enumerated() {
-            appendStackedColumn(
-                column,
-                trailingSpacing: index + 1 < columns.count ? columnSpacing : 0,
-                to: result
-            )
+        guard !columns.isEmpty else { return NSAttributedString(string: "") }
+
+        let result = NSMutableAttributedString(string: "")
+        appendRow(columns.map(\.top), to: result)
+        // Keep the line break in the same font as both rows.  An unstyled
+        // newline inherits AppKit's default font (and its larger line box),
+        // which makes the attributed title taller than the status item.
+        result.append(NSAttributedString(string: "\n", attributes: [.font: font]))
+        appendRow(columns.map(\.bottom), to: result)
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.lineBreakMode = .byClipping
+        paragraph.lineSpacing = lineSpacing
+        paragraph.tabStops = columnStartOffsets(for: columns).dropFirst().map {
+            NSTextTab(textAlignment: .left, location: $0)
         }
+        result.addAttribute(
+            .paragraphStyle,
+            value: paragraph,
+            range: NSRange(location: 0, length: result.length)
+        )
         return result
     }
 
-    private static func appendStackedColumn(
-        _ column: StatusBarMetricColumn,
-        trailingSpacing: CGFloat,
+    static func columnStartOffsets(for columns: [StatusBarMetricColumn]) -> [CGFloat] {
+        guard !columns.isEmpty else { return [] }
+        var starts: [CGFloat] = [0]
+        var nextStart: CGFloat = 0
+        for column in columns.dropLast() {
+            nextStart += max(textWidth(column.top.text), textWidth(column.bottom.text)) + columnSpacing
+            starts.append(nextStart)
+        }
+        return starts
+    }
+
+    private static func appendRow(
+        _ lines: [StatusBarMetricLine],
         to result: NSMutableAttributedString
     ) {
-        let topFont = font(for: column.top)
-        let bottomFont = font(for: column.bottom)
-        let topWidth = textWidth(column.top.text, font: topFont)
-        let bottomWidth = textWidth(column.bottom.text, font: bottomFont)
-        let occupiedWidth = max(topWidth, bottomWidth)
-
-        appendLine(
-            column.top.text,
-            font: topFont,
-            baselineOffset: upperBaselineOffset,
-            trailingKern: -topWidth,
-            to: result
-        )
-        appendLine(
-            column.bottom.text,
-            font: bottomFont,
-            baselineOffset: lowerBaselineOffset,
-            trailingKern: occupiedWidth - bottomWidth + trailingSpacing,
-            to: result
-        )
+        for (index, line) in lines.enumerated() {
+            if index > 0 {
+                // Tabs participate in line measurement too; keep them in the
+                // same font so AppKit does not use its larger default line box.
+                result.append(NSAttributedString(string: "\t", attributes: [.font: font]))
+            }
+            result.append(NSAttributedString(
+                string: line.text.isEmpty ? "\u{200B}" : line.text,
+                attributes: [
+                    .font: font,
+                    .foregroundColor: line.isSecondary
+                        ? NSColor.secondaryLabelColor
+                        : NSColor.controlTextColor,
+                ]
+            ))
+        }
     }
 
-    private static func appendLine(
-        _ text: String,
-        font: NSFont,
-        baselineOffset: CGFloat,
-        trailingKern: CGFloat,
-        to result: NSMutableAttributedString
-    ) {
-        let renderedText = text.isEmpty ? "\u{200B}" : text
-        let run = NSMutableAttributedString(
-            string: renderedText,
-            attributes: lineAttributes(font: font, baselineOffset: baselineOffset)
-        )
-        run.addAttribute(
-            .kern,
-            value: trailingKern,
-            range: NSRange(location: run.length - 1, length: 1)
-        )
-        result.append(run)
-    }
-
-    private static func lineAttributes(
-        font: NSFont,
-        baselineOffset: CGFloat
-    ) -> [NSAttributedString.Key: Any] {
-        [
-            .font: font,
-            .foregroundColor: NSColor.controlTextColor,
-            .baselineOffset: baselineOffset,
-        ]
-    }
-
-    private static func font(for line: StatusBarMetricLine) -> NSFont {
-        line.isSecondary ? secondaryFont : primaryFont
-    }
-
-    private static func textWidth(_ text: String, font: NSFont) -> CGFloat {
+    private static func textWidth(_ text: String) -> CGFloat {
         guard !text.isEmpty else { return 0 }
-        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        return (text as NSString).size(withAttributes: [.font: font]).width
     }
 }
 
