@@ -3621,7 +3621,7 @@ fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
 }
 
 #[test]
-fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
+fn exact_index_quick_check_rejects_corrupt_database_without_deleting_it() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -3631,11 +3631,12 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
     fs::create_dir_all(&session_dir).unwrap();
     let file = session_dir.join("rollout-019ecorrupt-index-0000-0000-0000-exact.jsonl");
     let original = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
-    let rewritten = r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101,"cached_input_tokens":20,"output_tokens":20,"total_tokens":121}}}}"#;
     write_lines(&file, &[original]);
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
-    write_lines(&file, &[rewritten]);
+    let index_metadata = fs::metadata(&index_path).unwrap();
+    #[cfg(unix)]
+    let original_identity = (index_metadata.dev(), index_metadata.ino());
     let index_size = fs::metadata(&index_path).unwrap().len();
     let mut index_file = fs::OpenOptions::new()
         .write(true)
@@ -3647,27 +3648,62 @@ fn exact_index_quick_check_recovers_a_corrupt_database_by_rebuilding() {
     drop(index_file);
     assert_eq!(fs::metadata(&index_path).unwrap().len(), index_size);
 
-    let rebuilt = dashboard_snapshot(&root).unwrap();
-    assert_eq!(rebuilt.stats.total_tokens, 121);
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("已保留原索引并拒绝自动重建"), "{error}");
+    let preserved_metadata = fs::metadata(&index_path).unwrap();
+    assert_eq!(preserved_metadata.len(), index_size);
+    #[cfg(unix)]
+    assert_eq!(
+        (preserved_metadata.dev(), preserved_metadata.ino()),
+        original_identity,
+        "a corrupt index must remain available for recovery instead of being silently replaced"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_transient_quick_check_failure_preserves_published_database() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019etransient-check-0000-0000-fast.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    let before = fs::metadata(&index_path).unwrap();
+    #[cfg(unix)]
+    let before_identity = (before.dev(), before.ino());
+    fs::remove_file(receipt).unwrap();
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::fail_next_quick_check_query_for_testing();
+
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("transient quick_check failure must not be accepted as a clean open"),
+        Err(error) => error,
+    };
+    assert!(error.contains("暂时失败"), "{error}");
+    assert!(error.contains("已保留原索引并拒绝自动重建"), "{error}");
+    let after = fs::metadata(&index_path).unwrap();
+    assert_eq!(after.len(), before.len());
+    #[cfg(unix)]
+    assert_eq!((after.dev(), after.ino()), before_identity);
+
+    drop(ExactUsageIndex::open(&root).unwrap());
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
-            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        "ok"
+        1
     );
-    assert_eq!(
-        connection
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'schema_version'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-        "8"
-    );
-    drop(connection);
-
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4243,6 +4279,12 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     let data = index
         .dashboard_data(&root, now, UtcOffset::UTC, &mut warnings)
         .unwrap();
+    let temp_objects = index.dashboard_temp_object_types_for_testing().unwrap();
+    assert_eq!(temp_objects.get("published_events").map(String::as_str), Some("view"));
+    assert!(
+        !temp_objects.contains_key("dashboard_turn_positions"),
+        "turn positions must be calculated only for selected candidates, not materialized for every event"
+    );
 
     assert_eq!(data.summary.total_tokens, 300);
     assert_eq!(data.summary.today_tokens, 300);

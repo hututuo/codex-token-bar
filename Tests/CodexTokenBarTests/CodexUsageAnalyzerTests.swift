@@ -3734,11 +3734,17 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
         let reloaded = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(reloaded.stats.totalTokens, 140)
         XCTAssertEqual(reloaded.stats.totalCalls, 1)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.sourceContentProbeCountForTesting,
+            0,
+            "unchanged sources must not be reopened to hash their first/last bytes"
+        )
     }
 
     func testPersistentExactHistoryIndexRebuildsChangedSourceAndSkipsUnchangedSource() throws {
@@ -4804,7 +4810,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: exactDirectory.path))
     }
 
-    func testPersistentExactHistoryIndexRebuildsFromRawHistoryAfterDatabaseCorruption() throws {
+    func testPersistentExactHistoryIndexPreservesCorruptDatabaseForExplicitRecovery() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Corrupt")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -4839,22 +4845,16 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: databaseURL.path + "-wal")
         try? FileManager.default.removeItem(atPath: databaseURL.path + "-shm")
         try Data("corrupt exact history index\n".utf8).write(to: databaseURL, options: [.atomic])
+        let corruptBytes = try Data(contentsOf: databaseURL)
 
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
-        let rebuilt = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
-
-        XCTAssertEqual(rebuilt.stats.totalTokens, 120)
-        XCTAssertEqual(rebuilt.stats.totalCalls, 1)
-        XCTAssertNotEqual(
-            rebuilt.cacheUsage.attributionProvenanceEpoch,
-            initialProvenanceEpoch
+        XCTAssertThrowsError(
+            try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
         )
-        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
-        XCTAssertEqual(
-            try scalarInt("SELECT COUNT(*) FROM events;", in: SQLiteDatabaseDriver(url: databaseURL)),
-            1
-        )
+        XCTAssertEqual(try Data(contentsOf: databaseURL), corruptBytes)
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertFalse(initialProvenanceEpoch.isEmpty)
     }
 
     func testOldDiscardableSessionCacheCannotOverrideTheExactRawHistoryIndex() throws {
@@ -5333,18 +5333,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(summary.todayModelBreakdowns.first?.breakdown.calls, 1)
     }
 
-    func testIntegrityQuickCheckRunsOncePerProcessPerPath() throws {
+    func testOpeningExactHistoryDoesNotRunWholeDatabaseQuickCheck() throws {
         let codexHome = try makeCodexHome()
-        let baseline = CodexUsageHistoryIndex.integrityCheckRunCountForTesting
-        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
-        XCTAssertEqual(CodexUsageHistoryIndex.integrityCheckRunCountForTesting, baseline + 1)
-        // 同进程同路径再次建索引：不得再跑 PRAGMA quick_check 全库扫描。
-        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
-        XCTAssertEqual(CodexUsageHistoryIndex.integrityCheckRunCountForTesting, baseline + 1)
-        // 新路径首次建索引仍要校验。
-        let otherHome = try makeCodexHome()
-        _ = try CodexUsageHistoryIndex(codexHome: otherHome)
-        XCTAssertEqual(CodexUsageHistoryIndex.integrityCheckRunCountForTesting, baseline + 2)
+        XCTAssertNoThrow(try CodexUsageHistoryIndex(codexHome: codexHome))
+        XCTAssertNoThrow(try CodexUsageHistoryIndex(codexHome: codexHome))
+        // Opening the same published index must stay metadata-bound. A full
+        // PRAGMA quick_check here would scale with the entire history database
+        // and block every fresh app process before cached data can render.
     }
 
     private func makeCodexHome() throws -> URL {

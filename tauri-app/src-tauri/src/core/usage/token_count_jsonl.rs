@@ -956,6 +956,7 @@ fn run_precise_refresh(
         Ok(index) => index,
         Err(error) => {
             flight.set_trace_status("open_error");
+            trace_precise_failure("open", &error);
             return PreciseRefreshResult::failure(error);
         }
     };
@@ -992,6 +993,7 @@ fn run_precise_refresh(
         Ok(revision) => revision,
         Err(error) => {
             flight.set_trace_status("sync_error");
+            trace_precise_failure("sync", &error);
             return PreciseRefreshResult::failure(error);
         }
     };
@@ -1736,6 +1738,7 @@ fn build_full_dashboard_after_precise_sync(
             Ok(data) => data,
             Err(error) => {
                 flight.set_trace_status("dashboard_data_error");
+                trace_precise_failure("dashboard_data", &error);
                 return Err(error);
             }
         }
@@ -1811,6 +1814,31 @@ fn build_full_dashboard_after_precise_sync(
         merge_usage_cache_marker_warning(&mut snapshot);
     }
     Ok((snapshot, summary))
+}
+
+fn trace_precise_failure(stage: &str, error: &str) {
+    let normalized = error.to_ascii_lowercase();
+    let class = if normalized.contains("unique constraint") {
+        "unique_constraint"
+    } else if normalized.contains("disk i/o") || normalized.contains("ioerr") {
+        "disk_io"
+    } else if normalized.contains("busy") || normalized.contains("locked") {
+        "busy_locked"
+    } else if normalized.contains("corrupt")
+        || normalized.contains("malformed")
+        || normalized.contains("损坏")
+    {
+        "corrupt"
+    } else if normalized.contains("cantopen") || normalized.contains("无法打开") {
+        "cant_open"
+    } else if normalized.contains("source changed") || normalized.contains("源文件") {
+        "source_changed"
+    } else {
+        "other"
+    };
+    startup_trace::mark_performance(format!(
+        "precise_failure stage={stage} class={class}"
+    ));
 }
 
 fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {

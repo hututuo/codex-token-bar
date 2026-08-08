@@ -468,6 +468,8 @@ static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static QUICK_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
+static FAIL_NEXT_QUICK_CHECK_QUERY: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
 static RECEIPT_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static QUICK_CHECK_BARRIER: OnceLock<Mutex<Option<(Arc<Barrier>, HashSet<PathBuf>)>>> =
@@ -849,6 +851,11 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn quick_check_count_for_testing() -> u64 {
         QUICK_CHECK_COUNT.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_quick_check_query_for_testing() {
+        FAIL_NEXT_QUICK_CHECK_QUERY.store(true, Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -1252,42 +1259,50 @@ impl ExactUsageIndex {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn dashboard_temp_object_types_for_testing(
+        &self,
+    ) -> Result<HashMap<String, String>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT name, type FROM sqlite_temp_master WHERE name LIKE 'dashboard_%' OR name = 'published_events'",
+            )
+            .map_err(|error| format!("无法检查仪表盘临时对象：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("无法读取仪表盘临时对象：{error}"))?;
+        rows.map(|row| row.map_err(|error| format!("无法解码仪表盘临时对象：{error}")))
+            .collect()
+    }
+
     fn prepare_dashboard_event_snapshot(&self) -> Result<(), String> {
         self.connection
             .execute_batch(
                 r#"
-                DROP TABLE IF EXISTS temp.dashboard_turn_positions;
                 DROP TABLE IF EXISTS temp.dashboard_session_rows;
-                DROP TABLE IF EXISTS temp.published_events;
+                DROP VIEW IF EXISTS temp.published_events;
                 DROP TABLE IF EXISTS temp.published_files;
-                -- Materialize the small published file set first, then join the
-                -- indexed event table directly. Selecting main.published_events
-                -- here would evaluate the published-files grouping a second time.
+                -- Materialize only the small file-generation selector. The old
+                -- path copied every published event into a temp table and built
+                -- two temp indexes on every dashboard read. On a real 280k-event
+                -- index that preparation alone took tens of seconds and could
+                -- exhaust temp storage. A temp view keeps all aggregate reads on
+                -- the durable main.events indexes without repeating the expensive
+                -- published-files grouping.
                 CREATE TEMP TABLE published_files AS
                 SELECT *
                 FROM main.published_files;
                 CREATE UNIQUE INDEX published_files_path_snapshot_idx
                     ON published_files(path);
-                CREATE TEMP TABLE published_events AS
+                CREATE TEMP VIEW published_events AS
                 SELECT e.*
                 FROM main.events e
                 JOIN published_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path;
-                CREATE INDEX published_events_timestamp_snapshot_idx
-                    ON published_events(timestamp);
-                CREATE INDEX published_events_session_snapshot_idx
-                    ON published_events(session_id, timestamp, file_path, ordinal);
-                CREATE TEMP TABLE dashboard_turn_positions AS
-                SELECT
-                    id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY session_id
-                        ORDER BY timestamp ASC, file_path ASC, ordinal ASC
-                    ) AS turn_index_in_session
-                FROM published_events;
-                CREATE UNIQUE INDEX dashboard_turn_positions_id_idx
-                    ON dashboard_turn_positions(id);
                 CREATE TEMP TABLE dashboard_session_rows AS
                 SELECT
                     e.session_id,
@@ -1924,7 +1939,20 @@ impl ExactUsageIndex {
         latest_first: bool,
     ) -> Result<Vec<IndexedTurnCandidate>, String> {
         let turn_predicate = if later_turn_only {
-            "AND turn_index_in_session > 1"
+            r#"AND EXISTS (
+                SELECT 1
+                FROM published_events earlier
+                WHERE earlier.session_id = e.session_id
+                  AND (
+                    earlier.timestamp < e.timestamp
+                    OR (earlier.timestamp = e.timestamp AND earlier.file_path < e.file_path)
+                    OR (
+                        earlier.timestamp = e.timestamp
+                        AND earlier.file_path = e.file_path
+                        AND earlier.ordinal < e.ordinal
+                    )
+                  )
+            )"#
         } else {
             ""
         };
@@ -1938,14 +1966,12 @@ impl ExactUsageIndex {
             WITH selected_turns AS (
                 SELECT
                     e.*,
-                    p.turn_index_in_session,
                     CASE WHEN e.input_tokens > 0
                         THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
                         ELSE 0
                     END AS hit_rate,
                     e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached
                 FROM published_events e
-                JOIN dashboard_turn_positions p ON p.id = e.id
                 WHERE e.input_tokens >= ?1 {turn_predicate}
                 {ordering}
                 LIMIT ?2
@@ -1964,7 +1990,23 @@ impl ExactUsageIndex {
                 turn_rows.user_prompt_end,
                 turn_rows.assistant_response_start,
                 turn_rows.assistant_response_end,
-                turn_rows.turn_index_in_session,
+                1 + (
+                    SELECT COUNT(*)
+                    FROM published_events earlier
+                    WHERE earlier.session_id = turn_rows.session_id
+                      AND (
+                        earlier.timestamp < turn_rows.timestamp
+                        OR (
+                            earlier.timestamp = turn_rows.timestamp
+                            AND earlier.file_path < turn_rows.file_path
+                        )
+                        OR (
+                            earlier.timestamp = turn_rows.timestamp
+                            AND earlier.file_path = turn_rows.file_path
+                            AND earlier.ordinal < turn_rows.ordinal
+                        )
+                      )
+                ) AS turn_index_in_session,
                 COALESCE(
                     NULLIF(TRIM(m.title), ''),
                     '会话 ' || SUBSTR(turn_rows.session_id, 1, 8)
@@ -5318,7 +5360,7 @@ fn open_index_connection_with_recovery(
             .filter(|receipt| receipt_storage_matches(receipt, path, signature))
     });
 
-    let integrity_failure = match open_index_connection(path) {
+    match open_index_connection(path) {
         Ok(connection) if state_has_active_connection => {
             return managed_index_connection(path, connection)
                 .map(|connection| (connection, false));
@@ -5331,49 +5373,47 @@ fn open_index_connection_with_recovery(
                 return managed_index_connection(path, connection)
                     .map(|connection| (connection, false));
             }
-            match quick_check_index(&connection, Some(path)) {
-                Ok(()) => {
+            match quick_check_index_result(&connection, Some(path)) {
+                Ok(None) => {
                     return managed_index_connection(path, connection)
                         .map(|connection| (connection, false));
                 }
+                Ok(Some(report)) => {
+                    drop(connection);
+                    return Err(format!(
+                        "精确 token 索引完整性检查报告损坏，已保留原索引并拒绝自动重建：{report}"
+                    ));
+                }
                 Err(error) => {
                     drop(connection);
-                    error
+                    return Err(format!(
+                        "精确 token 索引完整性检查暂时失败，已保留原索引并拒绝自动重建：{error}"
+                    ));
                 }
             }
         }
-        Err(error) => error,
-    };
-
-    // Recovery is intentionally unchanged: only a failed SQLite open or
-    // strict quick_check enters the destructive, rebuildable-index path.
-    let states = index_integrity_states();
-    let mut states = states
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    states.remove(path);
-    drop(states);
-
-    remove_index_storage(path).map_err(|rebuild_error| {
-        format!(
-            "精确 token 索引完整性检查失败，且无法移除损坏索引：{integrity_failure}；{rebuild_error}"
-        )
-    })?;
-    let connection = open_index_connection(path).map_err(|rebuild_error| {
-        format!(
-            "精确 token 索引完整性检查失败，自动重建也失败：{integrity_failure}；{rebuild_error}"
-        )
-    })?;
-    managed_index_connection(path, connection)
-        .map(|connection| (connection, true))
-        .map_err(|rebuild_error| {
-            format!(
-                "精确 token 索引完整性检查失败，自动重建也失败：{integrity_failure}；{rebuild_error}"
-            )
-        })
+        Err(error) => Err(format!(
+            "精确 token 索引打开失败，已保留原索引并拒绝自动重建：{error}"
+        )),
+    }
 }
 
 fn quick_check_index(connection: &Connection, path: Option<&Path>) -> Result<(), String> {
+    match quick_check_index_result(connection, path)? {
+        None => Ok(()),
+        Some(report) => Err(format!("SQLite quick_check 报告损坏：{report}")),
+    }
+}
+
+/// Returns `Ok(None)` for a clean database, `Ok(Some(report))` only when
+/// SQLite completed the check and explicitly reported structural corruption,
+/// and `Err` for a transient/query failure. Callers must never turn the latter
+/// into destructive recovery: an interrupted WAL/checkpoint, lock, or disk I/O
+/// failure is not proof that the published index is corrupt.
+fn quick_check_index_result(
+    connection: &Connection,
+    path: Option<&Path>,
+) -> Result<Option<String>, String> {
     #[cfg(test)]
     QUICK_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
     #[cfg(not(test))]
@@ -5391,13 +5431,17 @@ fn quick_check_index(connection: &Connection, path: Option<&Path>) -> Result<(),
             barrier.wait();
         }
     }
+    #[cfg(test)]
+    if FAIL_NEXT_QUICK_CHECK_QUERY.swap(false, Ordering::SeqCst) {
+        return Err("injected transient quick_check query failure".into());
+    }
     let result = connection
         .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
         .map_err(|error| format!("无法完成 SQLite quick_check：{error}"))?;
     if result.eq_ignore_ascii_case("ok") {
-        Ok(())
+        Ok(None)
     } else {
-        Err(format!("SQLite quick_check 报告损坏：{result}"))
+        Ok(Some(result))
     }
 }
 

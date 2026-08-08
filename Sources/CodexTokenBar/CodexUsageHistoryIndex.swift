@@ -305,6 +305,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let stagingTestState = CodexUsageHistoryStagingTestState()
     private static let sessionCatalogPublishTestState =
         CodexSessionCatalogPublishTestState()
+    private static let sourceProbeTestState = CodexUsageHistorySourceProbeTestState()
     private static let ephemeralRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("CodexTokenBarSwift-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         .appendingPathComponent(indexNamespace, isDirectory: true)
@@ -335,17 +336,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         try withExclusiveAccess {
-            do {
-                try prepareSchema()
-                try validateIntegrity()
-            } catch let error as SQLiteDatabaseError
-                where Self.isRebuildableCorruption(error) {
-                try? fileManager.removeItem(at: driver.url)
-                try? fileManager.removeItem(atPath: driver.url.path + "-wal")
-                try? fileManager.removeItem(atPath: driver.url.path + "-shm")
-                try prepareSchema()
-                try validateIntegrity()
-            }
+            // Normal schema reads already make SQLite validate every page they
+            // touch. Running PRAGMA quick_check over the entire hundreds-of-MiB
+            // history database at every Swift process launch delayed cached data and
+            // turned a transient read failure into an apparent startup outage.
+            // Fail closed and preserve the database on any error; explicit
+            // recovery can inspect the original bytes instead of silently
+            // deleting the user's only published index.
+            try prepareSchema()
         }
     }
 
@@ -378,6 +376,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     static func failNextSessionCatalogPublishForTesting() {
         sessionCatalogPublishTestState.armFailure()
+    }
+
+    static func resetSourceContentProbeCountForTesting() {
+        sourceProbeTestState.reset()
+    }
+
+    static var sourceContentProbeCountForTesting: Int {
+        sourceProbeTestState.count
     }
 
     // 冷建 heavy 文件阈值（与 Rust PARALLEL_HEAVY_FILE_BYTES 同值）。
@@ -802,17 +808,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         try driver.withConnection { connection in
             try configure(connection)
+            let indexedSources = try indexedSources(connection: connection)
 
             for file in canonicalFiles {
                 try autoreleasepool {
                     let path = file.path
-                    let observed = try sourceSignature(for: file)
-                    let existing = try indexedSource(path: path, connection: connection)
+                    let existing = indexedSources[path]
+                    let observedMetadata = try sourceSignatureMetadata(for: file)
                     if let existing,
-                       existing.signature == observed {
+                       isTrustedContentProbe(existing.signature.contentProbe),
+                       sourceMetadataMatches(existing.signature, observedMetadata) {
                         unchangedFiles += 1
                         return
                     }
+                    let observed = try sourceSignature(
+                        metadata: observedMetadata,
+                        for: file
+                    )
 
                     let parsedSessionID = sessionID(file)
                     if let existing,
@@ -1258,11 +1270,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .appendingPathComponent(indexNamespace, isDirectory: true)
             try? fileManager.removeItem(at: root)
         }
-    }
-
-    private static func isRebuildableCorruption(_ error: SQLiteDatabaseError) -> Bool {
-        let primaryCode = error.code & 0xFF
-        return primaryCode == SQLITE_CORRUPT || primaryCode == SQLITE_NOTADB
     }
 
     private func prepareSchema() throws {
@@ -2122,64 +2129,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return hasExplicitAgentIdentity ? .explicit : .nonExplicit
     }
 
-    // 决策口径：PRAGMA quick_check 是全库扫描，且在 single-flight 门内执行，
-    // 每进程每路径只跑一次；通过后记入进程级注册表，后续同路径建索引跳过。
-    private final class IntegrityValidationRegistry: @unchecked Sendable {
-        private let lock = NSLock()
-        private var validatedPaths: Set<String> = []
-        private var runCount = 0
-
-        func isValidated(path: String) -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return validatedPaths.contains(path)
-        }
-
-        func recordRun() {
-            lock.lock()
-            runCount += 1
-            lock.unlock()
-        }
-
-        func markValidated(path: String) {
-            lock.lock()
-            validatedPaths.insert(path)
-            lock.unlock()
-        }
-
-        var runCountForTesting: Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return runCount
-        }
-    }
-
-    private static let integrityValidationRegistry = IntegrityValidationRegistry()
-
-    static var integrityCheckRunCountForTesting: Int {
-        integrityValidationRegistry.runCountForTesting
-    }
-
-    private func validateIntegrity() throws {
-        let path = driver.url.path
-        if Self.integrityValidationRegistry.isValidated(path: path) {
-            return
-        }
-        Self.integrityValidationRegistry.recordRun()
-        let results = try driver.readRows("PRAGMA quick_check;") { row in
-            row.text(0) ?? ""
-        }
-        guard results == ["ok"] else {
-            throw SQLiteDatabaseError(
-                operation: "Validate exact usage index",
-                code: SQLITE_CORRUPT,
-                message: results.joined(separator: "; "),
-                path: driver.url.path
-            )
-        }
-        Self.integrityValidationRegistry.markValidated(path: path)
-    }
-
     private func configure(_ connection: SQLiteDatabaseConnection) throws {
         try connection.execute(
             """
@@ -2282,6 +2231,104 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
         }
         return rows.compactMap { $0 }.first
+    }
+
+    /// Loads the small source catalog once per synchronization. The previous
+    /// implementation issued one SQLite query per JSONL file, which amplified
+    /// cold-page I/O into thousands of random reads on every refresh.
+    private func indexedSources(
+        connection: SQLiteDatabaseConnection
+    ) throws -> [String: IndexedSource] {
+        let rows: [(String, IndexedSource)?] = try connection.readRows(
+            """
+            SELECT
+                path,
+                source_id,
+                size_bytes,
+                modified_at,
+                content_probe,
+                device_id,
+                inode,
+                status_changed_seconds,
+                status_changed_nanoseconds,
+                append_ready,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_at,
+                is_skipping_fork_replay,
+                is_explicit_subagent_fork,
+                last_skipped_fork_replay_token_at,
+                current_user_prompt_offset,
+                assistant_start_offset,
+                current_model,
+                audit_chunk_index
+            FROM sources
+            ORDER BY source_id;
+            """
+        ) { row -> (String, IndexedSource)? in
+            guard let path = row.text(0),
+                  let sourceID = row.int64(1),
+                  let rawSize = row.int64(2),
+                  rawSize >= 0,
+                  let modifiedAt = row.double(3),
+                  let probe = row.text(4),
+                  let rawDeviceID = row.text(5),
+                  let deviceID = UInt64(rawDeviceID),
+                  let rawInode = row.text(6),
+                  let inode = UInt64(rawInode),
+                  let statusChangedSeconds = row.int64(7),
+                  let statusChangedNanoseconds = row.int64(8) else {
+                return nil
+            }
+            let checkpoint: SourceCheckpoint?
+            if row.int(9) == 1,
+               let rawResumeOffset = row.int64(10),
+               rawResumeOffset >= 0 {
+                checkpoint = SourceCheckpoint(
+                    resumeOffset: UInt64(rawResumeOffset),
+                    parserState: CodexUsageAnalyzer.IndexedSessionParserState(
+                        previousTotalTokens: row.int(11),
+                        forkReplayStartedAt: row.double(12).map {
+                            Date(timeIntervalSince1970: $0)
+                        },
+                        isSkippingForkReplay: row.int(13) == 1,
+                        isExplicitSubagentFork: row.int(14) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(15).map {
+                            Date(timeIntervalSince1970: $0)
+                        },
+                        currentUserPromptOffset: row.int64(16).flatMap {
+                            $0 >= 0 ? UInt64($0) : nil
+                        },
+                        assistantStartOffset: row.int64(17).flatMap {
+                            $0 >= 0 ? UInt64($0) : nil
+                        },
+                        currentModel: row.text(18)
+                    ),
+                    auditChunkIndex: row.int64(19).flatMap {
+                        $0 >= 0 ? UInt64($0) : nil
+                    } ?? 0
+                )
+            } else {
+                checkpoint = nil
+            }
+            return (
+                path,
+                IndexedSource(
+                    id: sourceID,
+                    signature: SourceSignature(
+                        size: UInt64(rawSize),
+                        modifiedAt: modifiedAt,
+                        contentProbe: probe,
+                        deviceID: deviceID,
+                        inode: inode,
+                        statusChangedSeconds: statusChangedSeconds,
+                        statusChangedNanoseconds: statusChangedNanoseconds
+                    ),
+                    checkpoint: checkpoint
+                )
+            )
+        }
+        return Dictionary(uniqueKeysWithValues: rows.compactMap { $0 })
     }
 
     private func indexedSourceIdentities(
@@ -3563,7 +3610,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return .int64(try sqliteInt64(value))
     }
 
-    private func sourceSignature(for file: URL) throws -> SourceSignature {
+    private func sourceSignatureMetadata(for file: URL) throws -> SourceSignature {
         var fileStatus = Darwin.stat()
         guard lstat(file.path, &fileStatus) == 0 else {
             throw CocoaError(.fileReadUnknown)
@@ -3580,12 +3627,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return SourceSignature(
             size: size,
             modifiedAt: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
-            contentProbe: try contentProbe(for: file, size: size),
+            contentProbe: "",
             deviceID: UInt64(fileStatus.st_dev),
             inode: UInt64(fileStatus.st_ino),
             statusChangedSeconds: Int64(fileStatus.st_ctimespec.tv_sec),
             statusChangedNanoseconds: Int64(fileStatus.st_ctimespec.tv_nsec)
         )
+    }
+
+    private func sourceSignature(
+        metadata: SourceSignature,
+        for file: URL
+    ) throws -> SourceSignature {
+        SourceSignature(
+            size: metadata.size,
+            modifiedAt: metadata.modifiedAt,
+            contentProbe: try contentProbe(for: file, size: metadata.size),
+            deviceID: metadata.deviceID,
+            inode: metadata.inode,
+            statusChangedSeconds: metadata.statusChangedSeconds,
+            statusChangedNanoseconds: metadata.statusChangedNanoseconds
+        )
+    }
+
+    private func sourceSignature(for file: URL) throws -> SourceSignature {
+        try sourceSignature(metadata: sourceSignatureMetadata(for: file), for: file)
+    }
+
+    private func sourceMetadataMatches(
+        _ stored: SourceSignature,
+        _ observed: SourceSignature
+    ) -> Bool {
+        stored.size == observed.size
+            && stored.modifiedAt == observed.modifiedAt
+            && stored.deviceID == observed.deviceID
+            && stored.inode == observed.inode
+            && stored.statusChangedSeconds == observed.statusChangedSeconds
+            && stored.statusChangedNanoseconds == observed.statusChangedNanoseconds
+    }
+
+    private func isTrustedContentProbe(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)
+        }
     }
 
     private func contentHash(for file: URL, length: UInt64) throws -> String {
@@ -3609,6 +3693,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func contentProbe(for file: URL, size: UInt64) throws -> String {
+        Self.sourceProbeTestState.record()
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
 
@@ -3720,6 +3805,29 @@ private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
         defer { lock.unlock() }
         let value = shouldFailNextImport
         shouldFailNextImport = false
+        return value
+    }
+}
+
+private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func record() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        value = 0
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
         return value
     }
 }
