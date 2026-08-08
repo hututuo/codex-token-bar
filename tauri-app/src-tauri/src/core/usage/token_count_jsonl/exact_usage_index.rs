@@ -20,7 +20,9 @@ use crate::models::{
     RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
     TokenCacheUsage, TurnCacheUsage,
 };
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
@@ -450,6 +452,7 @@ static BEFORE_FINISH_INDEX_CONNECTION_HOOK: OnceLock<
 thread_local! {
     static AFTER_PREFIX_SCAN_HOOK: RefCell<Option<AfterPrefixScanHook>> = RefCell::new(None);
     static AFTER_FILE_COMMIT_HOOK: RefCell<Option<AfterFileCommitHook>> = RefCell::new(None);
+    static AFTER_DASHBOARD_SNAPSHOT_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
     static PREFIX_REHASH_COUNT: Cell<u64> = const { Cell::new(0) };
     static FAIL_NEXT_SESSION_CATALOG_PUBLISH: Cell<bool> = const { Cell::new(false) };
 }
@@ -515,7 +518,8 @@ impl ExactUsageIndex {
                 // 9-field fingerprint blobs that would break deduplication.
                 drop(connection);
                 remove_index_storage(&path)?;
-                connection = managed_index_connection(&path, open_index_connection(&path)?)?;
+                connection =
+                    managed_index_connection(&path, open_index_connection(&path, true)?)?;
                 schema_version = None;
                 has_schema_version = false;
             } else if schema_version.is_some() {
@@ -737,6 +741,13 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn set_after_prefix_scan_hook_for_testing(hook: impl FnOnce(&Path) + 'static) {
         AFTER_PREFIX_SCAN_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(hook));
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_after_dashboard_snapshot_hook_for_testing(hook: impl FnOnce() + 'static) {
+        AFTER_DASHBOARD_SNAPSHOT_HOOK.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(hook));
         });
     }
@@ -1212,8 +1223,17 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
         let dashboard_started = Instant::now();
+        // The small temp published-files selector avoids copying every event,
+        // but the view still reads main.events. Keep the complete dashboard in
+        // one deferred WAL snapshot so a concurrent publisher cannot make the
+        // totals, time series, and rankings observe different generations.
+        let snapshot_transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| format!("无法开始精确 token 仪表盘读取事务：{error}"))?;
         let prepare_started = Instant::now();
         self.prepare_dashboard_event_snapshot()?;
+        run_after_dashboard_snapshot_hook_for_testing();
         let prepare_snapshot_ms = prepare_started.elapsed().as_millis();
 
         let activity_started = Instant::now();
@@ -1247,7 +1267,7 @@ impl ExactUsageIndex {
             total_ms,
         ));
 
-        Ok(ExactDashboardData {
+        let data = ExactDashboardData {
             summary,
             stats,
             activity_days,
@@ -1256,7 +1276,11 @@ impl ExactUsageIndex {
             recent_usage_30d,
             cache_hit_ranking,
             cache_usage,
-        })
+        };
+        snapshot_transaction
+            .commit()
+            .map_err(|error| format!("无法结束精确 token 仪表盘读取事务：{error}"))?;
+        Ok(data)
     }
 
     #[cfg(test)]
@@ -5341,7 +5365,7 @@ fn open_index_connection_with_recovery(
     let existed_before = existing_regular_index(path)?;
     let _ = existed_before_hint;
     if !existed_before {
-        let connection = open_index_connection(path)?;
+        let connection = open_index_connection(path, true)?;
         return managed_index_connection(path, connection).map(|connection| (connection, false));
     }
 
@@ -5360,7 +5384,7 @@ fn open_index_connection_with_recovery(
             .filter(|receipt| receipt_storage_matches(receipt, path, signature))
     });
 
-    match open_index_connection(path) {
+    match open_index_connection(path, false) {
         Ok(connection) if state_has_active_connection => {
             return managed_index_connection(path, connection)
                 .map(|connection| (connection, false));
@@ -5733,8 +5757,12 @@ fn invalidate_index_integrity_signature(path: &Path) {
     states.remove(path);
 }
 
-fn open_index_connection(path: &Path) -> Result<Connection, String> {
-    let connection = Connection::open(path)
+fn open_index_connection(path: &Path, create_if_missing: bool) -> Result<Connection, String> {
+    let mut flags = OpenFlags::default();
+    if !create_if_missing {
+        flags.remove(OpenFlags::SQLITE_OPEN_CREATE);
+    }
+    let connection = Connection::open_with_flags(path, flags)
         .map_err(|error| format!("无法打开精确 token 索引 {}：{}", path.display(), error))?;
     connection
         .busy_timeout(StdDuration::from_secs(30))
@@ -5904,9 +5932,14 @@ pub(super) fn repair_orphaned_index_rows_for_testing(
 
 #[cfg(test)]
 pub(super) fn open_index_for_testing(path: &Path) -> Result<Connection, String> {
-    let connection = open_index_connection(path)?;
+    let connection = open_index_connection(path, true)?;
     initialize_index_schema(&connection)?;
     Ok(connection)
+}
+
+#[cfg(test)]
+pub(super) fn open_existing_index_for_testing(path: &Path) -> Result<Connection, String> {
+    open_index_connection(path, false)
 }
 
 fn delete_file_version_rows(
@@ -7128,6 +7161,17 @@ fn run_after_prefix_scan_hook_for_testing(path: &Path) {
 
 #[cfg(not(test))]
 fn run_after_prefix_scan_hook_for_testing(_path: &Path) {}
+
+#[cfg(test)]
+fn run_after_dashboard_snapshot_hook_for_testing() {
+    let hook = AFTER_DASHBOARD_SNAPSHOT_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_after_dashboard_snapshot_hook_for_testing() {}
 
 #[cfg(test)]
 fn run_after_file_commit_hook_for_testing(path: &Path) -> Result<(), String> {

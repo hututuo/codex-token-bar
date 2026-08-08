@@ -2144,7 +2144,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         path: String,
         connection: SQLiteDatabaseConnection
     ) throws -> IndexedSource? {
-        let rows: [IndexedSource?] = try connection.readRows(
+        let rows: [IndexedSource] = try connection.readRows(
             """
             SELECT
                 source_id,
@@ -2172,65 +2172,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             """,
             bindings: [.text(path)]
         ) { row in
-            guard let sourceID = row.int64(0),
-                  let rawSize = row.int64(1),
-                  rawSize >= 0,
-                  let modifiedAt = row.double(2),
-                  let probe = row.text(3),
-                  let rawDeviceID = row.text(4),
-                  let deviceID = UInt64(rawDeviceID),
-                  let rawInode = row.text(5),
-                  let inode = UInt64(rawInode),
-                  let statusChangedSeconds = row.int64(6),
-                  let statusChangedNanoseconds = row.int64(7) else {
-                return nil
-            }
-            let checkpoint: SourceCheckpoint?
-            if row.int(8) == 1,
-               let rawResumeOffset = row.int64(9),
-               rawResumeOffset >= 0 {
-                checkpoint = SourceCheckpoint(
-                    resumeOffset: UInt64(rawResumeOffset),
-                    parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                        previousTotalTokens: row.int(10),
-                        forkReplayStartedAt: row.double(11).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        isSkippingForkReplay: row.int(12) == 1,
-                        isExplicitSubagentFork: row.int(13) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(14).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        currentUserPromptOffset: row.int64(15).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        assistantStartOffset: row.int64(16).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        currentModel: row.text(17)
-                    ),
-                    auditChunkIndex: row.int64(18).flatMap {
-                        $0 >= 0 ? UInt64($0) : nil
-                    } ?? 0
-                )
-            } else {
-                checkpoint = nil
-            }
-            return IndexedSource(
-                id: sourceID,
-                signature: SourceSignature(
-                    size: UInt64(rawSize),
-                    modifiedAt: modifiedAt,
-                    contentProbe: probe,
-                    deviceID: deviceID,
-                    inode: inode,
-                    statusChangedSeconds: statusChangedSeconds,
-                    statusChangedNanoseconds: statusChangedNanoseconds
-                ),
-                checkpoint: checkpoint
-            )
+            try decodeIndexedSource(row, startingAt: 0)
         }
-        return rows.compactMap { $0 }.first
+        return rows.first
     }
 
     /// Loads the small source catalog once per synchronization. The previous
@@ -2239,7 +2183,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func indexedSources(
         connection: SQLiteDatabaseConnection
     ) throws -> [String: IndexedSource] {
-        let rows: [(String, IndexedSource)?] = try connection.readRows(
+        let rows: [(String, IndexedSource)] = try connection.readRows(
             """
             SELECT
                 path,
@@ -2265,70 +2209,85 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             FROM sources
             ORDER BY source_id;
             """
-        ) { row -> (String, IndexedSource)? in
-            guard let path = row.text(0),
-                  let sourceID = row.int64(1),
-                  let rawSize = row.int64(2),
-                  rawSize >= 0,
-                  let modifiedAt = row.double(3),
-                  let probe = row.text(4),
-                  let rawDeviceID = row.text(5),
-                  let deviceID = UInt64(rawDeviceID),
-                  let rawInode = row.text(6),
-                  let inode = UInt64(rawInode),
-                  let statusChangedSeconds = row.int64(7),
-                  let statusChangedNanoseconds = row.int64(8) else {
-                return nil
+        ) { row in
+            guard let path = row.text(0), !path.isEmpty else {
+                throw malformedIndexedSourceError("missing source path")
             }
-            let checkpoint: SourceCheckpoint?
-            if row.int(9) == 1,
-               let rawResumeOffset = row.int64(10),
-               rawResumeOffset >= 0 {
-                checkpoint = SourceCheckpoint(
-                    resumeOffset: UInt64(rawResumeOffset),
-                    parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                        previousTotalTokens: row.int(11),
-                        forkReplayStartedAt: row.double(12).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        isSkippingForkReplay: row.int(13) == 1,
-                        isExplicitSubagentFork: row.int(14) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(15).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        currentUserPromptOffset: row.int64(16).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        assistantStartOffset: row.int64(17).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        currentModel: row.text(18)
-                    ),
-                    auditChunkIndex: row.int64(19).flatMap {
-                        $0 >= 0 ? UInt64($0) : nil
-                    } ?? 0
-                )
-            } else {
-                checkpoint = nil
-            }
-            return (
-                path,
-                IndexedSource(
-                    id: sourceID,
-                    signature: SourceSignature(
-                        size: UInt64(rawSize),
-                        modifiedAt: modifiedAt,
-                        contentProbe: probe,
-                        deviceID: deviceID,
-                        inode: inode,
-                        statusChangedSeconds: statusChangedSeconds,
-                        statusChangedNanoseconds: statusChangedNanoseconds
-                    ),
-                    checkpoint: checkpoint
-                )
-            )
+            return (path, try decodeIndexedSource(row, startingAt: 1))
         }
-        return Dictionary(uniqueKeysWithValues: rows.compactMap { $0 })
+        return Dictionary(uniqueKeysWithValues: rows)
+    }
+
+    private func decodeIndexedSource(
+        _ row: SQLiteStatement,
+        startingAt offset: Int32
+    ) throws -> IndexedSource {
+        guard let sourceID = row.int64(offset),
+              let rawSize = row.int64(offset + 1),
+              rawSize >= 0,
+              let modifiedAt = row.double(offset + 2),
+              let probe = row.text(offset + 3),
+              let rawDeviceID = row.text(offset + 4),
+              let deviceID = UInt64(rawDeviceID),
+              let rawInode = row.text(offset + 5),
+              let inode = UInt64(rawInode),
+              let statusChangedSeconds = row.int64(offset + 6),
+              let statusChangedNanoseconds = row.int64(offset + 7) else {
+            throw malformedIndexedSourceError("invalid required source fields")
+        }
+        let checkpoint: SourceCheckpoint?
+        if row.int(offset + 8) == 1,
+           let rawResumeOffset = row.int64(offset + 9),
+           rawResumeOffset >= 0 {
+            checkpoint = SourceCheckpoint(
+                resumeOffset: UInt64(rawResumeOffset),
+                parserState: CodexUsageAnalyzer.IndexedSessionParserState(
+                    previousTotalTokens: row.int(offset + 10),
+                    forkReplayStartedAt: row.double(offset + 11).map {
+                        Date(timeIntervalSince1970: $0)
+                    },
+                    isSkippingForkReplay: row.int(offset + 12) == 1,
+                    isExplicitSubagentFork: row.int(offset + 13) == 1,
+                    lastSkippedForkReplayTokenAt: row.double(offset + 14).map {
+                        Date(timeIntervalSince1970: $0)
+                    },
+                    currentUserPromptOffset: row.int64(offset + 15).flatMap {
+                        $0 >= 0 ? UInt64($0) : nil
+                    },
+                    assistantStartOffset: row.int64(offset + 16).flatMap {
+                        $0 >= 0 ? UInt64($0) : nil
+                    },
+                    currentModel: row.text(offset + 17)
+                ),
+                auditChunkIndex: row.int64(offset + 18).flatMap {
+                    $0 >= 0 ? UInt64($0) : nil
+                } ?? 0
+            )
+        } else {
+            checkpoint = nil
+        }
+        return IndexedSource(
+            id: sourceID,
+            signature: SourceSignature(
+                size: UInt64(rawSize),
+                modifiedAt: modifiedAt,
+                contentProbe: probe,
+                deviceID: deviceID,
+                inode: inode,
+                statusChangedSeconds: statusChangedSeconds,
+                statusChangedNanoseconds: statusChangedNanoseconds
+            ),
+            checkpoint: checkpoint
+        )
+    }
+
+    private func malformedIndexedSourceError(_ reason: String) -> SQLiteDatabaseError {
+        SQLiteDatabaseError(
+            operation: "Decode exact usage source catalog",
+            code: SQLITE_CORRUPT,
+            message: reason,
+            path: driver.url.path
+        )
     }
 
     private func indexedSourceIdentities(

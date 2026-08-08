@@ -1,5 +1,5 @@
 use super::exact_usage_index::{
-    integrity_receipt_path_for_testing, open_index_for_testing,
+    integrity_receipt_path_for_testing, open_existing_index_for_testing, open_index_for_testing,
     repair_orphaned_index_rows_for_testing, ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY,
     STAGED_FULL_REBUILD_PARSER_REVISION,
 };
@@ -3708,6 +3708,22 @@ fn exact_index_transient_quick_check_failure_preserves_published_database() {
 }
 
 #[test]
+fn exact_index_existing_open_never_recreates_a_missing_database() {
+    let root = temp_root();
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("exact-token-index.sqlite3");
+
+    let error = open_existing_index_for_testing(&path).unwrap_err();
+    assert!(error.contains("无法打开精确 token 索引"), "{error}");
+    assert!(
+        !path.exists(),
+        "an existing-index reopen must fail closed if the file disappears instead of creating an empty replacement"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_replaces_plaintext_v1_storage_and_keeps_only_source_offsets() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -4194,6 +4210,65 @@ fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
         .windows(2)
         .all(|window| window[1].start_unix - window[0].start_unix == 5 * 60));
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_temp_view_keeps_one_wal_snapshot_across_all_sections() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(5))
+        .format(&Rfc3339)
+        .unwrap();
+    write_lines(
+        &session_dir.join("rollout-019edashboard-snapshot-0000-0000-fast.jsonl"),
+        &[format!(
+            r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#
+        )],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index.sync(&root, &mut warnings).unwrap();
+    let database_path = super::exact_usage_index::database_path(&root).unwrap();
+    ExactUsageIndex::set_after_dashboard_snapshot_hook_for_testing(move || {
+        let writer = Connection::open(&database_path).unwrap();
+        writer.busy_timeout(StdDuration::from_secs(1)).unwrap();
+        writer
+            .execute(
+                "UPDATE events SET tokens = 999, input_tokens = 900, cached_input_tokens = 0, output_tokens = 99",
+                [],
+            )
+            .unwrap();
+    });
+
+    let data = index
+        .dashboard_data(
+            &root,
+            OffsetDateTime::now_utc(),
+            UtcOffset::UTC,
+            &mut warnings,
+        )
+        .unwrap();
+    assert_eq!(data.summary.total_tokens, 120);
+    assert_eq!(data.stats.total_tokens, 120);
+    assert_eq!(data.stats.total_input_tokens, 100);
+    assert_eq!(data.stats.total_output_tokens, 20);
+
+    let writer = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(
+        writer
+            .query_row("SELECT tokens FROM events LIMIT 1", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        999,
+        "the concurrent writer must have committed while the dashboard retained its earlier read snapshot"
+    );
+    drop(writer);
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -3747,6 +3747,54 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testMalformedSourceCatalogFailsBeforeReopeningSessionFiles() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerMalformedCatalog")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-malformedcatalog"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        try [
+            try tokenCountLine(
+                timestamp: Date().addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.loadCompactSummary()?.totalTokens, 120)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute("UPDATE sources SET device_id = 'invalid-device-id';")
+
+        CodexUsageHistoryIndex.resetSourceContentProbeCountForTesting()
+        XCTAssertThrowsError(try analyzer.loadCompactSummary()) { error in
+            XCTAssertTrue(
+                error.localizedDescription.contains("Decode exact usage source catalog"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.sourceContentProbeCountForTesting,
+            0,
+            "a malformed source catalog must fail closed before staging a potentially multi-gigabyte JSONL rebuild"
+        )
+        XCTAssertEqual(
+            try database.readRows("SELECT device_id FROM sources LIMIT 1;") { $0.text(0) }.first,
+            "invalid-device-id"
+        )
+    }
+
     func testPersistentExactHistoryIndexRebuildsChangedSourceAndSkipsUnchangedSource() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerV9Append")
