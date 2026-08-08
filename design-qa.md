@@ -10,6 +10,7 @@ latest result: blocked
   - `/Users/huyiyang/WorkBuddy/2026-08-08-08-01-54/codex-token-bar-visual-polish-guide.html`
 - Code-side gates passed: Swift compile plus 53 content/layout tests and 11 interface-scale tests; Tauri TypeScript typecheck, 60 targeted Node tests, and production frontend build; `git diff --check` clean.
 - Interaction structure implemented in both clients: row reordering, page grouping/splitting, default page, hide/restore, reset confirmation, 3-second undo, and production-renderer preview selection.
+- Follow-up `ed11e5b` responds to user inspection by moving both page arrows to the outer edge and compressing their visible width to 58%; automated geometry assertions pass, but the resulting visual density remains pending the next user-run build.
 - Blocker: the user explicitly owns complex visual inspection. No new Swift/Tauri app bundle was built or opened in this task, so viewport matching, real font rendering, clipping, density, hover affordances, and final polish remain pending user inspection.
 - P0/P1 code defects found by automated checks: none. This is not visual acceptance.
 
