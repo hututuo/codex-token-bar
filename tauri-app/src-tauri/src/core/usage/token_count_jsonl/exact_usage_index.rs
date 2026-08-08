@@ -1152,9 +1152,14 @@ impl ExactUsageIndex {
                 r#"
                 SELECT
                     COALESCE(SUM(tokens), 0),
-                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM published_events
+                    COALESCE(SUM(CASE WHEN bucket_start >= ?1 AND bucket_start < ?2 THEN tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN bucket_start >= ?1 AND bucket_start < ?2 THEN calls ELSE 0 END), 0)
+                FROM attribution_source_buckets
+                WHERE provenance_epoch = (
+                    SELECT value
+                    FROM metadata
+                    WHERE key = 'attribution_provenance_epoch'
+                )
                 "#,
                 params![start, end],
                 |row| {
@@ -1165,7 +1170,7 @@ impl ExactUsageIndex {
                     ))
                 },
             )
-            .map_err(|error| format!("无法汇总精确 token 用量：{error}"))?;
+            .map_err(|error| format!("无法从精确归因账本汇总 token 用量：{error}"))?;
         Ok(TokenUsageSummary {
             total_tokens: nonnegative_u64(total),
             today_tokens: nonnegative_u64(today_tokens),
