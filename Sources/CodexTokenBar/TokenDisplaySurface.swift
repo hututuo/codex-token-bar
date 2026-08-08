@@ -453,6 +453,7 @@ struct TokenDisplayCard: View {
                     Spacer(minLength: 0)
                     pageButton(systemImage: "chevron.right", row: row, delta: 1)
                 }
+                .padding(.horizontal, -9.scaled(by: displayScale))
             }
         }
         .frame(height: rowHeight, alignment: .center)
@@ -516,10 +517,11 @@ struct TokenDisplayCard: View {
             selectedPageIndexByRowID[row.id] = (current + delta + row.groups.count) % row.groups.count
         } label: {
             Image(systemName: systemImage)
-                .font(.system(size: 7.6.scaled(by: displayScale), weight: .bold))
+                .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
                 .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
+                .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
                 .frame(
-                    width: 20.scaled(by: displayScale),
+                    width: 14.scaled(by: displayScale),
                     height: 20.scaled(by: displayScale)
                 )
                 .contentShape(Rectangle())

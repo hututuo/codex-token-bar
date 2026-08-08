@@ -330,7 +330,7 @@ function FloatingPagedContentRow({
             onDoubleClick={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             type="button"
-          >‹</button>
+          ><span aria-hidden="true">‹</span></button>
           <button
             aria-label="显示下一项"
             className="floating-page-switch floating-page-switch--next"
@@ -338,7 +338,7 @@ function FloatingPagedContentRow({
             onDoubleClick={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             type="button"
-          >›</button>
+          ><span aria-hidden="true">›</span></button>
         </>
       ) : null}
     </div>

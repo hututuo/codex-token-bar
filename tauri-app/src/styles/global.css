@@ -7670,18 +7670,24 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   bottom: 0;
   display: grid;
   place-items: center;
-  width: calc(20px * var(--floating-scale));
+  width: calc(14px * var(--floating-scale));
   border: 0;
   background: transparent;
   color: var(--floating-secondary);
   cursor: pointer;
-  font-size: calc(11px * var(--floating-scale));
-  font-weight: var(--weight-semibold);
-  line-height: 1;
   opacity: 0.2;
   padding: 0;
   transition: opacity 160ms ease-out, color 160ms ease-out;
   -webkit-app-region: no-drag;
+}
+
+.floating-page-switch > span {
+  display: block;
+  font-size: calc(11px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  transform: scaleX(0.58);
+  transform-origin: center;
 }
 
 .floating-page-layout-row.is-paged:hover .floating-page-switch {
@@ -7701,11 +7707,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-page-switch--previous {
-  left: 0;
+  left: calc(-9px * var(--floating-scale));
 }
 
 .floating-page-switch--next {
-  right: 0;
+  right: calc(-9px * var(--floating-scale));
 }
 
 .floating-row {
