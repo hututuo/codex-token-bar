@@ -1290,25 +1290,33 @@ fn macos_status_tray_attributed_title(
         MACOS_STATUS_TRAY_FONT_SIZE,
         semibold_weight,
     );
-    let color = NSColor::controlTextColor();
-    let top = columns
-        .iter()
-        .map(|column| column.top.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
-    let bottom = columns
-        .iter()
-        .map(|column| column.bottom.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
-    let result = NSMutableAttributedString::from_nsstring(&NSString::from_str(&format!(
-        "{top}\n{bottom}"
-    )));
+    let primary_color = NSColor::controlTextColor();
+    let secondary_color = NSColor::secondaryLabelColor();
+    let result = NSMutableAttributedString::from_nsstring(&NSString::from_str(""));
+    if columns.is_empty() {
+        return result;
+    }
+    macos_append_status_row(
+        &result,
+        columns,
+        true,
+        &font,
+        &primary_color,
+        &secondary_color,
+    );
+    macos_append_status_piece(&result, "\n", &font, &primary_color);
+    macos_append_status_row(
+        &result,
+        columns,
+        false,
+        &font,
+        &primary_color,
+        &secondary_color,
+    );
     let range = NSRange::new(0, result.length());
-    let font_object: &AnyObject = font.as_ref();
-    let color_object: &AnyObject = color.as_ref();
 
     let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(NSTextAlignment::Left);
     paragraph.setLineSpacing(MACOS_STATUS_TRAY_LINE_SPACING);
     let options = NSDictionary::<NSTextTabOptionKey, AnyObject>::new();
     let tab_stops = macos_status_tray_column_starts(columns, &font)
@@ -1328,8 +1336,6 @@ fn macos_status_tray_attributed_title(
     let paragraph_object: &AnyObject = paragraph.as_ref();
 
     unsafe {
-        result.addAttribute_value_range(NSFontAttributeName, font_object, range);
-        result.addAttribute_value_range(NSForegroundColorAttributeName, color_object, range);
         result.addAttribute_value_range(
             NSParagraphStyleAttributeName,
             paragraph_object,
@@ -1338,6 +1344,52 @@ fn macos_status_tray_attributed_title(
     }
 
     result
+}
+
+#[cfg(target_os = "macos")]
+fn macos_append_status_row(
+    result: &NSMutableAttributedString,
+    columns: &[StatusTrayColumn],
+    top: bool,
+    font: &NSFont,
+    primary_color: &NSColor,
+    secondary_color: &NSColor,
+) {
+    for (index, column) in columns.iter().enumerate() {
+        if index > 0 {
+            macos_append_status_piece(result, "\t", font, primary_color);
+        }
+        let line = if top { &column.top } else { &column.bottom };
+        let rendered = if line.text.is_empty() {
+            "\u{200B}"
+        } else {
+            line.text.as_str()
+        };
+        let color = if line.secondary {
+            secondary_color
+        } else {
+            primary_color
+        };
+        macos_append_status_piece(result, rendered, font, color);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_append_status_piece(
+    result: &NSMutableAttributedString,
+    text: &str,
+    font: &NSFont,
+    color: &NSColor,
+) {
+    let piece = NSMutableAttributedString::from_nsstring(&NSString::from_str(text));
+    let range = NSRange::new(0, piece.length());
+    let font_object: &AnyObject = font.as_ref();
+    let color_object: &AnyObject = color.as_ref();
+    unsafe {
+        piece.addAttribute_value_range(NSFontAttributeName, font_object, range);
+        piece.addAttribute_value_range(NSForegroundColorAttributeName, color_object, range);
+    }
+    result.appendAttributedString(&piece);
 }
 
 #[cfg(target_os = "macos")]
