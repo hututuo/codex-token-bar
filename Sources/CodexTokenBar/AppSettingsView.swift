@@ -638,23 +638,23 @@ struct AppSettingsView: View {
                     HStack(spacing: 6) {
                         ForEach(Array(presentation.columns.enumerated()), id: \.offset) { entry in
                             let column = entry.element
-                            VStack(spacing: 0) {
+                            VStack(alignment: .leading, spacing: 0) {
                                 Text(column.top.text.isEmpty ? "\u{200B}" : column.top.text)
                                     .font(.system(
-                                        size: column.top.isSecondary ? 6.5 : 7.5,
+                                        size: 8.75,
                                         weight: .semibold,
                                         design: .monospaced
                                     ))
                                     .foregroundStyle(column.top.isSecondary ? .secondary : .primary)
-                                    .frame(height: 8.5)
+                                    .frame(height: 10)
                                 Text(column.bottom.text.isEmpty ? "\u{200B}" : column.bottom.text)
                                     .font(.system(
-                                        size: column.bottom.isSecondary ? 6.5 : 7.5,
+                                        size: 8.75,
                                         weight: .semibold,
                                         design: .monospaced
                                     ))
                                     .foregroundStyle(column.bottom.isSecondary ? .secondary : .primary)
-                                    .frame(height: 8.5)
+                                    .frame(height: 10)
                             }
                             .fixedSize()
                         }

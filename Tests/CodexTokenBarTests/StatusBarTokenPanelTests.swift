@@ -105,7 +105,7 @@ final class StatusBarTokenPanelTests: XCTestCase {
     }
 
     @MainActor
-    func testAttributedStatusTitleUsesSeparatedTwoLineColumns() throws {
+    func testAttributedStatusTitleUsesTrueRowsWithSharedLeftAlignedTabStops() throws {
         let presentation = StatusBarMetricsPresentation(segments: [
             StatusBarMetricSegment(
                 id: .fiveHour,
@@ -141,23 +141,30 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertNotEqual(sevenQuota.location, NSNotFound)
         XCTAssertNotEqual(firstModel.location, NSNotFound)
         XCTAssertNotEqual(secondModel.location, NSNotFound)
-        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: fiveQuota.location, in: title), 0)
-        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: sevenQuota.location, in: title), 0)
-        XCTAssertLessThan(
-            try numericAttribute(.kern, at: NSMaxRange(fiveQuota) - 1, in: title),
-            0
+        XCTAssertEqual(title.string, "5 0%\t1 Sol·XH\n7 42%\t2 Luna·H")
+        let paragraph = try XCTUnwrap(
+            title.attribute(.paragraphStyle, at: fiveQuota.location, effectiveRange: nil)
+                as? NSParagraphStyle
         )
-        XCTAssertGreaterThan(try numericAttribute(.baselineOffset, at: firstModel.location, in: title), 0)
-        XCTAssertLessThan(try numericAttribute(.baselineOffset, at: secondModel.location, in: title), 0)
-        XCTAssertLessThan(
-            try numericAttribute(.kern, at: NSMaxRange(firstModel) - 1, in: title),
-            0
+        XCTAssertEqual(paragraph.alignment, .left)
+        XCTAssertEqual(paragraph.tabStops.count, 1)
+        XCTAssertEqual(
+            paragraph.tabStops[0].location,
+            StatusBarAttributedTitleBuilder.columnStartOffsets(for: presentation.columns)[1],
+            accuracy: 0.001
         )
-        XCTAssertGreaterThan(
-            StatusBarAttributedTitleBuilder.upperBaselineOffset
-                - StatusBarAttributedTitleBuilder.lowerBaselineOffset,
-            StatusBarAttributedTitleBuilder.primaryFontSize
-        )
+        let topFont = try XCTUnwrap(title.attribute(.font, at: fiveQuota.location, effectiveRange: nil) as? NSFont)
+        let bottomFont = try XCTUnwrap(title.attribute(.font, at: sevenQuota.location, effectiveRange: nil) as? NSFont)
+        XCTAssertEqual(topFont.pointSize, StatusBarAttributedTitleBuilder.fontSize, accuracy: 0.001)
+        XCTAssertEqual(bottomFont.pointSize, StatusBarAttributedTitleBuilder.fontSize, accuracy: 0.001)
+        for offset in [rawTitle.range(of: "\t").location, rawTitle.range(of: "\n").location] {
+            let separatorFont = try XCTUnwrap(title.attribute(.font, at: offset, effectiveRange: nil) as? NSFont)
+            XCTAssertEqual(separatorFont.pointSize, StatusBarAttributedTitleBuilder.fontSize, accuracy: 0.001)
+        }
+        XCTAssertGreaterThanOrEqual(title.size().height, 19)
+        XCTAssertLessThanOrEqual(title.size().height, 22)
+        XCTAssertNil(title.attribute(.kern, at: NSMaxRange(fiveQuota) - 1, effectiveRange: nil))
+        XCTAssertNil(title.attribute(.baselineOffset, at: fiveQuota.location, effectiveRange: nil))
         XCTAssertFalse(title.string.contains("⁵"))
         XCTAssertFalse(title.string.contains("⁷"))
     }

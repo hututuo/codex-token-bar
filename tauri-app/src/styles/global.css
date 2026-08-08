@@ -8939,14 +8939,15 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .status-indicator-column {
   position: relative;
   display: grid;
-  grid-template-rows: repeat(2, 10px);
+  grid-template-rows: repeat(2, 11px);
+  justify-items: start;
   align-content: center;
   flex: 0 0 auto;
   color: var(--text);
-  font-size: 9px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   font-weight: var(--weight-semibold);
-  line-height: 10px;
+  line-height: 11px;
 }
 
 .status-indicator-column + .status-indicator-column::before {
@@ -8967,15 +8968,16 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: block;
   overflow: hidden;
   max-width: 100%;
+  justify-self: start;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .status-indicator-column > .is-secondary {
   color: var(--muted);
-  font-size: 7px;
+  font-size: 10px;
   font-weight: var(--weight-semibold);
-  letter-spacing: -0.15px;
 }
 
 @media (max-width: 960px) {
