@@ -1,6 +1,21 @@
 # Design QA
 
-final result: passed
+latest result: blocked
+
+## Current scope: floating content settings and Tauri header (2026-08-08)
+
+- Implementation commit: `feature/floating-widget-metric-groups-20260807@7416360`.
+- Reference designs:
+  - `/Users/huyiyang/WorkBuddy/2026-08-08-08-01-54/codex-token-bar-floating-content-settings-redesign.html`
+  - `/Users/huyiyang/WorkBuddy/2026-08-08-08-01-54/codex-token-bar-visual-polish-guide.html`
+- Code-side gates passed: Swift compile plus 53 content/layout tests and 11 interface-scale tests; Tauri TypeScript typecheck, 60 targeted Node tests, and production frontend build; `git diff --check` clean.
+- Interaction structure implemented in both clients: row reordering, page grouping/splitting, default page, hide/restore, reset confirmation, 3-second undo, and production-renderer preview selection.
+- Blocker: the user explicitly owns complex visual inspection. No new Swift/Tauri app bundle was built or opened in this task, so viewport matching, real font rendering, clipping, density, hover affordances, and final polish remain pending user inspection.
+- P0/P1 code defects found by automated checks: none. This is not visual acceptance.
+
+## Prior completed scope: chart cards (2026-08-02)
+
+prior result: passed
 
 ## Scope
 
