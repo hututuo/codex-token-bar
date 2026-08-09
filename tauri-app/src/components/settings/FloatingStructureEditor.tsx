@@ -121,6 +121,39 @@ export function FloatingStructureEditor({
     }, `已移动「${rowTitle(row)}」`);
   };
 
+  const clearDragState = () => {
+    setDragState(null);
+    setDropTargetId(null);
+  };
+
+  const canDropIntoGap = (target: EditorRow, placement: FloatingContentRowPlacement) => {
+    if (dragState?.kind === "page") {
+      const nextPairs = splitFloatingPage(visibility.pagePairs, dragState.group);
+      const nextOrder = moveFloatingRow(visibility.order, [dragState.group], target.groups, placement);
+      return JSON.stringify(nextPairs) !== JSON.stringify(visibility.pagePairs)
+        || JSON.stringify(nextOrder) !== JSON.stringify(visibility.order);
+    }
+    if (dragState?.kind !== "row") return false;
+    const source = rows.find((row) => row.id === dragState.rowId);
+    if (!source || source.id === target.id) return false;
+    const nextOrder = moveFloatingRow(visibility.order, source.groups, target.groups, placement);
+    return JSON.stringify(nextOrder) !== JSON.stringify(visibility.order);
+  };
+
+  const canMergePageInto = (group: FloatingContentGroup, target: FloatingContentGroup) => {
+    if (
+      group === target
+      || !FLOATING_PAGE_CAPABLE_GROUPS.includes(group)
+      || !FLOATING_PAGE_CAPABLE_GROUPS.includes(target)
+    ) return false;
+    const next = setFloatingGroupsVisible({
+      ...visibility,
+      order: placeFloatingPageAfterTarget(visibility.order, group, target),
+      pagePairs: mergeFloatingPage(visibility.pagePairs, group, target),
+    }, [group, target], true);
+    return JSON.stringify(next) !== JSON.stringify(visibility);
+  };
+
   const moveRowBy = (row: EditorRow, delta: -1 | 1) => {
     const index = rows.findIndex((candidate) => candidate.id === row.id);
     const target = rows[index + delta];
@@ -182,11 +215,10 @@ export function FloatingStructureEditor({
         const rect = event.currentTarget.getBoundingClientRect();
         moveRowRelative(source, target, event.clientY < rect.top + rect.height / 2 ? "before" : "after");
       }
-    } else if (dragState?.kind === "page") {
+    } else if (dragState?.kind === "page" && canMergePageInto(dragState.group, target.layoutRow.groups[0])) {
       mergePageInto(dragState.group, target.layoutRow.groups[0]);
     }
-    setDragState(null);
-    setDropTargetId(null);
+    clearDragState();
   };
 
   const dropIntoGap = (
@@ -196,27 +228,60 @@ export function FloatingStructureEditor({
   ) => {
     event.preventDefault();
     event.stopPropagation();
-    if (dragState?.kind !== "page") return;
-    const nextPairs = splitFloatingPage(visibility.pagePairs, dragState.group);
-    const nextOrder = moveFloatingRow(
-      visibility.order,
-      [dragState.group],
-      target.groups,
-      placement,
-    );
-    commit({ ...visibility, order: nextOrder, pagePairs: nextPairs }, `已将「${title(dragState.group)}」拆成单独一行`);
-    setDragState(null);
-    setDropTargetId(null);
+    if (dragState?.kind === "row") {
+      const source = rows.find((row) => row.id === dragState.rowId);
+      if (source && source.id !== target.id) moveRowRelative(source, target, placement);
+    } else if (dragState?.kind === "page") {
+      const nextPairs = splitFloatingPage(visibility.pagePairs, dragState.group);
+      const nextOrder = moveFloatingRow(
+        visibility.order,
+        [dragState.group],
+        target.groups,
+        placement,
+      );
+      commit({ ...visibility, order: nextOrder, pagePairs: nextPairs }, `已将「${title(dragState.group)}」拆成单独一行`);
+    }
+    clearDragState();
+  };
+
+  const dropIntoHidden = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (dragState?.kind === "row") {
+      commit(
+        setFloatingGroupsVisible(visibility, dragState.groups, false),
+        `已隐藏「${dragState.groups.map(title).join(" · ")}」`,
+      );
+    } else if (dragState?.kind === "page") {
+      commit(
+        setFloatingGroupsVisible(visibility, [dragState.group], false),
+        `已隐藏「${title(dragState.group)}」`,
+      );
+    }
+    clearDragState();
   };
 
   return (
-    <div className="floating-structure-shell">
+    <div className={`floating-structure-shell${dragState ? " is-dragging" : ""}`}>
       <header className="floating-structure-intro">
         <div>
           <strong>悬浮窗布局</strong>
-          <span>每一行就是悬浮窗的一行；拖动行手柄排序，拖动胶囊成组或拆分。</span>
+          <span>每一行就是悬浮窗的一行；拖动行排序，拖到“已隐藏”即可隐藏。</span>
         </div>
-        <button onClick={() => setResetPending(true)} type="button">恢复默认布局</button>
+        <div className="floating-structure-actions">
+          <label className="fs-arrow-toggle">
+            <input
+              checked={visibility.showPageNavigationArrows}
+              onChange={(event) => commit(
+                { ...visibility, showPageNavigationArrows: event.currentTarget.checked },
+                event.currentTarget.checked ? "已显示翻页箭头" : "已隐藏翻页箭头",
+              )}
+              type="checkbox"
+            />
+            <span>显示翻页箭头</span>
+          </label>
+          <button onClick={() => setResetPending(true)} type="button">恢复默认布局</button>
+        </div>
       </header>
 
       <div className="floating-structure-grid">
@@ -231,16 +296,30 @@ export function FloatingStructureEditor({
                   <div
                     aria-hidden="true"
                     className={`fs-drop-gap${dropTargetId === `gap:${row.id}:before` ? " is-target" : ""}`}
-                    onDragEnter={() => setDropTargetId(`gap:${row.id}:before`)}
-                    onDragOver={(event) => dragState?.kind === "page" && event.preventDefault()}
+                    onDragEnter={() => canDropIntoGap(row, "before") && setDropTargetId(`gap:${row.id}:before`)}
+                    onDragOver={(event) => {
+                      if (!canDropIntoGap(row, "before")) return;
+                      event.preventDefault();
+                      setDropTargetId(`gap:${row.id}:before`);
+                    }}
                     onDrop={(event) => dropIntoGap(event, row, "before")}
                   />
                   <div
-                    className={`fs-row${paged ? " is-paged" : ""}${inline ? " is-inline" : ""}${selectedRowId === row.id ? " is-selected" : ""}${dropTargetId === row.id ? " is-drop-target" : ""}`}
-                    onDragEnter={() => setDropTargetId(row.id)}
+                    className={`fs-row${paged ? " is-paged" : ""}${inline ? " is-inline" : ""}${selectedRowId === row.id ? " is-selected" : ""}${dropTargetId === `row:${row.id}` ? " is-drop-target" : ""}`}
+                    data-row-id={row.id}
                     onDragOver={(event) => {
-                      if (dragState?.kind === "row" || (dragState?.kind === "page" && FLOATING_PAGE_CAPABLE_GROUPS.includes(row.layoutRow.groups[0]))) {
+                      if (dragState?.kind === "row") {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                        if (!canDropIntoGap(row, placement)) return;
                         event.preventDefault();
+                        setDropTargetId(`gap:${row.id}:${placement}`);
+                      } else if (
+                        dragState?.kind === "page"
+                        && canMergePageInto(dragState.group, row.layoutRow.groups[0])
+                      ) {
+                        event.preventDefault();
+                        setDropTargetId(`row:${row.id}`);
                       }
                     }}
                     onDrop={(event) => dropOnRow(event, row)}
@@ -255,7 +334,7 @@ export function FloatingStructureEditor({
                       aria-label={`拖动整行：${rowTitle(row)}`}
                       className="fs-row-handle"
                       draggable
-                      onDragEnd={() => setDragState(null)}
+                      onDragEnd={clearDragState}
                       onDragStart={(event) => {
                         event.dataTransfer.effectAllowed = "move";
                         event.dataTransfer.setData("text/plain", `row:${row.id}`);
@@ -283,7 +362,7 @@ export function FloatingStructureEditor({
                             className={`fs-chip${isDefault ? " is-default" : ""}${isInline ? " is-inline" : ""}${canPage ? " is-draggable" : ""}`}
                             draggable={canPage}
                             key={group}
-                            onDragEnd={() => setDragState(null)}
+                            onDragEnd={clearDragState}
                             onDragStart={canPage ? (event) => {
                               event.stopPropagation();
                               event.dataTransfer.effectAllowed = "move";
@@ -330,18 +409,32 @@ export function FloatingStructureEditor({
             {rows.length > 0 ? (
               <div
                 aria-hidden="true"
-                className={`fs-drop-gap fs-drop-gap--last${dropTargetId === "gap:last" ? " is-target" : ""}`}
-                onDragEnter={() => setDropTargetId("gap:last")}
-                onDragOver={(event) => dragState?.kind === "page" && event.preventDefault()}
+                className={`fs-drop-gap fs-drop-gap--last${dropTargetId === `gap:${rows[rows.length - 1].id}:after` ? " is-target" : ""}`}
+                onDragEnter={() => canDropIntoGap(rows[rows.length - 1], "after") && setDropTargetId(`gap:${rows[rows.length - 1].id}:after`)}
+                onDragOver={(event) => {
+                  const target = rows[rows.length - 1];
+                  if (!canDropIntoGap(target, "after")) return;
+                  event.preventDefault();
+                  setDropTargetId(`gap:${target.id}:after`);
+                }}
                 onDrop={(event) => dropIntoGap(event, rows[rows.length - 1], "after")}
               />
             ) : null}
           </div>
 
-          <div className="fs-hidden-zone">
+          <div
+            className={`fs-hidden-zone${dropTargetId === "hidden" ? " is-drop-target" : ""}`}
+            onDragEnter={() => dragState && setDropTargetId("hidden")}
+            onDragOver={(event) => {
+              if (!dragState) return;
+              event.preventDefault();
+              setDropTargetId("hidden");
+            }}
+            onDrop={dropIntoHidden}
+          >
             <div>
               <strong>已隐藏</strong>
-              <span>点“恢复”后回到原位置，组合关系会保留。</span>
+              <span>{dropTargetId === "hidden" ? "松手即可隐藏" : "拖到这里隐藏；恢复后回到原位置。"}</span>
             </div>
             {hiddenRows.length === 0 ? <p>没有隐藏内容</p> : hiddenRows.map((groups) => (
               <button key={groups.join("|")} onClick={() => restoreHidden(groups)} type="button">
@@ -387,7 +480,7 @@ export function FloatingStructureEditor({
 
       {resetPending ? (
         <div className="fs-reset-confirm" role="alertdialog" aria-label="恢复默认布局确认">
-          <span>恢复默认显示、顺序和“模型占比 → 模型费用”翻页组合？</span>
+          <span>恢复默认显示、顺序、翻页箭头和“模型占比 → 模型费用”组合？</span>
           <button onClick={() => setResetPending(false)} type="button">取消</button>
           <button onClick={() => {
             setResetPending(false);

@@ -40,6 +40,7 @@ export const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showQuota: true,
   showRadar: true,
   showCrowdRadar: true,
+  showPageNavigationArrows: true,
   order: FLOATING_CONTENT_GROUPS,
   pagePairs: DEFAULT_FLOATING_PAGE_PAIRS,
 };
@@ -67,6 +68,7 @@ export function sanitizeFloatingContentVisibility(value: Partial<FloatingContent
     showQuota: value?.showQuota ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showQuota,
     showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
     showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
+    showPageNavigationArrows: value?.showPageNavigationArrows ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showPageNavigationArrows,
     order: sanitizeContentOrder(value?.order),
     pagePairs: sanitizeFloatingPagePairs(value?.pagePairs),
   };
@@ -316,7 +318,7 @@ export function isFloatingGroupVisible(
   }
 }
 
-export type FloatingVisibilityKey = Exclude<keyof FloatingContentVisibility, "order" | "pagePairs">;
+export type FloatingVisibilityKey = Exclude<keyof FloatingContentVisibility, "order" | "pagePairs" | "showPageNavigationArrows">;
 
 export function floatingVisibilityKey(group: FloatingContentGroup): FloatingVisibilityKey {
   switch (group) {

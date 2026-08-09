@@ -59,6 +59,7 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var floatingPanelShowCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var floatingPanelContentOrderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @AppStorage(FloatingPanelContentVisibility.pagePairsKey) private var floatingPanelPagePairsRaw = FloatingPanelContentVisibility.defaultPagePairsRaw
+    @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var floatingPanelShowPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
@@ -469,6 +470,7 @@ struct DashboardView: View {
                 showCrowdRadar: $floatingPanelShowCrowdRadar,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
                 pagePairsRaw: $floatingPanelPagePairsRaw,
+                showPageNavigationArrows: $floatingPanelShowPageNavigationArrows,
                 floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
                 floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
                 defaultCodexHome: store.currentDataSource?.codexHome,
@@ -1060,6 +1062,7 @@ struct DashboardView: View {
             showQuota: floatingPanelShowQuota,
             showRadar: floatingPanelShowRadar,
             showCrowdRadar: floatingPanelShowCrowdRadar,
+            showPageNavigationArrows: floatingPanelShowPageNavigationArrows,
             groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw),
             pagePairs: FloatingPanelContentVisibility.pagePairs(from: floatingPanelPagePairsRaw)
         )

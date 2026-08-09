@@ -57,6 +57,18 @@ test("floating model row switches share and cost without starting panel drag", a
         await React.act(async () => previous.click());
         assert.match(container.textContent, /Sol50%/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
+
+        await React.act(async () => root.render(React.createElement(FloatingPanelSurface, {
+          onDragStart: () => {
+            dragStarts += 1;
+          },
+          priceModel: "gpt56Luna",
+          settings: floatingSettingsFixture(false),
+          snapshot: floatingSnapshotFixture(),
+          unreadEffect: "off",
+        })));
+        assert.equal(container.querySelector('button[aria-label="显示上一项"]'), null);
+        assert.equal(container.querySelector('button[aria-label="显示下一项"]'), null);
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -68,7 +80,7 @@ test("floating model row switches share and cost without starting panel drag", a
   }
 });
 
-function floatingSettingsFixture() {
+function floatingSettingsFixture(showPageNavigationArrows = true) {
   return {
     opacity: 0.92,
     scale: 1,
@@ -91,6 +103,7 @@ function floatingSettingsFixture() {
       showQuota: false,
       showRadar: false,
       showCrowdRadar: false,
+      showPageNavigationArrows,
       order: ["todayModelShare", "todayModelCost"],
       pagePairs: [["todayModelShare", "todayModelCost"]],
     },

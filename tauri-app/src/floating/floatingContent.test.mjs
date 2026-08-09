@@ -162,6 +162,12 @@ test("legacy floating order inserts running threads after metrics and enables it
     "usageStatus",
   ]);
   assert.deepEqual(migrated.pagePairs, [["todayModelShare", "todayModelCost"]]);
+  assert.equal(migrated.showPageNavigationArrows, true);
+});
+
+test("page navigation arrow visibility defaults on and preserves an explicit off setting", () => {
+  assert.equal(DEFAULT_FLOATING_CONTENT_VISIBILITY.showPageNavigationArrows, true);
+  assert.equal(sanitizeFloatingContentVisibility({ showPageNavigationArrows: false }).showPageNavigationArrows, false);
 });
 
 test("paged rows combine model share and cost without losing their configured default page", () => {

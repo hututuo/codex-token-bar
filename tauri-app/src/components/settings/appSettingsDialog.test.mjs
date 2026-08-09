@@ -115,6 +115,12 @@ test("floating settings combine appearance, content, paging, and the real previe
     assert.equal(panel.querySelector(".app-settings-preview"), null);
     assert.equal(panel.querySelectorAll(".floating-structure-shell select").length, 0);
 
+    const arrowToggle = panel.querySelector('.fs-arrow-toggle input[type="checkbox"]');
+    assert.ok(arrowToggle);
+    assert.equal(arrowToggle.checked, true);
+    await click(act, arrowToggle, window);
+    assert.equal(calls.floatingContentVisibilities.at(-1).showPageNavigationArrows, false);
+
     const hideModelRow = panel.querySelector('button[aria-label="隐藏今日模型占比 · 今日模型费用"]');
     assert.ok(hideModelRow);
     await click(act, hideModelRow, window);

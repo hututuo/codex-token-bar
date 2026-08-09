@@ -159,6 +159,20 @@ test("floating content removes horizontal rules without adding whitespace", () =
   assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(2px \* var\(--floating-scale\)\);/);
 });
 
+test("model share distributes four compact values across the full row", () => {
+  assert.match(previewSource, /floating-model-usage--share/);
+  assert.match(stylesSource, /\.floating-model-usage--share \.floating-model-usage-items\s*{[\s\S]*?gap: 0;/);
+  assert.match(stylesSource, /\.floating-model-usage--share \.floating-model-usage-item\s*{[\s\S]*?flex: 1 1 0;[\s\S]*?justify-content: center;/);
+});
+
+test("floating quota uses the Swift-style single filled segment instead of nested rails", () => {
+  assert.match(previewSource, /"--quota-fill-min"/);
+  assert.match(stylesSource, /\.floating-quota-track\s*{[\s\S]*?inset: 0;[\s\S]*?background: rgba\(255, 255, 255, 0\.78\);/);
+  assert.match(stylesSource, /\.floating-quota-track::after\s*{[\s\S]*?content: none;/);
+  assert.match(stylesSource, /\.floating-quota-fill\s*{[\s\S]*?width: min\(100%, max\(var\(--quota-fill, 0%\), var\(--quota-fill-min, 0px\)\)\);[\s\S]*?box-shadow: none;[\s\S]*?opacity: 0\.78;/);
+  assert.match(stylesSource, /\.floating-quota-label\s*{[\s\S]*?text-shadow: none;/);
+});
+
 test("paged row arrows hug the outer edge while keeping a forgiving hit target", () => {
   assert.match(previewSource, />\s*<span aria-hidden="true">‹<\/span><\/button>/);
   assert.match(previewSource, />\s*<span aria-hidden="true">›<\/span><\/button>/);

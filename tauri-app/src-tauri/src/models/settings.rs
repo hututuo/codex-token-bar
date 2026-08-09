@@ -481,6 +481,8 @@ pub struct FloatingContentVisibilitySnapshot {
     pub show_radar: bool,
     #[serde(default = "default_enabled")]
     pub show_crowd_radar: bool,
+    #[serde(default = "default_enabled")]
+    pub show_page_navigation_arrows: bool,
     #[serde(default = "default_floating_content_order")]
     pub order: Vec<String>,
     #[serde(default = "default_floating_page_pairs")]
@@ -499,6 +501,7 @@ impl Default for FloatingContentVisibilitySnapshot {
             show_quota: default_enabled(),
             show_radar: default_enabled(),
             show_crowd_radar: default_enabled(),
+            show_page_navigation_arrows: default_enabled(),
             order: default_floating_content_order(),
             page_pairs: default_floating_page_pairs(),
         }

@@ -142,6 +142,7 @@ struct AppSettingsView: View {
     @Binding var showCrowdRadar: Bool
     @Binding var contentOrderRaw: String
     @Binding var pagePairsRaw: String
+    @Binding var showPageNavigationArrows: Bool
     let floatingPreviewSnapshot: TokenDisplaySnapshot
     let floatingPreviewRadarPresentation: CodexRadarPresentationState
     let defaultCodexHome: URL?
@@ -846,6 +847,7 @@ struct AppSettingsView: View {
                     showQuota: showQuota,
                     showRadar: showRadar,
                     showCrowdRadar: showCrowdRadar,
+                    showPageNavigationArrows: showPageNavigationArrows,
                     groupOrder: orderedGroups,
                     pagePairs: pagePairs
                 )
@@ -860,6 +862,7 @@ struct AppSettingsView: View {
                 showQuota = next.showQuota
                 showRadar = next.showRadar
                 showCrowdRadar = next.showCrowdRadar
+                showPageNavigationArrows = next.showPageNavigationArrows
                 contentOrderRaw = FloatingPanelContentVisibility.encodedOrder(next.groupOrder)
                 pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(next.pagePairs)
             }

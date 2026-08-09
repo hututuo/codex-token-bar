@@ -2610,6 +2610,7 @@ fn sanitize_floating_content_visibility(
         show_quota: visibility.show_quota,
         show_radar: visibility.show_radar,
         show_crowd_radar: visibility.show_crowd_radar,
+        show_page_navigation_arrows: visibility.show_page_navigation_arrows,
         order: sanitize_floating_content_order(visibility.order),
         page_pairs: sanitize_floating_page_pairs(visibility.page_pairs),
     }
@@ -3010,6 +3011,7 @@ mod tests {
                 "textTone": 4,
                 "contentVisibility": {
                     "showRadar": false,
+                    "showPageNavigationArrows": false,
                     "order": ["quota", "quota", "unknown", "rateAndBar"]
                 }
             },
@@ -3038,6 +3040,7 @@ mod tests {
         assert_eq!(sanitized.floating_window.quota_fixed_color, "#1469cc");
         assert_eq!(sanitized.floating_window.text_tone, 1.0);
         assert!(!sanitized.floating_window.content_visibility.show_radar);
+        assert!(FloatingContentVisibilitySnapshot::default().show_page_navigation_arrows);
         assert!(
             sanitized
                 .floating_window
@@ -3062,6 +3065,7 @@ mod tests {
                 .content_visibility
                 .show_today_model_cost
         );
+        assert!(!sanitized.floating_window.content_visibility.show_page_navigation_arrows);
         assert_eq!(
             sanitized.floating_window.content_visibility.order,
             [

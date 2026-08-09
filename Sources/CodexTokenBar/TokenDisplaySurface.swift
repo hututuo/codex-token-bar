@@ -452,7 +452,7 @@ struct TokenDisplayCard: View {
             // outside a padded parent's hit-test bounds.
             .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)
 
-            if row.isPaged {
+            if row.isPaged, visibility.showPageNavigationArrows {
                 HStack {
                     pageButton(systemImage: "chevron.left", row: row, delta: -1)
                     Spacer(minLength: 0)

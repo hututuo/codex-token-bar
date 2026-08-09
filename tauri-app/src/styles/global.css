@@ -5688,7 +5688,7 @@ button.quota-side-card:hover {
   gap: 12px;
 }
 
-.floating-structure-intro > div {
+.floating-structure-intro > div:first-child {
   display: grid;
   gap: 2px;
 }
@@ -5705,7 +5705,7 @@ button.quota-side-card:hover {
   line-height: 1.45;
 }
 
-.floating-structure-intro > button,
+.floating-structure-actions > button,
 .floating-structure-footer button,
 .fs-reset-confirm button,
 .fs-undo-bar button {
@@ -5717,6 +5717,28 @@ button.quota-side-card:hover {
   cursor: pointer;
   font-size: 10px;
   padding: 4px 9px;
+}
+
+.floating-structure-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+}
+
+.fs-arrow-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.fs-arrow-toggle input {
+  accent-color: var(--accent);
 }
 
 .floating-structure-grid {
@@ -5758,13 +5780,23 @@ button.quota-side-card:hover {
 }
 
 .fs-drop-gap {
-  height: 5px;
-  border-radius: 999px;
-  transition: background 120ms ease-out;
+  height: 6px;
+  margin-inline: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-sizing: border-box;
+  transition: height 120ms ease-out, border-color 120ms ease-out, background 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.floating-structure-shell.is-dragging .fs-drop-gap:not(.is-target) {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
 
 .fs-drop-gap.is-target {
-  background: color-mix(in srgb, var(--accent) 68%, transparent);
+  height: 30px;
+  border-color: color-mix(in srgb, var(--accent) 86%, white 14%);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .fs-row {
@@ -5953,6 +5985,17 @@ button.quota-side-card:hover {
   border-radius: 9px;
   background: color-mix(in srgb, var(--panel-soft) 76%, transparent);
   padding: 8px;
+  transition: border-color 120ms ease-out, background 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.fs-hidden-zone.is-drop-target {
+  border-color: color-mix(in srgb, var(--accent) 90%, white 10%);
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.fs-hidden-zone.is-drop-target > div span {
+  color: var(--accent-strong);
 }
 
 .fs-hidden-zone > div {
@@ -7932,6 +7975,15 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   min-width: 0;
 }
 
+.floating-model-usage--share .floating-model-usage-items {
+  gap: 0;
+}
+
+.floating-model-usage--share .floating-model-usage-item {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
 .floating-model-usage-item i {
   width: calc(4px * var(--floating-scale));
   height: calc(4px * var(--floating-scale));
@@ -8155,13 +8207,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   flex: 1;
   min-width: 0;
   min-height: calc(15.5px * var(--floating-scale));
-  border-radius: calc(7px * var(--floating-scale));
-  background: rgba(255, 255, 255, 0.30);
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.18),
-    inset 0 -1px 1px rgba(26, 80, 157, 0.07);
-  padding: 0 calc(3px * var(--floating-scale));
+  border: 0;
+  border-radius: calc(5.3px * var(--floating-scale));
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
   overflow: hidden;
   font-size: calc(9.9px * var(--floating-scale));
   font-weight: var(--weight-semibold);
@@ -8178,24 +8228,17 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-quota-track {
   position: absolute;
-  inset: calc(1px * var(--floating-scale));
+  inset: 0;
   overflow: hidden;
-  border-radius: calc(5px * var(--floating-scale));
-  background: rgba(255, 255, 255, 0.42);
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.78);
   box-sizing: border-box;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.22),
-    inset 0 1px 2px rgba(20, 48, 91, 0.08);
+  box-shadow: inset 0 0 0 calc(0.45px * var(--floating-scale)) rgba(0, 0, 0, 0.055);
   z-index: 0;
 }
 
 .floating-quota-track::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 calc(1px * var(--floating-scale)) rgba(255, 255, 255, 0.30);
-  pointer-events: none;
+  content: none;
 }
 
 .floating-quota-fill {
@@ -8204,14 +8247,13 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   bottom: 0;
   left: 0;
   display: block;
-  width: var(--quota-fill, 0%);
+  width: min(100%, max(var(--quota-fill, 0%), var(--quota-fill-min, 0px)));
   max-width: 100%;
   min-width: 0;
   border-radius: inherit;
   background: var(--quota-fill-background, #1469cc);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.36),
-    inset 0 -1px 0 rgba(26, 80, 157, 0.22);
+  box-shadow: none;
+  opacity: 0.78;
   transition: width 180ms ease-out;
 }
 
@@ -8221,8 +8263,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-primary);
   overflow: hidden;
   max-width: 100%;
+  padding: 0 calc(3px * var(--floating-scale));
   text-overflow: ellipsis;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.42);
+  text-shadow: none;
 }
 
 .unread-effect {

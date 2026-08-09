@@ -111,7 +111,7 @@ struct FloatingPanelLayoutRow: Equatable, Identifiable, Sendable {
     var isPaged: Bool { groups.count > 1 }
 }
 
-enum FloatingPanelContentDropPlacement {
+enum FloatingPanelContentDropPlacement: Equatable, Sendable {
     case before
     case after
 }
@@ -128,6 +128,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let crowdRadarKey = "floatingPanelShowCrowdRadar"
     static let orderKey = "floatingPanelContentOrderV01"
     static let pagePairsKey = "floatingPanelPagePairsV01"
+    static let pageNavigationArrowsKey = "floatingPanelShowPageNavigationArrows"
     static let defaultOrder: [FloatingPanelContentGroup] = [
         .rateAndBar,
         .usageStatus,
@@ -154,7 +155,8 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         showTodayModelCost: true,
         showQuota: true,
         showRadar: true,
-        showCrowdRadar: true
+        showCrowdRadar: true,
+        showPageNavigationArrows: true
     )
 
     var showRateAndBar: Bool
@@ -166,6 +168,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     var showQuota: Bool
     var showRadar: Bool
     var showCrowdRadar: Bool
+    var showPageNavigationArrows: Bool
     var groupOrder = Self.defaultOrder
     var pagePairs = Self.defaultPagePairs
 
@@ -179,6 +182,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         showQuota: Bool,
         showRadar: Bool,
         showCrowdRadar: Bool = false,
+        showPageNavigationArrows: Bool = true,
         groupOrder: [FloatingPanelContentGroup] = Self.defaultOrder,
         pagePairs: [FloatingPanelPagePair] = Self.defaultPagePairs
     ) {
@@ -191,6 +195,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         self.showQuota = showQuota
         self.showRadar = showRadar
         self.showCrowdRadar = showCrowdRadar
+        self.showPageNavigationArrows = showPageNavigationArrows
         self.groupOrder = groupOrder
         self.pagePairs = Self.sanitizedPagePairs(pagePairs)
     }

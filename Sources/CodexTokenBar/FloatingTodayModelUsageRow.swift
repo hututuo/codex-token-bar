@@ -183,7 +183,7 @@ struct FloatingTodayModelUsageRow: View {
                     .foregroundStyle(textPalette.secondaryColor)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
-                HStack(spacing: 6.scaled(by: displayScale)) {
+                HStack(spacing: page == .share ? 0 : 6.scaled(by: displayScale)) {
                     ForEach(Array(items.prefix(visibleLimit))) { item in
                         HStack(spacing: 2.scaled(by: displayScale)) {
                             Circle()
@@ -201,6 +201,7 @@ struct FloatingTodayModelUsageRow: View {
                         .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
+                        .frame(maxWidth: page == .share ? .infinity : nil, alignment: .center)
                     }
                     if let overflowDetail {
                         Text("+\(items.count - visibleLimit)")

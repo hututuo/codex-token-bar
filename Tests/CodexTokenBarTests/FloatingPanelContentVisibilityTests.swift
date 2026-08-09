@@ -17,6 +17,24 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(visibility.shows(.quota))
         XCTAssertTrue(visibility.shows(.radar))
         XCTAssertTrue(visibility.shows(.crowdRadar))
+        XCTAssertTrue(visibility.showPageNavigationArrows)
+    }
+
+    func testPageNavigationArrowsCanBeHiddenWithoutChangingPagePairs() {
+        let visibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showTodayModelShare: true,
+            showTodayModelCost: true,
+            showQuota: true,
+            showRadar: true,
+            showPageNavigationArrows: false
+        )
+
+        XCTAssertFalse(visibility.showPageNavigationArrows)
+        XCTAssertEqual(visibility.pagePairs, FloatingPanelContentVisibility.defaultPagePairs)
+        XCTAssertTrue(visibility.layoutRows.contains(where: \.isPaged))
     }
 
     func testAdaptiveSizeShrinksWhenOnlyUsageStatusIsVisible() {
@@ -1400,6 +1418,25 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains("height: 24.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("Rectangle()\n                .fill(Color.black.opacity(0.001))"))
         XCTAssertTrue(source.contains(".buttonStyle(.plain)\n        .contentShape(Rectangle())"))
+        XCTAssertTrue(source.contains("if row.isPaged, visibility.showPageNavigationArrows"))
+    }
+
+    func testStructureEditorShowsInsertionPreviewAndAcceptsHiddenDrops() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let editor = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(editor.contains("case gap(targetID: String, placement: FloatingPanelContentDropPlacement)"))
+        XCTAssertTrue(editor.contains("isTarget ? AppTheme.accentBlue.opacity(0.12)"))
+        XCTAssertTrue(editor.contains("FloatingStructureHiddenDropDelegate"))
+        XCTAssertTrue(editor.contains("Text(isDropTarget ? \"松手即可隐藏\" : \"拖到这里隐藏\")"))
+        XCTAssertTrue(editor.contains("canDropOnRow"))
+        XCTAssertTrue(editor.contains("canDropIntoGap"))
     }
 
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {

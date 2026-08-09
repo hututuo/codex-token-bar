@@ -104,6 +104,7 @@ export function FloatingQuotaBar({
       aria-valuenow={Math.round(fillPercent)}
       style={{
         "--quota-fill": `${fillPercent}%`,
+        "--quota-fill-min": fillPercent > 0 ? "calc(15.5px * var(--floating-scale))" : "0px",
         "--quota-fill-background": floatingQuotaFillBackground(settings, fillPercent, expectedRemainingPercent),
       } as CSSProperties}
     >
@@ -323,7 +324,7 @@ function FloatingPagedContentRow({
       } : undefined}
     >
       <FloatingContentRow {...props} group={group} />
-      {paged ? (
+      {paged && props.settings.contentVisibility.showPageNavigationArrows !== false ? (
         <>
           <button
             aria-label="显示上一项"
@@ -513,7 +514,7 @@ function FloatingTodayModelUsageRow({
   return (
     <div
       aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
-      className="floating-row floating-model-usage"
+      className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : ""}`}
       style={style}
     >
       {items.length === 0 ? (
