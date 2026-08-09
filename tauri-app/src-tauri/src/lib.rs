@@ -113,6 +113,7 @@ pub fn run() {
             commands::settings::read_autostart_status,
             commands::settings::set_autostart_enabled,
             commands::settings::save_floating_settings,
+            commands::settings::complete_floating_paging_guide,
             commands::settings::save_floating_position,
             commands::settings::save_display_surfaces,
             commands::settings::save_custom_account_display_name,

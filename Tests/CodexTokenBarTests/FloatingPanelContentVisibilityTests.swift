@@ -17,7 +17,39 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(visibility.shows(.quota))
         XCTAssertTrue(visibility.shows(.radar))
         XCTAssertTrue(visibility.shows(.crowdRadar))
-        XCTAssertTrue(visibility.showPageNavigationArrows)
+        XCTAssertFalse(visibility.showPageNavigationArrows)
+    }
+
+    func testPagingGuideAppearsOnceAfterSetupWhenPagedRowsExist() {
+        XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
+            setupGuideCompleted: false,
+            completedRevision: 0,
+            hasPagedRows: true
+        ))
+        XCTAssertTrue(FloatingPanelPagingGuideState.shouldPresent(
+            setupGuideCompleted: true,
+            completedRevision: 0,
+            hasPagedRows: true
+        ))
+        XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
+            setupGuideCompleted: true,
+            completedRevision: FloatingPanelContentVisibility.currentPagingGuideRevision,
+            hasPagedRows: true
+        ))
+        XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
+            setupGuideCompleted: true,
+            completedRevision: 0,
+            hasPagedRows: false
+        ))
+        XCTAssertEqual(
+            FloatingTokenPanelMetrics.firstPagedRowCenterY(
+                visibility: .default,
+                panelHeight: FloatingTokenPanelMetrics.baseSize.height,
+                scale: 1
+            ) ?? -1,
+            59.75,
+            accuracy: 0.001
+        )
     }
 
     func testPageNavigationArrowsCanBeHiddenWithoutChangingPagePairs() {
@@ -1403,6 +1435,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift"),
             encoding: .utf8
         )
+        let guide = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelPagingGuide.swift"),
+            encoding: .utf8
+        )
 
         XCTAssertFalse(source.contains(".padding(.horizontal, -10.scaled(by: displayScale))"))
         XCTAssertTrue(source.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)"))
@@ -1421,6 +1457,12 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains("if row.isPaged {"))
         XCTAssertTrue(source.contains("showsGlyph: visibility.showPageNavigationArrows"))
         XCTAssertTrue(source.contains(".opacity(showsGlyph ? 1 : 0)"))
+        XCTAssertTrue(source.contains("onPageNavigation?()"))
+        XCTAssertTrue(guide.contains("点两侧即可翻页"))
+        XCTAssertTrue(guide.contains("Toggle(\"显示箭头\""))
+        XCTAssertTrue(guide.contains("TimelineView"))
+        XCTAssertTrue(guide.contains("edgeGlow(isLeading: true)"))
+        XCTAssertTrue(guide.contains("edgeGlow(isLeading: false)"))
 
         let dashboard = try String(
             contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift"),

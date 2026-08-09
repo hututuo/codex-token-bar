@@ -57,6 +57,18 @@ pub async fn save_floating_settings(
 }
 
 #[tauri::command]
+pub async fn complete_floating_paging_guide(
+    window: tauri::WebviewWindow,
+    show_page_navigation_arrows: bool,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "complete_floating_paging_guide")?;
+    run_blocking_command(move || {
+        platform::complete_floating_paging_guide(show_page_navigation_arrows)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn save_floating_position(
     window: tauri::WebviewWindow,
     position: FloatingWindowPositionSnapshot,
@@ -105,6 +117,7 @@ mod tests {
             "read_app_settings",
             "read_autostart_status",
             "set_autostart_enabled",
+            "complete_floating_paging_guide",
         ] {
             assert_async_command_uses_blocking_pool(settings_source, command);
         }

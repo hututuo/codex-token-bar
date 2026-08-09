@@ -1,6 +1,6 @@
-import { type CSSProperties, type MouseEvent, useEffect, useReducer, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useMemo, useReducer, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { readAppSettings, recordStartupEvent } from "../api/client";
+import { completeFloatingPagingGuide, readAppSettings, recordStartupEvent } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useSharedAccountAttributionSettings } from "../settings/useSharedAccountAttributionSettings";
@@ -11,8 +11,9 @@ import {
 } from "../surfaces/surfaceLifecycle";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
-import { floatingContentHeight } from "./floatingContent";
+import { firstPagedFloatingRowCenterY, floatingContentHeight, layoutFloatingContentRows } from "./floatingContent";
 import {
+  CURRENT_FLOATING_PAGING_GUIDE_REVISION,
   FLOATING_BASE_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
   floatingGradientBackground,
@@ -20,6 +21,7 @@ import {
   type FloatingWindowSettings,
 } from "./floatingSettings";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
+import { FloatingPagingGuide } from "./FloatingPagingGuide";
 import { useFloatingCrowdRadar, useFloatingRadar } from "./useFloatingRadar";
 import { useFloatingWindowPlacement } from "./useFloatingWindowPlacement";
 
@@ -40,6 +42,11 @@ export function FloatingWindowApp() {
     sourceToken,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [setupGuideCompleted, setSetupGuideCompleted] = useState(false);
+  const [pagingGuideShowsArrowGlyphs, setPagingGuideShowsArrowGlyphs] = useState(false);
+  const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
+  const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
   const { settings: attributionSettings } = useSharedAccountAttributionSettings();
   const radarSnapshot = useFloatingRadar(surfaceLifecycle.active && sourceReady);
   const crowdRadarSnapshot = useFloatingCrowdRadar(surfaceLifecycle.active && sourceReady);
@@ -123,6 +130,9 @@ export function FloatingWindowApp() {
     });
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
+      setSettings(sanitizeFloatingSettings(payload.floatingWindow));
+      setSettingsLoaded(true);
+      setSetupGuideCompleted(payload.setupGuideCompleted);
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
       dispatchSurfaceLifecycle({
         type: "enabled",
@@ -150,6 +160,8 @@ export function FloatingWindowApp() {
     void readAppSettings().then((settings) => {
       if (!cancelled && settings !== null) {
         setSettings(sanitizeFloatingSettings(settings.floatingWindow));
+        setSettingsLoaded(true);
+        setSetupGuideCompleted(settings.setupGuideCompleted);
         setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
         dispatchSurfaceLifecycle({
           type: "enabled",
@@ -166,6 +178,17 @@ export function FloatingWindowApp() {
     };
   }, []);
 
+  const pagingGuidePresented = settingsLoaded
+    && setupGuideCompleted
+    && settings.pagingGuideRevision < CURRENT_FLOATING_PAGING_GUIDE_REVISION
+    && layoutFloatingContentRows(settings.contentVisibility).some((row) => row.groups.length > 1);
+  const presentedSettings = useMemo(
+    () => pagingGuidePresented
+      ? floatingSettingsWithPagingGuideChoice(settings, pagingGuideShowsArrowGlyphs)
+      : settings,
+    [pagingGuidePresented, pagingGuideShowsArrowGlyphs, settings],
+  );
+
   useEffect(() => {
     return observeFloatingSurfaceVisibility({
       onVisible(visible) {
@@ -177,12 +200,12 @@ export function FloatingWindowApp() {
   }, []);
 
   useEffect(() => {
-    const height = floatingContentHeight(settings.contentVisibility);
+    const height = floatingContentHeight(presentedSettings.contentVisibility);
     void desktopPlatform.resizeFloatingWindow(
-      FLOATING_BASE_WIDTH * settings.scale,
-      height * settings.scale,
+      FLOATING_BASE_WIDTH * presentedSettings.scale,
+      height * presentedSettings.scale,
     );
-  }, [settings.contentVisibility, settings.scale]);
+  }, [presentedSettings.contentVisibility, presentedSettings.scale]);
 
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {
@@ -204,11 +227,33 @@ export function FloatingWindowApp() {
     void desktopPlatform.startFloatingWindowDrag();
   }
 
-  const gradientBackground = floatingGradientBackground(settings);
-  const effectColor = effectColorFromGradient(settings.gradientStart, settings.gradientEnd);
+  async function completePagingGuide() {
+    if (!pagingGuidePresented || pagingGuideSaving) {
+      return;
+    }
+    setPagingGuideSaving(true);
+    setPagingGuideError(null);
+    try {
+      const saved = await completeFloatingPagingGuide(pagingGuideShowsArrowGlyphs);
+      const next = sanitizeFloatingSettings(saved.floatingWindow);
+      setSettings(next);
+      void desktopPlatform.publishFloatingSettings(next);
+      void desktopPlatform.publishFloatingPagingGuideCompleted({
+        pagingGuideRevision: next.pagingGuideRevision,
+        showPageNavigationArrows: next.contentVisibility.showPageNavigationArrows,
+      });
+    } catch (error) {
+      setPagingGuideError(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setPagingGuideSaving(false);
+    }
+  }
+
+  const gradientBackground = floatingGradientBackground(presentedSettings);
+  const effectColor = effectColorFromGradient(presentedSettings.gradientStart, presentedSettings.gradientEnd);
   const shellStyle = {
-    "--floating-card-opacity": settings.opacity.toFixed(2),
-    "--floating-scale": settings.scale.toFixed(2),
+    "--floating-card-opacity": presentedSettings.opacity.toFixed(2),
+    "--floating-scale": presentedSettings.scale.toFixed(2),
     "--floating-gradient-background": gradientBackground,
     "--floating-effect-color": effectColor.hex,
     "--floating-effect-rgb": effectColor.rgb,
@@ -217,19 +262,48 @@ export function FloatingWindowApp() {
   return (
     <main className="floating-window-shell" style={shellStyle}>
       <FloatingPanelSurface
-        settings={settings}
+        settings={presentedSettings}
         snapshot={snapshot}
         radarSnapshot={radarSnapshot}
         crowdRadarSnapshot={crowdRadarSnapshot}
         runningThreads={runningThreads}
-        unreadEffect={settings.unreadEffect}
+        unreadEffect={presentedSettings.unreadEffect}
         priceModel={attributionSettings.priceModel}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
         onOpenDashboard={openDashboardWindow}
+        onPageNavigation={() => {
+          void completePagingGuide();
+        }}
+        overlay={pagingGuidePresented ? (
+          <FloatingPagingGuide
+            error={pagingGuideError}
+            saving={pagingGuideSaving}
+            showsArrowGlyphs={pagingGuideShowsArrowGlyphs}
+            targetX={(FLOATING_BASE_WIDTH / 2 - 24) * presentedSettings.scale}
+            targetY={(firstPagedFloatingRowCenterY(presentedSettings.contentVisibility) ?? 60) * presentedSettings.scale}
+            onArrowVisibilityChange={setPagingGuideShowsArrowGlyphs}
+            onComplete={() => {
+              void completePagingGuide();
+            }}
+          />
+        ) : null}
       />
     </main>
   );
+}
+
+export function floatingSettingsWithPagingGuideChoice(
+  settings: FloatingWindowSettings,
+  showPageNavigationArrows: boolean,
+): FloatingWindowSettings {
+  return sanitizeFloatingSettings({
+    ...settings,
+    contentVisibility: {
+      ...settings.contentVisibility,
+      showPageNavigationArrows,
+    },
+  });
 }
 
 function effectColorFromGradient(start: string, end: string): { hex: string; rgb: string } {

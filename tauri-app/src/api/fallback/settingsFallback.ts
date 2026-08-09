@@ -20,6 +20,7 @@ export const fallbackAppSettings: AppSettingsSnapshot = {
     quotaColorMode: "adaptive",
     quotaFixedColor: "#1469cc",
     textTone: -1,
+    pagingGuideRevision: 0,
     contentVisibility: DEFAULT_FLOATING_CONTENT_VISIBILITY,
   },
   floatingPosition: null,

@@ -10,6 +10,7 @@ export interface FloatingWindowSettings {
   quotaColorMode: FloatingQuotaColorMode;
   quotaFixedColor: string;
   textTone: number;
+  pagingGuideRevision: number;
   contentVisibility: FloatingContentVisibility;
 }
 

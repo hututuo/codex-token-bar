@@ -479,6 +479,10 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage(FloatingPanelAppearance.unreadPreviewUntilKey) private var floatingPanelUnreadPreviewUntil = 0.0
     @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
+    @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
+    @AppStorage(FloatingPanelContentVisibility.pagingGuideRevisionKey) private var pagingGuideRevision = 0
+    @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var persistedPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
+    @State private var pagingGuideShowsArrowGlyphs = false
     let onClose: () -> Void
 
     var body: some View {
@@ -529,6 +533,23 @@ struct FloatingTokenPanelView: View {
         let standaloneUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.standaloneUsageStatusPalette
         let radarActionTextPalette = overridePalette ?? automaticTextPalettes.radarActionPalette
         let radarModelTextPalette = overridePalette ?? automaticTextPalettes.radarModelPalette
+        let pagingGuidePresented = FloatingPanelPagingGuideState.shouldPresent(
+            setupGuideCompleted: setupGuideCompleted,
+            completedRevision: pagingGuideRevision,
+            hasPagedRows: visibility.layoutRows.contains(where: \.isPaged)
+        )
+        var presentedVisibility = visibility
+        presentedVisibility.showPageNavigationArrows = pagingGuidePresented
+            ? pagingGuideShowsArrowGlyphs
+            : persistedPageNavigationArrows
+        let pagingGuideTargetY = FloatingTokenPanelMetrics.firstPagedRowCenterY(
+            visibility: visibility,
+            panelHeight: size.height,
+            scale: scale
+        ) ?? size.height / 2
+        let pageNavigationAction: (() -> Void)? = pagingGuidePresented
+            ? { completePagingGuide() }
+            : nil
 
         return ZStack {
             TokenGlassBackground(
@@ -557,16 +578,33 @@ struct FloatingTokenPanelView: View {
                     feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
                     crowdSnapshot: radar.crowdSnapshot
                 ),
-                visibility: visibility,
+                visibility: presentedVisibility,
                 onClose: nil,
                 lockState: nil,
                 lockTargetDescription: nil,
-                onToggleLock: nil
+                onToggleLock: nil,
+                onPageNavigation: pageNavigationAction
             )
                 .environment(\.tokenDisplayScale, scale)
                 .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .zIndex(2)
+
+            if pagingGuidePresented {
+                FloatingPanelPagingGuide(
+                    showsArrowGlyphs: Binding(
+                        get: { pagingGuideShowsArrowGlyphs },
+                        set: { value in
+                            pagingGuideShowsArrowGlyphs = value
+                            persistedPageNavigationArrows = value
+                        }
+                    ),
+                    scale: scale,
+                    targetY: pagingGuideTargetY,
+                    onComplete: completePagingGuide
+                )
+                .zIndex(6)
+            }
 
             FloatingPanelLockButton(
                 state: isLocked ? .locked : .unlocked,
@@ -575,15 +613,21 @@ struct FloatingTokenPanelView: View {
                 action: onToggleLock
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .zIndex(4)
+            .zIndex(8)
 
             FloatingPanelCloseButton(
                 scale: scale,
                 action: onClose
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .zIndex(4)
+            .zIndex(8)
         }
+        .background(
+            FloatingPanelInteractionBridge(
+                guidePresented: pagingGuidePresented,
+                isLocked: isLocked
+            )
+        )
         .environment(\.tokenDisplayTextPalette, baseTextPalette)
         .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
         .environment(\.tokenDisplayMetricTextPalettes, metricTextPalettes)
@@ -596,6 +640,11 @@ struct FloatingTokenPanelView: View {
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    private func completePagingGuide() {
+        persistedPageNavigationArrows = pagingGuideShowsArrowGlyphs
+        pagingGuideRevision = FloatingPanelContentVisibility.currentPagingGuideRevision
     }
 
     func withLockTarget(_ description: String?) -> FloatingTokenPanelView {

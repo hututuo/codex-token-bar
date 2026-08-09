@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_FLOATING_CONTENT_VISIBILITY,
   editorGroupsForFloatingRow,
+  firstPagedFloatingRowCenterY,
   floatingContentGap,
   floatingContentHeight,
   layoutFloatingContentGroups,
@@ -162,12 +163,22 @@ test("legacy floating order inserts running threads after metrics and enables it
     "usageStatus",
   ]);
   assert.deepEqual(migrated.pagePairs, [["todayModelShare", "todayModelCost"]]);
-  assert.equal(migrated.showPageNavigationArrows, true);
+  assert.equal(migrated.showPageNavigationArrows, false);
 });
 
-test("page navigation arrow visibility defaults on and preserves an explicit off setting", () => {
-  assert.equal(DEFAULT_FLOATING_CONTENT_VISIBILITY.showPageNavigationArrows, true);
+test("page navigation arrow visibility defaults off and preserves explicit choices", () => {
+  assert.equal(DEFAULT_FLOATING_CONTENT_VISIBILITY.showPageNavigationArrows, false);
   assert.equal(sanitizeFloatingContentVisibility({ showPageNavigationArrows: false }).showPageNavigationArrows, false);
+  assert.equal(sanitizeFloatingContentVisibility({ showPageNavigationArrows: true }).showPageNavigationArrows, true);
+});
+
+test("paging guide pointer targets the first real paged row", () => {
+  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 59.5);
+  assert.equal(firstPagedFloatingRowCenterY(sanitizeFloatingContentVisibility({
+    showTodayModelShare: false,
+    showTodayModelCost: false,
+    pagePairs: [],
+  })), null);
 });
 
 test("paged rows combine model share and cost without losing their configured default page", () => {

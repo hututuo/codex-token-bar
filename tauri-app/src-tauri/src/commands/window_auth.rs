@@ -117,6 +117,10 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL);
     }
 
+    if command == "complete_floating_paging_guide" {
+        return label == FLOATING_WINDOW_LABEL;
+    }
+
     if SURFACE_SAFE_COMMANDS.contains(&command) {
         return is_app_surface_label(label);
     }
@@ -165,6 +169,14 @@ mod tests {
         assert!(allows_window_label("save_floating_position", "main"));
         assert!(allows_window_label("save_floating_position", "floating"));
         assert!(!allows_window_label("save_floating_position", "status"));
+    }
+
+    #[test]
+    fn paging_guide_completion_is_floating_surface_only() {
+        assert!(!allows_window_label("complete_floating_paging_guide", "main"));
+        assert!(allows_window_label("complete_floating_paging_guide", "floating"));
+        assert!(!allows_window_label("complete_floating_paging_guide", "status"));
+        assert!(!allows_window_label("complete_floating_paging_guide", "unknown"));
     }
 
     #[test]

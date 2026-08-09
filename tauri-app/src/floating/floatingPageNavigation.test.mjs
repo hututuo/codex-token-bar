@@ -18,11 +18,15 @@ test("floating model row switches share and cost without starting panel drag", a
       dom.document.body.append(container);
       const root = createRoot(container);
       let dragStarts = 0;
+      let pageNavigations = 0;
 
       try {
         await React.act(async () => root.render(React.createElement(FloatingPanelSurface, {
           onDragStart: () => {
             dragStarts += 1;
+          },
+          onPageNavigation: () => {
+            pageNavigations += 1;
           },
           priceModel: "gpt56Luna",
           settings: floatingSettingsFixture(),
@@ -48,6 +52,7 @@ test("floating model row switches share and cost without starting panel drag", a
         })));
         assert.equal(dragStarts, 0);
         await React.act(async () => next.click());
+        assert.equal(pageNavigations, 1);
         assert.match(container.textContent, /Sol\$3\.25/);
         assert.match(container.textContent, /Luna\$0\.32/);
         assert.doesNotMatch(container.textContent, /Sol50%/);
@@ -55,12 +60,16 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.doesNotMatch(container.textContent, /费用/);
 
         await React.act(async () => previous.click());
+        assert.equal(pageNavigations, 2);
         assert.match(container.textContent, /Sol50%/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
 
         await React.act(async () => root.render(React.createElement(FloatingPanelSurface, {
           onDragStart: () => {
             dragStarts += 1;
+          },
+          onPageNavigation: () => {
+            pageNavigations += 1;
           },
           priceModel: "gpt56Luna",
           settings: floatingSettingsFixture(false),
@@ -74,6 +83,7 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.equal(hiddenPrevious.classList.contains("is-glyph-hidden"), true);
         assert.equal(hiddenNext.classList.contains("is-glyph-hidden"), true);
         await React.act(async () => hiddenNext.click());
+        assert.equal(pageNavigations, 3);
         assert.match(container.textContent, /Sol\$3\.25/);
       } finally {
         await React.act(async () => root.unmount());
@@ -99,6 +109,7 @@ function floatingSettingsFixture(showPageNavigationArrows = true) {
     quotaColorMode: "adaptive",
     quotaFixedColor: "#1469cc",
     textTone: -1,
+    pagingGuideRevision: 0,
     contentVisibility: {
       showRateAndBar: false,
       showUsageStatus: false,

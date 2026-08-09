@@ -394,6 +394,8 @@ pub struct FloatingWindowSettingsSnapshot {
     #[serde(default = "default_floating_text_tone")]
     pub text_tone: f64,
     #[serde(default)]
+    pub paging_guide_revision: u32,
+    #[serde(default)]
     pub content_visibility: FloatingContentVisibilitySnapshot,
 }
 
@@ -411,6 +413,7 @@ impl Default for FloatingWindowSettingsSnapshot {
             quota_color_mode: default_floating_quota_color_mode(),
             quota_fixed_color: default_floating_quota_fixed_color(),
             text_tone: default_floating_text_tone(),
+            paging_guide_revision: 0,
             content_visibility: FloatingContentVisibilitySnapshot::default(),
         }
     }
@@ -481,7 +484,7 @@ pub struct FloatingContentVisibilitySnapshot {
     pub show_radar: bool,
     #[serde(default = "default_enabled")]
     pub show_crowd_radar: bool,
-    #[serde(default = "default_enabled")]
+    #[serde(default)]
     pub show_page_navigation_arrows: bool,
     #[serde(default = "default_floating_content_order")]
     pub order: Vec<String>,
@@ -501,7 +504,7 @@ impl Default for FloatingContentVisibilitySnapshot {
             show_quota: default_enabled(),
             show_radar: default_enabled(),
             show_crowd_radar: default_enabled(),
-            show_page_navigation_arrows: default_enabled(),
+            show_page_navigation_arrows: false,
             order: default_floating_content_order(),
             page_pairs: default_floating_page_pairs(),
         }

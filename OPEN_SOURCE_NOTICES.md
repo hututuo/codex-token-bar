@@ -55,6 +55,19 @@ and remains unmerged, so the project independently adapted and runtime-tested
 the narrow change against 0.55.1. Wry's original `LICENSE-APACHE`,
 `LICENSE-MIT`, and `LICENSE.spdx` files are preserved with the vendored source.
 
+## Google Material Design Icons paging-guide asset
+
+The Tauri floating-panel paging guide includes one unmodified raster icon:
+
+- Project: Google Material Design Icons
+- Upstream: https://github.com/google/material-design-icons
+- Asset: `action/touch_app`, round 48dp 2x
+- Bundled file: `tauri-app/public/floating-paging-touch.png`
+- Upstream license: Apache License 2.0
+
+The icon is used only as the animated pointer/touch affordance in the one-time
+floating-panel paging guide.
+
 ## Cockpit product-behavior reference
 
 The Codex instance-management and conversation-visibility work was informed by

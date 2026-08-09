@@ -265,6 +265,7 @@ export function useDashboardShellSettings({
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let unlistenPagingGuide: (() => void) | null = null;
     void desktopPlatform.onAppSettingsChanged((settings) => {
       if (!disposed) {
         setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
@@ -274,9 +275,32 @@ export function useDashboardShellSettings({
       if (disposed) listener();
       else unlisten = listener;
     });
+    void desktopPlatform.onFloatingPagingGuideCompleted((completion) => {
+      if (disposed) return;
+      const current = floatingSettingsRef.current;
+      const next = sanitizeFloatingSettings({
+        ...current,
+        pagingGuideRevision: Math.max(current.pagingGuideRevision, completion.pagingGuideRevision),
+        contentVisibility: {
+          ...current.contentVisibility,
+          showPageNavigationArrows: completion.showPageNavigationArrows,
+        },
+      });
+      if (sameFloatingSettings(current, next)) return;
+      floatingSettingsEdits.current += 1;
+      floatingSettingsRef.current = next;
+      setFloatingSettings(next);
+      if (floatingSettingsLoaded.current) {
+        floatingPersistenceRef.current?.schedule(next);
+      }
+    }).then((listener) => {
+      if (disposed) listener();
+      else unlistenPagingGuide = listener;
+    });
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenPagingGuide?.();
     };
   }, []);
 

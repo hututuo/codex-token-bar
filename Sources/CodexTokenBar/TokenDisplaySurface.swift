@@ -310,6 +310,7 @@ struct TokenDisplayCard: View {
     var onToggleLock: (() -> Void)? = nil
     var selectedPreviewRowID: String? = nil
     var onPreviewRowSelect: ((String) -> Void)? = nil
+    var onPageNavigation: (() -> Void)? = nil
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)
     private var fallbackPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var selectedPageIndexByRowID: [String: Int] = [:]
@@ -534,6 +535,7 @@ struct TokenDisplayCard: View {
         return Button {
             let current = selectedPageIndexByRowID[row.id, default: 0]
             selectedPageIndexByRowID[row.id] = (current + delta + row.groups.count) % row.groups.count
+            onPageNavigation?()
         } label: {
             // Make the full edge gutter the label's concrete layout instead of
             // rendering the chevron outside its real bounds with `offset`.

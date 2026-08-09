@@ -4,6 +4,7 @@ import {
   FLOATING_BASE_WIDTH,
   FLOATING_DEFAULT_HEIGHT,
   FLOATING_MIN_HEIGHT,
+  CURRENT_FLOATING_PAGING_GUIDE_REVISION,
   DEFAULT_FLOATING_SETTINGS,
   floatingGradientBackground,
   sanitizeFloatingSettings,
@@ -27,6 +28,7 @@ test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
     gradientType: "conic",
     quotaColorMode: "fixed",
     quotaFixedColor: "#ABCDEF",
+    pagingGuideRevision: 3.8,
   });
 
   assert.equal(settings.gradientStart, "#abcdef");
@@ -36,6 +38,7 @@ test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
   assert.equal(settings.quotaColorMode, "fixed");
   assert.equal(settings.quotaFixedColor, "#abcdef");
   assert.equal(settings.tokenRateFullScale, 260);
+  assert.equal(settings.pagingGuideRevision, 3);
 });
 
 test("sanitizeFloatingSettings falls back for invalid gradient palette values", () => {
@@ -84,6 +87,15 @@ test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-s
 
   assert.equal(DEFAULT_FLOATING_SETTINGS.tokenRateFullScale, 200);
   assert.equal(settings.tokenRateFullScale, 200);
+  assert.equal(DEFAULT_FLOATING_SETTINGS.pagingGuideRevision, 0);
+  assert.equal(settings.pagingGuideRevision, 0);
+  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 1);
+});
+
+test("sanitizeFloatingSettings clamps invalid paging guide revisions without replaying future guides", () => {
+  assert.equal(sanitizeFloatingSettings({ pagingGuideRevision: -3 }).pagingGuideRevision, 0);
+  assert.equal(sanitizeFloatingSettings({ pagingGuideRevision: Number.NaN }).pagingGuideRevision, 0);
+  assert.equal(sanitizeFloatingSettings({ pagingGuideRevision: 4.9 }).pagingGuideRevision, 4);
 });
 
 test("sanitizeFloatingSettings migrates legacy content order with running threads visible after metrics", () => {

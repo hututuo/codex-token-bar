@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   codexRadarDiagnosticLabel,
   compactRadarModelName,
@@ -52,6 +52,8 @@ interface FloatingPanelSurfaceProps {
   previewMode?: boolean;
   selectedPreviewRowId?: string | null;
   onPreviewRowSelect?: (rowId: string) => void;
+  onPageNavigation?: () => void;
+  overlay?: ReactNode;
 }
 
 const PENDING_FLOATING_RUNNING_THREADS: RunningThreadSummary = {
@@ -214,6 +216,8 @@ export function FloatingPanelSurface({
   previewMode = false,
   selectedPreviewRowId = null,
   onPreviewRowSelect,
+  onPageNavigation,
+  overlay,
 }: FloatingPanelSurfaceProps) {
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
   const rows = layoutFloatingContentRows(settings.contentVisibility);
@@ -271,9 +275,11 @@ export function FloatingPanelSurface({
             previewMode={previewMode}
             selectedPreviewRowId={selectedPreviewRowId}
             onPreviewRowSelect={onPreviewRowSelect}
+            onPageNavigation={onPageNavigation}
           />
         ))}
       </div>
+      {overlay}
     </aside>
   );
 }
@@ -297,6 +303,7 @@ interface FloatingPagedContentRowProps extends Omit<FloatingContentRowProps, "gr
   previewMode?: boolean;
   selectedPreviewRowId?: string | null;
   onPreviewRowSelect?: (rowId: string) => void;
+  onPageNavigation?: () => void;
 }
 
 function FloatingPagedContentRow({
@@ -304,6 +311,7 @@ function FloatingPagedContentRow({
   previewMode = false,
   selectedPreviewRowId = null,
   onPreviewRowSelect,
+  onPageNavigation,
   ...props
 }: FloatingPagedContentRowProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -311,9 +319,12 @@ function FloatingPagedContentRow({
   const group = row.groups[safeIndex];
   const paged = row.groups.length > 1;
   const showsArrowGlyphs = props.settings.contentVisibility.showPageNavigationArrows !== false;
-  const cycle = (delta: -1 | 1) => setSelectedIndex((current) => (
-    current + delta + row.groups.length
-  ) % row.groups.length);
+  const cycle = (delta: -1 | 1) => {
+    setSelectedIndex((current) => (
+      current + delta + row.groups.length
+    ) % row.groups.length);
+    onPageNavigation?.();
+  };
   return (
     <div
       className={`floating-page-layout-row${paged ? " is-paged" : ""}${selectedPreviewRowId === row.id ? " is-preview-selected" : ""}`}

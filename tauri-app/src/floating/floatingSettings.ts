@@ -12,6 +12,7 @@ export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 288;
 export const FLOATING_MIN_HEIGHT = 88;
 export const FLOATING_DEFAULT_HEIGHT = 138;
+export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 1;
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,
@@ -25,6 +26,7 @@ export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   quotaColorMode: "adaptive",
   quotaFixedColor: "#1469cc",
   textTone: -1,
+  pagingGuideRevision: 0,
   contentVisibility: DEFAULT_FLOATING_CONTENT_VISIBILITY,
 };
 
@@ -43,8 +45,19 @@ export function sanitizeFloatingSettings(
     quotaColorMode: sanitizeQuotaColorMode(settings.quotaColorMode),
     quotaFixedColor: sanitizeHexColor(settings.quotaFixedColor, DEFAULT_FLOATING_SETTINGS.quotaFixedColor),
     textTone: clampNumber(settings.textTone, -1, 1, DEFAULT_FLOATING_SETTINGS.textTone),
+    pagingGuideRevision: sanitizeNonnegativeInteger(
+      settings.pagingGuideRevision,
+      DEFAULT_FLOATING_SETTINGS.pagingGuideRevision,
+    ),
     contentVisibility: sanitizeFloatingContentVisibility(settings.contentVisibility),
   };
+}
+
+function sanitizeNonnegativeInteger(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(0, Math.trunc(value));
 }
 
 export function floatingGradientBackground(

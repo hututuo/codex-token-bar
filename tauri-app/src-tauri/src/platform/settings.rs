@@ -22,6 +22,7 @@ const RECOVERY_DIRECTORY_ENTRY_LIMIT: usize = 1024;
 const RECOVERY_TOTAL_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
 const COMMIT_MARKER_MAX_BYTES: u64 = 4096;
 const TEMP_CREATE_ATTEMPT_LIMIT: usize = 16;
+const FLOATING_PAGING_GUIDE_REVISION: u32 = 1;
 static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -103,6 +104,28 @@ pub fn save_floating_settings(
     mutate_app_settings(|settings| {
         settings.floating_window = sanitize_floating_settings(floating_window);
     })
+}
+
+pub fn complete_floating_paging_guide(
+    show_page_navigation_arrows: bool,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| {
+        apply_floating_paging_guide_completion(settings, show_page_navigation_arrows);
+    })
+}
+
+fn apply_floating_paging_guide_completion(
+    settings: &mut AppSettingsSnapshot,
+    show_page_navigation_arrows: bool,
+) {
+    settings.floating_window.paging_guide_revision = settings
+        .floating_window
+        .paging_guide_revision
+        .max(FLOATING_PAGING_GUIDE_REVISION);
+    settings
+        .floating_window
+        .content_visibility
+        .show_page_navigation_arrows = show_page_navigation_arrows;
 }
 
 pub fn save_floating_position(
@@ -2593,6 +2616,7 @@ fn sanitize_floating_settings(
         quota_color_mode: sanitize_floating_quota_color_mode(&settings.quota_color_mode).into(),
         quota_fixed_color: sanitize_hex_color(&settings.quota_fixed_color, "#1469cc").into(),
         text_tone: clamp_f64(settings.text_tone, -1.0, 1.0, -1.0),
+        paging_guide_revision: settings.paging_guide_revision,
         content_visibility: sanitize_floating_content_visibility(settings.content_visibility),
     }
 }
@@ -3040,7 +3064,8 @@ mod tests {
         assert_eq!(sanitized.floating_window.quota_fixed_color, "#1469cc");
         assert_eq!(sanitized.floating_window.text_tone, 1.0);
         assert!(!sanitized.floating_window.content_visibility.show_radar);
-        assert!(FloatingContentVisibilitySnapshot::default().show_page_navigation_arrows);
+        assert!(!FloatingContentVisibilitySnapshot::default().show_page_navigation_arrows);
+        assert_eq!(sanitized.floating_window.paging_guide_revision, 0);
         assert!(
             sanitized
                 .floating_window
@@ -3103,6 +3128,30 @@ mod tests {
             ["radar", "quota"]
         );
         assert!(!sanitized.setup_guide_completed);
+    }
+
+    #[test]
+    fn paging_guide_completion_updates_only_revision_and_arrow_preference() {
+        let mut settings = AppSettingsSnapshot::default();
+        settings.floating_window.opacity = 0.73;
+        settings.floating_window.scale = 1.21;
+        settings.floating_window.paging_guide_revision = 0;
+        settings
+            .floating_window
+            .content_visibility
+            .show_page_navigation_arrows = false;
+
+        apply_floating_paging_guide_completion(&mut settings, true);
+
+        assert_eq!(settings.floating_window.paging_guide_revision, 1);
+        assert!(settings.floating_window.content_visibility.show_page_navigation_arrows);
+        assert_eq!(settings.floating_window.opacity, 0.73);
+        assert_eq!(settings.floating_window.scale, 1.21);
+
+        settings.floating_window.paging_guide_revision = 4;
+        apply_floating_paging_guide_completion(&mut settings, false);
+        assert_eq!(settings.floating_window.paging_guide_revision, 4);
+        assert!(!settings.floating_window.content_visibility.show_page_navigation_arrows);
     }
 
     #[test]

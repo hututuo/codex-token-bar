@@ -76,6 +76,33 @@ enum FloatingTokenPanelMetrics {
         return rowHeights + interRowSpacing
     }
 
+    static func firstPagedRowCenterY(
+        visibility: FloatingPanelContentVisibility,
+        panelHeight: CGFloat,
+        scale: CGFloat
+    ) -> CGFloat? {
+        let rows = visibility.layoutRows
+        guard rows.contains(where: \.isPaged), scale > 0 else { return nil }
+
+        let unscaledPanelHeight = panelHeight / scale
+        let contentAreaHeight = max(0, unscaledPanelHeight - verticalPadding * 2)
+        let topInset = visibility.needsTopControlInset ? singleElementTopInset : 0
+        let centeredInset = max(0, contentAreaHeight - topInset - contentHeight(visibility: visibility)) / 2
+        var cursor = verticalPadding + topInset + centeredInset
+
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                cursor += spacing(between: rows[index - 1].primaryGroup, and: row.primaryGroup)
+            }
+            let height = row.groups.map(rowHeight(for:)).max() ?? 0
+            if row.isPaged {
+                return (cursor + height / 2) * scale
+            }
+            cursor += height
+        }
+        return nil
+    }
+
     static func spacing(
         between upperGroup: FloatingPanelContentGroup,
         and lowerGroup: FloatingPanelContentGroup

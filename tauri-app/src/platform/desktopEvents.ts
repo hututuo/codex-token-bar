@@ -23,6 +23,8 @@ const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
 const APP_SETTINGS_EVENT = "app-settings-changed";
 const OPEN_APP_SETTINGS_EVENT = "open-app-settings";
+const FLOATING_PAGING_GUIDE_COMPLETED_EVENT = "floating-paging-guide-completed";
+const MAIN_WINDOW_LABEL = "main";
 const FLOATING_WINDOW_LABEL = "floating";
 const STATUS_WINDOW_LABEL = "status";
 export const CODEX_HOME_SOURCE_CHANGED_EVENT = "codex-home-source-changed";
@@ -75,6 +77,26 @@ export async function publishFloatingSettings(settings: FloatingWindowSettings):
 
 export function onFloatingSettingsChanged(handler: (settings: FloatingWindowSettings) => void): Promise<Unlisten> {
   return listenToEvent<FloatingWindowSettings>(FLOATING_SETTINGS_EVENT, handler);
+}
+
+export interface FloatingPagingGuideCompletion {
+  pagingGuideRevision: number;
+  showPageNavigationArrows: boolean;
+}
+
+export function publishFloatingPagingGuideCompleted(payload: FloatingPagingGuideCompletion): Promise<boolean> {
+  return emitPlatformEventTo(
+    MAIN_WINDOW_LABEL,
+    FLOATING_PAGING_GUIDE_COMPLETED_EVENT,
+    "publish-floating-paging-guide-completed",
+    payload,
+  );
+}
+
+export function onFloatingPagingGuideCompleted(
+  handler: (payload: FloatingPagingGuideCompletion) => void,
+): Promise<Unlisten> {
+  return listenToEvent<FloatingPagingGuideCompletion>(FLOATING_PAGING_GUIDE_COMPLETED_EVENT, handler);
 }
 
 export function publishDisplaySurfaces(settings: DisplaySurfaceSettings): Promise<boolean> {

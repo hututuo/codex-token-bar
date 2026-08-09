@@ -10,7 +10,7 @@ test("floating panel double click opens dashboard instead of starting a drag", a
   assert.match(floatingWindow, /desktopPlatform\.showDashboardWindow\(\)/);
   assert.match(floatingWindow, /event\.detail >= 2/);
   assert.match(floatingPanel, /onOpenDashboard\?: \(\) => void/);
-  assert.match(floatingPanel, /onDoubleClick=\{onOpenDashboard\}/);
+  assert.match(floatingPanel, /onDoubleClick=\{previewMode \? undefined : onOpenDashboard\}/);
 });
 
 test("status tray left click toggles status panel while its menu opens dashboard or quits", async () => {

@@ -30,6 +30,7 @@ export {
 
 export {
   cancelAutoResumeRun,
+  completeFloatingPagingGuide,
   readAppSettings,
   listAutoResumeThreads,
   readAutoResumeStatus,

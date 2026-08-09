@@ -40,7 +40,7 @@ export const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showQuota: true,
   showRadar: true,
   showCrowdRadar: true,
-  showPageNavigationArrows: true,
+  showPageNavigationArrows: false,
   order: FLOATING_CONTENT_GROUPS,
   pagePairs: DEFAULT_FLOATING_PAGE_PAIRS,
 };
@@ -357,33 +357,45 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
     return 88;
   }
 
-  const rowHeights = rows.map((row) => Math.max(...row.groups.map((group) => {
-    switch (group) {
-      case "rateAndBar":
-        return 28;
-      case "usageStatus":
-        return 20;
-      case "metrics":
-        return 13;
-      case "runningThreads":
-        return 14;
-      case "todayModelShare":
-      case "todayModelCost":
-        return 17;
-      case "radar":
-        return 24;
-      case "crowdRadar":
-        return 20;
-      case "quota":
-        return 15.5;
-    }
-  })));
+  const rowHeights = rows.map(floatingContentRowHeight);
   const verticalPadding = 12;
   const gaps = rows.slice(1).reduce(
     (sum, row, index) => sum + floatingContentGap(rows[index].primaryGroup, row.primaryGroup),
     0,
   );
   return Math.max(88, Math.ceil(verticalPadding + gaps + rowHeights.reduce((sum, height) => sum + height, 0)));
+}
+
+export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibility): number | null {
+  const rows = layoutFloatingContentRows(visibility);
+  let cursor = 6;
+  for (const [index, row] of rows.entries()) {
+    if (index > 0) {
+      cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
+    }
+    const height = floatingContentRowHeight(row);
+    if (row.groups.length > 1) {
+      return cursor + height / 2;
+    }
+    cursor += height;
+  }
+  return null;
+}
+
+function floatingContentRowHeight(row: FloatingContentLayoutRow): number {
+  return Math.max(...row.groups.map((group) => {
+    switch (group) {
+      case "rateAndBar": return 28;
+      case "usageStatus": return 20;
+      case "metrics": return 13;
+      case "runningThreads": return 14;
+      case "todayModelShare":
+      case "todayModelCost": return 17;
+      case "radar": return 24;
+      case "crowdRadar": return 20;
+      case "quota": return 15.5;
+    }
+  }));
 }
 
 function visibleFloatingContentGroups(visibility: FloatingContentVisibility): FloatingContentGroup[] {

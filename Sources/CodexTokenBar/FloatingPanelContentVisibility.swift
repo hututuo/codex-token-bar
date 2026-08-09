@@ -129,6 +129,8 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let orderKey = "floatingPanelContentOrderV01"
     static let pagePairsKey = "floatingPanelPagePairsV01"
     static let pageNavigationArrowsKey = "floatingPanelShowPageNavigationArrows"
+    static let pagingGuideRevisionKey = "floatingPanelPagingGuideRevisionV01"
+    static let currentPagingGuideRevision = 1
     static let defaultOrder: [FloatingPanelContentGroup] = [
         .rateAndBar,
         .usageStatus,
@@ -156,7 +158,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         showQuota: true,
         showRadar: true,
         showCrowdRadar: true,
-        showPageNavigationArrows: true
+        showPageNavigationArrows: false
     )
 
     var showRateAndBar: Bool
@@ -182,7 +184,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         showQuota: Bool,
         showRadar: Bool,
         showCrowdRadar: Bool = false,
-        showPageNavigationArrows: Bool = true,
+        showPageNavigationArrows: Bool = false,
         groupOrder: [FloatingPanelContentGroup] = Self.defaultOrder,
         pagePairs: [FloatingPanelPagePair] = Self.defaultPagePairs
     ) {
