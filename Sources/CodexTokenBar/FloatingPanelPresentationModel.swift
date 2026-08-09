@@ -48,14 +48,16 @@ struct FloatingPanelPresentationModel: Equatable {
             parts.append(FloatingTodayModelUsagePresentation.accessibilityText(
                 page: .share,
                 rows: snapshot.todayModelBreakdowns,
-                fallbackModel: fallbackPriceModel
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
             ))
         }
         if visibility.showTodayModelCost {
             parts.append(FloatingTodayModelUsagePresentation.accessibilityText(
                 page: .cost,
                 rows: snapshot.todayModelBreakdowns,
-                fallbackModel: fallbackPriceModel
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
             ))
         }
         if visibility.showUsageStatus {

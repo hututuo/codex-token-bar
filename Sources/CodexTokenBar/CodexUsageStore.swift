@@ -51,6 +51,10 @@ private final class SharedAccountContinuityObserverToken: @unchecked Sendable {
 final class CodexUsageStore: ObservableObject {
     @Published private(set) var snapshot: DashboardSnapshot = .empty
     private(set) var todayModelBreakdowns: [ModelTokenBreakdown] = []
+    /// The last successful exact model snapshot's local day. A fast/compact
+    /// refresh can temporarily lack attribution rows; retaining this marker
+    /// lets us keep that snapshot only within the same day and source.
+    private var todayModelBreakdownsDay: Date?
     @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
@@ -347,6 +351,7 @@ final class CodexUsageStore: ObservableObject {
         isRefreshing = false
         isPreparingUsageCache = false
         preciseTimeSeriesFresh = false
+        todayModelBreakdownsDay = nil
         guard identityChanged else { return true }
 
         sourceIdentityGeneration += 1
@@ -391,6 +396,7 @@ final class CodexUsageStore: ObservableObject {
             "alreadyRefreshing": isRefreshing ? "1" : "0",
             "source": resolvedDataSource?.displayPath ?? "nil"
         ])
+        clearStaleTodayModelBreakdownsIfNeeded()
         let requestedBindingKey = Self.bindingKey(for: resolvedDataSource)
         if isRefreshing,
            requestedSourceID == activeRefreshSourceID,
@@ -432,6 +438,7 @@ final class CodexUsageStore: ObservableObject {
             pendingFullRefresh = false
             snapshot = .empty
             todayModelBreakdowns = []
+            todayModelBreakdownsDay = nil
             snapshotSourceID = nil
             preciseTimeSeriesFresh = false
             status = "未找到本地 Codex 数据目录"
@@ -459,6 +466,7 @@ final class CodexUsageStore: ObservableObject {
         if let snapshotSourceID, snapshotSourceID != sourceID {
             snapshot = .empty
             todayModelBreakdowns = []
+            todayModelBreakdownsDay = nil
             self.snapshotSourceID = nil
             preciseTimeSeriesFresh = false
         }
@@ -667,6 +675,7 @@ final class CodexUsageStore: ObservableObject {
                 if !retainedTrustedSnapshot {
                     self.snapshot = .empty
                     self.todayModelBreakdowns = []
+                    self.todayModelBreakdownsDay = nil
                     self.snapshotSourceID = nil
                 }
                 self.preciseTimeSeriesFresh = false
@@ -757,18 +766,30 @@ final class CodexUsageStore: ObservableObject {
         todayModelBreakdowns: [ModelTokenBreakdown]? = nil,
         sourceID: String
     ) {
-        self.todayModelBreakdowns = todayModelBreakdowns
-            ?? Self.todayModelBreakdowns(in: snapshot, now: snapshot.generatedAt)
+        let availableRows = todayModelBreakdowns
+            ?? Self.todayModelBreakdownsIfAvailable(in: snapshot, now: snapshot.generatedAt)
+        if let availableRows {
+            let hasTodayUsage = Self.todayTokenCount(in: snapshot, now: snapshot.generatedAt) > 0
+            let shouldRetainPrevious = availableRows.isEmpty
+                && hasTodayUsage
+                && !self.todayModelBreakdowns.isEmpty
+                && snapshotSourceID == sourceID
+                && todayModelBreakdownsDay == Self.startOfDay(snapshot.generatedAt)
+            if !shouldRetainPrevious {
+                self.todayModelBreakdowns = availableRows
+                todayModelBreakdownsDay = Self.startOfDay(snapshot.generatedAt)
+            }
+        }
         self.snapshot = snapshot
         snapshotSourceID = sourceID
     }
 
-    private static func todayModelBreakdowns(
+    private static func todayModelBreakdownsIfAvailable(
         in snapshot: DashboardSnapshot,
         now: Date,
         calendar: Calendar = .current
-    ) -> [ModelTokenBreakdown] {
-        guard snapshot.cacheUsage.attributionEventsComplete else { return [] }
+    ) -> [ModelTokenBreakdown]? {
+        guard snapshot.cacheUsage.attributionEventsComplete else { return nil }
         let start = calendar.startOfDay(for: now)
         guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
         return ModelUsagePresentation.rows(
@@ -776,6 +797,29 @@ final class CodexUsageStore: ObservableObject {
                 $0.start >= start && $0.start < end
             }
         )
+    }
+
+    private static func startOfDay(_ date: Date) -> Date {
+        Calendar.current.startOfDay(for: date)
+    }
+
+    private static func todayTokenCount(
+        in snapshot: DashboardSnapshot,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        snapshot.dailyUsage.first {
+            calendar.isDate($0.date, inSameDayAs: now)
+        }?.tokens ?? 0
+    }
+
+    private func clearStaleTodayModelBreakdownsIfNeeded() {
+        guard let todayModelBreakdownsDay,
+              !Calendar.current.isDate(todayModelBreakdownsDay, inSameDayAs: Date()) else {
+            return
+        }
+        todayModelBreakdowns = []
+        self.todayModelBreakdownsDay = nil
     }
 
     private func prepareAfterObserverTakeover(for source: CodexDataSource) {

@@ -34,9 +34,10 @@ test("floating model row switches share and cost without starting panel drag", a
         const previous = container.querySelector('button[aria-label="显示上一项"]');
         assert.ok(next);
         assert.ok(previous);
-        assert.match(container.textContent, /占比/);
         assert.match(container.textContent, /Sol50%/);
         assert.doesNotMatch(container.textContent, /Sol\$3\.25/);
+        assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
+        assert.doesNotMatch(container.textContent, /费用/);
 
         await React.act(async () => next.dispatchEvent(new dom.MouseEvent("mousedown", {
           bubbles: true,
@@ -44,14 +45,15 @@ test("floating model row switches share and cost without starting panel drag", a
         })));
         assert.equal(dragStarts, 0);
         await React.act(async () => next.click());
-        assert.match(container.textContent, /费用/);
         assert.match(container.textContent, /Sol\$3\.25/);
         assert.match(container.textContent, /Luna\$0\.32/);
         assert.doesNotMatch(container.textContent, /Sol50%/);
+        assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /费用/);
+        assert.doesNotMatch(container.textContent, /费用/);
 
         await React.act(async () => previous.click());
-        assert.match(container.textContent, /占比/);
         assert.match(container.textContent, /Sol50%/);
+        assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
       } finally {
         await React.act(async () => root.unmount());
       }

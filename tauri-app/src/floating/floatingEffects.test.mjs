@@ -144,13 +144,14 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
 });
 
-test("paged row arrows hug the outer edge while keeping a compact hit target", () => {
+test("paged row arrows hug the outer edge while keeping a forgiving hit target", () => {
   assert.match(previewSource, />\s*<span aria-hidden="true">‹<\/span><\/button>/);
   assert.match(previewSource, />\s*<span aria-hidden="true">›<\/span><\/button>/);
-  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?width: calc\(14px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?width: calc\(24px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?top: calc\(-2px \* var\(--floating-scale\)\);[\s\S]*?bottom: calc\(-2px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-page-switch > span\s*{[\s\S]*?transform: scaleX\(0\.58\);/);
-  assert.match(stylesSource, /\.floating-page-switch--previous\s*{[^}]*left: calc\(-9px \* var\(--floating-scale\)\);/s);
-  assert.match(stylesSource, /\.floating-page-switch--next\s*{[^}]*right: calc\(-9px \* var\(--floating-scale\)\);/s);
+  assert.match(stylesSource, /\.floating-page-switch--previous\s*{[^}]*left: calc\(-8px \* var\(--floating-scale\)\);/s);
+  assert.match(stylesSource, /\.floating-page-switch--next\s*{[^}]*right: calc\(-8px \* var\(--floating-scale\)\);/s);
 });
 
 test("floating pace text keeps the Swift-style status and card count in one line", () => {

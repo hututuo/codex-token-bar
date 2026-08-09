@@ -146,12 +146,25 @@ export function mergeFloatingUsageSummary(
   snapshot: FloatingPanelSnapshot,
   summary: UsageSummarySnapshot,
 ): FloatingPanelSnapshot {
+  const incomingModelBreakdowns = summary.todayModelBreakdowns;
+  // The native summary command may briefly return a numeric summary while its
+  // exact model projection is still rebuilding. An empty/omitted breakdown in
+  // that state is not a successful zero-usage day: keep the last trusted rows
+  // until a complete model projection arrives. A genuinely empty day has
+  // todayTokens === 0 and is allowed to clear the rows.
+  const keepTrustedModelBreakdowns = (
+    (!incomingModelBreakdowns || incomingModelBreakdowns.length === 0)
+    && summary.todayTokens > 0
+    && snapshot.todayModelBreakdowns.length > 0
+  );
   return {
     ...snapshot,
     totalTokensLabel: `总 ${compactTokens(summary.totalTokens)}`,
     todayTokensLabel: `今 ${compactTokens(summary.todayTokens)}`,
     requestsLabel: `次 ${summary.todayRequests}`,
-    todayModelBreakdowns: summary.todayModelBreakdowns ?? [],
+    todayModelBreakdowns: keepTrustedModelBreakdowns
+      ? snapshot.todayModelBreakdowns
+      : incomingModelBreakdowns ?? [],
   };
 }
 

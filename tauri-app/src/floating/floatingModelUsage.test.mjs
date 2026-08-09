@@ -36,6 +36,34 @@ test("Spark stays visible in share but is labelled as independent quota in cost"
   ], "gpt56Sol"), /Spark 独立/);
 });
 
+test("today model usage keeps four core placeholders and shares one cost order", () => {
+  const rows = [
+    row("gpt-5.6-luna", 2_000_000, 0, 0, 2_000_000, 1),
+    row("gpt-5.6-sol", 1_000_000, 0, 1_000_000, 2_000_000, 1),
+  ];
+  const items = floatingTodayModelUsageItems(rows, "gpt56Sol", { showPlaceholders: true });
+
+  assert.deepEqual(items.map(({ label, tokens }) => ({ label, tokens })), [
+    { label: "Sol", tokens: 2_000_000 },
+    { label: "Luna", tokens: 2_000_000 },
+    { label: "Terra", tokens: 0 },
+    { label: "5.3", tokens: 0 },
+  ]);
+  assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0, 0]);
+  assert.deepEqual(
+    floatingTodayModelUsageItems(rows, "gpt56Sol", { showPlaceholders: true }).map((item) => item.key),
+    items.map((item) => item.key),
+  );
+});
+
+test("cold-start empty model rows remain pending until a trusted summary exists", () => {
+  assert.deepEqual(floatingTodayModelUsageItems([], "gpt56Sol"), []);
+  assert.equal(
+    floatingTodayModelUsageItems([], "gpt56Sol", { showPlaceholders: true }).length,
+    4,
+  );
+});
+
 function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls) {
   return { model, breakdown: { inputTokens, cachedInputTokens, outputTokens, totalTokens, calls } };
 }

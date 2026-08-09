@@ -6,6 +6,7 @@ import {
   floatingLiveRateStatusText,
   floatingSnapshotForLiveRate,
   liveRateStreamStartFailureSnapshot,
+  mergeFloatingUsageSummary,
   preserveFloatingUsageSummary,
   compactSnapshotForSurfaceActivity,
 } from "./compactPanelSnapshotModel.ts";
@@ -111,6 +112,40 @@ test("compact panel preserves the last trusted usage summary while precise summa
   assert.equal(preserved.requestsLabel, "次 2222");
   assert.equal(preserved.tokensPerSecond, trustedSnapshot.tokensPerSecond);
   assert.equal(preserved.unreadSummary, trustedSnapshot.unreadSummary);
+});
+
+test("compact panel retains trusted model rows while a nonzero summary rebuilds", () => {
+  const trustedSnapshot = floatingSnapshotForLiveRate(
+    liveRateSnapshot({
+      totalTokens: 1_000,
+      totalTokensToday: 100,
+      requestsToday: 2,
+    }),
+    {
+      totalTokens: 1_000,
+      todayTokens: 100,
+      todayRequests: 2,
+      todayModelBreakdowns: [
+        modelRow("gpt-5.6-sol", 100),
+      ],
+    },
+  );
+
+  const rebuilding = mergeFloatingUsageSummary(trustedSnapshot, {
+    totalTokens: 1_200,
+    todayTokens: 120,
+    todayRequests: 3,
+    todayModelBreakdowns: [],
+  });
+  assert.deepEqual(rebuilding.todayModelBreakdowns, trustedSnapshot.todayModelBreakdowns);
+
+  const emptyDay = mergeFloatingUsageSummary(trustedSnapshot, {
+    totalTokens: 1_200,
+    todayTokens: 0,
+    todayRequests: 0,
+    todayModelBreakdowns: [],
+  });
+  assert.deepEqual(emptyDay.todayModelBreakdowns, []);
 });
 
 test("compact panel keeps trusted summary when a later live-rate event carries giant totals", () => {
@@ -248,5 +283,18 @@ function liveRateSnapshot(overrides) {
     },
     warnings: [],
     ...overrides,
+  };
+}
+
+function modelRow(model, totalTokens) {
+  return {
+    model,
+    breakdown: {
+      inputTokens: totalTokens,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      totalTokens,
+      calls: 1,
+    },
   };
 }

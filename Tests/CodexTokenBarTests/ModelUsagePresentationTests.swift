@@ -87,6 +87,64 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(item.label, "future-model")
     }
 
+    func testFloatingTodayModelUsageShowsFourStableCoreModelsAndUsesCostOrder() throws {
+        let rows = [
+            rowWithBreakdown(
+                "gpt-5.6-luna",
+                inputTokens: 2_000_000,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 2_000_000
+            ),
+            rowWithBreakdown(
+                "gpt-5.6-sol",
+                inputTokens: 1_000_000,
+                cachedInputTokens: 0,
+                outputTokens: 1_000_000,
+                totalTokens: 2_000_000
+            )
+        ]
+
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: .gpt56Sol,
+            showPlaceholders: true
+        )
+
+        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Terra", "5.3"])
+        XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0, 0])
+        XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%", "0%"])
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.items(
+                from: rows,
+                fallbackModel: .gpt56Sol,
+                showPlaceholders: true
+            ).map(\.id),
+            items.map(\.id),
+            "share and cost pages must consume one stable model order"
+        )
+    }
+
+    private func rowWithBreakdown(
+        _ model: String,
+        inputTokens: Int,
+        cachedInputTokens: Int,
+        outputTokens: Int,
+        totalTokens: Int
+    ) -> ModelTokenBreakdown {
+        ModelTokenBreakdown(
+            model: model,
+            breakdown: TokenCacheBreakdown(
+                inputTokens: inputTokens,
+                cachedInputTokens: cachedInputTokens,
+                outputTokens: outputTokens,
+                reasoningOutputTokens: 0,
+                totalTokens: totalTokens,
+                calls: 1
+            )
+        )
+    }
+
     @MainActor
     func testRecentChartPreparationCarriesFiveMinuteModelBreakdownToPointPreview() throws {
         let start = Date(timeIntervalSince1970: 1_786_051_200)

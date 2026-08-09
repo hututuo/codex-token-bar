@@ -32,9 +32,24 @@ interface CombinedModelUsage {
   calls: number;
 }
 
+// Keep this list in lockstep with the Swift compact surface. Spark is not a
+// default paid model because its quota is independent; it is added only when
+// the source actually reports Spark usage.
+export const FLOATING_DEFAULT_MODEL_KEYS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.3-codex",
+] as const;
+
+const FLOATING_DEFAULT_MODEL_ORDER: ReadonlyMap<string, number> = new Map(
+  FLOATING_DEFAULT_MODEL_KEYS.map((key, index) => [key, index]),
+);
+
 export function floatingTodayModelUsageItems(
   rows: ModelUsageRowLike[] | null | undefined,
   fallbackModel: OfficialAPIPriceModel,
+  options: { showPlaceholders?: boolean } = {},
 ): FloatingModelUsageItem[] {
   const grouped = new Map<string, CombinedModelUsage>();
   for (const row of rows ?? []) {
@@ -57,27 +72,60 @@ export function floatingTodayModelUsageItems(
     grouped.set(key, current);
   }
   const total = [...grouped.values()].reduce((sum, row) => sum + row.totalTokens, 0);
-  if (total <= 0) return [];
+  if (total <= 0 && !options.showPlaceholders) return [];
+  if (options.showPlaceholders) {
+    for (const key of FLOATING_DEFAULT_MODEL_KEYS) {
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          model: key,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          calls: 0,
+        });
+      }
+    }
+  }
   return [...grouped.entries()].map(([key, row]) => {
     const usesIndependentQuota = independentQuotaModelName(row.model) !== null;
     const priceModel = detectedOfficialAPIPriceModel(row.model) ?? fallbackModel;
+    const costUSD = usesIndependentQuota
+      ? null
+      : officialAPICostUSD(
+        row.inputTokens,
+        row.cachedInputTokens,
+        row.outputTokens,
+        priceModel,
+      );
     return {
       key,
       label: modelUsageLabel(row.model),
       tokens: row.totalTokens,
-      share: row.totalTokens / total,
-      costUSD: usesIndependentQuota
-        ? null
-        : officialAPICostUSD(
-            row.inputTokens,
-            row.cachedInputTokens,
-            row.outputTokens,
-            priceModel,
-          ),
+      share: total > 0 ? row.totalTokens / total : 0,
+      costUSD,
       usesIndependentQuota,
       color: modelUsageColor(key),
     };
-  }).sort((left, right) => right.tokens - left.tokens || left.label.localeCompare(right.label));
+  }).sort((left, right) => {
+    const leftUsed = left.tokens > 0;
+    const rightUsed = right.tokens > 0;
+    if (leftUsed !== rightUsed) return leftUsed ? -1 : 1;
+
+    // Both pages consume this one order. Paid models sort by today's dollar
+    // estimate; independent-quota Spark has no dollar value but stays ahead
+    // of zero placeholders when it was actually used.
+    const leftCost = left.costUSD ?? 0;
+    const rightCost = right.costUSD ?? 0;
+    if (leftCost !== rightCost) return rightCost - leftCost;
+    if (left.usesIndependentQuota !== right.usesIndependentQuota) {
+      return left.usesIndependentQuota ? 1 : -1;
+    }
+    const leftDefaultIndex = FLOATING_DEFAULT_MODEL_ORDER.get(left.key) ?? FLOATING_DEFAULT_MODEL_KEYS.length;
+    const rightDefaultIndex = FLOATING_DEFAULT_MODEL_ORDER.get(right.key) ?? FLOATING_DEFAULT_MODEL_KEYS.length;
+    if (leftDefaultIndex !== rightDefaultIndex) return leftDefaultIndex - rightDefaultIndex;
+    return left.key.localeCompare(right.key);
+  });
 }
 
 export function floatingModelUsageValue(
@@ -93,8 +141,9 @@ export function floatingModelUsageAccessibilityText(
   page: FloatingModelUsagePage,
   rows: ModelUsageRowLike[] | null | undefined,
   fallbackModel: OfficialAPIPriceModel,
+  options: { showPlaceholders?: boolean } = {},
 ): string {
-  const items = floatingTodayModelUsageItems(rows, fallbackModel);
+  const items = floatingTodayModelUsageItems(rows, fallbackModel, options);
   if (items.length === 0) return "今日模型待读取";
   const title = page === "share" ? "占比" : "费用";
   return `今日模型${title}：${items.map((item) => `${item.label} ${floatingModelUsageValue(item, page)}`).join("，")}`;
