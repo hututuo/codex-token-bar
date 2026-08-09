@@ -529,14 +529,14 @@ struct TokenDisplayCard: View {
                     // Keep the enlarged hit target centered on the edge gutter,
                     // but push the visible glyph back to the outer-edge position
                     // used before the hit-area expansion.
-                    .offset(x: (delta < 0 ? -7 : 7).scaled(by: displayScale))
+                    .offset(x: (delta < 0 ? -17 : 17).scaled(by: displayScale))
                     .frame(
                         width: 14.scaled(by: displayScale),
                         height: 20.scaled(by: displayScale)
                     )
             }
             .frame(
-                width: 28.scaled(by: displayScale),
+                width: 48.scaled(by: displayScale),
                 height: 24.scaled(by: displayScale)
             )
                 .contentShape(Rectangle())

@@ -51,7 +51,7 @@ enum FloatingPanelMouseDownAction: Equatable {
 @MainActor
 final class FloatingTokenPanelWindow: NSPanel {
     var allowsBackgroundDrag = true
-    var controlExclusionSize: CGFloat = 24
+    var controlExclusionSize: CGFloat = 52
     var onOpenDashboard: (() -> Void)?
 
     override var canBecomeKey: Bool { false }
@@ -355,7 +355,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.isOpaque = false
             panel.hasShadow = false
             panel.allowsBackgroundDrag = !isLocked
-            panel.controlExclusionSize = 24 * layout.effectiveScale
+            panel.controlExclusionSize = 52 * layout.effectiveScale
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
             }
@@ -374,7 +374,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
         if let panel = panel as? FloatingTokenPanelWindow {
             panel.allowsBackgroundDrag = !isLocked
-            panel.controlExclusionSize = 24 * layout.effectiveScale
+            panel.controlExclusionSize = 52 * layout.effectiveScale
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
             }

@@ -587,9 +587,14 @@ button {
   padding: 8px 10px 8px 12px;
 }
 
-.dash-head__identity,
+.dash-head__top--actions-only {
+  min-height: 42px;
+  justify-content: flex-end;
+}
+
 .dash-head__actions,
-.dash-head__product > span,
+.dash-head__platform,
+.dash-head__platform > strong,
 .dash-head__source,
 .dash-head__threads,
 .dash-head__freshness {
@@ -745,7 +750,7 @@ button {
   background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
 }
 
-.dash-head__name,
+.dash-head__platform,
 .dash-head__source,
 .dash-head__threads,
 .dash-head__freshness {
@@ -753,30 +758,33 @@ button {
   padding: 6px 10px;
 }
 
-.dash-head__name,
+.dash-head__platform,
 .dash-head__source,
 .dash-head__threads {
   border-right: 1px solid var(--line);
 }
 
-.dash-head__name {
-  display: flex;
+.dash-head__platform {
+  display: grid;
   min-width: 0;
-  align-items: center;
+  align-content: center;
+  gap: 3px;
 }
 
-.dash-head__name .account-name {
-  max-width: 190px;
-  font-size: 12px;
+.dash-head__platform > small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-head__platform > strong {
+  gap: 6px;
+  font-size: 10.5px;
   font-weight: var(--weight-semibold);
-}
-
-.dash-head__name .account-name-edit {
-  width: 100%;
-  border-radius: 7px;
-  font-size: 12px;
-  padding: 3px 7px;
-  text-align: left;
+  white-space: nowrap;
 }
 
 .dash-head__source {
@@ -7672,13 +7680,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   place-items: center;
   /* The glyph remains thin; the transparent button is intentionally wider
      so the whole edge gutter is easy to click without changing row layout. */
-  width: calc(24px * var(--floating-scale));
+  width: calc(48px * var(--floating-scale));
   border: 0;
   background: transparent;
   color: var(--floating-secondary);
   cursor: pointer;
   opacity: 0.2;
   padding: 0;
+  pointer-events: auto;
   transition: opacity 160ms ease-out, color 160ms ease-out;
   -webkit-app-region: no-drag;
 }
@@ -7713,7 +7722,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-page-switch--previous > span {
-  transform: translateX(calc(-6px * var(--floating-scale))) scaleX(0.58);
+  transform: translateX(calc(-18px * var(--floating-scale))) scaleX(0.58);
 }
 
 .floating-page-switch--next {
@@ -7721,7 +7730,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-page-switch--next > span {
-  transform: translateX(calc(6px * var(--floating-scale))) scaleX(0.58);
+  transform: translateX(calc(18px * var(--floating-scale))) scaleX(0.58);
 }
 
 .floating-row {
