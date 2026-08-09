@@ -453,7 +453,7 @@ struct TokenDisplayCard: View {
                     Spacer(minLength: 0)
                     pageButton(systemImage: "chevron.right", row: row, delta: 1)
                 }
-                .padding(.horizontal, -9.scaled(by: displayScale))
+                .padding(.horizontal, -10.scaled(by: displayScale))
             }
         }
         .frame(height: rowHeight, alignment: .center)
@@ -522,10 +522,11 @@ struct TokenDisplayCard: View {
                 // Keep the glyph visually narrow while giving the button a
                 // forgiving edge hit target. This overlay does not take part
                 // in row layout, so it cannot squeeze model text.
-                // A concrete clear layer is required here: with a plain Button,
-                // contentShape alone exposes the large accessibility frame but
-                // AppKit still mouse-hits only the small image bounds.
-                Color.clear
+                // `Color.clear` still lets AppKit mouse-hit only the image's
+                // un-offset bounds. A non-zero but imperceptible alpha makes
+                // the entire label a real hit surface, including the visible
+                // chevron and the narrow strip between it and the window edge.
+                Color.black.opacity(0.001)
 
                 Image(systemName: systemImage)
                     .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
