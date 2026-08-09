@@ -79,6 +79,9 @@ const snapshot = {
 test("compact Radar presentation localizes actions and keeps model reasoning effort", () => {
   assert.equal(radarActionDisplayText("wait"), "等待");
   assert.equal(radarActionDisplayText("run"), "运行");
+  for (const rawAction of ["Use Windows", "use_window", "use-window", "use windows"]) {
+    assert.equal(radarActionDisplayText(rawAction), "速登窗口");
+  }
   assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol max");
   assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna max");
   assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra max");

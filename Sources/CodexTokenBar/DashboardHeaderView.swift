@@ -24,7 +24,6 @@ enum DashboardHeaderPresentationMode: Equatable {
     func actions(unreadCount: Int) -> [DashboardHeaderAction] {
         guard showsActions else { return [] }
         return [
-            .markAllRead,
             .refresh,
             .changeDirectory,
             .providerRepair,

@@ -12,14 +12,34 @@ use std::sync::{Mutex, OnceLock};
 mod recent_completion;
 #[cfg(test)]
 mod sequence_tests;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 mod session_files;
 mod state;
 
+#[cfg(not(test))]
+use state::read_sidebar_unread_thread_ids;
+#[cfg(test)]
 use state::read_unread_thread_ids;
 
 static ACKNOWLEDGEMENT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TRUSTED_SUMMARIES: OnceLock<Mutex<HashMap<String, UnreadSummary>>> = OnceLock::new();
 const PINNED_RECENT_COMPLETION_MARKER_LIMIT: usize = 4_096;
+
+// Unit tests exercise the persisted-state parser without a running Codex
+// desktop page.  Production must always use the read-only CDP snapshot; the
+// test-only atom path keeps the existing parser/transaction fixtures useful
+// without weakening the runtime fail-closed rule.
+fn current_sidebar_unread_thread_ids(codex_home: &Path) -> Option<HashSet<String>> {
+    #[cfg(test)]
+    {
+        read_unread_thread_ids(codex_home)
+    }
+    #[cfg(not(test))]
+    {
+        read_sidebar_unread_thread_ids(codex_home)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct UnreadObservation {
@@ -105,7 +125,12 @@ impl UnreadObservationBuilder {
                     &self.session_metadata,
                 )?)
             }
-            None => None,
+            None => {
+                return Err(
+                    "pinned native unread observation is unavailable; refusing completion fallback"
+                        .into(),
+                )
+            }
         };
         Ok(UnreadObservation {
             native_thread_ids,
@@ -151,11 +176,13 @@ pub fn try_read_unread_summary_for_source(
 
 pub fn try_read_unread_summary_for_observation(
     observation: &UnreadObservation,
+    observation_home: &Path,
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
     let summary = try_read_unread_summary_for_observation_at(
         observation,
+        observation_home,
         source_scope_key,
         validate_before_write,
     )?;
@@ -164,48 +191,43 @@ pub fn try_read_unread_summary_for_observation(
 }
 
 fn try_read_unread_summary_for_observation_at<V>(
-    observation: &UnreadObservation,
+    _observation: &UnreadObservation,
+    observation_home: &Path,
     source_scope_key: &str,
     validate_before_write: V,
 ) -> Result<UnreadSummary, String>
 where
     V: FnOnce() -> Result<(), String>,
 {
+    let native_thread_ids = current_sidebar_unread_thread_ids(observation_home).ok_or_else(|| {
+        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
+            .to_string()
+    })?;
+    #[cfg(not(test))]
+    {
+        let _ = (source_scope_key, &native_thread_ids);
+        validate_before_write()?;
+        // Codex Desktop owns the read marker.  Never subtract a Token Bar
+        // acknowledgement baseline from the live sidebar snapshot.
+        return Ok(unread_state_summary(native_thread_ids.len()));
+    }
+    #[cfg(test)]
     acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
             .entry(source_scope_key.to_string())
             .or_default();
         let previous = home_acknowledgement.clone();
-        let completion_thread_ids = observation
-            .recent_completions
-            .iter()
-            .filter_map(|(thread_id, marker)| {
-                (!home_acknowledgement.completion_markers.contains(marker))
-                    .then_some(thread_id.clone())
-            })
+        home_acknowledgement
+            .unread_thread_ids
+            .retain(|thread_id| native_thread_ids.contains(thread_id));
+        // Completion markers are deliberately excluded. The desktop sidebar
+        // atom is the only producer of unread state.
+        let active_ids = native_thread_ids
+            .difference(&home_acknowledgement.unread_thread_ids)
+            .cloned()
             .collect::<HashSet<_>>();
-        let summary = match observation.native_thread_ids.as_ref() {
-            Some(thread_ids) => {
-                home_acknowledgement
-                    .unread_thread_ids
-                    .retain(|thread_id| thread_ids.contains(thread_id));
-                let reactivated_thread_ids: HashSet<String> = completion_thread_ids
-                    .intersection(thread_ids)
-                    .cloned()
-                    .collect();
-                home_acknowledgement
-                    .unread_thread_ids
-                    .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
-                let mut active_ids: HashSet<String> = thread_ids
-                    .difference(&home_acknowledgement.unread_thread_ids)
-                    .cloned()
-                    .collect();
-                active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
-                unread_state_summary(active_ids.len())
-            }
-            None => recent_completion_summary(completion_thread_ids.len()),
-        };
+        let summary = unread_state_summary(active_ids.len());
         Ok((summary, *home_acknowledgement != previous))
     })
 }
@@ -286,7 +308,7 @@ where
 fn try_read_unread_summary_for_source_at_with_io<P, S, V>(
     codex_home: &Path,
     source_scope_key: &str,
-    now: f64,
+    _now: f64,
     prepare: &P,
     sync_parent: S,
     validate_before_write: V,
@@ -300,12 +322,19 @@ where
     S: FnOnce(&Path) -> Result<(), String>,
     V: FnOnce() -> Result<(), String>,
 {
-    let native_thread_ids = read_unread_thread_ids(codex_home);
-    // 递归扫描 sessions 收集完成标记（磁盘 IO 大头）必须在全局未读事务锁外
-    // 完成；锁内只对已确认标记做纯集合过滤，避免慢盘/大目录时悬浮窗与仪表
-    // 盘的并发刷新全部挂在锁上。
-    let collected_completion_markers =
-        recent_completion::collect_recent_completion_markers_at(codex_home, now);
+    let native_thread_ids = current_sidebar_unread_thread_ids(codex_home).ok_or_else(|| {
+        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
+            .to_string()
+    })?;
+    #[cfg(not(test))]
+    {
+        let _ = (&prepare, &sync_parent, source_scope_key, &native_thread_ids);
+        validate_before_write()?;
+        // The current DOM snapshot is already the official sidebar state;
+        // local acknowledgement files are diagnostic history only.
+        return Ok(unread_state_summary(native_thread_ids.len()));
+    }
+    #[cfg(test)]
     acknowledgement_transaction_with_io(
         prepare,
         sync_parent,
@@ -316,35 +345,14 @@ where
                 .entry(source_scope_key.to_string())
                 .or_default();
             let previous = home_acknowledgement.clone();
-            let summary = match native_thread_ids.as_ref() {
-                Some(thread_ids) => {
-                    home_acknowledgement
-                        .unread_thread_ids
-                        .retain(|thread_id| thread_ids.contains(thread_id));
-                    let completion_thread_ids =
-                        recent_completion::thread_ids_from_collected_markers(
-                            &collected_completion_markers,
-                            &home_acknowledgement.completion_markers,
-                        );
-                    let reactivated_thread_ids: HashSet<String> = completion_thread_ids
-                        .intersection(thread_ids)
-                        .cloned()
-                        .collect();
-                    home_acknowledgement
-                        .unread_thread_ids
-                        .retain(|thread_id| !reactivated_thread_ids.contains(thread_id));
-                    let mut active_ids: HashSet<String> = thread_ids
-                        .difference(&home_acknowledgement.unread_thread_ids)
-                        .cloned()
-                        .collect();
-                    active_ids.extend(completion_thread_ids.intersection(thread_ids).cloned());
-                    unread_state_summary(active_ids.len())
-                }
-                None => recent_completion::summary_from_collected_markers(
-                    &collected_completion_markers,
-                    &home_acknowledgement.completion_markers,
-                ),
-            };
+            home_acknowledgement
+                .unread_thread_ids
+                .retain(|thread_id| native_thread_ids.contains(thread_id));
+            let active_ids = native_thread_ids
+                .difference(&home_acknowledgement.unread_thread_ids)
+                .cloned()
+                .collect::<HashSet<_>>();
+            let summary = unread_state_summary(active_ids.len());
             Ok((summary, *home_acknowledgement != previous))
         },
     )
@@ -361,27 +369,19 @@ pub fn acknowledge_current_unread_for_source(
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
-    let completion_markers = recent_completion::recent_completion_markers(observation_home);
-    let native_thread_ids = read_unread_thread_ids(observation_home);
+    let native_thread_ids = current_sidebar_unread_thread_ids(observation_home).ok_or_else(|| {
+        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
+            .to_string()
+    })?;
     let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
             .entry(source_scope_key.to_string())
             .or_default();
         let previous = home_acknowledgement.clone();
-        match native_thread_ids.as_ref() {
-            Some(thread_ids) => {
-                home_acknowledgement
-                    .unread_thread_ids
-                    .extend(thread_ids.iter().cloned());
-                home_acknowledgement
-                    .completion_markers
-                    .extend(completion_markers.iter().cloned());
-            }
-            None => home_acknowledgement
-                .completion_markers
-                .extend(completion_markers.iter().cloned()),
-        }
+        home_acknowledgement
+            .unread_thread_ids
+            .extend(native_thread_ids.iter().cloned());
         Ok((
             unread_state_summary(0),
             *home_acknowledgement != previous,
@@ -396,23 +396,18 @@ pub fn acknowledge_current_unread_for_observation(
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
+    let native_thread_ids = observation.native_thread_ids.as_ref().ok_or_else(|| {
+        "native unread state is unavailable; refusing completion fallback".to_string()
+    })?;
     let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
             .entry(source_scope_key.to_string())
             .or_default();
         let previous = home_acknowledgement.clone();
-        if let Some(thread_ids) = observation.native_thread_ids.as_ref() {
-            home_acknowledgement
-                .unread_thread_ids
-                .extend(thread_ids.iter().cloned());
-        }
-        home_acknowledgement.completion_markers.extend(
-            observation
-                .recent_completions
-                .iter()
-                .map(|(_, marker)| marker.clone()),
-        );
+        home_acknowledgement
+            .unread_thread_ids
+            .extend(native_thread_ids.iter().cloned());
         Ok((
             unread_state_summary(0),
             *home_acknowledgement != previous,
@@ -438,25 +433,6 @@ fn unread_state_summary(count: usize) -> UnreadSummary {
             "Codex 未读列表为空。".into()
         },
         source: "codex_unread_state".into(),
-    }
-}
-
-fn recent_completion_summary(count: usize) -> UnreadSummary {
-    let active = count > 0;
-    UnreadSummary {
-        active,
-        count: count as u32,
-        label: if active {
-            "刚有任务完成".into()
-        } else {
-            "暂无未读完成会话".into()
-        },
-        detail: if active {
-            format!("Codex 未读状态不可用，按最近 30 秒内完成的 {count} 个会话兜底。")
-        } else {
-            "Codex 未读状态不可用，最近 30 秒没有可见会话完成。".into()
-        },
-        source: "recent_task_complete".into(),
     }
 }
 
@@ -701,10 +677,18 @@ fn retained_or_failed_summary(source_scope_key: &str, error: &str) -> UnreadSumm
     let cache = TRUSTED_SUMMARIES.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(guard) = cache.lock() {
         if let Some(summary) = guard.get(source_scope_key) {
-            let mut retained = summary.clone();
-            retained.detail = format!("{} · 读取失败，保留上次可信结果：{error}", retained.detail);
-            retained.source = format!("{}_stale", retained.source);
-            return retained;
+            // The persisted atom is only a diagnostic candidate.  Once the
+            // current CDP sidebar snapshot is unavailable, retaining a prior
+            // active value would make a stale reminder keep flashing after the
+            // user has already read it in Codex.  Fail closed to an inactive
+            // degraded summary instead.
+            return UnreadSummary {
+                active: false,
+                count: 0,
+                label: "未读状态暂不可用".into(),
+                detail: format!("当前侧栏未读快照不可用，已隐藏上次状态：{error}"),
+                source: format!("{}_hidden", summary.source),
+            };
         }
     }
     UnreadSummary {
@@ -825,23 +809,20 @@ mod tests {
     }
 
     #[test]
-    fn uninitialized_sidebar_state_fails_open_to_existing_visibility_checks() {
+    fn uninitialized_sidebar_state_fails_closed_without_historical_visibility_fallback() {
         let root = temp_root("sidebar-uninitialized");
         fs::create_dir_all(&root).unwrap();
         let unread = "019eaaaa-3000-0000-0000-000000000001";
         write_unread_state_with_sidebar(&root, &[unread], &[], &[], &[], false);
         create_all_visible_state_database(&root, &[unread]);
 
-        assert_eq!(
-            read_unread_thread_ids(&root).unwrap(),
-            HashSet::from([unread.to_string()])
-        );
+        assert!(read_unread_thread_ids(&root).is_none());
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn malformed_sidebar_state_fails_open_to_existing_visibility_checks() {
+    fn malformed_sidebar_state_fails_closed_without_historical_visibility_fallback() {
         let root = temp_root("sidebar-malformed");
         fs::create_dir_all(&root).unwrap();
         let unread = "019eaaaa-4000-0000-0000-000000000001";
@@ -865,10 +846,7 @@ mod tests {
         .unwrap();
         create_all_visible_state_database(&root, &[unread]);
 
-        assert_eq!(
-            read_unread_thread_ids(&root).unwrap(),
-            HashSet::from([unread.to_string()])
-        );
+        assert!(read_unread_thread_ids(&root).is_none());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -895,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_recent_task_complete_when_unread_state_is_unavailable() {
+    fn does_not_use_recent_task_complete_when_unread_state_is_unavailable() {
         let root = temp_root("task-complete-fallback");
         let sessions = root.join("sessions");
         fs::create_dir_all(&sessions).unwrap();
@@ -908,9 +886,35 @@ mod tests {
         );
 
         let summary = read_unread_summary(&root);
-        assert!(summary.active);
-        assert_eq!(summary.count, 1);
-        assert_eq!(summary.source, "recent_task_complete");
+        assert!(!summary.active);
+        assert_eq!(summary.count, 0);
+        assert_eq!(summary.source, "unread_error");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_failure_hides_last_trusted_sidebar_summary_without_completion_fallback() {
+        let root = temp_root("read-failure-retention");
+        let support = root.join("tauri-support");
+        let thread_id = "019eaaaa-0000-0000-0000-000000000015";
+        fs::create_dir_all(&root).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        write_visible_session_meta(&root, thread_id);
+        write_unread_state(&root, &[thread_id]);
+
+        let trusted = read_unread_summary(&root);
+        assert!(trusted.active);
+        assert_eq!(trusted.count, 1);
+        assert_eq!(trusted.source, "codex_unread_state");
+
+        fs::write(root.join(".codex-global-state.json"), b"{not-json").unwrap();
+        let retained = read_unread_summary(&root);
+        assert!(!retained.active);
+        assert_eq!(retained.count, 0);
+        assert_eq!(retained.source, "codex_unread_state_hidden");
+        assert!(retained.detail.contains("当前侧栏未读快照不可用"));
+        assert!(!retained.detail.contains("task_complete"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1055,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledging_recent_completion_filters_current_completion_but_not_later_completion() {
+    fn does_not_use_recent_completion_without_native_unread_state() {
         let root = temp_root("ack-recent-completion");
         let support = root.join("tauri-support");
         let sessions = root.join("sessions");
@@ -1070,10 +1074,8 @@ mod tests {
             "turn-before-ack",
         );
 
-        assert!(read_unread_summary(&root).active);
-        let acknowledged = acknowledge_current_unread(&root).unwrap();
-        assert!(!acknowledged.active);
         assert!(!read_unread_summary(&root).active);
+        assert!(acknowledge_current_unread(&root).is_err());
 
         append_task_complete(
             &sessions.join("visible.jsonl"),
@@ -1082,8 +1084,8 @@ mod tests {
             "turn-after-ack",
         );
         let summary = read_unread_summary(&root);
-        assert!(summary.active);
-        assert_eq!(summary.count, 1);
+        assert!(!summary.active);
+        assert_eq!(summary.count, 0);
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1109,7 +1111,7 @@ mod tests {
         fs::write(
             root.join(".codex-global-state.json"),
             format!(
-                r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}}}}}}"#
+                r#"{{"electron-persisted-atom-state":{{"unread-thread-ids-by-host-v1":{{"localhost":[{values}]}},"flat-project-sidebar-preferences-v1":{{"initialized":true,"mode":"project"}}}},"sidebar-project-thread-orders":{{"local-project":{{"sortKey":"updated_at","threadIds":[{values}]}}}},"pinned-thread-ids":[],"projectless-thread-ids":[]}}"#
             ),
         )
         .unwrap();

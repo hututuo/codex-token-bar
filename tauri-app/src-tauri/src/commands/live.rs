@@ -282,6 +282,7 @@ impl LiveRateMonitorRegistry {
             match pinned.observation() {
                 Some(observation) => unread::try_read_unread_summary_for_observation(
                     observation,
+                    &captured.codex_home,
                     &pinned.source_scope_key,
                     validate_before_write,
                 ),
@@ -1059,10 +1060,17 @@ fn live_rate_source_scope(source_token: &CodexHomeSourceToken) -> LiveRateSource
 }
 
 fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
-    let mut stale = summary.clone();
-    stale.detail = format!("{} · unread refresh failed; using cached value: {error}", stale.detail);
-    stale.source = format!("{}_stale", stale.source.trim_end_matches("_stale"));
-    stale
+    // A cached active value is not safe for this indicator: Codex Desktop's
+    // sidebar is the authority, and a missing/failed CDP snapshot may mean
+    // that the user has already read the row.  Hide the previous value until
+    // a fresh sidebar snapshot is available instead of keeping a flashing dot.
+    UnreadSummary {
+        active: false,
+        count: 0,
+        label: "未读状态暂不可用".into(),
+        detail: format!("当前侧栏未读快照不可用，已隐藏上次状态：{error}"),
+        source: format!("{}_hidden", summary.source.trim_end_matches("_stale")),
+    }
 }
 
 fn cached_unread_result(
@@ -2279,7 +2287,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn expired_cache_refresh_failure_backs_off_and_returns_trusted_stale_summary() {
+    fn expired_cache_refresh_failure_hides_trusted_summary_and_backs_off() {
         use std::os::unix::fs::MetadataExt;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2330,8 +2338,9 @@ mod tests {
                     Err("injected refresh failure".into())
                 })
                 .unwrap();
-            assert_eq!(summary.count, 3);
-            assert!(summary.source.ends_with("_stale"));
+            assert_eq!(summary.count, 0);
+            assert!(!summary.active);
+            assert!(summary.source.ends_with("_hidden"));
         }
 
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
@@ -2385,7 +2394,7 @@ mod tests {
     }
 
     #[test]
-    fn unread_refresh_wait_times_out_and_serves_the_stale_summary() {
+    fn unread_refresh_wait_times_out_and_hides_the_stale_summary() {
         use std::sync::{Arc, Barrier};
 
         let registry = LiveRateMonitorRegistry::default();
@@ -2457,8 +2466,9 @@ mod tests {
                 >= UNREAD_REFRESH_WAIT_TIMEOUT.saturating_sub(Duration::from_millis(50)),
             "waiter returned materially before the timeout: {waited:?}"
         );
-        assert_eq!(summary.count, 5);
-        assert!(summary.source.ends_with("_stale"));
+        assert_eq!(summary.count, 0);
+        assert!(!summary.active);
+        assert!(summary.source.ends_with("_hidden"));
         release.wait();
         assert_eq!(holder.join().unwrap().count, 9);
     }
@@ -2589,7 +2599,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_to_b_to_a_swap_acknowledges_only_the_pinned_a_observation() {
+    fn pinned_acknowledgement_fails_closed_without_a_live_sidebar_snapshot() {
         use std::os::unix::fs::MetadataExt;
         use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -2641,11 +2651,9 @@ mod tests {
             }
         });
 
-        assert_eq!(result.unwrap().count, 0);
-        let baseline =
-            std::fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
-        assert!(baseline.contains(thread_a));
-        assert!(!baseline.contains(thread_b));
+        let error = result.unwrap_err();
+        assert!(error.contains("pinned native unread observation is unavailable"));
+        assert!(!support.join("unread-acknowledgement.json").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

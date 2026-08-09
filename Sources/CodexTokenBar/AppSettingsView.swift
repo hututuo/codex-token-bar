@@ -10,11 +10,30 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case statusBar
     case monitoring
     case floatingPanel
+    // Legacy route kept for requests created by older builds. It is omitted
+    // from the sidebar and resolves to the unified floating-panel page.
     case content
     case alertsAndUpdates
     case dataAndMaintenance
 
+    static let allCases: [AppSettingsCategory] = [
+        .general,
+        .sessionEnhancements,
+        .codexInstances,
+        .autoResume,
+        .surfaces,
+        .statusBar,
+        .monitoring,
+        .floatingPanel,
+        .alertsAndUpdates,
+        .dataAndMaintenance,
+    ]
+
     var id: String { rawValue }
+
+    var canonical: AppSettingsCategory {
+        self == .content ? .floatingPanel : self
+    }
 
     var title: String {
         switch self {
@@ -25,8 +44,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "显示面"
         case .statusBar: return "状态栏"
         case .monitoring: return "监控与额度"
-        case .floatingPanel: return "悬浮窗"
-        case .content: return "悬浮窗内容"
+        case .floatingPanel, .content: return "悬浮窗"
         case .alertsAndUpdates: return "提醒与更新"
         case .dataAndMaintenance: return "数据与维护"
         }
@@ -41,8 +59,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "主界面与辅助显示面"
         case .statusBar: return "顶部指标、顺序与紧凑显示"
         case .monitoring: return "实时速率、统计与刷新"
-        case .floatingPanel: return "位置、尺寸与视觉样式"
-        case .content: return "悬浮窗信息和排列顺序"
+        case .floatingPanel, .content: return "位置、外观、内容与翻页"
         case .alertsAndUpdates: return "未读反馈与版本检查"
         case .dataAndMaintenance: return "目录与修复工具"
         }
@@ -57,8 +74,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "rectangle.3.group"
         case .statusBar: return "menubar.rectangle"
         case .monitoring: return "speedometer"
-        case .floatingPanel: return "rectangle.on.rectangle"
-        case .content: return "list.bullet.rectangle"
+        case .floatingPanel, .content: return "rectangle.on.rectangle"
         case .alertsAndUpdates: return "bell.badge"
         case .dataAndMaintenance: return "wrench.and.screwdriver"
         }
@@ -80,7 +96,7 @@ enum AppSettingsRouteRequest {
     static func consume(defaults: UserDefaults = .standard) -> AppSettingsCategory? {
         guard let rawValue = defaults.string(forKey: pendingCategoryKey) else { return nil }
         defaults.removeObject(forKey: pendingCategoryKey)
-        return AppSettingsCategory(rawValue: rawValue)
+        return AppSettingsCategory(rawValue: rawValue)?.canonical
     }
 }
 
@@ -119,10 +135,15 @@ struct AppSettingsView: View {
     @Binding var showUsageStatus: Bool
     @Binding var showMetrics: Bool
     @Binding var showRunningThreads: Bool
+    @Binding var showTodayModelShare: Bool
+    @Binding var showTodayModelCost: Bool
     @Binding var showQuota: Bool
     @Binding var showRadar: Bool
     @Binding var showCrowdRadar: Bool
     @Binding var contentOrderRaw: String
+    @Binding var pagePairsRaw: String
+    let floatingPreviewSnapshot: TokenDisplaySnapshot
+    let floatingPreviewRadarPresentation: CodexRadarPresentationState
     let defaultCodexHome: URL?
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -152,6 +173,7 @@ struct AppSettingsView: View {
         .background(AppTheme.panelBackground)
         .onExitCommand(perform: onClose)
         .onAppear {
+            selectedCategory = selectedCategory.canonical
             sharedAccountRadarTierRaw = SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw).rawValue
             sharedAccountPriceModelRaw = OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw).rawValue
             if selectedCategory == .autoResume {
@@ -159,6 +181,10 @@ struct AppSettingsView: View {
             }
         }
         .onChange(of: selectedCategory) {
+            if selectedCategory != selectedCategory.canonical {
+                selectedCategory = selectedCategory.canonical
+                return
+            }
             if selectedCategory == .autoResume {
                 autoResumeController.refreshThreads()
             }
@@ -293,10 +319,8 @@ struct AppSettingsView: View {
                 statusBarSettings
             case .monitoring:
                 monitoringSettings
-            case .floatingPanel:
+            case .floatingPanel, .content:
                 floatingPanelSettings
-            case .content:
-                contentSettings
             case .alertsAndUpdates:
                 alertsAndUpdateSettings
             case .dataAndMaintenance:
@@ -585,15 +609,25 @@ struct AppSettingsView: View {
                     settingsColor("额度固定色", systemImage: "circle.fill", hex: $quotaFixedHex, fallback: FloatingQuotaColorStyle.defaultFixedHex)
                 }
             }
+
+            contentSettings
         }
     }
 
     private var contentSettings: some View {
-        settingsSection(title: "显示内容", subtitle: "选择悬浮窗信息，并用箭头调整从上到下的顺序") {
-            ForEach(orderedGroups) { group in
-                contentRow(group)
-            }
-        }
+        FloatingPanelStructureEditor(
+            visibility: floatingContentVisibilityBinding,
+            snapshot: floatingPreviewSnapshot,
+            radarPresentation: floatingPreviewRadarPresentation,
+            opacity: floatingPanelOpacity,
+            scale: floatingPanelScale,
+            appearance: FloatingPanelAppearance(
+                startHex: gradientStartHex,
+                endHex: gradientEndHex,
+                directionRaw: gradientDirection,
+                styleRaw: gradientStyle
+            )
+        )
     }
 
     private var statusBarPreview: some View {
@@ -625,23 +659,23 @@ struct AppSettingsView: View {
                     HStack(spacing: 6) {
                         ForEach(Array(presentation.columns.enumerated()), id: \.offset) { entry in
                             let column = entry.element
-                            VStack(spacing: 0) {
+                            VStack(alignment: .leading, spacing: 0) {
                                 Text(column.top.text.isEmpty ? "\u{200B}" : column.top.text)
                                     .font(.system(
-                                        size: column.top.isSecondary ? 6.5 : 7.5,
+                                        size: 8.75,
                                         weight: .semibold,
                                         design: .monospaced
                                     ))
                                     .foregroundStyle(column.top.isSecondary ? .secondary : .primary)
-                                    .frame(height: 8.5)
+                                    .frame(height: 10)
                                 Text(column.bottom.text.isEmpty ? "\u{200B}" : column.bottom.text)
                                     .font(.system(
-                                        size: column.bottom.isSecondary ? 6.5 : 7.5,
+                                        size: 8.75,
                                         weight: .semibold,
                                         design: .monospaced
                                     ))
                                     .foregroundStyle(column.bottom.isSecondary ? .secondary : .primary)
-                                    .frame(height: 8.5)
+                                    .frame(height: 10)
                             }
                             .fixedSize()
                         }
@@ -870,6 +904,47 @@ struct AppSettingsView: View {
 
     private var orderedGroups: [FloatingPanelContentGroup] {
         FloatingPanelContentVisibility.order(from: contentOrderRaw)
+    }
+
+    private var pageCapableGroups: [FloatingPanelContentGroup] {
+        orderedGroups.filter(\.supportsPaging)
+    }
+
+    private var pagePairs: [FloatingPanelPagePair] {
+        FloatingPanelContentVisibility.pagePairs(from: pagePairsRaw)
+    }
+
+    private var floatingContentVisibilityBinding: Binding<FloatingPanelContentVisibility> {
+        Binding(
+            get: {
+                FloatingPanelContentVisibility(
+                    showRateAndBar: showRateAndBar,
+                    showUsageStatus: showUsageStatus,
+                    showMetrics: showMetrics,
+                    showRunningThreads: showRunningThreads,
+                    showTodayModelShare: showTodayModelShare,
+                    showTodayModelCost: showTodayModelCost,
+                    showQuota: showQuota,
+                    showRadar: showRadar,
+                    showCrowdRadar: showCrowdRadar,
+                    groupOrder: orderedGroups,
+                    pagePairs: pagePairs
+                )
+            },
+            set: { next in
+                showRateAndBar = next.showRateAndBar
+                showUsageStatus = next.showUsageStatus
+                showMetrics = next.showMetrics
+                showRunningThreads = next.showRunningThreads
+                showTodayModelShare = next.showTodayModelShare
+                showTodayModelCost = next.showTodayModelCost
+                showQuota = next.showQuota
+                showRadar = next.showRadar
+                showCrowdRadar = next.showCrowdRadar
+                contentOrderRaw = FloatingPanelContentVisibility.encodedOrder(next.groupOrder)
+                pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(next.pagePairs)
+            }
+        )
     }
 
     private var statusBarMetricConfiguration: StatusBarMetricConfiguration {
@@ -1113,6 +1188,54 @@ struct AppSettingsView: View {
         .settingsRowDivider()
     }
 
+    private func pagePairRow(_ group: FloatingPanelContentGroup) -> some View {
+        let pair = pagePairs.first { $0.contains(group) }
+        let isDefault = pair?.first == group
+        return HStack(spacing: 9) {
+            Image(systemName: group.systemImage)
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(group.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                    if pair != nil {
+                        Text(isDefault ? "默认页" : "第二页")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(isDefault ? AppTheme.accentBlue : Color.secondary)
+                    }
+                }
+                Text(pair == nil ? "单独占一行" : "与 \(pair?.partner(of: group)?.title ?? "--") 共用一行")
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            Picker("翻页搭档", selection: pagePartnerBinding(for: group)) {
+                Text("单独显示").tag("")
+                ForEach(pageCapableGroups.filter { $0 != group }) { candidate in
+                    Text(candidate.title).tag(candidate.rawValue)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+            if pair?.second == group {
+                Button("设为默认") {
+                    pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(
+                        FloatingPanelContentVisibility.swappingDefaultPage(
+                            in: pagePairs,
+                            for: group
+                        )
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .settingsRowDivider()
+    }
+
     private func statusBarMetricRow(_ metric: StatusBarMetricID) -> some View {
         let order = orderedStatusBarMetrics
         let index = order.firstIndex(of: metric) ?? 0
@@ -1234,10 +1357,31 @@ struct AppSettingsView: View {
         case .usageStatus: return $showUsageStatus
         case .metrics: return $showMetrics
         case .runningThreads: return $showRunningThreads
+        case .todayModelShare: return $showTodayModelShare
+        case .todayModelCost: return $showTodayModelCost
         case .quota: return $showQuota
         case .radar: return $showRadar
         case .crowdRadar: return $showCrowdRadar
         }
+    }
+
+    private func pagePartnerBinding(for group: FloatingPanelContentGroup) -> Binding<String> {
+        Binding(
+            get: { pagePairs.first(where: { $0.contains(group) })?.partner(of: group)?.rawValue ?? "" },
+            set: { rawValue in
+                let partner = FloatingPanelContentGroup(rawValue: rawValue)
+                let next = FloatingPanelContentVisibility.replacingPagePartner(
+                    in: pagePairs,
+                    for: group,
+                    with: partner
+                )
+                pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(next)
+                if partner != nil {
+                    visibilityBinding(for: group).wrappedValue = true
+                    visibilityBinding(for: partner!).wrappedValue = true
+                }
+            }
+        )
     }
 
     private func move(_ group: FloatingPanelContentGroup, by delta: Int) {

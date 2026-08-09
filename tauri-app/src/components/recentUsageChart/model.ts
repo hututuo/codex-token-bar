@@ -1,7 +1,6 @@
 import type { RecentUsagePoint } from "../../types/dashboard";
 import {
   modelAwareAPICostUSD,
-  officialAPICostUSD as calculateOfficialAPICostUSD,
   type ModelTokenCostRow,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
@@ -20,6 +19,18 @@ export interface RecentChartScrollLayout {
   className: string;
 }
 
+export type RecentChartScrollDirection = "backward" | "forward";
+
+export interface RecentChartScrollPresentation {
+  contentOffset: number;
+  maxOffset: number;
+  viewportWidth: number;
+  currentWindowIndex: number;
+  windowCount: number;
+  isAtOldest: boolean;
+  isAtLatest: boolean;
+}
+
 export interface RecentUsageChartSeries {
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
@@ -27,6 +38,12 @@ export interface RecentUsageChartSeries {
 }
 
 export const RECENT_CHART_24H_VIEWPORT_SECONDS = 24 * 60 * 60;
+
+const RECENT_CHART_WINDOW_SECONDS: Record<RecentChartRange, number> = {
+  "24h": 24 * 60 * 60,
+  "7d": 7 * 24 * 60 * 60,
+  "30d": 30 * 24 * 60 * 60,
+};
 
 export interface SeriesVisibility {
   tokens: boolean;
@@ -89,6 +106,8 @@ export interface QuotaConsumptionEstimate {
   comparisonStartUnix: number | null;
   comparisonEndUnix: number | null;
   confidence: QuotaConsumptionConfidence;
+  excludedModels: string[];
+  excludedCalls: number;
 }
 
 export interface QuotaConsumptionSelection {
@@ -107,6 +126,8 @@ export interface QuotaConsumptionSelection {
   cacheHitRate: number;
   modelBreakdowns: ModelTokenCostRow[];
   sevenDayModelBreakdowns: ModelTokenCostRow[];
+  excludedModels: string[];
+  excludedCalls: number;
   fiveHour: QuotaConsumptionEstimate;
   sevenDay: QuotaConsumptionEstimate;
   sevenDayToFiveHourBudgetRatio: number | null;
@@ -117,15 +138,21 @@ export type QuotaSelectionAttributionState =
   | "withinTolerance"
   | "suspectedNonLocalUsage"
   | "localEstimateExceedsAccountDrop"
-  | "provisional";
+  | "provisional"
+  | "missingQuotaHistory"
+  | "missingRadarTierBaseline"
+  | "missingCompatiblePriceRevision";
 
 export interface QuotaSelectionAttributionResult {
   state: QuotaSelectionAttributionState;
-  accountDropPercent: number;
-  localSharePercent: number;
-  nonLocalDifferencePercent: number;
-  localComparableCostUSD: number;
-  radarSevenDayTotalUSD: number;
+  accountDropPercent: number | null;
+  localSharePercent: number | null;
+  nonLocalDifferencePercent: number | null;
+  localComparableCostUSD: number | null;
+  localCurrentAPIEquivalentUSD: number;
+  excludedModels: string[];
+  excludedCalls: number;
+  radarSevenDayTotalUSD: number | null;
   allowsAttributionConclusion: boolean;
 }
 
@@ -167,25 +194,16 @@ export function recentChartScrollLayout(
   viewportWidth = 980,
 ): RecentChartScrollLayout {
   const safeViewportWidth = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 980;
-  if (range !== "24h") {
-    return {
-      isHorizontal: false,
-      viewportWidth: safeViewportWidth,
-      contentWidth: safeViewportWidth,
-      latestScrollLeft: 0,
-      windowCount: 1,
-      className: "recent-chart-scroll",
-    };
-  }
-
   const intervalCount = Math.max(0, pointCount - 1);
-  const safeBucketSeconds = Number.isFinite(bucketSeconds) && bucketSeconds > 0 ? bucketSeconds : 5 * 60;
-  const viewportIntervalCount = Math.max(1, RECENT_CHART_24H_VIEWPORT_SECONDS / safeBucketSeconds);
+  const defaultBucketSeconds = range === "24h" ? 5 * 60 : range === "7d" ? 60 * 60 : 6 * 60 * 60;
+  const safeBucketSeconds = Number.isFinite(bucketSeconds) && bucketSeconds > 0 ? bucketSeconds : defaultBucketSeconds;
+  const viewportDurationSeconds = RECENT_CHART_WINDOW_SECONDS[range];
+  const contentDurationSeconds = Math.max(intervalCount * safeBucketSeconds, viewportDurationSeconds);
   const rawContentWidth = intervalCount > 0
-    ? Math.round((intervalCount / viewportIntervalCount) * safeViewportWidth)
+    ? Math.round((contentDurationSeconds / viewportDurationSeconds) * safeViewportWidth)
     : safeViewportWidth;
   const contentWidth = Math.max(safeViewportWidth, rawContentWidth);
-  const windowCount = Math.max(1, Math.ceil(Math.max(intervalCount, 1) / viewportIntervalCount));
+  const windowCount = Math.max(1, Math.ceil(contentDurationSeconds / viewportDurationSeconds));
 
   return {
     isHorizontal: contentWidth > safeViewportWidth,
@@ -193,8 +211,56 @@ export function recentChartScrollLayout(
     contentWidth,
     latestScrollLeft: Math.max(0, contentWidth - safeViewportWidth),
     windowCount,
-    className: "recent-chart-scroll recent-chart-scroll--horizontal",
+    className: contentWidth > safeViewportWidth
+      ? "recent-chart-scroll recent-chart-scroll--horizontal"
+      : "recent-chart-scroll",
   };
+}
+
+export function recentChartScrollPresentation(
+  layout: Pick<RecentChartScrollLayout, "contentWidth" | "viewportWidth" | "windowCount">,
+  contentOffset: number,
+  epsilon = 0.5,
+): RecentChartScrollPresentation {
+  const safeViewportWidth = Math.max(0, Number.isFinite(layout.viewportWidth) ? layout.viewportWidth : 0);
+  const safeContentWidth = Math.max(0, Number.isFinite(layout.contentWidth) ? layout.contentWidth : 0);
+  const maxOffset = Math.max(safeContentWidth - safeViewportWidth, 0);
+  const safeOffset = Number.isFinite(contentOffset) ? clamp(contentOffset, 0, maxOffset) : 0;
+  const safeWindowCount = Math.max(1, Math.floor(Number.isFinite(layout.windowCount) ? layout.windowCount : 1));
+  const safeEpsilon = Math.max(0, Number.isFinite(epsilon) ? epsilon : 0);
+  const upperWindowIndex = safeWindowCount - 1;
+  const currentWindowIndex = safeViewportWidth > 0
+    ? clamp(Math.floor((safeOffset + safeEpsilon) / safeViewportWidth), 0, upperWindowIndex)
+    : 0;
+  return {
+    contentOffset: safeOffset,
+    maxOffset,
+    viewportWidth: safeViewportWidth,
+    currentWindowIndex,
+    windowCount: safeWindowCount,
+    isAtOldest: safeOffset <= safeEpsilon,
+    isAtLatest: maxOffset - safeOffset <= safeEpsilon,
+  };
+}
+
+export function recentChartScrollTarget(
+  layout: Pick<RecentChartScrollLayout, "contentWidth" | "viewportWidth" | "windowCount">,
+  contentOffset: number,
+  direction: RecentChartScrollDirection,
+): number {
+  const presentation = recentChartScrollPresentation(layout, contentOffset);
+  if (presentation.windowCount <= 1 || presentation.viewportWidth <= 0) {
+    return presentation.contentOffset;
+  }
+  const delta = direction === "forward" ? 1 : -1;
+  const targetWindowIndex = clamp(
+    presentation.currentWindowIndex + delta,
+    0,
+    presentation.windowCount - 1,
+  );
+  return targetWindowIndex >= presentation.windowCount - 1
+    ? presentation.maxOffset
+    : Math.min(targetWindowIndex * presentation.viewportWidth, presentation.maxOffset);
 }
 
 export function prepareRecentChartData(
@@ -446,6 +512,14 @@ export function clickQuotaSelection(
   return { startIndex: state.startIndex, fixedEndIndex: index };
 }
 
+export function shouldReopenPreviewOnHoverMove(
+  fixedEndIndex: number | null,
+  previousHoveredIndex: number | null,
+  nextHoveredIndex: number | null,
+): boolean {
+  return fixedEndIndex === null && nextHoveredIndex !== previousHoveredIndex;
+}
+
 export function activeQuotaSelectionEndIndex(
   state: QuotaSelectionState,
   hoveredIndex: number | null,
@@ -481,11 +555,11 @@ export function quotaConsumptionSelection(
 
   const selectedPoints = data.points.slice(lower, upper + 1);
   const breakdown = combineTokenBreakdown(selectedPoints);
-  const selectedCostUSD = modelAwareAPICostUSD(
+  const selectedEstimate = modelAwareAPICostUSD(
     selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
     breakdown,
     priceModel,
-  ).costUSD;
+  );
   const fiveHourDrop = quotaDropResolution(selectedPoints.map((point) => point.fiveHourRemainingPercent));
   const sevenDayDrop = quotaDropResolution(selectedPoints.map((point) => point.sevenDayRemainingPercent));
   const fiveHourComparisonPoints = fiveHourDrop.comparisonStartOffset === null
@@ -496,32 +570,34 @@ export function quotaConsumptionSelection(
     : selectedPoints.slice(sevenDayDrop.comparisonStartOffset);
   const fiveHourComparisonBreakdown = combineTokenBreakdown(fiveHourComparisonPoints);
   const sevenDayComparisonBreakdown = combineTokenBreakdown(sevenDayComparisonPoints);
-  const fiveHourComparisonCost = modelAwareAPICostUSD(
+  const fiveHourComparisonEstimate = modelAwareAPICostUSD(
     fiveHourComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []),
     fiveHourComparisonBreakdown,
     priceModel,
-  ).costUSD;
+  );
   const sevenDayModelBreakdowns = sevenDayComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []);
-  const sevenDayComparisonCost = modelAwareAPICostUSD(
+  const sevenDayComparisonEstimate = modelAwareAPICostUSD(
     sevenDayModelBreakdowns,
     sevenDayComparisonBreakdown,
     priceModel,
-  ).costUSD;
+  );
   const fiveHour = quotaConsumptionEstimate(
     breakdown,
     fiveHourDrop,
-    selectedCostUSD,
-    fiveHourComparisonCost,
+    selectedEstimate.costUSD,
+    fiveHourComparisonEstimate.costUSD,
     fiveHourComparisonBreakdown,
+    fiveHourComparisonEstimate,
     selectedPoints,
     data.bucketSeconds,
   );
   const sevenDay = quotaConsumptionEstimate(
     breakdown,
     sevenDayDrop,
-    selectedCostUSD,
-    sevenDayComparisonCost,
+    selectedEstimate.costUSD,
+    sevenDayComparisonEstimate.costUSD,
     sevenDayComparisonBreakdown,
+    sevenDayComparisonEstimate,
     selectedPoints,
     data.bucketSeconds,
   );
@@ -536,7 +612,7 @@ export function quotaConsumptionSelection(
     startUnix: data.points[lower].startUnix,
     endUnix: data.points[upper].startUnix + data.bucketSeconds,
     priceModel,
-    selectedCostUSD: fiveHour.selectedCostUSD,
+    selectedCostUSD: selectedEstimate.costUSD,
     totalTokens: breakdown.totalTokens,
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
@@ -545,6 +621,8 @@ export function quotaConsumptionSelection(
     cacheHitRate: breakdown.cacheHitRate,
     modelBreakdowns: selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
     sevenDayModelBreakdowns,
+    excludedModels: selectedEstimate.excludedModels,
+    excludedCalls: selectedEstimate.excludedCalls,
     fiveHour,
     sevenDay,
     sevenDayToFiveHourBudgetRatio: ratio,
@@ -569,6 +647,30 @@ export function quotaSelectionDurationText(
   if (hours > 0) parts.push(`${hours}小时`);
   if (minutes > 0 || parts.length === 0) parts.push(`${minutes}分钟`);
   return `持续 ${parts.join("")}`;
+}
+
+export function quotaComparisonScopeText(
+  selection: QuotaConsumptionSelection,
+  visibility: QuotaEstimateWindowVisibility,
+): string | null {
+  const narrowedWindows = [
+    visibility.fiveHour && usesNarrowerComparison(selection.fiveHour, selection) ? "5h" : null,
+    visibility.sevenDay && usesNarrowerComparison(selection.sevenDay, selection) ? "7d" : null,
+  ].filter((value): value is string => value !== null);
+  return narrowedWindows.length === 0
+    ? null
+    : `${narrowedWindows.join("/")} 反推仅按同周期可比区间`;
+}
+
+function usesNarrowerComparison(
+  estimate: QuotaConsumptionEstimate,
+  selection: QuotaConsumptionSelection,
+): boolean {
+  return estimate.quotaDropAvailable
+    && estimate.comparisonStartUnix !== null
+    && estimate.comparisonEndUnix !== null
+    && (estimate.comparisonStartUnix > selection.startUnix + 0.5
+      || estimate.comparisonEndUnix < selection.endUnix - 0.5);
 }
 
 function pointsForRange(range: RecentChartRange, series: RecentUsageChartSeries): RecentUsagePoint[] {
@@ -646,7 +748,6 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
   // classified token dimensions.
   const outputTokens = points.reduce((total, point) => total + finiteNonnegative(point.outputTokens), 0);
   const calls = points.reduce((total, point) => total + point.calls, 0);
-  const costUSD = officialAPICostUSD(inputTokens, cachedInputTokens, outputTokens, "gpt56Sol");
   return {
     inputTokens,
     cachedInputTokens,
@@ -654,7 +755,6 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
     totalTokens: points.reduce((total, point) => total + point.tokens, 0),
     calls,
     cacheHitRate: inputTokens === 0 ? 0 : cachedInputTokens / inputTokens,
-    costUSD,
   };
 }
 
@@ -664,6 +764,7 @@ function quotaConsumptionEstimate(
   selectedCostUSD: number,
   comparisonCostUSD: number,
   comparisonBreakdown: ReturnType<typeof combineTokenBreakdown>,
+  comparisonEstimate: ReturnType<typeof modelAwareAPICostUSD>,
   selectedPoints: RecentUsagePoint[],
   bucketSeconds: number,
 ): QuotaConsumptionEstimate {
@@ -698,6 +799,8 @@ function quotaConsumptionEstimate(
       ? null
       : selectedPoints[selectedPoints.length - 1].startUnix + bucketSeconds,
     confidence,
+    excludedModels: comparisonEstimate.excludedModels,
+    excludedCalls: comparisonEstimate.excludedCalls,
   };
 }
 
@@ -705,37 +808,56 @@ export function quotaSelectionAttribution(
   selection: QuotaConsumptionSelection,
   context: SharedAccountAttributionResult | null,
 ): QuotaSelectionAttributionResult | null {
-  if (!context
-    || !selection.sevenDay.quotaDropAvailable
-    || context.priceBasis === null
-    || context.radarPlanTotalUSD === null
-    || !Number.isFinite(context.radarPlanTotalUSD)
-    || context.radarPlanTotalUSD <= 0) {
+  if (!context) {
     return null;
   }
 
-  const localComparableCostUSD = modelAwareAPICostUSD(
-    selection.sevenDayModelBreakdowns,
-    {
-      inputTokens: selection.sevenDay.comparisonBreakdown.inputTokens,
-      cachedInputTokens: selection.sevenDay.comparisonBreakdown.cachedInputTokens,
-      outputTokens: selection.sevenDay.comparisonBreakdown.outputTokens,
-      calls: selection.sevenDay.comparisonBreakdown.calls,
-    },
+  const comparisonRows = selection.sevenDayModelBreakdowns;
+  const comparisonBreakdown = {
+    inputTokens: selection.sevenDay.comparisonBreakdown.inputTokens,
+    cachedInputTokens: selection.sevenDay.comparisonBreakdown.cachedInputTokens,
+    outputTokens: selection.sevenDay.comparisonBreakdown.outputTokens,
+    calls: selection.sevenDay.comparisonBreakdown.calls,
+  };
+  const localCurrentAPIEquivalent = modelAwareAPICostUSD(
+    comparisonRows,
+    comparisonBreakdown,
     selection.priceModel,
-    context.priceBasis,
-  ).costUSD;
-  const accountDropPercent = selection.sevenDay.quotaDropPercent;
-  const localSharePercent = localComparableCostUSD / context.radarPlanTotalUSD * 100;
-  const nonLocalDifferencePercent = accountDropPercent - localSharePercent;
+    "current",
+  );
+  const localComparableEstimate = context.priceBasis === null
+    ? null
+    : modelAwareAPICostUSD(
+        selection.sevenDayModelBreakdowns,
+        comparisonBreakdown,
+        selection.priceModel,
+        context.priceBasis,
+      );
+  const localComparableCostUSD = localComparableEstimate?.costUSD ?? null;
+  const radarSevenDayTotalUSD = context.radarPlanTotalUSD !== null
+    && Number.isFinite(context.radarPlanTotalUSD)
+    && context.radarPlanTotalUSD > 0
+    ? context.radarPlanTotalUSD
+    : null;
+  const accountDropPercent = selection.sevenDay.quotaDropAvailable
+    ? selection.sevenDay.quotaDropPercent
+    : null;
+  const localSharePercent = localComparableCostUSD !== null && radarSevenDayTotalUSD !== null
+    ? localComparableCostUSD / radarSevenDayTotalUSD * 100
+    : null;
+  const nonLocalDifferencePercent = accountDropPercent !== null && localSharePercent !== null
+    ? accountDropPercent - localSharePercent
+    : null;
   const quotaCoveredBoundary = context.quotaUpdatedAtUnix === null
     ? null
     : Math.floor(context.quotaUpdatedAtUnix / (5 * 60)) * (5 * 60);
-  const allowsAttributionConclusion = (
-    context.status === "positiveResidual"
-      || context.status === "negativeResidual"
-      || context.status === "indistinguishable"
-  )
+  const allowsAttributionConclusion = accountDropPercent !== null
+    && localSharePercent !== null
+    && (
+      context.status === "positiveResidual"
+        || context.status === "negativeResidual"
+        || context.status === "indistinguishable"
+    )
     && !context.quotaDataStale
     && !context.radarDataStale
     && !context.usagePendingQuotaRefresh
@@ -745,13 +867,19 @@ export function quotaSelectionAttribution(
     && (context.cycleEndUnix === null || selection.endUnix <= context.cycleEndUnix)
     && (context.segmentStartUnix === null || selection.startUnix >= context.segmentStartUnix)
     && (quotaCoveredBoundary === null || selection.endUnix <= quotaCoveredBoundary);
-  const state: QuotaSelectionAttributionState = !allowsAttributionConclusion
-    ? "provisional"
-    : Math.abs(nonLocalDifferencePercent) <= 2
-      ? "withinTolerance"
-      : nonLocalDifferencePercent > 0
-        ? "suspectedNonLocalUsage"
-        : "localEstimateExceedsAccountDrop";
+  const state: QuotaSelectionAttributionState = context.priceBasis === null
+    ? "missingCompatiblePriceRevision"
+    : radarSevenDayTotalUSD === null
+      ? "missingRadarTierBaseline"
+      : accountDropPercent === null
+        ? "missingQuotaHistory"
+        : !allowsAttributionConclusion
+          ? "provisional"
+          : Math.abs(nonLocalDifferencePercent ?? 0) <= 2
+            ? "withinTolerance"
+            : (nonLocalDifferencePercent ?? 0) > 0
+              ? "suspectedNonLocalUsage"
+              : "localEstimateExceedsAccountDrop";
 
   return {
     state,
@@ -759,7 +887,10 @@ export function quotaSelectionAttribution(
     localSharePercent,
     nonLocalDifferencePercent,
     localComparableCostUSD,
-    radarSevenDayTotalUSD: context.radarPlanTotalUSD,
+    localCurrentAPIEquivalentUSD: localCurrentAPIEquivalent.costUSD,
+    excludedModels: localCurrentAPIEquivalent.excludedModels,
+    excludedCalls: localCurrentAPIEquivalent.excludedCalls,
+    radarSevenDayTotalUSD,
     allowsAttributionConclusion,
   };
 }
@@ -818,21 +949,6 @@ function isFullRemainingSpike(value: number, previous: number | null, next: numb
 
 function quotaPercentValue(value: number): number {
   return value <= 1 ? value * 100 : value;
-}
-
-export function officialAPICostUSD(
-  inputTokens: number,
-  cachedInputTokens: number,
-  outputTokens: number,
-  priceModel: OfficialAPIPriceModel,
-): number {
-  return calculateOfficialAPICostUSD(
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
-    priceModel,
-    "current",
-  );
 }
 
 function latestPresent(values: Array<number | null>): number | null {

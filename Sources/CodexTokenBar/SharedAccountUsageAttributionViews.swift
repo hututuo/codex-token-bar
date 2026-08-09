@@ -89,12 +89,20 @@ struct SharedAccountUsageAttributionPresentation: Equatable {
 
     var modelLine: String {
         let detected = result.detectedModels.map(\.quotaEstimateShortTitle)
+        let excludedText = !result.excludedModels.isEmpty
+            ? "\(result.excludedModels.joined(separator: "/")) \(result.excludedCalls) 次独立额度，不参与 API 等值"
+            : ""
         if detected.isEmpty {
-            return "未知模型回退：\(result.model.title)"
+            if result.fallbackModelCalls == 0, !excludedText.isEmpty {
+                return excludedText
+            }
+            return "未知模型回退：\(result.model.title)\(excludedText.isEmpty ? "" : " · \(excludedText)")"
         }
         let automatic = "自动：\(detected.joined(separator: "/"))"
-        guard result.fallbackModelCalls > 0 else { return automatic }
-        return "\(automatic) · \(result.fallbackModelCalls) 次回退 \(result.model.quotaEstimateShortTitle)"
+        let fallback = result.fallbackModelCalls > 0
+            ? " · \(result.fallbackModelCalls) 次回退 \(result.model.quotaEstimateShortTitle)"
+            : ""
+        return automatic + fallback + (excludedText.isEmpty ? "" : " · \(excludedText)")
     }
 
     var compactSummaryLine: String {

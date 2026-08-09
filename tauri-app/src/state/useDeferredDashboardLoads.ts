@@ -4,6 +4,9 @@ import type {
   CodexHomeSourceToken,
   DashboardSnapshot,
   LiveThreadOption,
+  PreciseDashboardDedupeDomain,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardRequestRevision,
   UsageCacheStatus,
 } from "../types/dashboard";
 import { useDeferredQuotaLoad } from "./useDeferredQuotaLoad";
@@ -15,12 +18,18 @@ interface DeferredDashboardLoadsOptions {
   dashboardReady: boolean;
   loading: boolean;
   generation: number;
+  forcePreciseRefresh?: boolean;
+  preciseRefreshReason?: PreciseDashboardRefreshReason;
+  preciseRefreshRevision?: PreciseDashboardRequestRevision;
+  preciseRefreshDedupeDomain?: PreciseDashboardDedupeDomain;
+  preciseRefreshDedupeKey?: string;
   quotaGeneration: number;
   forceQuotaRefresh: boolean;
   sourceToken: CodexHomeSourceToken | null;
   source: Pick<
     DashboardDataSource,
     | "readPreciseDashboardSnapshot"
+    | "readPreciseDashboardSourceProbe"
     | "readUsageCacheStatus"
     | "readAccountQuota"
     | "readLiveThreadOptions"
@@ -30,6 +39,14 @@ interface DeferredDashboardLoadsOptions {
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized: () => void;
   onUsageCacheStatus: (status: UsageCacheStatus) => void;
+  onPreciseRequestStarted?: (
+    generation: number,
+    forced: boolean,
+    reason: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;
@@ -42,6 +59,11 @@ export function useDeferredDashboardLoads({
   dashboardReady,
   loading,
   generation,
+  forcePreciseRefresh,
+  preciseRefreshReason,
+  preciseRefreshRevision,
+  preciseRefreshDedupeDomain,
+  preciseRefreshDedupeKey,
   quotaGeneration,
   forceQuotaRefresh,
   sourceToken,
@@ -51,6 +73,7 @@ export function useDeferredDashboardLoads({
   onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
+  onPreciseRequestStarted,
   onQuota,
   onLiveThreadOptions,
   onForceQuotaRefreshConsumed,
@@ -61,12 +84,18 @@ export function useDeferredDashboardLoads({
     active,
     dashboardReady,
     generation,
+    forcePreciseRefresh,
+    preciseRefreshReason,
+    preciseRefreshRevision,
+    preciseRefreshDedupeDomain,
+    preciseRefreshDedupeKey,
     loading,
     onPreciseDashboard,
     onPreciseDashboardFailure,
     onPreciseDashboardStale,
     onUsageCacheInitialized,
     onUsageCacheStatus,
+    onPreciseRequestStarted,
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,

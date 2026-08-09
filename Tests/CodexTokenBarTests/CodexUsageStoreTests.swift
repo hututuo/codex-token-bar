@@ -803,6 +803,166 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.status.contains("精确 token 仍在读取"), store.status)
     }
 
+    func testFullPreciseRefreshPublishesNumericThenFinalPhaseExactlyOnce() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/phased-publication/.codex"),
+            origin: .defaultHome
+        )
+        let numeric = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            preciseTimeSeriesGeneratedAt: nil,
+            attributionEventsComplete: false
+        )
+        let final = makeSnapshot(
+            totalTokens: 1_200,
+            dayTokens: 120,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 3_000),
+            attributionEventsComplete: true
+        )
+        let loader = BarrierPhasedDashboardSnapshotLoader(
+            numeric: numeric,
+            final: final
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+        let numericPublished = expectation(description: "numeric phase published")
+        let finalPublished = expectation(description: "final phase published")
+        var publishedTokens: [Int] = []
+        let cancellable = store.$snapshot.sink { snapshot in
+            guard snapshot.stats.totalTokens > 0 else { return }
+            publishedTokens.append(snapshot.stats.totalTokens)
+            if snapshot.stats.totalTokens == numeric.stats.totalTokens {
+                numericPublished.fulfill()
+            }
+            if snapshot.stats.totalTokens == final.stats.totalTokens {
+                finalPublished.fulfill()
+            }
+        }
+        defer { cancellable.cancel() }
+
+        store.refresh()
+        await loader.waitUntilPhaseRequestStarted()
+        await loader.yieldNumeric()
+        await fulfillment(of: [numericPublished], timeout: 1)
+        XCTAssertEqual(store.snapshot.stats.totalTokens, numeric.stats.totalTokens)
+        XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        let phaseLoadCountAfterNumeric = await loader.phasedLoadCountValue()
+        XCTAssertEqual(phaseLoadCountAfterNumeric, 1)
+
+        await loader.yieldFinal()
+        await fulfillment(of: [finalPublished], timeout: 1)
+        await waitUntilYielding("final refresh cleanup") {
+            !store.isRefreshing
+        }
+        XCTAssertEqual(store.snapshot.stats.totalTokens, final.stats.totalTokens)
+        XCTAssertTrue(store.snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.isRefreshing)
+        XCTAssertEqual(publishedTokens, [numeric.stats.totalTokens, final.stats.totalTokens])
+        let phaseLoadCountAfterFinal = await loader.phasedLoadCountValue()
+        XCTAssertEqual(phaseLoadCountAfterFinal, 1)
+    }
+
+    func testNumericPhaseRemainsDisplayableWhenFinalPrecisePhaseFails() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/phased-failure/.codex"),
+            origin: .defaultHome
+        )
+        let numeric = makeSnapshot(
+            totalTokens: 2_000,
+            dayTokens: 200,
+            preciseTimeSeriesGeneratedAt: nil,
+            attributionEventsComplete: false
+        )
+        let loader = BarrierPhasedDashboardSnapshotLoader(
+            numeric: numeric,
+            final: nil
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+        let numericPublished = expectation(description: "numeric phase published")
+        let cancellable = store.$snapshot.sink { snapshot in
+            if snapshot.stats.totalTokens == numeric.stats.totalTokens {
+                numericPublished.fulfill()
+            }
+        }
+        defer { cancellable.cancel() }
+
+        store.refresh()
+        await loader.waitUntilPhaseRequestStarted()
+        await loader.yieldNumeric()
+        await fulfillment(of: [numericPublished], timeout: 1)
+        await loader.yieldFinal()
+        await waitUntilYielding("failed final phase") {
+            !store.isRefreshing && store.status.hasPrefix("读取失败")
+        }
+
+        XCTAssertEqual(store.snapshot.stats.totalTokens, numeric.stats.totalTokens)
+        XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.status.contains("当前显示已陈旧"), store.status)
+    }
+
+    func testStalePrecisePhaseCannotPublishAfterSourceBindingChanges() async {
+        let sourceA = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/phased-stale-a/.codex"),
+            origin: .defaultHome
+        )
+        let sourceB = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/phased-stale-b/.codex"),
+            origin: .defaultHome
+        )
+        let resolver = MutableCodexDataSourceResolver(source: sourceA)
+        let numericA = makeSnapshot(
+            totalTokens: 3_000,
+            dayTokens: 300,
+            preciseTimeSeriesGeneratedAt: nil,
+            attributionEventsComplete: false
+        )
+        let finalB = makeSnapshot(
+            totalTokens: 4_000,
+            dayTokens: 400,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 4_000),
+            attributionEventsComplete: true
+        )
+        let loader = ControlledPhasedDashboardSnapshotLoader(
+            numericBySource: [sourceA.codexHome.path: numericA],
+            finalBySource: [sourceB.codexHome.path: finalB]
+        )
+        let store = CodexUsageStore(
+            resolver: resolver,
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await loader.waitUntilPending(source: sourceA)
+        resolver.source = sourceB
+        store.refresh()
+        await loader.waitUntilPending(source: sourceB)
+        await loader.yieldFinal(source: sourceB)
+        await waitUntilYielding("source B final phase") {
+            store.snapshot.stats.totalTokens == finalB.stats.totalTokens
+                && !store.isRefreshing
+        }
+
+        // The cancelled source-A stream may still deliver its queued value;
+        // the store must reject it by generation and source binding.
+        await loader.yieldNumeric(source: sourceA)
+        await loader.yieldFinal(source: sourceA)
+        await Task.yield()
+        XCTAssertEqual(store.snapshot.stats.totalTokens, finalB.stats.totalTokens)
+        XCTAssertEqual(store.currentDataSource, sourceB)
+    }
+
     func testSameSourceMetadataOnlyRefreshRetainsPreciseValuesAndMarksThemStale() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/same-source-metadata/.codex"),
@@ -1595,6 +1755,19 @@ final class CodexUsageStoreTests: XCTestCase {
                 totalTokens: 1_500,
                 todayTokens: 300,
                 todayCalls: 7,
+                todayModelBreakdowns: [
+                    ModelTokenBreakdown(
+                        model: "gpt-5.6-luna",
+                        breakdown: TokenCacheBreakdown(
+                            inputTokens: 260,
+                            cachedInputTokens: 200,
+                            outputTokens: 40,
+                            reasoningOutputTokens: 0,
+                            totalTokens: 300,
+                            calls: 7
+                        )
+                    )
+                ],
                 generatedAt: Date()
             )
         )
@@ -1628,6 +1801,8 @@ final class CodexUsageStoreTests: XCTestCase {
         }
         XCTAssertEqual(today?.tokens, 300)
         XCTAssertEqual(today?.calls, 7)
+        XCTAssertEqual(store.todayModelBreakdowns.first?.model, "gpt-5.6-luna")
+        XCTAssertEqual(store.todayModelBreakdowns.first?.breakdown.cachedInputTokens, 200)
         // 重字段（时间序列）保留上次全量构建结果：旧日条目仍在、bins 未动。
         XCTAssertEqual(store.snapshot.dailyUsage.count, 2)
         XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)
@@ -1645,6 +1820,84 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(preciseCount, 2)
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, secondPreciseCoverageAt)
         XCTAssertTrue(store.preciseTimeSeriesFresh)
+    }
+
+    func testCompactSummaryRefreshRetainsModelRowsWhileProjectionIsTemporarilyEmpty() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-model-cache/.codex"),
+            origin: .defaultHome
+        )
+        let generatedAt = Date()
+        let modelEvent = TokenCacheAttributionEvent(
+            id: "model-cache-sol",
+            start: generatedAt,
+            model: "gpt-5.6-sol",
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                totalTokens: 100,
+                calls: 1
+            )
+        )
+        let initial = DashboardSnapshot(
+            stats: DashboardStats(
+                totalTokens: 100,
+                peakDayTokens: 100,
+                peakThreadTokens: 100,
+                currentStreakDays: 1,
+                longestStreakDays: 1,
+                totalCalls: 1,
+                totalThreads: 1,
+                mostUsedReasoning: "",
+                skillsExplored: 0,
+                totalSkillsUsed: 0
+            ),
+            dailyUsage: [DayUsage(date: generatedAt, tokens: 100, calls: 1)],
+            recentBins: [],
+            hourlyUsage: [],
+            pluginUsage: [],
+            cacheUsage: TokenCacheUsage(
+                total: .empty,
+                daily: [],
+                hourly: [],
+                recentBins: [],
+                sessions: [],
+                turns: [],
+                attributionEvents: [modelEvent],
+                attributionEventsComplete: true
+            ),
+            generatedAt: generatedAt
+        )
+        let emptyProjection = CodexUsageAnalyzer.CompactUsageSummary(
+            totalTokens: 120,
+            todayTokens: 120,
+            todayCalls: 2,
+            todayModelBreakdowns: [],
+            generatedAt: generatedAt
+        )
+        let loader = CompactSummarySequenceProbeLoader(
+            precise: [initial],
+            summaries: [emptyProjection]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("initial model snapshot") {
+            !store.isRefreshing && store.todayModelBreakdowns.count == 1
+        }
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refresh()
+        await waitUntil("empty model projection refresh") {
+            !store.isRefreshing && store.snapshot.stats.totalTokens == 120
+        }
+
+        XCTAssertEqual(store.todayModelBreakdowns.map(\.model), ["gpt-5.6-sol"])
     }
 
     func testFirstLoadTakesTheFullPathEvenWhenOnlyCompactSurfaceIsVisible() async {
@@ -1845,6 +2098,7 @@ final class CodexUsageStoreTests: XCTestCase {
         usagePrecision: DashboardUsagePrecision = .precise,
         preciseTimeSeriesGeneratedAt: Date? = nil,
         generatedAt: Date = Date(timeIntervalSince1970: 1_800),
+        attributionEventsComplete: Bool? = nil,
         attributionProvenanceEpoch: String? = nil,
         attributionGeneration: Int64? = nil,
         attributionUnsafeSinceGeneration: Int64? = nil,
@@ -1876,7 +2130,8 @@ final class CodexUsageStoreTests: XCTestCase {
                 sessions: [],
                 turns: [],
                 attributionEvents: [],
-                attributionEventsComplete: usagePrecision == .precise,
+                attributionEventsComplete:
+                    attributionEventsComplete ?? (usagePrecision == .precise),
                 attributionProvenanceEpoch: attributionProvenanceEpoch
                     ?? (usagePrecision == .precise ? "usage-store-test-provenance" : nil),
                 attributionGeneration: attributionGeneration,
@@ -1889,6 +2144,18 @@ final class CodexUsageStoreTests: XCTestCase {
             preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
             generatedAt: generatedAt
         )
+    }
+
+    private func waitUntilYielding(
+        _ label: String,
+        iterations: Int = 10_000,
+        _ predicate: @escaping @MainActor () -> Bool
+    ) async {
+        for _ in 0..<iterations {
+            if predicate() { return }
+            await Task.yield()
+        }
+        XCTFail("Timed out waiting for \(label)")
     }
 
     private func waitUntil(
@@ -1983,6 +2250,35 @@ private actor CompactSummaryProbeLoader: DashboardSnapshotLoading {
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         compactSummaryCount += 1
         return summary
+    }
+}
+
+private actor CompactSummarySequenceProbeLoader: DashboardSnapshotLoading {
+    private var preciseResults: [DashboardSnapshot]
+    private var summaries: [CodexUsageAnalyzer.CompactUsageSummary]
+
+    init(
+        precise: [DashboardSnapshot],
+        summaries: [CodexUsageAnalyzer.CompactUsageSummary]
+    ) {
+        self.preciseResults = precise
+        self.summaries = summaries
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
+        return preciseResults.removeFirst()
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        guard !summaries.isEmpty else { return nil }
+        return summaries.removeFirst()
     }
 }
 
@@ -2171,6 +2467,147 @@ private actor SuspendedDashboardSnapshotLoader: DashboardSnapshotLoading {
 
     func completePreciseRequest(for dataSource: CodexDataSource, with snapshot: DashboardSnapshot) {
         preciseContinuations.removeValue(forKey: dataSource.codexHome.path)?.resume(returning: snapshot)
+    }
+}
+
+private actor BarrierPhasedDashboardSnapshotLoader: DashboardSnapshotLoading {
+    private let numeric: DashboardSnapshot
+    private let final: DashboardSnapshot?
+    private var phaseContinuation:
+        AsyncThrowingStream<DashboardSnapshot, Error>.Continuation?
+    private var phaseRequestStarted = false
+    private var phaseRequestStartedContinuation: CheckedContinuation<Void, Never>?
+    private(set) var phasedLoadCount = 0
+
+    init(numeric: DashboardSnapshot, final: DashboardSnapshot?) {
+        self.numeric = numeric
+        self.final = final
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    nonisolated func loadSnapshotPhases(
+        dataSource: CodexDataSource
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        return AsyncThrowingStream { continuation in
+            let registration = Task { [weak self] in
+                await self?.register(continuation)
+            }
+            continuation.onTermination = { _ in
+                registration.cancel()
+            }
+        }
+    }
+
+    func waitUntilPhaseRequestStarted() async {
+        if phaseRequestStarted { return }
+        await withCheckedContinuation { continuation in
+            phaseRequestStartedContinuation = continuation
+        }
+    }
+
+    func phasedLoadCountValue() -> Int {
+        phasedLoadCount
+    }
+
+    func yieldNumeric() {
+        phaseContinuation?.yield(numeric)
+    }
+
+    func yieldFinal() {
+        guard let phaseContinuation else { return }
+        if let final {
+            phaseContinuation.yield(final)
+            phaseContinuation.finish()
+        } else {
+            phaseContinuation.finish(throwing: UsageStoreTestError())
+        }
+        self.phaseContinuation = nil
+    }
+
+    private func register(
+        _ continuation: AsyncThrowingStream<DashboardSnapshot, Error>.Continuation
+    ) {
+        phasedLoadCount += 1
+        phaseContinuation = continuation
+        phaseRequestStarted = true
+        phaseRequestStartedContinuation?.resume()
+        phaseRequestStartedContinuation = nil
+    }
+}
+
+private actor ControlledPhasedDashboardSnapshotLoader: DashboardSnapshotLoading {
+    private let numericBySource: [String: DashboardSnapshot]
+    private let finalBySource: [String: DashboardSnapshot]
+    private var pending: [String: AsyncThrowingStream<DashboardSnapshot, Error>.Continuation] = [:]
+    private var pendingWaiters: [String: CheckedContinuation<Void, Never>] = [:]
+
+    init(
+        numericBySource: [String: DashboardSnapshot],
+        finalBySource: [String: DashboardSnapshot]
+    ) {
+        self.numericBySource = numericBySource
+        self.finalBySource = finalBySource
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    nonisolated func loadSnapshotPhases(
+        dataSource: CodexDataSource
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        let sourceID = dataSource.codexHome.path
+        return AsyncThrowingStream { continuation in
+            let registration = Task { [weak self] in
+                await self?.register(continuation, for: sourceID)
+            }
+            continuation.onTermination = { _ in
+                registration.cancel()
+            }
+        }
+    }
+
+    func waitUntilPending(source: CodexDataSource) async {
+        let sourceID = source.codexHome.path
+        if pending[sourceID] != nil { return }
+        await withCheckedContinuation { continuation in
+            pendingWaiters[sourceID] = continuation
+        }
+    }
+
+    func yieldNumeric(source: CodexDataSource) {
+        let sourceID = source.codexHome.path
+        guard let numeric = numericBySource[sourceID] else { return }
+        pending[sourceID]?.yield(numeric)
+    }
+
+    func yieldFinal(source: CodexDataSource) {
+        let sourceID = source.codexHome.path
+        guard let continuation = pending[sourceID] else { return }
+        if let final = finalBySource[sourceID] {
+            continuation.yield(final)
+        }
+        continuation.finish()
+        pending.removeValue(forKey: sourceID)
+    }
+
+    private func register(
+        _ continuation: AsyncThrowingStream<DashboardSnapshot, Error>.Continuation,
+        for sourceID: String
+    ) {
+        pending[sourceID] = continuation
+        pendingWaiters.removeValue(forKey: sourceID)?.resume()
     }
 }
 

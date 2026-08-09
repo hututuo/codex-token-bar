@@ -55,6 +55,12 @@ protocol CodexUnreadThreadReading: Sendable {
     func readUnreadThreadIDs(codexHome: URL) async -> CodexUnreadThreadReadResult
 }
 
+struct UnavailableCodexUnreadThreadReader: CodexUnreadThreadReading {
+    func readUnreadThreadIDs(codexHome: URL) async -> CodexUnreadThreadReadResult {
+        .unavailable
+    }
+}
+
 protocol TaskCompletionScanning: Sendable {
     func scan(request: TaskCompletionPollRequest) async -> TaskCompletionScanResult
 }
@@ -68,6 +74,22 @@ struct LiveCodexUnreadThreadReader: CodexUnreadThreadReading {
         await Task.detached(priority: .utility) {
             CodexUnreadThreadReader.readUnreadThreadIDs(codexHome: codexHome)
         }.value
+    }
+}
+
+struct LiveCodexSidebarUnreadThreadReader: CodexUnreadThreadReading {
+    let bridge: CodexThreadDeleteBridgeService
+
+    func readUnreadThreadIDs(codexHome: URL) async -> CodexUnreadThreadReadResult {
+        guard let threadIDs = await bridge.sidebarUnreadThreadIDsSnapshot() else {
+            return .unavailable
+        }
+        return .available(
+            CodexUnreadThreadReader.filterLiveSidebarThreadIDs(
+                threadIDs,
+                codexHome: codexHome
+            )
+        )
     }
 }
 
@@ -107,7 +129,7 @@ struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
     private let runningThreadScanner: any RunningThreadScanning
 
     init(
-        unreadReader: any CodexUnreadThreadReading = LiveCodexUnreadThreadReader(),
+        unreadReader: any CodexUnreadThreadReading = UnavailableCodexUnreadThreadReader(),
         scanner: any TaskCompletionScanning = LiveTaskCompletionScanner(),
         runningThreadScanner: any RunningThreadScanning = LiveRunningThreadScanner()
     ) {
@@ -123,36 +145,18 @@ struct LiveTaskCompletionPollLoader: TaskCompletionPollLoading {
         async let runningThreadResultTask = runningThreadScanner.scan(request: request)
         let unreadThreadRead = await unreadThreadReadTask
         let runningThreadResult = await runningThreadResultTask
-        switch unreadThreadRead {
-        case let .available(threadIDs):
-            let reactivationThreadIDs = request.suppressedOfficialThreadIDs.intersection(threadIDs)
-            guard !reactivationThreadIDs.isEmpty else {
-                return TaskCompletionPollOutput(
-                    result: nil,
-                    runningThreadResult: runningThreadResult,
-                    unreadThreadRead: unreadThreadRead,
-                    officialReadBoundary: request.pollStartedAt
-                )
-            }
-            let result = await scanner.scan(request: request)
-            return TaskCompletionPollOutput(
-                result: TaskCompletionScanResult(
-                    states: result.states,
-                    events: result.events.filter { reactivationThreadIDs.contains($0.threadID) },
-                    fileCount: result.fileCount
-                ),
-                runningThreadResult: runningThreadResult,
-                unreadThreadRead: unreadThreadRead,
-                officialReadBoundary: request.pollStartedAt
-            )
-        case .unavailable:
-            let result = await scanner.scan(request: request)
-            return TaskCompletionPollOutput(
-                result: result,
-                runningThreadResult: runningThreadResult,
-                unreadThreadRead: unreadThreadRead
-            )
-        }
+        // Codex Desktop's unread atom is the only source of truth for this
+        // indicator.  A completed turn, an active rollout, or a stale local
+        // scanner event is not equivalent to a sidebar unread marker.  Keep
+        // the scanner dependency for source compatibility with older test and
+        // composition code, but never use it to manufacture an unread state.
+        _ = scanner
+        return TaskCompletionPollOutput(
+            result: nil,
+            runningThreadResult: runningThreadResult,
+            unreadThreadRead: unreadThreadRead,
+            officialReadBoundary: request.pollStartedAt
+        )
     }
 }
 
@@ -273,15 +277,11 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     func markAllRead() {
-        readBaseline.markAllRead(
-            unreadThreadIDs: unreadThreadState.threadIDs,
-            completedEventIDs: Set(completedTaskThreadIDs.keys)
-        )
-        persistReadBaseline()
-        unreadThreadState = CodexUnreadThreadState()
-        completedTaskThreadIDs.removeAll()
-        resetFallbackReactivationTracking(boundary: now())
-        recomputeUnreadThreadCount()
+        // Token Bar cannot mutate Codex Desktop's in-memory sidebar state.
+        // Keeping a local acknowledgement baseline here made the indicator
+        // disagree with the left list, so the compatibility entry point is a
+        // deliberate no-op.  Users must mark the conversation read in Codex;
+        // the next CDP snapshot will mirror that state.
         updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
     }
 
@@ -395,55 +395,17 @@ final class TaskCompletionMonitor: ObservableObject {
         unreadThreadRead: CodexUnreadThreadReadResult,
         officialReadBoundary: Date?
     ) {
+        // `result` and `officialReadBoundary` are retained in the poll
+        // protocol for compatibility, but completion events are deliberately
+        // ignored.  Only the desktop sidebar unread atom may change this
+        // indicator.
+        _ = result
+        _ = officialReadBoundary
         applyRunningThreadResult(runningThreadResult)
         applyCodexUnreadRead(unreadThreadRead)
-        unreadThreadCountAvailable = hasCodexUnreadState || result != nil
-
-        if hasCodexUnreadState, result == nil {
-            prepareFallbackForOfficialAvailability(boundary: officialReadBoundary ?? now())
-        }
-
-        if hasCodexUnreadState {
-            completedTaskThreadIDs = completedTaskThreadIDs.filter { _, threadID in
-                officialUnreadThreadIDs.contains(threadID)
-            }
-        }
-
-        guard let result else {
-            applyReadBaselineToFallbackEvents()
-            refreshActiveOfficialUnreadState()
-            recomputeUnreadThreadCount()
-            updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
-            return
-        }
-
-        fileStates = result.states
-        seeded = true
-
-        if result.fileCount == 0 {
-            setStatusText("未发现会话日志", detail: "等待 Codex 写入 sessions")
-        } else if result.events.isEmpty {
-            updateStatusText(fileCount: result.fileCount)
-        }
-
-        var didAddUnread = false
-        for event in result.events {
-            guard rememberCompletedEvent(event) else { continue }
-            guard !hasCodexUnreadState || officialUnreadThreadIDs.contains(event.threadID) else { continue }
-            setLastCompletedTitle(event.title)
-            completedTaskThreadIDs[event.id] = event.threadID
-            didAddUnread = true
-        }
-
-        applyReadBaselineToFallbackEvents()
         refreshActiveOfficialUnreadState()
         recomputeUnreadThreadCount()
-        if didAddUnread, !hasCodexUnreadState, unreadThreadCount > 0 {
-            statusText = "有任务完成"
-            detailText = lastCompletedTitle
-        } else {
-            updateStatusText(fileCount: result.fileCount)
-        }
+        updateStatusText(fileCount: fileStates.isEmpty ? nil : fileStates.count)
     }
 
     private func applyRunningThreadResult(_ result: RunningThreadScanResult?) {
@@ -468,7 +430,7 @@ final class TaskCompletionMonitor: ObservableObject {
         if hasCodexUnreadState {
             setUnreadThreadCount(unreadThreadState.threadIDs.count)
         } else {
-            setUnreadThreadCount(Set(completedTaskThreadIDs.values).count)
+            setUnreadThreadCount(0)
         }
     }
 
@@ -477,11 +439,16 @@ final class TaskCompletionMonitor: ObservableObject {
         case let .available(threadIDs):
             officialUnreadThreadIDs = threadIDs
             hasCodexUnreadState = true
+            unreadThreadCountAvailable = true
             refreshActiveOfficialUnreadState()
         case .unavailable:
+            // A CDP snapshot is the only accepted source.  If it disappears,
+            // hide the previous value immediately; retaining it would keep a
+            // stale atom/DOM observation flashing after the user read the row.
             officialUnreadThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
+            unreadThreadCountAvailable = false
         }
     }
 
@@ -497,23 +464,14 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private var suppressedOfficialThreadIDs: Set<String> {
-        guard hasCodexUnreadState else { return [] }
-        return officialUnreadThreadIDs.subtracting(unreadThreadState.threadIDs)
+        []
     }
 
     private func refreshActiveOfficialUnreadState() {
         guard hasCodexUnreadState else { return }
-        let baselineBeforeRefresh = readBaseline
-        let completionThreadIDs = Set(completedTaskThreadIDs.values)
-        unreadThreadState = CodexUnreadThreadState(
-            threadIDs: readBaseline.activeUnreadThreadIDs(
-                from: officialUnreadThreadIDs,
-                reactivatedBy: completionThreadIDs
-            )
-        )
-        if readBaseline != baselineBeforeRefresh {
-            persistReadBaseline()
-        }
+        // Pure mirror: no local baseline, completion scanner or acknowledgement
+        // can add/remove an ID from the official sidebar snapshot.
+        unreadThreadState = CodexUnreadThreadState(threadIDs: officialUnreadThreadIDs)
     }
 
     private func applyReadBaselineToFallbackEvents() {

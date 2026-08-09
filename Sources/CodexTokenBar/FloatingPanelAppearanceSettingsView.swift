@@ -164,6 +164,8 @@ struct FloatingPanelContentSettingsMenu: View {
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var showUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var showMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.runningThreadsKey) private var showRunningThreads = FloatingPanelContentVisibility.default.showRunningThreads
+    @AppStorage(FloatingPanelContentVisibility.todayModelShareKey) private var showTodayModelShare = FloatingPanelContentVisibility.default.showTodayModelShare
+    @AppStorage(FloatingPanelContentVisibility.todayModelCostKey) private var showTodayModelCost = FloatingPanelContentVisibility.default.showTodayModelCost
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var showQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var showRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var showCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
@@ -244,6 +246,10 @@ struct FloatingPanelContentSettingsMenu: View {
             return $showMetrics
         case .runningThreads:
             return $showRunningThreads
+        case .todayModelShare:
+            return $showTodayModelShare
+        case .todayModelCost:
+            return $showTodayModelCost
         case .quota:
             return $showQuota
         case .radar:

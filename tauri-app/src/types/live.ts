@@ -1,5 +1,6 @@
 import type { LocalDataWarning } from "./diagnostics";
 import type { CodexHomeSourceToken } from "./platform";
+import type { ModelTokenBreakdown } from "./usage";
 
 export interface LiveRateSnapshot {
   scopeLabel: string;
@@ -43,6 +44,7 @@ export interface FloatingPanelSnapshot {
   totalTokensLabel: string;
   todayTokensLabel: string;
   requestsLabel: string;
+  todayModelBreakdowns: ModelTokenBreakdown[];
   fiveHourLabel: string;
   fiveHourAvailability: "measured" | "unavailable" | "absent";
   fiveHourRemainingPercent: number | null;

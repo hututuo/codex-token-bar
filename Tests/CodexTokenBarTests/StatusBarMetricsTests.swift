@@ -570,6 +570,19 @@ final class StatusBarMetricsTests: XCTestCase {
         XCTAssertNil(AppSettingsRouteRequest.consume(defaults: defaults))
     }
 
+    func testLegacyContentSettingsRouteRedirectsToUnifiedFloatingPage() {
+        let suiteName = "StatusBarMetricsTests.legacy-content-route.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        defaults.set("content", forKey: AppSettingsRouteRequest.pendingCategoryKey)
+
+        XCTAssertEqual(AppSettingsRouteRequest.consume(defaults: defaults), .floatingPanel)
+        XCTAssertNil(AppSettingsRouteRequest.consume(defaults: defaults))
+    }
+
     private func makeValues(
         rate: Double? = 0,
         fiveHour: Int? = nil,

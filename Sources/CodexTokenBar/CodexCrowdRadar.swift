@@ -104,7 +104,7 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
     func models(for mode: CodexCrowdRadarMode) -> [CodexCrowdRadarModel] {
         switch mode {
         case .realtime:
-            return realtimeModels.isEmpty ? recentModels : realtimeModels
+            return realtimeModels
         case .recent:
             return recentModels.isEmpty ? realtimeModels : recentModels
         }
@@ -167,15 +167,29 @@ protocol CodexCrowdRadarReading: Sendable {
 
 struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
     private static let maxResponseBytes = 8 * 1024 * 1024
+    private static let sourceAttemptLimit = 3
+    private static let retryDelays: [TimeInterval] = [0.25, 0.75]
+
+    private static let tableSources: [(url: URL, budget: TimeInterval)] = [
+        (URL(string: "https://codexradar.com/api/intelligence-efficiency")!, 12),
+        (URL(string: "https://api.codexradar.com/api/v1/table")!, 6)
+    ]
+    private static let leaderboardSources: [(url: URL, budget: TimeInterval)] = [
+        (URL(string: "https://codexradar.com/data/intelligence-efficiency.json")!, 12),
+        (URL(string: "https://api.codexradar.com/api/v1/leaderboard")!, 6)
+    ]
 
     func readCrowdRadar() async throws -> CodexCrowdRadarSnapshot {
-        async let tableData: Data? = try? read(
-            URL(string: "https://api.codexradar.com/api/v1/table")!
+        async let tableData: Data? = try? readFirstAvailable(
+            Self.tableSources,
+            signalKeys: ["combos", "tasks", "cells", "baselineGeneratedAt"]
         )
-        async let leaderboardData: Data? = try? read(
-            URL(string: "https://api.codexradar.com/api/v1/leaderboard")!
+        async let leaderboardData: Data? = try? readFirstAvailable(
+            Self.leaderboardSources,
+            signalKeys: ["points", "models", "rankings", "modelStats"]
         )
         let payloads = await (tableData, leaderboardData)
+        try Task.checkCancellation()
         guard payloads.0 != nil || payloads.1 != nil else {
             throw CodexRadarReaderError.invalidResponse
         }
@@ -185,9 +199,84 @@ struct LiveCodexCrowdRadarReader: CodexCrowdRadarReading, Sendable {
         )
     }
 
-    private func read(_ url: URL) async throws -> Data {
+    private func readFirstAvailable(
+        _ sources: [(url: URL, budget: TimeInterval)],
+        signalKeys: [String]
+    ) async throws -> Data {
+        var lastError: Error = CodexRadarReaderError.invalidResponse
+        for source in sources {
+            try Task.checkCancellation()
+            do {
+                let data = try await readWithRetries(source.url, budget: source.budget)
+                guard Self.payloadContainsSignal(data, signalKeys: signalKeys) else {
+                    try Task.checkCancellation()
+                    lastError = CodexRadarReaderError.invalidResponse
+                    continue
+                }
+                return data
+            } catch {
+                if Self.isCancellation(error) { throw error }
+                lastError = error
+            }
+        }
+        throw lastError
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        Task.isCancelled
+            || error is CancellationError
+            || (error as? URLError)?.code == .cancelled
+    }
+
+    private static func payloadContainsSignal(_ data: Data, signalKeys: [String]) -> Bool {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return false }
+        let signals = Set(signalKeys.map { canonicalKey($0) })
+        func containsSignal(_ value: Any, depth: Int) -> Bool {
+            guard let object = value as? [String: Any] else { return false }
+            if object.keys.contains(where: { signals.contains(canonicalKey($0)) }) {
+                return true
+            }
+            guard depth < 4 else { return false }
+            return ["data", "result", "snapshot", "payload", "response", "body"]
+                .compactMap { object[$0] }
+                .contains { containsSignal($0, depth: depth + 1) }
+        }
+        return containsSignal(root, depth: 0)
+    }
+
+    private static func canonicalKey(_ value: String) -> String {
+        value.unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+            .lowercased()
+    }
+
+    private func readWithRetries(_ url: URL, budget: TimeInterval) async throws -> Data {
+        let deadline = Date().addingTimeInterval(budget)
+        var lastError: Error = CodexRadarReaderError.invalidResponse
+        for attempt in 0..<Self.sourceAttemptLimit {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            do {
+                return try await read(url, timeoutInterval: min(6, remaining))
+            } catch {
+                if Self.isCancellation(error) { throw error }
+                lastError = error
+                guard attempt + 1 < Self.sourceAttemptLimit else { break }
+                let delay = Self.retryDelays[attempt]
+                let sleepNanos = UInt64(max(0, min(delay, deadline.timeIntervalSinceNow)) * 1_000_000_000)
+                if sleepNanos > 0 {
+                    try await Task.sleep(nanoseconds: sleepNanos)
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func read(_ url: URL, timeoutInterval: TimeInterval = 18) async throws -> Data {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 18
+        request.timeoutInterval = min(18, timeoutInterval)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

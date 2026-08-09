@@ -87,7 +87,7 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
     }
 
     @MainActor
-    func testSingleObservationCarryProducesExplicitEstimateNotObservedDrop() throws {
+    func testSingleObservationCarryFailsClosedInsteadOfClaimingAnObservedDrop() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let prepared = preparedData(
@@ -111,20 +111,16 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
         )
 
         XCTAssertEqual(selection.breakdown.inputTokens, 600)
-        XCTAssertEqual(
-            selection.sevenDay.comparisonBreakdown.inputTokens,
-            500,
-            "without a pre-selection quota boundary, comparison must exclude the uncovered first bucket"
-        )
-        XCTAssertEqual(selection.sevenDay.comparisonStartDate, start.addingTimeInterval(300))
-        XCTAssertEqual(selection.sevenDay.comparisonEndDate, start.addingTimeInterval(900))
-        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .estimated)
+        XCTAssertEqual(selection.sevenDay.comparisonBreakdown, .empty)
+        XCTAssertNil(selection.sevenDay.comparisonStartDate)
+        XCTAssertNil(selection.sevenDay.comparisonEndDate)
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .unavailable)
         XCTAssertFalse(selection.sevenDay.quotaDropObserved)
-        XCTAssertTrue(selection.sevenDay.quotaDropEstimated)
         XCTAssertEqual(selection.sevenDay.quotaDropPercent, 0)
+        XCTAssertNil(selection.sevenDay.impliedWindowBudgetUSD)
         XCTAssertEqual(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: selection.sevenDay).detail,
-            "暂算降 0% · 不反推"
+            "7d 样本不足"
         )
     }
 
@@ -273,7 +269,7 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
     }
 
     @MainActor
-    func testGraduallyDriftingResetBoundaryDoesNotBridgeSeparateCycles() throws {
+    func testGraduallyDriftingResetBoundaryUsesLatestSameCycleSuffix() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let prepared = preparedData(
@@ -306,8 +302,9 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .estimated)
-        XCTAssertFalse(selection.sevenDay.quotaDropObserved)
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .observed)
+        XCTAssertTrue(selection.sevenDay.quotaDropObserved)
+        XCTAssertEqual(selection.sevenDay.quotaDropPercent, 5)
     }
 
     @MainActor
@@ -343,7 +340,7 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .estimated)
+        XCTAssertEqual(selection.sevenDay.quotaDropBasis, .unavailable)
         XCTAssertFalse(selection.sevenDay.quotaDropObserved)
 
         let attribution = QuotaSelectionAttributionEstimator.estimate(
@@ -372,9 +369,9 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(attribution.state, .provisional)
+        XCTAssertEqual(attribution.state, .missingQuotaHistory)
         XCTAssertFalse(attribution.allowsAttributionConclusion)
-        XCTAssertTrue(attribution.caveats.contains { $0.contains("沿用或插值") })
+        XCTAssertTrue(attribution.caveats.contains { $0.contains("至少需要两个") })
     }
 
     @MainActor

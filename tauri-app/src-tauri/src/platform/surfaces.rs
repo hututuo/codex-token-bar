@@ -9,16 +9,17 @@ use std::{
     time::Duration,
 };
 #[cfg(target_os = "macos")]
-use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker};
+use objc2::{rc::Retained, runtime::AnyObject, AnyThread, MainThreadMarker};
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{
-    NSBaselineOffsetAttributeName, NSColor, NSFont, NSFontAttributeName,
-    NSFontWeightSemibold, NSForegroundColorAttributeName, NSKernAttributeName,
-    NSStringDrawing, NSVariableStatusItemLength, NSWindow,
+    NSMutableParagraphStyle, NSColor, NSFont, NSFontAttributeName,
+    NSFontWeightSemibold, NSForegroundColorAttributeName, NSParagraphStyleAttributeName,
+    NSStringDrawing, NSTextAlignment, NSTextTab, NSTextTabOptionKey, NSVariableStatusItemLength,
+    NSWindow,
 };
 #[cfg(target_os = "macos")]
 use objc2_foundation::{
-    NSDictionary, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSString,
+    NSArray, NSDictionary, NSMutableAttributedString, NSPoint, NSRange, NSString,
 };
 use tauri::{
     async_runtime,
@@ -32,9 +33,9 @@ use tauri::{
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 
-const FLOATING_WINDOW_WIDTH: f64 = 296.0;
+const FLOATING_WINDOW_WIDTH: f64 = 288.0;
 const FLOATING_WINDOW_MIN_HEIGHT: f64 = 88.0;
-const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 151.0;
+const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 138.0;
 const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
 const FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "floating-window-visibility-changed";
@@ -1274,13 +1275,9 @@ fn apply_macos_status_tray_title<R: tauri::Runtime>(
 }
 
 #[cfg(target_os = "macos")]
-const MACOS_STATUS_TRAY_PRIMARY_FONT_SIZE: f64 = 7.0;
+const MACOS_STATUS_TRAY_FONT_SIZE: f64 = 8.75;
 #[cfg(target_os = "macos")]
-const MACOS_STATUS_TRAY_SECONDARY_FONT_SIZE: f64 = 6.25;
-#[cfg(target_os = "macos")]
-const MACOS_STATUS_TRAY_UPPER_BASELINE_OFFSET: f64 = 4.25;
-#[cfg(target_os = "macos")]
-const MACOS_STATUS_TRAY_LOWER_BASELINE_OFFSET: f64 = -4.25;
+const MACOS_STATUS_TRAY_LINE_SPACING: f64 = -1.0;
 #[cfg(target_os = "macos")]
 const MACOS_STATUS_TRAY_COLUMN_SPACING: f64 = 6.0;
 
@@ -1289,56 +1286,126 @@ fn macos_status_tray_attributed_title(
     columns: &[StatusTrayColumn],
 ) -> Retained<NSMutableAttributedString> {
     let semibold_weight = unsafe { NSFontWeightSemibold };
-    let primary_font = NSFont::monospacedSystemFontOfSize_weight(
-        MACOS_STATUS_TRAY_PRIMARY_FONT_SIZE,
+    let font = NSFont::monospacedSystemFontOfSize_weight(
+        MACOS_STATUS_TRAY_FONT_SIZE,
         semibold_weight,
     );
-    let secondary_font = NSFont::monospacedSystemFontOfSize_weight(
-        MACOS_STATUS_TRAY_SECONDARY_FONT_SIZE,
-        semibold_weight,
-    );
-    let color = NSColor::controlTextColor();
+    let primary_color = NSColor::controlTextColor();
+    let secondary_color = NSColor::secondaryLabelColor();
     let result = NSMutableAttributedString::from_nsstring(&NSString::from_str(""));
+    if columns.is_empty() {
+        return result;
+    }
+    macos_append_status_row(
+        &result,
+        columns,
+        true,
+        &font,
+        &primary_color,
+        &secondary_color,
+    );
+    macos_append_status_piece(&result, "\n", &font, &primary_color);
+    macos_append_status_row(
+        &result,
+        columns,
+        false,
+        &font,
+        &primary_color,
+        &secondary_color,
+    );
+    let range = NSRange::new(0, result.length());
 
-    for (index, column) in columns.iter().enumerate() {
-        let top_font = if column.top.secondary {
-            secondary_font.as_ref()
-        } else {
-            primary_font.as_ref()
-        };
-        let bottom_font = if column.bottom.secondary {
-            secondary_font.as_ref()
-        } else {
-            primary_font.as_ref()
-        };
-        let top_width = macos_status_line_width(&column.top.text, top_font);
-        let bottom_width = macos_status_line_width(&column.bottom.text, bottom_font);
-        let column_width = top_width.max(bottom_width);
-        let trailing_spacing = if index + 1 < columns.len() {
-            MACOS_STATUS_TRAY_COLUMN_SPACING
-        } else {
-            0.0
-        };
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(NSTextAlignment::Left);
+    paragraph.setLineSpacing(MACOS_STATUS_TRAY_LINE_SPACING);
+    let options = NSDictionary::<NSTextTabOptionKey, AnyObject>::new();
+    let tab_stops = macos_status_tray_column_starts(columns, &font)
+        .into_iter()
+        .skip(1)
+        .map(|location| unsafe {
+            NSTextTab::initWithTextAlignment_location_options(
+                NSTextTab::alloc(),
+                NSTextAlignment::Left,
+                location,
+                &options,
+            )
+        })
+        .collect::<Vec<_>>();
+    let tab_stops = NSArray::from_retained_slice(&tab_stops);
+    paragraph.setTabStops(Some(&tab_stops));
+    let paragraph_object: &AnyObject = paragraph.as_ref();
 
-        macos_append_status_line(
-            &result,
-            &column.top.text,
-            top_font,
-            &color,
-            MACOS_STATUS_TRAY_UPPER_BASELINE_OFFSET,
-            -top_width,
-        );
-        macos_append_status_line(
-            &result,
-            &column.bottom.text,
-            bottom_font,
-            &color,
-            MACOS_STATUS_TRAY_LOWER_BASELINE_OFFSET,
-            column_width - bottom_width + trailing_spacing,
+    unsafe {
+        result.addAttribute_value_range(
+            NSParagraphStyleAttributeName,
+            paragraph_object,
+            range,
         );
     }
 
     result
+}
+
+#[cfg(target_os = "macos")]
+fn macos_append_status_row(
+    result: &NSMutableAttributedString,
+    columns: &[StatusTrayColumn],
+    top: bool,
+    font: &NSFont,
+    primary_color: &NSColor,
+    secondary_color: &NSColor,
+) {
+    for (index, column) in columns.iter().enumerate() {
+        if index > 0 {
+            macos_append_status_piece(result, "\t", font, primary_color);
+        }
+        let line = if top { &column.top } else { &column.bottom };
+        let rendered = if line.text.is_empty() {
+            "\u{200B}"
+        } else {
+            line.text.as_str()
+        };
+        let color = if line.secondary {
+            secondary_color
+        } else {
+            primary_color
+        };
+        macos_append_status_piece(result, rendered, font, color);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_append_status_piece(
+    result: &NSMutableAttributedString,
+    text: &str,
+    font: &NSFont,
+    color: &NSColor,
+) {
+    let piece = NSMutableAttributedString::from_nsstring(&NSString::from_str(text));
+    let range = NSRange::new(0, piece.length());
+    let font_object: &AnyObject = font.as_ref();
+    let color_object: &AnyObject = color.as_ref();
+    unsafe {
+        piece.addAttribute_value_range(NSFontAttributeName, font_object, range);
+        piece.addAttribute_value_range(NSForegroundColorAttributeName, color_object, range);
+    }
+    result.appendAttributedString(&piece);
+}
+
+#[cfg(target_os = "macos")]
+fn macos_status_tray_column_starts(columns: &[StatusTrayColumn], font: &NSFont) -> Vec<f64> {
+    if columns.is_empty() {
+        return Vec::new();
+    }
+    let mut starts = vec![0.0];
+    let mut next_start = 0.0;
+    for column in columns.iter().take(columns.len() - 1) {
+        let top_width = macos_status_line_width(&column.top.text, font);
+        let bottom_width = macos_status_line_width(&column.bottom.text, font);
+        next_start += top_width.max(bottom_width) + MACOS_STATUS_TRAY_COLUMN_SPACING;
+        starts.push(next_start);
+    }
+    starts
 }
 
 #[cfg(target_os = "macos")]
@@ -1351,37 +1418,6 @@ fn macos_status_line_width(text: &str, font: &NSFont) -> f64 {
     let font_attribute_name = unsafe { NSFontAttributeName };
     let attributes = NSDictionary::from_slices(&[font_attribute_name], &[font_object]);
     unsafe { text.sizeWithAttributes(Some(&attributes)).width }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_append_status_line(
-    result: &NSMutableAttributedString,
-    text: &str,
-    font: &NSFont,
-    color: &NSColor,
-    baseline_offset: f64,
-    trailing_kern: f64,
-) {
-    let rendered_text = if text.is_empty() { "\u{200B}" } else { text };
-    let piece = NSMutableAttributedString::from_nsstring(&NSString::from_str(rendered_text));
-    let start = result.length();
-    let length = piece.length();
-    result.appendAttributedString(&piece);
-    let range = NSRange::new(start, length);
-    let font_object: &AnyObject = font.as_ref();
-    let color_object: &AnyObject = color.as_ref();
-    let baseline = NSNumber::new_f64(baseline_offset);
-    let kern = NSNumber::new_f64(trailing_kern);
-    unsafe {
-        result.addAttribute_value_range(NSFontAttributeName, font_object, range);
-        result.addAttribute_value_range(NSForegroundColorAttributeName, color_object, range);
-        result.addAttribute_value_range(NSBaselineOffsetAttributeName, baseline.as_ref(), range);
-        result.addAttribute_value_range(
-            NSKernAttributeName,
-            kern.as_ref(),
-            NSRange::new(start + length - 1, 1),
-        );
-    }
 }
 
 pub fn set_update_available_tray_fallback(app: &tauri::AppHandle, version: &str) -> Result<bool, String> {
@@ -2386,10 +2422,11 @@ mod tests {
     }
 
     #[test]
-    fn floating_window_height_keeps_swift_protection_without_clipping_default_content() {
+    fn floating_window_dimensions_keep_compact_swift_proportions_without_clipping_default_content() {
+        assert_eq!(FLOATING_WINDOW_WIDTH, 288.0);
         assert_eq!(FLOATING_WINDOW_MIN_HEIGHT, 88.0);
-        assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 151.0);
-        assert!(FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE >= 151.0 * 1.38);
+        assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 138.0);
+        assert!(FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE >= 138.0 * 1.38);
     }
 
     #[test]
@@ -2701,11 +2738,27 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_status_tray_two_line_baselines_exceed_the_primary_font_height() {
-        let baseline_separation = MACOS_STATUS_TRAY_UPPER_BASELINE_OFFSET
-            - MACOS_STATUS_TRAY_LOWER_BASELINE_OFFSET;
-        assert!(baseline_separation > MACOS_STATUS_TRAY_PRIMARY_FONT_SIZE);
-        assert!(baseline_separation > MACOS_STATUS_TRAY_SECONDARY_FONT_SIZE);
+    fn macos_status_tray_uses_large_true_rows_with_shared_column_starts() {
+        assert!(MACOS_STATUS_TRAY_FONT_SIZE >= 8.5);
+        assert!(MACOS_STATUS_TRAY_LINE_SPACING < 0.0);
+        let font = NSFont::monospacedSystemFontOfSize_weight(
+            MACOS_STATUS_TRAY_FONT_SIZE,
+            unsafe { NSFontWeightSemibold },
+        );
+        let columns = vec![
+            StatusTrayColumn {
+                top: StatusTrayLine { text: "12.4".into(), secondary: false },
+                bottom: StatusTrayLine { text: "tok/s".into(), secondary: true },
+            },
+            StatusTrayColumn {
+                top: StatusTrayLine { text: "5 41%".into(), secondary: false },
+                bottom: StatusTrayLine { text: "7 76%".into(), secondary: false },
+            },
+        ];
+        let starts = macos_status_tray_column_starts(&columns, &font);
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0], 0.0);
+        assert!(starts[1] > macos_status_line_width("tok/s", &font));
         assert!(MACOS_STATUS_TRAY_COLUMN_SPACING >= 6.0);
     }
 

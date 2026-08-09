@@ -119,13 +119,14 @@ test("ripple atlas ignores stale async render results", () => {
   assert.match(previewSource, /URL\.revokeObjectURL\(nextAtlas\.url\)/);
 });
 
-test("floating panel keeps muted pace text black metrics rounded corners and corner close button", () => {
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(12px \* var\(--floating-scale\)\);/);
+test("floating panel keeps compact Swift proportions with complete readable text", () => {
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(14px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?width: min\(calc\(288px \* var\(--floating-scale\)\), calc\(100vw - 2px\)\);/);
   assert.match(previewSource, /className="floating-rate-readout"/);
-  assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(86px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?padding-right: calc\(17px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(58px \* var\(--floating-scale\)\) calc\(20px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(19px \* var\(--floating-scale\)\);[\s\S]*?font-variant-numeric: tabular-nums;/);
-  assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(8\.5px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(92px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?column-gap: calc\(8px \* var\(--floating-scale\)\);[\s\S]*?padding-right: calc\(17px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(64px \* var\(--floating-scale\)\) calc\(22px \* var\(--floating-scale\)\);[\s\S]*?column-gap: calc\(4px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(20px \* var\(--floating-scale\)\);[\s\S]*?font-variant-numeric: tabular-nums;/);
+  assert.match(stylesSource, /\.floating-rate-readout > span\s*{[\s\S]*?font-size: calc\(8\.6px \* var\(--floating-scale\)\);/);
   assert.match(previewSource, /function FloatingRateMeter/);
   assert.match(previewSource, /fullScale=\{settings\.tokenRateFullScale\}/);
   assert.match(previewSource, /floating-rate-meter--with-status/);
@@ -139,9 +140,36 @@ test("floating panel keeps muted pace text black metrics rounded corners and cor
   assert.match(stylesSource, /\.floating-status-text em\s*{[\s\S]*?font-size: calc\(10\.3px \* var\(--floating-scale\)\);[\s\S]*?text-overflow: clip;[\s\S]*?white-space: nowrap;/);
   assert.match(stylesSource, /\.floating-usage-status-card\s*{[\s\S]*?width: 100%;[\s\S]*?max-width: 100%;[\s\S]*?font-size: calc\(13\.1px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-metrics\s*{[\s\S]*?font-size: calc\(9\.9px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(7px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(6px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface > :not\(\.unread-effect\):not\(\.floating-close-button\)\s*{/);
   assert.match(stylesSource, /\.floating-close-button\s*{[\s\S]*?position: absolute;[\s\S]*?top: calc\(1px \* var\(--floating-scale\)\);[\s\S]*?right: calc\(1px \* var\(--floating-scale\)\);/);
+});
+
+test("floating content removes horizontal rules without adding whitespace", () => {
+  const modelUsage = /\.floating-model-usage\s*{([^}]*)}/.exec(stylesSource)?.[1] ?? "";
+  const radar = /\.floating-radar\s*{([^}]*)}/.exec(stylesSource)?.[1] ?? "";
+  const crowdRadar = [...stylesSource.matchAll(/^\.floating-crowd-radar\s*{([^}]*)}/gm)].at(-1)?.[1] ?? "";
+  assert.doesNotMatch(modelUsage, /border-top/);
+  assert.match(modelUsage, /min-height: calc\(17px \* var\(--floating-scale\)\);/);
+  assert.doesNotMatch(radar, /border-top|padding-top/);
+  assert.doesNotMatch(crowdRadar, /border-top|padding-top/);
+  assert.match(radar, /min-height: calc\(24px \* var\(--floating-scale\)\);/);
+  assert.match(crowdRadar, /min-height: calc\(20px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(6px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(2px \* var\(--floating-scale\)\);/);
+});
+
+test("paged row arrows hug the outer edge while keeping a forgiving hit target", () => {
+  assert.match(previewSource, />\s*<span aria-hidden="true">‹<\/span><\/button>/);
+  assert.match(previewSource, />\s*<span aria-hidden="true">›<\/span><\/button>/);
+  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?width: calc\(48px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?background: rgba\(0, 0, 0, 0\.001\);/);
+  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?top: calc\(-2px \* var\(--floating-scale\)\);[\s\S]*?bottom: calc\(-2px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-page-switch > span\s*{[\s\S]*?transform: scaleX\(0\.58\);/);
+  assert.match(stylesSource, /\.floating-page-switch--previous\s*{[^}]*left: calc\(-8px \* var\(--floating-scale\)\);/s);
+  assert.match(stylesSource, /\.floating-page-switch--previous > span\s*{[^}]*translateX\(calc\(-18px \* var\(--floating-scale\)\)\) scaleX\(0\.58\);/s);
+  assert.match(stylesSource, /\.floating-page-switch--next\s*{[^}]*right: calc\(-8px \* var\(--floating-scale\)\);/s);
+  assert.match(stylesSource, /\.floating-page-switch--next > span\s*{[^}]*translateX\(calc\(18px \* var\(--floating-scale\)\)\) scaleX\(0\.58\);/s);
 });
 
 test("floating pace text keeps the Swift-style status and card count in one line", () => {

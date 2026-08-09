@@ -22,6 +22,9 @@ import type {
   DashboardSnapshot,
   LiveRateSnapshot,
   LiveThreadOption,
+  PreciseDashboardDedupeDomain,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardRequestRevision,
   UsageCacheStatus,
 } from "../types/dashboard";
 import {
@@ -56,6 +59,7 @@ import {
   type QuotaComparisonObservationState,
 } from "./quotaComparisonObservation";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
+import { canonicalAttributionBoundaryKey } from "./attributionBoundary";
 import { planPreciseUsageCatchUp } from "./preciseUsageCatchUp";
 import { publishPreciseUsageFailure } from "./preciseUsageFailureChannel";
 import { useDashboardActions } from "./useDashboardActions";
@@ -68,6 +72,48 @@ import { useWakeRefresh } from "../utils/useWakeRefresh";
 const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
 const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 export const MAIN_SOURCE_RECONCILE_INTERVAL_MS = 30_000;
+
+interface PreciseDashboardRequestIntent {
+  force: boolean;
+  reason: PreciseDashboardRefreshReason;
+  revision?: PreciseDashboardRequestRevision;
+  dedupeDomain?: PreciseDashboardDedupeDomain;
+  dedupeKey?: string;
+}
+
+function mergePreciseRequestIntent(
+  previous: PreciseDashboardRequestIntent | null,
+  incoming: PreciseDashboardRequestIntent,
+): PreciseDashboardRequestIntent {
+  if (previous === null) {
+    return incoming;
+  }
+  // Keep a fail-safe intent when several React updates batch into one exact
+  // generation. Manual/source-change/retry/unknown requests must not be
+  // downgraded to a coalescible quota or attribution request.
+  const previousPriority = preciseRequestReasonPriority(previous.reason);
+  const incomingPriority = preciseRequestReasonPriority(incoming.reason);
+  if (incomingPriority >= previousPriority) {
+    return {
+      ...incoming,
+      force: previous.force || incoming.force,
+    };
+  }
+  return {
+    ...previous,
+    force: previous.force || incoming.force,
+  };
+}
+
+function preciseRequestReasonPriority(reason: PreciseDashboardRefreshReason): number {
+  if (reason === "manual" || reason === "source-change" || reason === "retry" || reason === "unknown") {
+    return 2;
+  }
+  if (reason === "quota" || reason === "catch-up" || reason === "attribution" || reason === "wake") {
+    return 1;
+  }
+  return 0;
+}
 
 function scheduleMainSourceReconcile(refresh: () => void, intervalMs: number) {
   const interval = window.setInterval(refresh, intervalMs);
@@ -120,8 +166,67 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const preciseCatchUpQuotaRef = useRef<string | null>(null);
   const attributionPreciseRefreshRef = useRef<string | null>(null);
   const latestPreciseCoverageRef = useRef<string | null>(null);
+  const pendingForcedPreciseRefreshRef = useRef(false);
+  const pendingPreciseRequestRef = useRef<PreciseDashboardRequestIntent | null>(null);
+  const retryPreciseRefreshRef = useRef(false);
+  const wakeRefreshSequenceRef = useRef(0);
+  // Keep the force bit stable for the whole active generation. Clearing only
+  // the pending bit at timer start must not make a later unrelated render
+  // change the effect dependency and cancel the in-flight owner.
+  const activeForcedPreciseGenerationRef = useRef<number | null>(null);
+  const activePreciseRequestRef = useRef<PreciseDashboardRequestIntent | null>(null);
   latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
+
+  const requestPreciseRefresh = useCallback((
+    force = true,
+    reason?: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => {
+    const request: PreciseDashboardRequestIntent = {
+      force,
+      reason: reason ?? (force ? "unknown" : "cadence"),
+      revision,
+      dedupeDomain,
+      dedupeKey,
+    };
+    pendingPreciseRequestRef.current = mergePreciseRequestIntent(
+      pendingPreciseRequestRef.current,
+      request,
+    );
+    if (force) {
+      pendingForcedPreciseRefreshRef.current = true;
+    }
+    setLoadGeneration((current) => {
+      // A cadence tick can batch with a forced/manual request. The pending
+      // force bit is consumed only when the exact effect actually starts, so
+      // the final batched generation cannot silently downgrade to periodic.
+      return current + 1;
+    });
+  }, []);
+
+  const markPreciseRequestStarted = useCallback((
+    generation: number,
+    forced: boolean,
+    reason: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => {
+    activeForcedPreciseGenerationRef.current = forced ? generation : null;
+    activePreciseRequestRef.current = {
+      force: forced,
+      reason,
+      revision,
+      dedupeDomain,
+      dedupeKey,
+    };
+    pendingPreciseRequestRef.current = null;
+    retryPreciseRefreshRef.current = false;
+    pendingForcedPreciseRefreshRef.current = false;
+  }, []);
 
   // 本地命令失败诊断接入 state.diagnostics（订阅即回放当前快照），
   // 否则 recordCommandFailure 记下的失败没有任何消费者、恒不可见。
@@ -179,7 +284,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       latestComparisonUpdatedAtRef.current = null;
       preciseCatchUpQuotaRef.current = null;
       attributionPreciseRefreshRef.current = null;
-      setLoadGeneration((current) => current + 1);
+      requestPreciseRefresh(true, "source-change", acceptedSourceToken.transitionGeneration);
       setQuotaLoadGeneration((current) => current + 1);
       setRadarRefreshGeneration((current) => current + 1);
       setLiveRateRetryGeneration((current) => current + 1);
@@ -187,7 +292,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       void recordStartupEvent("codex home ready");
     }
     return true;
-  }, [isSourceTokenCurrent]);
+  }, [isSourceTokenCurrent, requestPreciseRefresh]);
   const refreshCurrentSource = useCallback((token: DashboardSourceToken) => {
     if (!isSourceTokenCurrent(token)) {
       return;
@@ -196,7 +301,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       ? { ...current, loading: true }
       : current);
     setSourceLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
-  }, [isSourceTokenCurrent]);
+    requestPreciseRefresh(true, "source-change", token.transitionGeneration);
+  }, [isSourceTokenCurrent, requestPreciseRefresh]);
   const reconcileCodexHomeSource = useCallback(async () => {
     if (sourceReconcileInFlightRef.current !== null) {
       return sourceReconcileInFlightRef.current;
@@ -233,7 +339,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     source,
     providerRepairVisible,
     setState,
-    setLoadGeneration,
+    requestPreciseRefresh,
     setQuotaLoadGeneration,
     setRadarRefreshGeneration,
     setForceNextQuotaLoad,
@@ -258,13 +364,19 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       quotaUpdatedAt: latestComparisonUpdatedAtRef.current,
       preciseCoveredAt: precise.preciseRecentUsageCoveredAt,
       preciseFresh: precise.preciseRecentUsageFresh,
-      requestedForQuotaUpdatedAt: preciseCatchUpQuotaRef.current,
+      requestedForQuotaBoundaryKey: preciseCatchUpQuotaRef.current,
     });
-    preciseCatchUpQuotaRef.current = catchUp.requestedForQuotaUpdatedAt;
+    preciseCatchUpQuotaRef.current = catchUp.requestedForQuotaBoundaryKey;
     if (catchUp.shouldSchedule) {
-      setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+      requestPreciseRefresh(
+        true,
+        "catch-up",
+        latestComparisonUpdatedAtRef.current ?? undefined,
+        "attribution-boundary",
+        catchUp.requestedForQuotaBoundaryKey ?? undefined,
+      );
     }
-  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
+  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
 
   const markPreciseSnapshotStale = useCallback(() => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -284,6 +396,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       sourceHomeIdentity,
       Number.isFinite(coveredAtMillis) ? coveredAtMillis / 1_000 : Date.now() / 1_000,
     );
+    retryPreciseRefreshRef.current = true;
   }, [isSourceTokenCurrent, sourceToken]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
@@ -313,18 +426,46 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     // Poll timestamps alone are not a comparison boundary. Exact usage catches
     // up only after a substantive account/reset/used-percent transition.
     if (comparison.shouldRefreshPreciseUsage) {
-      attributionPreciseRefreshRef.current = comparison.state?.comparisonUpdatedAt ?? quota.updatedAt;
-      setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
+      const comparisonUpdatedAt = comparison.state?.comparisonUpdatedAt ?? quota.updatedAt;
+      const comparisonBoundaryKey = canonicalAttributionBoundaryKey(comparisonUpdatedAt);
+      attributionPreciseRefreshRef.current = comparisonBoundaryKey ?? null;
+      // The first quota observation commonly arrives while the cold precise
+      // owner is already running. Coalesce that observation without asking the
+      // owner for a redundant trailing full scan; a coverage mismatch after
+      // settlement still schedules an explicit catch-up below.
+      requestPreciseRefresh(
+        comparison.reason !== "initial",
+        "quota",
+        comparisonUpdatedAt,
+        "attribution-boundary",
+        comparisonBoundaryKey,
+      );
     }
-  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
+  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
 
   const refreshAttributionPreciseUsage = useCallback((comparisonUpdatedAt: string) => {
-    if (!isSourceTokenCurrent(sourceToken)
-      || !Number.isFinite(Date.parse(comparisonUpdatedAt))) {
+    if (!isSourceTokenCurrent(sourceToken)) {
       return;
     }
-    const alreadyRequested = attributionPreciseRefreshRef.current === comparisonUpdatedAt;
-    attributionPreciseRefreshRef.current = comparisonUpdatedAt;
+    const comparisonBoundaryKey = canonicalAttributionBoundaryKey(comparisonUpdatedAt);
+    const parsedComparisonMillis = typeof comparisonUpdatedAt === "string"
+      ? Date.parse(comparisonUpdatedAt)
+      : Number.NaN;
+    // A malformed UI callback must not reuse an earlier boundary. Let it
+    // reach the native owner without a dedupe key instead of silently
+    // suppressing a refresh.
+    if (comparisonBoundaryKey === undefined || !Number.isFinite(parsedComparisonMillis)) {
+      attributionPreciseRefreshRef.current = null;
+      requestPreciseRefresh(
+        true,
+        "attribution",
+        typeof comparisonUpdatedAt === "string" ? comparisonUpdatedAt : undefined,
+        "attribution-boundary",
+      );
+      return;
+    }
+    const alreadyRequested = attributionPreciseRefreshRef.current === comparisonBoundaryKey;
+    attributionPreciseRefreshRef.current = comparisonBoundaryKey;
     quotaComparisonObservationRef.current = alignQuotaComparisonObservation(
       quotaComparisonObservationRef.current,
       comparisonUpdatedAt,
@@ -332,12 +473,18 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     const previousMillis = latestComparisonUpdatedAtRef.current === null
       ? Number.NEGATIVE_INFINITY
       : Date.parse(latestComparisonUpdatedAtRef.current);
-    if (Date.parse(comparisonUpdatedAt) > previousMillis) {
+    if (parsedComparisonMillis > previousMillis) {
       latestComparisonUpdatedAtRef.current = comparisonUpdatedAt;
     }
     if (alreadyRequested) return;
-    setLoadGeneration((current) => isSourceTokenCurrent(sourceToken) ? current + 1 : current);
-  }, [isSourceTokenCurrent, sourceToken]);
+    requestPreciseRefresh(
+      true,
+      "attribution",
+      comparisonUpdatedAt,
+      "attribution-boundary",
+      comparisonBoundaryKey,
+    );
+  }, [isSourceTokenCurrent, requestPreciseRefresh, sourceToken]);
 
   const acknowledgeAttributionSafety = useCallback(async (
     provenanceEpoch: string,
@@ -354,16 +501,16 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (acknowledged && isSourceTokenCurrent(sourceToken)) {
       // The acknowledgement changes native exact-index state. Only a fresh
       // precise snapshot without the episode token may advance the baseline.
-      setLoadGeneration((current) => current + 1);
+      requestPreciseRefresh(true, "source-change", throughGeneration);
     }
     return acknowledged;
-  }, [isSourceTokenCurrent, source, sourceToken]);
+  }, [isSourceTokenCurrent, requestPreciseRefresh, source, sourceToken]);
 
   const refreshAttributionSafety = useCallback(() => {
     if (isSourceTokenCurrent(sourceToken)) {
-      setLoadGeneration((current) => current + 1);
+      requestPreciseRefresh(true, "attribution");
     }
-  }, [isSourceTokenCurrent, sourceToken]);
+  }, [isSourceTokenCurrent, requestPreciseRefresh, sourceToken]);
 
   const mergeLiveRateSnapshot = useCallback((liveRate: LiveRateSnapshot) => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -694,7 +841,11 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
     const plan = makeDashboardRefreshPlan("systemWake", context);
     applyDashboardRefreshPlan(plan, {
-      refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+      refreshPreciseUsage: () => {
+        wakeRefreshSequenceRef.current += 1;
+        const wakeKey = `wake-${wakeRefreshSequenceRef.current}`;
+        requestPreciseRefresh(true, "wake", wakeKey, "wake", wakeKey);
+      },
       refreshQuota: () => {
         setForceNextQuotaLoad(true);
         setQuotaLoadGeneration((current) => current + 1);
@@ -702,7 +853,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
       scanProviders: () => {},
     });
-  }, [dashboardVisible, state.dashboard?.generatedAt]);
+  }, [dashboardVisible, requestPreciseRefresh, state.dashboard?.generatedAt]);
 
   useWakeRefresh({
     active: fastSnapshotLoaded && dashboardReady && !state.loading,
@@ -714,6 +865,32 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dashboardReady,
     loading: state.loading,
     generation: loadGeneration,
+    forcePreciseRefresh: pendingForcedPreciseRefreshRef.current
+      || activeForcedPreciseGenerationRef.current === loadGeneration,
+    preciseRefreshReason: pendingPreciseRequestRef.current?.reason
+      ?? (activePreciseRequestRef.current
+        && activePreciseRequestRef.current.force
+        && activeForcedPreciseGenerationRef.current === loadGeneration
+        ? activePreciseRequestRef.current.reason
+        : retryPreciseRefreshRef.current ? "retry" : "cadence"),
+    preciseRefreshRevision: pendingPreciseRequestRef.current?.revision
+      ?? (activePreciseRequestRef.current
+        && activePreciseRequestRef.current.force
+        && activeForcedPreciseGenerationRef.current === loadGeneration
+        ? activePreciseRequestRef.current.revision
+        : undefined),
+    preciseRefreshDedupeDomain: pendingPreciseRequestRef.current?.dedupeDomain
+      ?? (activePreciseRequestRef.current
+        && activePreciseRequestRef.current.force
+        && activeForcedPreciseGenerationRef.current === loadGeneration
+        ? activePreciseRequestRef.current.dedupeDomain
+        : undefined),
+    preciseRefreshDedupeKey: pendingPreciseRequestRef.current?.dedupeKey
+      ?? (activePreciseRequestRef.current
+        && activePreciseRequestRef.current.force
+        && activeForcedPreciseGenerationRef.current === loadGeneration
+        ? activePreciseRequestRef.current.dedupeKey
+        : undefined),
     quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
     sourceToken,
@@ -723,6 +900,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     onPreciseDashboardStale: markPreciseSnapshotStale,
     onUsageCacheInitialized: markUsageCacheInitialized,
     onUsageCacheStatus: updateUsageCacheStatus,
+    onPreciseRequestStarted: markPreciseRequestStarted,
     onQuota: mergeQuotaSnapshot,
     onLiveThreadOptions: mergeThreadOptions,
     onForceQuotaRefreshConsumed: consumeForcedQuotaRefresh,

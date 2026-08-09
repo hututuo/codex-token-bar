@@ -42,6 +42,146 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(rows[1].score ?? 0, 2.25, accuracy: 0.001)
     }
 
+    func testOrdinaryDriverPreservesExplicitSidecarURL() throws {
+        let mainURL = try makeDatabaseURL()
+        let walURL = URL(fileURLWithPath: mainURL.path + "-wal")
+        let shmURL = URL(fileURLWithPath: mainURL.path + "-shm")
+
+        XCTAssertEqual(
+            SQLiteDatabaseDriver(url: walURL, readOnly: true, createsFileIfMissing: false).url.path,
+            walURL.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            SQLitePersistentDatabaseReader(url: shmURL).url.path,
+            shmURL.standardizedFileURL.path
+        )
+    }
+
+    func testPeerImmutableFallbackReadsCheckpointedWALMainWithoutCreatingSidecars() throws {
+        let seedURL = try makeDatabaseURL()
+        let spacedDirectory = seedURL.deletingLastPathComponent()
+            .appendingPathComponent("peer dir with spaces", isDirectory: true)
+        try FileManager.default.createDirectory(at: spacedDirectory, withIntermediateDirectories: false)
+        let url = spacedDirectory.appendingPathComponent("quota-history.sqlite")
+        let writer = SQLiteDatabaseDriver(url: url, enableWAL: true)
+        try writer.execute("CREATE TABLE items (value TEXT NOT NULL);")
+        try writer.execute("INSERT INTO items (value) VALUES ('checkpointed');")
+        try SQLiteDatabaseDriver(url: url, enableWAL: true)
+            .execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        try removeSQLiteSidecars(at: url)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-shm"))
+
+        let reader = SQLitePeerDatabaseReader(url: url, busyTimeoutMilliseconds: 250)
+        XCTAssertEqual(
+            try reader.readRows("SELECT value FROM items;") { $0.text(0) ?? "" },
+            ["checkpointed"]
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path + "-wal"),
+            "immutable peer fallback must not create a WAL sidecar"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path + "-shm"),
+            "immutable peer fallback must not create a SHM sidecar"
+        )
+        XCTAssertThrowsError(try reader.execute("CREATE TABLE forbidden (id INTEGER);")) { error in
+            XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_READONLY)
+        }
+    }
+
+    func testPeerReaderUsesActiveWALSnapshotInsteadOfImmutableFallback() throws {
+        let url = try makeDatabaseURL()
+        let writer = SQLiteDatabaseDriver(url: url, enableWAL: true)
+        try writer.execute("CREATE TABLE items (value TEXT NOT NULL);")
+        try writer.execute("INSERT INTO items (value) VALUES ('active-wal');")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-wal"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-shm"))
+
+        let probe = PeerReadHookProbe()
+        let reader = SQLitePeerDatabaseReader(
+            url: url,
+            beforeImmutableOpen: { probe.recordMessage("immutable fallback must not run while WAL exists") }
+        )
+        XCTAssertEqual(
+            try reader.readRows("SELECT value FROM items;") { $0.text(0) ?? "" },
+            ["active-wal"]
+        )
+        XCTAssertNil(probe.message)
+    }
+
+    func testPeerImmutableFallbackDiscardsResultWhenWALAppearsAfterOpen() throws {
+        let url = try makeDatabaseURL()
+        let writer = SQLiteDatabaseDriver(url: url, enableWAL: true)
+        try writer.execute("CREATE TABLE items (value TEXT NOT NULL);")
+        try writer.execute("INSERT INTO items (value) VALUES ('before');")
+        try SQLiteDatabaseDriver(url: url, enableWAL: true)
+            .execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        try removeSQLiteSidecars(at: url)
+
+        let probe = PeerReadHookProbe()
+        let reader = SQLitePeerDatabaseReader(
+            url: url,
+            afterImmutableOpen: {
+                do {
+                    try writer.execute("INSERT INTO items (value) VALUES ('after');")
+                } catch {
+                    probe.record(error)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(
+            try reader.readRows("SELECT value FROM items ORDER BY rowid;") { $0.text(0) ?? "" }
+        ) { error in
+            XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_PROTOCOL)
+            XCTAssertTrue(
+                (error as? SQLiteDatabaseError)?.message.contains("changed") == true,
+                "an in-flight WAL transition must discard the immutable result"
+            )
+        }
+        XCTAssertNil(probe.error)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-wal"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path + "-shm"))
+    }
+
+    func testPeerImmutableFallbackRejectsSidecarRotationEvenWhenFilesAreGoneAfterRead() throws {
+        let url = try makeDatabaseURL()
+        let writer = SQLiteDatabaseDriver(url: url, enableWAL: true)
+        try writer.execute("CREATE TABLE items (value TEXT NOT NULL);")
+        try writer.execute("INSERT INTO items (value) VALUES ('before');")
+        try SQLiteDatabaseDriver(url: url, enableWAL: true)
+            .execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        try removeSQLiteSidecars(at: url)
+
+        let probe = PeerReadHookProbe()
+        let reader = SQLitePeerDatabaseReader(
+            url: url,
+            afterImmutableOpen: {
+                do {
+                    try writer.execute("INSERT INTO items (value) VALUES ('rotated');")
+                    try removeSQLiteSidecars(at: url)
+                } catch {
+                    probe.record(error)
+                }
+            }
+        )
+
+        XCTAssertThrowsError(
+            try reader.readRows("SELECT value FROM items ORDER BY rowid;") { $0.text(0) ?? "" }
+        ) { error in
+            XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_PROTOCOL)
+            XCTAssertTrue(
+                (error as? SQLiteDatabaseError)?.message.contains("changed") == true,
+                "sidecar create/remove during immutable read must be discarded"
+            )
+        }
+        XCTAssertNil(probe.error)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-shm"))
+    }
+
     func testExecuteChangedRowsReturnsChangedCount() throws {
         let driver = SQLiteDatabaseDriver(url: try makeDatabaseURL())
         try driver.execute("CREATE TABLE counters (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);")
@@ -623,6 +763,45 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
     private func openDescriptorCountIfPresent(for url: URL) throws -> Int {
         guard FileManager.default.fileExists(atPath: url.path) else { return 0 }
         return try openDescriptorCount(for: url)
+    }
+}
+
+private func removeSQLiteSidecars(at url: URL) throws {
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = URL(fileURLWithPath: url.path + suffix)
+        if FileManager.default.fileExists(atPath: sidecar.path) {
+            try FileManager.default.removeItem(at: sidecar)
+        }
+    }
+}
+
+private final class PeerReadHookProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedError: Error?
+    private var recordedMessage: String?
+
+    var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedError
+    }
+
+    var message: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedMessage
+    }
+
+    func record(_ error: Error) {
+        lock.lock()
+        recordedError = error
+        lock.unlock()
+    }
+
+    func recordMessage(_ message: String) {
+        lock.lock()
+        recordedMessage = message
+        lock.unlock()
     }
 }
 

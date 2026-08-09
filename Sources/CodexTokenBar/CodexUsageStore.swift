@@ -50,6 +50,11 @@ private final class SharedAccountContinuityObserverToken: @unchecked Sendable {
 @MainActor
 final class CodexUsageStore: ObservableObject {
     @Published private(set) var snapshot: DashboardSnapshot = .empty
+    private(set) var todayModelBreakdowns: [ModelTokenBreakdown] = []
+    /// The last successful exact model snapshot's local day. A fast/compact
+    /// refresh can temporarily lack attribution rows; retaining this marker
+    /// lets us keep that snapshot only within the same day and source.
+    private var todayModelBreakdownsDay: Date?
     @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
     @Published private(set) var isInitialLoading = true
@@ -346,10 +351,12 @@ final class CodexUsageStore: ObservableObject {
         isRefreshing = false
         isPreparingUsageCache = false
         preciseTimeSeriesFresh = false
+        todayModelBreakdownsDay = nil
         guard identityChanged else { return true }
 
         sourceIdentityGeneration += 1
         snapshot = .empty
+        todayModelBreakdowns = []
         snapshotSourceID = nil
         didRunPreciseScan = false
         status = nextDataSource == nil
@@ -389,6 +396,7 @@ final class CodexUsageStore: ObservableObject {
             "alreadyRefreshing": isRefreshing ? "1" : "0",
             "source": resolvedDataSource?.displayPath ?? "nil"
         ])
+        clearStaleTodayModelBreakdownsIfNeeded()
         let requestedBindingKey = Self.bindingKey(for: resolvedDataSource)
         if isRefreshing,
            requestedSourceID == activeRefreshSourceID,
@@ -429,6 +437,8 @@ final class CodexUsageStore: ObservableObject {
             activeRefreshCompactOnly = false
             pendingFullRefresh = false
             snapshot = .empty
+            todayModelBreakdowns = []
+            todayModelBreakdownsDay = nil
             snapshotSourceID = nil
             preciseTimeSeriesFresh = false
             status = "未找到本地 Codex 数据目录"
@@ -455,6 +465,8 @@ final class CodexUsageStore: ObservableObject {
         let sourceID = refreshSourceID(for: dataSource)
         if let snapshotSourceID, snapshotSourceID != sourceID {
             snapshot = .empty
+            todayModelBreakdowns = []
+            todayModelBreakdownsDay = nil
             self.snapshotSourceID = nil
             preciseTimeSeriesFresh = false
         }
@@ -563,6 +575,7 @@ final class CodexUsageStore: ObservableObject {
                         if let summary {
                             self.publish(
                                 Self.applyingCompactSummary(summary, to: self.snapshot),
+                                todayModelBreakdowns: summary.todayModelBreakdowns,
                                 sourceID: sourceID
                             )
                             self.preciseTimeSeriesFresh = false
@@ -578,39 +591,72 @@ final class CodexUsageStore: ObservableObject {
                     }
                     if !compactSummaryApplied {
                         trace?.mark("preciseSnapshot.begin")
-                        let loaded = try await self.snapshotLoader.loadSnapshot(dataSource: source)
-                        guard self.isCurrentRefresh(
-                            generation: generation,
-                            bindingGeneration: bindingGeneration,
-                            sourceID: sourceID
-                        ) else {
-                            trace?.end("stale-after-preciseSnapshot")
-                            return
-                        }
-                        if loaded.hasPreciseTokenUsage {
-                            self.publish(loaded, sourceID: sourceID)
-                            self.preciseTimeSeriesFresh = loaded.preciseTimeSeriesGeneratedAt != nil
-                                && loaded.cacheUsage.attributionEventsComplete
-                            self.didRunPreciseScan = true
-                            UsageCacheLifecycle.markCurrentCachePrepared()
-                            self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
-                            trace?.mark("preciseSnapshot.end", metadata: [
-                                "tokens": String(loaded.stats.totalTokens),
-                                "calls": String(loaded.stats.totalCalls),
-                                "threads": String(loaded.stats.totalThreads)
-                            ])
-                        } else {
-                            self.preciseTimeSeriesFresh = false
-                            self.markPreciseTimeSeriesContinuityLoss(for: source)
-                            if !self.snapshot.hasPreciseTokenUsage {
-                                self.publish(loaded, sourceID: sourceID)
-                                self.status = self.metadataOnlyStatus(origin: source.originLabel)
-                            } else {
-                                self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
+                        var sawFinalPrecisePhase = false
+                        var sawNumericPrecisePhase = false
+                        for try await loaded in self.snapshotLoader.loadSnapshotPhases(
+                            dataSource: source
+                        ) {
+                            guard self.isCurrentRefresh(
+                                generation: generation,
+                                bindingGeneration: bindingGeneration,
+                                sourceID: sourceID
+                            ) else {
+                                trace?.end("stale-after-preciseSnapshot")
+                                return
                             }
-                            trace?.mark("preciseSnapshot.metadataOnly", metadata: [
-                                "threads": String(loaded.stats.totalThreads)
-                            ])
+                            if loaded.hasPreciseTokenUsage {
+                                self.publish(loaded, sourceID: sourceID)
+                                if loaded.cacheUsage.attributionEventsComplete {
+                                    sawFinalPrecisePhase = true
+                                    self.preciseTimeSeriesFresh =
+                                        loaded.preciseTimeSeriesGeneratedAt != nil
+                                            && loaded.cacheUsage.attributionEventsComplete
+                                    self.didRunPreciseScan = true
+                                    UsageCacheLifecycle.markCurrentCachePrepared()
+                                    self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                                    trace?.mark("preciseSnapshot.finalPhase", metadata: [
+                                        "tokens": String(loaded.stats.totalTokens),
+                                        "calls": String(loaded.stats.totalCalls),
+                                        "threads": String(loaded.stats.totalThreads)
+                                    ])
+                                } else {
+                                    // Numeric phase: keep the dashboard useful
+                                    // while making the attribution freshness
+                                    // boundary explicit until the final phase.
+                                    sawNumericPrecisePhase = true
+                                    self.preciseTimeSeriesFresh = false
+                                    self.status = "\(source.originLabel) · token_count · 正在补齐会话明细..."
+                                    trace?.mark("preciseSnapshot.numericPhase", metadata: [
+                                        "tokens": String(loaded.stats.totalTokens),
+                                        "calls": String(loaded.stats.totalCalls)
+                                    ])
+                                }
+                            } else {
+                                self.preciseTimeSeriesFresh = false
+                                self.markPreciseTimeSeriesContinuityLoss(for: source)
+                                if !self.snapshot.hasPreciseTokenUsage {
+                                    self.publish(loaded, sourceID: sourceID)
+                                    self.status = self.metadataOnlyStatus(origin: source.originLabel)
+                                } else {
+                                    self.status = self.staleMetadataOnlyStatus(origin: source.originLabel)
+                                }
+                                trace?.mark("preciseSnapshot.metadataOnly", metadata: [
+                                    "threads": String(loaded.stats.totalThreads)
+                                ])
+                            }
+                        }
+                        if sawNumericPrecisePhase && !sawFinalPrecisePhase {
+                            throw NSError(
+                                domain: "CodexTokenBar",
+                                code: 7,
+                                userInfo: [
+                                    NSLocalizedDescriptionKey:
+                                        "精确数值阶段已发布，但会话明细阶段未完成"
+                                ]
+                            )
+                        }
+                        if !sawFinalPrecisePhase {
+                            trace?.mark("preciseSnapshot.noFinalPhase")
                         }
                     }
                 }
@@ -628,6 +674,8 @@ final class CodexUsageStore: ObservableObject {
                     && self.hasDisplayableSnapshot(self.snapshot)
                 if !retainedTrustedSnapshot {
                     self.snapshot = .empty
+                    self.todayModelBreakdowns = []
+                    self.todayModelBreakdownsDay = nil
                     self.snapshotSourceID = nil
                 }
                 self.preciseTimeSeriesFresh = false
@@ -713,9 +761,65 @@ final class CodexUsageStore: ObservableObject {
         dataSource.stableIdentityKey
     }
 
-    private func publish(_ snapshot: DashboardSnapshot, sourceID: String) {
+    private func publish(
+        _ snapshot: DashboardSnapshot,
+        todayModelBreakdowns: [ModelTokenBreakdown]? = nil,
+        sourceID: String
+    ) {
+        let availableRows = todayModelBreakdowns
+            ?? Self.todayModelBreakdownsIfAvailable(in: snapshot, now: snapshot.generatedAt)
+        if let availableRows {
+            let hasTodayUsage = Self.todayTokenCount(in: snapshot, now: snapshot.generatedAt) > 0
+            let shouldRetainPrevious = availableRows.isEmpty
+                && hasTodayUsage
+                && !self.todayModelBreakdowns.isEmpty
+                && snapshotSourceID == sourceID
+                && todayModelBreakdownsDay == Self.startOfDay(snapshot.generatedAt)
+            if !shouldRetainPrevious {
+                self.todayModelBreakdowns = availableRows
+                todayModelBreakdownsDay = Self.startOfDay(snapshot.generatedAt)
+            }
+        }
         self.snapshot = snapshot
         snapshotSourceID = sourceID
+    }
+
+    private static func todayModelBreakdownsIfAvailable(
+        in snapshot: DashboardSnapshot,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [ModelTokenBreakdown]? {
+        guard snapshot.cacheUsage.attributionEventsComplete else { return nil }
+        let start = calendar.startOfDay(for: now)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
+        return ModelUsagePresentation.rows(
+            from: snapshot.cacheUsage.attributionEvents.filter {
+                $0.start >= start && $0.start < end
+            }
+        )
+    }
+
+    private static func startOfDay(_ date: Date) -> Date {
+        Calendar.current.startOfDay(for: date)
+    }
+
+    private static func todayTokenCount(
+        in snapshot: DashboardSnapshot,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        snapshot.dailyUsage.first {
+            calendar.isDate($0.date, inSameDayAs: now)
+        }?.tokens ?? 0
+    }
+
+    private func clearStaleTodayModelBreakdownsIfNeeded() {
+        guard let todayModelBreakdownsDay,
+              !Calendar.current.isDate(todayModelBreakdownsDay, inSameDayAs: Date()) else {
+            return
+        }
+        todayModelBreakdowns = []
+        self.todayModelBreakdownsDay = nil
     }
 
     private func prepareAfterObserverTakeover(for source: CodexDataSource) {
@@ -1060,7 +1164,7 @@ final class CodexUsageStore: ObservableObject {
     }
 
     // 轻量 summary 只覆盖紧凑 surface 消费的字段（累计 token、今日 token/
-    // 调用数）；时间序列/排行/摘录保留上次全量构建结果，展开仪表盘时由
+    // 调用数与今日逐模型用量）；时间序列/排行/摘录保留上次全量构建结果，展开仪表盘时由
     // setOnlyCompactSurfaceVisible 触发的全量刷新补齐。
     static func applyingCompactSummary(
         _ summary: CodexUsageAnalyzer.CompactUsageSummary,
@@ -1257,13 +1361,14 @@ enum ActivityMode: String, CaseIterable, Identifiable {
     case daily = "每日"
     case weekly = "每周"
     case cumulative = "累计"
+    case modelShare = "模型"
     case cacheHitRate = "命中率"
     case quotaRemaining = "额度"
 
     var id: String { rawValue }
 
     var isSpecial: Bool {
-        self == .cacheHitRate || self == .quotaRemaining
+        self == .modelShare || self == .cacheHitRate || self == .quotaRemaining
     }
 }
 

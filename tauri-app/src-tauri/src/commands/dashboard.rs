@@ -1,4 +1,4 @@
-use super::run_blocking_command;
+use super::{run_blocking_command, run_blocking_command_with_worker_start};
 use super::window_auth::require_window_label;
 use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
@@ -20,6 +20,7 @@ pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-chan
 
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
 static PINNED_SQLITE_VIEW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static PRECISE_DASHBOARD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[cfg(unix)]
 static PINNED_SQLITE_DESCRIPTOR_VIEW: OnceLock<Mutex<Option<PinnedSqliteDescriptorView>>> =
     OnceLock::new();
@@ -1477,20 +1478,77 @@ pub async fn read_precise_dashboard_snapshot(
     window: tauri::WebviewWindow,
     app: AppHandle,
     source_token: CodexHomeSourceToken,
+    request_reason: Option<String>,
 ) -> Result<DashboardSnapshot, String> {
     require_window_label(&window, "read_precise_dashboard_snapshot")?;
+    let request_id = PRECISE_DASHBOARD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let request_reason = precise_dashboard_request_reason(request_reason.as_deref());
+    let queue_wait_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let queue_wait_for_worker = std::sync::Arc::clone(&queue_wait_ms);
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
-        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
-            .read_precise_dashboard_snapshot()
-    })
+    let result = run_source_bound_dashboard_read_with_worker_start(
+        &app,
+        source_token,
+        |codex_home| {
+            crate::core::dashboard::LocalCodexDataSource::new(codex_home)
+                .read_precise_dashboard_snapshot()
+        },
+        move |queue_wait| {
+            queue_wait_for_worker.store(queue_wait, Ordering::Relaxed);
+        },
+    )
     .await;
+    let queue_wait = queue_wait_ms.load(Ordering::Relaxed);
     startup_trace::mark_performance(format!(
-        "read_precise_dashboard_snapshot {}ms {}",
+        "precise_request id={} reason={} queue_wait_ms={} total_ms={} status={}",
+        request_id,
+        request_reason,
+        if queue_wait == u64::MAX {
+            "na".to_string()
+        } else {
+            queue_wait.to_string()
+        },
         started.elapsed().as_millis(),
         result_status(&result)
     ));
     result
+}
+
+async fn run_source_bound_dashboard_read_with_worker_start<T, Read, OnWorkerStart>(
+    app: &AppHandle,
+    expected: CodexHomeSourceToken,
+    read: Read,
+    on_worker_start: OnWorkerStart,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    Read: FnOnce(PathBuf) -> Result<T, String> + Send + 'static,
+    OnWorkerStart: FnOnce(u64) + Send + 'static,
+{
+    run_source_bound_dashboard_read_with(
+        &expected,
+        || emit_detected_source_transition(app).map(|_| ()),
+        |expected| capture_codex_home_source(Some(expected)),
+        |codex_home| {
+            run_blocking_command_with_worker_start(move || read(codex_home), on_worker_start)
+        },
+        validate_codex_home_source,
+    )
+    .await
+}
+
+fn precise_dashboard_request_reason(value: Option<&str>) -> &'static str {
+    match value {
+        Some("cadence") => "cadence",
+        Some("source-change") => "source-change",
+        Some("quota") => "quota",
+        Some("catch-up") => "catch-up",
+        Some("attribution") => "attribution",
+        Some("manual") => "manual",
+        Some("wake") => "wake",
+        Some("retry") => "retry",
+        _ => "unknown",
+    }
 }
 
 #[tauri::command]
@@ -1585,6 +1643,26 @@ pub async fn read_usage_summary_snapshot(
     .await;
     startup_trace::mark_performance(format!(
         "read_usage_summary_snapshot {}ms {}",
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
+#[tauri::command]
+pub async fn read_precise_dashboard_source_probe(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+) -> Result<token_count_jsonl::PreciseDashboardSourceProbe, String> {
+    require_window_label(&window, "read_precise_dashboard_source_probe")?;
+    let started = Instant::now();
+    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        token_count_jsonl::precise_dashboard_source_probe(&codex_home)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "read_precise_dashboard_source_probe {}ms {}",
         started.elapsed().as_millis(),
         result_status(&result)
     ));
@@ -1706,6 +1784,7 @@ fn compact_trace_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::unread::test_fixtures::write_initialized_sidebar_state;
     use crate::models::{
         AccountInfo, AccountQuotaBundle, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
     };
@@ -2185,6 +2264,7 @@ mod tests {
     fn pinned_source_observation_survives_a_to_b_to_a_swap() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("pinned-source-a");
+        write_initialized_sidebar_state(&home, &[]);
         let displaced = home.with_extension("displaced");
         let session_path = canonical_session_test_directory(&home);
         std::fs::create_dir_all(&session_path).unwrap();
@@ -2232,6 +2312,7 @@ mod tests {
         let target = disposable_source_test_directory("canonical-target");
         let link = target.with_extension("link");
         symlink(&target, &link).unwrap();
+        write_initialized_sidebar_state(&target, &[]);
         let session_path = canonical_session_test_directory(&target);
         std::fs::create_dir_all(&session_path).unwrap();
         write_completion_session(
@@ -2262,6 +2343,7 @@ mod tests {
     fn pinned_source_reads_only_bounded_recent_session_candidates_in_memory() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("bounded-pinned-sessions");
+        write_initialized_sidebar_state(&home, &[]);
         let old_sessions = home.join("sessions/2000/01/01");
         std::fs::create_dir_all(&old_sessions).unwrap();
         for index in 0..10_000 {
@@ -2294,6 +2376,7 @@ mod tests {
     fn pinned_source_selects_the_newest_sixty_four_recent_sessions() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("newest-pinned-sessions");
+        write_initialized_sidebar_state(&home, &[]);
         let sessions = canonical_session_test_directory(&home);
         std::fs::create_dir_all(&sessions).unwrap();
         let base = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
@@ -2356,6 +2439,7 @@ mod tests {
     fn sessions_root_allows_ds_store_without_weakening_layout_validation() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("sessions-ds-store");
+        write_initialized_sidebar_state(&home, &[]);
         std::fs::create_dir(home.join("sessions")).unwrap();
         std::fs::write(home.join("sessions/.DS_Store"), b"metadata").unwrap();
         let current = canonical_session_test_directory(&home);
@@ -2382,11 +2466,10 @@ mod tests {
     fn pinned_source_fails_with_diagnostic_when_archived_fallback_cannot_be_safe() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("unsafe-archived-fallback");
-        std::fs::write(
-            home.join(".codex-global-state.json"),
-            r#"{"unread-thread-ids-by-host-v1":{"localhost":["019eaaaa-0000-0000-0000-0000000000aa"]}}"#,
-        )
-        .unwrap();
+        write_initialized_sidebar_state(
+            &home,
+            &["019eaaaa-0000-0000-0000-0000000000aa"],
+        );
         let archived = home.join("archived_sessions");
         std::fs::create_dir(&archived).unwrap();
         std::fs::write(
@@ -2417,11 +2500,7 @@ mod tests {
     fn empty_native_state_never_copies_large_sqlite_files() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("empty-state-skips-db");
-        std::fs::write(
-            home.join(".codex-global-state.json"),
-            r#"{"unread-thread-ids-by-host-v1":{"localhost":[]}}"#,
-        )
-        .unwrap();
+        write_initialized_sidebar_state(&home, &[]);
         std::fs::write(home.join("state_5.sqlite"), vec![0u8; 2 * 1024 * 1024]).unwrap();
         std::fs::write(home.join("state_5.sqlite-wal"), vec![0u8; 1024 * 1024]).unwrap();
         let mut transition = CodexHomeTransitionState::default();
@@ -2446,11 +2525,10 @@ mod tests {
     fn state_sqlite_directory_is_rejected_as_a_non_file() {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("sqlite-directory");
-        std::fs::write(
-            home.join(".codex-global-state.json"),
-            r#"{"unread-thread-ids-by-host-v1":{"localhost":["019eaaaa-0000-0000-0000-0000000000aa"]}}"#,
-        )
-        .unwrap();
+        write_initialized_sidebar_state(
+            &home,
+            &["019eaaaa-0000-0000-0000-0000000000aa"],
+        );
         std::fs::create_dir(home.join("state_5.sqlite")).unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
@@ -2502,11 +2580,7 @@ mod tests {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("db-signature-cache");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
-        std::fs::write(
-            home.join(".codex-global-state.json"),
-            format!(r#"{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}"#),
-        )
-        .unwrap();
+        write_initialized_sidebar_state(&home, &[thread_id]);
         let database_path = home.join("state_5.sqlite");
         let connection = rusqlite::Connection::open(&database_path).unwrap();
         connection
@@ -2571,11 +2645,7 @@ mod tests {
         let _guard = pinned_source_counter_test_guard();
         let home = disposable_source_test_directory("descriptor-wal");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000ab";
-        std::fs::write(
-            home.join(".codex-global-state.json"),
-            format!(r#"{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}"#),
-        )
-        .unwrap();
+        write_initialized_sidebar_state(&home, &[thread_id]);
         let connection = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
         connection
             .execute_batch(
@@ -2671,11 +2741,7 @@ mod tests {
         let _guard = pinned_source_counter_test_guard();
         let home_a = disposable_source_test_directory("cache-source-a");
         let thread_id = "019eaaaa-0000-0000-0000-0000000000aa";
-        std::fs::write(
-            home_a.join(".codex-global-state.json"),
-            format!(r#"{{"unread-thread-ids-by-host-v1":{{"localhost":["{thread_id}"]}}}}"#),
-        )
-        .unwrap();
+        write_initialized_sidebar_state(&home_a, &[thread_id]);
         let connection = rusqlite::Connection::open(home_a.join("state_5.sqlite")).unwrap();
         connection
             .execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY);")
@@ -2699,11 +2765,7 @@ mod tests {
             .is_empty());
 
         let home_b = disposable_source_test_directory("cache-source-b-empty");
-        std::fs::write(
-            home_b.join(".codex-global-state.json"),
-            r#"{"unread-thread-ids-by-host-v1":{"localhost":[]}}"#,
-        )
-        .unwrap();
+        write_initialized_sidebar_state(&home_b, &[]);
         let mut transition_b = CodexHomeTransitionState::default();
         let source_b = resolve_codex_home_source(
             &mut transition_b,
@@ -2732,11 +2794,10 @@ mod tests {
         let _guard = pinned_source_counter_test_guard();
         reset_pinned_source_observation_counters_for_test();
         let home = disposable_source_test_directory("failed-db-cache");
-        std::fs::write(
-            home.join(".codex-global-state.json"),
-            r#"{"unread-thread-ids-by-host-v1":{"localhost":["019eaaaa-0000-0000-0000-0000000000aa"]}}"#,
-        )
-        .unwrap();
+        write_initialized_sidebar_state(
+            &home,
+            &["019eaaaa-0000-0000-0000-0000000000aa"],
+        );
         std::fs::write(home.join("state_5.sqlite"), b"not sqlite").unwrap();
         let mut transition = CodexHomeTransitionState::default();
         let source = resolve_codex_home_source(
@@ -2775,6 +2836,27 @@ mod tests {
             account_quota_result_status(&placeholder),
             "quota_placeholder"
         );
+    }
+
+    #[test]
+    fn precise_dashboard_request_trace_accepts_only_bounded_reasons() {
+        for reason in [
+            "cadence",
+            "source-change",
+            "quota",
+            "catch-up",
+            "attribution",
+            "manual",
+            "wake",
+            "retry",
+        ] {
+            assert_eq!(precise_dashboard_request_reason(Some(reason)), reason);
+        }
+        assert_eq!(
+            precise_dashboard_request_reason(Some("/private/source.jsonl")),
+            "unknown"
+        );
+        assert_eq!(precise_dashboard_request_reason(None), "unknown");
     }
 
     #[test]

@@ -11,6 +11,8 @@ struct SubscriptionSavingsEstimate: Equatable {
     let priceModel: OfficialAPIPriceModel
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackModelCalls: Int
+    let excludedModels: [String]
+    let excludedCalls: Int
     let firstUsageAt: Date
 }
 
@@ -53,6 +55,8 @@ enum SubscriptionSavingsEstimator {
             priceModel: priceModel,
             detectedModels: apiPrice.detectedModels,
             fallbackModelCalls: apiPrice.fallbackCalls,
+            excludedModels: apiPrice.excludedModels,
+            excludedCalls: apiPrice.excludedCalls,
             firstUsageAt: firstUsageAt
         )
     }
@@ -125,11 +129,26 @@ struct SubscriptionSavingsPresentation: Equatable {
     private static func pricingDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
         let models = estimate.detectedModels.map(\.quotaEstimateShortTitle)
         guard !models.isEmpty else {
-            return "缺少逐模型历史，按未知模型回退 \(estimate.priceModel.title) 当前 API 单价估算"
+            if estimate.fallbackModelCalls == 0, !estimate.excludedModels.isEmpty {
+                return standaloneExcludedDescription(estimate)
+            }
+            let fallback = "缺少逐模型历史，按未知模型回退 \(estimate.priceModel.title) 当前 API 单价估算"
+            return fallback + excludedDescription(estimate)
         }
         let automatic = "按历史真实模型 \(models.joined(separator: "/")) 的当前 API 单价自动估算"
-        guard estimate.fallbackModelCalls > 0 else { return automatic }
-        return "\(automatic)，另有 \(estimate.fallbackModelCalls) 次未知记录按 \(estimate.priceModel.quotaEstimateShortTitle) 回退"
+        let fallback = estimate.fallbackModelCalls > 0
+            ? "，另有 \(estimate.fallbackModelCalls) 次未知记录按 \(estimate.priceModel.quotaEstimateShortTitle) 回退"
+            : ""
+        return automatic + fallback + excludedDescription(estimate)
+    }
+
+    private static func excludedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
+        guard !estimate.excludedModels.isEmpty else { return "" }
+        return "；\(standaloneExcludedDescription(estimate))"
+    }
+
+    private static func standaloneExcludedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
+        "\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用属于独立额度，不参与 API 等值"
     }
 
     static func compactMoney(_ value: Double) -> String {

@@ -203,16 +203,102 @@ extension CodexUsageAnalyzer {
             }
         }
 
+        /// The on-disk fast-start surface. This intentionally contains only
+        /// numeric dashboard data plus stable identifiers required to bind the
+        /// payload to one exact session tree. Conversation excerpts, titles,
+        /// session/turn rows, and attribution locators never cross this
+        /// boundary.
+        private struct PersistentExactSnapshot: Codable {
+            static let currentPayloadVersion = 1
+
+            let payloadVersion: Int
+            let root: String
+            let signature: SessionTreeSignature
+            let stats: DashboardStats
+            let dailyUsage: [DayUsage]
+            let recentBins: [BinUsage]
+            let hourlyUsage: [BinUsage]
+            let pluginUsage: [PluginUsage]
+            let cacheTotal: TokenCacheBreakdown
+            let cacheModelBreakdowns: [ModelTokenBreakdown]
+            let cacheDaily: [TokenCacheBucket]
+            let cacheHourly: [TokenCacheBucket]
+            let cacheRecentBins: [TokenCacheBucket]
+            let preciseTimeSeriesGeneratedAt: Date?
+
+            init(
+                snapshot: DashboardSnapshot,
+                root: String,
+                signature: SessionTreeSignature
+            ) {
+                payloadVersion = Self.currentPayloadVersion
+                self.root = root
+                self.signature = signature
+                stats = snapshot.stats
+                dailyUsage = snapshot.dailyUsage
+                recentBins = snapshot.recentBins
+                hourlyUsage = snapshot.hourlyUsage
+                pluginUsage = snapshot.pluginUsage
+                cacheTotal = snapshot.cacheUsage.total
+                cacheModelBreakdowns = snapshot.cacheUsage.modelBreakdowns
+                cacheDaily = snapshot.cacheUsage.daily
+                cacheHourly = snapshot.cacheUsage.hourly
+                cacheRecentBins = snapshot.cacheUsage.recentBins
+                preciseTimeSeriesGeneratedAt = snapshot.preciseTimeSeriesGeneratedAt
+            }
+
+            func restoredSnapshot(
+                attributionState: CodexUsageHistoryIndex.AttributionState,
+                generatedAt: Date = Date()
+            ) -> DashboardSnapshot {
+                let cacheUsage = TokenCacheUsage(
+                    total: cacheTotal,
+                    modelBreakdowns: cacheModelBreakdowns,
+                    daily: cacheDaily,
+                    hourly: cacheHourly,
+                    recentBins: cacheRecentBins,
+                    // A fast-start projection is deliberately not a complete
+                    // attribution result. The next full load must hydrate
+                    // these details from the exact index.
+                    sessions: [],
+                    turns: [],
+                    attributionEvents: [],
+                    attributionEventsComplete: false,
+                    attributionProvenanceEpoch: signature.attributionProvenanceEpoch,
+                    attributionGeneration: signature.attributionGeneration,
+                    attributionUnsafeSinceGeneration:
+                        attributionState.unsafeSinceGeneration,
+                    attributionCurrentScanUnsafeCauseDetected:
+                        attributionState.currentScanUnsafeCauseDetected,
+                    attributionSourceMutationDetected:
+                        attributionState.requiresSyntheticCutover
+                )
+                return DashboardSnapshot(
+                    stats: stats,
+                    dailyUsage: dailyUsage,
+                    recentBins: recentBins,
+                    hourlyUsage: hourlyUsage,
+                    pluginUsage: pluginUsage,
+                    cacheUsage: cacheUsage,
+                    usagePrecision: .precise,
+                    preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
+                    generatedAt: generatedAt
+                )
+            }
+        }
+
         private let lock = NSLock()
         private var storage: [String: CachedSession] = [:]
         private var snapshotStorage: [String: (signature: SessionTreeSignature, snapshot: DashboardSnapshot)] = [:]
+        private var persistentExactSnapshotStorage: [String: (signature: SessionTreeSignature, payload: PersistentExactSnapshot)] = [:]
+        private var didLoadPersistentExactSnapshotRoots = Set<String>()
+        private var persistentExactSnapshotLoads: [String: DispatchGroup] = [:]
         private var snapshotBuildCount = 0
         private var fullSessionParseCount = 0
         private var incrementalSessionParseCount = 0
         private var didLoadPersistentCache = false
         private var pendingPersistence: [String: PersistenceOperation] = [:]
         private var deletedPersistentPaths = Set<String>()
-        private var isSnapshotDirty = false
         private var shouldFinalizeLegacyV8Migration = false
         private var legacyV8MigrationFailed = false
         private let persistenceLock = NSLock()
@@ -306,9 +392,89 @@ extension CodexUsageAnalyzer {
         }
 
         func storeSnapshot(_ snapshot: DashboardSnapshot, for root: String, signature: SessionTreeSignature) {
+            let canonicalRoot = Self.canonicalRootPath(root)
+            let persistentPayload = PersistentExactSnapshot(
+                snapshot: snapshot,
+                root: canonicalRoot,
+                signature: signature
+            )
             lock.lock()
             snapshotStorage[root] = (signature, snapshot)
-            isSnapshotDirty = true
+            // Keep the in-process persistent projection in sync with the
+            // complete snapshot. This lets a later fast refresh avoid disk
+            // I/O while preserving the same incomplete-attribution contract
+            // used after a process restart.
+            persistentExactSnapshotStorage[canonicalRoot] = (
+                signature,
+                persistentPayload
+            )
+            didLoadPersistentExactSnapshotRoots.insert(canonicalRoot)
+            lock.unlock()
+            Self.persistPersistentExactSnapshot(persistentPayload)
+        }
+
+        func persistentExactSnapshot(
+            for root: String,
+            signature: SessionTreeSignature,
+            attributionState: CodexUsageHistoryIndex.AttributionState
+        ) -> DashboardSnapshot? {
+            guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
+                return nil
+            }
+            let canonicalRoot = Self.canonicalRootPath(root)
+
+            while true {
+                lock.lock()
+                if let cached = persistentExactSnapshotStorage[canonicalRoot] {
+                    lock.unlock()
+                    guard cached.signature == signature else { return nil }
+                    return cached.payload.restoredSnapshot(
+                        attributionState: attributionState
+                    )
+                }
+                if didLoadPersistentExactSnapshotRoots.contains(canonicalRoot) {
+                    lock.unlock()
+                    return nil
+                }
+                if let loading = persistentExactSnapshotLoads[canonicalRoot] {
+                    lock.unlock()
+                    // Wait only for this canonical Home. Other Homes can load
+                    // concurrently because no global lock is held during I/O.
+                    loading.wait()
+                    continue
+                }
+                let loading = DispatchGroup()
+                loading.enter()
+                persistentExactSnapshotLoads[canonicalRoot] = loading
+                lock.unlock()
+
+                let loaded = Self.loadPersistentExactSnapshot(
+                    root: canonicalRoot,
+                    signature: signature
+                )
+                lock.lock()
+                if let loaded {
+                    persistentExactSnapshotStorage[canonicalRoot] = loaded
+                }
+                didLoadPersistentExactSnapshotRoots.insert(canonicalRoot)
+                persistentExactSnapshotLoads.removeValue(forKey: canonicalRoot)
+                lock.unlock()
+                loading.leave()
+
+                return loaded?.payload.restoredSnapshot(
+                    attributionState: attributionState
+                )
+            }
+        }
+
+        /// Clears only process-local snapshot state. The versioned exact
+        /// snapshot remains on disk so tests can model a new process without
+        /// rebuilding the source index.
+        func resetPersistentExactSnapshotStateForTesting() {
+            lock.lock()
+            persistentExactSnapshotStorage.removeAll()
+            didLoadPersistentExactSnapshotRoots.removeAll()
+            persistentExactSnapshotLoads.removeAll()
             lock.unlock()
         }
 
@@ -366,7 +532,9 @@ extension CodexUsageAnalyzer {
             didLoadPersistentCache = false
             pendingPersistence.removeAll()
             deletedPersistentPaths.removeAll()
-            isSnapshotDirty = false
+            persistentExactSnapshotStorage.removeAll()
+            didLoadPersistentExactSnapshotRoots.removeAll()
+            persistentExactSnapshotLoads.removeAll()
             shouldFinalizeLegacyV8Migration = false
             legacyV8MigrationFailed = false
             lock.unlock()
@@ -385,7 +553,6 @@ extension CodexUsageAnalyzer {
             if CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled {
                 pendingPersistence.removeAll()
                 deletedPersistentPaths.removeAll()
-                isSnapshotDirty = false
                 lock.unlock()
                 trace?.end("disabled")
                 return
@@ -395,12 +562,10 @@ extension CodexUsageAnalyzer {
             let dirtySessions = pendingPersistence.compactMap { path, operation in
                 storage[path].map { (path, $0, operation) }
             }
-            let shouldRemovePersistentSnapshot = isSnapshotDirty
             let shouldFinalizeLegacyV8Migration = shouldFinalizeLegacyV8Migration
                 && !legacyV8MigrationFailed
             guard !dirtySessions.isEmpty
                     || !deletedPersistentPaths.isEmpty
-                    || shouldRemovePersistentSnapshot
                     || shouldFinalizeLegacyV8Migration else {
                 lock.unlock()
                 trace?.end("clean")
@@ -408,7 +573,6 @@ extension CodexUsageAnalyzer {
             }
             self.pendingPersistence.removeAll()
             self.deletedPersistentPaths.removeAll()
-            isSnapshotDirty = false
             lock.unlock()
 
             guard let cacheDirectory = Self.sessionCacheDirectory else {
@@ -421,15 +585,10 @@ extension CodexUsageAnalyzer {
                 trace?.mark("removeLegacy.begin")
                 Self.removeLegacyCaches()
                 trace?.mark("removeLegacy.end")
-                if let snapshotURL = Self.snapshotCacheURL {
-                    trace?.mark("removePersistentSnapshot.begin")
-                    try? FileManager.default.removeItem(at: snapshotURL)
-                    trace?.mark("removePersistentSnapshot.end")
-                }
                 guard !dirtySessions.isEmpty
                         || !deletedPersistentPaths.isEmpty
                         || shouldFinalizeLegacyV8Migration else {
-                    trace?.end("removed-snapshot-only")
+                    trace?.end("clean")
                     return
                 }
                 trace?.mark("createDirectory.begin")
@@ -672,6 +831,16 @@ extension CodexUsageAnalyzer {
                 .appendingPathComponent(cacheNamespace, isDirectory: true)
         }
 
+        private static let persistentExactSnapshotDirectoryName =
+            "persistent-exact-snapshots-v1"
+
+        private static var persistentExactSnapshotDirectory: URL? {
+            cacheNamespaceDirectory?.appendingPathComponent(
+                persistentExactSnapshotDirectoryName,
+                isDirectory: true
+            )
+        }
+
         static var legacyV8NamespaceDirectory: URL? {
             cacheRootURL?
                 .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
@@ -685,13 +854,6 @@ extension CodexUsageAnalyzer {
         static var isLegacyV8MigrationComplete: Bool {
             guard let marker = legacyV8MigrationMarkerURL else { return false }
             return FileManager.default.fileExists(atPath: marker.path)
-        }
-
-        private static var snapshotCacheURL: URL? {
-            cacheRootURL?
-                .appendingPathComponent(appCacheDirectoryName, isDirectory: true)
-                .appendingPathComponent(cacheNamespace, isDirectory: true)
-                .appendingPathComponent("session-token-snapshots-v9.json")
         }
 
         private static var legacyCacheURLs: [URL] {
@@ -718,6 +880,66 @@ extension CodexUsageAnalyzer {
                 return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
             }
             return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        }
+
+        private static func canonicalRootPath(_ root: String) -> String {
+            URL(fileURLWithPath: root)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+                .path
+        }
+
+        private static func persistentExactSnapshotURL(for root: String) -> URL? {
+            guard let directory = persistentExactSnapshotDirectory,
+                  let rootHash = digest(root) else {
+                return nil
+            }
+            return directory.appendingPathComponent("\(rootHash).json")
+        }
+
+        private static func loadPersistentExactSnapshot(
+            root: String,
+            signature: SessionTreeSignature
+        ) -> (signature: SessionTreeSignature, payload: PersistentExactSnapshot)? {
+            guard let url = persistentExactSnapshotURL(for: root),
+                  let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]),
+                  values.isSymbolicLink != true,
+                  let data = try? Data(contentsOf: url),
+                  let payload = try? JSONDecoder().decode(
+                      PersistentExactSnapshot.self,
+                      from: data
+                  ),
+                  payload.payloadVersion == PersistentExactSnapshot.currentPayloadVersion,
+                  payload.root == root,
+                  payload.signature == signature else {
+                return nil
+            }
+            return (payload.signature, payload)
+        }
+
+        private static func persistPersistentExactSnapshot(
+            _ payload: PersistentExactSnapshot
+        ) {
+            guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled,
+                  let directory = persistentExactSnapshotDirectory,
+                  let url = persistentExactSnapshotURL(for: payload.root) else {
+                return
+            }
+            do {
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let data = try JSONEncoder().encode(payload)
+                // Data's atomic option writes a sibling temporary file and
+                // replaces the destination, so readers never observe a
+                // truncated JSON payload. Failures are intentionally ignored:
+                // the in-memory exact snapshot remains authoritative.
+                try data.write(to: url, options: [.atomic])
+            } catch {
+                // Best effort only. A corrupt or unavailable disk snapshot is
+                // treated as a miss on the next process start.
+            }
         }
 
         private static func removeLegacyCaches() {
@@ -904,6 +1126,10 @@ extension CodexUsageAnalyzer {
 
     static func clearInMemoryUsageSnapshotsForTesting() {
         sessionEventCache.clearSnapshotsForTesting()
+    }
+
+    static func resetPersistentExactSnapshotStateForTesting() {
+        sessionEventCache.resetPersistentExactSnapshotStateForTesting()
     }
 
     struct OfficialThreadSummary {

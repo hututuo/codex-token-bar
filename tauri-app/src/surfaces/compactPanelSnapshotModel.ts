@@ -1,4 +1,5 @@
 import type {
+  DashboardSnapshot,
   FloatingPanelSnapshot,
   LiveRateSnapshot,
   UsageSummarySnapshot,
@@ -15,6 +16,7 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
   totalTokensLabel: "总 待读取",
   todayTokensLabel: "今 待读取",
   requestsLabel: "次 待读取",
+  todayModelBreakdowns: [],
   fiveHourLabel: "5h 待读取",
   fiveHourAvailability: "unavailable",
   fiveHourRemainingPercent: null,
@@ -52,6 +54,39 @@ export function floatingSnapshotForLiveRate(
     unreadSummary: liveRate.unreadSummary,
   };
   return usageSummary ? mergeFloatingUsageSummary(snapshot, usageSummary) : snapshot;
+}
+
+export function floatingSnapshotForDashboardPreview(
+  liveRate: LiveRateSnapshot,
+  dashboard: DashboardSnapshot,
+): FloatingPanelSnapshot {
+  const generatedDate = new Date(dashboard.generatedAt);
+  const dayKey = Number.isNaN(generatedDate.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(generatedDate);
+  const today = dashboard.activityDays.find((day) => day.date === dayKey)
+    ?? dashboard.activityDays.at(-1);
+  const snapshot = floatingSnapshotForLiveRate(liveRate, {
+    totalTokens: dashboard.stats.totalTokens,
+    todayTokens: today?.tokens ?? liveRate.totalTokensToday,
+    todayRequests: today?.calls ?? liveRate.requestsToday,
+    todayModelBreakdowns: today?.modelBreakdowns ?? [],
+  });
+  return {
+    ...snapshot,
+    fiveHourLabel: dashboard.quota.fiveHour.label || "5h",
+    fiveHourAvailability: dashboard.quota.fiveHour.availability,
+    fiveHourRemainingPercent: dashboard.quota.fiveHour.remainingPercent,
+    fiveHourExpectedRemainingPercent: null,
+    sevenDayLabel: dashboard.quota.sevenDay.label || "7d",
+    sevenDayAvailability: dashboard.quota.sevenDay.availability,
+    sevenDayRemainingPercent: dashboard.quota.sevenDay.remainingPercent,
+    sevenDayExpectedRemainingPercent: null,
+  };
 }
 
 export function disabledFloatingLiveSnapshot(
@@ -111,11 +146,25 @@ export function mergeFloatingUsageSummary(
   snapshot: FloatingPanelSnapshot,
   summary: UsageSummarySnapshot,
 ): FloatingPanelSnapshot {
+  const incomingModelBreakdowns = summary.todayModelBreakdowns;
+  // The native summary command may briefly return a numeric summary while its
+  // exact model projection is still rebuilding. An empty/omitted breakdown in
+  // that state is not a successful zero-usage day: keep the last trusted rows
+  // until a complete model projection arrives. A genuinely empty day has
+  // todayTokens === 0 and is allowed to clear the rows.
+  const keepTrustedModelBreakdowns = (
+    (!incomingModelBreakdowns || incomingModelBreakdowns.length === 0)
+    && summary.todayTokens > 0
+    && snapshot.todayModelBreakdowns.length > 0
+  );
   return {
     ...snapshot,
     totalTokensLabel: `总 ${compactTokens(summary.totalTokens)}`,
     todayTokensLabel: `今 ${compactTokens(summary.todayTokens)}`,
     requestsLabel: `次 ${summary.todayRequests}`,
+    todayModelBreakdowns: keepTrustedModelBreakdowns
+      ? snapshot.todayModelBreakdowns
+      : incomingModelBreakdowns ?? [],
   };
 }
 

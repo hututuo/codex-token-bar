@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DEFAULT_FLOATING_CONTENT_VISIBILITY,
+  editorGroupsForFloatingRow,
   floatingContentGap,
   floatingContentHeight,
   layoutFloatingContentGroups,
+  layoutFloatingContentRows,
+  mergeFloatingPage,
   moveFloatingContent,
+  moveFloatingRow,
+  placeFloatingPageAfterTarget,
+  replaceFloatingPagePartner,
   sanitizeFloatingContentVisibility,
+  setFloatingGroupsVisible,
+  splitFloatingPage,
+  swapFloatingDefaultPage,
 } from "./floatingContent.ts";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette.ts";
 
@@ -18,6 +27,8 @@ test("layoutFloatingContentGroups embeds usage status into adjacent rate row", (
 
   assert.deepEqual(layoutFloatingContentGroups(visibility), [
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "rateAndBar",
     "radar",
     "crowdRadar",
@@ -34,6 +45,8 @@ test("layoutFloatingContentGroups keeps usage status standalone when it is not a
   assert.deepEqual(layoutFloatingContentGroups(visibility), [
     "rateAndBar",
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "usageStatus",
     "radar",
     "crowdRadar",
@@ -49,6 +62,8 @@ test("moveFloatingContent swaps adjacent groups in both directions", () => {
     "rateAndBar",
     "metrics",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "quota",
@@ -58,6 +73,8 @@ test("moveFloatingContent swaps adjacent groups in both directions", () => {
     "usageStatus",
     "runningThreads",
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "quota",
@@ -96,13 +113,15 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 134);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 138);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
   assert.deepEqual(layoutFloatingContentGroups(DEFAULT_FLOATING_CONTENT_VISIBILITY), [
     "rateAndBar",
     "metrics",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "quota",
@@ -117,6 +136,8 @@ test("adjacent running thread counts attach to the right of metrics", () => {
     "radar",
     "crowdRadar",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "quota",
     "rateAndBar",
   ]);
@@ -133,15 +154,103 @@ test("legacy floating order inserts running threads after metrics and enables it
     "quota",
     "metrics",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "rateAndBar",
     "usageStatus",
   ]);
+  assert.deepEqual(migrated.pagePairs, [["todayModelShare", "todayModelCost"]]);
+});
+
+test("paged rows combine model share and cost without losing their configured default page", () => {
+  const rows = layoutFloatingContentRows(DEFAULT_FLOATING_CONTENT_VISIBILITY);
+  assert.deepEqual(rows.map((row) => row.groups), [
+    ["rateAndBar"],
+    ["metrics"],
+    ["todayModelShare", "todayModelCost"],
+    ["radar"],
+    ["crowdRadar"],
+    ["quota"],
+  ]);
+  const pairedRadar = replaceFloatingPagePartner(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.pagePairs,
+    "radar",
+    "crowdRadar",
+  );
+  assert.deepEqual(pairedRadar, [
+    ["todayModelShare", "todayModelCost"],
+    ["radar", "crowdRadar"],
+  ]);
+  assert.deepEqual(swapFloatingDefaultPage(pairedRadar, "crowdRadar"), [
+    ["todayModelShare", "todayModelCost"],
+    ["crowdRadar", "radar"],
+  ]);
+});
+
+test("structure editor moves whole paged and inline rows", () => {
+  const rows = layoutFloatingContentRows(DEFAULT_FLOATING_CONTENT_VISIBILITY);
+  const metrics = rows.find((row) => row.primaryGroup === "metrics");
+  const model = rows.find((row) => row.primaryGroup === "todayModelShare");
+  assert.ok(metrics);
+  assert.ok(model);
+  assert.deepEqual(editorGroupsForFloatingRow(DEFAULT_FLOATING_CONTENT_VISIBILITY, metrics), [
+    "metrics",
+    "runningThreads",
+  ]);
+  assert.deepEqual(editorGroupsForFloatingRow(DEFAULT_FLOATING_CONTENT_VISIBILITY, model), [
+    "todayModelShare",
+    "todayModelCost",
+  ]);
+  assert.deepEqual(moveFloatingRow(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.order,
+    ["todayModelShare", "todayModelCost"],
+    ["metrics", "runningThreads"],
+    "before",
+  ), [
+    "rateAndBar",
+    "usageStatus",
+    "todayModelShare",
+    "todayModelCost",
+    "metrics",
+    "runningThreads",
+    "radar",
+    "crowdRadar",
+    "quota",
+  ]);
+});
+
+test("structure editor merge split and grouped visibility preserve V01 pairs", () => {
+  const mergedPairs = mergeFloatingPage(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.pagePairs,
+    "radar",
+    "crowdRadar",
+  );
+  assert.deepEqual(mergedPairs, [
+    ["todayModelShare", "todayModelCost"],
+    ["crowdRadar", "radar"],
+  ]);
+  assert.deepEqual(placeFloatingPageAfterTarget(
+    DEFAULT_FLOATING_CONTENT_VISIBILITY.order,
+    "radar",
+    "crowdRadar",
+  ).slice(-3), ["crowdRadar", "radar", "quota"]);
+
+  const hidden = setFloatingGroupsVisible({
+    ...DEFAULT_FLOATING_CONTENT_VISIBILITY,
+    pagePairs: mergedPairs,
+  }, ["crowdRadar", "radar"], false);
+  assert.equal(hidden.showCrowdRadar, false);
+  assert.equal(hidden.showRadar, false);
+  assert.deepEqual(hidden.pagePairs, mergedPairs);
+  assert.deepEqual(splitFloatingPage(hidden.pagePairs, "radar"), [
+    ["todayModelShare", "todayModelCost"],
+  ]);
 });
 
 test("radar crowd spacing tightens without changing the crowd quota gap", () => {
-  assert.equal(floatingContentGap("radar", "crowdRadar"), 2);
-  assert.equal(floatingContentGap("crowdRadar", "quota"), 4);
-  assert.equal(floatingContentGap("metrics", "radar"), 4);
+  assert.equal(floatingContentGap("radar", "crowdRadar"), 0);
+  assert.equal(floatingContentGap("crowdRadar", "quota"), 2);
+  assert.equal(floatingContentGap("metrics", "radar"), 2);
 });

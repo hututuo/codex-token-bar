@@ -46,6 +46,32 @@ function sidebarRow(document, reference, title, active = false) {
   return row;
 }
 
+function officialUnreadDot(document, row) {
+  const icon = document.createElement("span");
+  icon.className = "icon-xs relative scale-50";
+  const dot = document.createElement("span");
+  dot.className = "absolute inset-0 rounded-full";
+  icon.appendChild(dot);
+  row.appendChild(icon);
+  return dot;
+}
+
+function officialUnreadCount(document, row, count = "2") {
+  const countNode = document.createElement("span");
+  countNode.className = "flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full";
+  countNode.textContent = count;
+  row.appendChild(countNode);
+  return countNode;
+}
+
+function unrelatedRoundedCircle(document, row) {
+  const circle = document.createElement("span");
+  circle.className = "rounded-full bg-token-charts-blue";
+  circle.textContent = "2";
+  row.appendChild(circle);
+  return circle;
+}
+
 function projectRow(document, projectPath, label) {
   const row = document.createElement("div");
   row.setAttribute("data-app-action-sidebar-project-row", "true");
@@ -69,6 +95,36 @@ async function cleanupWindow(window) {
   await window.happyDOM.abort();
   window.close();
 }
+
+test("sidebar unread health mirrors only the official dot/count markers", async () => {
+  const window = new Window({ url: "app://codex/" });
+  const dotID = "019f5a7c-0001-7abc-8def-0123456789ab";
+  const countID = "019f5a7c-0002-7abc-8def-0123456789ab";
+  const cleanID = "019f5a7c-0003-7abc-8def-0123456789ab";
+  const unrelatedID = "019f5a7c-0004-7abc-8def-0123456789ab";
+  const dotRow = sidebarRow(window.document, dotID, "点未读");
+  const countRow = sidebarRow(window.document, countID, "数未读");
+  sidebarRow(window.document, cleanID, "已读");
+  const unrelatedRow = sidebarRow(window.document, unrelatedID, "其它圆点");
+  officialUnreadDot(window.document, dotRow);
+  officialUnreadCount(window.document, countRow, "3");
+  unrelatedRoundedCircle(window.document, unrelatedRow);
+
+  window.eval(renderedScript({ sessionDelete: false, markdownExport: false, projectMove: false }));
+  const health = window.__codexTokenBarSessionEnhancementsHealth();
+  assert.equal(health.sidebarSnapshotReady, true);
+  assert.deepEqual([...health.sidebarUnreadThreadIDs], [dotID, countID]);
+  await cleanupWindow(window);
+});
+
+test("sidebar unread health stays unavailable while no canonical sidebar rows are rendered", async () => {
+  const window = new Window({ url: "app://codex/" });
+  window.eval(renderedScript({ sessionDelete: false, markdownExport: false, projectMove: false }));
+  const health = window.__codexTokenBarSessionEnhancementsHealth();
+  assert.equal(health.sidebarSnapshotReady, false);
+  assert.deepEqual([...health.sidebarUnreadThreadIDs], []);
+  await cleanupWindow(window);
+});
 
 test("session more menu exports real Markdown through the native bridge", async () => {
   const window = new Window({ url: "app://codex/" });

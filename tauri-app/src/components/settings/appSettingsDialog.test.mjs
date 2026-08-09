@@ -14,12 +14,11 @@ const SETTINGS_CATEGORIES = [
   "状态栏与托盘",
   "监控与额度",
   "悬浮窗",
-  "悬浮窗内容",
   "提醒与更新",
   "数据与维护",
 ];
 
-test("global settings exposes eleven categorized tabs and defaults to general", async () => {
+test("global settings exposes ten categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
@@ -93,11 +92,44 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     assert.equal(tabName(selectedTab(container)), "常规");
     assert.equal(document.activeElement, generalTab);
 
-    await click(act, tabByName(container, "悬浮窗内容"), window);
-    assert.equal(tabName(selectedTab(container)), "悬浮窗内容");
+    await click(act, tabByName(container, "悬浮窗"), window);
+    assert.equal(tabName(selectedTab(container)), "悬浮窗");
     assert.match(activePanel(container).textContent, /速率|额度|雷达/);
     assert.match(activePanel(container).textContent, /运行线程/);
   });
+});
+
+test("floating settings combine appearance, content, paging, and the real preview", async () => {
+  await withMountedSettings(async ({ act, calls, container, window }) => {
+    await click(act, tabByName(container, "悬浮窗"), window);
+    const panel = activePanel(container);
+    assert.match(panel.textContent, /透明度/);
+    assert.match(panel.textContent, /颜色与额度条/);
+    assert.match(panel.textContent, /结构编辑器/);
+    assert.match(panel.textContent, /实时预览/);
+    assert.match(panel.textContent, /今日模型占比/);
+    assert.match(panel.textContent, /今日模型费用/);
+    assert.match(panel.textContent, /默认页/);
+    assert.equal(panel.querySelectorAll(".floating-panel-surface--preview").length, 1);
+    assert.equal(panel.querySelectorAll(".floating-structure-shell select").length, 0);
+
+    const hideModelRow = panel.querySelector('button[aria-label="隐藏今日模型占比 · 今日模型费用"]');
+    assert.ok(hideModelRow);
+    await click(act, hideModelRow, window);
+    const changed = calls.floatingContentVisibilities.at(-1);
+    assert.equal(changed.showTodayModelShare, false);
+    assert.equal(changed.showTodayModelCost, false);
+    assert.deepEqual(changed.pagePairs, [["todayModelShare", "todayModelCost"]]);
+    assert.match(panel.textContent, /撤销/);
+  });
+});
+
+test("legacy content route opens the unified floating settings page", async () => {
+  await withMountedSettings(async ({ container }) => {
+    assert.equal(tabName(selectedTab(container)), "悬浮窗");
+    assert.match(activePanel(container).textContent, /透明度/);
+    assert.match(activePanel(container).textContent, /结构编辑器/);
+  }, { initialCategory: "content" });
 });
 
 test("status indicator settings preview, select, reorder and restore through one callback", async () => {
@@ -593,6 +625,7 @@ async function withMountedSettings(run, initialOverrides = {}) {
         autoResumeRuns: 0,
         autoResumeSaves: [],
         close: 0,
+        floatingContentVisibilities: [],
         providerRepair: 0,
         sessionManagement: 0,
         threadDeleteReconnect: 0,
@@ -635,6 +668,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     autoResumeRuns: 0,
     autoResumeSaves: [],
     close: 0,
+    floatingContentVisibilities: [],
     providerRepair: 0,
     sessionManagement: 0,
     threadDeleteReconnect: 0,
@@ -666,6 +700,36 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
       statusSummaryOrder: ["overview", "usage", "quota", "running", "unread", "radar", "crowdRadar"],
     },
     floatingSettings,
+    floatingPreviewSnapshot: {
+      tokensPerSecond: 12.4,
+      maxTokensPerSecond: 200,
+      liveRateAvailable: true,
+      trendLabel: "稳定",
+      resetCreditLabel: "",
+      totalTokensLabel: "3.2亿",
+      todayTokensLabel: "420万",
+      requestsLabel: "36",
+      todayModelBreakdowns: [],
+      fiveHourLabel: "5h 42%",
+      fiveHourAvailability: "measured",
+      fiveHourRemainingPercent: 42,
+      fiveHourExpectedRemainingPercent: 40,
+      sevenDayLabel: "7d 76%",
+      sevenDayAvailability: "measured",
+      sevenDayRemainingPercent: 76,
+      sevenDayExpectedRemainingPercent: 72,
+      unread: false,
+      unreadSummary: { active: false, count: 0, label: "无未读", detail: "", source: "sidebar" },
+    },
+    floatingPreviewRunningThreads: {
+      total: 3,
+      mainThreads: 2,
+      subagents: 1,
+      status: "ready",
+      updatedAt: 1,
+      detail: "test",
+      livenessLeaseHours: 24,
+    },
     liveRateEnabled: true,
     open: true,
     platform: platformCapabilities(),
@@ -684,7 +748,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onClose: () => { callLog.close += 1; },
     onCodexHomeChange: async () => {},
     onCodexHomeReset: async () => {},
-    onFloatingContentVisibilityChange: noop,
+    onFloatingContentVisibilityChange: (visibility) => {
+      callLog.floatingContentVisibilities.push(visibility);
+    },
     onFloatingGradientChange: noop,
     onFloatingOpacityChange: noop,
     onFloatingScaleChange: noop,

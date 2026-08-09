@@ -43,8 +43,8 @@ test("DashboardHeader edit mode keeps a narrow blur and Enter wiring guard", asy
     source.indexOf("return (", source.indexOf("function handleDisplayNameKeyDown")),
   );
   const buttonBlock = source.slice(
-    source.indexOf("<button"),
-    source.indexOf("</button>") + "</button>".length,
+    source.indexOf('<button className="account-name-button"'),
+    source.indexOf("</button>", source.indexOf('<button className="account-name-button"')) + "</button>".length,
   );
 
   assert.equal(buttonBlock.includes("onClick={beginEditDisplayName}"), true);
@@ -66,6 +66,8 @@ test("DashboardHeader renders the resolved account name without the local diagno
     assert.match(html, /Lab Alias/);
     assert.doesNotMatch(html, /Official User/);
     assert.match(html, /account-name-button/);
+    assert.match(html, /brand-mark/);
+    assert.doesNotMatch(html, /dash-head__name/);
     assert.doesNotMatch(html, /account-name-edit/);
     assert.doesNotMatch(html, /DiagnosticStrip/);
     assert.doesNotMatch(html, /diagnostic-strip/);

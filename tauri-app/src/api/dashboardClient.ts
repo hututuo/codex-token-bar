@@ -3,6 +3,8 @@ import type {
   CodexHomeSourceEnvelope,
   CodexHomeSourceToken,
   DashboardSnapshot,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardSourceProbe,
   PlatformCapabilities,
   UsageSummarySnapshot,
   UsageCacheStatus,
@@ -32,16 +34,44 @@ export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
 export function readDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,
 ): Promise<DashboardSnapshot> {
-  return callCommand("read_dashboard_snapshot", emptyDashboardSnapshot(), { sourceToken });
+  // A cold local index can legitimately take longer than the generic 4 second
+  // command budget. JavaScript cannot cancel the native IPC, so racing this
+  // read against an arbitrary deadline publishes the empty fallback as a false
+  // failure while the native command is still running. Keep the existing
+  // loading state until the native operation itself succeeds or rejects.
+  return callCommand(
+    "read_dashboard_snapshot",
+    emptyDashboardSnapshot(),
+    { sourceToken },
+    null,
+  );
 }
 
 export function readPreciseDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,
+  requestReason?: PreciseDashboardRefreshReason,
 ): Promise<DashboardSnapshot | null> {
   // This native read owns a serialized, potentially multi-minute index sync.
   // A JavaScript-only timeout cannot cancel it and only creates another queued
   // read on the next refresh, so wait for the real native outcome.
-  return callCommandOptional("read_precise_dashboard_snapshot", { sourceToken }, null);
+  const args: Record<string, unknown> = { sourceToken };
+  if (requestReason !== undefined) {
+    args.requestReason = requestReason;
+  }
+  return callCommandOptional("read_precise_dashboard_snapshot", args, null);
+}
+
+export function readPreciseDashboardSourceProbe(
+  sourceToken: CodexHomeSourceToken,
+): Promise<PreciseDashboardSourceProbe | null> {
+  // This probe only compares the published session-file metadata with the
+  // current source. It deliberately does not scan JSONL bodies; a changed,
+  // unknown, or failed probe falls back to the serialized precise owner.
+  return callCommandOptional(
+    "read_precise_dashboard_source_probe",
+    { sourceToken },
+    null,
+  );
 }
 
 export function acknowledgeAttributionSafety(

@@ -80,6 +80,8 @@ pub struct ActivityDay {
     pub date: String,
     pub tokens: u64,
     pub calls: u32,
+    #[serde(default)]
+    pub model_breakdowns: Vec<ModelTokenBreakdown>,
     pub cache_hit_rate: f64,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,

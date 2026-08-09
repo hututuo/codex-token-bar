@@ -5,13 +5,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testDefaultVisibilityShowsAllFloatingPanelGroups() {
         let visibility = FloatingPanelContentVisibility.default
 
-        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .radar, .crowdRadar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .radar, .crowdRadar, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,runningThreads,radar,crowdRadar,quota")
+        XCTAssertEqual(visibility.visibleGroups, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrder, [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.defaultOrderRaw, "rateAndBar,usageStatus,metrics,runningThreads,todayModelShare,todayModelCost,radar,crowdRadar,quota")
         XCTAssertTrue(visibility.shows(.rateAndBar))
         XCTAssertTrue(visibility.shows(.usageStatus))
         XCTAssertTrue(visibility.shows(.metrics))
         XCTAssertTrue(visibility.shows(.runningThreads))
+        XCTAssertTrue(visibility.shows(.todayModelShare))
+        XCTAssertTrue(visibility.shows(.todayModelCost))
         XCTAssertTrue(visibility.shows(.quota))
         XCTAssertTrue(visibility.shows(.radar))
         XCTAssertTrue(visibility.shows(.crowdRadar))
@@ -38,28 +40,30 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let height = FloatingTokenPanelMetrics.contentHeight(visibility: .default)
         let expectedHeight = FloatingTokenPanelMetrics.rateRowHeight
             + FloatingTokenPanelMetrics.metricRowHeight
+            + FloatingTokenPanelMetrics.todayModelRowHeight
             + FloatingTokenPanelMetrics.quotaRowHeight
             + FloatingTokenPanelMetrics.radarRowHeight
             + FloatingTokenPanelMetrics.crowdRadarRowHeight
-            + FloatingTokenPanelMetrics.rowSpacing * 3
+            + FloatingTokenPanelMetrics.rowSpacing * 4
             + FloatingTokenPanelMetrics.radarCrowdRowSpacing
 
         XCTAssertEqual(height, expectedHeight, accuracy: 0.001)
     }
 
     func testDefaultFloatingPanelUsesTighterVerticalRhythm() {
-        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 117, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.baseSize.height, 138, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.verticalPadding, 6, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rowSpacing, 2, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.rateRowHeight, 28, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.usageStatusRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 11, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 13, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.runningThreadsRowHeight, 14, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.todayModelRowHeight, 17, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 104.5, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 117, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 125.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 138, accuracy: 0.001)
     }
 
     func testDefaultMetricsEmbedMainAndSubagentCountsOnTheRight() {
@@ -68,7 +72,45 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(visibility.embedsRunningThreadsInMetricsRow)
         XCTAssertEqual(
             visibility.layoutGroups,
-            [.rateAndBar, .metrics, .radar, .crowdRadar, .quota]
+            [.rateAndBar, .metrics, .todayModelShare, .todayModelCost, .radar, .crowdRadar, .quota]
+        )
+        XCTAssertEqual(
+            visibility.layoutRows.map(\.groups),
+            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.radar], [.crowdRadar], [.quota]]
+        )
+    }
+
+    func testPagePairsSanitizeConflictsAndCanChangeDefaultPage() {
+        let decoded = FloatingPanelContentVisibility.pagePairs(
+            from: "todayModelShare|todayModelCost,radar|crowdRadar,radar|quota,rateAndBar|metrics"
+        )
+
+        XCTAssertEqual(decoded, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .radar, second: .crowdRadar),
+        ])
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.swappingDefaultPage(in: decoded, for: .todayModelCost),
+            [
+                FloatingPanelPagePair(first: .todayModelCost, second: .todayModelShare),
+                FloatingPanelPagePair(first: .radar, second: .crowdRadar),
+            ]
+        )
+    }
+
+    func testReplacingPagePartnerRemovesPreviousPairOnBothSides() {
+        let pairs = [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .radar, second: .crowdRadar),
+        ]
+
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.replacingPagePartner(
+                in: pairs,
+                for: .todayModelShare,
+                with: .radar
+            ),
+            [FloatingPanelPagePair(first: .todayModelShare, second: .radar)]
         )
     }
 
@@ -168,8 +210,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
     func testFloatingPanelLayoutGroupsFollowStoredOrder() {
         let decoded = FloatingPanelContentVisibility.order(from: "radar,metrics,rateAndBar,unknown,radar")
-        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .runningThreads, .rateAndBar, .usageStatus, .quota])
-        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,runningThreads,rateAndBar,usageStatus,quota")
+        XCTAssertEqual(decoded, [.radar, .crowdRadar, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .rateAndBar, .usageStatus, .quota])
+        XCTAssertEqual(FloatingPanelContentVisibility.encodedOrder(decoded), "radar,crowdRadar,metrics,runningThreads,todayModelShare,todayModelCost,rateAndBar,usageStatus,quota")
 
         let visibility = FloatingPanelContentVisibility(
             showRateAndBar: true,
@@ -362,7 +404,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .metrics,
                 placement: .after
             ),
-            [.usageStatus, .metrics, .rateAndBar, .runningThreads, .quota, .radar, .crowdRadar]
+            [.usageStatus, .metrics, .rateAndBar, .runningThreads, .todayModelShare, .todayModelCost, .quota, .radar, .crowdRadar]
         )
 
         XCTAssertEqual(
@@ -372,8 +414,56 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 relativeTo: .usageStatus,
                 placement: .before
             ),
-            [.rateAndBar, .radar, .usageStatus, .metrics, .runningThreads, .quota, .crowdRadar]
+            [.rateAndBar, .radar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .quota, .crowdRadar]
         )
+    }
+
+    func testStructureEditorMovesWholePagedAndInlineRows() {
+        let visibility = FloatingPanelContentVisibility.default
+        let rows = visibility.layoutRows
+        let metrics = rows.first { $0.primaryGroup == .metrics }!
+        let model = rows.first { $0.primaryGroup == .todayModelShare }!
+
+        XCTAssertEqual(visibility.editorGroups(for: metrics), [.metrics, .runningThreads])
+        XCTAssertEqual(visibility.editorGroups(for: model), [.todayModelShare, .todayModelCost])
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.movingRow(
+                in: visibility.groupOrder,
+                groups: visibility.editorGroups(for: model),
+                relativeTo: visibility.editorGroups(for: metrics),
+                placement: .before
+            ),
+            [.rateAndBar, .usageStatus, .todayModelShare, .todayModelCost, .metrics, .runningThreads, .radar, .crowdRadar, .quota]
+        )
+    }
+
+    func testStructureEditorMergeSplitAndGroupedVisibilityPreserveV01Pairs() {
+        var visibility = FloatingPanelContentVisibility.default
+        visibility.pagePairs = FloatingPanelContentVisibility.mergingPage(
+            in: visibility.pagePairs,
+            group: .radar,
+            into: .crowdRadar
+        )
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .crowdRadar, second: .radar),
+        ])
+
+        visibility.setVisible(false, for: [.crowdRadar, .radar])
+        XCTAssertFalse(visibility.shows(.crowdRadar))
+        XCTAssertFalse(visibility.shows(.radar))
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+            FloatingPanelPagePair(first: .crowdRadar, second: .radar),
+        ])
+
+        visibility.pagePairs = FloatingPanelContentVisibility.splittingPage(
+            in: visibility.pagePairs,
+            group: .radar
+        )
+        XCTAssertEqual(visibility.pagePairs, [
+            FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),
+        ])
     }
 
     func testAdaptiveSizeKeepsControlsReachableWhenAllGroupsAreHidden() {
@@ -735,12 +825,14 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let liveRateView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let appSettingsView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AppSettingsView.swift")
+        let structureEditor = projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift")
         let quotaViews = projectRoot.appendingPathComponent("Sources/CodexTokenBar/AccountQuotaViews.swift")
         let settingsSource = try String(contentsOf: settingsView, encoding: .utf8)
         let visibilitySource = try String(contentsOf: visibilityModel, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
         let liveRateSource = try String(contentsOf: liveRateView, encoding: .utf8)
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
+        let structureEditorSource = try String(contentsOf: structureEditor, encoding: .utf8)
         let quotaViewsSource = try String(contentsOf: quotaViews, encoding: .utf8)
         let liveRateControls = try XCTUnwrap(sourceBlock(
             named: "LiveRateControls",
@@ -756,6 +848,10 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.rateAndBarKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.usageStatusKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.metricsKey)"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.todayModelShareKey)"))
+        XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.todayModelCostKey)"))
+        XCTAssertTrue(appSettingsSource.contains("@Binding var pagePairsRaw: String"))
+        XCTAssertTrue(dashboardSource.contains("@AppStorage(FloatingPanelContentVisibility.pagePairsKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.quotaKey)"))
         XCTAssertTrue(settingsSource.contains("@AppStorage(FloatingPanelContentVisibility.radarKey)"))
         XCTAssertTrue(settingsSource.contains("Image(systemName: \"line.3.horizontal\")"))
@@ -776,7 +872,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertFalse(liveRateControls.contains("FloatingPanelContentSettingsButton("))
         XCTAssertTrue(liveRateControls.contains("Label(\"总体设置\", systemImage: \"gearshape\")"))
         XCTAssertTrue(appSettingsSource.contains("settingsToggle(\"精确 token 统计\""))
-        XCTAssertTrue(appSettingsSource.contains("ForEach(orderedGroups)"))
+        XCTAssertTrue(appSettingsSource.contains("FloatingPanelStructureEditor("))
+        XCTAssertTrue(structureEditorSource.contains("结构编辑器"))
+        XCTAssertTrue(structureEditorSource.contains("实时预览"))
+        XCTAssertTrue(structureEditorSource.contains("已隐藏"))
+        XCTAssertTrue(structureEditorSource.contains("恢复默认布局"))
+        XCTAssertTrue(structureEditorSource.contains(".onDrag"))
+        XCTAssertTrue(structureEditorSource.contains(".onDrop"))
         XCTAssertFalse(liveRateControls.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertFalse(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertTrue(quotaViewsSource.contains("AccountQuotaRefreshCadencePicker()"))
@@ -792,9 +894,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "悬浮窗内容", "提醒与更新", "数据与维护"] {
+        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "提醒与更新", "数据与维护"] {
             XCTAssertTrue(appSettingsSource.contains("return \"\(category)\""), category)
         }
+        XCTAssertFalse(AppSettingsCategory.allCases.contains(.content))
+        XCTAssertEqual(AppSettingsCategory.content.canonical, .floatingPanel)
+        XCTAssertTrue(appSettingsSource.contains("case .floatingPanel, .content:"))
+        XCTAssertTrue(appSettingsSource.contains("contentSettings"))
         XCTAssertTrue(appSettingsSource.contains("ForEach(AppSettingsCategory.allCases)"))
         XCTAssertTrue(appSettingsSource.contains("@Binding var tokenRateFullScale: Double"))
         XCTAssertTrue(appSettingsSource.contains("TokenRateScaleSettings.displayValue(tokenRateFullScale)"))
@@ -1014,7 +1120,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(CodexRadarPresentationText.action(snapshot?.recommendedAction))\")"))
         XCTAssertTrue(radarStrip.contains("presentation.compactMarkerText"))
         XCTAssertTrue(radarStrip.contains("presentation.compactAccessibilityText"))
-        XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPalette.primaryColor)"))
+        XCTAssertTrue(radarStrip.contains("let actionPrimaryColor = AppTheme.radarActionRole"))
+        XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPrimaryColor)"))
         XCTAssertTrue(radarStrip.contains("let primary = snapshot?.modelIQ.primaryModelPoint"))
         XCTAssertTrue(radarStrip.contains("Text(primary?.scoreDisplayText ?? \"IQ --\")"))
         XCTAssertTrue(radarStrip.contains("tokenDisplayRadarSecondaryIQText(snapshot)"))
@@ -1256,6 +1363,38 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             FloatingTokenPanelMetrics.metricRequestsNudge - FloatingTokenPanelMetrics.metricRequestsDigitCompensation,
             accuracy: 0.001
         )
+    }
+
+    func testPagedRowArrowsUseCompactVisualsAtTheOuterEdge() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
+        let source = try String(contentsOf: surface, encoding: .utf8)
+        let panel = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingTokenPanel.swift"),
+            encoding: .utf8
+        )
+        let editor = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains(".padding(.horizontal, -10.scaled(by: displayScale))"))
+        XCTAssertTrue(source.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)"))
+        XCTAssertFalse(panel.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)"))
+        XCTAssertFalse(editor.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * previewScale)"))
+        XCTAssertTrue(source.contains(".scaleEffect(x: 0.58, y: 0.92, anchor: .center)"))
+        XCTAssertTrue(source.contains("let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing"))
+        XCTAssertTrue(source.contains(".overlay(alignment: edgeAlignment)"))
+        XCTAssertFalse(source.contains(".offset(x: (delta < 0 ? -17 : 17).scaled(by: displayScale))"))
+        XCTAssertTrue(source.contains("width: 14.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("height: 20.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("width: 48.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("height: 24.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("Rectangle()\n                .fill(Color.black.opacity(0.001))"))
+        XCTAssertTrue(source.contains(".buttonStyle(.plain)\n        .contentShape(Rectangle())"))
     }
 
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {

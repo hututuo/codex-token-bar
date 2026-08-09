@@ -43,6 +43,7 @@ extension CodexUsageAnalyzer {
         var previousTotalTokens: Int?
         var forkReplayStartedAt: Date?
         var isSkippingForkReplay: Bool
+        var isExplicitSubagentFork: Bool
         var lastSkippedForkReplayTokenAt: Date?
         var currentUserPromptOffset: UInt64?
         var assistantStartOffset: UInt64?
@@ -52,6 +53,7 @@ extension CodexUsageAnalyzer {
             previousTotalTokens: nil,
             forkReplayStartedAt: nil,
             isSkippingForkReplay: false,
+            isExplicitSubagentFork: false,
             lastSkippedForkReplayTokenAt: nil,
             currentUserPromptOffset: nil,
             assistantStartOffset: nil,
@@ -204,6 +206,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let checkpoint: SourceCheckpoint?
     }
 
+    private struct SourceIdentity {
+        let id: Int64
+        let path: String
+    }
+
     private struct SourceCheckpoint {
         let resumeOffset: UInt64
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
@@ -274,14 +281,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let signature: SessionCatalogFileSignature
     }
 
-    private static let schemaVersion = "4"
-    private static let legacyAppendMigrationSchemaVersion = "2"
+    private enum ExplicitSubagentSessionFileProbe {
+        case explicit
+        case nonExplicit
+        case unresolved
+    }
+
+    private static let schemaVersion = "5"
+    private static let inPlaceSchemaVersions: Set<String> = ["2", "3", "4", "5"]
+    private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
-    private static let attributionProvenanceRevision = "source-bucket-v3-model-aware-parser-v1"
+    private static let attributionProvenanceRevision = "source-bucket-v4-fork-replay-boundary-v2"
     private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
+    private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
@@ -290,6 +305,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let stagingTestState = CodexUsageHistoryStagingTestState()
     private static let sessionCatalogPublishTestState =
         CodexSessionCatalogPublishTestState()
+    private static let sourceProbeTestState = CodexUsageHistorySourceProbeTestState()
     private static let ephemeralRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("CodexTokenBarSwift-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         .appendingPathComponent(indexNamespace, isDirectory: true)
@@ -320,17 +336,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         try withExclusiveAccess {
-            do {
-                try prepareSchema()
-                try validateIntegrity()
-            } catch let error as SQLiteDatabaseError
-                where Self.isRebuildableCorruption(error) {
-                try? fileManager.removeItem(at: driver.url)
-                try? fileManager.removeItem(atPath: driver.url.path + "-wal")
-                try? fileManager.removeItem(atPath: driver.url.path + "-shm")
-                try prepareSchema()
-                try validateIntegrity()
-            }
+            // Normal schema reads already make SQLite validate every page they
+            // touch. Running PRAGMA quick_check over the entire hundreds-of-MiB
+            // history database at every Swift process launch delayed cached data and
+            // turned a transient read failure into an apparent startup outage.
+            // Fail closed and preserve the database on any error; explicit
+            // recovery can inspect the original bytes instead of silently
+            // deleting the user's only published index.
+            try prepareSchema()
         }
     }
 
@@ -363,6 +376,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     static func failNextSessionCatalogPublishForTesting() {
         sessionCatalogPublishTestState.armFailure()
+    }
+
+    static func resetSourceContentProbeCountForTesting() {
+        sourceProbeTestState.reset()
+    }
+
+    static var sourceContentProbeCountForTesting: Int {
+        sourceProbeTestState.count
     }
 
     // 冷建 heavy 文件阈值（与 Rust PARALLEL_HEAVY_FILE_BYTES 同值）。
@@ -765,6 +786,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
+        let canonicalFiles = files.map { $0.resolvingSymlinksInPath() }
+        let observedPaths = Set(canonicalFiles.map(\.path))
         var changedFiles = 0
         var unchangedFiles = 0
         var indexedEvents = 0
@@ -773,39 +796,41 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var removedFiles = 0
         var fullRebuildJobs: [FullRebuildJob] = []
         let canonicalLineageCounts = Dictionary(
-            grouping: files.compactMap { file in
-                canonicalSessionID(sessionID(file.resolvingSymlinksInPath()))
+            grouping: canonicalFiles.compactMap { file in
+                canonicalSessionID(sessionID(file))
             },
             by: { $0 }
         )
         var lineageAmbiguityDetected = canonicalLineageCounts.values.contains {
             $0.count > 1
         }
+        var sourceMutationDetected = false
 
         try driver.withConnection { connection in
             try configure(connection)
+            let indexedSources = try indexedSources(connection: connection)
 
-            for file in files {
+            for file in canonicalFiles {
                 try autoreleasepool {
-                    let canonicalFile = file.resolvingSymlinksInPath()
-                    let path = canonicalFile.path
-                    let observed = try sourceSignature(for: canonicalFile)
-                    let existing = try indexedSource(path: path, connection: connection)
+                    let path = file.path
+                    let existing = indexedSources[path]
+                    let observedMetadata = try sourceSignatureMetadata(for: file)
                     if let existing,
-                       existing.signature == observed {
-                        try connection.execute(
-                            "UPDATE sources SET last_seen_generation = ? WHERE source_id = ?;",
-                            bindings: [.text(generation), .int64(existing.id)]
-                        )
+                       isTrustedContentProbe(existing.signature.contentProbe),
+                       sourceMetadataMatches(existing.signature, observedMetadata) {
                         unchangedFiles += 1
                         return
                     }
+                    let observed = try sourceSignature(
+                        metadata: observedMetadata,
+                        for: file
+                    )
 
-                    let parsedSessionID = sessionID(canonicalFile)
+                    let parsedSessionID = sessionID(file)
                     if let existing,
                        canAttemptAppend(from: existing, to: observed),
                        let appended = try appendSource(
-                           file: canonicalFile,
+                           file: file,
                            sessionID: parsedSessionID,
                            observedSignature: observed,
                            existing: existing,
@@ -813,6 +838,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                            connection: connection,
                            parser: parser
                        ) {
+                        sourceMutationDetected = true
                         changedFiles += 1
                         indexedEvents += appended.eventCount
                         incrementallyParsedFiles += 1
@@ -822,7 +848,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         }
                         fullRebuildJobs.append(
                             FullRebuildJob(
-                                file: canonicalFile,
+                                file: file,
                                 sessionID: parsedSessionID,
                                 observedSignature: observed
                             )
@@ -846,12 +872,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         var lineageReplacements: [String: LineageReplacement] = [:]
         var lineagesRequiringMaximumMerge = Set<String>()
+        var provenanceRotated = false
         let finalAttributionState = try driver.withConnection { connection in
             try configure(connection)
             for staged in stagedRebuilds {
                 let resolution = try lineageReplacement(
                     for: staged,
-                    generation: generation,
+                    observedPaths: observedPaths,
                     connection: connection
                 )
                 if let replacement = resolution.replacement {
@@ -876,6 +903,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 && !preRotationAttributionState.currentScanUnsafeCauseDetected
             if currentScanUnsafeCauseDetected
                 && !preRotationAttributionState.requiresSyntheticCutover {
+                provenanceRotated = true
                 _ = try rotateAttributionProvenance(
                     markUnsafe: true,
                     connection: connection
@@ -892,37 +920,68 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
                 changedFiles += 1
                 indexedEvents += staged.eventCount
+                sourceMutationDetected = true
                 removeStagingDatabase(at: staged.databaseURL)
             }
             return try connection.transaction { transaction in
-                try transaction.execute(
-                    """
-                    INSERT INTO schema_meta(key, value)
-                    VALUES ('attribution_current_scan_unsafe_cause', ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                    """,
-                    bindings: [.text(currentScanUnsafeCauseDetected ? "1" : "0")]
+                let currentScanUnsafeCauseBeforePublish =
+                    preRotationAttributionState.currentScanUnsafeCauseDetected
+                if currentScanUnsafeCauseDetected
+                    != currentScanUnsafeCauseBeforePublish {
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('attribution_current_scan_unsafe_cause', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [
+                            .text(currentScanUnsafeCauseDetected ? "1" : "0")
+                        ]
+                    )
+                }
+
+                // `last_seen_generation` is a publication marker for changed
+                // sources, not a heartbeat. Reading the current source paths
+                // and diffing against this round's observed canonical paths
+                // avoids rewriting every unchanged row and keeps deletion
+                // detection independent of SQLite's host parameter limit.
+                let currentSources = try indexedSourceIdentities(
+                    connection: transaction
                 )
-                removedFiles = try transaction.readRows(
-                    "SELECT COUNT(*) FROM sources WHERE last_seen_generation <> ?;",
-                    bindings: [.text(generation)]
-                ) { row in row.int(0) ?? 0 }.first ?? 0
-                try transaction.execute(
-                    "DELETE FROM sources WHERE last_seen_generation <> ?;",
-                    bindings: [.text(generation)]
-                )
+                let removedSourceIDs = currentSources
+                    .filter { !observedPaths.contains($0.path) }
+                    .map(\.id)
+                removedFiles = removedSourceIDs.count
+                sourceMutationDetected = sourceMutationDetected
+                    || !removedSourceIDs.isEmpty
+                for sourceID in removedSourceIDs {
+                    try transaction.execute(
+                        "DELETE FROM sources WHERE source_id = ?;",
+                        bindings: [.int64(sourceID)]
+                    )
+                }
                 let current = try currentAttributionState(connection: transaction)
                 try transaction.execute(
                     "DELETE FROM attribution_source_buckets WHERE provenance_epoch <> ?;",
                     bindings: [.text(current.provenanceEpoch)]
                 )
-                let nextGeneration = try bumpAttributionGeneration(
-                    connection: transaction
-                )
+
+                let unsafeCauseChanged = currentScanUnsafeCauseDetected
+                    != currentScanUnsafeCauseBeforePublish
+                let needsPublicationGeneration = sourceMutationDetected
+                    || (unsafeCauseChanged && !provenanceRotated)
+                let publishedGeneration: Int64
+                if needsPublicationGeneration {
+                    publishedGeneration = try bumpAttributionGeneration(
+                        connection: transaction
+                    )
+                } else {
+                    publishedGeneration = current.generation
+                }
                 if unsafeEpisodeBegan {
                     try markAttributionUnsafe(
                         provenanceEpoch: current.provenanceEpoch,
-                        sinceGeneration: nextGeneration,
+                        sinceGeneration: publishedGeneration,
                         connection: transaction
                     )
                 }
@@ -951,6 +1010,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let totalTokens: Int
         let todayTokens: Int
         let todayCalls: Int
+        let todayModelBreakdowns: [ModelTokenBreakdown]
     }
 
     func attributionSourceBuckets(
@@ -1027,8 +1087,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    // 决策口径：紧凑 surface 刷新只跑三条 SUM SQL（累计 token、今日 token、
-    // 今日调用数），不得顺带构建时间序列/排行/摘录。
+    // 决策口径：紧凑 surface 刷新只跑轻量聚合 SQL（累计 token、今日 token、
+    // 今日调用数、今日逐模型用量），不得顺带构建时间序列/排行/摘录。
     func compactTotals(todayStart: Date) throws -> CompactTotals {
         try withExclusiveAccess {
             try driver.withConnection { connection in
@@ -1044,10 +1104,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     "SELECT COUNT(*) FROM events WHERE timestamp >= ?;",
                     bindings: [.double(start)]
                 ) { row in row.int(0) ?? 0 }.first ?? 0
+                let todayModelBreakdowns = try connection.readRows(
+                    """
+                    SELECT
+                        model,
+                        COALESCE(SUM(input_tokens), 0),
+                        COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                        COALESCE(SUM(output_tokens), 0),
+                        COALESCE(SUM(reasoning_output_tokens), 0),
+                        COALESCE(SUM(tokens), 0),
+                        COUNT(*)
+                    FROM events
+                    WHERE timestamp >= ?
+                    GROUP BY model
+                    ORDER BY SUM(tokens) DESC;
+                    """,
+                    bindings: [.double(start)]
+                ) { row in
+                    ModelTokenBreakdown(
+                        model: row.text(0).flatMap { $0.isEmpty ? nil : $0 },
+                        breakdown: TokenCacheBreakdown(
+                            inputTokens: row.int(1) ?? 0,
+                            cachedInputTokens: row.int(2) ?? 0,
+                            outputTokens: row.int(3) ?? 0,
+                            reasoningOutputTokens: row.int(4) ?? 0,
+                            totalTokens: row.int(5) ?? 0,
+                            calls: row.int(6) ?? 0
+                        )
+                    )
+                }
                 return CompactTotals(
                     totalTokens: total,
                     todayTokens: todayTokens,
-                    todayCalls: todayCalls
+                    todayCalls: todayCalls,
+                    todayModelBreakdowns: todayModelBreakdowns
                 )
             }
         }
@@ -1182,11 +1272,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    private static func isRebuildableCorruption(_ error: SQLiteDatabaseError) -> Bool {
-        let primaryCode = error.code & 0xFF
-        return primaryCode == SQLITE_CORRUPT || primaryCode == SQLITE_NOTADB
-    }
-
     private func prepareSchema() throws {
         try driver.withConnection { connection in
             try configure(connection)
@@ -1198,9 +1283,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) { row in
                 row.text(0)
             }.first ?? nil
-            let destructiveRebuildRequired = currentVersion != nil
-                && currentVersion != Self.schemaVersion
-                && currentVersion != Self.legacyAppendMigrationSchemaVersion
+            let numericVersion = currentVersion.flatMap(Int.init)
+            let isLegacyDiscardableSchema = numericVersion.map { $0 < 2 } ?? false
+            let isKnownInPlaceSchema = currentVersion.map(Self.inPlaceSchemaVersions.contains) ?? true
+            if let currentVersion,
+               !isKnownInPlaceSchema,
+               !isLegacyDiscardableSchema {
+                throw SQLiteDatabaseError(
+                    operation: "Open exact usage history index",
+                    code: SQLITE_MISMATCH,
+                    message: "Index schema \(currentVersion) is newer or unknown; refusing to rewrite it",
+                    path: driver.url.path
+                )
+            }
+            let destructiveRebuildRequired = isLegacyDiscardableSchema
+
+            if !destructiveRebuildRequired,
+               currentVersion != nil {
+                try migrateV2SourcesForAppend(connection)
+                try migrateKnownEventColumns(connection)
+                try repairExplicitSubagentReplayBoundary(connection)
+            }
 
             // Capture all attribution evidence before any destructive schema
             // rebuild. A future/unknown schema version and a tombstoned ledger
@@ -1281,6 +1384,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     previous_total_tokens INTEGER,
                     fork_replay_started_at REAL,
                     is_skipping_fork_replay INTEGER NOT NULL DEFAULT 0,
+                    is_explicit_subagent_fork INTEGER NOT NULL DEFAULT 0,
                     last_skipped_fork_replay_token_at REAL,
                     current_user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
@@ -1309,6 +1413,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON events(source_id, timestamp, source_offset);
                 CREATE INDEX IF NOT EXISTS sources_session
                     ON sources(session_id, source_id);
+                CREATE INDEX IF NOT EXISTS sources_session_nocase
+                    ON sources(session_id COLLATE NOCASE, source_id);
 
                 CREATE TABLE IF NOT EXISTS attribution_source_buckets (
                     provenance_epoch TEXT NOT NULL,
@@ -1404,6 +1510,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
             }
             try migrateV2SourcesForAppend(connection)
+            try migrateKnownEventColumns(connection)
             try connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_fingerprints (
@@ -1684,7 +1791,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var sourcePredicate: String
         var bindings: [SQLiteBinding] = []
         if let canonicalSessionID = lineage.canonicalSessionID {
-            sourcePredicate = "lower(s.session_id) = ?"
+            // Canonical UUIDs are compared case-insensitively, while keeping
+            // the predicate sargable against sources_session_nocase. Applying
+            // lower() to the column would force SQLite to scan events first.
+            sourcePredicate = "s.session_id COLLATE NOCASE = ?"
             bindings.append(.text(canonicalSessionID))
         } else {
             sourcePredicate = "e.source_id = ?"
@@ -1851,6 +1961,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ("previous_total_tokens", "INTEGER"),
             ("fork_replay_started_at", "REAL"),
             ("is_skipping_fork_replay", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_explicit_subagent_fork", "INTEGER NOT NULL DEFAULT 0"),
             ("last_skipped_fork_replay_token_at", "REAL"),
             ("current_user_prompt_offset", "INTEGER"),
             ("assistant_start_offset", "INTEGER"),
@@ -1864,62 +1975,158 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    // 决策口径：PRAGMA quick_check 是全库扫描，且在 single-flight 门内执行，
-    // 每进程每路径只跑一次；通过后记入进程级注册表，后续同路径建索引跳过。
-    private final class IntegrityValidationRegistry: @unchecked Sendable {
-        private let lock = NSLock()
-        private var validatedPaths: Set<String> = []
-        private var runCount = 0
-
-        func isValidated(path: String) -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return validatedPaths.contains(path)
-        }
-
-        func recordRun() {
-            lock.lock()
-            runCount += 1
-            lock.unlock()
-        }
-
-        func markValidated(path: String) {
-            lock.lock()
-            validatedPaths.insert(path)
-            lock.unlock()
-        }
-
-        var runCountForTesting: Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return runCount
+    private func migrateKnownEventColumns(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        let tableExists = try connection.readRows(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'events';
+            """
+        ) { ($0.int(0) ?? 0) > 0 }.first ?? false
+        guard tableExists else { return }
+        let columns = Set(
+            try connection.readRows("PRAGMA table_info(events);") { row in
+                row.text(1) ?? ""
+            }
+        )
+        if !columns.contains("model") {
+            try connection.execute("ALTER TABLE events ADD COLUMN model TEXT;")
         }
     }
 
-    private static let integrityValidationRegistry = IntegrityValidationRegistry()
+    /// Marks only active replay sources whose first line proves an explicit
+    /// subagent fork for an atomic single-file replacement on the next normal
+    /// synchronization. The currently published rows remain readable until
+    /// that replacement is committed; migration never deletes token events or
+    /// rescans the full JSONL corpus.
+    private func repairExplicitSubagentReplayBoundary(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        let tableExists = try connection.readRows(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'sources';
+            """
+        ) { ($0.int(0) ?? 0) > 0 }.first ?? false
+        guard tableExists else { return }
+        let storedRevision = try connection.readRows(
+            """
+            SELECT value FROM schema_meta
+            WHERE key = 'fork_replay_boundary_revision' LIMIT 1;
+            """
+        ) { $0.text(0) }.first ?? nil
+        guard storedRevision != Self.forkReplayBoundaryRevision else { return }
 
-    static var integrityCheckRunCountForTesting: Int {
-        integrityValidationRegistry.runCountForTesting
-    }
+        let candidates = try connection.readRows(
+            """
+            SELECT source_id, path
+            FROM sources
+            WHERE is_skipping_fork_replay = 1
+              AND is_explicit_subagent_fork = 0;
+            """
+        ) { row in
+            (id: row.int64(0), path: row.text(1))
+        }
+        var unresolvedCandidate = false
+        for candidate in candidates {
+            guard let sourceID = candidate.id,
+                  let path = candidate.path else {
+                unresolvedCandidate = true
+                continue
+            }
+            switch probeExplicitSubagentSessionFile(URL(fileURLWithPath: path)) {
+            case .explicit:
+                // A mismatched probe schedules an atomic single-file rebuild
+                // while leaving the currently published rows available to
+                // readers.
+                try connection.execute(
+                    """
+                    UPDATE sources
+                    SET is_explicit_subagent_fork = 1,
+                        append_ready = 0,
+                        resume_offset = NULL,
+                        content_probe = ?
+                    WHERE source_id = ?;
+                    """,
+                    bindings: [
+                        .text("migration:\(Self.forkReplayBoundaryRevision)"),
+                        .int64(sourceID)
+                    ]
+                )
+            case .nonExplicit:
+                break
+            case .unresolved:
+                // Do not make an unreadable or incomplete candidate look
+                // migrated. A later startup must retry it without blocking
+                // the dashboard from using the already-published rows.
+                unresolvedCandidate = true
+            }
+        }
 
-    private func validateIntegrity() throws {
-        let path = driver.url.path
-        if Self.integrityValidationRegistry.isValidated(path: path) {
+        guard !unresolvedCandidate else {
             return
         }
-        Self.integrityValidationRegistry.recordRun()
-        let results = try driver.readRows("PRAGMA quick_check;") { row in
-            row.text(0) ?? ""
+
+        try connection.execute(
+            """
+            INSERT INTO schema_meta(key, value)
+            VALUES ('fork_replay_boundary_revision', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [.text(Self.forkReplayBoundaryRevision)]
+        )
+    }
+
+    private func probeExplicitSubagentSessionFile(
+        _ file: URL
+    ) -> ExplicitSubagentSessionFileProbe {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return .unresolved }
+        defer { try? handle.close() }
+        var firstLine = Data()
+        while true {
+            let remaining = Self.explicitSubagentFirstLineLimit + 1 - firstLine.count
+            let chunk = handle.readData(ofLength: min(64 * 1_024, remaining))
+            guard !chunk.isEmpty else { return .unresolved }
+            if let newline = chunk.firstIndex(of: 0x0A) {
+                guard firstLine.count + chunk.distance(from: chunk.startIndex, to: newline)
+                    <= Self.explicitSubagentFirstLineLimit else {
+                    return .unresolved
+                }
+                firstLine.append(contentsOf: chunk[..<newline])
+                break
+            }
+            firstLine.append(contentsOf: chunk)
+            guard firstLine.count <= Self.explicitSubagentFirstLineLimit else {
+                return .unresolved
+            }
         }
-        guard results == ["ok"] else {
-            throw SQLiteDatabaseError(
-                operation: "Validate exact usage index",
-                code: SQLITE_CORRUPT,
-                message: results.joined(separator: "; "),
-                path: driver.url.path
-            )
+        guard let object = try? JSONSerialization.jsonObject(with: firstLine) as? [String: Any] else {
+            return .unresolved
         }
-        Self.integrityValidationRegistry.markValidated(path: path)
+        guard object["type"] as? String == "session_meta" else {
+            return .nonExplicit
+        }
+        guard let payload = object["payload"] as? [String: Any] else {
+            return .unresolved
+        }
+        guard let forkedFromID = payload["forked_from_id"] as? String,
+              !forkedFromID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .nonExplicit
+        }
+        let source = payload["source"] as? [String: Any]
+        let subagent = source?["subagent"] as? [String: Any]
+        if subagent?["thread_spawn"] is [String: Any] { return .explicit }
+        if (payload["thread_source"] as? String)?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) == "subagent" {
+            return .explicit
+        }
+        let hasExplicitAgentIdentity = ["agent_role", "agent_path"].contains { key in
+            guard let value = payload[key] as? String else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return hasExplicitAgentIdentity ? .explicit : .nonExplicit
     }
 
     private func configure(_ connection: SQLiteDatabaseConnection) throws {
@@ -1937,7 +2144,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         path: String,
         connection: SQLiteDatabaseConnection
     ) throws -> IndexedSource? {
-        let rows: [IndexedSource?] = try connection.readRows(
+        let rows: [IndexedSource] = try connection.readRows(
             """
             SELECT
                 source_id,
@@ -1953,6 +2160,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 previous_total_tokens,
                 fork_replay_started_at,
                 is_skipping_fork_replay,
+                is_explicit_subagent_fork,
                 last_skipped_fork_replay_token_at,
                 current_user_prompt_offset,
                 assistant_start_offset,
@@ -1964,64 +2172,136 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             """,
             bindings: [.text(path)]
         ) { row in
+            try decodeIndexedSource(row, startingAt: 0)
+        }
+        return rows.first
+    }
+
+    /// Loads the small source catalog once per synchronization. The previous
+    /// implementation issued one SQLite query per JSONL file, which amplified
+    /// cold-page I/O into thousands of random reads on every refresh.
+    private func indexedSources(
+        connection: SQLiteDatabaseConnection
+    ) throws -> [String: IndexedSource] {
+        let rows: [(String, IndexedSource)] = try connection.readRows(
+            """
+            SELECT
+                path,
+                source_id,
+                size_bytes,
+                modified_at,
+                content_probe,
+                device_id,
+                inode,
+                status_changed_seconds,
+                status_changed_nanoseconds,
+                append_ready,
+                resume_offset,
+                previous_total_tokens,
+                fork_replay_started_at,
+                is_skipping_fork_replay,
+                is_explicit_subagent_fork,
+                last_skipped_fork_replay_token_at,
+                current_user_prompt_offset,
+                assistant_start_offset,
+                current_model,
+                audit_chunk_index
+            FROM sources
+            ORDER BY source_id;
+            """
+        ) { row in
+            guard let path = row.text(0), !path.isEmpty else {
+                throw malformedIndexedSourceError("missing source path")
+            }
+            return (path, try decodeIndexedSource(row, startingAt: 1))
+        }
+        return Dictionary(uniqueKeysWithValues: rows)
+    }
+
+    private func decodeIndexedSource(
+        _ row: SQLiteStatement,
+        startingAt offset: Int32
+    ) throws -> IndexedSource {
+        guard let sourceID = row.int64(offset),
+              let rawSize = row.int64(offset + 1),
+              rawSize >= 0,
+              let modifiedAt = row.double(offset + 2),
+              let probe = row.text(offset + 3),
+              let rawDeviceID = row.text(offset + 4),
+              let deviceID = UInt64(rawDeviceID),
+              let rawInode = row.text(offset + 5),
+              let inode = UInt64(rawInode),
+              let statusChangedSeconds = row.int64(offset + 6),
+              let statusChangedNanoseconds = row.int64(offset + 7) else {
+            throw malformedIndexedSourceError("invalid required source fields")
+        }
+        let checkpoint: SourceCheckpoint?
+        if row.int(offset + 8) == 1,
+           let rawResumeOffset = row.int64(offset + 9),
+           rawResumeOffset >= 0 {
+            checkpoint = SourceCheckpoint(
+                resumeOffset: UInt64(rawResumeOffset),
+                parserState: CodexUsageAnalyzer.IndexedSessionParserState(
+                    previousTotalTokens: row.int(offset + 10),
+                    forkReplayStartedAt: row.double(offset + 11).map {
+                        Date(timeIntervalSince1970: $0)
+                    },
+                    isSkippingForkReplay: row.int(offset + 12) == 1,
+                    isExplicitSubagentFork: row.int(offset + 13) == 1,
+                    lastSkippedForkReplayTokenAt: row.double(offset + 14).map {
+                        Date(timeIntervalSince1970: $0)
+                    },
+                    currentUserPromptOffset: row.int64(offset + 15).flatMap {
+                        $0 >= 0 ? UInt64($0) : nil
+                    },
+                    assistantStartOffset: row.int64(offset + 16).flatMap {
+                        $0 >= 0 ? UInt64($0) : nil
+                    },
+                    currentModel: row.text(offset + 17)
+                ),
+                auditChunkIndex: row.int64(offset + 18).flatMap {
+                    $0 >= 0 ? UInt64($0) : nil
+                } ?? 0
+            )
+        } else {
+            checkpoint = nil
+        }
+        return IndexedSource(
+            id: sourceID,
+            signature: SourceSignature(
+                size: UInt64(rawSize),
+                modifiedAt: modifiedAt,
+                contentProbe: probe,
+                deviceID: deviceID,
+                inode: inode,
+                statusChangedSeconds: statusChangedSeconds,
+                statusChangedNanoseconds: statusChangedNanoseconds
+            ),
+            checkpoint: checkpoint
+        )
+    }
+
+    private func malformedIndexedSourceError(_ reason: String) -> SQLiteDatabaseError {
+        SQLiteDatabaseError(
+            operation: "Decode exact usage source catalog",
+            code: SQLITE_CORRUPT,
+            message: reason,
+            path: driver.url.path
+        )
+    }
+
+    private func indexedSourceIdentities(
+        connection: SQLiteDatabaseConnection
+    ) throws -> [SourceIdentity] {
+        try connection.readRows(
+            "SELECT source_id, path FROM sources ORDER BY source_id;"
+        ) { row -> SourceIdentity? in
             guard let sourceID = row.int64(0),
-                  let rawSize = row.int64(1),
-                  rawSize >= 0,
-                  let modifiedAt = row.double(2),
-                  let probe = row.text(3),
-                  let rawDeviceID = row.text(4),
-                  let deviceID = UInt64(rawDeviceID),
-                  let rawInode = row.text(5),
-                  let inode = UInt64(rawInode),
-                  let statusChangedSeconds = row.int64(6),
-                  let statusChangedNanoseconds = row.int64(7) else {
+                  let path = row.text(1) else {
                 return nil
             }
-            let checkpoint: SourceCheckpoint?
-            if row.int(8) == 1,
-               let rawResumeOffset = row.int64(9),
-               rawResumeOffset >= 0 {
-                checkpoint = SourceCheckpoint(
-                    resumeOffset: UInt64(rawResumeOffset),
-                    parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                        previousTotalTokens: row.int(10),
-                        forkReplayStartedAt: row.double(11).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        isSkippingForkReplay: row.int(12) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(13).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        currentUserPromptOffset: row.int64(14).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        assistantStartOffset: row.int64(15).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        currentModel: row.text(16)
-                    ),
-                    auditChunkIndex: row.int64(17).flatMap {
-                        $0 >= 0 ? UInt64($0) : nil
-                    } ?? 0
-                )
-            } else {
-                checkpoint = nil
-            }
-            return IndexedSource(
-                id: sourceID,
-                signature: SourceSignature(
-                    size: UInt64(rawSize),
-                    modifiedAt: modifiedAt,
-                    contentProbe: probe,
-                    deviceID: deviceID,
-                    inode: inode,
-                    statusChangedSeconds: statusChangedSeconds,
-                    statusChangedNanoseconds: statusChangedNanoseconds
-                ),
-                checkpoint: checkpoint
-            )
-        }
-        return rows.compactMap { $0 }.first
+            return SourceIdentity(id: sourceID, path: path)
+        }.compactMap { $0 }
     }
 
     private func canAttemptAppend(
@@ -2201,7 +2481,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         replacing: false,
                         connection: transaction
                     )
-                    _ = try bumpAttributionGeneration(connection: transaction)
                 }
                 return result
             }
@@ -2384,6 +2663,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 previous_total_tokens = ?,
                 fork_replay_started_at = ?,
                 is_skipping_fork_replay = ?,
+                is_explicit_subagent_fork = ?,
                 last_skipped_fork_replay_token_at = ?,
                 current_user_prompt_offset = ?,
                 assistant_start_offset = ?,
@@ -2405,6 +2685,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 state.previousTotalTokens.map(SQLiteBinding.int) ?? .null,
                 state.forkReplayStartedAt.map(SQLiteBinding.date) ?? .null,
                 .int(state.isSkippingForkReplay ? 1 : 0),
+                .int(state.isExplicitSubagentFork ? 1 : 0),
                 state.lastSkippedForkReplayTokenAt.map(SQLiteBinding.date) ?? .null,
                 try state.currentUserPromptOffset.map {
                     .int64(try sqliteInt64($0))
@@ -2567,6 +2848,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     previous_total_tokens INTEGER,
                     fork_replay_started_at REAL,
                     is_skipping_fork_replay INTEGER NOT NULL,
+                    is_explicit_subagent_fork INTEGER NOT NULL,
                     last_skipped_fork_replay_token_at REAL,
                     current_user_prompt_offset INTEGER,
                     assistant_start_offset INTEGER,
@@ -2706,11 +2988,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         previous_total_tokens,
                         fork_replay_started_at,
                         is_skipping_fork_replay,
+                        is_explicit_subagent_fork,
                         last_skipped_fork_replay_token_at,
                         current_user_prompt_offset,
                         assistant_start_offset,
                         current_model
-                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
                         .text(job.sessionID),
@@ -2726,6 +3009,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         .optionalInt(state.previousTotalTokens),
                         .optionalDate(state.forkReplayStartedAt),
                         .int(state.isSkippingForkReplay ? 1 : 0),
+                        .int(state.isExplicitSubagentFork ? 1 : 0),
                         .optionalDate(state.lastSkippedForkReplayTokenAt),
                         try optionalOffsetBinding(state.currentUserPromptOffset),
                         try optionalOffsetBinding(state.assistantStartOffset),
@@ -2781,6 +3065,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     previous_total_tokens,
                     fork_replay_started_at,
                     is_skipping_fork_replay,
+                    is_explicit_subagent_fork,
                     last_skipped_fork_replay_token_at,
                     current_user_prompt_offset,
                     assistant_start_offset,
@@ -2828,16 +3113,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             Date(timeIntervalSince1970: $0)
                         },
                         isSkippingForkReplay: row.int(12) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(13).map {
+                        isExplicitSubagentFork: row.int(13) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(14).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        currentUserPromptOffset: row.int64(14).flatMap {
+                        currentUserPromptOffset: row.int64(15).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        assistantStartOffset: row.int64(15).flatMap {
+                        assistantStartOffset: row.int64(16).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        currentModel: row.text(16)
+                        currentModel: row.text(17)
                     )
                 )
             }
@@ -2854,7 +3140,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func lineageReplacement(
         for staged: StagedFullRebuild,
-        generation: String,
+        observedPaths: Set<String>,
         connection: SQLiteDatabaseConnection
     ) throws -> (
         replacement: LineageReplacement?,
@@ -2870,20 +3156,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         let candidates = try connection.readRows(
             """
-            SELECT source_id
+            SELECT source_id, path
             FROM sources
             WHERE lower(session_id) = ?
               AND path <> ?
-              AND last_seen_generation <> ?
             ORDER BY source_id;
             """,
             bindings: [
                 .text(canonicalSessionID),
-                .text(staged.job.file.path),
-                .text(generation),
+                .text(staged.job.file.path)
             ]
-        ) { row in row.int64(0) }.compactMap { $0 }
-        if candidates.count == 1, let sourceID = candidates.first {
+        ) { row -> SourceIdentity? in
+            guard let sourceID = row.int64(0),
+                  let path = row.text(1),
+                  !observedPaths.contains(path) else {
+                return nil
+            }
+            return SourceIdentity(id: sourceID, path: path)
+        }.compactMap { $0 }
+        let candidateIDs = candidates.map(\.id)
+        if candidateIDs.count == 1, let sourceID = candidateIDs.first {
             let contentMatches = try stagedContentMatchesSource(
                 staged,
                 sourceID: sourceID,
@@ -2895,7 +3187,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 false
             )
         }
-        guard candidates.isEmpty else {
+        guard candidateIDs.isEmpty else {
             return (nil, true, false)
         }
 
@@ -3212,7 +3504,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 preservingExistingMaximum: preserveExistingAttributionLedger,
                 connection: transaction
             )
-            _ = try bumpAttributionGeneration(connection: transaction)
         }
     }
 
@@ -3278,7 +3569,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return .int64(try sqliteInt64(value))
     }
 
-    private func sourceSignature(for file: URL) throws -> SourceSignature {
+    private func sourceSignatureMetadata(for file: URL) throws -> SourceSignature {
         var fileStatus = Darwin.stat()
         guard lstat(file.path, &fileStatus) == 0 else {
             throw CocoaError(.fileReadUnknown)
@@ -3295,12 +3586,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return SourceSignature(
             size: size,
             modifiedAt: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
-            contentProbe: try contentProbe(for: file, size: size),
+            contentProbe: "",
             deviceID: UInt64(fileStatus.st_dev),
             inode: UInt64(fileStatus.st_ino),
             statusChangedSeconds: Int64(fileStatus.st_ctimespec.tv_sec),
             statusChangedNanoseconds: Int64(fileStatus.st_ctimespec.tv_nsec)
         )
+    }
+
+    private func sourceSignature(
+        metadata: SourceSignature,
+        for file: URL
+    ) throws -> SourceSignature {
+        SourceSignature(
+            size: metadata.size,
+            modifiedAt: metadata.modifiedAt,
+            contentProbe: try contentProbe(for: file, size: metadata.size),
+            deviceID: metadata.deviceID,
+            inode: metadata.inode,
+            statusChangedSeconds: metadata.statusChangedSeconds,
+            statusChangedNanoseconds: metadata.statusChangedNanoseconds
+        )
+    }
+
+    private func sourceSignature(for file: URL) throws -> SourceSignature {
+        try sourceSignature(metadata: sourceSignatureMetadata(for: file), for: file)
+    }
+
+    private func sourceMetadataMatches(
+        _ stored: SourceSignature,
+        _ observed: SourceSignature
+    ) -> Bool {
+        stored.size == observed.size
+            && stored.modifiedAt == observed.modifiedAt
+            && stored.deviceID == observed.deviceID
+            && stored.inode == observed.inode
+            && stored.statusChangedSeconds == observed.statusChangedSeconds
+            && stored.statusChangedNanoseconds == observed.statusChangedNanoseconds
+    }
+
+    private func isTrustedContentProbe(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)
+        }
     }
 
     private func contentHash(for file: URL, length: UInt64) throws -> String {
@@ -3324,6 +3652,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func contentProbe(for file: URL, size: UInt64) throws -> String {
+        Self.sourceProbeTestState.record()
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
 
@@ -3435,6 +3764,29 @@ private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
         defer { lock.unlock() }
         let value = shouldFailNextImport
         shouldFailNextImport = false
+        return value
+    }
+}
+
+private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func record() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        value = 0
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
         return value
     }
 }

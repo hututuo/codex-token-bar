@@ -9,14 +9,31 @@ enum CodexUnreadThreadReader {
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return .unavailable
         }
+        // The desktop atom is only a candidate set.  The sidebar snapshot is
+        // the boundary that tells us which of those IDs can actually be shown
+        // to the user.  If that snapshot is missing or mid-migration, do not
+        // fall back to the historical SQLite/session catalogue: a stale atom
+        // must never turn an invisible thread into a flashing reminder.
+        guard let sidebarThreadIDs = sidebarVisibleThreadIDs(in: object) else {
+            return .unavailable
+        }
         guard let unreadState = unreadStateValue(in: object) else {
             return .available([])
         }
         let nativeThreadIDs = collectThreadIDs(from: unreadState)
-        let threadIDs = sidebarVisibleThreadIDs(in: object).map {
-            nativeThreadIDs.intersection($0)
-        } ?? nativeThreadIDs
+        let threadIDs = nativeThreadIDs.intersection(sidebarThreadIDs)
         return .available(visibleUserThreadIDs(from: threadIDs, codexHome: codexHome))
+    }
+
+    /// Apply the same local-session visibility boundary to a live sidebar
+    /// snapshot.  The IDs have already been marked unread by Codex's renderer;
+    /// this only prevents a different CODEX_HOME or an archived/subagent row
+    /// from crossing into the current Token Bar source.
+    static func filterLiveSidebarThreadIDs(
+        _ threadIDs: Set<String>,
+        codexHome: URL
+    ) -> Set<String> {
+        visibleUserThreadIDs(from: threadIDs, codexHome: codexHome)
     }
 
     private static func unreadStateValue(in object: [String: Any]) -> Any? {
@@ -31,7 +48,7 @@ enum CodexUnreadThreadReader {
     /// Its native unread atom can retain threads that no longer appear in the
     /// sidebar, so only an initialized and structurally complete sidebar
     /// snapshot is authoritative. Older or partially migrated Codex versions
-    /// fail open to the existing SQLite/session visibility checks.
+    /// fail closed until the desktop publishes a complete snapshot again.
     private static func sidebarVisibleThreadIDs(in object: [String: Any]) -> Set<String>? {
         guard let persistedState = object["electron-persisted-atom-state"] as? [String: Any],
               let preferences = persistedState["flat-project-sidebar-preferences-v1"] as? [String: Any],

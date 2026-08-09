@@ -4,7 +4,10 @@ import {
   type CodexRadarQuotaRow,
 } from "../../domain/codexRadar/model.ts";
 import type { OfficialAPIPriceModel, QuotaPriceBasis } from "../../settings/quotaPriceModel";
-import { modelAwareAPICostUSD } from "../../settings/quotaPriceModel.ts";
+import {
+  modelAwareAPICostUSD,
+  type ModelAwareAPICostEstimate,
+} from "../../settings/quotaPriceModel.ts";
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
 import type { QuotaAttributionIdentity, QuotaLimit } from "../../types/dashboard";
 import { ATTRIBUTION_BUCKET_SECONDS, type AttributionTokenBucket } from "./highWater.ts";
@@ -66,6 +69,8 @@ export interface SharedAccountAttributionResult {
   localComparableUSD: number | null;
   scannedLocalComparableUSD: number | null;
   localCurrentAPIEquivalentUSD: number | null;
+  excludedModels: string[];
+  excludedCalls: number;
   scannedLocalCurrentAPIEquivalentUSD: number | null;
   scannedLocalRadar20260730EquivalentUSD: number | null;
   historyChangedLowConfidence: boolean;
@@ -216,27 +221,31 @@ export function estimateSharedAccountAttribution({
   }
 
   const radarPricingBasisDate = normalizedRadarDate(quotaRadar.basisDate);
-  const priceBasis = radarCompatiblePriceBasis(radarPricingBasisDate);
+  const priceBasis = radarCompatiblePriceBasis(quotaRadar);
   if (!priceBasis) {
     return { ...base, status: "pricingVersionUnavailable", radarPlanTotalUSD: tierRow.sevenD };
   }
 
   const tokens = aggregateAttributionBuckets(buckets);
   const scannedTokens = aggregateAttributionBuckets(scannedBuckets);
-  const localRadar20260730EquivalentUSD = costForBreakdown(tokens, buckets, priceModel, "radar20260730");
-  const localCurrentAPIEquivalentUSD = costForBreakdown(tokens, buckets, priceModel, "current");
-  const scannedLocalRadar20260730EquivalentUSD = costForBreakdown(
+  const localRadarEstimate = costForBreakdown(tokens, buckets, priceModel, "radar20260730");
+  const localCurrentEstimate = costForBreakdown(tokens, buckets, priceModel, "current");
+  const scannedLocalRadarEstimate = costForBreakdown(
     scannedTokens,
     scannedBuckets,
     priceModel,
     "radar20260730",
   );
-  const scannedLocalCurrentAPIEquivalentUSD = costForBreakdown(
+  const scannedLocalCurrentEstimate = costForBreakdown(
     scannedTokens,
     scannedBuckets,
     priceModel,
     "current",
   );
+  const localRadar20260730EquivalentUSD = localRadarEstimate.costUSD;
+  const localCurrentAPIEquivalentUSD = localCurrentEstimate.costUSD;
+  const scannedLocalRadar20260730EquivalentUSD = scannedLocalRadarEstimate.costUSD;
+  const scannedLocalCurrentAPIEquivalentUSD = scannedLocalCurrentEstimate.costUSD;
   const localComparableUSD = priceBasis === "radar20260730"
     ? localRadar20260730EquivalentUSD
     : localCurrentAPIEquivalentUSD;
@@ -277,6 +286,8 @@ export function estimateSharedAccountAttribution({
     localComparableUSD,
     scannedLocalComparableUSD,
     localCurrentAPIEquivalentUSD,
+    excludedModels: localCurrentEstimate.excludedModels,
+    excludedCalls: localCurrentEstimate.excludedCalls,
     scannedLocalCurrentAPIEquivalentUSD,
     scannedLocalRadar20260730EquivalentUSD,
     historyChangedLowConfidence,
@@ -340,19 +351,29 @@ export function quotaValueToPercentagePoints(value: number): number {
   return value >= 0 && value <= 1 ? value * 100 : value;
 }
 
-export function radarCompatiblePriceBasis(radarDate: string): QuotaPriceBasis | null {
+export function radarCompatiblePriceBasis(
+  radar: Pick<CodexRadarQuotaRadar, "basisDate" | "sourceKind" | "sevenDayPolicy"> | null,
+): QuotaPriceBasis | null {
+  if (!radar) return null;
+  const radarDate = normalizedRadarDate(radar.basisDate);
   if (radarDate === "2026-07-30") return "radar20260730";
   if (radarDate === "2026-07-31") return "current";
+  if (radarDate > "2026-07-31"
+    && normalizedSemanticKey(radar.sourceKind) === "quotaapi"
+    && normalizedSemanticKey(radar.sevenDayPolicy) === "directquotaapi") {
+    return "current";
+  }
   return null;
 }
 
 /** Explicit invalidation signature for compatibility-sensitive Radar/account fields. */
 export function sharedAccountAttributionInputSignature(
-  quotaRadar: Pick<CodexRadarQuotaRadar, "basisDate" | "sevenDayPolicy"> | null,
+  quotaRadar: Pick<CodexRadarQuotaRadar, "basisDate" | "sourceKind" | "sevenDayPolicy"> | null,
   identity: Pick<QuotaAttributionIdentity, "plan"> | null | undefined,
 ): string {
   return JSON.stringify([
     quotaRadar?.basisDate ?? "",
+    quotaRadar?.sourceKind ?? "",
     quotaRadar?.sevenDayPolicy ?? "",
     identity?.plan ?? "",
   ]);
@@ -399,7 +420,7 @@ function costForBreakdown(
   buckets: AttributionTokenBucket[],
   priceModel: OfficialAPIPriceModel,
   basis: QuotaPriceBasis,
-): number {
+): ModelAwareAPICostEstimate {
   const modelBreakdowns = buckets.every((bucket) => (
     bucket.modelTrackingComplete === true && Array.isArray(bucket.modelBreakdowns)
   ))
@@ -415,7 +436,7 @@ function costForBreakdown(
     },
     priceModel,
     basis,
-  ).costUSD;
+  );
 }
 
 function emptyResult(
@@ -432,7 +453,7 @@ function emptyResult(
     ? tierRow?.sevenD ?? null
     : null;
   const radarPricingBasisDate = normalizedRadarDate(quotaRadar?.basisDate || "");
-  const priceBasis = radarCompatiblePriceBasis(radarPricingBasisDate);
+  const priceBasis = radarCompatiblePriceBasis(quotaRadar);
   return {
     status: "radarUnavailable",
     pricingBasisStatus: priceBasis === "radar20260730"
@@ -451,6 +472,8 @@ function emptyResult(
     localComparableUSD: null,
     scannedLocalComparableUSD: null,
     localCurrentAPIEquivalentUSD: null,
+    excludedModels: [],
+    excludedCalls: 0,
     scannedLocalCurrentAPIEquivalentUSD: null,
     scannedLocalRadar20260730EquivalentUSD: null,
     historyChangedLowConfidence: false,
@@ -479,7 +502,19 @@ function emptyTokenBreakdown(): SharedAccountTokenBreakdown {
 }
 
 function normalizedRadarDate(value: string): string {
-  return /^(\d{4}-\d{2}-\d{2})/.exec(value.trim())?.[1] ?? "";
+  const candidate = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim())?.[1] ?? "";
+  if (!candidate) return "";
+  const [year, month, day] = candidate.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day
+    ? candidate
+    : "";
+}
+
+function normalizedSemanticKey(value: string | null | undefined): string {
+  return (value ?? "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function finiteNonnegative(value: number): number {

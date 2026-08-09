@@ -163,7 +163,7 @@ test("a hidden or paused Radar seven-day policy rejects a retained positive row"
   assert.equal(hidden.radarPlanTotalUSD, null);
 });
 
-test("Radar-compatible amount drives share while current API equivalent stays separate", () => {
+test("Radar-compatible amount and current API equivalent use the published GPT-5.6 rates", () => {
   const terraBucket = bucket(0, 1_000_000);
   const result = estimate({
     buckets: [terraBucket],
@@ -171,10 +171,10 @@ test("Radar-compatible amount drives share while current API equivalent stays se
     priceModel: "gpt56Terra",
   });
   assert.equal(result.pricingBasisStatus, "legacyRadarBasis");
-  assert.equal(result.localComparableUSD, 2.5);
+  assert.equal(result.localComparableUSD, 2);
   assert.equal(result.localCurrentAPIEquivalentUSD, 2);
-  assert.equal(result.localSharePercent, 2.5);
-  assert.equal(result.residualPercent, 10.5);
+  assert.equal(result.localSharePercent, 2);
+  assert.equal(result.residualPercent, 11);
 });
 
 test("shared-account API values use complete historical model rows before the fallback", () => {
@@ -193,7 +193,29 @@ test("shared-account API values use complete historical model rows before the fa
   });
 
   assert.equal(result.localCurrentAPIEquivalentUSD, 7);
-  assert.equal(result.localComparableUSD, 7.5);
+  assert.equal(result.localComparableUSD, 7);
+});
+
+test("shared-account Spark usage keeps tokens/calls but is excluded from local dollars", () => {
+  const sparkBucket = bucket(0, 2_000_000, {
+    calls: 2,
+    modelTrackingComplete: true,
+    modelBreakdowns: [
+      { model: "gpt-5.3-codex-spark", breakdown: { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 2_000_000, calls: 2 } },
+    ],
+  });
+  const result = estimate({
+    buckets: [sparkBucket],
+    scannedBuckets: [sparkBucket],
+    priceModel: "gpt56Sol",
+  });
+
+  assert.equal(result.tokens.inputTokens, 2_000_000);
+  assert.equal(result.tokens.calls, 2);
+  assert.equal(result.localCurrentAPIEquivalentUSD, 0);
+  assert.equal(result.localComparableUSD, 0);
+  assert.deepEqual(result.excludedModels, ["gpt-5.3-codex-spark"]);
+  assert.equal(result.excludedCalls, 2);
 });
 
 test("Radar basisDate controls pricing even when the outer feed date is newer", () => {
@@ -210,10 +232,21 @@ test("Radar basisDate controls pricing even when the outer feed date is newer", 
   assert.equal(result.radarDate, "2026-08-15");
   assert.equal(result.radarPricingBasisDate, "2026-07-30");
   assert.equal(result.priceBasis, "radar20260730");
-  assert.equal(result.localComparableUSD, 2.5);
+  assert.equal(result.localComparableUSD, 2);
 });
 
-test("unconfirmed or future Radar basis dates fail closed instead of using current prices", () => {
+test("new direct quota-API measurements stay compatible while unknown future sources fail closed", () => {
+  const live = estimate({
+    quotaRadar: radar({
+      basisDate: "2026-08-03",
+      date: "2026-08-03",
+      sourceKind: "quota_api",
+      sevenDayPolicy: "direct_quota_api",
+    }),
+  });
+  assert.equal(live.status, "positiveResidual");
+  assert.equal(live.priceBasis, "current");
+
   const future = estimate({
     quotaRadar: radar({ basisDate: "2026-08-01", date: "2026-08-01" }),
   });
@@ -227,13 +260,48 @@ test("unconfirmed or future Radar basis dates fail closed instead of using curre
   });
   assert.equal(old.status, "pricingVersionUnavailable");
 
+  const wrongSource = estimate({
+    quotaRadar: radar({
+      basisDate: "2026-08-03",
+      date: "2026-08-03",
+      sourceKind: "estimated",
+      sevenDayPolicy: "direct_quota_api",
+    }),
+  });
+  assert.equal(wrongSource.status, "pricingVersionUnavailable");
+  assert.equal(wrongSource.priceBasis, null);
+
+  const wrongPolicy = estimate({
+    quotaRadar: radar({
+      basisDate: "2026-08-03",
+      date: "2026-08-03",
+      sourceKind: "quota_api",
+      sevenDayPolicy: "estimated",
+    }),
+  });
+  assert.equal(wrongPolicy.status, "pricingVersionUnavailable");
+  assert.equal(wrongPolicy.priceBasis, null);
+
+  for (const invalidDate of ["2026-99-99", "2026-13-40"]) {
+    const invalid = estimate({
+      quotaRadar: radar({
+        basisDate: invalidDate,
+        date: invalidDate,
+        sourceKind: "quota_api",
+        sevenDayPolicy: "direct_quota_api",
+      }),
+    });
+    assert.equal(invalid.status, "pricingVersionUnavailable");
+    assert.equal(invalid.priceBasis, null);
+  }
+
   const missingBasis = estimate({
     quotaRadar: radar({ basisDate: "", date: "2026-07-31" }),
   });
   assert.equal(missingBasis.status, "pricingVersionUnavailable");
 });
 
-test("input signature explicitly changes for basis date, seven-day policy and identity plan", () => {
+test("input signature explicitly changes for basis date, source kind, seven-day policy and identity plan", () => {
   const base = sharedAccountAttributionInputSignature(radar(), { plan: "pro" });
   assert.notEqual(
     base,
@@ -243,7 +311,26 @@ test("input signature explicitly changes for basis date, seven-day policy and id
     base,
     sharedAccountAttributionInputSignature(radar({ sevenDayPolicy: "hidden" }), { plan: "pro" }),
   );
+  assert.notEqual(
+    base,
+    sharedAccountAttributionInputSignature(radar({ sourceKind: "quota_api" }), { plan: "pro" }),
+  );
   assert.notEqual(base, sharedAccountAttributionInputSignature(radar(), { plan: "plus" }));
+
+  const current = radar({
+    basisDate: "2026-08-03",
+    sourceKind: "quota_api",
+    sevenDayPolicy: "direct_quota_api",
+  });
+  const sourceMissing = radar({
+    basisDate: "2026-08-03",
+    sourceKind: null,
+    sevenDayPolicy: "direct_quota_api",
+  });
+  assert.notEqual(
+    sharedAccountAttributionInputSignature(current, { plan: "pro" }),
+    sharedAccountAttributionInputSignature(sourceMissing, { plan: "pro" }),
+  );
 });
 
 test("negative residual remains negative and the ±2 point band remains indistinguishable", () => {

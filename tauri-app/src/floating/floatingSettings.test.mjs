@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  FLOATING_BASE_WIDTH,
   FLOATING_DEFAULT_HEIGHT,
   FLOATING_MIN_HEIGHT,
   DEFAULT_FLOATING_SETTINGS,
@@ -8,9 +9,10 @@ import {
   sanitizeFloatingSettings,
 } from "./floatingSettings.ts";
 
-test("floating height separates Swift-style protection from the default expanded content", () => {
+test("floating dimensions keep compact Swift-style proportions", () => {
+  assert.equal(FLOATING_BASE_WIDTH, 288);
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 134);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 138);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
@@ -97,9 +99,12 @@ test("sanitizeFloatingSettings migrates legacy content order with running thread
     "quota",
     "metrics",
     "runningThreads",
+    "todayModelShare",
+    "todayModelCost",
     "radar",
     "crowdRadar",
     "rateAndBar",
     "usageStatus",
   ]);
+  assert.deepEqual(settings.contentVisibility.pagePairs, [["todayModelShare", "todayModelCost"]]);
 });

@@ -41,6 +41,7 @@ export const emptyFloatingPanelSnapshot: FloatingPanelSnapshot = {
   totalTokensLabel: "总 待读取",
   todayTokensLabel: "今 待读取",
   requestsLabel: "次 待读取",
+  todayModelBreakdowns: [],
   fiveHourLabel: "5h 待读取",
   fiveHourAvailability: "unavailable",
   fiveHourRemainingPercent: null,

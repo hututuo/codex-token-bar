@@ -2,6 +2,8 @@ export type OfficialAPIPriceModel =
   | "gpt56Sol"
   | "gpt56Terra"
   | "gpt56Luna"
+  | "gpt53Codex"
+  | "gpt52Codex"
   | "gpt54Legacy"
   | "gpt54MiniLegacy";
 
@@ -27,6 +29,9 @@ export interface ModelAwareAPICostEstimate {
   costUSD: number;
   detectedModels: OfficialAPIPriceModel[];
   fallbackCalls: number;
+  /** Models on an independent quota; retained in token/model stats but never priced. */
+  excludedModels: string[];
+  excludedCalls: number;
 }
 
 export const QUOTA_PRICE_MODEL_STORAGE_KEY = "recentChartQuotaEstimateModel";
@@ -41,10 +46,15 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
   { value: "gpt56Luna", label: "GPT-5.6 Luna" },
 ];
 
+// Standard short-context prices published by OpenAI. Long-context, cache-write,
+// priority/service-tier and regional multipliers remain outside this estimate.
+// https://developers.openai.com/api/docs/models/compare
 const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
   gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
   gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
+  gpt53Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
+  gpt52Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
   gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
   gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
 };
@@ -54,8 +64,10 @@ const CURRENT_API_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
 // the attribution division use one vintage. Source: https://codexradar.com/
 const RADAR_2026_07_30_PRICES: Record<OfficialAPIPriceModel, APIPriceRates> = {
   gpt56Sol: { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 },
-  gpt56Terra: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
-  gpt56Luna: { inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 6 },
+  gpt56Terra: { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 },
+  gpt56Luna: { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 },
+  gpt53Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
+  gpt52Codex: { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 },
   gpt54Legacy: { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 },
   gpt54MiniLegacy: { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 },
 };
@@ -70,6 +82,8 @@ export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPrice
   if (value === "gpt56Sol"
     || value === "gpt56Terra"
     || value === "gpt56Luna"
+    || value === "gpt53Codex"
+    || value === "gpt52Codex"
     || value === "gpt54Legacy"
     || value === "gpt54MiniLegacy") {
     return value;
@@ -81,6 +95,8 @@ export function isOfficialAPIPriceModel(value: unknown): value is OfficialAPIPri
   return value === "gpt56Sol"
     || value === "gpt56Terra"
     || value === "gpt56Luna"
+    || value === "gpt53Codex"
+    || value === "gpt52Codex"
     || value === "gpt54Legacy"
     || value === "gpt54MiniLegacy";
 }
@@ -153,6 +169,19 @@ export function detectedOfficialAPIPriceModel(value: string | null | undefined):
     case "gpt56-luna":
     case "gpt56luna":
       return "gpt56Luna";
+    case "gpt-5.3-codex":
+    case "gpt5.3-codex":
+    case "gpt53-codex":
+    case "gpt53codex":
+      return "gpt53Codex";
+    case "codex-auto-review":
+    case "codexautoreview":
+      return "gpt53Codex";
+    case "gpt-5.2-codex":
+    case "gpt5.2-codex":
+    case "gpt52-codex":
+    case "gpt52codex":
+      return "gpt52Codex";
     case "gpt-5.4":
     case "gpt54":
       return "gpt54Legacy";
@@ -175,6 +204,8 @@ export function modelAwareAPICostUSD(
       costUSD: officialAPICostUSD(fallback.inputTokens, fallback.cachedInputTokens, fallback.outputTokens, fallbackModel, basis),
       detectedModels: [],
       fallbackCalls: fallback.calls,
+      excludedModels: [],
+      excludedCalls: 0,
     };
   }
   const covered = rows.reduce((total, row) => ({
@@ -183,6 +214,20 @@ export function modelAwareAPICostUSD(
     outputTokens: total.outputTokens + finiteNonnegative(row.breakdown.outputTokens),
     calls: total.calls + finiteNonnegative(row.breakdown.calls),
   }), { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 });
+  const excludedModels: string[] = [];
+  let excludedCalls = 0;
+  const excludedBreakdown = rows.reduce((total, row) => {
+    const excluded = independentQuotaModelName(row.model);
+    if (!excluded) return total;
+    if (!excludedModels.includes(excluded)) excludedModels.push(excluded);
+    excludedCalls += finiteNonnegative(row.breakdown.calls);
+    return {
+      inputTokens: total.inputTokens + finiteNonnegative(row.breakdown.inputTokens),
+      cachedInputTokens: total.cachedInputTokens + finiteNonnegative(row.breakdown.cachedInputTokens),
+      outputTokens: total.outputTokens + finiteNonnegative(row.breakdown.outputTokens),
+      calls: total.calls + finiteNonnegative(row.breakdown.calls),
+    };
+  }, { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 });
   const expected = {
     inputTokens: finiteNonnegative(fallback.inputTokens),
     cachedInputTokens: finiteNonnegative(fallback.cachedInputTokens),
@@ -195,19 +240,25 @@ export function modelAwareAPICostUSD(
     || covered.calls !== expected.calls) {
     return {
       costUSD: officialAPICostUSD(
-        expected.inputTokens,
-        expected.cachedInputTokens,
-        expected.outputTokens,
+        Math.max(expected.inputTokens - excludedBreakdown.inputTokens, 0),
+        Math.max(expected.cachedInputTokens - excludedBreakdown.cachedInputTokens, 0),
+        Math.max(expected.outputTokens - excludedBreakdown.outputTokens, 0),
         fallbackModel,
         basis,
       ),
       detectedModels: [],
-      fallbackCalls: expected.calls,
+      fallbackCalls: Math.max(expected.calls - excludedBreakdown.calls, 0),
+      excludedModels,
+      excludedCalls,
     };
   }
   const grouped = new Map<OfficialAPIPriceModel, ModelTokenCostRow["breakdown"]>();
   const unknown = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
   for (const row of rows) {
+    const excluded = independentQuotaModelName(row.model);
+    if (excluded) {
+      continue;
+    }
     const detected = detectedOfficialAPIPriceModel(row.model);
     const target = detected
       ? grouped.get(detected) ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 }
@@ -228,10 +279,14 @@ export function modelAwareAPICostUSD(
       "gpt56Sol",
       "gpt56Terra",
       "gpt56Luna",
+      "gpt53Codex",
+      "gpt52Codex",
       "gpt54Legacy",
       "gpt54MiniLegacy",
     ] satisfies OfficialAPIPriceModel[]).filter((model) => grouped.has(model)),
     fallbackCalls: unknown.calls,
+    excludedModels,
+    excludedCalls,
   };
 }
 
@@ -240,9 +295,25 @@ export function priceModelTitle(model: OfficialAPIPriceModel): string {
     case "gpt56Sol": return "GPT-5.6 Sol";
     case "gpt56Terra": return "GPT-5.6 Terra";
     case "gpt56Luna": return "GPT-5.6 Luna";
+    case "gpt53Codex": return "GPT-5.3 Codex";
+    case "gpt52Codex": return "GPT-5.2 Codex";
     case "gpt54Legacy": return "GPT-5.4";
     case "gpt54MiniLegacy": return "GPT-5.4 Mini";
   }
+}
+
+/** Canonical model names on the separate Spark quota. */
+export function independentQuotaModelName(value: string | null | undefined): string | null {
+  const key = canonicalModelKey(value);
+  return key === "gpt53codexspark" ? "gpt-5.3-codex-spark" : null;
+}
+
+function canonicalModelKey(value: string | null | undefined): string {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replaceAll("_", "-")
+    .replace(/[^a-z0-9]+/g, "");
 }
 
 function finiteNonnegative(value: number): number {

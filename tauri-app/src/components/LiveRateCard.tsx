@@ -57,10 +57,6 @@ export function LiveRateCard({
     : liveRateEnabled
       ? "含输出与工具输入流 · 部分流式可能延迟"
       : "实时速率已关闭";
-  const unreadActive = snapshot.unreadSummary.active;
-  const unreadAckTitle = unreadActive
-    ? `拉基线：${snapshot.unreadSummary.detail || "把当前已知未读/完成提示标记为已读，不删除 Codex 原始数据"}`
-    : "当前没有未读会话；点击会把当前状态作为已读基线";
 
   return (
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
@@ -87,17 +83,6 @@ export function LiveRateCard({
           </span>
         </div>
         <div className="live-title-actions">
-          <button
-            type="button"
-            className={unreadActive ? "unread-ack-button unread-ack-button--active" : "unread-ack-button unread-ack-button--idle"}
-            onClick={() => {
-              void onAcknowledgeUnread();
-            }}
-            title={unreadAckTitle}
-            aria-label="一键标记未读会话已读"
-          >
-            一键已读
-          </button>
           <button
             type="button"
             className="live-reset-button"

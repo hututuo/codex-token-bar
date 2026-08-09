@@ -237,15 +237,17 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
     }
 
     func testHealthVerificationDistinguishesReadyWaitingAndStructuralFailure() throws {
+        let unreadThreadID = "019f5a7c-0001-7abc-8def-0123456789ab"
         XCTAssertEqual(
             try CodexThreadDeleteInjectionVerification.verify(health(
                 candidateRows: 3,
                 eligibleRows: 3,
                 attachedRows: 3,
                 buttons: 3,
-                readiness: "ready"
+                readiness: "ready",
+                sidebarUnreadThreadIDs: [unreadThreadID]
             )),
-            .ready(buttonCount: 3)
+            .ready(buttonCount: 3, sidebarUnreadThreadIDs: [unreadThreadID])
         )
         XCTAssertEqual(
             try CodexThreadDeleteInjectionVerification.verify(health(
@@ -256,7 +258,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
                 readiness: "ready",
                 deleteEnabled: false
             )),
-            .ready(buttonCount: 0)
+            .ready(buttonCount: 0, sidebarUnreadThreadIDs: [])
         )
         XCTAssertEqual(
             try CodexThreadDeleteInjectionVerification.verify(health(
@@ -374,7 +376,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
     }
 
     func testRealRuntimeEvaluateHealthResponseDecodesAndVerifies() throws {
-        let data = Data(#"{"id":104,"result":{"result":{"type":"object","value":{"schemaVersion":2,"owner":"swift","bridgeRegistered":true,"bindingMatches":true,"bindingAvailable":true,"deleteEnabled":true,"sessionEnhancementsInstalled":true,"sessionEnhancementError":null,"candidateRowCount":2,"eligibleRowCount":2,"attachedRowCount":2,"buttonCount":2,"missingButtonCount":0,"duplicateButtonCount":0,"orphanButtonCount":0,"styleInstalled":true,"observerInstalled":true,"scanError":null,"readiness":"ready"}}}}"#.utf8)
+        let data = Data(#"{"id":104,"result":{"result":{"type":"object","value":{"schemaVersion":2,"owner":"swift","bridgeRegistered":true,"bindingMatches":true,"bindingAvailable":true,"deleteEnabled":true,"sessionEnhancementsInstalled":true,"sessionEnhancementError":null,"candidateRowCount":2,"eligibleRowCount":2,"attachedRowCount":2,"buttonCount":2,"missingButtonCount":0,"duplicateButtonCount":0,"orphanButtonCount":0,"styleInstalled":true,"observerInstalled":true,"scanError":null,"readiness":"ready","sidebarSnapshotReady":true,"sidebarUnreadThreadIDs":[]}}}}"#.utf8)
         let response = try JSONDecoder().decode(
             CodexThreadDeleteCDPCommandResponse.self,
             from: data
@@ -384,7 +386,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             try CodexThreadDeleteInjectionVerification.verify(
                 response.validated(method: "Runtime.evaluate").decodedHealth()
             ),
-            .ready(buttonCount: 2)
+            .ready(buttonCount: 2, sidebarUnreadThreadIDs: [])
         )
     }
 
@@ -633,7 +635,8 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         readiness: String,
         bindingAvailable: Bool = true,
         deleteEnabled: Bool = true,
-        scanError: String? = nil
+        scanError: String? = nil,
+        sidebarUnreadThreadIDs: [String] = []
     ) -> CodexThreadDeleteInjectionHealth {
         CodexThreadDeleteInjectionHealth(
             schemaVersion: 2,
@@ -654,7 +657,9 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             styleInstalled: true,
             observerInstalled: true,
             scanError: scanError,
-            readiness: readiness
+            readiness: readiness,
+            sidebarSnapshotReady: candidateRows > 0,
+            sidebarUnreadThreadIDs: sidebarUnreadThreadIDs
         )
     }
 }

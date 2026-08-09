@@ -74,9 +74,11 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
             case .gpt56Sol:
                 return APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
             case .gpt56Terra:
-                return APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
+                return APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
             case .gpt56Luna:
-                return APIPriceRates(inputUSDPerMillion: 1.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 6.00)
+                return APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
+            case .gpt53Codex, .gpt52Codex:
+                return APIPriceRates(inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14.00)
             case .gpt54Legacy:
                 return APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
             case .gpt54MiniLegacy:
@@ -88,9 +90,12 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
     }
 
     static func compatible(with radar: CodexRadarQuotaRadar) -> SharedAccountRadarPriceRevision {
-        // `basisDate` describes the quota table's own pricing vintage. The
-        // outer snapshot date may advance independently when the feed refreshes,
-        // so it is never a safe fallback for converting local tokens.
+        // `basisDate` is the measurement date, not a fixed pricing revision.
+        // Keep the two historical dates that older payloads exposed, then accept
+        // later measurements only when Radar explicitly identifies the same
+        // direct quota-API pipeline. This avoids breaking the calculation every
+        // time a fresh measurement advances the date while still failing closed
+        // for an unknown or differently sourced quota table.
         guard let dateKey = Self.dateKey(radar.basisDate) else {
             return .unavailable
         }
@@ -98,10 +103,12 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
         case "2026-07-30": return .radar20260730
         case "2026-07-31": return .currentOfficial
         default:
-            // A later feed date does not prove that its quota total still uses
-            // the price card currently compiled into the app. Fail closed until
-            // Radar publishes a recognized pricing revision or we add it.
-            return .unavailable
+            guard dateKey > "2026-07-31",
+                  CodexRadarJSONKeyMatcher.canonical(radar.sourceKind ?? "") == "quotaapi",
+                  CodexRadarJSONKeyMatcher.canonical(radar.sevenDayPolicy ?? "") == "directquotaapi" else {
+                return .unavailable
+            }
+            return .currentOfficial
         }
     }
 
@@ -110,6 +117,19 @@ enum SharedAccountRadarPriceRevision: String, Codable, Hashable, Sendable {
         guard trimmed.count >= 10 else { return nil }
         let prefix = String(trimmed.prefix(10))
         guard prefix.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        guard let year = Int(prefix.prefix(4)),
+              let month = Int(prefix.dropFirst(5).prefix(2)),
+              let day = Int(prefix.suffix(2)) else {
+            return nil
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? calendar.timeZone
+        let components = DateComponents(year: year, month: month, day: day)
+        guard let date = calendar.date(from: components) else { return nil }
+        let normalized = calendar.dateComponents([.year, .month, .day], from: date)
+        guard normalized.year == year, normalized.month == month, normalized.day == day else {
             return nil
         }
         return prefix
@@ -1524,6 +1544,8 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let model: OfficialAPIPriceModel
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackModelCalls: Int
+    let excludedModels: [String]
+    let excludedCalls: Int
     let priceRevision: SharedAccountRadarPriceRevision
     let cycleStart: Date?
     let cycleEnd: Date?
@@ -1937,6 +1959,8 @@ enum SharedAccountUsageAttributionEstimator {
                     model: model,
                     detectedModels: pendingComparableCost.detectedModels,
                     fallbackModelCalls: pendingComparableCost.fallbackCalls,
+                    excludedModels: pendingComparableCost.excludedModels,
+                    excludedCalls: pendingComparableCost.excludedCalls,
                     priceRevision: priceRevision,
                     cycleStart: cycleStart,
                     cycleEnd: resetAt,
@@ -2107,6 +2131,8 @@ enum SharedAccountUsageAttributionEstimator {
             model: model,
             detectedModels: localComparableEstimate.detectedModels,
             fallbackModelCalls: localComparableEstimate.fallbackCalls,
+            excludedModels: localComparableEstimate.excludedModels,
+            excludedCalls: localComparableEstimate.excludedCalls,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: resetAt,
@@ -2207,6 +2233,8 @@ enum SharedAccountUsageAttributionEstimator {
             model: model,
             detectedModels: [],
             fallbackModelCalls: breakdown.calls,
+            excludedModels: [],
+            excludedCalls: 0,
             priceRevision: priceRevision,
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,

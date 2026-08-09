@@ -2,15 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("Status panel can acknowledge the same unread baseline as the main dashboard", async () => {
+test("Status panel mirrors the official sidebar unread state without a local acknowledgement", async () => {
   const source = await readFile(new URL("./StatusPanelApp.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /acknowledgeUnreadSummary/);
-  assert.match(source, /acknowledgeUnreadSummary\(acknowledgedSourceToken\)/);
-  assert.match(source, /sameCodexHomeSourceToken\(sourceTokenRef\.current, acknowledgedSourceToken\)/);
-  assert.match(source, /publishUnreadSummaryChanged/);
-  assert.match(source, /onUnreadSummaryChanged/);
-  assert.match(source, /全部已读/);
+  assert.doesNotMatch(source, /acknowledgeUnreadSummary/);
+  assert.doesNotMatch(source, /acknowledgedSourceToken/);
+  assert.doesNotMatch(source, /sameCodexHomeSourceToken/);
+  assert.doesNotMatch(source, /全部已读/);
   assert.match(
     source,
     /useFloatingRadar\([\s\S]*?active && sourceReady && dataInterests\.radar,[\s\S]*?\)/,

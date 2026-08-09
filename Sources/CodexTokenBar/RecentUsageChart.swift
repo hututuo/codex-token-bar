@@ -336,6 +336,7 @@ struct RecentChartPreparedData: Equatable {
     let callTotal: Int
     let recentCacheBreakdown: TokenCacheBreakdown
     let cacheBreakdowns: [TokenCacheBreakdown]
+    let modelBreakdowns: [[ModelTokenBreakdown]]
     let observedCacheHitRates: [Double?]
     let fiveHourRemainingPercents: [Double?]
     let sevenDayRemainingPercents: [Double?]
@@ -359,6 +360,7 @@ struct RecentChartPreparedData: Equatable {
         callTotal: Int,
         recentCacheBreakdown: TokenCacheBreakdown,
         cacheBreakdowns: [TokenCacheBreakdown],
+        modelBreakdowns: [[ModelTokenBreakdown]] = [],
         observedCacheHitRates: [Double?],
         fiveHourRemainingPercents: [Double?],
         sevenDayRemainingPercents: [Double?],
@@ -381,6 +383,7 @@ struct RecentChartPreparedData: Equatable {
         self.callTotal = callTotal
         self.recentCacheBreakdown = recentCacheBreakdown
         self.cacheBreakdowns = cacheBreakdowns
+        self.modelBreakdowns = modelBreakdowns
         self.observedCacheHitRates = observedCacheHitRates
         self.fiveHourRemainingPercents = fiveHourRemainingPercents
         self.sevenDayRemainingPercents = sevenDayRemainingPercents
@@ -430,6 +433,7 @@ struct RecentChartPreparedData: Equatable {
         callTotal: 0,
         recentCacheBreakdown: .empty,
         cacheBreakdowns: [],
+        modelBreakdowns: [],
         observedCacheHitRates: [],
         fiveHourRemainingPercents: [],
         sevenDayRemainingPercents: [],
@@ -527,6 +531,40 @@ struct RecentChartSelectionIndices: Equatable {
     let endIndex: Int?
 
     var isFixed: Bool { endIndex != nil }
+}
+
+/// Tracks preview-card dismissal independently from the selected range. A
+/// close action hides only the card that was closed for the current user
+/// interaction generation; it never clears the two-click selection state.
+struct RecentChartPreviewVisibilityState: Equatable {
+    private(set) var interactionGeneration = 0
+    private(set) var topDismissedGeneration: Int?
+    private(set) var selectionDismissedGeneration: Int?
+
+    var showsTopPreview: Bool {
+        topDismissedGeneration != interactionGeneration
+    }
+
+    var showsSelectionSummary: Bool {
+        selectionDismissedGeneration != interactionGeneration
+    }
+
+    mutating func beginInteraction() {
+        interactionGeneration &+= 1
+    }
+
+    mutating func beginHoverInteraction(selectionIsFixed: Bool) {
+        guard !selectionIsFixed else { return }
+        beginInteraction()
+    }
+
+    mutating func dismissTopPreview() {
+        topDismissedGeneration = interactionGeneration
+    }
+
+    mutating func dismissSelectionSummary() {
+        selectionDismissedGeneration = interactionGeneration
+    }
 }
 
 enum RecentChartAccessibilityCursorDirection {
@@ -665,6 +703,7 @@ struct RecentUsageChart: View, Equatable {
     let cacheRecentBins: [TokenCacheBucket]
     let cacheHourlyBins: [TokenCacheBucket]
     let attributionEvents: [TokenCacheAttributionEvent]
+    let attributionEventsComplete: Bool
     let quotaRecentBins: [QuotaHistoryRecentBucket]
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
     let currentFiveHourQuotaPresent: Bool
@@ -683,6 +722,7 @@ struct RecentUsageChart: View, Equatable {
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State private var consumptionSelectionTimeAnchor: RecentChartSelectionTimeAnchor?
     @State private var consumptionSelectionInvalidationMessage: String?
+    @State private var previewVisibility = RecentChartPreviewVisibilityState()
     @State private var accessibilityCursorState = RecentChartAccessibilityCursorState()
     @State private var scrollPresentation: RecentChartScrollPresentation?
     @State var preparedData: RecentChartPreparedData
@@ -693,6 +733,7 @@ struct RecentUsageChart: View, Equatable {
         cacheRecentBins: [TokenCacheBucket],
         cacheHourlyBins: [TokenCacheBucket],
         attributionEvents: [TokenCacheAttributionEvent] = [],
+        attributionEventsComplete: Bool = true,
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket],
         currentFiveHourQuotaPresent: Bool = true,
@@ -704,6 +745,7 @@ struct RecentUsageChart: View, Equatable {
         self.cacheRecentBins = cacheRecentBins
         self.cacheHourlyBins = cacheHourlyBins
         self.attributionEvents = attributionEvents
+        self.attributionEventsComplete = attributionEventsComplete
         self.quotaRecentBins = quotaRecentBins
         self.quotaHourlyBins = quotaHourlyBins
         self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
@@ -718,6 +760,7 @@ struct RecentUsageChart: View, Equatable {
             && lhs.cacheRecentBins == rhs.cacheRecentBins
             && lhs.cacheHourlyBins == rhs.cacheHourlyBins
             && lhs.attributionEvents == rhs.attributionEvents
+            && lhs.attributionEventsComplete == rhs.attributionEventsComplete
             && lhs.quotaRecentBins == rhs.quotaRecentBins
             && lhs.quotaHourlyBins == rhs.quotaHourlyBins
             && lhs.currentFiveHourQuotaPresent == rhs.currentFiveHourQuotaPresent
@@ -750,7 +793,7 @@ struct RecentUsageChart: View, Equatable {
             get: { selectedRange },
             set: { range in
                 selectedRangeRaw = range.rawValue
-                hoveredIndex = nil
+                clearConsumptionSelection()
             }
         )
     }
@@ -933,6 +976,14 @@ struct RecentUsageChart: View, Equatable {
                             selectAccessibilityCursor()
                             return .handled
                         }
+                        .onKeyPress(.escape) {
+                            guard consumptionSelectionState.startIndex != nil || hoveredIndex != nil else {
+                                return .ignored
+                            }
+                            dismissTopPreview()
+                            dismissSelectionSummary()
+                            return .handled
+                        }
 
                         RecentChartEdgeFadeOverlay(
                             state: presentation.edgeFadeState
@@ -1098,6 +1149,7 @@ struct RecentUsageChart: View, Equatable {
 
                 linePath(points: plotData.tokenPoints)
                     .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+
             }
 
             if showCalls {
@@ -1182,7 +1234,9 @@ struct RecentUsageChart: View, Equatable {
                         x: location.x + plot.minX,
                         y: location.y + plot.minY
                     )
-                    hoveredIndex = hoverIndex(at: plotLocation, in: plot, step: step)
+                    updateHoveredIndex(
+                        hoverIndex(at: plotLocation, in: plot, step: step)
+                    )
                 },
                 onClick: { location in
                     let plotLocation = CGPoint(
@@ -1191,11 +1245,10 @@ struct RecentUsageChart: View, Equatable {
                     )
                     guard let clickedIndex = hoverIndex(at: plotLocation, in: plot, step: step),
                           preparedData.bins.indices.contains(clickedIndex) else { return }
-                    hoveredIndex = clickedIndex
                     updateConsumptionSelection(forClickedIndex: clickedIndex)
                 },
                 onExit: {
-                    hoveredIndex = nil
+                    updateHoveredIndex(nil)
                 }
             )
             .frame(width: plot.width, height: plot.height)
@@ -1227,7 +1280,7 @@ struct RecentUsageChart: View, Equatable {
         }
         let activeIndex = fixedEndIndex ?? liveHoverIndex
 
-        if let activeIndex {
+        if previewVisibility.showsTopPreview, let activeIndex {
             let contentPlot = CGRect(x: 0, y: 18, width: contentWidth, height: max(height - 42, 1))
             let viewportPlot = CGRect(x: 0, y: 18, width: viewportWidth, height: max(height - 42, 1))
             let step = contentPlot.width / CGFloat(max(chartBins.count - 1, 1))
@@ -1235,11 +1288,15 @@ struct RecentUsageChart: View, Equatable {
 
             Group {
                 if fixedEndIndex != nil, let selection = consumptionSelection {
-                    ChartSelectionSummaryBubble(selection: selection)
+                    ChartSelectionSummaryBubble(
+                        selection: selection,
+                        onClose: dismissTopPreview
+                    )
                 } else {
                     ChartHoverBubble(
                         bin: chartBins[activeIndex],
                         cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
+                        modelBreakdowns: preparedData.modelBreakdowns[safe: activeIndex] ?? [],
                         fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
                             ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
                             : nil,
@@ -1247,7 +1304,8 @@ struct RecentUsageChart: View, Equatable {
                             ? preparedData.sevenDayRemainingPercents[safe: activeIndex] ?? nil
                             : nil,
                         bucketInterval: preparedData.bucketInterval,
-                        isHovering: true
+                        isHovering: true,
+                        onClose: dismissTopPreview
                     )
                 }
             }
@@ -1307,7 +1365,7 @@ struct RecentUsageChart: View, Equatable {
         selection consumptionSelection: QuotaConsumptionSelection?,
         attribution: QuotaSelectionAttributionResult?
     ) -> some View {
-        if let consumptionSelection {
+        if previewVisibility.showsSelectionSummary, let consumptionSelection {
             RecentChartQuotaEstimateOverlay(
                 selection: consumptionSelection,
                 attribution: attribution,
@@ -1316,7 +1374,8 @@ struct RecentUsageChart: View, Equatable {
                 showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay,
                 currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
                 currentSevenDayQuotaPresent: currentSevenDayQuotaPresent,
-                onClose: clearConsumptionSelection
+                attributionEventsComplete: attributionEventsComplete,
+                onClose: dismissSelectionSummary
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if let consumptionSelectionInvalidationMessage {
@@ -1404,6 +1463,7 @@ struct RecentUsageChart: View, Equatable {
             hourlyBins: hourlyBins,
             cacheRecentBins: cacheRecentBins,
             cacheHourlyBins: cacheHourlyBins,
+            attributionEvents: attributionEvents,
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
@@ -1437,7 +1497,7 @@ struct RecentUsageChart: View, Equatable {
     private func activeSelectionAttribution(
         for selection: QuotaConsumptionSelection?
     ) -> QuotaSelectionAttributionResult? {
-        guard selectedRange == .twentyFourHours,
+        guard attributionEventsComplete,
               consumptionSelectionState.fixedEndIndex != nil,
               let selection,
               let sharedAccountAttributionContext else { return nil }
@@ -1451,6 +1511,8 @@ struct RecentUsageChart: View, Equatable {
         guard preparedData.bins.indices.contains(clickedIndex),
               let clickedDate = preparedData.bins[safe: clickedIndex]?.start else { return }
 
+        previewVisibility.beginInteraction()
+        hoveredIndex = clickedIndex
         consumptionSelectionInvalidationMessage = nil
         accessibilityCursorState.select(
             index: clickedIndex,
@@ -1517,6 +1579,24 @@ struct RecentUsageChart: View, Equatable {
         consumptionSelectionInvalidationMessage = nil
     }
 
+    private func updateHoveredIndex(_ index: Int?) {
+        guard hoveredIndex != index else { return }
+        hoveredIndex = index
+        if index != nil {
+            previewVisibility.beginHoverInteraction(
+                selectionIsFixed: consumptionSelectionState.fixedEndIndex != nil
+            )
+        }
+    }
+
+    private func dismissTopPreview() {
+        previewVisibility.dismissTopPreview()
+    }
+
+    private func dismissSelectionSummary() {
+        previewVisibility.dismissSelectionSummary()
+    }
+
     private func moveAccessibilityCursor(
         _ direction: RecentChartAccessibilityCursorDirection
     ) {
@@ -1524,7 +1604,7 @@ struct RecentUsageChart: View, Equatable {
             direction,
             validCount: preparedData.bins.count
         ) else { return }
-        hoveredIndex = index
+        updateHoveredIndex(index)
     }
 
     private func selectAccessibilityCursor() {
@@ -1532,7 +1612,6 @@ struct RecentUsageChart: View, Equatable {
             validCount: preparedData.bins.count
         ) else { return }
         accessibilityCursorState.select(index: index, validCount: preparedData.bins.count)
-        hoveredIndex = index
         updateConsumptionSelection(forClickedIndex: index)
     }
 }

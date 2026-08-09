@@ -1,6 +1,8 @@
 import type { ActivityDay } from "../../types/dashboard";
 import { formatPercent, formatTokens } from "../../utils/format";
 import type { ActivityMode } from "./types";
+import { modelUsageCompactText } from "../modelUsagePresentation.ts";
+import type { ModelTokenBreakdown } from "../../types/dashboard";
 
 export function summarizeRange(
   selectedDays: ActivityDay[],
@@ -37,10 +39,20 @@ export function summarizeRange(
       )}`,
     };
   }
+  if (mode === "model") {
+    return {
+      hint: `${rangeStart} - ${rangeEnd}`,
+      value: `${formatTokens(tokens)} · ${modelUsageCompactText(combineModelRows(selectedDays)) ?? "暂无模型明细"}`,
+    };
+  }
   return {
     hint: `${rangeStart} - ${rangeEnd}`,
     value: `${formatTokens(tokens)} tokens · ${calls} calls`,
   };
+}
+
+function combineModelRows(days: ActivityDay[]): ModelTokenBreakdown[] {
+  return days.flatMap((day) => day.modelBreakdowns ?? []);
 }
 
 export function isInRange(date: string, rangeStart: string | null, rangeEnd: string | null): boolean {

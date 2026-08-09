@@ -5,7 +5,13 @@ import {
 } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
-import type { CodexHomeSourceEnvelope, ProviderRepairSnapshot } from "../types/dashboard";
+import type {
+  CodexHomeSourceEnvelope,
+  PreciseDashboardDedupeDomain,
+  PreciseDashboardRefreshReason,
+  PreciseDashboardRequestRevision,
+  ProviderRepairSnapshot,
+} from "../types/dashboard";
 import {
   applyDashboardRefreshPlan,
   applyManualDashboardRefresh,
@@ -27,7 +33,13 @@ interface DashboardActionsOptions {
   >;
   providerRepairVisible: boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
-  setLoadGeneration: Dispatch<SetStateAction<number>>;
+  requestPreciseRefresh: (
+    force?: boolean,
+    reason?: PreciseDashboardRefreshReason,
+    revision?: PreciseDashboardRequestRevision,
+    dedupeDomain?: PreciseDashboardDedupeDomain,
+    dedupeKey?: string,
+  ) => void;
   setQuotaLoadGeneration: Dispatch<SetStateAction<number>>;
   setRadarRefreshGeneration: Dispatch<SetStateAction<number>>;
   setForceNextQuotaLoad: Dispatch<SetStateAction<boolean>>;
@@ -42,7 +54,7 @@ export function useDashboardActions({
   source,
   providerRepairVisible,
   setState,
-  setLoadGeneration,
+  requestPreciseRefresh,
   setQuotaLoadGeneration,
   setRadarRefreshGeneration,
   setForceNextQuotaLoad,
@@ -64,7 +76,7 @@ export function useDashboardActions({
     applyManualDashboardRefresh({
       providerRepairVisible,
       dispatchers: {
-        refreshPreciseUsage: () => setLoadGeneration((current) => current + 1),
+        refreshPreciseUsage: () => requestPreciseRefresh(true, "manual"),
         refreshQuota: () => {
           setForceNextQuotaLoad(true);
           setQuotaLoadGeneration((current) => current + 1);
@@ -86,7 +98,7 @@ export function useDashboardActions({
     isSourceTokenCurrent,
     source,
     setForceNextQuotaLoad,
-    setLoadGeneration,
+    requestPreciseRefresh,
     setQuotaLoadGeneration,
     setRadarRefreshGeneration,
     updateProviderRepair,

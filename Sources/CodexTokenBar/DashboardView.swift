@@ -52,10 +52,13 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.usageStatusKey) private var floatingPanelShowUsageStatus = FloatingPanelContentVisibility.default.showUsageStatus
     @AppStorage(FloatingPanelContentVisibility.metricsKey) private var floatingPanelShowMetrics = FloatingPanelContentVisibility.default.showMetrics
     @AppStorage(FloatingPanelContentVisibility.runningThreadsKey) private var floatingPanelShowRunningThreads = FloatingPanelContentVisibility.default.showRunningThreads
+    @AppStorage(FloatingPanelContentVisibility.todayModelShareKey) private var floatingPanelShowTodayModelShare = FloatingPanelContentVisibility.default.showTodayModelShare
+    @AppStorage(FloatingPanelContentVisibility.todayModelCostKey) private var floatingPanelShowTodayModelCost = FloatingPanelContentVisibility.default.showTodayModelCost
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var floatingPanelShowCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var floatingPanelContentOrderRaw = FloatingPanelContentVisibility.defaultOrderRaw
+    @AppStorage(FloatingPanelContentVisibility.pagePairsKey) private var floatingPanelPagePairsRaw = FloatingPanelContentVisibility.defaultPagePairsRaw
     @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
     @State private var showingProviderSync = false
     @State private var showingSetupGuide = false
@@ -459,10 +462,15 @@ struct DashboardView: View {
                 showUsageStatus: $floatingPanelShowUsageStatus,
                 showMetrics: $floatingPanelShowMetrics,
                 showRunningThreads: $floatingPanelShowRunningThreads,
+                showTodayModelShare: $floatingPanelShowTodayModelShare,
+                showTodayModelCost: $floatingPanelShowTodayModelCost,
                 showQuota: $floatingPanelShowQuota,
                 showRadar: $floatingPanelShowRadar,
                 showCrowdRadar: $floatingPanelShowCrowdRadar,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
+                pagePairsRaw: $floatingPanelPagePairsRaw,
+                floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
+                floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
                 defaultCodexHome: store.currentDataSource?.codexHome,
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
@@ -601,6 +609,7 @@ struct DashboardView: View {
             radar?.date ?? "",
             radar?.basisDate ?? "",
             radar?.updatedAt ?? "",
+            radar?.sourceKind ?? "",
             radar?.sevenDayPolicy ?? "",
             radarStore.staleDataDisplayed ? "radar-stale" : "radar-fresh",
             radarRows,
@@ -970,6 +979,7 @@ struct DashboardView: View {
             ActivitySection(
                 dailyUsage: store.snapshot.dailyUsage,
                 cacheDaily: store.snapshot.cacheUsage.daily,
+                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
                 quotaDaily: quotaHistoryStore.snapshot.daily,
                 selectedMode: $store.selectedMode
             )
@@ -980,6 +990,7 @@ struct DashboardView: View {
                 cacheRecentBins: store.snapshot.cacheUsage.recentBins,
                 cacheHourlyBins: store.snapshot.cacheUsage.hourly,
                 attributionEvents: store.snapshot.cacheUsage.attributionEvents,
+                attributionEventsComplete: store.snapshot.cacheUsage.attributionEventsComplete,
                 quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
                 quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins,
                 currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,
@@ -1044,10 +1055,13 @@ struct DashboardView: View {
             showUsageStatus: floatingPanelShowUsageStatus,
             showMetrics: floatingPanelShowMetrics,
             showRunningThreads: floatingPanelShowRunningThreads,
+            showTodayModelShare: floatingPanelShowTodayModelShare,
+            showTodayModelCost: floatingPanelShowTodayModelCost,
             showQuota: floatingPanelShowQuota,
             showRadar: floatingPanelShowRadar,
             showCrowdRadar: floatingPanelShowCrowdRadar,
-            groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw)
+            groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw),
+            pagePairs: FloatingPanelContentVisibility.pagePairs(from: floatingPanelPagePairsRaw)
         )
     }
 
@@ -1085,6 +1099,26 @@ struct DashboardView: View {
         )
     }
 
+    private var floatingPanelPreviewSnapshot: TokenDisplaySnapshot {
+        TokenDisplaySnapshot.make(
+            store: store,
+            monitor: liveMonitor,
+            quota: quotaStore,
+            runningThreads: taskCompletionMonitor.runningThreadSummary
+        )
+    }
+
+    private var floatingPanelPreviewRadarPresentation: CodexRadarPresentationState {
+        CodexRadarPresentationState(
+            snapshot: radarStore.snapshot,
+            status: radarStore.status,
+            diagnostics: radarStore.diagnostics,
+            staleDataDisplayed: radarStore.staleDataDisplayed,
+            feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
+            crowdSnapshot: radarStore.crowdSnapshot
+        )
+    }
+
     private var statusSummaryConfiguration: StatusSummaryConfiguration {
         StatusSummaryConfiguration(
             version: statusSummaryConfigurationVersion,
@@ -1111,8 +1145,12 @@ struct DashboardView: View {
             floatingPanelShowUsageStatus ? "1" : "0",
             floatingPanelShowMetrics ? "1" : "0",
             floatingPanelShowRunningThreads ? "1" : "0",
+            floatingPanelShowTodayModelShare ? "1" : "0",
+            floatingPanelShowTodayModelCost ? "1" : "0",
             floatingPanelShowQuota ? "1" : "0",
             floatingPanelShowRadar ? "1" : "0",
+            floatingPanelShowCrowdRadar ? "1" : "0",
+            floatingPanelPagePairsRaw,
             interfaceScaleAutoEnabled ? "1" : "0",
             String(interfaceScaleManualMultiplier),
             floatingPanelLocked ? "1" : "0",

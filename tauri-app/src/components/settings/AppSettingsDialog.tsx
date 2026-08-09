@@ -9,11 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ThreadDeleteBridgeStatus } from "../../api/threadDeleteClient";
-import {
-  FLOATING_CONTENT_LABELS,
-  moveFloatingContent,
-  sanitizeFloatingContentVisibility,
-} from "../../floating/floatingContent";
+import { sanitizeFloatingContentVisibility } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import { floatingGradientBackground } from "../../floating/floatingSettings";
 import { floatingTextPaletteForGroup } from "../../floating/floatingTextPalette";
@@ -55,11 +51,12 @@ import type {
   AutoResumeThreadOption,
   CodexHomeStatus,
   DisplaySurfaceSettings,
-  FloatingContentGroup,
   FloatingContentVisibility,
+  FloatingPanelSnapshot,
   FloatingPalettePatch,
   FloatingUnreadEffect,
   PlatformCapabilities,
+  RunningThreadSummary,
   SessionEnhancementSettings,
   StatusMetricId,
   StatusMetricLabelStyle,
@@ -68,6 +65,7 @@ import type {
 import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
 import { CodexInstancesSettings } from "./CodexInstancesSettings";
+import { FloatingStructureEditor } from "./FloatingStructureEditor";
 
 export type AppSettingsCategory =
   | "general"
@@ -82,8 +80,10 @@ export type AppSettingsCategory =
   | "alerts"
   | "data";
 
+type VisibleAppSettingsCategory = Exclude<AppSettingsCategory, "content">;
+
 interface SettingsCategoryDefinition {
-  id: AppSettingsCategory;
+  id: VisibleAppSettingsCategory;
   label: string;
   description: string;
 }
@@ -96,11 +96,14 @@ const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
   { id: "status", label: "状态栏与托盘", description: "指标、顺序与紧缩预览" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
-  { id: "floating", label: "悬浮窗", description: "尺寸、颜色与额度条" },
-  { id: "content", label: "悬浮窗内容", description: "悬浮窗显示项目与排列顺序" },
+  { id: "floating", label: "悬浮窗", description: "尺寸、外观、内容与翻页" },
   { id: "alerts", label: "提醒与更新", description: "未读提示与版本更新" },
   { id: "data", label: "数据与维护", description: "目录、修复与连接状态" },
 ];
+
+function normalizeSettingsCategory(category: AppSettingsCategory): VisibleAppSettingsCategory {
+  return category === "content" ? "floating" : category;
+}
 
 interface AppUpdateViewState {
   kind: "idle" | "checking" | "available" | "installing" | "error";
@@ -121,6 +124,8 @@ interface AppSettingsDialogProps {
   codexHome: CodexHomeStatus;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
+  floatingPreviewSnapshot: FloatingPanelSnapshot;
+  floatingPreviewRunningThreads: RunningThreadSummary;
   initialCategory?: AppSettingsCategory;
   liveRateEnabled: boolean;
   open: boolean;
@@ -171,6 +176,8 @@ export function AppSettingsDialog({
   codexHome,
   displaySurfaces,
   floatingSettings,
+  floatingPreviewSnapshot,
+  floatingPreviewRunningThreads,
   initialCategory = "general",
   liveRateEnabled,
   open,
@@ -206,7 +213,9 @@ export function AppSettingsDialog({
   onStatusMetricLabelStyleChange,
   onStatusSummaryOrderChange,
 }: AppSettingsDialogProps) {
-  const [selectedCategory, setSelectedCategory] = useState<AppSettingsCategory>(initialCategory);
+  const [selectedCategory, setSelectedCategory] = useState<VisibleAppSettingsCategory>(
+    normalizeSettingsCategory(initialCategory),
+  );
   const [sessionEnableConfirmationOpen, setSessionEnableConfirmationOpen] = useState(false);
   const sessionEnableConfirmationOpenRef = useRef(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -243,7 +252,7 @@ export function AppSettingsDialog({
       setSessionEnableConfirmationOpen(false);
       return;
     }
-    setSelectedCategory(initialCategory);
+    setSelectedCategory(normalizeSettingsCategory(initialCategory));
   }, [initialCategory, open]);
 
   useEffect(() => {
@@ -435,19 +444,21 @@ export function AppSettingsDialog({
                 />
               ) : null}
               {selectedCategory === "floating" ? (
-                <FloatingAppearanceSettings
-                  floatingSettings={floatingSettings}
-                  onFloatingGradientChange={onFloatingGradientChange}
-                  onFloatingOpacityChange={onFloatingOpacityChange}
-                  onFloatingScaleChange={onFloatingScaleChange}
-                  onFloatingTextToneChange={onFloatingTextToneChange}
-                />
-              ) : null}
-              {selectedCategory === "content" ? (
-                <ContentSettings
-                  floatingSettings={floatingSettings}
-                  onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
-                />
+                <>
+                  <FloatingAppearanceSettings
+                    floatingSettings={floatingSettings}
+                    onFloatingGradientChange={onFloatingGradientChange}
+                    onFloatingOpacityChange={onFloatingOpacityChange}
+                    onFloatingScaleChange={onFloatingScaleChange}
+                    onFloatingTextToneChange={onFloatingTextToneChange}
+                  />
+                  <ContentSettings
+                    floatingSettings={floatingSettings}
+                    floatingPreviewSnapshot={floatingPreviewSnapshot}
+                    floatingPreviewRunningThreads={floatingPreviewRunningThreads}
+                    onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+                  />
+                </>
               ) : null}
               {selectedCategory === "alerts" ? (
                 <AlertAndUpdateSettings
@@ -1945,43 +1956,24 @@ function FloatingAppearanceSettings({
 
 function ContentSettings({
   floatingSettings,
+  floatingPreviewSnapshot,
+  floatingPreviewRunningThreads,
   onFloatingContentVisibilityChange,
-}: Pick<AppSettingsDialogProps, "floatingSettings" | "onFloatingContentVisibilityChange">) {
+}: Pick<AppSettingsDialogProps,
+  | "floatingSettings"
+  | "floatingPreviewSnapshot"
+  | "floatingPreviewRunningThreads"
+  | "onFloatingContentVisibilityChange"
+>) {
   const visibility = sanitizeFloatingContentVisibility(floatingSettings.contentVisibility);
   return (
-    <SettingsGroup title="悬浮窗显示内容" description="打开需要的信息，并用箭头调整从上到下的顺序。">
-      <div className="app-settings-content-list">
-        {visibility.order.map((group, index) => {
-          const label = FLOATING_CONTENT_LABELS[group];
-          const visible = isFloatingGroupVisible(visibility, group);
-          const updateVisibility = (checked: boolean) => {
-            onFloatingContentVisibilityChange(sanitizeFloatingContentVisibility({
-              ...visibility,
-              [visibilityKey(group)]: checked,
-            }));
-          };
-          const move = (delta: -1 | 1) => {
-            onFloatingContentVisibilityChange(sanitizeFloatingContentVisibility({
-              ...visibility,
-              order: moveFloatingContent(visibility.order, group, delta),
-            }));
-          };
-          return (
-            <div className="app-settings-content-row" key={group}>
-              <label>
-                <input checked={visible} onChange={(event) => updateVisibility(event.currentTarget.checked)} type="checkbox" />
-                <span><strong>{label.title}</strong>{label.subtitle ? <em>{label.subtitle}</em> : null}</span>
-              </label>
-              <div>
-                <button aria-label={`向上移动${label.title}`} disabled={index === 0} onClick={() => move(-1)} type="button">上移</button>
-                <button aria-label={`向下移动${label.title}`} disabled={index === visibility.order.length - 1} onClick={() => move(1)} type="button">下移</button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="app-settings-note">趣味话与速率相邻时会自动合并成一行，减少悬浮窗高度。</div>
-    </SettingsGroup>
+    <FloatingStructureEditor
+      onChange={onFloatingContentVisibilityChange}
+      runningThreads={floatingPreviewRunningThreads}
+      settings={floatingSettings}
+      snapshot={floatingPreviewSnapshot}
+      visibility={visibility}
+    />
   );
 }
 
@@ -2221,28 +2213,4 @@ function shortErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   return fallback;
-}
-
-function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: FloatingContentGroup): boolean {
-  switch (group) {
-    case "rateAndBar": return visibility.showRateAndBar;
-    case "usageStatus": return visibility.showUsageStatus;
-    case "metrics": return visibility.showMetrics;
-    case "runningThreads": return visibility.showRunningThreads;
-    case "quota": return visibility.showQuota;
-    case "radar": return visibility.showRadar;
-    case "crowdRadar": return visibility.showCrowdRadar;
-  }
-}
-
-function visibilityKey(group: FloatingContentGroup): keyof FloatingContentVisibility {
-  switch (group) {
-    case "rateAndBar": return "showRateAndBar";
-    case "usageStatus": return "showUsageStatus";
-    case "metrics": return "showMetrics";
-    case "runningThreads": return "showRunningThreads";
-    case "quota": return "showQuota";
-    case "radar": return "showRadar";
-    case "crowdRadar": return "showCrowdRadar";
-  }
 }

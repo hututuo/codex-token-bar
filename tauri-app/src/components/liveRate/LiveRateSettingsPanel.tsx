@@ -660,7 +660,7 @@ function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: Fl
   return Boolean(visibility[visibilityKey(group)]);
 }
 
-function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentVisibility, "order"> {
+function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentVisibility, "order" | "pagePairs"> {
   switch (group) {
     case "rateAndBar":
       return "showRateAndBar";
@@ -670,6 +670,10 @@ function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentV
       return "showMetrics";
     case "runningThreads":
       return "showRunningThreads";
+    case "todayModelShare":
+      return "showTodayModelShare";
+    case "todayModelCost":
+      return "showTodayModelCost";
     case "quota":
       return "showQuota";
     case "radar":

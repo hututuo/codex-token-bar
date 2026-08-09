@@ -8,44 +8,33 @@ function renderComponent(Component, props) {
   return renderToStaticMarkup(React.createElement(Component, props));
 }
 
-test("DashboardHeader renders restrained provider repair entry", async () => {
+test("DashboardHeader keeps the account identity above the compact product card", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
     const html = renderComponent(DashboardHeader, headerProps());
 
-    const button = findButton(html, "会话消失修复");
-    assert.match(button.attrs, /class="toolbar-button/);
-    assert.match(button.attrs, /title="找回消失的历史会话"/);
-    assert.match(html, /class="header-context"/);
-    assert.equal((html.match(/class="header-info-cell/g) ?? []).length, 4);
-    assert.equal((html.match(/class="header-info-kicker"/g) ?? []).length, 4);
-    assert.equal((html.match(/class="header-info-main"/g) ?? []).length, 4);
-    assert.equal((html.match(/class="header-action-divider"/g) ?? []).length, 2);
-    assert.match(html, /class="header-info-kicker">Codex Token Bar/);
-    assert.match(html, /class="header-info-kicker">数据源/);
-    assert.match(html, /class="header-info-kicker">统计状态/);
-    assert.match(html, /class="header-info-kicker">运行线程/);
+    assert.match(html, /class="dashboard-header"/);
+    assert.match(html, /class="brand-mark">CX/);
+    assert.match(html, /class="account-row"/);
+    assert.match(html, /class="account-name">Test User/);
+    assert.match(html, /class="dash-head"/);
+    assert.match(html, /class="dash-head__top dash-head__top--actions-only"/);
+    assert.match(html, /class="dash-head__strip"/);
+    assert.match(html, /class="dash-head__platform"/);
+    assert.match(html, />Codex Token Bar</);
     assert.match(html, /总 5 · 主 2 · 子 3/);
     assert.match(html, /class="platform-badge">跨平台版/);
-    assert.match(html, /class="header-data-mode">本地统计/);
-    assert.match(html, /class="header-primary-actions" aria-label="常用操作"/);
-    assert.match(html, /class="header-action-group header-action-group--primary"/);
-    assert.match(html, /class="header-action-group header-action-group--maintenance"/);
-    assert.match(html, /class="header-action-group header-action-group--export"/);
+    assert.match(html, /class="dash-head__actions"/);
     assert.match(html, /立即刷新/);
-    assert.match(html, /检查更新/);
-    assert.match(html, /开机自启：关/);
-    assert.match(html, /更改目录/);
-    assert.match(html, />会话增强<\/button>/);
-    assert.match(html, />自动续跑<\/button>/);
     assert.match(html, />设置<\/button>/);
-    assert.match(html, /导出 CSV/);
-    assert.match(html, /导出 PNG/);
-    assert.doesNotMatch(html, /更多操作|启用侧栏删除|启用会话删除/);
+    assert.match(html, /aria-label="更多操作"/);
+    assert.doesNotMatch(html, /dash-head__mark|dash-head__identity|dash-head__name/);
+    assert.ok(html.indexOf('class="account-row"') < html.indexOf('class="dash-head"'));
+    assert.doesNotMatch(html, /role="menu"|启用侧栏删除|启用会话删除/);
   });
 });
 
-test("DashboardHeader exposes complete update states on the primary action", async () => {
+test("DashboardHeader marks update states on the More entry without expanding the menu in SSR", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
     const available = renderComponent(DashboardHeader, headerProps({
@@ -55,9 +44,10 @@ test("DashboardHeader exposes complete update states on the primary action", asy
       appUpdateState: { kind: "error", message: "暂时无法检查更新，请稍后重试" },
     }));
 
-    assert.match(available, /class="toolbar-button update-action update-action--available"[^>]*title="发现新版本 v0.7.4"[^>]*>安装更新<\/button>/);
-    assert.match(failed, /class="toolbar-button update-action update-action--error"[^>]*title="暂时无法检查更新，请稍后重试"[^>]*>重试更新检查<\/button>/);
-    assert.match(failed, /aria-live="polite"/);
+    assert.match(available, /aria-label="更新需要处理"/);
+    assert.match(failed, /aria-label="更新需要处理"/);
+    assert.doesNotMatch(available, /安装更新<\/button>/);
+    assert.doesNotMatch(failed, /重试更新检查<\/button>/);
   });
 });
 
@@ -85,15 +75,6 @@ test("DashboardHeader running thread states never turn loading into fake zero", 
     }), "上次 · 总 4 · 主 1 · 子 3");
   });
 });
-
-function findButton(html, text) {
-  const pattern = new RegExp(`<button(?<attrs>[^>]*)>${text}</button>`);
-  const match = html.match(pattern);
-  assert.ok(match, `Expected button "${text}" in ${html}`);
-  return {
-    attrs: match.groups.attrs,
-  };
-}
 
 function headerProps(overrides = {}) {
   return {
@@ -126,6 +107,7 @@ function headerProps(overrides = {}) {
     onExportCsv: () => {},
     onExportPng: () => {},
     onOpenProviderRepair: () => {},
+    onOpenSessionManagement: () => {},
     onOpenSettings: () => {},
     onRefresh: async () => {},
     onToggleAutostart: () => {},

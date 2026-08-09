@@ -20,13 +20,21 @@ import type {
 import {
   embedsRunningThreadsInMetricsRow,
   embedsUsageStatusInRateRow,
-  layoutFloatingContentGroups,
+  layoutFloatingContentRows,
+  type FloatingContentLayoutRow,
 } from "./floatingContent";
 import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./floatingPanelLabels";
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 import { floatingGradientBackground } from "./floatingSettings";
 import { crowdRadarModelLabel, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
+import type { OfficialAPIPriceModel } from "../settings/quotaPriceModel";
+import {
+  floatingModelUsageAccessibilityText,
+  floatingModelUsageValue,
+  floatingTodayModelUsageItems,
+  type FloatingModelUsagePage,
+} from "./floatingModelUsage";
 
 interface FloatingPanelSurfaceProps {
   settings: FloatingWindowSettings;
@@ -35,9 +43,13 @@ interface FloatingPanelSurfaceProps {
   crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
   runningThreads?: RunningThreadSummary;
   unreadEffect?: FloatingUnreadEffect;
+  priceModel?: OfficialAPIPriceModel;
   onClose?: () => void;
   onDragStart?: (event: MouseEvent<HTMLElement>) => void;
   onOpenDashboard?: () => void;
+  previewMode?: boolean;
+  selectedPreviewRowId?: string | null;
+  onPreviewRowSelect?: (rowId: string) => void;
 }
 
 const PENDING_FLOATING_RUNNING_THREADS: RunningThreadSummary = {
@@ -192,15 +204,19 @@ export function FloatingPanelSurface({
   crowdRadarSnapshot,
   runningThreads = PENDING_FLOATING_RUNNING_THREADS,
   unreadEffect = "ripple",
+  priceModel = "gpt56Sol",
   onClose,
   onDragStart,
   onOpenDashboard,
+  previewMode = false,
+  selectedPreviewRowId = null,
+  onPreviewRowSelect,
 }: FloatingPanelSurfaceProps) {
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
-  const groups = layoutFloatingContentGroups(settings.contentVisibility);
+  const rows = layoutFloatingContentRows(settings.contentVisibility);
   const attachedUsageStatus = embedsUsageStatusInRateRow(settings.contentVisibility);
   const attachedRunningThreads = embedsRunningThreadsInMetricsRow(settings.contentVisibility);
-  const rootPalette = floatingTextPaletteForGroup(settings, groups[0] ?? "rateAndBar", 0, Math.max(groups.length, 1));
+  const rootPalette = floatingTextPaletteForGroup(settings, rows[0]?.primaryGroup ?? "rateAndBar", 0, Math.max(rows.length, 1));
   const effectRgb = useMemo(
     () => effectRgbFromGradient(settings.gradientStart, settings.gradientEnd),
     [settings.gradientStart, settings.gradientEnd],
@@ -214,38 +230,44 @@ export function FloatingPanelSurface({
 
   return (
     <aside
-      className="floating-panel-surface"
+      className={`floating-panel-surface${previewMode ? " floating-panel-surface--preview" : ""}`}
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
-      onMouseDown={onDragStart}
-      onDoubleClick={onOpenDashboard}
+      onMouseDown={previewMode ? undefined : onDragStart}
+      onDoubleClick={previewMode ? undefined : onOpenDashboard}
       style={rootStyle}
       title={snapshot.unreadSummary.detail}
     >
       {shouldShowUnreadEffect ? <UnreadEffect effect={unreadEffect} effectRgb={effectRgb} /> : null}
-      <button
-        className="floating-close-button"
-        type="button"
-        aria-label="关闭悬浮窗"
-        onMouseDown={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => event.stopPropagation()}
-        onClick={onClose}
-      >
-        ×
-      </button>
+      {!previewMode ? (
+        <button
+          className="floating-close-button"
+          type="button"
+          aria-label="关闭悬浮窗"
+          onMouseDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onClick={onClose}
+        >
+          ×
+        </button>
+      ) : null}
       <div className="floating-content">
-        {groups.map((group, index) => (
-          <FloatingContentRow
+        {rows.map((row, index) => (
+          <FloatingPagedContentRow
             attachedRunningThreads={attachedRunningThreads}
             attachedUsageStatus={attachedUsageStatus}
-            group={group}
             index={index}
-            key={group}
+            key={row.id}
+            priceModel={priceModel}
             radarSnapshot={radarSnapshot}
+            row={row}
             crowdRadarSnapshot={crowdRadarSnapshot}
             runningThreads={runningThreads}
             settings={settings}
             snapshot={snapshot}
-            total={groups.length}
+            total={rows.length}
+            previewMode={previewMode}
+            selectedPreviewRowId={selectedPreviewRowId}
+            onPreviewRowSelect={onPreviewRowSelect}
           />
         ))}
       </div>
@@ -261,9 +283,66 @@ interface FloatingContentRowProps {
   radarSnapshot?: CodexRadarSnapshot | null;
   crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
   runningThreads: RunningThreadSummary;
+  priceModel: OfficialAPIPriceModel;
   settings: FloatingWindowSettings;
   snapshot: FloatingPanelSnapshot;
   total: number;
+}
+
+interface FloatingPagedContentRowProps extends Omit<FloatingContentRowProps, "group"> {
+  row: FloatingContentLayoutRow;
+  previewMode?: boolean;
+  selectedPreviewRowId?: string | null;
+  onPreviewRowSelect?: (rowId: string) => void;
+}
+
+function FloatingPagedContentRow({
+  row,
+  previewMode = false,
+  selectedPreviewRowId = null,
+  onPreviewRowSelect,
+  ...props
+}: FloatingPagedContentRowProps) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const safeIndex = selectedIndex % row.groups.length;
+  const group = row.groups[safeIndex];
+  const paged = row.groups.length > 1;
+  const cycle = (delta: -1 | 1) => setSelectedIndex((current) => (
+    current + delta + row.groups.length
+  ) % row.groups.length);
+  return (
+    <div
+      className={`floating-page-layout-row${paged ? " is-paged" : ""}${selectedPreviewRowId === row.id ? " is-preview-selected" : ""}`}
+      data-floating-group={row.primaryGroup}
+      data-floating-row-id={row.id}
+      onClick={previewMode ? (event) => {
+        event.stopPropagation();
+        onPreviewRowSelect?.(row.id);
+      } : undefined}
+    >
+      <FloatingContentRow {...props} group={group} />
+      {paged ? (
+        <>
+          <button
+            aria-label="显示上一项"
+            className="floating-page-switch floating-page-switch--previous"
+            onClick={() => cycle(-1)}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            type="button"
+          ><span aria-hidden="true">‹</span></button>
+          <button
+            aria-label="显示下一项"
+            className="floating-page-switch floating-page-switch--next"
+            onClick={() => cycle(1)}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            type="button"
+          ><span aria-hidden="true">›</span></button>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 function FloatingContentRow({
@@ -274,6 +353,7 @@ function FloatingContentRow({
   radarSnapshot,
   crowdRadarSnapshot,
   runningThreads,
+  priceModel,
   settings,
   snapshot,
   total,
@@ -351,6 +431,26 @@ function FloatingContentRow({
           ))}
         </div>
       );
+    case "todayModelShare":
+      return (
+        <FloatingTodayModelUsageRow
+          page="share"
+          priceModel={priceModel}
+          rows={snapshot.todayModelBreakdowns}
+          showPlaceholders={todayModelUsageReady(snapshot)}
+          style={style}
+        />
+      );
+    case "todayModelCost":
+      return (
+        <FloatingTodayModelUsageRow
+          page="cost"
+          priceModel={priceModel}
+          rows={snapshot.todayModelBreakdowns}
+          showPlaceholders={todayModelUsageReady(snapshot)}
+          style={style}
+        />
+      );
     case "radar":
       return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
     case "crowdRadar":
@@ -391,6 +491,51 @@ function FloatingContentRow({
       );
     }
   }
+}
+
+function FloatingTodayModelUsageRow({
+  page,
+  priceModel,
+  rows,
+  showPlaceholders,
+  style,
+}: {
+  page: FloatingModelUsagePage;
+  priceModel: OfficialAPIPriceModel;
+  rows: FloatingPanelSnapshot["todayModelBreakdowns"];
+  showPlaceholders: boolean;
+  style: CSSProperties;
+}) {
+  const items = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders });
+  return (
+    <div
+      aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
+      className="floating-row floating-model-usage"
+      style={style}
+    >
+      {items.length === 0 ? (
+        <span className="floating-model-usage-empty">今日模型待读取</span>
+      ) : (
+        <span className="floating-model-usage-items">
+          {items.slice(0, 4).map((item) => (
+            <span className="floating-model-usage-item" key={item.key}>
+              <i aria-hidden="true" style={{ background: item.color }} />
+              <em>{item.label}</em>
+              <strong>{floatingModelUsageValue(item, page)}</strong>
+            </span>
+          ))}
+          {items.length > 4 ? <small>+{items.length - 4}</small> : null}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// A numeric `今` label means a trusted summary exists (including a valid
+// zero-usage day); the pending label is the genuine cold-start state where an
+// empty row is allowed.
+function todayModelUsageReady(snapshot: FloatingPanelSnapshot): boolean {
+  return !snapshot.todayTokensLabel.includes("待读取");
 }
 
 export function floatingRunningThreadLabels(summary: RunningThreadSummary): string[] {

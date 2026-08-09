@@ -35,11 +35,19 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     func load() throws -> DashboardSnapshot {
+        try load(onNumericPhase: nil)
+    }
+
+    func load(
+        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)?
+    ) throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.load", metadata: [
             "source": dataSource.displayPath
         ])
         do {
-            let preciseSnapshot = try loadFromTokenCountJSONL()
+            let preciseSnapshot = try loadFromTokenCountJSONL(
+                onNumericPhase: onNumericPhase
+            )
             trace?.end("precise", metadata: [
                 "tokens": String(preciseSnapshot.stats.totalTokens),
                 "calls": String(preciseSnapshot.stats.totalCalls)
@@ -92,10 +100,25 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let totalTokens: Int
         let todayTokens: Int
         let todayCalls: Int
+        let todayModelBreakdowns: [ModelTokenBreakdown]
         let generatedAt: Date
+
+        init(
+            totalTokens: Int,
+            todayTokens: Int,
+            todayCalls: Int,
+            todayModelBreakdowns: [ModelTokenBreakdown] = [],
+            generatedAt: Date
+        ) {
+            self.totalTokens = totalTokens
+            self.todayTokens = todayTokens
+            self.todayCalls = todayCalls
+            self.todayModelBreakdowns = todayModelBreakdowns
+            self.generatedAt = generatedAt
+        }
     }
 
-    // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑三条 SUM SQL，
+    // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑轻量聚合 SQL，
     // 不重放历史事件、不构建时间序列/排行/摘录，也不写 snapshot 缓存。
     // 无 token JSONL 文件时返回 nil，调用方回退全量路径。
     func loadCompactSummary() throws -> CompactUsageSummary? {
@@ -128,6 +151,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     totalTokens: totals.totalTokens,
                     todayTokens: totals.todayTokens,
                     todayCalls: totals.todayCalls,
+                    todayModelBreakdowns: totals.todayModelBreakdowns,
                     generatedAt: Date()
                 )
             }
@@ -153,19 +177,35 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             attributionProvenanceEpoch: attributionState.provenanceEpoch,
             attributionGeneration: attributionState.generation
         )
-        return Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature)
+        if let inMemory = Self.sessionEventCache.snapshot(
+            for: dataSource.codexHome.path,
+            signature: signature
+        ) {
+            return inMemory
+        }
+        return Self.sessionEventCache.persistentExactSnapshot(
+            for: dataSource.codexHome.path,
+            signature: signature,
+            attributionState: attributionState
+        )
     }
 
-    private func loadFromTokenCountJSONL() throws -> DashboardSnapshot {
+    private func loadFromTokenCountJSONL(
+        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil
+    ) throws -> DashboardSnapshot {
         // Keep discovery, generation synchronization, event aggregation, excerpt lookup, and
         // snapshot publication in one per-index scope. Releasing between synchronize and the
         // reads would let another refresh delete or replace the generation being aggregated.
         try CodexUsageHistoryIndex.withExclusiveAccess(codexHome: dataSource.codexHome) {
-            try loadFromTokenCountJSONLExclusively()
+            try loadFromTokenCountJSONLExclusively(
+                onNumericPhase: onNumericPhase
+            )
         }
     }
 
-    private func loadFromTokenCountJSONLExclusively() throws -> DashboardSnapshot {
+    private func loadFromTokenCountJSONLExclusively(
+        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil
+    ) throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
@@ -330,27 +370,22 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let threadInfo = loadThreadInfo()
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
-        let cacheUsage = hydratingTurnExcerpts(
-            in: aggregation.cacheUsage(
-                recentBins: recentBins,
-                threadInfo: threadInfo,
-                attributionProvenanceEpoch: synchronization.provenanceEpoch,
-                attributionGeneration: synchronization.attributionGeneration,
-                attributionUnsafeSinceGeneration:
-                    synchronization.attributionUnsafeSinceGeneration,
-                attributionCurrentScanUnsafeCauseDetected:
-                    synchronization.rewrittenFiles > 0
-                        || synchronization.lineageAmbiguityDetected,
-                attributionSourceMutationDetected:
-                    synchronization.attributionSourceMutationDetected,
-                durableAttributionEvents: durableAttributionEvents
-            ),
-            from: historyIndex
+        let attributionCurrentScanUnsafeCauseDetected =
+            synchronization.rewrittenFiles > 0
+                || synchronization.lineageAmbiguityDetected
+        let aggregatedCacheUsage = aggregation.cacheUsage(
+            recentBins: recentBins,
+            threadInfo: threadInfo,
+            attributionProvenanceEpoch: synchronization.provenanceEpoch,
+            attributionGeneration: synchronization.attributionGeneration,
+            attributionUnsafeSinceGeneration:
+                synchronization.attributionUnsafeSinceGeneration,
+            attributionCurrentScanUnsafeCauseDetected:
+                attributionCurrentScanUnsafeCauseDetected,
+            attributionSourceMutationDetected:
+                synchronization.attributionSourceMutationDetected,
+            durableAttributionEvents: durableAttributionEvents
         )
-        trace?.mark("cacheUsage.end", metadata: [
-            "sessions": String(cacheUsage.sessions.count),
-            "turns": String(cacheUsage.turns.count)
-        ])
         let totalTokens = aggregation.totalTokens
         trace?.mark("stats.begin")
         let peakThreadTokens = aggregation.peakSessionTokens
@@ -369,14 +404,66 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
             totalSkillsUsed: metadata.plugins.count,
-            totalInputTokens: cacheUsage.total.inputTokens,
-            totalCachedInputTokens: cacheUsage.total.cachedInputTokens,
-            totalOutputTokens: cacheUsage.total.outputTokens,
+            totalInputTokens: aggregatedCacheUsage.total.inputTokens,
+            totalCachedInputTokens: aggregatedCacheUsage.total.cachedInputTokens,
+            totalOutputTokens: aggregatedCacheUsage.total.outputTokens,
             firstUsageAt: aggregation.firstEventAt
         )
         trace?.mark("stats.end", metadata: [
             "tokens": String(totalTokens),
             "peakThread": String(peakThreadTokens)
+        ])
+
+        // Publish only the numeric projection at this boundary. It is never
+        // sent to SessionEventCache, so a partial phase cannot become the
+        // complete in-memory or persistent snapshot.
+        let numericCacheUsage = TokenCacheUsage(
+            total: aggregatedCacheUsage.total,
+            modelBreakdowns: aggregatedCacheUsage.modelBreakdowns,
+            daily: aggregatedCacheUsage.daily,
+            hourly: aggregatedCacheUsage.hourly,
+            recentBins: aggregatedCacheUsage.recentBins,
+            sessions: [],
+            turns: [],
+            attributionEvents: [],
+            attributionEventsComplete: false,
+            attributionProvenanceEpoch:
+                aggregatedCacheUsage.attributionProvenanceEpoch,
+            attributionGeneration: aggregatedCacheUsage.attributionGeneration,
+            attributionUnsafeSinceGeneration:
+                aggregatedCacheUsage.attributionUnsafeSinceGeneration,
+            attributionCurrentScanUnsafeCauseDetected:
+                aggregatedCacheUsage.attributionCurrentScanUnsafeCauseDetected,
+            attributionSourceMutationDetected:
+                aggregatedCacheUsage.attributionSourceMutationDetected
+        )
+        let numericSnapshot = DashboardSnapshot(
+            stats: stats,
+            dailyUsage: daily,
+            recentBins: recentBins,
+            hourlyUsage: hourlyUsage,
+            pluginUsage: metadata.plugins,
+            cacheUsage: numericCacheUsage,
+            usagePrecision: .precise,
+            // A numeric phase is displayable but must not claim fresh
+            // attribution/time-series coverage until the final phase lands.
+            preciseTimeSeriesGeneratedAt: nil,
+            generatedAt: Date()
+        )
+        onNumericPhase?(numericSnapshot)
+        trace?.mark("numericPhase.published", metadata: [
+            "tokens": String(numericSnapshot.stats.totalTokens),
+            "calls": String(numericSnapshot.stats.totalCalls)
+        ])
+
+        trace?.mark("hydrateTurnExcerpts.begin")
+        let cacheUsage = hydratingTurnExcerpts(
+            in: aggregatedCacheUsage,
+            from: historyIndex
+        )
+        trace?.mark("hydrateTurnExcerpts.end", metadata: [
+            "sessions": String(cacheUsage.sessions.count),
+            "turns": String(cacheUsage.turns.count)
         ])
 
         let snapshot = DashboardSnapshot(

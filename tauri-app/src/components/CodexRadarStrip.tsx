@@ -11,6 +11,7 @@ import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadar
 import {
   bestCodexCrowdRadarModel,
   crowdRadarModelLabel,
+  nextCodexCrowdRadarRecoveryDelayMs,
   rankedCodexCrowdRadarModels,
   readCodexCrowdRadarSnapshot,
   type CodexCrowdRadarMode,
@@ -54,6 +55,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [crowdRadar, setCrowdRadar] = useState<CodexCrowdRadarSnapshot | null>(null);
   const [crowdRadarStatus, setCrowdRadarStatus] = useState("众测雷达待读取");
+  const [crowdRadarError, setCrowdRadarError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [detailSnapshot, setDetailSnapshot] = useState<CodexRadarSnapshot | null>(null);
   const [detailStatus, setDetailStatus] = useState("详细信息待读取");
@@ -61,6 +63,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const lastExternalRefreshGeneration = useRef(0);
   const refreshingRef = useRef(false);
   const crowdRefreshingRef = useRef(false);
+  const crowdRecoveryAttemptRef = useRef(0);
+  const crowdRecoveryTimerRef = useRef<number | null>(null);
   const detailRefreshingRef = useRef(false);
   const snapshotRef = useRef<CodexRadarSnapshot | null>(null);
   const crowdRadarRef = useRef<CodexCrowdRadarSnapshot | null>(null);
@@ -78,16 +82,40 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     try {
       const next = await readCodexCrowdRadarSnapshot();
       crowdRadarRef.current = next;
+      crowdRecoveryAttemptRef.current = 0;
+      setCrowdRadarError(null);
+      if (crowdRecoveryTimerRef.current !== null) {
+        window.clearTimeout(crowdRecoveryTimerRef.current);
+        crowdRecoveryTimerRef.current = null;
+      }
       startTransition(() => {
         setCrowdRadar(next);
-        setCrowdRadarStatus("众测数据已更新");
+        const serverStale = [next.provenance?.table, next.provenance?.leaderboard]
+          .some((source) => source?.stale === true);
+        setCrowdRadarStatus(serverStale
+          ? "众测数据已更新（服务端标记陈旧，详见诊断）"
+          : next.endpointErrors?.length
+            ? "众测数据已更新（部分来源失败，详见诊断）"
+            : "众测数据已更新");
       });
-    } catch {
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setCrowdRadarError(detail);
       startTransition(() => {
         setCrowdRadarStatus(crowdRadarRef.current
           ? "众测刷新失败，继续显示上次数据"
           : "众测雷达暂不可用");
       });
+      if (!crowdRadarRef.current && crowdRecoveryTimerRef.current === null) {
+        const delay = nextCodexCrowdRadarRecoveryDelayMs(crowdRecoveryAttemptRef.current);
+        if (delay !== null) {
+          crowdRecoveryAttemptRef.current += 1;
+          crowdRecoveryTimerRef.current = window.setTimeout(() => {
+            crowdRecoveryTimerRef.current = null;
+            void refreshCrowdRadar();
+          }, delay);
+        }
+      }
     } finally {
       crowdRefreshingRef.current = false;
     }
@@ -181,10 +209,17 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       });
     });
     void refresh(true);
-    const timer = window.setInterval(() => void refresh(true), RADAR_REFRESH_INTERVAL_MS);
+    const timer = window.setInterval(() => {
+      if (!crowdRadarRef.current) crowdRecoveryAttemptRef.current = 0;
+      void refresh(true);
+    }, RADAR_REFRESH_INTERVAL_MS);
     return () => {
       unsubscribe();
       window.clearInterval(timer);
+      if (crowdRecoveryTimerRef.current !== null) {
+        window.clearTimeout(crowdRecoveryTimerRef.current);
+        crowdRecoveryTimerRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -233,7 +268,11 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   );
   const crowdLeaders = useMemo(() => rankedCodexCrowdRadarModels(crowdRadar, 3), [crowdRadar]);
   const crowdBest = crowdLeaders[0] ?? null;
-  const crowdRadarStale = crowdRadar !== null && crowdRadarStatus.startsWith("众测刷新失败");
+  const crowdRadarStale = crowdRadar !== null && (
+    crowdRadarStatus.startsWith("众测刷新失败")
+    || [crowdRadar.provenance?.table, crowdRadar.provenance?.leaderboard]
+      .some((source) => source?.stale === true)
+  );
   const summaryQuotaRadar = snapshot?.modelIq.quotaRadar ?? null;
   const quotaRows = summaryQuotaRadar?.rows ?? [];
   const hasFiveHourQuota = summaryQuotaRadar
@@ -274,7 +313,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       <CodexRadarDiagnosticsNotice diagnostics={diagnostics} snapshot={snapshot} />
 
       <div className="codex-radar-grid">
-        <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速蹬窗口">
+        <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速登窗口">
           <strong>{snapshot ? (snapshot.window.message || "暂无窗口信息") : "等待 Codex 雷达"}</strong>
           <div className="radar-mini-row">
             <RadarMini accentColor={radarActionAccent(snapshot?.recommendedAction)} label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
@@ -346,6 +385,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         <CodexRadarDetailOverlay
           allModels={allModels}
           crowdRadar={crowdRadar}
+          crowdRadarError={crowdRadarError}
           crowdRadarStatus={crowdRadarStatus}
           diagnostics={diagnostics}
           detailSnapshot={detailSnapshot}
@@ -371,6 +411,7 @@ export const CodexRadarStrip = memo(CodexRadarStripView);
 export function CodexRadarDetailOverlay({
   allModels,
   crowdRadar = null,
+  crowdRadarError = null,
   crowdRadarStatus = "众测雷达待读取",
   diagnostics,
   detailSnapshot,
@@ -388,6 +429,7 @@ export function CodexRadarDetailOverlay({
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
   crowdRadar?: CodexCrowdRadarSnapshot | null;
+  crowdRadarError?: string | null;
   crowdRadarStatus?: string;
   diagnostics: CodexRadarDiagnostic[];
   detailSnapshot: CodexRadarSnapshot | null;
@@ -451,6 +493,7 @@ export function CodexRadarDetailOverlay({
               quotaRows={displayQuotaRows}
               snapshot={displaySnapshot}
               crowdRadar={crowdRadar}
+              crowdRadarError={crowdRadarError}
               crowdRadarStatus={crowdRadarStatus}
             />
           ) : (
@@ -505,6 +548,7 @@ function writeLastDetailAttemptedSlotAt(value: string): void {
 const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   allModels,
   crowdRadar,
+  crowdRadarError,
   crowdRadarStatus,
   primary,
   probability24h,
@@ -514,6 +558,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
 }: {
   allModels: CodexRadarModelIQComparisonRow[];
   crowdRadar: CodexCrowdRadarSnapshot | null;
+  crowdRadarError: string | null;
   crowdRadarStatus: string;
   primary: CodexRadarModelIQComparisonRow | null;
   probability24h: number | undefined;
@@ -542,19 +587,22 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   return (
     <div className="codex-radar-detail-stack">
       <CodexRadarDiagnosticsNotice snapshot={snapshot} />
-      <CrowdRadarDetail snapshot={crowdRadar} status={crowdRadarStatus} />
-      <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
+      <CrowdRadarDetail error={crowdRadarError} snapshot={crowdRadar} status={crowdRadarStatus} />
+      <RadarDetailSection icon="bolt.badge.clock" title="速登窗口与预测">
         <RadarDetailSubsection title="窗口摘要">
-          <RadarKeyValueGrid rows={[
-            ["窗口状态", snapshot.window.message || "--"],
-            ["建议动作", radarActionDisplayText(snapshot.recommendedAction)],
-            ["24h 概率", percentText(probability24h)],
-            ["48h 概率", percentText(probability48h)],
-            ["预计窗口", snapshot.prediction.expectedWindow || "--"],
-            ["范围", snapshot.window.scope || "--"],
-            ["上次关闭", snapshot.window.closedAt || "--"],
-            ["来源", snapshot.window.sourceUrl || "--"],
-          ]} />
+          <RadarKeyValueGrid
+            rows={[
+              ["窗口状态", snapshot.window.message || "--"],
+              ["建议动作", radarActionDisplayText(snapshot.recommendedAction)],
+              ["24h 概率", percentText(probability24h)],
+              ["48h 概率", percentText(probability48h)],
+              ["预计窗口", snapshot.prediction.expectedWindow || "--"],
+              ["范围", snapshot.window.scope || "--"],
+              ["上次关闭", snapshot.window.closedAt || "--"],
+              ["来源", snapshot.window.sourceUrl || "--"],
+            ]}
+            valueColors={{ "建议动作": radarActionAccent(snapshot.recommendedAction) }}
+          />
         </RadarDetailSubsection>
         <RadarDetailSubsection title="预测说明">
           <p className="codex-radar-paragraph">{snapshot.prediction.summary || "--"}</p>
@@ -741,20 +789,40 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
   );
 });
 
-function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnapshot | null; status: string }) {
+function CrowdRadarDetail({
+  error,
+  snapshot,
+  status,
+}: {
+  error?: string | null;
+  snapshot: CodexCrowdRadarSnapshot | null;
+  status: string;
+}) {
   const [mode, setMode] = useState<CodexCrowdRadarMode>("realtime");
   const rows = rankedCodexCrowdRadarModels(snapshot, 8, mode);
   const best = bestCodexCrowdRadarModel(snapshot, mode);
-  const staleDataDisplayed = snapshot !== null && status.startsWith("众测刷新失败");
+  const staleDataDisplayed = snapshot !== null && (
+    status.startsWith("众测刷新失败")
+    || [snapshot.provenance?.table, snapshot.provenance?.leaderboard]
+      .some((source) => source?.stale === true)
+  );
   const modeTitle = mode === "realtime" ? "实时监控" : "近期表现";
   const modeExplanation = mode === "realtime"
     ? "每格取最新 1 次有效结果"
     : "每格汇总最近 3 次有效结果";
   return (
     <RadarDetailSection icon="antenna.radiowaves.left.and.right" title="众测雷达">
+      {error ? (
+        <p className="codex-radar-fallback-note" role="status">众测来源诊断：{error}</p>
+      ) : null}
       {snapshot ? (
         <>
           {staleDataDisplayed ? <p className="codex-radar-stale-note" role="status">{status}</p> : null}
+          {snapshot.endpointErrors?.length ? (
+            <p className="codex-radar-fallback-note" role="status">
+              众测来源诊断：{snapshot.endpointErrors.join("；")}
+            </p>
+          ) : null}
           <div className="codex-crowd-radar-mode-row">
             <div aria-label="众测雷达统计口径" className="segmented codex-crowd-radar-mode" role="group">
               {(["realtime", "recent"] as const).map((option) => (
@@ -773,7 +841,7 @@ function CrowdRadarDetail({ snapshot, status }: { snapshot: CodexCrowdRadarSnaps
           </div>
           {mode === "realtime" && !snapshot.realtimeAvailable ? (
             <p className="codex-radar-fallback-note" role="status">
-              实时表格暂不可用，当前以近期结果安全兜底
+              实时表格暂不可用，实时排名暂不显示；可切换“近期表现”查看已发布结果
             </p>
           ) : null}
           <RadarDetailSubsection title="众测覆盖">
@@ -850,11 +918,11 @@ function RadarMini({ accentColor, label, value }: { accentColor?: string; label:
   );
 }
 
-function RadarDetailItem({ label, value }: { label: string; value: string }) {
+function RadarDetailItem({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <span>
       <em>{label}</em>
-      <b>{value}</b>
+      <b style={valueColor ? { "--radar-kv-value-color": valueColor } as CSSProperties : undefined}>{value}</b>
     </span>
   );
 }
@@ -880,10 +948,10 @@ function RadarDetailSubsection({ children, title }: { children: ReactNode; title
   );
 }
 
-function RadarKeyValueGrid({ rows }: { rows: Array<[string, string]> }) {
+function RadarKeyValueGrid({ rows, valueColors = {} }: { rows: Array<[string, string]>; valueColors?: Record<string, string> }) {
   return (
     <div className="codex-radar-kv-grid">
-      {rows.map(([label, value]) => <RadarDetailItem key={label} label={label} value={value} />)}
+      {rows.map(([label, value]) => <RadarDetailItem key={label} label={label} value={value} valueColor={valueColors[label]} />)}
     </div>
   );
 }

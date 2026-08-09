@@ -17,23 +17,29 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   quotaConsumptionSelection,
+  quotaComparisonScopeText,
   quotaSelectionAttribution,
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
   recentChartScrollLayout,
+  recentChartScrollPresentation,
+  recentChartScrollTarget,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
   smoothPath,
+  shouldReopenPreviewOnHoverMove,
   tokenAreaPath,
   type OfficialAPIPriceModel,
   type QuotaConsumptionEstimate,
   type QuotaConsumptionSelection,
   type QuotaSelectionAttributionResult,
   type QuotaSelectionState,
+  type RecentChartScrollDirection,
   type RecentChartRange,
   type SeriesVisibility,
 } from "./recentUsageChart/model";
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
+import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 interface RecentUsageChartProps {
   recentUsage24h: RecentUsagePoint[];
@@ -62,6 +68,7 @@ export function RecentUsageChart({
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
   const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -72,8 +79,9 @@ export function RecentUsageChart({
     () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
     [range, recentUsage24h, recentUsage7d, recentUsage30d],
   );
-  const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, CHART_WIDTH);
+  const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth);
   const chartWidth = scrollLayout.contentWidth;
+  const scrollPresentation = recentChartScrollPresentation(scrollLayout, chartScrollLeft);
   const scrollContentStyle = {
     "--recent-chart-content-width": `${chartWidth}px`,
     "--recent-chart-aspect-ratio": `${chartWidth} / ${CHART_HEIGHT}`,
@@ -94,8 +102,7 @@ export function RecentUsageChart({
   const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
     ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
     : null;
-  const selectionAttribution = range === "24h"
-    && fixedSelectionEndIndex !== null
+  const selectionAttribution = fixedSelectionEndIndex !== null
     && consumptionSelection !== null
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
     : null;
@@ -124,6 +131,7 @@ export function RecentUsageChart({
   function updateRange(next: RecentChartRange) {
     setRange(next);
     setHoveredIndex(null);
+    setPreviewDismissed(false);
     setQuotaSelectionState({ startIndex: null, fixedEndIndex: null });
     window.localStorage.setItem(RANGE_STORAGE_KEY, next);
   }
@@ -147,7 +155,11 @@ export function RecentUsageChart({
       setHoveredIndex(null);
       return;
     }
-    setHoveredIndex(hoverIndexForX(x, chartWidth, data.points.length));
+    const nextIndex = hoverIndexForX(x, chartWidth, data.points.length);
+    if (shouldReopenPreviewOnHoverMove(fixedSelectionEndIndex, hoveredIndex, nextIndex)) {
+      setPreviewDismissed(false);
+    }
+    setHoveredIndex(nextIndex);
   }
 
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
@@ -164,8 +176,21 @@ export function RecentUsageChart({
     if (clickedIndex === null) {
       return;
     }
+    setPreviewDismissed(false);
     setHoveredIndex(clickedIndex);
     setQuotaSelectionState((current) => clickQuotaSelection(current, clickedIndex, data.points.length));
+  }
+
+  function scrollChart(direction: RecentChartScrollDirection) {
+    const scrollElement = scrollRef.current;
+    if (!scrollElement || !scrollLayout.isHorizontal) {
+      return;
+    }
+    const target = recentChartScrollTarget(scrollLayout, scrollElement.scrollLeft, direction);
+    if (Math.abs(target - scrollElement.scrollLeft) < 0.5) {
+      return;
+    }
+    scrollElement.scrollTo({ left: target, behavior: "smooth" });
   }
 
   return (
@@ -216,7 +241,7 @@ export function RecentUsageChart({
         <div
           className={scrollLayout.className}
           ref={scrollRef}
-          aria-label={scrollLayout.isHorizontal ? "最近 24 小时图表可左右滚动" : undefined}
+          aria-label={scrollLayout.isHorizontal ? `${data.title}图表可左右滚动` : undefined}
           onScroll={(event) => {
             setChartScrollLeft(event.currentTarget.scrollLeft);
             setChartViewportWidth(event.currentTarget.clientWidth || CHART_WIDTH);
@@ -286,22 +311,46 @@ export function RecentUsageChart({
           {visibleWindowLabel ? (
             <div className="recent-chart-visible-window">当前窗口：{visibleWindowLabel}</div>
           ) : null}
-          {fixedSelectionEndIndex !== null && consumptionSelection ? (
+          {!previewDismissed && fixedSelectionEndIndex !== null && consumptionSelection ? (
             <SelectionSummaryBubble
+              onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
               viewportWidth={chartViewportWidth}
               x={(plotData.tokenPoints[fixedSelectionEndIndex]?.x ?? 0) - chartScrollLeft}
             />
-          ) : activePoint && activeTokenPoint ? (
+          ) : !previewDismissed && activePoint && activeTokenPoint ? (
             <HoverBubble
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
               fiveHourRemaining={fiveHourQuotaPresent ? activePoint.fiveHourRemainingPercent : null}
+              onClose={() => setPreviewDismissed(true)}
               point={activePoint}
               sevenDayRemaining={sevenDayQuotaPresent ? activePoint.sevenDayRemainingPercent : null}
               viewportWidth={chartViewportWidth}
               x={activeTokenPoint.x - chartScrollLeft}
             />
+          ) : null}
+          {scrollLayout.isHorizontal ? (
+            <div className="recent-chart-page-controls" aria-label="曲线分页">
+              <button
+                aria-label="向前翻页"
+                className="recent-chart-page-button recent-chart-page-button--backward"
+                disabled={scrollPresentation.isAtOldest}
+                onClick={() => scrollChart("backward")}
+                type="button"
+              >
+                ‹
+              </button>
+              <button
+                aria-label="向后翻页"
+                className="recent-chart-page-button recent-chart-page-button--forward"
+                disabled={scrollPresentation.isAtLatest}
+                onClick={() => scrollChart("forward")}
+                type="button"
+              >
+                ›
+              </button>
+            </div>
           ) : null}
         </div>
       </div>
@@ -380,6 +429,7 @@ function HoverBubble({
   bucketSeconds,
   cacheVisible,
   fiveHourRemaining,
+  onClose,
   point,
   sevenDayRemaining,
   viewportWidth,
@@ -388,12 +438,13 @@ function HoverBubble({
   bucketSeconds: number;
   cacheVisible: boolean;
   fiveHourRemaining: number | null;
+  onClose: () => void;
   point: RecentUsagePoint;
   sevenDayRemaining: number | null;
   viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 92), Math.max(92, viewportWidth - 92));
+  const left = Math.min(Math.max(x, 150), Math.max(150, viewportWidth - 150));
   const average = point.calls > 0 ? Math.round(point.tokens / point.calls) : 0;
   const quotaParts = [
     fiveHourRemaining !== null ? `5h ${percentText(fiveHourRemaining)}` : null,
@@ -402,42 +453,90 @@ function HoverBubble({
 
   return (
     <div className="chart-hover-bubble" style={{ left: `${left}px` }}>
-      <div>
+      <div className="chart-hover-heading">
         <strong>当前点</strong>
         <span>{timeRange(point.startUnix, bucketSeconds)}</span>
+        <PreviewCloseButton ariaLabel="关闭当前点预览" onClose={onClose} />
       </div>
       <b>{formatTokens(point.tokens)}</b>
-      <span>请求 {point.calls} 次 · avg {formatTokens(average)}</span>
+      <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
-        <em>缓存命中 {percentText(point.cacheHitRate)}</em>
+        <em className="chart-hover-row chart-hover-row--cache">
+          缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
+        </em>
       ) : null}
-      {quotaParts.length > 0 ? <span>额度 {quotaParts.join(" · ")}</span> : null}
-      <em>点击起点/终点可估算额度</em>
+      <ModelUsageInline rows={point.modelBreakdowns} />
+      {quotaParts.length > 0 ? <span className="chart-hover-row">额度 {quotaParts.join(" · ")}</span> : null}
+      <em className="chart-hover-row chart-hover-row--action">点击起点/终点可估算额度</em>
     </div>
   );
 }
 
 function SelectionSummaryBubble({
+  onClose,
   selection,
   viewportWidth,
   x,
 }: {
+  onClose: () => void;
   selection: QuotaConsumptionSelection;
   viewportWidth: number;
   x: number;
 }) {
-  const left = Math.min(Math.max(x, 112), Math.max(112, viewportWidth - 112));
+  const left = Math.min(Math.max(x, 150), Math.max(150, viewportWidth - 150));
   const average = selection.calls > 0 ? Math.round(selection.totalTokens / selection.calls) : 0;
   return (
     <div className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
-      <div>
+      <div className="chart-hover-heading">
         <strong>选中区间</strong>
         <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>
+        <PreviewCloseButton ariaLabel="关闭选中区间预览" onClose={onClose} />
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
-      <span>请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      {selection.calls > 0 ? <em>缓存命中 {percentText(selection.cacheHitRate)}</em> : null}
-      <span>{quotaSelectionDurationText(selection)}</span>
+      <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
+      {selection.calls > 0 ? (
+        <em className="chart-hover-row chart-hover-row--cache">
+          缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}
+        </em>
+      ) : null}
+      <ModelUsageInline rows={selection.modelBreakdowns} />
+      <span className="chart-hover-row">{quotaSelectionDurationText(selection)}</span>
+    </div>
+  );
+}
+
+function PreviewCloseButton({ ariaLabel, onClose }: { ariaLabel: string; onClose: () => void }) {
+  return (
+    <button
+      aria-label={ariaLabel}
+      className="chart-preview-close"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClose();
+      }}
+      type="button"
+    >
+      ×
+    </button>
+  );
+}
+
+function ModelUsageInline({
+  rows,
+}: {
+  rows: RecentUsagePoint["modelBreakdowns"] | QuotaConsumptionSelection["modelBreakdowns"];
+}) {
+  const slices = modelUsageSlices(rows);
+  if (slices.length === 0) return null;
+  return (
+    <div className="model-usage-inline chart-hover-row" aria-label={`模型占比 ${slices.map((slice) => `${slice.label} ${Math.round(slice.share * 100)}%`).join("，")}`}>
+      {slices.slice(0, 3).map((slice) => (
+        <span key={slice.key}>
+          <i style={{ backgroundColor: slice.color }} />
+          {slice.label} {Math.round(slice.share * 100)}%
+        </span>
+      ))}
+      {slices.length > 3 ? <span>+{slices.length - 3}</span> : null}
     </div>
   );
 }
@@ -463,6 +562,10 @@ function RecentChartQuotaEstimateOverlay({
     && showsSevenDayQuota
     && currentFiveHourQuotaPresent
     && currentSevenDayQuotaPresent;
+  const comparisonScopeText = quotaComparisonScopeText(selection, {
+    fiveHour: showsFiveHourQuota,
+    sevenDay: showsSevenDayQuota,
+  });
 
   return (
     <div className="chart-quota-estimate-card" role="dialog" aria-label="额度估算">
@@ -474,6 +577,12 @@ function RecentChartQuotaEstimateOverlay({
           <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
           <b>命中 {percentText(selection.cacheHitRate)}</b>
         </div>
+        {selection.excludedModels.length > 0 ? (
+          <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+            <span>{selection.excludedModels.join("、")} {selection.excludedCalls} 次调用</span>
+            <em>独立额度，不参与 API 等值</em>
+          </div>
+        ) : null}
         <div className="quota-estimate-row">
           <span>反推总额度</span>
           {showsFiveHourQuota ? (
@@ -492,6 +601,7 @@ function RecentChartQuotaEstimateOverlay({
               title="7d"
             />
           ) : null}
+          {comparisonScopeText ? <em>{comparisonScopeText}</em> : null}
         </div>
         {showsBudgetRatio ? (
           <div className="quota-estimate-row">
@@ -511,6 +621,7 @@ function RecentChartQuotaEstimateOverlay({
 }
 
 function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelectionAttributionResult }) {
+  const accountTitle = attribution.accountDropPercent === null ? "账号下降" : "账号实降";
   const differenceTitle = attribution.state === "suspectedNonLocalUsage"
     ? "疑似他人"
     : attribution.state === "localEstimateExceedsAccountDrop"
@@ -518,18 +629,30 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
       : attribution.allowsAttributionConclusion ? "差额" : "暂算差额";
   const difference = attribution.nonLocalDifferencePercent;
   return (
-    <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
-      <span>账号实降</span>
-      <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
-      <i aria-hidden="true">｜</i>
-      <span>本机折算</span>
-      <strong>≈{oneDecimalPercent(attribution.localSharePercent)}</strong>
-      <i aria-hidden="true">｜</i>
-      <span>{differenceTitle}</span>
-      <strong>{attribution.allowsAttributionConclusion
-        ? `≈${signedOneDecimalPercent(difference)}`
-        : signedOneDecimalPercent(difference)}</strong>
-    </div>
+    <>
+      <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
+        <span>{accountTitle}</span>
+        <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
+        <i aria-hidden="true">｜</i>
+        <span>本机折算</span>
+        <strong>{attribution.localSharePercent === null ? "--" : `≈${oneDecimalPercent(attribution.localSharePercent)}`}</strong>
+        <i aria-hidden="true">｜</i>
+        <span>{differenceTitle}</span>
+        <strong>{attribution.allowsAttributionConclusion && difference !== null
+          ? `≈${signedOneDecimalPercent(difference)}`
+          : signedOneDecimalPercent(difference)}</strong>
+      </div>
+      <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="选区本机 API 等价金额">
+        <span>本机同基准 {moneyText(attribution.localComparableCostUSD)}</span>
+        <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
+      </div>
+      {attribution.excludedModels.length > 0 ? (
+        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+          <span>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用</span>
+          <em>独立额度，不参与 API 等值</em>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -669,13 +792,14 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     return `无 ${title} 额度`;
   }
 
+  const excludedNote = estimate.excludedModels.length > 0 ? " · 独立额度不计入" : "";
   switch (estimate.confidence) {
     case "measured":
-      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}`;
+      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${excludedNote}`;
     case "insufficientQuotaMovement":
-      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推`;
+      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${excludedNote}`;
     case "noTokenUsage":
-      return "无 token";
+      return `无 token${excludedNote}`;
   }
 }
 
@@ -692,11 +816,13 @@ function moneyText(value: number | null): string {
   return `$${value.toFixed(2)}`;
 }
 
-function oneDecimalPercent(value: number): string {
+function oneDecimalPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "--";
   return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
-function signedOneDecimalPercent(value: number): string {
+function signedOneDecimalPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "--";
   const sign = value >= 0 ? "+" : "";
   return `${sign}${oneDecimalPercent(value)}`;
 }

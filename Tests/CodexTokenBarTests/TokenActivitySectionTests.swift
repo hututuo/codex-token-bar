@@ -9,20 +9,21 @@ final class TokenActivitySectionTests: XCTestCase {
             ActivityModeOptionPresentation(mode: mode, isSelected: mode == .weekly)
         }
 
-        XCTAssertEqual(presentations.map(\.visibleTitle), ["每日", "每周", "累计", "命中率", "额度"])
+        XCTAssertEqual(presentations.map(\.visibleTitle), ["每日", "每周", "累计", "模型", "命中率", "额度"])
         XCTAssertEqual(
             presentations.map(\.accessibilityLabel),
             [
                 "Token 活动模式 每日",
                 "Token 活动模式 每周",
                 "Token 活动模式 累计",
+                "Token 活动模式 模型",
                 "Token 活动模式 命中率",
                 "Token 活动模式 额度",
             ]
         )
         XCTAssertEqual(
             presentations.map(\.accessibilityValue),
-            ["未选择", "已选择", "未选择", "未选择", "未选择"]
+            ["未选择", "已选择", "未选择", "未选择", "未选择", "未选择"]
         )
         XCTAssertEqual(Set(presentations.map(\.accessibilityLabel)).count, ActivityMode.allCases.count)
     }
@@ -49,7 +50,7 @@ final class TokenActivitySectionTests: XCTestCase {
     }
 
     @MainActor
-    func testHostedModeSelectorExposesFiveActionableAccessibilityButtons() throws {
+    func testHostedModeSelectorExposesSixActionableAccessibilityButtons() throws {
         var selectedMode = ActivityMode.weekly
         let hostingView = NSHostingView(
             rootView: HostedActivityModeSelectorHarness(
@@ -75,7 +76,7 @@ final class TokenActivitySectionTests: XCTestCase {
         XCTAssertEqual(buttons.count, ActivityMode.allCases.count)
         XCTAssertEqual(buttons.compactMap { $0.accessibilityLabel() }.sorted(), expectedLabels.sorted())
         XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "已选择" }.count, 1)
-        XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "未选择" }.count, 4)
+        XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "未选择" }.count, 5)
         XCTAssertTrue(buttons.allSatisfy { $0.accessibilityRole() == .button })
 
         let dailyButton = try XCTUnwrap(
@@ -94,6 +95,37 @@ final class TokenActivitySectionTests: XCTestCase {
             buttons.first { $0.accessibilityLabel() == "Token 活动模式 每周" }?.accessibilityValue() as? String,
             "未选择"
         )
+    }
+
+    @MainActor
+    func testModelHeatmapModeGroupsExactEventsByDay() throws {
+        let day = Date(timeIntervalSince1970: 1_786_051_200)
+        let event = TokenCacheAttributionEvent(
+            id: "sol-day",
+            start: day.addingTimeInterval(3600),
+            model: "gpt-5.6-sol",
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 700,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                totalTokens: 700,
+                calls: 2
+            )
+        )
+
+        let prepared = TokenHeatmap.prepare(
+            dailyUsage: [DayUsage(date: day, tokens: 700, calls: 2)],
+            cacheDaily: [],
+            attributionEvents: [event],
+            quotaDaily: [],
+            mode: .modelShare
+        )
+
+        let summary = try XCTUnwrap(prepared.summaries.first)
+        XCTAssertTrue(summary.isModelShare)
+        XCTAssertEqual(summary.modelBreakdowns.first?.model, "gpt-5.6-sol")
+        XCTAssertEqual(ModelUsagePresentation.compactText(from: summary.modelBreakdowns), "Sol 100%")
     }
 }
 

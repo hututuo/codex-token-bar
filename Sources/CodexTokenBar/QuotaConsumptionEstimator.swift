@@ -34,6 +34,23 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     let costUSD: Double
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackCalls: Int
+    /// Models on an independent quota; retained in token/model stats but never priced.
+    let excludedModels: [String]
+    let excludedCalls: Int
+
+    init(
+        costUSD: Double,
+        detectedModels: [OfficialAPIPriceModel],
+        fallbackCalls: Int,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0
+    ) {
+        self.costUSD = costUSD
+        self.detectedModels = detectedModels
+        self.fallbackCalls = fallbackCalls
+        self.excludedModels = excludedModels
+        self.excludedCalls = excludedCalls
+    }
 }
 
 enum ModelAwareAPIPriceEstimator {
@@ -73,21 +90,39 @@ enum ModelAwareAPIPriceEstimator {
                 rates: rates
             )
         }
+        let independentRows = modelBreakdowns.compactMap { row -> (String, TokenCacheBreakdown)? in
+            guard let name = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) else {
+                return nil
+            }
+            return (name, row.breakdown)
+        }
+        let excludedBreakdown = independentRows.map(\.1).combined
+        let excludedModels = independentRows.reduce(into: [String]()) { names, row in
+            if !names.contains(row.0) { names.append(row.0) }
+        }
+        let excludedCalls = independentRows.reduce(0) { total, row in
+            total + max(row.1.calls, 0)
+        }
         let coveredBreakdown = modelBreakdowns.map(\.breakdown).combined
         guard coveredBreakdown.inputTokens == fallbackBreakdown.inputTokens,
               coveredBreakdown.cachedInputTokens == fallbackBreakdown.cachedInputTokens,
               coveredBreakdown.outputTokens == fallbackBreakdown.outputTokens,
               coveredBreakdown.calls == fallbackBreakdown.calls else {
             return fallback(
-                breakdown: fallbackBreakdown,
+                breakdown: fallbackBreakdown.subtracting(excludedBreakdown),
                 model: fallbackModel,
-                rates: rates
+                rates: rates,
+                excludedModels: excludedModels,
+                excludedCalls: excludedCalls
             )
         }
         var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
         var fallbackBreakdowns: [TokenCacheBreakdown] = []
         for row in modelBreakdowns {
-            if let detected = OfficialAPIPriceModel.detected(from: row.model) {
+            if OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil {
+                // Collected above so incomplete model rows can also fail closed
+                // without charging this independent quota to the fallback.
+            } else if let detected = OfficialAPIPriceModel.detected(from: row.model) {
                 grouped[detected, default: []].append(row.breakdown)
             } else {
                 fallbackBreakdowns.append(row.breakdown)
@@ -100,19 +135,38 @@ enum ModelAwareAPIPriceEstimator {
         return ModelAwareAPIPriceEstimate(
             costUSD: knownCost + rates(fallbackModel).costUSD(for: unknownBreakdown),
             detectedModels: OfficialAPIPriceModel.allCases.filter { grouped[$0] != nil },
-            fallbackCalls: unknownBreakdown.calls
+            fallbackCalls: unknownBreakdown.calls,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
         )
     }
 
     private static func fallback(
         breakdown: TokenCacheBreakdown,
         model: OfficialAPIPriceModel,
-        rates: (OfficialAPIPriceModel) -> APIPriceRates
+        rates: (OfficialAPIPriceModel) -> APIPriceRates,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0
     ) -> ModelAwareAPIPriceEstimate {
         ModelAwareAPIPriceEstimate(
             costUSD: rates(model).costUSD(for: breakdown),
             detectedModels: [],
-            fallbackCalls: breakdown.calls
+            fallbackCalls: breakdown.calls,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
+        )
+    }
+}
+
+private extension TokenCacheBreakdown {
+    func subtracting(_ excluded: TokenCacheBreakdown) -> TokenCacheBreakdown {
+        TokenCacheBreakdown(
+            inputTokens: max(inputTokens - max(excluded.inputTokens, 0), 0),
+            cachedInputTokens: max(cachedInputTokens - max(excluded.cachedInputTokens, 0), 0),
+            outputTokens: max(outputTokens - max(excluded.outputTokens, 0), 0),
+            reasoningOutputTokens: max(reasoningOutputTokens - max(excluded.reasoningOutputTokens, 0), 0),
+            totalTokens: max(totalTokens - max(excluded.totalTokens, 0), 0),
+            calls: max(calls - max(excluded.calls, 0), 0)
         )
     }
 }
@@ -121,6 +175,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     case gpt56Sol
     case gpt56Terra
     case gpt56Luna
+    case gpt53Codex
+    case gpt52Codex
     case gpt54Legacy
     case gpt54MiniLegacy
 
@@ -137,12 +193,17 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt56Sol: "GPT-5.6 Sol"
         case .gpt56Terra: "GPT-5.6 Terra"
         case .gpt56Luna: "GPT-5.6 Luna"
+        case .gpt53Codex: "GPT-5.3 Codex"
+        case .gpt52Codex: "GPT-5.2 Codex"
         case .gpt54Legacy: "GPT-5.4"
         case .gpt54MiniLegacy: "GPT-5.4 Mini"
         }
     }
 
     var currentPriceRates: APIPriceRates {
+        // Standard short-context prices published by OpenAI. Long-context,
+        // cache-write, priority/service-tier and regional multipliers remain
+        // outside this estimate.
         switch self {
         case .gpt56Sol:
             APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
@@ -150,6 +211,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
         case .gpt56Luna:
             APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
+        case .gpt53Codex, .gpt52Codex:
+            APIPriceRates(inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14.00)
         case .gpt54Legacy:
             APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
         case .gpt54MiniLegacy:
@@ -201,6 +264,12 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             return .gpt56Terra
         case "gpt-5.6-luna", "gpt5.6-luna", "gpt56-luna", "gpt56luna":
             return .gpt56Luna
+        case "gpt-5.3-codex", "gpt5.3-codex", "gpt53-codex", "gpt53codex":
+            return .gpt53Codex
+        case "codex-auto-review", "codexautoreview":
+            return .gpt53Codex
+        case "gpt-5.2-codex", "gpt5.2-codex", "gpt52-codex", "gpt52codex":
+            return .gpt52Codex
         case "gpt-5.4", "gpt54":
             return .gpt54Legacy
         case "gpt-5.4-mini", "gpt54mini":
@@ -208,6 +277,19 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         default:
             return nil
         }
+    }
+
+    /// Returns the canonical model name when the usage belongs to the
+    /// independent GPT-5.3 Codex Spark quota. Spark remains in token/model
+    /// analytics but is intentionally excluded from every API-dollar estimate.
+    static func independentQuotaModelName(from rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let key = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .filter { $0.isLetter || $0.isNumber }
+        return key == "gpt53codexspark" ? "gpt-5.3-codex-spark" : nil
     }
 
     // Source-compatible aliases for tests and integrations compiled against
@@ -249,6 +331,8 @@ struct QuotaConsumptionEstimate: Equatable {
     let calls: Int
     let cacheHitRate: Double
     let confidence: QuotaConsumptionConfidence
+    let excludedModels: [String]
+    let excludedCalls: Int
 
     var quotaDropObserved: Bool { quotaDropBasis == .observed }
     var quotaDropEstimated: Bool { quotaDropBasis == .estimated }
@@ -268,7 +352,9 @@ struct QuotaConsumptionEstimate: Equatable {
         outputTokens: Int,
         calls: Int,
         cacheHitRate: Double,
-        confidence: QuotaConsumptionConfidence
+        confidence: QuotaConsumptionConfidence,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0
     ) {
         self.selectedCostUSD = selectedCostUSD
         self.impliedWindowBudgetUSD = impliedWindowBudgetUSD
@@ -292,6 +378,8 @@ struct QuotaConsumptionEstimate: Equatable {
         self.calls = calls
         self.cacheHitRate = cacheHitRate
         self.confidence = confidence
+        self.excludedModels = excludedModels
+        self.excludedCalls = excludedCalls
     }
 }
 
@@ -322,6 +410,8 @@ enum QuotaConsumptionEstimator {
         comparisonCostUSD: Double? = nil,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
         comparisonBreakdown: TokenCacheBreakdown? = nil,
+        excludedModels: [String] = [],
+        excludedCalls: Int = 0,
         comparisonStartDate: Date? = nil,
         comparisonEndDate: Date? = nil,
         comparisonUsesConservativeBuckets: Bool = false
@@ -363,7 +453,9 @@ enum QuotaConsumptionEstimator {
             outputTokens: breakdown.outputTokens,
             calls: breakdown.calls,
             cacheHitRate: breakdown.cacheHitRate,
-            confidence: confidence
+            confidence: confidence,
+            excludedModels: excludedModels,
+            excludedCalls: excludedCalls
         )
     }
 }
@@ -522,8 +614,7 @@ extension RecentChartPreparedData {
             lower: lower,
             upper: upper,
             selectionStart: start,
-            selectionEnd: end,
-            fullSelectionBreakdown: breakdown
+            selectionEnd: end
         )
         let sevenDayDrop = quotaDropResolution(
             values: sevenDayRemainingPercents,
@@ -531,8 +622,7 @@ extension RecentChartPreparedData {
             lower: lower,
             upper: upper,
             selectionStart: start,
-            selectionEnd: end,
-            fullSelectionBreakdown: breakdown
+            selectionEnd: end
         )
         let fallbackModel = priceCard.officialAPIModel
         let fullEvents = attributionEvents.filter {
@@ -581,6 +671,8 @@ extension RecentChartPreparedData {
                 comparisonCostUSD: fiveHourPrice.costUSD,
                 quotaDropBasis: fiveHourDrop.basis,
                 comparisonBreakdown: fiveHourDrop.comparisonBreakdown,
+                excludedModels: fiveHourPrice.excludedModels,
+                excludedCalls: fiveHourPrice.excludedCalls,
                 comparisonStartDate: fiveHourDrop.comparisonStartDate,
                 comparisonEndDate: fiveHourDrop.comparisonEndDate,
                 comparisonUsesConservativeBuckets: fiveHourDrop.comparisonUsesConservativeBuckets
@@ -593,6 +685,8 @@ extension RecentChartPreparedData {
                 comparisonCostUSD: sevenDayPrice.costUSD,
                 quotaDropBasis: sevenDayDrop.basis,
                 comparisonBreakdown: sevenDayDrop.comparisonBreakdown,
+                excludedModels: sevenDayPrice.excludedModels,
+                excludedCalls: sevenDayPrice.excludedCalls,
                 comparisonStartDate: sevenDayDrop.comparisonStartDate,
                 comparisonEndDate: sevenDayDrop.comparisonEndDate,
                 comparisonUsesConservativeBuckets: sevenDayDrop.comparisonUsesConservativeBuckets
@@ -609,66 +703,74 @@ extension RecentChartPreparedData {
         lower: Int,
         upper: Int,
         selectionStart: Date,
-        selectionEnd: Date,
-        fullSelectionBreakdown: TokenCacheBreakdown
+        selectionEnd: Date
     ) -> RecentChartQuotaDropResolution {
-        if quotaObservationProvenanceAvailable,
-           let observed = observedQuotaDropResolution(
-               observations: observations,
-               lower: lower,
-               upper: upper,
-               selectionStart: selectionStart,
-               selectionEnd: selectionEnd
-           ) {
-            return observed
+        let selectedObservations = observationSlice(
+            observations,
+            from: selectionStart,
+            through: selectionEnd
+        )
+
+        // Persisted observations carry reset provenance. Once any such
+        // observation is present in the selected interval, do not fall back to
+        // display-value arithmetic when the cycle cannot be proven: doing so
+        // can combine the previous cycle's tokens with the latest cycle's drop.
+        if selectedObservations.contains(where: { $0.resetsAt != nil }) {
+            return observedQuotaDropResolution(
+                observations: Array(selectedObservations),
+                lower: lower,
+                upper: upper
+            ) ?? RecentChartQuotaDropResolution(
+                percent: nil,
+                basis: .unavailable,
+                comparisonBreakdown: .empty,
+                comparisonStartDate: nil,
+                comparisonEndDate: nil,
+                comparisonUsesConservativeBuckets: false
+            )
         }
 
-        // Display values are sampled at each bucket's end. Include the value
-        // immediately before the selected first bucket so this provisional drop
-        // spans the same full interval as `fullSelectionBreakdown`.
-        let boundaryLower = quotaObservationProvenanceAvailable && lower > 0
-            ? lower - 1
-            : lower
-        let estimatedDrop = cumulativeQuotaDrop(
+        // Without reset provenance, mirror the chart's product heuristic:
+        // remove isolated 0/100 glitches, find the latest sustained upward
+        // jump, and use only that cycle's suffix for the comparison. The full
+        // selection remains untouched by this comparison-only narrowing.
+        guard let estimatedDrop = cumulativeQuotaDrop(
             values,
-            lower: boundaryLower,
+            lower: lower,
             upper: upper
-        )
-        let estimatedComparisonBreakdown: TokenCacheBreakdown
-        let estimatedComparisonStart: Date?
-        let estimatedComparisonEnd: Date?
-        if quotaObservationProvenanceAvailable, let estimatedDrop {
-            let firstCoveredIndex = max(lower, estimatedDrop.firstBoundaryIndex + 1)
-            let lastCoveredIndex = min(upper, estimatedDrop.lastBoundaryIndex)
-            guard firstCoveredIndex <= lastCoveredIndex else {
-                return RecentChartQuotaDropResolution(
-                    percent: nil,
-                    basis: .unavailable,
-                    comparisonBreakdown: .empty,
-                    comparisonStartDate: nil,
-                    comparisonEndDate: nil,
-                    comparisonUsesConservativeBuckets: false
-                )
-            }
-            estimatedComparisonBreakdown = (firstCoveredIndex...lastCoveredIndex)
-                .map { cacheBreakdowns[safe: $0] ?? .empty }
-                .combined
-            estimatedComparisonStart = bins[safe: firstCoveredIndex]?.start
-            estimatedComparisonEnd = bins[safe: lastCoveredIndex]?.start
-                .addingTimeInterval(bucketInterval)
-        } else {
-            estimatedComparisonBreakdown = fullSelectionBreakdown
-            estimatedComparisonStart = estimatedDrop == nil ? nil : selectionStart
-            estimatedComparisonEnd = estimatedDrop == nil ? nil : selectionEnd
+        ) else {
+            return RecentChartQuotaDropResolution(
+                percent: nil,
+                basis: .unavailable,
+                comparisonBreakdown: .empty,
+                comparisonStartDate: nil,
+                comparisonEndDate: nil,
+                comparisonUsesConservativeBuckets: false
+            )
+        }
+
+        let firstCoveredIndex = max(lower, estimatedDrop.firstBoundaryIndex)
+        let lastCoveredIndex = min(upper, estimatedDrop.lastBoundaryIndex)
+        guard firstCoveredIndex <= lastCoveredIndex,
+              let estimatedComparisonStart = bins[safe: firstCoveredIndex]?.start,
+              let lastStart = bins[safe: lastCoveredIndex]?.start else {
+            return RecentChartQuotaDropResolution(
+                percent: nil,
+                basis: .unavailable,
+                comparisonBreakdown: .empty,
+                comparisonStartDate: nil,
+                comparisonEndDate: nil,
+                comparisonUsesConservativeBuckets: false
+            )
         }
         return RecentChartQuotaDropResolution(
-            percent: estimatedDrop?.percent,
-            basis: estimatedDrop == nil
-                ? .unavailable
-                : .estimated,
-            comparisonBreakdown: estimatedComparisonBreakdown,
+            percent: estimatedDrop.percent,
+            basis: .estimated,
+            comparisonBreakdown: (firstCoveredIndex...lastCoveredIndex)
+                .map { cacheBreakdowns[safe: $0] ?? .empty }
+                .combined,
             comparisonStartDate: estimatedComparisonStart,
-            comparisonEndDate: estimatedComparisonEnd,
+            comparisonEndDate: lastStart.addingTimeInterval(bucketInterval),
             comparisonUsesConservativeBuckets: false
         )
     }
@@ -676,25 +778,31 @@ extension RecentChartPreparedData {
     private func observedQuotaDropResolution(
         observations: [QuotaHistoryObservation],
         lower: Int,
-        upper: Int,
-        selectionStart: Date,
-        selectionEnd: Date
+        upper: Int
     ) -> RecentChartQuotaDropResolution? {
-        let observations = observationSlice(
-            observations,
-            from: selectionStart,
-            through: selectionEnd
-        )
-        let adjacentObservations = zip(observations, observations.dropFirst())
-        guard observations.count >= 2,
-              let first = observations.first,
-              observations.dropFirst().allSatisfy({
-                  sameQuotaCycle(first, $0)
-              }),
+        guard let authority = observations.last,
+              authority.resetsAt != nil else {
+            return nil
+        }
+
+        // The final reliable observation defines the cycle at the selection
+        // endpoint. Walk backwards only while reset provenance remains within
+        // the existing two-minute same-cycle tolerance; anything before the
+        // first mismatch belongs to an older cycle and is excluded.
+        var cycleSuffix = [authority]
+        for observation in observations.dropLast().reversed() {
+            guard sameQuotaCycle(observation, authority) else { break }
+            cycleSuffix.append(observation)
+        }
+        cycleSuffix.reverse()
+
+        let adjacentObservations = zip(cycleSuffix, cycleSuffix.dropFirst())
+        guard cycleSuffix.count >= 2,
               adjacentObservations.allSatisfy({ pair in
                   pair.1.remainingPercent <= pair.0.remainingPercent + 0.0001
               }),
-              let last = observations.last else {
+              let first = cycleSuffix.first,
+              let last = cycleSuffix.last else {
             return nil
         }
 
@@ -797,14 +905,26 @@ extension RecentChartPreparedData {
         let availableValues = sanitizedQuotaDropValues(indexedValues)
         guard availableValues.count >= 2 else { return nil }
 
-        let percent = zip(availableValues, availableValues.dropFirst())
+        // A sustained upward move is the only display-only reset evidence we
+        // accept. A suffix with fewer than two points cannot support a budget
+        // inversion, so it fails closed.
+        var currentCycleStart = 0
+        for index in 1..<availableValues.count {
+            if availableValues[index].value > availableValues[index - 1].value + 5 {
+                currentCycleStart = index
+            }
+        }
+        let currentCycleValues = Array(availableValues[currentCycleStart...])
+        guard currentCycleValues.count >= 2 else { return nil }
+
+        let percent = zip(currentCycleValues, currentCycleValues.dropFirst())
             .reduce(0) { partial, pair in
                 partial + max(pair.0.value - pair.1.value, 0)
             }
         return (
             percent: percent,
-            firstBoundaryIndex: availableValues[0].index,
-            lastBoundaryIndex: availableValues[availableValues.count - 1].index
+            firstBoundaryIndex: currentCycleValues[0].index,
+            lastBoundaryIndex: currentCycleValues[currentCycleValues.count - 1].index
         )
     }
 
@@ -814,15 +934,24 @@ extension RecentChartPreparedData {
         values.enumerated().compactMap { offset, item in
             let previous = offset > 0 ? values[offset - 1].value : nil
             let next = offset + 1 < values.count ? values[offset + 1].value : nil
-            if isFullUsageSpike(item.value, previous: previous, next: next) {
+            if isZeroRemainingSpike(item.value, previous: previous, next: next)
+                || isFullRemainingSpike(item.value, previous: previous, next: next) {
                 return nil
             }
             return item
         }
     }
 
-    private func isFullUsageSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
+    private func isZeroRemainingSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
         guard value <= 1, let previous, previous >= 95 else { return false }
         return next == nil || (next ?? 0) >= 95
+    }
+
+    private func isFullRemainingSpike(_ value: Double, previous: Double?, next: Double?) -> Bool {
+        value >= 99
+            && previous != nil
+            && next != nil
+            && (previous ?? 0) <= 95
+            && (next ?? 0) <= (previous ?? 0) + 1
     }
 }

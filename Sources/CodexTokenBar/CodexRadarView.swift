@@ -176,7 +176,7 @@ private struct CodexRadarWindowBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle(
-                "速蹬窗口",
+                "速登窗口",
                 systemImage: "bolt.badge.clock",
                 accent: AppTheme.radarActionColor(snapshot?.recommendedAction)
             )
@@ -489,7 +489,7 @@ private struct CodexCrowdRadarDetail: View {
                     .foregroundStyle(.secondary)
 
                 if mode == .realtime, !snapshot.realtimeAvailable {
-                    Label("实时表格暂不可用，当前以近期结果安全兜底", systemImage: "clock.arrow.circlepath")
+                    Label("实时表格暂不可用，实时排名暂不显示；可切换近期表现查看已发布结果", systemImage: "clock.arrow.circlepath")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.orange)
                 }
@@ -600,18 +600,21 @@ private struct CodexRadarDetailOverview: View {
     let snapshot: CodexRadarSnapshot
 
     var body: some View {
-        CodexRadarDetailSection(title: "速蹬窗口与预测", systemImage: "bolt.badge.clock") {
+        CodexRadarDetailSection(title: "速登窗口与预测", systemImage: "bolt.badge.clock") {
             CodexRadarDetailSubsection(title: "窗口摘要") {
-                CodexRadarKeyValueGrid(rows: [
-                    ("窗口状态", snapshot.window.message),
-                    ("建议动作", CodexRadarPresentationText.action(snapshot.recommendedAction)),
-                    ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
-                    ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
-                    ("预计窗口", snapshot.prediction.expectedWindow ?? "--"),
-                    ("范围", snapshot.window.scope),
-                    ("上次关闭", snapshot.window.closedAt ?? "--"),
-                    ("来源", snapshot.window.sourceUrl ?? "--")
-                ])
+                CodexRadarKeyValueGrid(
+                    rows: [
+                        ("窗口状态", snapshot.window.message),
+                        ("建议动作", CodexRadarPresentationText.action(snapshot.recommendedAction)),
+                        ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
+                        ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
+                        ("预计窗口", snapshot.prediction.expectedWindow ?? "--"),
+                        ("范围", snapshot.window.scope),
+                        ("上次关闭", snapshot.window.closedAt ?? "--"),
+                        ("来源", snapshot.window.sourceUrl ?? "--")
+                    ],
+                    valueColors: ["建议动作": AppTheme.radarActionColor(snapshot.recommendedAction)]
+                )
             }
 
             CodexRadarDetailSubsection(title: "预测说明") {
@@ -1048,6 +1051,12 @@ private struct CodexRadarDetailSubsection<Content: View>: View {
 
 private struct CodexRadarKeyValueGrid: View {
     let rows: [(String, String)]
+    let valueColors: [String: Color]
+
+    init(rows: [(String, String)], valueColors: [String: Color] = [:]) {
+        self.rows = rows
+        self.valueColors = valueColors
+    }
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 10)], alignment: .leading, spacing: 8) {
@@ -1058,6 +1067,7 @@ private struct CodexRadarKeyValueGrid: View {
                         .foregroundStyle(.secondary)
                     Text(row.1)
                         .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(valueColors[row.0] ?? .primary)
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }

@@ -214,8 +214,31 @@ struct RecentChartQuotaEstimateOverlay: View {
     let showsSevenDayQuota: Bool
     let currentFiveHourQuotaPresent: Bool
     let currentSevenDayQuotaPresent: Bool
+    let attributionEventsComplete: Bool
     let onClose: () -> Void
     @State private var detailSnapshot: QuotaConsumptionSelectionDetailSnapshot?
+
+    init(
+        selection: QuotaConsumptionSelection,
+        attribution: QuotaSelectionAttributionResult?,
+        isSelectionFixed: Bool,
+        showsFiveHourQuota: Bool,
+        showsSevenDayQuota: Bool,
+        currentFiveHourQuotaPresent: Bool,
+        currentSevenDayQuotaPresent: Bool,
+        attributionEventsComplete: Bool = true,
+        onClose: @escaping () -> Void = {}
+    ) {
+        self.selection = selection
+        self.attribution = attribution
+        self.isSelectionFixed = isSelectionFixed
+        self.showsFiveHourQuota = showsFiveHourQuota
+        self.showsSevenDayQuota = showsSevenDayQuota
+        self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
+        self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
+        self.attributionEventsComplete = attributionEventsComplete
+        self.onClose = onClose
+    }
 
     var body: some View {
         let presentation = QuotaConsumptionEstimatorOverlayPresentation(
@@ -256,6 +279,11 @@ struct RecentChartQuotaEstimateOverlay: View {
                         }
                         if showsSevenDayQuota {
                             QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
+                        }
+                        if let comparisonScopeText = presentation.comparisonScopeText {
+                            Text(comparisonScopeText)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -316,6 +344,10 @@ struct RecentChartQuotaEstimateOverlay: View {
             HStack(spacing: 7) {
                 if let attribution {
                     QuotaSelectionAttributionSummaryRow(result: attribution)
+                } else if !attributionEventsComplete {
+                    Text("等待完整模型跟踪")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("共享归因未开启")
                         .font(.system(size: 9.5, weight: .medium))
@@ -827,6 +859,11 @@ struct ChartBubblePlacementModifier: ViewModifier {
         let tokenX = self.tokenX
         content
             .fixedSize(horizontal: true, vertical: false)
+            // Keep the hit-test region to the actual preview card. The
+            // alignment frame below spans the plot so the card can be placed
+            // above the selected x-position, but it must not swallow clicks
+            // intended for the chart itself.
+            .contentShape(Rectangle())
             .alignmentGuide(.leading) { dimensions in
                 let lower = plot.minX
                 let upper = max(lower, plot.maxX - dimensions.width)
@@ -837,27 +874,62 @@ struct ChartBubblePlacementModifier: ViewModifier {
                 -(plot.minY - recentChartHoverBubbleVerticalOffset - dimensions.height / 2)
             }
             .frame(width: plot.width, height: plot.height, alignment: .topLeading)
-            .allowsHitTesting(false)
+            .allowsHitTesting(true)
     }
 }
 
 struct ChartHoverBubble: View {
     let bin: BinUsage
     let cacheBreakdown: TokenCacheBreakdown?
+    let modelBreakdowns: [ModelTokenBreakdown]
     let fiveHourRemaining: Double?
     let sevenDayRemaining: Double?
     let bucketInterval: TimeInterval
     let isHovering: Bool
+    let onClose: () -> Void
+
+    init(
+        bin: BinUsage,
+        cacheBreakdown: TokenCacheBreakdown?,
+        modelBreakdowns: [ModelTokenBreakdown] = [],
+        fiveHourRemaining: Double?,
+        sevenDayRemaining: Double?,
+        bucketInterval: TimeInterval,
+        isHovering: Bool,
+        onClose: @escaping () -> Void = {}
+    ) {
+        self.bin = bin
+        self.cacheBreakdown = cacheBreakdown
+        self.modelBreakdowns = modelBreakdowns
+        self.fiveHourRemaining = fiveHourRemaining
+        self.sevenDayRemaining = sevenDayRemaining
+        self.bucketInterval = bucketInterval
+        self.isHovering = isHovering
+        self.onClose = onClose
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text(isHovering ? "当前点" : "最新点")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(isHovering ? AppTheme.accentBlue : .secondary)
-                Text(timeRange)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(isHovering ? "当前点" : "最新点")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(isHovering ? AppTheme.accentBlue : .secondary)
+                    Text(timeRange)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isHovering ? "关闭当前点预览" : "关闭最新点预览")
             }
             Text(bin.tokens.abbreviatedTokens)
                 .font(.system(size: 15, weight: .semibold))
@@ -870,6 +942,7 @@ struct ChartHoverBubble: View {
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.accentCyan)
             }
+            ModelUsageInlineSummary(rows: modelBreakdowns)
             if let quotaSummary {
                 Text("额度 \(quotaSummary)")
                     .font(.system(size: 10))
@@ -889,7 +962,7 @@ struct ChartHoverBubble: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(isHovering ? "曲线当前点" : "曲线最新点")
         .accessibilityValue(accessibilitySummary)
     }
@@ -917,6 +990,9 @@ struct ChartHoverBubble: View {
             parts.append("缓存命中率 \(cacheBreakdown.cacheHitRate.percentString)")
             parts.append("命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
         }
+        if let models = ModelUsagePresentation.compactText(from: modelBreakdowns) {
+            parts.append("模型占比 \(models)")
+        }
         if let fiveHourRemaining { parts.append("5 小时额度 \(percentText(fiveHourRemaining))") }
         if let sevenDayRemaining { parts.append("7 天额度 \(percentText(sevenDayRemaining))") }
         if isHovering {
@@ -942,16 +1018,38 @@ struct ChartHoverBubble: View {
 
 struct ChartSelectionSummaryBubble: View {
     let selection: QuotaConsumptionSelection
+    let onClose: () -> Void
+
+    init(
+        selection: QuotaConsumptionSelection,
+        onClose: @escaping () -> Void = {}
+    ) {
+        self.selection = selection
+        self.onClose = onClose
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text("选中区间")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(AppTheme.accentBlue)
-                Text(timeRange)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text("选中区间")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                    Text(timeRange)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭选中区间预览")
             }
             Text(selection.breakdown.totalTokens.abbreviatedTokens)
                 .font(.system(size: 15, weight: .semibold))
@@ -964,6 +1062,9 @@ struct ChartSelectionSummaryBubble: View {
                     .font(.system(size: 10))
                     .foregroundStyle(AppTheme.accentCyan)
             }
+            ModelUsageInlineSummary(
+                rows: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)
+            )
             Text("持续 \(durationText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -976,15 +1077,30 @@ struct ChartSelectionSummaryBubble: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(AppTheme.borderStrong, lineWidth: 1)
         )
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("曲线选中区间")
-        .accessibilityValue("\(timeRange)；\(selection.breakdown.totalTokens.abbreviatedTokens) token；\(selection.breakdown.calls) 次请求；缓存命中率 \(selection.breakdown.cacheHitRate.percentString)")
+        .accessibilityValue(accessibilitySummary)
     }
 
     private var average: Int {
         selection.breakdown.calls > 0
             ? selection.breakdown.totalTokens / selection.breakdown.calls
             : 0
+    }
+
+    private var accessibilitySummary: String {
+        var parts = [
+            timeRange,
+            "\(selection.breakdown.totalTokens.abbreviatedTokens) token",
+            "\(selection.breakdown.calls) 次请求",
+            "缓存命中率 \(selection.breakdown.cacheHitRate.percentString)"
+        ]
+        if let models = ModelUsagePresentation.compactText(
+            from: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)
+        ) {
+            parts.append("模型占比 \(models)")
+        }
+        return parts.joined(separator: "；")
     }
 
     private var timeRange: String {

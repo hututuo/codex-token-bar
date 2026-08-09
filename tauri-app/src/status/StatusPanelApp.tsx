@@ -1,12 +1,11 @@
 import {
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
 } from "react";
-import { acknowledgeUnreadSummary, readAppSettings } from "../api/client";
+import { readAppSettings } from "../api/client";
 import { formatLiveRateValue, rateFillStyle } from "../components/liveRate/rateDisplay";
 import {
   DEFAULT_FLOATING_SETTINGS,
@@ -26,17 +25,12 @@ import {
 } from "../settings/displaySettings";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
-import {
-  sameCodexHomeSourceToken,
-  useCompactPanelSource,
-} from "../surfaces/useCompactPanelSource";
+import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
 import type {
-  CodexHomeSourceToken,
   DisplaySurfaceSettings,
   FloatingPanelSnapshot,
   FloatingWindowSettings,
   StatusSummarySectionId,
-  UnreadSummary,
 } from "../types/dashboard";
 import { compactQuotaResetText } from "../utils/quota";
 import {
@@ -80,7 +74,6 @@ export function StatusPanelApp() {
     summaryVisible,
   ]);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
-  const [acknowledgedUnreadSummary, setAcknowledgedUnreadSummary] = useState<UnreadSummary | null>(null);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const { sourceReady, sourceToken } = useCompactPanelSource(active);
   const radarSnapshot = useFloatingRadar(
@@ -90,7 +83,6 @@ export function StatusPanelApp() {
     active && sourceReady && dataInterests.crowdRadar,
     { clearOnError: true },
   );
-  const sourceTokenRef = useRef<CodexHomeSourceToken | null>(sourceToken);
   const lastPublishedReadoutRef = useRef("");
   const [publishRetryNonce, setPublishRetryNonce] = useState(0);
   const { quota, runningThreads, snapshot } = useCompactPanelData({
@@ -105,11 +97,6 @@ export function StatusPanelApp() {
     sourceToken,
   });
 
-  useLayoutEffect(() => {
-    sourceTokenRef.current = sourceToken;
-    setAcknowledgedUnreadSummary(null);
-  }, [sourceToken]);
-
   useEffect(() => {
     document.documentElement.classList.add("status-document");
     return () => document.documentElement.classList.remove("status-document");
@@ -121,12 +108,6 @@ export function StatusPanelApp() {
     updateCompactMode();
     return () => window.removeEventListener("resize", updateCompactMode);
   }, []);
-
-  useEffect(() => {
-    if (!snapshot.unreadSummary.active) {
-      setAcknowledgedUnreadSummary(null);
-    }
-  }, [snapshot.unreadSummary.active, snapshot.unreadSummary.count, snapshot.unreadSummary.source]);
 
   useEffect(() => {
     let disposed = false;
@@ -184,30 +165,6 @@ export function StatusPanelApp() {
     };
   }, []);
 
-  useEffect(() => {
-    if (sourceToken === null) {
-      return;
-    }
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void desktopPlatform.onUnreadSummaryChanged((payload) => {
-      if (!disposed && sameCodexHomeSourceToken(sourceTokenRef.current, payload.sourceToken)) {
-        setAcknowledgedUnreadSummary(payload.summary);
-      }
-    }).then((handler) => {
-      if (disposed) {
-        handler();
-      } else {
-        unlisten = handler;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [sourceToken]);
-
   function openDashboard() {
     void desktopPlatform.showDashboardWindow();
     void desktopPlatform.hideStatusPanelWindow();
@@ -229,32 +186,11 @@ export function StatusPanelApp() {
     void desktopPlatform.showStatusPanelWindow();
   }
 
-  function acknowledgeUnread() {
-    const acknowledgedSourceToken = sourceTokenRef.current;
-    if (acknowledgedSourceToken === null) {
-      return;
-    }
-    void acknowledgeUnreadSummary(acknowledgedSourceToken).then((summary) => {
-      if (
-        summary === null
-        || !sameCodexHomeSourceToken(sourceTokenRef.current, acknowledgedSourceToken)
-      ) {
-        return;
-      }
-      setAcknowledgedUnreadSummary(summary);
-      void desktopPlatform.publishUnreadSummaryChanged({
-        sourceToken: acknowledgedSourceToken,
-        summary,
-      });
-    });
-  }
-
   const statusQuotaSnapshot = statusSnapshotForQuotaDiagnostics(snapshot, quota.diagnostics);
-  const displayUnreadSummary = acknowledgedUnreadSummary ?? statusQuotaSnapshot.unreadSummary;
   const displaySnapshot = {
     ...statusQuotaSnapshot,
-    unread: displayUnreadSummary.active,
-    unreadSummary: displayUnreadSummary,
+    unread: statusQuotaSnapshot.unreadSummary.active,
+    unreadSummary: statusQuotaSnapshot.unreadSummary,
   };
   const summaryUpdatedAt = latestTrustedStatusUpdate(quota, runningThreads);
   const metricStates = useMemo(() => buildStatusMetricStates({
@@ -413,14 +349,6 @@ export function StatusPanelApp() {
             <div className="status-summary-unread-line" title={displaySnapshot.unreadSummary.detail}>
               <strong>{metricStates.unread.value}</strong>
               <span>个未读</span>
-              <button
-                className="status-summary-inline-action"
-                disabled={!metricStates.unread.available || !displaySnapshot.unreadSummary.active}
-                onClick={acknowledgeUnread}
-                type="button"
-              >
-                全部已读
-              </button>
             </div>
           </article>
         );

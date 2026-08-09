@@ -1,19 +1,23 @@
 use super::cache_lifecycle;
 use crate::core::app_paths;
+use crate::core::startup_trace;
 use crate::models::{
-    AccountInfo, DashboardSnapshot, LocalDataWarning, QuotaLimit, QuotaSnapshot, ResetCreditSummary,
+    AccountInfo, DashboardSnapshot, LocalDataWarning, ModelTokenBreakdown, QuotaLimit,
+    QuotaSnapshot, ResetCreditSummary,
 };
 use notify::event::ModifyKind;
 use notify::{
     Event as NotifyEvent, EventKind as NotifyEventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
@@ -34,25 +38,51 @@ use aggregates::{activity_days_at, stats_at};
 use exact_usage_index::ExactUsageIndex;
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
-static DASHBOARD_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static SESSION_CATALOG_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
-static USAGE_SUMMARY_REFRESH_IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
-static USAGE_SUMMARY_SOURCE_SCAN_CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, bool)>>> =
-    OnceLock::new();
 static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLock::new();
+static PRECISE_REFRESH_COORDINATORS: OnceLock<
+    Mutex<HashMap<PathBuf, Arc<PreciseRefreshCoordinator>>>,
+> = OnceLock::new();
+static PRECISE_REFRESH_RECENCY: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+static PRECISE_REFRESH_FLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
-static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<Mutex<HashMap<PathBuf, AttributionMutationWatcher>>> =
-    OnceLock::new();
+static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<
+    Mutex<HashMap<PathBuf, AttributionMutationWatcher>>,
+> = OnceLock::new();
 static ATTRIBUTION_MARKER_WRITE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static ATTRIBUTION_WATCHER_FAILURES: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_AGGREGATE_BUILD_COUNT: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 #[cfg(test)]
 static DASHBOARD_SCAN_SIGNATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
+#[cfg(test)]
+static PRECISE_REFRESH_SYNC_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static PRECISE_REFRESH_SYNC_HOOK: OnceLock<Mutex<Option<PreciseRefreshSyncHook>>> = OnceLock::new();
+#[cfg(test)]
+static PRECISE_REFRESH_AFTER_CUTOFF_HOOK: OnceLock<Mutex<Option<PreciseRefreshCutoffHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static PRECISE_REFRESH_PROMOTION_HOOK: OnceLock<Mutex<Option<PreciseRefreshPromotionHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static PRECISE_REFRESH_FINISH_HOOK: OnceLock<Mutex<Option<PreciseRefreshFinishHook>>> =
+    OnceLock::new();
+#[cfg(test)]
+static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+// v0.8.3 shipped the first stable DashboardSnapshot envelope (v16). v17 and
+// v18 only added serde-defaulted fields to that same envelope; keep one
+// isolated legacy decoder/sanitizer for all three versions and never write any
+// of them again.
+const LEGACY_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
+const LEGACY_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
+const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 19;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
-const USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
-const USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
+const PRECISE_REFRESH_REUSE_INTERVAL: StdDuration = StdDuration::from_millis(250);
+const PRECISE_REFRESH_RECENCY_RETENTION: StdDuration = StdDuration::from_secs(5 * 60);
+const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -231,12 +261,8 @@ fn write_attribution_continuity_unsafe_marker(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let marker_path = observer_marker_path(codex_home)?;
     if let Some(parent) = marker_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "无法创建本地用量连续性目录 {}：{error}",
-                parent.display()
-            )
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("无法创建本地用量连续性目录 {}：{error}", parent.display()))?;
     }
     let previous = fs::read(&marker_path)
         .ok()
@@ -323,12 +349,8 @@ fn clear_attribution_watcher_failure(codex_home: &Path) {
 }
 
 fn start_attribution_mutation_watcher(codex_home: &Path) -> Result<RecommendedWatcher, String> {
-    let canonical_home = fs::canonicalize(codex_home).map_err(|error| {
-        format!(
-            "无法确认本地用量监听目录 {}：{error}",
-            codex_home.display()
-        )
-    })?;
+    let canonical_home = fs::canonicalize(codex_home)
+        .map_err(|error| format!("无法确认本地用量监听目录 {}：{error}", codex_home.display()))?;
     let callback_home = canonical_home.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<NotifyEvent>| {
         let reason = match result {
@@ -354,22 +376,18 @@ fn start_attribution_mutation_watcher(codex_home: &Path) -> Result<RecommendedWa
 }
 
 fn ensure_attribution_mutation_watcher(codex_home: &Path) -> Result<(), String> {
-    let canonical_home = fs::canonicalize(codex_home).map_err(|error| {
-        format!(
-            "无法确认本地用量监听目录 {}：{error}",
-            codex_home.display()
-        )
-    })?;
+    let canonical_home = fs::canonicalize(codex_home)
+        .map_err(|error| format!("无法确认本地用量监听目录 {}：{error}", codex_home.display()))?;
     let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
-    let watchers = ATTRIBUTION_MUTATION_WATCHERS
-        .get_or_init(|| Mutex::new(HashMap::new()));
+    let watchers = ATTRIBUTION_MUTATION_WATCHERS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut watchers = watchers
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     watchers.retain(|path, _| path.exists());
-    if watchers.get(&canonical_home).is_some_and(|entry| {
-        entry.physical_home_identity == physical_home_identity
-    }) {
+    if watchers
+        .get(&canonical_home)
+        .is_some_and(|entry| entry.physical_home_identity == physical_home_identity)
+    {
         return precise_observer_identity(&canonical_home).map(|_| ());
     }
     let replaced_physical_root = watchers.remove(&canonical_home).is_some();
@@ -405,9 +423,7 @@ fn ensure_attribution_mutation_watcher(codex_home: &Path) -> Result<(), String> 
     if rebound_physical_home_identity != physical_home_identity {
         drop(watcher);
         let reason = "watch_root_changed_while_binding";
-        if let Err(error) =
-            write_attribution_continuity_unsafe_marker(&canonical_home, reason)
-        {
+        if let Err(error) = write_attribution_continuity_unsafe_marker(&canonical_home, reason) {
             record_attribution_watcher_failure(&canonical_home, error.clone());
             return Err(error);
         }
@@ -454,21 +470,1092 @@ pub(crate) struct IndexedSessionCatalogSnapshot {
     pub(crate) warnings: Vec<String>,
 }
 
-struct UsageSummaryRefreshOwner {
-    key: PathBuf,
+fn precise_refresh_home(codex_home: &Path) -> Result<PathBuf, String> {
+    fs::canonicalize(codex_home).map_err(|error| {
+        format!(
+            "精确 token refresh 无法解析 canonical Home {}：{error}",
+            codex_home.display()
+        )
+    })
 }
 
-impl Drop for UsageSummaryRefreshOwner {
-    fn drop(&mut self) {
-        let Some(in_flight) = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get() else {
-            return;
-        };
-        let mut guard = in_flight
+impl PreciseRefreshFlight {
+    fn new(
+        intent: PreciseRefreshIntent,
+        after_summary_only: bool,
+        summary_gap_ms: Option<u64>,
+        summary_previous_flight_id: Option<u64>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(PreciseRefreshFlightState {
+                full_requested: intent == PreciseRefreshIntent::Full,
+                full_build_started: false,
+                promotion_closed: false,
+                result: None,
+            }),
+            wake: Condvar::new(),
+            trace: Mutex::new(PreciseRefreshTrace::new(
+                intent,
+                after_summary_only,
+                summary_gap_ms,
+                summary_previous_flight_id,
+            )),
+            trace_finished: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn is_done(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result
+            .is_some()
+    }
+
+    fn request_full(&self) -> bool {
+        let mut state = self
+            .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.remove(&self.key);
+        if state.result.is_some() || state.promotion_closed {
+            return false;
+        }
+        if state.full_build_started {
+            return true;
+        }
+        let promoted_from_summary = self.trace_intent() == PreciseRefreshIntent::Summary;
+        state.full_requested = true;
+        if promoted_from_summary {
+            self.mark_trace_promoted();
+        }
+        true
+    }
+
+    fn has_full_result(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .result
+            .as_ref()
+            .is_some_and(|result| matches!(result.full.as_ref(), Some(Ok(_))))
+    }
+
+    fn claim_full_build_or_close(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let claimed = if state.full_requested {
+            state.full_build_started = true;
+            true
+        } else {
+            state.promotion_closed = true;
+            false
+        };
+        self.set_trace_claim(claimed);
+        claimed
+    }
+
+    fn trace_intent(&self) -> PreciseRefreshIntent {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .intent
+    }
+
+    fn mark_trace_promoted(&self) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .promoted_to_full = true;
+    }
+
+    fn set_trace_claim(&self, claimed: bool) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .claim_full = Some(claimed);
+    }
+
+    fn set_trace_status(&self, status: &'static str) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .status = status;
+    }
+
+    fn trace_status(&self) -> &'static str {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .status
+    }
+
+    fn record_trace_stage(&self, stage: PreciseRefreshTraceStage, elapsed: StdDuration) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record_stage(stage, elapsed);
+    }
+
+    fn render_trace(&self, result: &PreciseRefreshResult) -> String {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .render(result)
+    }
+
+    fn wait(&self) -> PreciseRefreshResult {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.result.is_none() {
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state
+            .result
+            .as_ref()
+            .expect("precise refresh result is published before waking waiters")
+            .clone()
+    }
+
+    fn trace_flight_id(&self) -> u64 {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .flight_id
     }
 }
+
+impl PreciseRefreshCoordinator {
+    fn record_completed_owner(
+        &self,
+        flight: &PreciseRefreshFlight,
+        result: &PreciseRefreshResult,
+        completed_at: Instant,
+    ) {
+        let owner = CompletedPreciseRefreshOwner {
+            flight_id: flight.trace_flight_id(),
+            summary_only: result.full.is_none(),
+            completed_at,
+        };
+        *self
+            .previous_completed_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(owner);
+    }
+
+    fn take_previous_completed_owner(&self, intent: PreciseRefreshIntent) -> Option<(u64, u64)> {
+        let owner = self
+            .previous_completed_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()?;
+        if intent != PreciseRefreshIntent::Full || !owner.summary_only {
+            return None;
+        }
+        let gap = Instant::now().saturating_duration_since(owner.completed_at);
+        if gap >= PRECISE_REFRESH_COMPLETED_OWNER_WINDOW {
+            return None;
+        }
+        Some((
+            owner.flight_id,
+            u64::try_from(gap.as_millis()).unwrap_or(u64::MAX),
+        ))
+    }
+}
+
+impl PreciseRefreshOwnerGuard {
+    fn finish(&self, result: PreciseRefreshResult) {
+        if self
+            .state
+            .finished
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        finish_precise_refresh_flight(&self.state.coordinator, &self.state.flight, result);
+    }
+}
+
+impl Drop for PreciseRefreshOwnerGuard {
+    fn drop(&mut self) {
+        self.finish(PreciseRefreshResult::failure(
+            "精确 token refresh owner 未发布结果".into(),
+        ));
+    }
+}
+
+fn finish_precise_refresh_flight(
+    coordinator: &Arc<PreciseRefreshCoordinator>,
+    flight: &Arc<PreciseRefreshFlight>,
+    result: PreciseRefreshResult,
+) {
+    let published_result = {
+        let mut state = flight
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let publish_result = state.result.is_none();
+        if publish_result {
+            state.result = Some(result);
+        }
+        let published = state.result.clone().unwrap_or_else(|| {
+            PreciseRefreshResult::failure("精确 token refresh trace 无结果".into())
+        });
+        if publish_result {
+            coordinator.record_completed_owner(flight, &published, Instant::now());
+        }
+        flight.wake.notify_all();
+        published
+    };
+    if !flight
+        .trace_finished
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        startup_trace::mark_performance(flight.render_trace(&published_result));
+    }
+    run_precise_refresh_finish_hook_for_testing();
+    record_precise_refresh_attempt(&coordinator.canonical_home);
+
+    let mut current = coordinator
+        .flight
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if current
+        .as_ref()
+        .is_some_and(|candidate| Arc::ptr_eq(candidate, flight))
+    {
+        *current = None;
+    }
+}
+
+fn precise_refresh_coordinator(
+    codex_home: &Path,
+) -> Result<Arc<PreciseRefreshCoordinator>, String> {
+    let canonical_home = precise_refresh_home(codex_home)?;
+    let registry = PRECISE_REFRESH_COORDINATORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = Instant::now();
+    registry.retain(|_, coordinator| {
+        if Arc::strong_count(coordinator) > 1 {
+            return true;
+        }
+        coordinator
+            .previous_completed_owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|owner| {
+                now.saturating_duration_since(owner.completed_at)
+                    < PRECISE_REFRESH_COMPLETED_OWNER_WINDOW
+            })
+    });
+    if let Some(coordinator) = registry.get(&canonical_home) {
+        return Ok(Arc::clone(coordinator));
+    }
+    let coordinator = Arc::new(PreciseRefreshCoordinator {
+        canonical_home: canonical_home.clone(),
+        flight: Mutex::new(None),
+        previous_completed_owner: Mutex::new(None),
+    });
+    registry.insert(canonical_home, Arc::clone(&coordinator));
+    Ok(coordinator)
+}
+
+fn request_precise_refresh(
+    codex_home: &Path,
+    intent: PreciseRefreshIntent,
+) -> Result<Arc<PreciseRefreshFlight>, String> {
+    request_precise_refresh_inner(codex_home, intent, false)?
+        .ok_or_else(|| "精确 token refresh explicit request 未创建 flight".to_string())
+}
+
+fn schedule_precise_refresh(
+    codex_home: &Path,
+) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
+    request_precise_refresh_inner(codex_home, PreciseRefreshIntent::Summary, true)
+}
+
+fn request_precise_refresh_inner(
+    codex_home: &Path,
+    intent: PreciseRefreshIntent,
+    enforce_reuse_window: bool,
+) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
+    let coordinator = precise_refresh_coordinator(codex_home)?;
+    loop {
+        let existing = coordinator
+            .flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(existing) = existing {
+            if existing.is_done() {
+                if intent == PreciseRefreshIntent::Full && existing.has_full_result() {
+                    return Ok(Some(existing));
+                }
+                let mut current = coordinator
+                    .flight
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if current
+                    .as_ref()
+                    .is_some_and(|candidate| Arc::ptr_eq(candidate, &existing))
+                {
+                    *current = None;
+                }
+                continue;
+            }
+            if intent == PreciseRefreshIntent::Full {
+                let promoted = existing.request_full();
+                run_precise_refresh_promotion_hook_for_testing(promoted)?;
+                if !promoted {
+                    existing.wait();
+                    continue;
+                }
+            }
+            return Ok(Some(existing));
+        }
+
+        let current = coordinator
+            .flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            continue;
+        }
+        drop(current);
+        if enforce_reuse_window
+            && !record_precise_refresh_attempt_if_due(&coordinator.canonical_home)
+        {
+            return Ok(None);
+        }
+        if !enforce_reuse_window {
+            record_precise_refresh_attempt(&coordinator.canonical_home);
+        }
+        let mut current = coordinator
+            .flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_some() {
+            continue;
+        }
+        let previous_summary = coordinator.take_previous_completed_owner(intent);
+        let (after_summary_only, summary_gap_ms, summary_previous_flight_id) = previous_summary
+            .map_or((false, None, None), |(flight_id, gap_ms)| {
+                (true, Some(gap_ms), Some(flight_id))
+            });
+        let flight = PreciseRefreshFlight::new(
+            intent,
+            after_summary_only,
+            summary_gap_ms,
+            summary_previous_flight_id,
+        );
+        *current = Some(Arc::clone(&flight));
+        drop(current);
+        spawn_precise_refresh_owner(Arc::clone(&coordinator), Arc::clone(&flight));
+        return Ok(Some(flight));
+    }
+}
+
+fn record_precise_refresh_attempt(canonical_home: &Path) {
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let mut recency = recency
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    recency.retain(|_, attempted_at| {
+        now.duration_since(*attempted_at) < PRECISE_REFRESH_RECENCY_RETENTION
+    });
+    recency.insert(canonical_home.to_path_buf(), now);
+}
+
+fn record_precise_refresh_attempt_if_due(canonical_home: &Path) -> bool {
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    let now = Instant::now();
+    let mut recency = recency
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    recency.retain(|_, attempted_at| {
+        now.duration_since(*attempted_at) < PRECISE_REFRESH_RECENCY_RETENTION
+    });
+    if recency.get(canonical_home).is_some_and(|attempted_at| {
+        now.duration_since(*attempted_at) < PRECISE_REFRESH_REUSE_INTERVAL
+    }) {
+        return false;
+    }
+    recency.insert(canonical_home.to_path_buf(), now);
+    true
+}
+
+fn spawn_precise_refresh_owner(
+    coordinator: Arc<PreciseRefreshCoordinator>,
+    flight: Arc<PreciseRefreshFlight>,
+) {
+    let owner_state = Arc::new(PreciseRefreshOwnerState {
+        coordinator: Arc::clone(&coordinator),
+        flight: Arc::clone(&flight),
+        finished: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    #[cfg(test)]
+    if FAIL_NEXT_PRECISE_REFRESH_SPAWN.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        flight.set_trace_status("spawn_error");
+        finish_precise_refresh_flight(
+            &coordinator,
+            &flight,
+            PreciseRefreshResult::failure("精确 token refresh owner 线程启动失败".into()),
+        );
+        return;
+    }
+
+    let key = coordinator.canonical_home.clone();
+    let thread_owner = Arc::clone(&owner_state);
+    let spawned = std::thread::Builder::new()
+        .name("codex-precise-refresh".into())
+        .spawn(move || {
+            let owner = PreciseRefreshOwnerGuard {
+                state: thread_owner,
+            };
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                run_precise_refresh(&key, &owner.state.flight)
+            }));
+            match result {
+                Ok(result) => owner.finish(result),
+                Err(_) => owner.finish(PreciseRefreshResult::failure(
+                    "精确 token refresh owner 执行异常".into(),
+                )),
+            }
+        });
+    if spawned.is_err() {
+        flight.set_trace_status("spawn_error");
+        finish_precise_refresh_flight(
+            &coordinator,
+            &flight,
+            PreciseRefreshResult::failure("精确 token refresh owner 线程启动失败".into()),
+        );
+    }
+}
+
+fn run_precise_refresh(
+    canonical_home: &Path,
+    flight: &PreciseRefreshFlight,
+) -> PreciseRefreshResult {
+    let mut warnings = Vec::new();
+    let open_result = {
+        let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Open);
+        ExactUsageIndex::open(canonical_home)
+    };
+    let mut index = match open_result {
+        Ok(index) => index,
+        Err(error) => {
+            flight.set_trace_status("open_error");
+            trace_precise_failure("open", &error);
+            return PreciseRefreshResult::failure(error);
+        }
+    };
+    let watcher_before: Result<(), String> = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::WatcherBefore);
+        #[cfg(not(test))]
+        {
+            ensure_attribution_mutation_watcher(canonical_home)
+        }
+        #[cfg(test)]
+        {
+            Ok(())
+        }
+    };
+    if let Err(error) = watcher_before {
+        flight.set_trace_status("watcher_before_error");
+        return PreciseRefreshResult::failure(error);
+    }
+    let precise_coverage_at = OffsetDateTime::now_utc();
+    let sync_hook = {
+        let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::SyncHook);
+        run_precise_refresh_sync_hook_for_testing(canonical_home)
+    };
+    if let Err(error) = sync_hook {
+        flight.set_trace_status("sync_hook_error");
+        return PreciseRefreshResult::failure(error);
+    }
+    let sync_result = {
+        let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Sync);
+        index.sync(canonical_home, &mut warnings)
+    };
+    let revision = match sync_result {
+        Ok(revision) => revision,
+        Err(error) => {
+            flight.set_trace_status("sync_error");
+            trace_precise_failure("sync", &error);
+            return PreciseRefreshResult::failure(error);
+        }
+    };
+    let watcher_after: Result<(), String> = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::WatcherAfter);
+        #[cfg(not(test))]
+        {
+            ensure_attribution_mutation_watcher(canonical_home)
+        }
+        #[cfg(test)]
+        {
+            Ok(())
+        }
+    };
+    if let Err(error) = watcher_after {
+        flight.set_trace_status("watcher_after_error");
+        return PreciseRefreshResult::failure(error);
+    }
+
+    let summary = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::SignatureSummary);
+        let signature = dashboard_index_signature(canonical_home, revision);
+        summary_after_precise_sync(&index, canonical_home, &signature, &warnings, flight)
+    };
+    let claim_full = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::ClaimFull);
+        flight.claim_full_build_or_close()
+    };
+    if !claim_full {
+        if let Err(error) = run_precise_refresh_after_cutoff_hook_for_testing() {
+            flight.set_trace_status("cutoff_error");
+            return PreciseRefreshResult::failure(error);
+        }
+        if summary.is_ok() {
+            if flight.trace_status() == "running" {
+                flight.set_trace_status("summary_only");
+            }
+        } else if flight.trace_status() == "running" {
+            flight.set_trace_status("summary_error");
+        }
+        return PreciseRefreshResult {
+            summary,
+            full: None,
+        };
+    }
+
+    match build_full_dashboard_after_precise_sync(
+        flight,
+        &mut index,
+        canonical_home,
+        revision,
+        precise_coverage_at,
+        &mut warnings,
+    ) {
+        Ok((snapshot, full_summary)) => {
+            if flight.trace_status().starts_with("summary_") || flight.trace_status() == "running" {
+                flight.set_trace_status("full_ok");
+            }
+            PreciseRefreshResult {
+                summary: if summary.is_ok() {
+                    summary
+                } else {
+                    Ok(full_summary)
+                },
+                full: Some(Ok(snapshot)),
+            }
+        }
+        Err(error) => {
+            if flight.trace_status().starts_with("summary_") || flight.trace_status() == "running" {
+                flight.set_trace_status("full_error");
+            }
+            PreciseRefreshResult {
+                summary,
+                full: Some(Err(error)),
+            }
+        }
+    }
+}
+
+fn summary_after_precise_sync(
+    index: &ExactUsageIndex,
+    canonical_home: &Path,
+    signature: &DashboardScanSignature,
+    warnings: &[LocalDataWarning],
+    flight: &PreciseRefreshFlight,
+) -> Result<TokenUsageSummary, String> {
+    let attribution_safety = match index.attribution_safety_state() {
+        Ok(state) => state,
+        Err(error) => {
+            flight.set_trace_status("summary_safety_error");
+            return Err(error);
+        }
+    };
+    let physical_home_identity = match attribution_watch_root_physical_identity(canonical_home) {
+        Ok(identity) => identity,
+        Err(error) => {
+            flight.set_trace_status("summary_identity_error");
+            return Err(error);
+        }
+    };
+    let cached = cached_dashboard_aggregate(signature)
+        .filter(|cached| {
+            cached.persistent_binding.as_ref().map_or(true, |binding| {
+                persistent_numeric_cache_binding_matches_current(
+                    binding,
+                    canonical_home,
+                    signature,
+                    &physical_home_identity,
+                    &attribution_safety,
+                )
+            })
+        })
+        .map(|cached| cached.summary);
+    if let Some(summary) = cached {
+        flight.set_trace_status("summary_cache_hit");
+        return Ok(summary);
+    }
+    let empty = match index.is_empty() {
+        Ok(empty) => empty,
+        Err(error) => {
+            flight.set_trace_status("summary_empty_check_error");
+            return Err(error);
+        }
+    };
+    if empty {
+        flight.set_trace_status("summary_empty");
+        return Err(no_token_events_error(warnings));
+    }
+    let local_offset = crate::core::localtime::local_offset();
+    let summary = match index.summary(OffsetDateTime::now_utc(), local_offset) {
+        Ok(summary) => summary,
+        Err(error) => {
+            flight.set_trace_status("summary_error");
+            return Err(error);
+        }
+    };
+    store_usage_summary(signature.clone(), summary.clone());
+    Ok(summary)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreciseRefreshIntent {
+    Summary,
+    Full,
+}
+
+#[derive(Clone, Debug)]
+struct PreciseRefreshResult {
+    summary: Result<TokenUsageSummary, String>,
+    full: Option<Result<DashboardSnapshot, String>>,
+}
+
+impl PreciseRefreshResult {
+    fn failure(error: String) -> Self {
+        Self {
+            summary: Err(error.clone()),
+            full: Some(Err(error)),
+        }
+    }
+}
+
+const PRECISE_OWNER_TRACE_MAX_BYTES: usize = 1_024;
+
+#[derive(Clone, Copy)]
+enum PreciseRefreshTraceStage {
+    Open,
+    WatcherBefore,
+    SyncHook,
+    Sync,
+    WatcherAfter,
+    SignatureSummary,
+    ClaimFull,
+    FullSafety,
+    FullIdentity,
+    FullSignature,
+    FullCacheDecision,
+    FullEmptyCheck,
+    DashboardData,
+    PersistentBinding,
+    StorePublish,
+    FullTotal,
+}
+
+struct PreciseRefreshTrace {
+    flight_id: u64,
+    intent: PreciseRefreshIntent,
+    promoted_to_full: bool,
+    after_summary_only: bool,
+    summary_gap_ms: Option<u64>,
+    summary_previous_flight_id: Option<u64>,
+    claim_full: Option<bool>,
+    status: &'static str,
+    started: Instant,
+    open_ms: Option<u64>,
+    watcher_before_ms: Option<u64>,
+    sync_hook_ms: Option<u64>,
+    sync_ms: Option<u64>,
+    watcher_after_ms: Option<u64>,
+    signature_summary_ms: Option<u64>,
+    claim_full_ms: Option<u64>,
+    full_safety_ms: Option<u64>,
+    full_identity_ms: Option<u64>,
+    full_signature_ms: Option<u64>,
+    full_cache_decision_ms: Option<u64>,
+    full_empty_check_ms: Option<u64>,
+    dashboard_data_ms: Option<u64>,
+    persistent_binding_ms: Option<u64>,
+    store_publish_ms: Option<u64>,
+    full_total_ms: Option<u64>,
+}
+
+impl PreciseRefreshTrace {
+    fn new(
+        intent: PreciseRefreshIntent,
+        after_summary_only: bool,
+        summary_gap_ms: Option<u64>,
+        summary_previous_flight_id: Option<u64>,
+    ) -> Self {
+        Self {
+            flight_id: PRECISE_REFRESH_FLIGHT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            intent,
+            promoted_to_full: false,
+            after_summary_only,
+            summary_gap_ms,
+            summary_previous_flight_id,
+            claim_full: None,
+            status: "running",
+            started: Instant::now(),
+            open_ms: None,
+            watcher_before_ms: None,
+            sync_hook_ms: None,
+            sync_ms: None,
+            watcher_after_ms: None,
+            signature_summary_ms: None,
+            claim_full_ms: None,
+            full_safety_ms: None,
+            full_identity_ms: None,
+            full_signature_ms: None,
+            full_cache_decision_ms: None,
+            full_empty_check_ms: None,
+            dashboard_data_ms: None,
+            persistent_binding_ms: None,
+            store_publish_ms: None,
+            full_total_ms: None,
+        }
+    }
+
+    fn record_stage(&mut self, stage: PreciseRefreshTraceStage, elapsed: StdDuration) {
+        let millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        match stage {
+            PreciseRefreshTraceStage::Open => self.open_ms = Some(millis),
+            PreciseRefreshTraceStage::WatcherBefore => self.watcher_before_ms = Some(millis),
+            PreciseRefreshTraceStage::SyncHook => self.sync_hook_ms = Some(millis),
+            PreciseRefreshTraceStage::Sync => self.sync_ms = Some(millis),
+            PreciseRefreshTraceStage::WatcherAfter => self.watcher_after_ms = Some(millis),
+            PreciseRefreshTraceStage::SignatureSummary => self.signature_summary_ms = Some(millis),
+            PreciseRefreshTraceStage::ClaimFull => self.claim_full_ms = Some(millis),
+            PreciseRefreshTraceStage::FullSafety => self.full_safety_ms = Some(millis),
+            PreciseRefreshTraceStage::FullIdentity => self.full_identity_ms = Some(millis),
+            PreciseRefreshTraceStage::FullSignature => self.full_signature_ms = Some(millis),
+            PreciseRefreshTraceStage::FullCacheDecision => {
+                self.full_cache_decision_ms = Some(millis)
+            }
+            PreciseRefreshTraceStage::FullEmptyCheck => self.full_empty_check_ms = Some(millis),
+            PreciseRefreshTraceStage::DashboardData => self.dashboard_data_ms = Some(millis),
+            PreciseRefreshTraceStage::PersistentBinding => {
+                self.persistent_binding_ms = Some(millis)
+            }
+            PreciseRefreshTraceStage::StorePublish => self.store_publish_ms = Some(millis),
+            PreciseRefreshTraceStage::FullTotal => self.full_total_ms = Some(millis),
+        }
+    }
+
+    fn stage_value(value: Option<u64>) -> String {
+        value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "na".into())
+    }
+
+    fn result_status(&self, result: &PreciseRefreshResult) -> &'static str {
+        if self.status != "running" {
+            return self.status;
+        }
+        match (&result.summary, &result.full) {
+            (_, Some(Ok(_))) => "full_ok",
+            (_, Some(Err(_))) => "full_error",
+            (Ok(_), None) => "summary_only",
+            (Err(_), None) => "summary_error",
+        }
+    }
+
+    fn render(&self, result: &PreciseRefreshResult) -> String {
+        let claim = match self.claim_full {
+            Some(true) => "1",
+            Some(false) => "0",
+            None => "na",
+        };
+        let intent = match self.intent {
+            PreciseRefreshIntent::Summary => "summary",
+            PreciseRefreshIntent::Full => "full",
+        };
+        let mut line = format!(
+            "precise_owner flight={} intent={} promoted={} after_summary_only={} summary_prev_flight={} summary_gap_ms={} claim_full={} status={} open_ms={} watcher_before_ms={} sync_hook_ms={} sync_ms={} watcher_after_ms={} signature_summary_ms={} claim_full_ms={} full_safety_ms={} full_identity_ms={} full_signature_ms={} full_cache_decision_ms={} full_empty_check_ms={} dashboard_data_ms={} persistent_binding_ms={} store_publish_ms={} full_total_ms={} total_ms={}",
+            self.flight_id,
+            intent,
+            u8::from(self.promoted_to_full),
+            u8::from(self.after_summary_only),
+            Self::stage_value(self.summary_previous_flight_id),
+            Self::stage_value(self.summary_gap_ms),
+            claim,
+            self.result_status(result),
+            Self::stage_value(self.open_ms),
+            Self::stage_value(self.watcher_before_ms),
+            Self::stage_value(self.sync_hook_ms),
+            Self::stage_value(self.sync_ms),
+            Self::stage_value(self.watcher_after_ms),
+            Self::stage_value(self.signature_summary_ms),
+            Self::stage_value(self.claim_full_ms),
+            Self::stage_value(self.full_safety_ms),
+            Self::stage_value(self.full_identity_ms),
+            Self::stage_value(self.full_signature_ms),
+            Self::stage_value(self.full_cache_decision_ms),
+            Self::stage_value(self.full_empty_check_ms),
+            Self::stage_value(self.dashboard_data_ms),
+            Self::stage_value(self.persistent_binding_ms),
+            Self::stage_value(self.store_publish_ms),
+            Self::stage_value(self.full_total_ms),
+            Self::stage_value(Some(
+                self.started
+                    .elapsed()
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            )),
+        );
+        if line.len() > PRECISE_OWNER_TRACE_MAX_BYTES {
+            line.truncate(PRECISE_OWNER_TRACE_MAX_BYTES);
+        }
+        line
+    }
+}
+
+#[cfg(test)]
+mod precise_refresh_trace_tests {
+    use super::*;
+
+    fn empty_result() -> PreciseRefreshResult {
+        PreciseRefreshResult {
+            summary: Ok(TokenUsageSummary::default()),
+            full: None,
+        }
+    }
+
+    #[test]
+    fn owner_trace_has_fixed_order_bounded_fields_and_no_source_text() {
+        let mut trace =
+            PreciseRefreshTrace::new(PreciseRefreshIntent::Summary, true, Some(7), Some(3));
+        trace.promoted_to_full = true;
+        trace.claim_full = Some(true);
+        trace.status = "summary_cache_hit";
+        trace.record_stage(PreciseRefreshTraceStage::Open, StdDuration::from_millis(3));
+        let line = trace.render(&empty_result());
+        let keys = line
+            .split_whitespace()
+            .map(|field| field.split_once('=').map_or(field, |(key, _)| key))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "precise_owner",
+                "flight",
+                "intent",
+                "promoted",
+                "after_summary_only",
+                "summary_prev_flight",
+                "summary_gap_ms",
+                "claim_full",
+                "status",
+                "open_ms",
+                "watcher_before_ms",
+                "sync_hook_ms",
+                "sync_ms",
+                "watcher_after_ms",
+                "signature_summary_ms",
+                "claim_full_ms",
+                "full_safety_ms",
+                "full_identity_ms",
+                "full_signature_ms",
+                "full_cache_decision_ms",
+                "full_empty_check_ms",
+                "dashboard_data_ms",
+                "persistent_binding_ms",
+                "store_publish_ms",
+                "full_total_ms",
+                "total_ms",
+            ]
+        );
+        assert!(line.len() <= PRECISE_OWNER_TRACE_MAX_BYTES);
+        assert!(line.contains("intent=summary"));
+        assert!(line.contains("promoted=1"));
+        assert!(line.contains("after_summary_only=1"));
+        assert!(line.contains("summary_prev_flight=3"));
+        assert!(line.contains("summary_gap_ms=7"));
+        assert!(line.contains("claim_full=1"));
+        assert!(!line.contains("/private/source.jsonl"));
+    }
+
+    #[test]
+    fn owner_trace_renders_explainable_terminal_statuses() {
+        let cases = [
+            ("summary_cache_hit", empty_result()),
+            ("summary_only", empty_result()),
+            (
+                "full_error",
+                PreciseRefreshResult {
+                    summary: Err("error contains /private/source.jsonl".into()),
+                    full: Some(Err("same error".into())),
+                },
+            ),
+            ("full_empty", empty_result()),
+        ];
+        for (status, result) in cases {
+            let mut trace = PreciseRefreshTrace::new(PreciseRefreshIntent::Full, false, None, None);
+            trace.status = status;
+            let line = trace.render(&result);
+            assert!(line.contains(&format!("status={status}")));
+            assert!(line.len() <= PRECISE_OWNER_TRACE_MAX_BYTES);
+            assert!(!line.contains("source.jsonl"));
+        }
+    }
+
+    #[test]
+    fn completed_owner_summary_metadata_survives_slot_clear_and_respects_window() {
+        let coordinator = Arc::new(PreciseRefreshCoordinator {
+            canonical_home: PathBuf::from("trace-only-home"),
+            flight: Mutex::new(None),
+            previous_completed_owner: Mutex::new(None),
+        });
+        let summary_flight =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None);
+        let summary_result = empty_result();
+        coordinator.record_completed_owner(
+            &summary_flight,
+            &summary_result,
+            Instant::now() - StdDuration::from_millis(25),
+        );
+        // The coordinator slot is intentionally left empty: this models the
+        // real owner cleanup that used to lose the summary-cutoff lineage.
+        assert!(coordinator.flight.lock().unwrap().is_none());
+        let (previous_flight_id, summary_gap_ms) = coordinator
+            .take_previous_completed_owner(PreciseRefreshIntent::Full)
+            .expect("recent summary owner should be retained after slot cleanup");
+        let full_trace = PreciseRefreshTrace::new(
+            PreciseRefreshIntent::Full,
+            true,
+            Some(summary_gap_ms),
+            Some(previous_flight_id),
+        );
+        let line = full_trace.render(&PreciseRefreshResult {
+            summary: Ok(TokenUsageSummary::default()),
+            full: Some(Err("diagnostic-only".into())),
+        });
+        assert!(line.contains("after_summary_only=1"));
+        assert!(line.contains("summary_gap_ms="));
+
+        let stale_summary_flight =
+            PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None);
+        coordinator.record_completed_owner(
+            &stale_summary_flight,
+            &summary_result,
+            Instant::now() - PRECISE_REFRESH_COMPLETED_OWNER_WINDOW - StdDuration::from_millis(1),
+        );
+        assert!(coordinator
+            .take_previous_completed_owner(PreciseRefreshIntent::Full)
+            .is_none());
+
+        let full_owner = PreciseRefreshFlight::new(PreciseRefreshIntent::Full, false, None, None);
+        coordinator.record_completed_owner(
+            &full_owner,
+            &PreciseRefreshResult {
+                summary: Ok(TokenUsageSummary::default()),
+                full: Some(Err("full owner".into())),
+            },
+            Instant::now(),
+        );
+        assert!(coordinator
+            .take_previous_completed_owner(PreciseRefreshIntent::Full)
+            .is_none());
+    }
+}
+
+struct PreciseRefreshTraceStageGuard<'a> {
+    flight: &'a PreciseRefreshFlight,
+    stage: PreciseRefreshTraceStage,
+    started: Instant,
+}
+
+impl<'a> PreciseRefreshTraceStageGuard<'a> {
+    fn new(flight: &'a PreciseRefreshFlight, stage: PreciseRefreshTraceStage) -> Self {
+        Self {
+            flight,
+            stage,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for PreciseRefreshTraceStageGuard<'_> {
+    fn drop(&mut self) {
+        self.flight
+            .record_trace_stage(self.stage, self.started.elapsed());
+    }
+}
+
+struct PreciseRefreshFlightState {
+    full_requested: bool,
+    full_build_started: bool,
+    promotion_closed: bool,
+    result: Option<PreciseRefreshResult>,
+}
+
+struct PreciseRefreshFlight {
+    state: Mutex<PreciseRefreshFlightState>,
+    wake: Condvar,
+    trace: Mutex<PreciseRefreshTrace>,
+    trace_finished: std::sync::atomic::AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+struct CompletedPreciseRefreshOwner {
+    flight_id: u64,
+    summary_only: bool,
+    completed_at: Instant,
+}
+
+struct PreciseRefreshCoordinator {
+    canonical_home: PathBuf,
+    flight: Mutex<Option<Arc<PreciseRefreshFlight>>>,
+    previous_completed_owner: Mutex<Option<CompletedPreciseRefreshOwner>>,
+}
+
+struct PreciseRefreshOwnerState {
+    coordinator: Arc<PreciseRefreshCoordinator>,
+    flight: Arc<PreciseRefreshFlight>,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+struct PreciseRefreshOwnerGuard {
+    state: Arc<PreciseRefreshOwnerState>,
+}
+
+#[cfg(test)]
+pub(crate) type PreciseRefreshSyncHook = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type PreciseRefreshCutoffHook = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type PreciseRefreshPromotionHook = Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type PreciseRefreshFinishHook = Arc<dyn Fn() + Send + Sync>;
 
 pub(crate) fn session_catalog_snapshot<F>(
     codex_home: &Path,
@@ -505,6 +1592,42 @@ pub struct TokenUsageSummary {
     pub total_tokens: u64,
     pub today_tokens: u64,
     pub today_requests: u32,
+    #[serde(default)]
+    pub today_model_breakdowns: Vec<ModelTokenBreakdown>,
+}
+
+/// Cheap source-change probe used by the dashboard cadence. The probe only
+/// enumerates the published session paths and compares filesystem metadata;
+/// it never reads JSONL bodies. A full precise refresh remains the authority
+/// whenever the probe cannot prove that the source is unchanged.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreciseDashboardSourceProbe {
+    pub state: String,
+    /// Published generations are authoritative dashboard lineage. Preserve
+    /// the u64 as text at IPC so the frontend never compares rounded values.
+    pub published_generation: String,
+}
+
+pub fn precise_dashboard_source_probe(
+    codex_home: &Path,
+) -> Result<PreciseDashboardSourceProbe, String> {
+    let canonical_home = precise_refresh_home(codex_home)?;
+    let mut index = ExactUsageIndex::open(&canonical_home)?;
+    let published_generation = index.published_generation()?;
+    let mut warnings = Vec::new();
+    let changed = index.sources_changed(&canonical_home, &mut warnings)?;
+    let state = if !warnings.is_empty() {
+        "unknown"
+    } else if changed {
+        "changed"
+    } else {
+        "unchanged"
+    };
+    Ok(PreciseDashboardSourceProbe {
+        state: state.into(),
+        published_generation: published_generation.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -521,43 +1644,105 @@ struct TokenEvent {
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
-    let build_gate = DASHBOARD_BUILD_GATE.get_or_init(|| Mutex::new(()));
-    let _build_guard = build_gate
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut warnings = Vec::new();
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    #[cfg(not(test))]
-    ensure_attribution_mutation_watcher(codex_home)?;
-    // This is a conservative coverage watermark, captured before the full sync
-    // starts. Events appended while sync/aggregation is running may or may not
-    // enter this generation, so publishing the return time would overclaim.
-    let precise_coverage_at = OffsetDateTime::now_utc();
-    let revision = index.sync(codex_home, &mut warnings)?;
-    #[cfg(not(test))]
-    ensure_attribution_mutation_watcher(codex_home)?;
-    let attribution_safety = index.attribution_safety_state()?;
-    let observer_identity = precise_observer_identity(codex_home)?;
-    let signature = dashboard_index_signature(codex_home, revision);
-    if let Some(snapshot) = cached_dashboard_snapshot(&signature) {
-        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+    let flight = request_precise_refresh(codex_home, PreciseRefreshIntent::Full)?;
+    flight
+        .wait()
+        .full
+        .unwrap_or_else(|| Err("精确 token full refresh 未发布结果".into()))
+}
+
+fn build_full_dashboard_after_precise_sync(
+    flight: &PreciseRefreshFlight,
+    index: &mut ExactUsageIndex,
+    codex_home: &Path,
+    revision: u64,
+    precise_coverage_at: OffsetDateTime,
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<(DashboardSnapshot, TokenUsageSummary), String> {
+    let _full_total =
+        PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullTotal);
+    let attribution_safety = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullSafety);
+        match index.attribution_safety_state() {
+            Ok(state) => state,
+            Err(error) => {
+                flight.set_trace_status("full_safety_error");
+                return Err(error);
+            }
+        }
+    };
+    let observer_identity = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullIdentity);
+        match precise_observer_identity(codex_home) {
+            Ok(identity) => identity,
+            Err(error) => {
+                flight.set_trace_status("full_identity_error");
+                return Err(error);
+            }
+        }
+    };
+    let signature = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullSignature);
+        dashboard_index_signature(codex_home, revision)
+    };
+    let cached_snapshot = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullCacheDecision);
+        cached_dashboard_snapshot_for_current(&signature, codex_home, &attribution_safety)
+    };
+    if let Some(snapshot) = cached_snapshot {
+        let summary = match cached_dashboard_aggregate(&signature).map(|cached| cached.summary) {
+            Some(summary) => summary,
+            None => {
+                flight.set_trace_status("full_cache_error");
+                return Err("精确 token full refresh 缺少与完整快照对应的 summary".to_string());
+            }
+        };
+        flight.set_trace_status("full_cache_hit");
         let mut snapshot = snapshot_with_precise_coverage(
             snapshot,
             precise_coverage_at,
             &observer_identity,
             &attribution_safety,
         );
+        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
         merge_usage_cache_marker_warning(&mut snapshot);
-        return Ok(snapshot);
+        return Ok((snapshot, summary));
     }
-    if index.is_empty()? {
-        return Err(no_token_events_error(&warnings));
+    let empty = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullEmptyCheck);
+        match index.is_empty() {
+            Ok(empty) => empty,
+            Err(error) => {
+                flight.set_trace_status("full_empty_check_error");
+                return Err(error);
+            }
+        }
+    };
+    if empty {
+        flight.set_trace_status("full_empty");
+        return Err(no_token_events_error(warnings));
     }
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
     let local_offset = crate::core::localtime::local_offset();
-    let data = index.dashboard_data(codex_home, now_utc, local_offset, &mut warnings)?;
+    let data = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::DashboardData);
+        match index.dashboard_data(codex_home, now_utc, local_offset, warnings) {
+            Ok(data) => data,
+            Err(error) => {
+                flight.set_trace_status("dashboard_data_error");
+                trace_precise_failure("dashboard_data", &error);
+                return Err(error);
+            }
+        }
+    };
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
@@ -572,21 +1757,16 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         generated_at: generated_at.clone(),
         precise_recent_usage_covered_at,
         precise_recent_usage_fresh: precise_scan_complete,
-        precise_observer_epoch: precise_scan_complete
-            .then_some(observer_identity.epoch.clone()),
+        precise_observer_epoch: precise_scan_complete.then_some(observer_identity.epoch.clone()),
         precise_observer_started_at_unix_micros: precise_scan_complete
             .then_some(observer_identity.started_at_unix_micros),
-        precise_observer_sequence: precise_scan_complete
-            .then_some(observer_identity.sequence),
-        precise_attribution_provenance_epoch: Some(
-            attribution_safety.provenance_epoch.clone(),
-        ),
+        precise_observer_sequence: precise_scan_complete.then_some(observer_identity.sequence),
+        precise_attribution_provenance_epoch: Some(attribution_safety.provenance_epoch.clone()),
         precise_attribution_generation: Some(attribution_safety.generation),
-        precise_attribution_unsafe_since_generation:
-            attribution_safety.unsafe_since_generation,
+        precise_attribution_unsafe_since_generation: attribution_safety.unsafe_since_generation,
         precise_attribution_unsafe_id: attribution_safety.unsafe_id.clone(),
-        precise_attribution_current_scan_unsafe:
-            attribution_safety.current_scan_unsafe_cause_detected,
+        precise_attribution_current_scan_unsafe: attribution_safety
+            .current_scan_unsafe_cause_detected,
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
@@ -599,17 +1779,94 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         recent_usage_30d: data.recent_usage_30d,
         cache_hit_ranking: data.cache_hit_ranking,
         cache_usage: data.cache_usage,
-        warnings,
+        warnings: warnings.clone(),
         diagnostics: Vec::new(),
     };
-    if let Some(warning) =
-        store_dashboard_aggregate(signature, Some(snapshot.clone()), data.summary)
+    let summary = data.summary;
+    let persistent_binding = {
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::PersistentBinding);
+        match persistent_numeric_cache_binding(codex_home, signature.clone(), &attribution_safety) {
+            Ok(binding) => Some(binding),
+            Err(error) => {
+                flight.set_trace_status("full_binding_warning");
+                snapshot.warnings.push(LocalDataWarning {
+                    source: "usage-cache-persistence".into(),
+                    message: error,
+                });
+                None
+            }
+        }
+    };
     {
-        snapshot.warnings.push(warning);
+        let _stage =
+            PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::StorePublish);
+        if let Some(warning) = store_dashboard_aggregate_with_binding(
+            signature,
+            Some(snapshot.clone()),
+            summary.clone(),
+            persistent_binding,
+        ) {
+            flight.set_trace_status("full_store_warning");
+            snapshot.warnings.push(warning);
+        }
+        let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
+        merge_usage_cache_marker_warning(&mut snapshot);
     }
-    let _ = cache_lifecycle::mark_usage_cache_ready_after_success();
-    merge_usage_cache_marker_warning(&mut snapshot);
-    Ok(snapshot)
+    Ok((snapshot, summary))
+}
+
+fn trace_precise_failure(stage: &str, error: &str) {
+    let normalized = error.to_ascii_lowercase();
+    let class = if normalized.contains("unique constraint") {
+        "unique_constraint"
+    } else if normalized.contains("disk i/o") || normalized.contains("ioerr") {
+        "disk_io"
+    } else if normalized.contains("busy") || normalized.contains("locked") {
+        "busy_locked"
+    } else if normalized.contains("corrupt")
+        || normalized.contains("malformed")
+        || normalized.contains("损坏")
+    {
+        "corrupt"
+    } else if normalized.contains("cantopen") || normalized.contains("无法打开") {
+        "cant_open"
+    } else if normalized.contains("source changed") || normalized.contains("源文件") {
+        "source_changed"
+    } else {
+        "other"
+    };
+    startup_trace::mark_performance(format!(
+        "precise_failure stage={stage} class={class}"
+    ));
+}
+
+fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    request_precise_refresh(codex_home, PreciseRefreshIntent::Summary)?
+        .wait()
+        .summary
+}
+
+pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    usage_summary(codex_home)
+}
+
+pub fn acknowledge_attribution_safety(
+    codex_home: &Path,
+    provenance_epoch: &str,
+    unsafe_id: &str,
+    through_generation: u64,
+) -> Result<bool, String> {
+    let mut index = ExactUsageIndex::open(codex_home)?;
+    index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)
+}
+
+pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    let cached = cached_dashboard_usage_summary_cache_only(codex_home);
+    if let Err(error) = schedule_precise_refresh(codex_home) {
+        return cached.ok_or(error);
+    }
+    cached.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
 }
 
 fn merge_usage_cache_marker_warning(snapshot: &mut DashboardSnapshot) {
@@ -638,121 +1895,67 @@ fn activity_days_and_stats_at(
     (days, stats)
 }
 
-fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let build_gate = DASHBOARD_BUILD_GATE.get_or_init(|| Mutex::new(()));
-    let _build_guard = build_gate
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut warnings = Vec::new();
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    let revision = index.sync(codex_home, &mut warnings)?;
-    let signature = dashboard_index_signature(codex_home, revision);
-    if let Some(summary) = cached_usage_summary(&signature) {
-        return Ok(summary);
-    }
-    if index.is_empty()? {
-        return Err(no_token_events_error(&warnings));
-    }
-
+fn cached_dashboard_usage_summary_cache_only(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = crate::core::localtime::local_offset();
-    let summary = index.summary(OffsetDateTime::now_utc(), local_offset)?;
-    store_usage_summary(signature, summary.clone());
-
-    Ok(summary)
-}
-
-pub fn dashboard_usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    usage_summary(codex_home)
-}
-
-pub fn acknowledge_attribution_safety(
-    codex_home: &Path,
-    provenance_epoch: &str,
-    unsafe_id: &str,
-    through_generation: u64,
-) -> Result<bool, String> {
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)
-}
-
-pub fn usage_summary_snapshot(codex_home: &Path) -> Result<TokenUsageSummary, String> {
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    let signature = dashboard_index_signature(codex_home, index.revision()?);
-    let mut warnings = Vec::new();
-    if usage_summary_sources_changed(&mut index, codex_home, &mut warnings)? {
-        schedule_usage_summary_refresh(codex_home);
-    }
-    if let Some(summary) = cached_usage_summary(&signature) {
-        return Ok(summary);
-    }
-    if let Some(cached) = cached_dashboard_aggregate(&signature) {
-        return Ok(cached.summary);
-    }
-
-    let local_offset = crate::core::localtime::local_offset();
-    let last_trusted = if index.is_empty()? {
-        None
-    } else {
-        index.summary(OffsetDateTime::now_utc(), local_offset).ok()
-    };
-    if let Some(summary) = last_trusted.as_ref() {
-        store_usage_summary_cache(signature, summary.clone());
-    }
-    last_trusted.ok_or_else(|| "精确 token summary 尚未就绪，正在后台初始化".into())
-}
-
-fn usage_summary_sources_changed(
-    index: &mut ExactUsageIndex,
-    codex_home: &Path,
-    warnings: &mut Vec<LocalDataWarning>,
-) -> Result<bool, String> {
-    let cache =
-        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let now = Instant::now();
-    cache.retain(|_, (scanned_at, _)| {
-        now.duration_since(*scanned_at) < USAGE_SUMMARY_SOURCE_SCAN_STATE_RETENTION
-    });
-    if let Some((scanned_at, changed)) = cache.get(codex_home) {
-        if now.duration_since(*scanned_at) < USAGE_SUMMARY_SOURCE_SCAN_REUSE_INTERVAL {
-            return Ok(*changed);
-        }
-    }
-
-    let changed = index.sources_changed(codex_home, warnings)?;
-    cache.insert(codex_home.to_path_buf(), (Instant::now(), changed));
-    Ok(changed)
-}
-
-fn mark_usage_summary_sources_synced(codex_home: &Path) {
-    let cache =
-        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(codex_home.to_path_buf(), (Instant::now(), false));
-    }
+    let now_utc = OffsetDateTime::now_utc();
+    cached_dashboard_usage_summary_at(codex_home, now_utc, local_offset).or_else(|| {
+        let canonical_home = precise_refresh_home(codex_home).ok()?;
+        (canonical_home != codex_home)
+            .then(|| cached_dashboard_usage_summary_at(&canonical_home, now_utc, local_offset))
+            .flatten()
+    })
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
     let local_offset = crate::core::localtime::local_offset();
-    cached_dashboard_usage_summary_at(codex_home, OffsetDateTime::now_utc(), local_offset).or_else(
-        || {
-            let index = ExactUsageIndex::open(codex_home).ok()?;
-            if index.is_empty().ok()? {
-                return None;
-            }
-            index.summary(OffsetDateTime::now_utc(), local_offset).ok()
-        },
-    )
+    cached_dashboard_usage_summary_cache_only(codex_home).or_else(|| {
+        let canonical_home = precise_refresh_home(codex_home).ok()?;
+        let index = ExactUsageIndex::open(&canonical_home).ok()?;
+        if index.is_empty().ok()? {
+            return None;
+        }
+        index.summary(OffsetDateTime::now_utc(), local_offset).ok()
+    })
 }
 
 pub(crate) fn cached_dashboard_snapshot_for_startup(
     codex_home: &Path,
 ) -> Option<DashboardSnapshot> {
-    let index = ExactUsageIndex::open(codex_home).ok()?;
-    let signature = dashboard_index_signature(codex_home, index.revision().ok()?);
-    cached_dashboard_startup_snapshot(&signature).map(snapshot_with_generated_at)
+    let canonical_home = precise_refresh_home(codex_home).ok()?;
+    let canonical_index = ExactUsageIndex::open(&canonical_home).ok()?;
+    let revision = canonical_index.revision().ok()?;
+    let attribution_safety = canonical_index.attribution_safety_state().ok()?;
+    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home).ok()?;
+    let canonical_signature = dashboard_index_signature(&canonical_home, revision);
+    if let Some(snapshot) = cached_dashboard_startup_snapshot(
+        &canonical_signature,
+        &canonical_home,
+        &attribution_safety,
+        &physical_home_identity,
+    ) {
+        return Some(snapshot_with_generated_at(snapshot));
+    }
+
+    // V18 wrote the pre-canonical request path. It is still safe to use only
+    // as a stale startup snapshot after the canonical index has been opened;
+    // never open an index at this raw alias path.
+    if canonical_home != codex_home {
+        let raw_signature = DashboardScanSignature {
+            codex_home: codex_home.to_path_buf(),
+            local_date: canonical_signature.local_date.clone(),
+            utc_offset_seconds: canonical_signature.utc_offset_seconds,
+            index_revision: revision,
+        };
+        if let Some(snapshot) = cached_dashboard_startup_snapshot(
+            &raw_signature,
+            &canonical_home,
+            &attribution_safety,
+            &physical_home_identity,
+        ) {
+            return Some(snapshot_with_generated_at(snapshot));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -777,29 +1980,9 @@ fn usage_summary_from_events_at(
         }
     }
 
+    summary.today_model_breakdowns = Vec::new();
+
     summary
-}
-
-fn schedule_usage_summary_refresh(codex_home: &Path) {
-    let key = codex_home.to_path_buf();
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = in_flight
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !guard.insert(key.clone()) {
-        return;
-    }
-    drop(guard);
-    let owner = UsageSummaryRefreshOwner { key: key.clone() };
-
-    let _ = std::thread::Builder::new()
-        .name("codex-usage-summary".into())
-        .spawn(move || {
-            let _owner = owner;
-            if usage_summary(&key).is_ok() {
-                mark_usage_summary_sources_synced(&key);
-            }
-        });
 }
 
 fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
@@ -841,12 +2024,64 @@ fn placeholder_quota() -> QuotaSnapshot {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentNumericCacheBinding {
+    canonical_home: PathBuf,
+    physical_home_identity: String,
+    signature: DashboardScanSignature,
+    precise_attribution_provenance_epoch: String,
+    precise_attribution_generation: u64,
+    precise_attribution_unsafe_since_generation: Option<u64>,
+    precise_attribution_unsafe_id: Option<String>,
+    precise_attribution_current_scan_unsafe: bool,
+    precise_attribution_current_scan_incomplete: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentNumericDashboardCacheV19 {
+    version: u32,
+    #[serde(flatten)]
+    binding: PersistentNumericCacheBinding,
+    built_at: String,
+    coverage_at: Option<String>,
+    summary: TokenUsageSummary,
+    stats: crate::models::DashboardStats,
+    activity_days: Vec<crate::models::ActivityDay>,
+    recent_usage_24h: Vec<PersistentNumericRecentUsagePoint>,
+    recent_usage_7d: Vec<PersistentNumericRecentUsagePoint>,
+    recent_usage_30d: Vec<PersistentNumericRecentUsagePoint>,
+}
+
+/// Persistence DTO deliberately has no source attribution fields. Reusing
+/// `RecentUsagePoint` here would serialize nullable/empty provenance fields and
+/// make a future model-field addition an accidental cache privacy expansion.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistentNumericRecentUsagePoint {
+    label: String,
+    start_unix: i64,
+    tokens: u64,
+    calls: u32,
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    #[serde(default)]
+    model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
+    cache_hit_rate: Option<f64>,
+    five_hour_remaining_percent: Option<f64>,
+    seven_day_remaining_percent: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
 struct CachedDashboardAggregate {
     signature: DashboardScanSignature,
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
     snapshot_complete: bool,
+    persistent_version: u32,
+    persistent_binding: Option<PersistentNumericCacheBinding>,
 }
 
 #[derive(Default)]
@@ -924,6 +2159,21 @@ fn cached_dashboard_usage_summary_at(
         .ok()
         .and_then(|guard| guard.aggregate.clone())
         .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .filter(|cached| {
+            let Some(binding) = cached.persistent_binding.as_ref() else {
+                return true;
+            };
+            let Ok(canonical_home) = precise_refresh_home(codex_home) else {
+                return false;
+            };
+            let Ok(physical_home_identity) =
+                attribution_watch_root_physical_identity(&canonical_home)
+            else {
+                return false;
+            };
+            binding.canonical_home == canonical_home
+                && binding.physical_home_identity == physical_home_identity
+        })
         .map(|cached| cached.summary)
 }
 
@@ -934,6 +2184,118 @@ impl DashboardScanSignature {
             local_date: self.local_date.clone(),
             utc_offset_seconds: self.utc_offset_seconds,
         }
+    }
+}
+
+fn persistent_numeric_cache_binding(
+    canonical_home: &Path,
+    signature: DashboardScanSignature,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> Result<PersistentNumericCacheBinding, String> {
+    let canonical_home = precise_refresh_home(canonical_home)?;
+    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
+    Ok(PersistentNumericCacheBinding {
+        canonical_home: canonical_home.clone(),
+        physical_home_identity,
+        signature,
+        precise_attribution_provenance_epoch: attribution_safety.provenance_epoch.clone(),
+        precise_attribution_generation: attribution_safety.generation,
+        precise_attribution_unsafe_since_generation: attribution_safety.unsafe_since_generation,
+        precise_attribution_unsafe_id: attribution_safety.unsafe_id.clone(),
+        precise_attribution_current_scan_unsafe: attribution_safety
+            .current_scan_unsafe_cause_detected,
+        precise_attribution_current_scan_incomplete: attribution_safety.current_scan_incomplete,
+    })
+}
+
+fn persistent_numeric_cache_binding_is_well_formed(
+    binding: &PersistentNumericCacheBinding,
+) -> bool {
+    let Ok(canonical_home) = precise_refresh_home(&binding.canonical_home) else {
+        return false;
+    };
+    if canonical_home != binding.canonical_home
+        || binding.signature.codex_home != binding.canonical_home
+        || binding.signature.local_date.trim().is_empty()
+        || binding.physical_home_identity.trim().is_empty()
+        || binding
+            .precise_attribution_provenance_epoch
+            .trim()
+            .is_empty()
+    {
+        return false;
+    }
+    if binding
+        .precise_attribution_unsafe_id
+        .as_deref()
+        .is_some_and(|unsafe_id| Uuid::parse_str(unsafe_id).is_err())
+    {
+        return false;
+    }
+    attribution_watch_root_physical_identity(&binding.canonical_home)
+        .is_ok_and(|identity| identity == binding.physical_home_identity)
+}
+
+fn persistent_numeric_cache_binding_matches_current(
+    binding: &PersistentNumericCacheBinding,
+    canonical_home: &Path,
+    signature: &DashboardScanSignature,
+    physical_home_identity: &str,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> bool {
+    binding.canonical_home == canonical_home
+        && binding.physical_home_identity == physical_home_identity
+        && binding.signature == *signature
+        && binding.precise_attribution_provenance_epoch == attribution_safety.provenance_epoch
+        && binding.precise_attribution_generation == attribution_safety.generation
+        && binding.precise_attribution_unsafe_since_generation
+            == attribution_safety.unsafe_since_generation
+        && binding.precise_attribution_unsafe_id == attribution_safety.unsafe_id
+        && binding.precise_attribution_current_scan_unsafe
+            == attribution_safety.current_scan_unsafe_cause_detected
+        && binding.precise_attribution_current_scan_incomplete
+            == attribution_safety.current_scan_incomplete
+}
+
+fn sanitize_numeric_recent_usage_points(points: &mut [crate::models::RecentUsagePoint]) {
+    for point in points {
+        point.source_contribution_epoch = None;
+        point.source_contributions.clear();
+    }
+}
+
+fn startup_snapshot_from_persistent_numeric(
+    cache: &PersistentNumericDashboardCacheV19,
+) -> DashboardSnapshot {
+    let recent_usage_24h = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_24h);
+    let recent_usage_7d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_7d);
+    let recent_usage_30d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_30d);
+    DashboardSnapshot {
+        generated_at: cache.built_at.clone(),
+        precise_recent_usage_covered_at: cache.coverage_at.clone(),
+        precise_recent_usage_fresh: false,
+        precise_observer_epoch: None,
+        precise_observer_started_at_unix_micros: None,
+        precise_observer_sequence: None,
+        precise_attribution_provenance_epoch: None,
+        precise_attribution_generation: None,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
+        account: AccountInfo {
+            display_name: "账户待读取".into(),
+            plan_label: "计划待读取".into(),
+        },
+        stats: cache.stats.clone(),
+        quota: placeholder_quota(),
+        activity_days: cache.activity_days.clone(),
+        recent_usage_24h,
+        recent_usage_7d,
+        recent_usage_30d,
+        cache_hit_ranking: Vec::new(),
+        cache_usage: Default::default(),
+        warnings: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -968,18 +2330,64 @@ fn cached_dashboard_snapshot(signature: &DashboardScanSignature) -> Option<Dashb
         .and_then(|cached| cached.snapshot)
 }
 
+fn cached_dashboard_snapshot_for_current(
+    signature: &DashboardScanSignature,
+    canonical_home: &Path,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+) -> Option<DashboardSnapshot> {
+    let physical_home_identity = attribution_watch_root_physical_identity(canonical_home).ok()?;
+    cached_dashboard_aggregate(signature)
+        .filter(|cached| cached.snapshot_complete)
+        .filter(|cached| {
+            cached.persistent_binding.as_ref().map_or(true, |binding| {
+                persistent_numeric_cache_binding_matches_current(
+                    binding,
+                    canonical_home,
+                    signature,
+                    &physical_home_identity,
+                    attribution_safety,
+                )
+            })
+        })
+        .and_then(|cached| cached.snapshot)
+}
+
 fn cached_dashboard_startup_snapshot(
     signature: &DashboardScanSignature,
+    canonical_home: &Path,
+    attribution_safety: &exact_usage_index::AttributionSafetyState,
+    physical_home_identity: &str,
 ) -> Option<DashboardSnapshot> {
     hydrate_dashboard_aggregate_cache_once();
-    let expected_scope = signature.usage_scope();
     DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
         .lock()
         .ok()
         .and_then(|guard| guard.aggregate.clone())
-        .filter(|cached| cached.signature.usage_scope() == expected_scope)
-        .and_then(|cached| cached.snapshot)
+        .filter(|cached| {
+            if cached.persistent_version == DASHBOARD_AGGREGATE_CACHE_VERSION
+                || cached.persistent_version == 0
+            {
+                cached.signature == *signature
+                    && cached.persistent_binding.as_ref().is_some_and(|binding| {
+                        persistent_numeric_cache_binding_matches_current(
+                            binding,
+                            canonical_home,
+                            signature,
+                            physical_home_identity,
+                            attribution_safety,
+                        )
+                    })
+            } else {
+                // Legacy V16-V18 have no physical/binding proof. The caller
+                // must supply the exact expected signature, including Home,
+                // local date, UTC offset, and index revision. The alias
+                // fallback constructs its raw signature explicitly, so this
+                // equality cannot bypass the Home or revision contract.
+                cached.signature == *signature
+            }
+        })
+        .and_then(|cached| cached.snapshot.map(sanitize_legacy_snapshot_for_startup))
 }
 
 fn cached_dashboard_aggregate(
@@ -1027,6 +2435,38 @@ fn store_dashboard_aggregate(
     snapshot: Option<DashboardSnapshot>,
     summary: TokenUsageSummary,
 ) -> Option<LocalDataWarning> {
+    let existing_binding = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .aggregate
+                .as_ref()
+                .filter(|cached| cached.signature == signature)
+                .and_then(|cached| cached.persistent_binding.clone())
+        });
+    #[cfg(test)]
+    let needs_test_binding = snapshot.is_none();
+    #[cfg(test)]
+    let snapshot = snapshot.or_else(|| Some(persistent_numeric_test_snapshot(&summary)));
+    #[cfg(test)]
+    let persistent_binding = if needs_test_binding {
+        Some(persistent_numeric_test_binding(&signature))
+    } else {
+        existing_binding
+    };
+    #[cfg(not(test))]
+    let persistent_binding = existing_binding;
+    store_dashboard_aggregate_with_binding(signature, snapshot, summary, persistent_binding)
+}
+
+fn store_dashboard_aggregate_with_binding(
+    signature: DashboardScanSignature,
+    snapshot: Option<DashboardSnapshot>,
+    summary: TokenUsageSummary,
+    persistent_binding: Option<PersistentNumericCacheBinding>,
+) -> Option<LocalDataWarning> {
     store_usage_summary_cache(signature.clone(), summary.clone());
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
@@ -1044,6 +2484,8 @@ fn store_dashboard_aggregate(
         snapshot,
         summary,
         snapshot_complete,
+        persistent_version: 0,
+        persistent_binding,
     };
     let warning = save_persistent_dashboard_aggregate(&aggregate)
         .err()
@@ -1067,27 +2509,81 @@ fn store_dashboard_aggregate(
     warning
 }
 
-fn cached_usage_summary(signature: &DashboardScanSignature) -> Option<TokenUsageSummary> {
-    let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = cache.lock() {
-        if let Some(cached) = guard.as_ref() {
-            if &cached.signature == signature {
-                return Some(cached.summary.clone());
-            }
-        }
+#[cfg(test)]
+fn persistent_numeric_test_binding(
+    signature: &DashboardScanSignature,
+) -> PersistentNumericCacheBinding {
+    let _ = fs::create_dir_all(&signature.codex_home);
+    let canonical_home = precise_refresh_home(&signature.codex_home)
+        .unwrap_or_else(|_| signature.codex_home.clone());
+    let mut canonical_signature = signature.clone();
+    canonical_signature.codex_home = canonical_home.clone();
+    let physical_home_identity =
+        attribution_watch_root_physical_identity(&canonical_home).unwrap_or_default();
+    PersistentNumericCacheBinding {
+        canonical_home,
+        physical_home_identity,
+        signature: canonical_signature,
+        precise_attribution_provenance_epoch: Uuid::nil().to_string(),
+        precise_attribution_generation: 0,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
+        precise_attribution_current_scan_incomplete: false,
     }
+}
 
-    if let Some(cached) = load_persistent_dashboard_aggregate() {
-        if &cached.signature == signature {
-            store_usage_summary_cache(cached.signature.clone(), cached.summary.clone());
-            return Some(cached.summary);
-        }
+#[cfg(test)]
+fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSnapshot {
+    DashboardSnapshot {
+        generated_at: OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
+        precise_recent_usage_covered_at: None,
+        precise_recent_usage_fresh: false,
+        precise_observer_epoch: None,
+        precise_observer_started_at_unix_micros: None,
+        precise_observer_sequence: None,
+        precise_attribution_provenance_epoch: None,
+        precise_attribution_generation: None,
+        precise_attribution_unsafe_since_generation: None,
+        precise_attribution_unsafe_id: None,
+        precise_attribution_current_scan_unsafe: false,
+        account: AccountInfo {
+            display_name: "账户待读取".into(),
+            plan_label: "计划待读取".into(),
+        },
+        stats: crate::models::DashboardStats {
+            total_tokens: summary.total_tokens,
+            peak_day_tokens: summary.today_tokens,
+            peak_thread_tokens: summary.today_tokens,
+            current_streak_days: 0,
+            longest_streak_days: 0,
+            total_calls: summary.today_requests,
+            total_threads: 0,
+            total_input_tokens: 0,
+            total_cached_input_tokens: 0,
+            total_output_tokens: 0,
+            model_breakdowns: Vec::new(),
+            first_usage_at: None,
+        },
+        quota: placeholder_quota(),
+        activity_days: Vec::new(),
+        recent_usage_24h: Vec::new(),
+        recent_usage_7d: Vec::new(),
+        recent_usage_30d: Vec::new(),
+        cache_hit_ranking: Vec::new(),
+        cache_usage: Default::default(),
+        warnings: Vec::new(),
+        diagnostics: Vec::new(),
     }
-
-    None
 }
 
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
+    // A summary refresh may run after a full V19 publish. Hydrate first so the
+    // existing binding is carried forward instead of silently downgrading the
+    // in-memory aggregate to an unbound snapshot.
+    hydrate_dashboard_aggregate_cache_once();
     store_usage_summary_cache(signature.clone(), summary.clone());
 
     let memory_snapshot = DASHBOARD_AGGREGATE_CACHE
@@ -1121,24 +2617,85 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
 
 fn load_persistent_dashboard_aggregate() -> Option<CachedDashboardAggregate> {
     let path = app_paths::token_aggregate_cache_path()?;
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
     let data = fs::read(path).ok()?;
     decode_persistent_dashboard_aggregate(&data)
 }
 
 fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardAggregate> {
-    let cache = serde_json::from_slice::<PersistentDashboardAggregateCache>(data).ok()?;
-    (cache.version == DASHBOARD_AGGREGATE_CACHE_VERSION).then_some(CachedDashboardAggregate {
-        signature: cache.signature,
-        snapshot: cache.snapshot,
-        summary: cache.summary,
-        snapshot_complete: false,
-    })
+    let version = serde_json::from_slice::<serde_json::Value>(data)
+        .ok()?
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())?;
+    match version {
+        DASHBOARD_AGGREGATE_CACHE_VERSION => {
+            let cache = serde_json::from_slice::<PersistentNumericDashboardCacheV19>(data).ok()?;
+            if cache.version != DASHBOARD_AGGREGATE_CACHE_VERSION
+                || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
+                || !valid_persistent_cache_timestamp(&cache.built_at)
+                || cache
+                    .coverage_at
+                    .as_deref()
+                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+            {
+                return None;
+            }
+            let snapshot = startup_snapshot_from_persistent_numeric(&cache);
+            Some(CachedDashboardAggregate {
+                signature: cache.binding.signature.clone(),
+                snapshot: Some(snapshot),
+                summary: cache.summary,
+                snapshot_complete: false,
+                persistent_version: DASHBOARD_AGGREGATE_CACHE_VERSION,
+                persistent_binding: Some(cache.binding),
+            })
+        }
+        LEGACY_DASHBOARD_AGGREGATE_CACHE_V16
+        | LEGACY_DASHBOARD_AGGREGATE_CACHE_V17
+        | LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION => {
+            let cache = serde_json::from_slice::<PersistentDashboardAggregateCache>(data).ok()?;
+            if !matches!(
+                cache.version,
+                LEGACY_DASHBOARD_AGGREGATE_CACHE_V16
+                    | LEGACY_DASHBOARD_AGGREGATE_CACHE_V17
+                    | LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION
+            ) {
+                return None;
+            }
+            Some(CachedDashboardAggregate {
+                signature: cache.signature,
+                snapshot: cache.snapshot.map(sanitize_legacy_snapshot_for_startup),
+                summary: cache.summary,
+                snapshot_complete: false,
+                persistent_version: cache.version,
+                persistent_binding: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn valid_persistent_cache_timestamp(value: &str) -> bool {
+    OffsetDateTime::parse(value, &Rfc3339).is_ok()
 }
 
 fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> Result<(), String> {
     let Some(path) = app_paths::token_aggregate_cache_path() else {
         return Ok(());
     };
+    let (Some(binding), Some(snapshot)) = (
+        aggregate.persistent_binding.as_ref(),
+        aggregate.snapshot.as_ref(),
+    ) else {
+        return Ok(());
+    };
+    if !persistent_numeric_cache_binding_is_well_formed(binding) {
+        return Err("persistent numeric dashboard cache binding is not trustworthy".into());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
@@ -1147,17 +2704,25 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
             )
         })?;
     }
-    if !aggregate_checkpoint_due(&path, &aggregate.signature, SystemTime::now()) {
+    if !aggregate_checkpoint_due_with_binding(
+        &path,
+        &binding.signature,
+        Some(binding),
+        SystemTime::now(),
+    ) {
         return Ok(());
     }
-    let payload = PersistentDashboardAggregateCache {
+    let payload = PersistentNumericDashboardCacheV19 {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
-        signature: aggregate.signature.clone(),
-        snapshot: aggregate
-            .snapshot
-            .clone()
-            .map(sanitize_snapshot_for_persistence),
+        binding: binding.clone(),
+        built_at: snapshot.generated_at.clone(),
+        coverage_at: snapshot.precise_recent_usage_covered_at.clone(),
         summary: aggregate.summary.clone(),
+        stats: snapshot.stats.clone(),
+        activity_days: snapshot.activity_days.clone(),
+        recent_usage_24h: persistent_numeric_recent_usage_points(&snapshot.recent_usage_24h),
+        recent_usage_7d: persistent_numeric_recent_usage_points(&snapshot.recent_usage_7d),
+        recent_usage_30d: persistent_numeric_recent_usage_points(&snapshot.recent_usage_30d),
     };
     let data = serde_json::to_vec(&payload)
         .map_err(|error| format!("serialize aggregate cache {}: {error}", path.display()))?;
@@ -1171,14 +2736,39 @@ fn aggregate_checkpoint_due(
     signature: &DashboardScanSignature,
     now: SystemTime,
 ) -> bool {
-    let Some(existing) = fs::read(path)
+    aggregate_checkpoint_due_with_binding(path, signature, None, now)
+}
+
+fn aggregate_checkpoint_due_with_binding(
+    path: &Path,
+    signature: &DashboardScanSignature,
+    binding: Option<&PersistentNumericCacheBinding>,
+    now: SystemTime,
+) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return true;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return true;
+    }
+    let Some(data) = fs::read(path).ok() else {
+        return true;
+    };
+    let Some(version) = serde_json::from_slice::<serde_json::Value>(&data)
         .ok()
-        .and_then(|data| serde_json::from_slice::<PersistentDashboardAggregateCache>(&data).ok())
+        .and_then(|value| value.get("version").and_then(serde_json::Value::as_u64))
+        .and_then(|version| u32::try_from(version).ok())
     else {
         return true;
     };
-    if existing.version != DASHBOARD_AGGREGATE_CACHE_VERSION
-        || existing.signature.usage_scope() != signature.usage_scope()
+    if version != DASHBOARD_AGGREGATE_CACHE_VERSION {
+        return true;
+    }
+    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCacheV19>(&data) else {
+        return true;
+    };
+    if existing.binding.signature != *signature
+        || binding.is_some_and(|binding| &existing.binding != binding)
     {
         return true;
     }
@@ -1197,7 +2787,10 @@ fn write_aggregate_if_changed(
     data: &[u8],
     writer: impl FnOnce(&Path, &[u8]) -> Result<(), crate::core::atomic_file::AtomicWriteError>,
 ) -> Result<(), String> {
-    if fs::read(path).is_ok_and(|existing| existing == data) {
+    let same_regular_file = fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        && fs::read(path).is_ok_and(|existing| existing == data);
+    if same_regular_file {
         return Ok(());
     }
     writer(path, data).map_err(|error| error.to_string())
@@ -1212,10 +2805,63 @@ struct PersistentDashboardAggregateCache {
     summary: TokenUsageSummary,
 }
 
-fn sanitize_snapshot_for_persistence(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
-    snapshot.recent_usage_24h.clear();
+fn persistent_numeric_recent_usage_points(
+    points: &[crate::models::RecentUsagePoint],
+) -> Vec<PersistentNumericRecentUsagePoint> {
+    points
+        .iter()
+        .map(|point| PersistentNumericRecentUsagePoint {
+            label: point.label.clone(),
+            start_unix: point.start_unix,
+            tokens: point.tokens,
+            calls: point.calls,
+            input_tokens: point.input_tokens,
+            cached_input_tokens: point.cached_input_tokens,
+            output_tokens: point.output_tokens,
+            model_breakdowns: point.model_breakdowns.clone(),
+            cache_hit_rate: point.cache_hit_rate,
+            five_hour_remaining_percent: point.five_hour_remaining_percent,
+            seven_day_remaining_percent: point.seven_day_remaining_percent,
+        })
+        .collect()
+}
+
+fn restore_persistent_numeric_recent_usage_points(
+    points: &[PersistentNumericRecentUsagePoint],
+) -> Vec<crate::models::RecentUsagePoint> {
+    points
+        .iter()
+        .map(|point| crate::models::RecentUsagePoint {
+            label: point.label.clone(),
+            start_unix: point.start_unix,
+            tokens: point.tokens,
+            calls: point.calls,
+            input_tokens: point.input_tokens,
+            cached_input_tokens: point.cached_input_tokens,
+            output_tokens: point.output_tokens,
+            model_breakdowns: point.model_breakdowns.clone(),
+            cache_hit_rate: point.cache_hit_rate,
+            five_hour_remaining_percent: point.five_hour_remaining_percent,
+            seven_day_remaining_percent: point.seven_day_remaining_percent,
+            source_contribution_epoch: None,
+            source_contributions: Vec::new(),
+        })
+        .collect()
+}
+
+fn sanitize_legacy_snapshot_for_startup(mut snapshot: DashboardSnapshot) -> DashboardSnapshot {
+    snapshot.account = AccountInfo {
+        display_name: "账户待读取".into(),
+        plan_label: "计划待读取".into(),
+    };
+    snapshot.quota = placeholder_quota();
+    sanitize_numeric_recent_usage_points(&mut snapshot.recent_usage_24h);
+    sanitize_numeric_recent_usage_points(&mut snapshot.recent_usage_7d);
+    sanitize_numeric_recent_usage_points(&mut snapshot.recent_usage_30d);
     snapshot.cache_hit_ranking.clear();
     snapshot.cache_usage = Default::default();
+    snapshot.warnings.clear();
+    snapshot.diagnostics.clear();
     snapshot.precise_recent_usage_fresh = false;
     snapshot.precise_observer_epoch = None;
     snapshot.precise_observer_started_at_unix_micros = None;
@@ -1263,9 +2909,8 @@ fn snapshot_with_precise_coverage(
         snapshot.precise_observer_epoch = None;
         snapshot.precise_observer_started_at_unix_micros = None;
         snapshot.precise_observer_sequence = None;
-        snapshot.precise_attribution_provenance_epoch = Some(
-            attribution_safety.provenance_epoch.clone(),
-        );
+        snapshot.precise_attribution_provenance_epoch =
+            Some(attribution_safety.provenance_epoch.clone());
         snapshot.precise_attribution_generation = Some(attribution_safety.generation);
         snapshot.precise_attribution_unsafe_since_generation =
             attribution_safety.unsafe_since_generation;
@@ -1281,13 +2926,11 @@ fn snapshot_with_precise_coverage(
     snapshot.precise_recent_usage_covered_at = Some(covered_at);
     snapshot.precise_recent_usage_fresh = true;
     snapshot.precise_observer_epoch = Some(observer_identity.epoch.clone());
-    snapshot.precise_observer_started_at_unix_micros = Some(
-        observer_identity.started_at_unix_micros,
-    );
+    snapshot.precise_observer_started_at_unix_micros =
+        Some(observer_identity.started_at_unix_micros);
     snapshot.precise_observer_sequence = Some(observer_identity.sequence);
-    snapshot.precise_attribution_provenance_epoch = Some(
-        attribution_safety.provenance_epoch.clone(),
-    );
+    snapshot.precise_attribution_provenance_epoch =
+        Some(attribution_safety.provenance_epoch.clone());
     snapshot.precise_attribution_generation = Some(attribution_safety.generation);
     snapshot.precise_attribution_unsafe_since_generation =
         attribution_safety.unsafe_since_generation;
@@ -1300,9 +2943,12 @@ fn snapshot_with_precise_coverage(
 fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
     #[cfg(test)]
     {
+        let Ok(canonical_home) = precise_refresh_home(_codex_home) else {
+            return;
+        };
         let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
         if let Ok(mut counts) = counts.lock() {
-            *counts.entry(_codex_home.to_path_buf()).or_default() += 1;
+            *counts.entry(canonical_home).or_default() += 1;
         }
     }
 }
@@ -1310,6 +2956,76 @@ fn record_dashboard_aggregate_build_for_testing(_codex_home: &Path) {
 fn record_dashboard_source_scan_for_testing() {
     #[cfg(test)]
     DASHBOARD_SCAN_SIGNATURE_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn run_precise_refresh_sync_hook_for_testing(path: &Path) -> Result<(), String> {
+    PRECISE_REFRESH_SYNC_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+    let hook = PRECISE_REFRESH_SYNC_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_sync_hook_for_testing(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
+    let hook = PRECISE_REFRESH_AFTER_CUTOFF_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_precise_refresh_promotion_hook_for_testing(promoted: bool) -> Result<(), String> {
+    let hook = PRECISE_REFRESH_PROMOTION_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook(promoted)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_promotion_hook_for_testing(_promoted: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn run_precise_refresh_finish_hook_for_testing() {
+    let hook = PRECISE_REFRESH_FINISH_HOOK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(hook) = hook.as_ref() {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+fn run_precise_refresh_finish_hook_for_testing() {}
+
+#[cfg(not(test))]
+fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1328,27 +3044,38 @@ pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     if let Ok(mut guard) = summary_cache.lock() {
         *guard = None;
     }
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
-    if let Ok(mut guard) = in_flight.lock() {
-        guard.clear();
-    }
-    let source_scan_cache =
-        USAGE_SUMMARY_SOURCE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = source_scan_cache.lock() {
-        guard.clear();
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut recency) = recency.lock() {
+        recency.clear();
     }
     DASHBOARD_SCAN_SIGNATURE_COUNT.store(0, Ordering::Relaxed);
+    PRECISE_REFRESH_SYNC_CALL_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn reset_precise_refresh_recency_for_testing() {
+    let recency = PRECISE_REFRESH_RECENCY.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut recency) = recency.lock() {
+        recency.clear();
+    }
 }
 
 #[cfg(test)]
 fn wait_for_usage_summary_refreshes_for_testing() {
-    let in_flight = USAGE_SUMMARY_REFRESH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
     for _ in 0..250 {
-        let is_empty = in_flight
+        let coordinators = PRECISE_REFRESH_COORDINATORS
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
-            .map(|guard| guard.is_empty())
-            .unwrap_or(false);
-        if is_empty {
+            .map(|registry| registry.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let idle = coordinators.iter().all(|coordinator| {
+            coordinator
+                .flight
+                .lock()
+                .map(|flight| flight.is_none())
+                .unwrap_or(false)
+        });
+        if idle {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1357,12 +3084,83 @@ fn wait_for_usage_summary_refreshes_for_testing() {
 }
 
 #[cfg(test)]
+pub(crate) fn set_precise_refresh_sync_hook_for_testing(hook: Option<PreciseRefreshSyncHook>) {
+    let slot = PRECISE_REFRESH_SYNC_HOOK.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn set_precise_refresh_after_cutoff_hook_for_testing(
+    hook: Option<PreciseRefreshCutoffHook>,
+) {
+    let slot = PRECISE_REFRESH_AFTER_CUTOFF_HOOK.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn set_precise_refresh_promotion_hook_for_testing(
+    hook: Option<PreciseRefreshPromotionHook>,
+) {
+    let slot = PRECISE_REFRESH_PROMOTION_HOOK.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn set_precise_refresh_finish_hook_for_testing(hook: Option<PreciseRefreshFinishHook>) {
+    let slot = PRECISE_REFRESH_FINISH_HOOK.get_or_init(|| Mutex::new(None));
+    *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+}
+
+#[cfg(test)]
+pub(crate) fn precise_refresh_sync_call_count_for_testing() -> usize {
+    PRECISE_REFRESH_SYNC_CALL_COUNT.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_precise_refresh_spawn_for_testing() {
+    FAIL_NEXT_PRECISE_REFRESH_SPAWN.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn precise_refresh_coordinator_registry_len_for_testing() -> usize {
+    let registry = PRECISE_REFRESH_COORDINATORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry.retain(|_, coordinator| {
+        Arc::strong_count(coordinator) > 1
+            || coordinator
+                .previous_completed_owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .is_some_and(|owner| {
+                    Instant::now().saturating_duration_since(owner.completed_at)
+                        < PRECISE_REFRESH_COMPLETED_OWNER_WINDOW
+                })
+    });
+    registry
+        .values()
+        .filter(|coordinator| {
+            coordinator
+                .flight
+                .lock()
+                .map(|flight| flight.is_some())
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+#[cfg(test)]
 pub(crate) fn dashboard_aggregate_build_count_for_testing(codex_home: &Path) -> usize {
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(canonical_home) = precise_refresh_home(codex_home) else {
+        return 0;
+    };
     counts
         .lock()
         .ok()
-        .and_then(|counts| counts.get(codex_home).copied())
+        .and_then(|counts| counts.get(&canonical_home).copied())
         .unwrap_or(0)
 }
 

@@ -42,7 +42,7 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         let panel = makePanel()
         defer { panel.close() }
         panel.allowsBackgroundDrag = true
-        panel.controlExclusionSize = 24
+        panel.controlExclusionSize = 52
 
         XCTAssertEqual(
             panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 120, y: 40)),
@@ -59,6 +59,26 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         XCTAssertEqual(
             panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 250, y: 88)),
             .passThrough
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 8, y: 20)),
+            .passThrough,
+            "分页箭头使用整条左右交互带，不能被背景拖拽吞掉"
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 48, y: 20)),
+            .passThrough,
+            "透明命中区向内容侧扩展后仍必须交给分页按钮"
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 250, y: 20)),
+            .passThrough,
+            "分页箭头使用整条左右交互带，不能被背景拖拽吞掉"
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 210, y: 20)),
+            .passThrough,
+            "右侧透明命中区向内容侧扩展后仍必须交给分页按钮"
         )
 
         panel.allowsBackgroundDrag = false

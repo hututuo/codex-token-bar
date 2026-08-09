@@ -1,9 +1,11 @@
 import Foundation
 
 struct FloatingPanelPresentationRow: Equatable, Identifiable {
-    let group: FloatingPanelContentGroup
+    let groups: [FloatingPanelContentGroup]
 
-    var id: FloatingPanelContentGroup { group }
+    var id: String { groups.map(\.rawValue).joined(separator: "|") }
+    var group: FloatingPanelContentGroup { groups[0] }
+    var isPaged: Bool { groups.count > 1 }
 }
 
 struct FloatingPanelPresentationModel: Equatable {
@@ -21,10 +23,11 @@ struct FloatingPanelPresentationModel: Equatable {
         snapshot: TokenDisplaySnapshot,
         visibility: FloatingPanelContentVisibility,
         radarSnapshot: CodexRadarSnapshot? = nil,
-        radarPresentation: CodexRadarPresentationState? = nil
+        radarPresentation: CodexRadarPresentationState? = nil,
+        fallbackPriceModel: OfficialAPIPriceModel = .gpt56Sol
     ) {
         let radarPresentation = radarPresentation ?? CodexRadarPresentationState(snapshot: radarSnapshot)
-        rows = visibility.layoutGroups.map(FloatingPanelPresentationRow.init(group:))
+        rows = visibility.layoutRows.map { FloatingPanelPresentationRow(groups: $0.groups) }
         rateBarUsageStatus = visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil
         standaloneUsageStatus = visibility.showsStandaloneUsageStatus ? snapshot.standaloneUsageStatus : nil
         needsTopSafetyInset = visibility.needsTopControlInset
@@ -40,6 +43,22 @@ struct FloatingPanelPresentationModel: Equatable {
         }
         if visibility.showRunningThreads {
             parts.append(RunningThreadPresentation(summary: snapshot.runningThreads).accessibilityText)
+        }
+        if visibility.showTodayModelShare {
+            parts.append(FloatingTodayModelUsagePresentation.accessibilityText(
+                page: .share,
+                rows: snapshot.todayModelBreakdowns,
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
+            ))
+        }
+        if visibility.showTodayModelCost {
+            parts.append(FloatingTodayModelUsagePresentation.accessibilityText(
+                page: .cost,
+                rows: snapshot.todayModelBreakdowns,
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
+            ))
         }
         if visibility.showUsageStatus {
             parts.append(snapshot.compactUsageStatus)

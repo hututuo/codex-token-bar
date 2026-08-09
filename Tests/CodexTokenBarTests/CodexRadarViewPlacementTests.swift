@@ -43,6 +43,17 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("refreshInterval: TimeInterval = 600"))
     }
 
+    func testSharedAccountRefreshSignatureIncludesRadarSourceKind() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
+        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("radar?.sourceKind ?? \"\""))
+    }
+
     func testRadarStripBalancesOfficialAndCrowdRadarsInMiddleColumns() {
         let widths = CodexRadarStrip.columnWidths(totalWidth: 800)
         let evenColumnWidth = 800 / 4.0
@@ -67,6 +78,21 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("private struct CodexRadarDetailSubsection"))
         XCTAssertTrue(source.contains("private struct CodexRadarTableContainer"))
         XCTAssertTrue(source.contains("CodexRadarTableContainer"))
+    }
+
+    func testRadarActionUsesUrgentAccentInDetailAndCompactSurfaces() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let compactSurface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
+        let radarSource = try String(contentsOf: radarView, encoding: .utf8)
+        let compactSource = try String(contentsOf: compactSurface, encoding: .utf8)
+
+        XCTAssertTrue(radarSource.contains("valueColors: [\"建议动作\": AppTheme.radarActionColor(snapshot.recommendedAction)]"))
+        XCTAssertTrue(compactSource.contains("let actionPrimaryColor = AppTheme.radarActionRole(snapshot?.recommendedAction) == .red"))
+        XCTAssertTrue(compactSource.contains(".foregroundStyle(actionPrimaryColor)"))
     }
 
     func testRadarDetailChartsUseAxesAndSelectableModelSeries() throws {

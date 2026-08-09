@@ -51,7 +51,7 @@ enum FloatingPanelMouseDownAction: Equatable {
 @MainActor
 final class FloatingTokenPanelWindow: NSPanel {
     var allowsBackgroundDrag = true
-    var controlExclusionSize: CGFloat = 24
+    var controlExclusionSize: CGFloat = 52
     var onOpenDashboard: (() -> Void)?
 
     override var canBecomeKey: Bool { false }
@@ -113,7 +113,10 @@ final class FloatingTokenPanelWindow: NSPanel {
     private func isInControlCorner(_ location: NSPoint) -> Bool {
         let bounds = contentView?.bounds ?? NSRect(origin: .zero, size: frame.size)
         let size = min(max(controlExclusionSize, 0), bounds.width / 2)
-        guard size > 0, location.y >= bounds.maxY - size else { return false }
+        guard size > 0 else { return false }
+        // The full left/right gutters are interactive. Besides the existing
+        // lock/close buttons, paged rows place their subtle navigation arrows
+        // here; the center remains a large uninterrupted drag surface.
         return location.x <= bounds.minX + size || location.x >= bounds.maxX - size
     }
 }
@@ -352,7 +355,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.isOpaque = false
             panel.hasShadow = false
             panel.allowsBackgroundDrag = !isLocked
-            panel.controlExclusionSize = 24 * layout.effectiveScale
+            panel.controlExclusionSize = 52 * layout.effectiveScale
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
             }
@@ -371,7 +374,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
         if let panel = panel as? FloatingTokenPanelWindow {
             panel.allowsBackgroundDrag = !isLocked
-            panel.controlExclusionSize = 24 * layout.effectiveScale
+            panel.controlExclusionSize = 52 * layout.effectiveScale
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
             }
@@ -561,7 +564,6 @@ struct FloatingTokenPanelView: View {
                 onToggleLock: nil
             )
                 .environment(\.tokenDisplayScale, scale)
-                .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)
                 .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .zIndex(2)

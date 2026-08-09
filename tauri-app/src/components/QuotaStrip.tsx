@@ -308,6 +308,12 @@ function SharedAccountAttributionDetail({
                 <dt>当前 API 等值</dt>
                 <dd>{money(attribution.localCurrentAPIEquivalentUSD)} · {priceModelTitle(attribution.priceModel)}</dd>
               </div>
+              {attribution.excludedModels.length > 0 ? (
+                <div>
+                  <dt>独立额度</dt>
+                  <dd>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用，不参与 API 等值</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>本机 token</dt>
                 <dd>

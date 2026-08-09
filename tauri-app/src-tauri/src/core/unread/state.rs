@@ -25,16 +25,31 @@ pub(super) fn read_unread_thread_ids(codex_home: &Path) -> Option<HashSet<String
     Some(visible_user_thread_ids(&thread_ids, codex_home))
 }
 
+/// Read the current left-sidebar state captured by the existing, loopback-only
+/// CDP supervisor.  The persisted atom remains available through
+/// `read_unread_thread_ids` for diagnostics and precise-source observations,
+/// but it is never allowed to drive the live unread indicator.
+pub(super) fn read_sidebar_unread_thread_ids(
+    codex_home: &Path,
+) -> Option<HashSet<String>> {
+    let thread_ids = crate::core::thread_delete::sidebar_unread_thread_ids()?;
+    Some(visible_user_thread_ids(&thread_ids, codex_home))
+}
+
 pub(super) fn parse_unread_thread_ids(data: &[u8]) -> Result<HashSet<String>, String> {
     let object: Value = serde_json::from_slice(data)
         .map_err(|error| format!("pinned native unread state JSON is invalid: {error}"))?;
+    // The atom is only the desktop's candidate set. Require the complete
+    // sidebar snapshot before accepting any ID; falling back to SQLite or
+    // session files here would turn stale historical IDs into false reminders.
+    let sidebar_visible_ids = sidebar_visible_thread_ids(&object).ok_or_else(|| {
+        "pinned native unread state has no complete initialized sidebar snapshot".to_string()
+    })?;
     let Some(unread_state) = unread_state_value(&object) else {
         return Ok(HashSet::new());
     };
     let mut thread_ids = collect_thread_ids(unread_state);
-    if let Some(sidebar_visible_ids) = sidebar_visible_thread_ids(&object) {
-        thread_ids.retain(|thread_id| sidebar_visible_ids.contains(thread_id));
-    }
+    thread_ids.retain(|thread_id| sidebar_visible_ids.contains(thread_id));
     Ok(thread_ids)
 }
 
@@ -99,8 +114,8 @@ fn unread_state_value(object: &Value) -> Option<&Value> {
 /// Codex desktop owns read/unread state outside app-server. Its native unread
 /// atom can retain threads that are no longer in the sidebar, so an initialized
 /// and structurally complete sidebar snapshot is used as the final visibility
-/// boundary. Missing, migrating, or malformed metadata fails open to the
-/// existing SQLite/session checks for compatibility.
+/// boundary. Missing, migrating, or malformed metadata fails closed until
+/// the desktop publishes a complete snapshot again.
 fn sidebar_visible_thread_ids(object: &Value) -> Option<HashSet<String>> {
     let persisted_state = object.get("electron-persisted-atom-state")?;
     let preferences = persisted_state.get("flat-project-sidebar-preferences-v1")?;

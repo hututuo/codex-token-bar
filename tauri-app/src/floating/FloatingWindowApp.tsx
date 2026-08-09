@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { readAppSettings, recordStartupEvent } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
+import { useSharedAccountAttributionSettings } from "../settings/useSharedAccountAttributionSettings";
 import {
   INITIAL_FLOATING_SURFACE_LIFECYCLE,
   observeFloatingSurfaceVisibility,
@@ -39,6 +40,7 @@ export function FloatingWindowApp() {
     sourceToken,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
+  const { settings: attributionSettings } = useSharedAccountAttributionSettings();
   const radarSnapshot = useFloatingRadar(surfaceLifecycle.active && sourceReady);
   const crowdRadarSnapshot = useFloatingCrowdRadar(surfaceLifecycle.active && sourceReady);
   useFloatingWindowPlacement();
@@ -221,6 +223,7 @@ export function FloatingWindowApp() {
         crowdRadarSnapshot={crowdRadarSnapshot}
         runningThreads={runningThreads}
         unreadEffect={settings.unreadEffect}
+        priceModel={attributionSettings.priceModel}
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
         onOpenDashboard={openDashboardWindow}

@@ -7,6 +7,7 @@ extension RecentUsageChart {
         hourlyBins: [BinUsage],
         cacheRecentBins: [TokenCacheBucket],
         cacheHourlyBins: [TokenCacheBucket],
+        attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket]
     ) -> RecentChartPreparedData {
@@ -18,6 +19,11 @@ extension RecentUsageChart {
             cacheHourlyBins: cacheHourlyBins
         )
         let observedRates = observedCacheHitRates(cacheBreakdowns: cacheBreakdowns)
+        let modelBreakdowns = modelBreakdowns(
+            bins: bins,
+            interval: range.bucketInterval,
+            attributionEvents: attributionEvents
+        )
         let quotaBuckets = quotaBuckets(
             for: range,
             bins: bins,
@@ -46,6 +52,7 @@ extension RecentUsageChart {
             callTotal: bins.reduce(0) { $0 + $1.calls },
             recentCacheBreakdown: cacheBreakdowns.combined,
             cacheBreakdowns: cacheBreakdowns,
+            modelBreakdowns: modelBreakdowns,
             observedCacheHitRates: observedRates,
             fiveHourRemainingPercents: fiveHourRemaining,
             sevenDayRemainingPercents: sevenDayRemaining,
@@ -59,6 +66,21 @@ extension RecentUsageChart {
             hasSevenDayQuota: sevenDayRemaining.contains { $0 != nil },
             markerIndices: markerIndices
         )
+    }
+
+    private static func modelBreakdowns(
+        bins: [BinUsage],
+        interval: TimeInterval,
+        attributionEvents: [TokenCacheAttributionEvent]
+    ) -> [[ModelTokenBreakdown]] {
+        let grouped = Dictionary(grouping: attributionEvents) {
+            timeBinKey($0.start, interval: interval)
+        }
+        return bins.map { bin in
+            ModelUsagePresentation.rows(
+                from: grouped[timeBinKey(bin.start, interval: interval)] ?? []
+            )
+        }
     }
 
     private static func usageBins(for range: RecentChartRange, recentBins: [BinUsage], hourlyBins: [BinUsage]) -> [BinUsage] {
@@ -148,7 +170,11 @@ extension RecentUsageChart {
                     let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
                     return quotaByHour[timeBinKey(date, interval: 60 * 60)]
                 }
-                return averagedQuotaBucket(start: bin.start, buckets: buckets)
+                return averagedQuotaBucket(
+                    start: bin.start,
+                    buckets: buckets,
+                    expectedBucketCount: 3
+                )
             }
         }
     }
@@ -159,22 +185,40 @@ extension RecentUsageChart {
         })
     }
 
-    private static func averagedQuotaBucket(start: Date, buckets: [QuotaHistoryRecentBucket]) -> QuotaHistoryRecentBucket? {
+    private static func averagedQuotaBucket(
+        start: Date,
+        buckets: [QuotaHistoryRecentBucket],
+        expectedBucketCount: Int
+    ) -> QuotaHistoryRecentBucket? {
         let fiveHourValues = buckets.compactMap(\.fiveHourRemainingPercent)
         let sevenDayValues = buckets.compactMap(\.sevenDayRemainingPercent)
-        let fiveHour = average(fiveHourValues)
-        let sevenDay = average(sevenDayValues)
+        // A 30d point represents three hourly buckets. If one of those
+        // buckets is unknown (for example, the poller was asleep across a
+        // quota reset), averaging the remaining values would turn one stale
+        // carried sample into a false plateau. Keep the metric unknown until
+        // every source bucket has a value; never manufacture a zero or carry
+        // an old value through the gap.
+        let fiveHour = fiveHourValues.count == expectedBucketCount
+            ? average(fiveHourValues)
+            : nil
+        let sevenDay = sevenDayValues.count == expectedBucketCount
+            ? average(sevenDayValues)
+            : nil
         guard fiveHour != nil || sevenDay != nil else { return nil }
         return QuotaHistoryRecentBucket(
             start: start,
             fiveHourRemainingPercent: fiveHour,
             sevenDayRemainingPercent: sevenDay,
-            fiveHourObservations: buckets
-                .flatMap(\.fiveHourObservations)
-                .sorted { $0.observedAt < $1.observedAt },
-            sevenDayObservations: buckets
-                .flatMap(\.sevenDayObservations)
-                .sorted { $0.observedAt < $1.observedAt }
+            fiveHourObservations: fiveHour == nil
+                ? []
+                : buckets
+                    .flatMap(\.fiveHourObservations)
+                    .sorted { $0.observedAt < $1.observedAt },
+            sevenDayObservations: sevenDay == nil
+                ? []
+                : buckets
+                    .flatMap(\.sevenDayObservations)
+                    .sorted { $0.observedAt < $1.observedAt }
         )
     }
 

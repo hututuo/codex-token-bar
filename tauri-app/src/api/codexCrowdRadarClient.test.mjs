@@ -176,8 +176,9 @@ test("crowd radar normalizer tolerates wrappers aliases strings maps and malform
   assert.equal(snapshot.pendingGrades, 2);
   assert.equal(snapshot.errorGrades, 1);
   assert.equal(snapshot.realtimeAvailable, false);
-  assert.equal(snapshot.models.length, 2);
-  assert.deepEqual(snapshot.models[0], {
+  assert.equal(snapshot.models.length, 0);
+  assert.equal(snapshot.recentModels.length, 2);
+  assert.deepEqual(snapshot.recentModels[0], {
     model: "gpt-5.6-sol",
     effort: "max",
     graded: 10,
@@ -188,8 +189,8 @@ test("crowd radar normalizer tolerates wrappers aliases strings maps and malform
     scoreSamples: 2,
     latestGradedAt: null,
   });
-  assert.deepEqual(snapshot.recentModels, snapshot.models);
-  assert.equal(snapshot.models[1].passRate, 0.8);
+  assert.equal(snapshot.recentModels.length, 2);
+  assert.equal(snapshot.recentModels[1].passRate, 0.8);
 });
 
 test("crowd radar normalizer derives votes from task maps and rejects meaningless payloads", () => {
@@ -209,7 +210,7 @@ test("crowd radar normalizer derives votes from task maps and rejects meaningles
       },
     },
   });
-  assert.deepEqual(snapshot.models[0], {
+  assert.deepEqual(snapshot.recentModels[0], {
     model: "gpt-5.6-luna",
     effort: "high",
     graded: 5,
@@ -284,7 +285,7 @@ test("crowd radar accepts the published intelligence-efficiency points fallback"
   assert.equal(snapshot.generatedAt, "2026-07-31T23:47:20+08:00");
   assert.equal(snapshot.taskCount, 112);
   assert.equal(snapshot.realtimeAvailable, false);
-  assert.deepEqual(snapshot.models[0], {
+  assert.deepEqual(snapshot.recentModels[0], {
     model: "gpt-5.6-sol",
     effort: "low",
     graded: 112,
@@ -295,7 +296,118 @@ test("crowd radar accepts the published intelligence-efficiency points fallback"
     scoreSamples: 112,
     latestGradedAt: "2026-07-31T14:54:08+00:00",
   });
-  assert.deepEqual(snapshot.recentModels, snapshot.models);
+  assert.equal(snapshot.models.length, 0);
+});
+
+test("published or old cumulative points never become the realtime ranking", () => {
+  const snapshot = normalizeCodexCrowdRadarPayload({
+    table: null,
+    tableError: "live table unavailable",
+    leaderboard: {
+      schema: 2,
+      type: "distributed_intelligence_efficiency",
+      source_updated_at: "2026-08-07T04:50:48+08:00",
+      points: [{
+        model: "gpt-5.6-sol",
+        effort: "low",
+        passed: 0,
+        valid_tasks: 3,
+        latest_graded_at: "2026-08-06T04:39:08+00:00",
+      }],
+    },
+  });
+
+  assert.equal(snapshot.realtimeAvailable, false);
+  assert.deepEqual(rankedCodexCrowdRadarModels(snapshot), []);
+  assert.deepEqual(
+    rankedCodexCrowdRadarModels(snapshot, 1, "recent").map((row) => [row.model, row.scorePassed, row.scoreSamples]),
+    [["gpt-5.6-sol", 0, 3]],
+  );
+});
+
+test("recovery scheduling is short, bounded, and has no fourth retry", async () => {
+  const source = readFileSync(new URL("./codexCrowdRadarClient.ts", import.meta.url), "utf8");
+  assert.match(source, /crowdRadarReadInFlight/);
+  const module = await import("./codexCrowdRadarClient.ts");
+  assert.equal(module.nextCodexCrowdRadarRecoveryDelayMs(0), 2_000);
+  assert.equal(module.nextCodexCrowdRadarRecoveryDelayMs(1), 8_000);
+  assert.equal(module.nextCodexCrowdRadarRecoveryDelayMs(2), null);
+});
+
+test("crowd radar keeps source freshness and fallback errors visible", () => {
+  const snapshot = normalizeCodexCrowdRadarPayload({
+    observedAt: "2026-08-08T09:00:00Z",
+    table: null,
+    tableError: "Crowd Radar table sources failed: site timeout",
+    tableProvenance: {
+      source: "legacy-api",
+      endpoint: "https://api.codexradar.com/api/v1/table",
+      attempts: 1,
+      fresh: true,
+      stale: false,
+      freshness_basis: "network_observation",
+      fallbackUsed: true,
+      sourceFailures: ["Crowd Radar table/site timeout"],
+      attemptErrors: [],
+      server_date: "Fri, 08 Aug 2026 09:00:00 GMT",
+      server_age_seconds: "2",
+    },
+    leaderboard: {
+      points: [{
+        model: "gpt-5.6-luna",
+        effort: "max",
+        iq: 120,
+        passed: 8,
+        valid_tasks: 10,
+      }],
+    },
+    leaderboardProvenance: {
+      source: "published",
+      endpoint: "https://codexradar.com/data/intelligence-efficiency.json",
+      attempts: 2,
+      fresh: true,
+      stale: false,
+      fallback_used: false,
+      source_failures: [],
+      attempt_errors: ["attempt 1: temporary transport failure"],
+      server_age_seconds: 3,
+    },
+  });
+
+  assert.equal(snapshot.provenance?.observedAt, "2026-08-08T09:00:00Z");
+  assert.equal(snapshot.provenance?.table?.source, "legacy-api");
+  assert.equal(snapshot.provenance?.table?.fresh, true);
+  assert.equal(snapshot.provenance?.table?.stale, false);
+  assert.equal(snapshot.provenance?.table?.freshnessBasis, "network_observation");
+  assert.equal(snapshot.provenance?.table?.fallbackUsed, true);
+  assert.equal(snapshot.provenance?.table?.serverAgeSeconds, 2);
+  assert.equal(snapshot.provenance?.leaderboard?.attempts, 2);
+  assert.equal(snapshot.provenance?.leaderboard?.attemptErrors.length, 1);
+  assert.equal(snapshot.endpointErrors?.length, 3);
+  assert.match(snapshot.endpointErrors?.[0] ?? "", /table sources failed/);
+  assert.match(snapshot.endpointErrors?.[1] ?? "", /table\/site timeout/);
+  assert.match(snapshot.endpointErrors?.[2] ?? "", /temporary transport failure/);
+});
+
+test("crowd radar keeps freshness unknown when cache headers are absent", () => {
+  const snapshot = normalizeCodexCrowdRadarPayload({
+    table: {
+      combos: [{ model: "gpt-5.6-sol", effort: "low" }],
+      tasks: [{ id: "one" }],
+      cells: {
+        "one|gpt-5.6-sol|low": { ran_by: [{ passed: true }] },
+      },
+    },
+    tableProvenance: {
+      fresh: null,
+      stale: null,
+      freshnessBasis: "network_observation",
+    },
+  });
+
+  assert.equal(snapshot.provenance?.table?.fresh, null);
+  assert.equal(snapshot.provenance?.table?.stale, null);
+  assert.equal(snapshot.realtimeAvailable, true);
 });
 
 test("crowd radar tie order ignores cumulative graded totals", () => {

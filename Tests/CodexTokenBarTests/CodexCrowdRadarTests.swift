@@ -2,6 +2,22 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexCrowdRadarTests: XCTestCase {
+    func testLiveReaderKeepsPerSourceBudgetsAndCancellationGuard() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexCrowdRadar.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("(URL(string: \"https://codexradar.com/api/intelligence-efficiency\")!, 12)"))
+        XCTAssertTrue(source.contains("(URL(string: \"https://api.codexradar.com/api/v1/table\")!, 6)"))
+        XCTAssertTrue(source.contains("(URL(string: \"https://codexradar.com/data/intelligence-efficiency.json\")!, 12)"))
+        XCTAssertTrue(source.contains("(URL(string: \"https://api.codexradar.com/api/v1/leaderboard\")!, 6)"))
+        XCTAssertTrue(source.contains("try Task.checkCancellation()"))
+        XCTAssertTrue(source.contains("private static func isCancellation"))
+    }
+
     func testBestModelUsesPassRateAndConvertsToIQ() {
         let snapshot = CodexCrowdRadarSnapshot(
             generatedAt: "2026-07-16T00:00:00Z",
@@ -136,14 +152,14 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.pendingGrades, 2)
         XCTAssertEqual(snapshot.errorGrades, 1)
         XCTAssertFalse(snapshot.realtimeAvailable)
-        XCTAssertEqual(snapshot.models.count, 2)
-        let sol = try XCTUnwrap(snapshot.models.first { $0.model == "gpt-5.6-sol" })
+        XCTAssertTrue(snapshot.models.isEmpty)
+        let sol = try XCTUnwrap(snapshot.recentModels.first { $0.model == "gpt-5.6-sol" })
         XCTAssertEqual(sol.effort, "max")
         XCTAssertEqual(sol.graded, 10)
         XCTAssertEqual(sol.passed, 8)
         XCTAssertEqual(sol.passRate, 0.8, accuracy: 0.0001)
         XCTAssertEqual(sol.cells, 2)
-        let terra = try XCTUnwrap(snapshot.models.first { $0.model == "gpt-5.6-terra" })
+        let terra = try XCTUnwrap(snapshot.recentModels.first { $0.model == "gpt-5.6-terra" })
         XCTAssertEqual(terra.passRate, 0.8, accuracy: 0.0001)
     }
 
@@ -166,7 +182,7 @@ final class CodexCrowdRadarTests: XCTestCase {
             leaderboardData: leaderboard
         )
 
-        let luna = try XCTUnwrap(snapshot.models.first)
+        let luna = try XCTUnwrap(snapshot.recentModels.first)
         XCTAssertEqual(luna.model, "gpt-5.6-luna")
         XCTAssertEqual(luna.effort, "high")
         XCTAssertEqual(luna.graded, 5)
@@ -190,10 +206,41 @@ final class CodexCrowdRadarTests: XCTestCase {
             leaderboardData: leaderboard
         )
 
-        XCTAssertEqual(snapshot.models.first?.model, "gpt-5.6-sol")
+        XCTAssertEqual(snapshot.recentModels.first?.model, "gpt-5.6-sol")
         XCTAssertEqual(snapshot.taskCount, 0)
         XCTAssertEqual(snapshot.cellCount, 0)
         XCTAssertFalse(snapshot.realtimeAvailable)
+    }
+
+    func testParserAcceptsPublishedPointsWithoutPresentingThemAsRealtime() throws {
+        let leaderboard = Data(#"""
+        {
+          "schema": 2,
+          "type": "distributed_intelligence_efficiency",
+          "source_updated_at": "2026-08-07T04:50:48+08:00",
+          "points": [{
+            "model": "gpt-5.6-sol",
+            "effort": "low",
+            "passed": 0,
+            "valid_tasks": 3,
+            "latest_graded_at": "2026-08-06T04:39:08+00:00"
+          }]
+        }
+        """#.utf8)
+
+        let snapshot = try CodexCrowdRadarParser.decode(
+            tableData: nil,
+            leaderboardData: leaderboard
+        )
+
+        XCTAssertEqual(snapshot.generatedAt, "2026-08-07T04:50:48+08:00")
+        XCTAssertFalse(snapshot.realtimeAvailable)
+        XCTAssertTrue(snapshot.rankedModels(for: .realtime).isEmpty)
+        let recent = try XCTUnwrap(snapshot.rankedModels(for: .recent).first)
+        XCTAssertEqual(recent.model, "gpt-5.6-sol")
+        XCTAssertEqual(recent.scorePassed, 0)
+        XCTAssertEqual(recent.scoreSamples, 3)
+        XCTAssertEqual(recent.passRate, 0, accuracy: 0.0001)
     }
 
     func testParserKeepsTableWhenLeaderboardIsUnavailableAndAcceptsStringTaskIDs() throws {
