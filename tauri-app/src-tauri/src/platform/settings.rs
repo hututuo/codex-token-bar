@@ -22,7 +22,7 @@ const RECOVERY_DIRECTORY_ENTRY_LIMIT: usize = 1024;
 const RECOVERY_TOTAL_BYTES_LIMIT: u64 = 2 * 1024 * 1024;
 const COMMIT_MARKER_MAX_BYTES: u64 = 4096;
 const TEMP_CREATE_ATTEMPT_LIMIT: usize = 16;
-const FLOATING_PAGING_GUIDE_REVISION: u32 = 1;
+const FLOATING_PAGING_GUIDE_REVISION: u32 = 2;
 static SETTINGS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -3143,7 +3143,7 @@ mod tests {
 
         apply_floating_paging_guide_completion(&mut settings, true);
 
-        assert_eq!(settings.floating_window.paging_guide_revision, 1);
+        assert_eq!(settings.floating_window.paging_guide_revision, 2);
         assert!(settings.floating_window.content_visibility.show_page_navigation_arrows);
         assert_eq!(settings.floating_window.opacity, 0.73);
         assert_eq!(settings.floating_window.scale, 1.21);

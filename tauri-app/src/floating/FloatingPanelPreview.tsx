@@ -335,7 +335,13 @@ function FloatingPagedContentRow({
         onPreviewRowSelect?.(row.id);
       } : undefined}
     >
-      <FloatingContentRow {...props} group={group} />
+      {paged ? (
+        <div className="floating-page-content" key={group}>
+          <FloatingContentRow {...props} group={group} />
+        </div>
+      ) : (
+        <FloatingContentRow {...props} group={group} />
+      )}
       {paged ? (
         <>
           <button

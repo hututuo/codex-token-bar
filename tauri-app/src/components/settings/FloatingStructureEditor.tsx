@@ -22,7 +22,6 @@ import {
   layoutFloatingContentRows,
   mergeFloatingPage,
   moveFloatingRow,
-  placeFloatingPageAfterTarget,
   sanitizeFloatingContentVisibility,
   setFloatingGroupsVisible,
   splitFloatingPage,
@@ -38,6 +37,9 @@ interface FloatingStructureEditorProps {
   runningThreads: RunningThreadSummary;
   visibility: FloatingContentVisibility;
   onChange: (visibility: FloatingContentVisibility) => void;
+  showPreview?: boolean;
+  selectedRowId?: string | null;
+  onSelectedRowIdChange?: (rowId: string | null) => void;
 }
 
 type EditorDragState =
@@ -62,6 +64,9 @@ export function FloatingStructureEditor({
   runningThreads,
   visibility: rawVisibility,
   onChange,
+  showPreview = true,
+  selectedRowId: controlledSelectedRowId,
+  onSelectedRowIdChange,
 }: FloatingStructureEditorProps) {
   const visibility = sanitizeFloatingContentVisibility(rawVisibility);
   const rows = useMemo<EditorRow[]>(() => layoutFloatingContentRows(visibility).map((layoutRow) => ({
@@ -73,7 +78,10 @@ export function FloatingStructureEditor({
   const [dragState, setDragState] = useState<EditorDragState | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [menuRowId, setMenuRowId] = useState<string | null>(null);
-  const [selectedRowId, setSelectedRowId] = useState<string | null>(rows[0]?.id ?? null);
+  const [internalSelectedRowId, setInternalSelectedRowId] = useState<string | null>(rows[0]?.id ?? null);
+  const selectedRowId = controlledSelectedRowId === undefined
+    ? internalSelectedRowId
+    : controlledSelectedRowId;
   const [undoState, setUndoState] = useState<UndoState | null>(null);
   const [resetPending, setResetPending] = useState(false);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -81,8 +89,10 @@ export function FloatingStructureEditor({
 
   useEffect(() => {
     if (selectedRowId !== null && rows.some((row) => row.id === selectedRowId)) return;
-    setSelectedRowId(rows[0]?.id ?? null);
-  }, [rows, selectedRowId]);
+    const next = rows[0]?.id ?? null;
+    setInternalSelectedRowId(next);
+    onSelectedRowIdChange?.(next);
+  }, [onSelectedRowIdChange, rows, selectedRowId]);
 
   useEffect(() => {
     if (undoState === null) return undefined;
@@ -110,8 +120,14 @@ export function FloatingStructureEditor({
   };
 
   const selectPreviewRow = (rowId: string) => {
-    setSelectedRowId(rowId);
+    setInternalSelectedRowId(rowId);
+    onSelectedRowIdChange?.(rowId);
     rowRefs.current.get(rowId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
+
+  const selectEditorRow = (rowId: string) => {
+    setInternalSelectedRowId(rowId);
+    onSelectedRowIdChange?.(rowId);
   };
 
   const moveRowRelative = (row: EditorRow, target: EditorRow, placement: FloatingContentRowPlacement) => {
@@ -140,16 +156,29 @@ export function FloatingStructureEditor({
     return JSON.stringify(nextOrder) !== JSON.stringify(visibility.order);
   };
 
-  const canMergePageInto = (group: FloatingContentGroup, target: FloatingContentGroup) => {
+  const mergeTargetForRow = (group: FloatingContentGroup, row: EditorRow) => (
+    row.layoutRow.groups.find((candidate) => candidate !== group)
+      ?? row.layoutRow.groups[0]
+  );
+
+  const canMergePageInto = (
+    group: FloatingContentGroup,
+    row: EditorRow,
+    placement: FloatingContentRowPlacement,
+  ) => {
+    const target = mergeTargetForRow(group, row);
     if (
-      group === target
+      target === undefined
+      || group === target
       || !FLOATING_PAGE_CAPABLE_GROUPS.includes(group)
       || !FLOATING_PAGE_CAPABLE_GROUPS.includes(target)
     ) return false;
+    let nextPairs = mergeFloatingPage(visibility.pagePairs, group, target);
+    if (placement === "before") nextPairs = swapFloatingDefaultPage(nextPairs, group);
     const next = setFloatingGroupsVisible({
       ...visibility,
-      order: placeFloatingPageAfterTarget(visibility.order, group, target),
-      pagePairs: mergeFloatingPage(visibility.pagePairs, group, target),
+      order: moveFloatingRow(visibility.order, [group], [target], placement),
+      pagePairs: nextPairs,
     }, [group, target], true);
     return JSON.stringify(next) !== JSON.stringify(visibility);
   };
@@ -162,21 +191,28 @@ export function FloatingStructureEditor({
     setMenuRowId(null);
   };
 
-  const mergePageInto = (group: FloatingContentGroup, target: FloatingContentGroup) => {
+  const mergePageInto = (
+    group: FloatingContentGroup,
+    row: EditorRow,
+    placement: FloatingContentRowPlacement,
+  ) => {
+    const target = mergeTargetForRow(group, row);
     if (
-      group === target
+      target === undefined
+      || group === target
       || !FLOATING_PAGE_CAPABLE_GROUPS.includes(group)
       || !FLOATING_PAGE_CAPABLE_GROUPS.includes(target)
     ) return;
     const oldPartner = visibility.pagePairs.find((pair) => pair.includes(target))
       ?.find((candidate) => candidate !== target);
-    const nextPairs = mergeFloatingPage(visibility.pagePairs, group, target);
+    let nextPairs = mergeFloatingPage(visibility.pagePairs, group, target);
+    if (placement === "before") nextPairs = swapFloatingDefaultPage(nextPairs, group);
     const next = setFloatingGroupsVisible({
       ...visibility,
-      order: placeFloatingPageAfterTarget(visibility.order, group, target),
+      order: moveFloatingRow(visibility.order, [group], [target], placement),
       pagePairs: nextPairs,
     }, [group, target], true);
-    commit(next, oldPartner
+    commit(next, oldPartner && oldPartner !== group
       ? `已将「${title(group)}」与「${title(target)}」成组，「${title(oldPartner)}」已恢复单独显示`
       : `已将「${title(group)}」与「${title(target)}」成组`);
   };
@@ -215,8 +251,11 @@ export function FloatingStructureEditor({
         const rect = event.currentTarget.getBoundingClientRect();
         moveRowRelative(source, target, event.clientY < rect.top + rect.height / 2 ? "before" : "after");
       }
-    } else if (dragState?.kind === "page" && canMergePageInto(dragState.group, target.layoutRow.groups[0])) {
-      mergePageInto(dragState.group, target.layoutRow.groups[0]);
+    } else if (dragState?.kind === "page") {
+      const placement = pagePlacementForRow(event.currentTarget, event.clientX);
+      if (canMergePageInto(dragState.group, target, placement)) {
+        mergePageInto(dragState.group, target, placement);
+      }
     }
     clearDragState();
   };
@@ -284,13 +323,42 @@ export function FloatingStructureEditor({
         </div>
       </header>
 
-      <div className="floating-structure-grid">
+      <div className={`floating-structure-grid${showPreview ? "" : " is-controls-only"}`}>
         <section aria-label="悬浮窗结构编辑器" className="floating-structure-editor">
           <div className="floating-structure-editor__label">结构编辑器</div>
           <div className="floating-structure-rows">
             {rows.map((row, index) => {
               const paged = row.layoutRow.groups.length > 1;
               const inline = row.groups.length > row.layoutRow.groups.length;
+              const pagePlacement = dropTargetId === `page:${row.id}:before`
+                ? "before"
+                : dropTargetId === `page:${row.id}:after`
+                  ? "after"
+                  : null;
+              const draggedPage = dragState?.kind === "page" ? dragState.group : null;
+              const pageMergeTarget = draggedPage && pagePlacement
+                ? mergeTargetForRow(draggedPage, row)
+                : null;
+              const inlineGroups = row.groups.filter((group) => !row.layoutRow.groups.includes(group));
+              const pageItems: Array<{ group: FloatingContentGroup; placeholder: boolean }> = (
+                draggedPage && pagePlacement && pageMergeTarget && pageMergeTarget !== draggedPage
+              )
+                ? [
+                    ...(pagePlacement === "before"
+                      ? [
+                          { group: draggedPage, placeholder: true },
+                          { group: pageMergeTarget, placeholder: false },
+                        ]
+                      : [
+                          { group: pageMergeTarget, placeholder: false },
+                          { group: draggedPage, placeholder: true },
+                        ]),
+                    ...inlineGroups
+                      .filter((group) => group !== draggedPage && group !== pageMergeTarget)
+                      .map((group) => ({ group, placeholder: false })),
+                  ]
+                : row.groups.map((group) => ({ group, placeholder: false }));
+              const displayPaged = paged || pagePlacement !== null;
               return (
                 <div key={row.id}>
                   <div
@@ -303,33 +371,46 @@ export function FloatingStructureEditor({
                       setDropTargetId(`gap:${row.id}:before`);
                     }}
                     onDrop={(event) => dropIntoGap(event, row, "before")}
-                  />
+                  >
+                    {dropTargetId === `gap:${row.id}:before` ? (
+                      <span className="fs-row-placeholder">{draggedItemLabel(dragState)}</span>
+                    ) : null}
+                  </div>
                   <div
-                    className={`fs-row${paged ? " is-paged" : ""}${inline ? " is-inline" : ""}${selectedRowId === row.id ? " is-selected" : ""}${dropTargetId === `row:${row.id}` ? " is-drop-target" : ""}`}
+                    className={`fs-row${displayPaged ? " is-paged" : ""}${inline ? " is-inline" : ""}${selectedRowId === row.id ? " is-selected" : ""}`}
                     data-row-id={row.id}
                     onDragOver={(event) => {
                       if (dragState?.kind === "row") {
                         const rect = event.currentTarget.getBoundingClientRect();
                         const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
-                        if (!canDropIntoGap(row, placement)) return;
+                        if (!canDropIntoGap(row, placement)) {
+                          setDropTargetId(null);
+                          return;
+                        }
                         event.preventDefault();
                         setDropTargetId(`gap:${row.id}:${placement}`);
                       } else if (
                         dragState?.kind === "page"
-                        && canMergePageInto(dragState.group, row.layoutRow.groups[0])
                       ) {
-                        event.preventDefault();
-                        setDropTargetId(`row:${row.id}`);
+                        const placement = pagePlacementForRow(event.currentTarget, event.clientX);
+                        if (canMergePageInto(dragState.group, row, placement)) {
+                          event.preventDefault();
+                          setDropTargetId(`page:${row.id}:${placement}`);
+                        } else {
+                          setDropTargetId(null);
+                        }
                       }
                     }}
                     onDrop={(event) => dropOnRow(event, row)}
-                    onMouseEnter={() => setSelectedRowId(row.id)}
+                    onMouseEnter={() => {
+                      if (!dragState) selectEditorRow(row.id);
+                    }}
                     ref={(node) => {
                       if (node) rowRefs.current.set(row.id, node);
                       else rowRefs.current.delete(row.id);
                     }}
                   >
-                    {paged ? <span className="fs-row-badge">翻页行 · 2 页</span> : null}
+                    {displayPaged ? <span className="fs-row-badge">翻页行 · 2 页</span> : null}
                     <button
                       aria-label={`拖动整行：${rowTitle(row)}`}
                       className="fs-row-handle"
@@ -353,15 +434,29 @@ export function FloatingStructureEditor({
                       type="button"
                     >拖动</button>
                     <div className="fs-row-pages">
-                      {row.groups.map((group, groupIndex) => {
+                      {pageItems.map((item, groupIndex) => {
+                        const { group } = item;
                         const isInline = inline && !row.layoutRow.groups.includes(group);
                         const canPage = FLOATING_PAGE_CAPABLE_GROUPS.includes(group) && !isInline;
-                        const isDefault = paged && groupIndex === 0;
+                        const isDefault = displayPaged && groupIndex === 0;
+                        if (item.placeholder) {
+                          return (
+                            <span
+                              aria-label={`${title(group)}可放置位置`}
+                              className={`fs-chip fs-chip--placeholder${isDefault ? " is-default" : ""}`}
+                              key={`placeholder:${row.id}:${group}`}
+                            >
+                              {isDefault ? <span aria-hidden="true">★</span> : null}
+                              <strong>{title(group)}</strong>
+                              <em>放这里</em>
+                            </span>
+                          );
+                        }
                         return (
                           <button
                             className={`fs-chip${isDefault ? " is-default" : ""}${isInline ? " is-inline" : ""}${canPage ? " is-draggable" : ""}`}
                             draggable={canPage}
-                            key={group}
+                            key={`${row.id}:${group}`}
                             onDragEnd={clearDragState}
                             onDragStart={canPage ? (event) => {
                               event.stopPropagation();
@@ -381,7 +476,7 @@ export function FloatingStructureEditor({
                         );
                       })}
                     </div>
-                    {paged ? <span aria-label="悬浮窗内可左右翻页" className="fs-page-mark">‹ ›</span> : null}
+                    {displayPaged ? <span aria-label="悬浮窗内可左右翻页" className="fs-page-mark">‹ ›</span> : null}
                     <button aria-label={`隐藏${rowTitle(row)}`} className="fs-visibility" onClick={() => hideRow(row)} type="button">隐藏</button>
                     <div className="fs-menu-root" ref={menuRowId === row.id ? menuRootRef : undefined}>
                       <button
@@ -418,7 +513,11 @@ export function FloatingStructureEditor({
                   setDropTargetId(`gap:${target.id}:after`);
                 }}
                 onDrop={(event) => dropIntoGap(event, rows[rows.length - 1], "after")}
-              />
+              >
+                {dropTargetId === `gap:${rows[rows.length - 1].id}:after` ? (
+                  <span className="fs-row-placeholder">{draggedItemLabel(dragState)}</span>
+                ) : null}
+              </div>
             ) : null}
           </div>
 
@@ -445,23 +544,16 @@ export function FloatingStructureEditor({
           </div>
         </section>
 
-        <section aria-label="悬浮窗实时预览" className="floating-structure-preview">
-          <div className="floating-structure-preview__label">
-            <strong>实时预览</strong>
-            <span>点击预览中的行可定位左侧结构</span>
-          </div>
-          <div className="floating-structure-preview__stage">
-            <FloatingPanelSurface
-              previewMode
-              onPreviewRowSelect={selectPreviewRow}
-              runningThreads={runningThreads}
-              selectedPreviewRowId={selectedRowId}
-              settings={{ ...settings, contentVisibility: visibility }}
-              snapshot={snapshot}
-              unreadEffect="off"
-            />
-          </div>
-        </section>
+        {showPreview ? (
+          <FloatingStructurePreview
+            onSelectedRowIdChange={selectPreviewRow}
+            runningThreads={runningThreads}
+            selectedRowId={selectedRowId}
+            settings={settings}
+            snapshot={snapshot}
+            visibility={visibility}
+          />
+        ) : null}
       </div>
 
       <footer className="floating-structure-footer">
@@ -490,6 +582,56 @@ export function FloatingStructureEditor({
       ) : null}
     </div>
   );
+}
+
+interface FloatingStructurePreviewProps {
+  settings: FloatingWindowSettings;
+  snapshot: FloatingPanelSnapshot;
+  runningThreads: RunningThreadSummary;
+  visibility: FloatingContentVisibility;
+  selectedRowId: string | null;
+  onSelectedRowIdChange: (rowId: string) => void;
+}
+
+export function FloatingStructurePreview({
+  settings,
+  snapshot,
+  runningThreads,
+  visibility,
+  selectedRowId,
+  onSelectedRowIdChange,
+}: FloatingStructurePreviewProps) {
+  return (
+    <section aria-label="悬浮窗实时预览" className="floating-structure-preview">
+      <div className="floating-structure-preview__label">
+        <strong>实时预览</strong>
+        <span>点击预览中的行可定位左侧结构</span>
+      </div>
+      <div className="floating-structure-preview__stage">
+        <FloatingPanelSurface
+          previewMode
+          onPreviewRowSelect={onSelectedRowIdChange}
+          runningThreads={runningThreads}
+          selectedPreviewRowId={selectedRowId}
+          settings={{ ...settings, contentVisibility: visibility }}
+          snapshot={snapshot}
+          unreadEffect="off"
+        />
+      </div>
+    </section>
+  );
+}
+
+function pagePlacementForRow(row: HTMLDivElement, clientX: number): FloatingContentRowPlacement {
+  const pages = row.querySelector<HTMLElement>(".fs-row-pages");
+  const rect = (pages ?? row).getBoundingClientRect();
+  return clientX < rect.left + rect.width / 2 ? "before" : "after";
+}
+
+function draggedItemLabel(dragState: EditorDragState | null): string {
+  if (dragState?.kind === "page") return title(dragState.group);
+  if (dragState?.kind === "row") return dragState.groups.map(title).join(" · ");
+  return "放到这里";
 }
 
 function hiddenEditorRows(visibility: FloatingContentVisibility): FloatingContentGroup[][] {

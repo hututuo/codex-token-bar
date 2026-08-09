@@ -244,11 +244,14 @@ export function DashboardHeader({
 
         <div aria-label="运行信息" className="dash-head__strip">
           <span className="dash-head__platform">
-            <small>Codex Token Bar</small>
+            <small>
+              <span>Codex Token Bar</span>
+              <span className="plan-badge">{account.planLabel}</span>
+            </small>
             <strong>
               <i aria-hidden="true" className="platform-indicator" />
               <span className="platform-badge">跨平台版</span>
-              <span className="plan-badge">{account.planLabel}</span>
+              <span aria-label="跨平台运行框架" className="platform-runtime">Tauri</span>
             </strong>
           </span>
           <button className="dash-head__source" onClick={() => setEditingPath((value) => !value)} title={codexHome.path} type="button">

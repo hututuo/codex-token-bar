@@ -13,3 +13,10 @@ test("auto resume content cannot widen the settings viewport after options load"
   );
   assert.match(styles, /\.auto-resume-thread-list\s*{[^}]*min-width: 0;/);
 });
+
+test("floating settings keep controls scrollable and the live preview fixed beside them", () => {
+  assert.match(styles, /\.app-settings-page--floating\s*\{[^}]*overflow: hidden;/);
+  assert.match(styles, /\.floating-settings-workspace\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\) 276px;/);
+  assert.match(styles, /\.floating-settings-controls\s*\{[^}]*overflow: auto;/);
+  assert.match(styles, /\.floating-settings-preview-column \.floating-structure-preview\s*\{[^}]*position: sticky;/);
+});

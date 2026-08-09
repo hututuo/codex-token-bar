@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
@@ -38,6 +39,7 @@ test("floating model row switches share and cost without starting panel drag", a
         const previous = container.querySelector('button[aria-label="显示上一项"]');
         assert.ok(next);
         assert.ok(previous);
+        assert.ok(container.querySelector(".floating-page-content"));
         assert.match(container.textContent, /Sol50%/);
         assert.doesNotMatch(container.textContent, /Sol\$3\.25/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
@@ -94,6 +96,13 @@ test("floating model row switches share and cost without starting panel drag", a
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     dom.close();
   }
+});
+
+test("paged floating rows use the same short fade cadence as Swift and respect reduced motion", async () => {
+  const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
+  assert.match(styles, /\.floating-page-content\s*\{[^}]*animation: floating-page-content-fade 160ms ease-out both;/);
+  assert.match(styles, /@keyframes floating-page-content-fade/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.floating-page-content\s*\{[^}]*animation: none;/);
 });
 
 function floatingSettingsFixture(showPageNavigationArrows = true) {

@@ -63,7 +63,7 @@ import type {
 import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
 import { CodexInstancesSettings } from "./CodexInstancesSettings";
-import { FloatingStructureEditor } from "./FloatingStructureEditor";
+import { FloatingStructureEditor, FloatingStructurePreview } from "./FloatingStructureEditor";
 
 export type AppSettingsCategory =
   | "general"
@@ -369,7 +369,7 @@ export function AppSettingsDialog({
             </header>
             <div
               aria-labelledby={`app-settings-tab-${selectedCategory}`}
-              className="app-settings-page"
+              className={`app-settings-page${selectedCategory === "floating" ? " app-settings-page--floating" : ""}`}
               id={`app-settings-panel-${selectedCategory}`}
               role="tabpanel"
               tabIndex={0}
@@ -442,21 +442,16 @@ export function AppSettingsDialog({
                 />
               ) : null}
               {selectedCategory === "floating" ? (
-                <>
-                  <FloatingAppearanceSettings
-                    floatingSettings={floatingSettings}
-                    onFloatingGradientChange={onFloatingGradientChange}
-                    onFloatingOpacityChange={onFloatingOpacityChange}
-                    onFloatingScaleChange={onFloatingScaleChange}
-                    onFloatingTextToneChange={onFloatingTextToneChange}
-                  />
-                  <ContentSettings
-                    floatingSettings={floatingSettings}
-                    floatingPreviewSnapshot={floatingPreviewSnapshot}
-                    floatingPreviewRunningThreads={floatingPreviewRunningThreads}
-                    onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
-                  />
-                </>
+                <FloatingSettingsWorkspace
+                  floatingSettings={floatingSettings}
+                  floatingPreviewSnapshot={floatingPreviewSnapshot}
+                  floatingPreviewRunningThreads={floatingPreviewRunningThreads}
+                  onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+                  onFloatingGradientChange={onFloatingGradientChange}
+                  onFloatingOpacityChange={onFloatingOpacityChange}
+                  onFloatingScaleChange={onFloatingScaleChange}
+                  onFloatingTextToneChange={onFloatingTextToneChange}
+                />
               ) : null}
               {selectedCategory === "alerts" ? (
                 <AlertAndUpdateSettings
@@ -1810,6 +1805,73 @@ function AutomationSettings({
   );
 }
 
+function FloatingSettingsWorkspace({
+  floatingSettings,
+  floatingPreviewSnapshot,
+  floatingPreviewRunningThreads,
+  onFloatingContentVisibilityChange,
+  onFloatingGradientChange,
+  onFloatingOpacityChange,
+  onFloatingScaleChange,
+  onFloatingTextToneChange,
+}: Pick<AppSettingsDialogProps,
+  | "floatingSettings"
+  | "floatingPreviewSnapshot"
+  | "floatingPreviewRunningThreads"
+  | "onFloatingContentVisibilityChange"
+  | "onFloatingGradientChange"
+  | "onFloatingOpacityChange"
+  | "onFloatingScaleChange"
+  | "onFloatingTextToneChange"
+>) {
+  const visibility = sanitizeFloatingContentVisibility(floatingSettings.contentVisibility);
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+
+  const selectPreviewRow = (rowId: string) => {
+    setSelectedRowId(rowId);
+    window.requestAnimationFrame(() => {
+      controlsRef.current
+        ?.querySelector<HTMLElement>(`[data-row-id="${rowId}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  };
+
+  return (
+    <div className="floating-settings-workspace">
+      <div className="floating-settings-controls" ref={controlsRef}>
+        <FloatingAppearanceSettings
+          floatingSettings={floatingSettings}
+          onFloatingGradientChange={onFloatingGradientChange}
+          onFloatingOpacityChange={onFloatingOpacityChange}
+          onFloatingScaleChange={onFloatingScaleChange}
+          onFloatingTextToneChange={onFloatingTextToneChange}
+        />
+        <FloatingStructureEditor
+          onChange={onFloatingContentVisibilityChange}
+          onSelectedRowIdChange={setSelectedRowId}
+          runningThreads={floatingPreviewRunningThreads}
+          selectedRowId={selectedRowId}
+          settings={floatingSettings}
+          showPreview={false}
+          snapshot={floatingPreviewSnapshot}
+          visibility={visibility}
+        />
+      </div>
+      <div className="floating-settings-preview-column">
+        <FloatingStructurePreview
+          onSelectedRowIdChange={selectPreviewRow}
+          runningThreads={floatingPreviewRunningThreads}
+          selectedRowId={selectedRowId}
+          settings={floatingSettings}
+          snapshot={floatingPreviewSnapshot}
+          visibility={visibility}
+        />
+      </div>
+    </div>
+  );
+}
+
 function FloatingAppearanceSettings({
   floatingSettings,
   onFloatingGradientChange,
@@ -1931,29 +1993,6 @@ function FloatingAppearanceSettings({
       </SettingsGroup>
 
     </>
-  );
-}
-
-function ContentSettings({
-  floatingSettings,
-  floatingPreviewSnapshot,
-  floatingPreviewRunningThreads,
-  onFloatingContentVisibilityChange,
-}: Pick<AppSettingsDialogProps,
-  | "floatingSettings"
-  | "floatingPreviewSnapshot"
-  | "floatingPreviewRunningThreads"
-  | "onFloatingContentVisibilityChange"
->) {
-  const visibility = sanitizeFloatingContentVisibility(floatingSettings.contentVisibility);
-  return (
-    <FloatingStructureEditor
-      onChange={onFloatingContentVisibilityChange}
-      runningThreads={floatingPreviewRunningThreads}
-      settings={floatingSettings}
-      snapshot={floatingPreviewSnapshot}
-      visibility={visibility}
-    />
   );
 }
 

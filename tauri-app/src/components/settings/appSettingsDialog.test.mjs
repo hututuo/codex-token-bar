@@ -111,15 +111,20 @@ test("floating settings combine appearance, content, paging, and the real previe
     assert.match(panel.textContent, /今日模型费用/);
     assert.match(panel.textContent, /默认页/);
     assert.equal(panel.querySelectorAll(".floating-panel-surface--preview").length, 1);
+    assert.ok(panel.classList.contains("app-settings-page--floating"));
+    assert.ok(panel.querySelector(".floating-settings-workspace"));
+    assert.ok(panel.querySelector(".floating-settings-controls"));
+    assert.ok(panel.querySelector(".floating-settings-preview-column"));
+    assert.ok(panel.querySelector(".floating-structure-grid.is-controls-only"));
     assert.equal(panel.querySelector('[aria-label="悬浮窗外观预览"]'), null);
     assert.equal(panel.querySelector(".app-settings-preview"), null);
     assert.equal(panel.querySelectorAll(".floating-structure-shell select").length, 0);
 
     const arrowToggle = panel.querySelector('.fs-arrow-toggle input[type="checkbox"]');
     assert.ok(arrowToggle);
-    assert.equal(arrowToggle.checked, true);
+    assert.equal(arrowToggle.checked, false);
     await click(act, arrowToggle, window);
-    assert.equal(calls.floatingContentVisibilities.at(-1).showPageNavigationArrows, false);
+    assert.equal(calls.floatingContentVisibilities.at(-1).showPageNavigationArrows, true);
 
     const hideModelRow = panel.querySelector('button[aria-label="隐藏今日模型占比 · 今日模型费用"]');
     assert.ok(hideModelRow);

@@ -65,10 +65,72 @@ test("structure dragging previews the nearest insertion slot and hides on drop",
   }
 });
 
+test("page dragging shows an item-sized left or right slot and commits that page order", async () => {
+  const dom = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { FloatingStructureEditor } = await load("/src/components/settings/FloatingStructureEditor.tsx");
+      const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+      let latestVisibility = null;
+
+      try {
+        await React.act(async () => root.render(React.createElement(FloatingStructureEditor, {
+          settings: DEFAULT_FLOATING_SETTINGS,
+          snapshot: snapshotFixture(),
+          runningThreads: runningThreadsFixture(),
+          visibility: DEFAULT_FLOATING_SETTINGS.contentVisibility,
+          onChange: (visibility) => {
+            latestVisibility = visibility;
+          },
+        })));
+
+        const radarChip = [...container.querySelectorAll("button.fs-chip")]
+          .find((chip) => chip.textContent?.includes("Radar"));
+        const crowdRow = container.querySelector('.fs-row[data-row-id="crowdRadar"]');
+        assert.ok(radarChip);
+        assert.ok(crowdRow);
+
+        await React.act(async () => radarChip.dispatchEvent(dragEvent(dom, "dragstart")));
+        await React.act(async () => crowdRow.dispatchEvent(dragEvent(dom, "dragover", { clientX: -1 })));
+        let pageItems = [...crowdRow.querySelectorAll(".fs-row-pages > *")];
+        assert.equal(pageItems[0].classList.contains("fs-chip--placeholder"), true);
+        assert.match(pageItems[0].textContent, /Radar.*放这里/);
+        assert.match(pageItems[1].textContent, /众测雷达/);
+
+        await React.act(async () => crowdRow.dispatchEvent(dragEvent(dom, "dragover", { clientX: 1 })));
+        pageItems = [...crowdRow.querySelectorAll(".fs-row-pages > *")];
+        assert.match(pageItems[0].textContent, /众测雷达/);
+        assert.equal(pageItems[1].classList.contains("fs-chip--placeholder"), true);
+
+        await React.act(async () => crowdRow.dispatchEvent(dragEvent(dom, "drop", { clientX: 1 })));
+        assert.ok(latestVisibility);
+        assert.ok(latestVisibility.pagePairs.some((pair) => (
+          pair[0] === "crowdRadar" && pair[1] === "radar"
+        )));
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
 function dragEvent(dom, type, options = {}) {
   const event = new dom.DragEvent(type, {
     bubbles: true,
     cancelable: true,
+    clientX: options.clientX ?? 0,
     clientY: options.clientY ?? 0,
   });
   Object.defineProperty(event, "dataTransfer", {
@@ -78,6 +140,10 @@ function dragEvent(dom, type, options = {}) {
   Object.defineProperty(event, "clientY", {
     configurable: true,
     value: options.clientY ?? 0,
+  });
+  Object.defineProperty(event, "clientX", {
+    configurable: true,
+    value: options.clientX ?? 0,
   });
   return event;
 }

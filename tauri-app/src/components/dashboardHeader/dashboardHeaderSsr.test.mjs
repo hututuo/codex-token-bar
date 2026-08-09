@@ -22,8 +22,11 @@ test("DashboardHeader keeps the account identity above the compact product card"
     assert.match(html, /class="dash-head__strip"/);
     assert.match(html, /class="dash-head__platform"/);
     assert.match(html, />Codex Token Bar</);
+    assert.match(html, /class="plan-badge">Plus/);
+    assert.match(html, /class="platform-runtime">Tauri/);
     assert.match(html, /总 5 · 主 2 · 子 3/);
     assert.match(html, /class="platform-badge">跨平台版/);
+    assert.ok(html.indexOf('class="plan-badge"') < html.indexOf('class="platform-badge"'));
     assert.match(html, /class="dash-head__actions"/);
     assert.match(html, /立即刷新/);
     assert.match(html, />设置<\/button>/);

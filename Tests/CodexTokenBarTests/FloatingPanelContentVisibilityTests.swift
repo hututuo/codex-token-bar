@@ -21,6 +21,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     }
 
     func testPagingGuideAppearsOnceAfterSetupWhenPagedRowsExist() {
+        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 2)
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: false,
             completedRevision: 0,
@@ -1485,11 +1486,38 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
 
         XCTAssertTrue(editor.contains("case gap(targetID: String, placement: FloatingPanelContentDropPlacement)"))
-        XCTAssertTrue(editor.contains("isTarget ? AppTheme.accentBlue.opacity(0.12)"))
+        XCTAssertTrue(editor.contains("case pageSlot("))
+        XCTAssertTrue(editor.contains("pagePlaceholder(group, isDefault:"))
+        XCTAssertTrue(editor.contains("FloatingStructurePageSlotDropDelegate"))
+        XCTAssertTrue(editor.contains("Text(\"放这里\")"))
+        XCTAssertTrue(editor.contains(".stroke(AppTheme.accentBlue.opacity(0.86), lineWidth: 1.3)"))
         XCTAssertTrue(editor.contains("FloatingStructureHiddenDropDelegate"))
         XCTAssertTrue(editor.contains("Text(isDropTarget ? \"松手即可隐藏\" : \"拖到这里隐藏\")"))
         XCTAssertTrue(editor.contains("canDropOnRow"))
         XCTAssertTrue(editor.contains("canDropIntoGap"))
+    }
+
+    func testFloatingSettingsKeepControlsScrollableBesideAFixedLivePreview() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settings = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/AppSettingsView.swift"),
+            encoding: .utf8
+        )
+        let editor = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(settings.contains("floatingPanelSettingsWorkspace"))
+        XCTAssertTrue(settings.contains("ScrollViewReader { proxy in"))
+        XCTAssertTrue(settings.contains("proxy.scrollTo(\"floating-structure-row:"))
+        XCTAssertTrue(settings.contains("FloatingPanelLivePreview("))
+        XCTAssertTrue(settings.contains("showsPreview: false"))
+        XCTAssertTrue(editor.contains("struct FloatingPanelLivePreview: View"))
+        XCTAssertTrue(editor.contains("预览固定在这里"))
     }
 
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {

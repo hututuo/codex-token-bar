@@ -89,7 +89,7 @@ test("sanitizeFloatingSettings defaults missing token rate full scale to Swift-s
   assert.equal(settings.tokenRateFullScale, 200);
   assert.equal(DEFAULT_FLOATING_SETTINGS.pagingGuideRevision, 0);
   assert.equal(settings.pagingGuideRevision, 0);
-  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 1);
+  assert.equal(CURRENT_FLOATING_PAGING_GUIDE_REVISION, 2);
 });
 
 test("sanitizeFloatingSettings clamps invalid paging guide revisions without replaying future guides", () => {

@@ -159,6 +159,8 @@ struct AppSettingsView: View {
     @AppStorage(SharedAccountUsageAttributionSettings.tierKey) private var sharedAccountRadarTierRaw = SharedAccountUsageAttributionSettings.defaultTier.rawValue
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var sharedAccountPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @FocusState private var focusedCategory: AppSettingsCategory?
+    @State private var floatingPreviewSelectedRowID: String?
+    @State private var floatingPreviewScrollTarget: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -293,12 +295,17 @@ struct AppSettingsView: View {
                 .fill(AppTheme.border)
                 .frame(height: 1)
 
-            ScrollView {
-                selectedCategoryContent
-                    .padding(24)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            if selectedCategory.canonical == .floatingPanel {
+                floatingPanelSettingsWorkspace
+                    .id(selectedCategory)
+            } else {
+                ScrollView {
+                    selectedCategoryContent
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .id(selectedCategory)
             }
-            .id(selectedCategory)
         }
     }
 
@@ -570,7 +577,7 @@ struct AppSettingsView: View {
     }
 
     private var floatingPanelSettings: some View {
-        Group {
+        VStack(spacing: 14) {
             settingsSection(title: "窗口行为", subtitle: "调整悬浮窗的位置与占用空间") {
                 settingsToggle("锁定悬浮窗位置", systemImage: "lock", isOn: $floatingPanelLocked)
                 settingsSlider(
@@ -578,14 +585,16 @@ struct AppSettingsView: View {
                     systemImage: "circle.lefthalf.filled",
                     value: $floatingPanelOpacity,
                     range: 0.45...0.98,
-                    display: "\(Int((floatingPanelOpacity * 100).rounded()))%"
+                    display: "\(Int((floatingPanelOpacity * 100).rounded()))%",
+                    compact: true
                 )
                 settingsSlider(
                     "大小",
                     systemImage: "arrow.up.left.and.arrow.down.right",
                     value: $floatingPanelScale,
                     range: FloatingTokenPanelMetrics.scaleRange,
-                    display: "\(Int((floatingPanelScale * 100).rounded()))%"
+                    display: "\(Int((floatingPanelScale * 100).rounded()))%",
+                    compact: true
                 )
             }
 
@@ -595,7 +604,8 @@ struct AppSettingsView: View {
                     systemImage: "textformat",
                     value: $floatingPanelTextTone,
                     range: -1...1,
-                    display: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextTone)
+                    display: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextTone),
+                    compact: true
                 )
                 settingsColor("起始色", systemImage: "circle.fill", hex: $gradientStartHex, fallback: FloatingPanelAppearance.defaultStartHex)
                 settingsColor("结束色", systemImage: "circle.lefthalf.filled", hex: $gradientEndHex, fallback: FloatingPanelAppearance.defaultEndHex)
@@ -609,6 +619,61 @@ struct AppSettingsView: View {
 
             contentSettings
         }
+    }
+
+    private var floatingPanelSettingsWorkspace: some View {
+        HStack(alignment: .top, spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    floatingPanelSettings
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 18)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .onChange(of: floatingPreviewScrollTarget) {
+                    guard let target = floatingPreviewScrollTarget else { return }
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        proxy.scrollTo("floating-structure-row:\(target)", anchor: .center)
+                    }
+                    DispatchQueue.main.async {
+                        floatingPreviewScrollTarget = nil
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Rectangle()
+                .fill(AppTheme.border)
+                .frame(width: 1)
+
+            FloatingPanelLivePreview(
+                visibility: floatingContentVisibilityBinding.wrappedValue,
+                snapshot: floatingPreviewSnapshot,
+                radarPresentation: floatingPreviewRadarPresentation,
+                opacity: floatingPanelOpacity,
+                scale: floatingPanelScale,
+                textTone: floatingPanelTextTone,
+                appearance: FloatingPanelAppearance(
+                    startHex: gradientStartHex,
+                    endHex: gradientEndHex,
+                    directionRaw: gradientDirection,
+                    styleRaw: gradientStyle
+                ),
+                quotaColorMode: quotaColorMode,
+                quotaFixedHex: quotaFixedHex,
+                selectedRowID: Binding(
+                    get: { floatingPreviewSelectedRowID },
+                    set: { selectedRowID in
+                        floatingPreviewSelectedRowID = selectedRowID
+                        floatingPreviewScrollTarget = selectedRowID
+                    }
+                )
+            )
+            .frame(width: 258, alignment: .top)
+            .padding(.horizontal, 14)
+            .padding(.top, 18)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var contentSettings: some View {
@@ -626,7 +691,9 @@ struct AppSettingsView: View {
                 styleRaw: gradientStyle
             ),
             quotaColorMode: quotaColorMode,
-            quotaFixedHex: quotaFixedHex
+            quotaFixedHex: quotaFixedHex,
+            selectedRowID: $floatingPreviewSelectedRowID,
+            showsPreview: false
         )
     }
 
@@ -943,7 +1010,8 @@ struct AppSettingsView: View {
         range: ClosedRange<Double>,
         display: String,
         step: Double = 0.01,
-        disabled: Bool = false
+        disabled: Bool = false,
+        compact: Bool = false
     ) -> some View {
         HStack(spacing: 9) {
             Image(systemName: systemImage)
@@ -951,7 +1019,7 @@ struct AppSettingsView: View {
                 .frame(width: 16)
             Text(title)
                 .font(.system(size: 11.5, weight: .medium))
-                .frame(width: 88, alignment: .leading)
+                .frame(width: compact ? 62 : 88, alignment: .leading)
             Slider(value: value, in: range, step: step)
                 .accessibilityLabel(title)
                 .accessibilityValue(display)
@@ -963,7 +1031,7 @@ struct AppSettingsView: View {
                 .frame(minWidth: 58, alignment: .trailing)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, compact ? 6 : 8)
         .disabled(disabled)
         .opacity(disabled ? 0.48 : 1)
         .settingsRowDivider()
