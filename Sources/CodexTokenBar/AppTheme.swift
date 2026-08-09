@@ -180,12 +180,12 @@ enum AppTheme {
     }
 
     static func radarActionRole(_ action: String?) -> SemanticAccentRole {
-        switch action?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        switch CodexRadarPresentationText.actionKey(action) {
         case "wait", "waiting", "hold", "等待", "暂缓":
             return .amber
         case "run", "go", "open", "运行", "可运行", "开放":
             return .green
-        case "closed", "关闭":
+        case "closed", "关闭", "use window", "use windows", "usewindow", "usewindows", "速登窗口":
             return .red
         default:
             return .blue

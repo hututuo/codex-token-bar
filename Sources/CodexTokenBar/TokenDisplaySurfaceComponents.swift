@@ -222,6 +222,9 @@ struct TokenDisplayRadarStrip: View {
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
         let actionAccent = AppTheme.radarActionColor(snapshot?.recommendedAction)
+        let actionPrimaryColor = AppTheme.radarActionRole(snapshot?.recommendedAction) == .red
+            ? actionAccent
+            : actionPalette.primaryColor
         let primaryAccent = primary.map {
             AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
         } ?? AppTheme.accentBlue
@@ -233,7 +236,7 @@ struct TokenDisplayRadarStrip: View {
                         .frame(width: 4.scaled(by: displayScale), height: 4.scaled(by: displayScale))
                     Text("动作 \(CodexRadarPresentationText.action(snapshot?.recommendedAction))")
                         .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(actionPalette.primaryColor)
+                        .foregroundStyle(actionPrimaryColor)
                     if let marker = presentation.compactMarkerText {
                         Text(marker)
                             .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold, design: .rounded))

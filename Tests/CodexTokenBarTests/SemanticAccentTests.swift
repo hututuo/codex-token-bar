@@ -27,6 +27,8 @@ final class SemanticAccentTests: XCTestCase {
         XCTAssertEqual(AppTheme.radarActionRole("wait"), .amber)
         XCTAssertEqual(AppTheme.radarActionRole("run"), .green)
         XCTAssertEqual(AppTheme.radarActionRole("closed"), .red)
+        XCTAssertEqual(AppTheme.radarActionRole("Use Windows"), .red)
+        XCTAssertEqual(AppTheme.radarActionRole("use_window"), .red)
         XCTAssertEqual(AppTheme.radarActionRole("unknown"), .blue)
         XCTAssertEqual(AppTheme.quotaPaceRole("用得太快，先省着"), .red)
         XCTAssertEqual(AppTheme.quotaPaceRole("最后几小时，别梭哈"), .red)

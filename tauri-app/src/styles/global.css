@@ -2763,7 +2763,7 @@ button.quota-side-card:hover {
 
 .codex-radar-kv-grid b {
   min-width: 0;
-  color: var(--text);
+  color: var(--radar-kv-value-color, var(--text));
   font-size: 12px;
   font-weight: var(--weight-regular);
   line-height: 1.28;
@@ -8117,7 +8117,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: flex;
   align-items: center;
   gap: calc(4px * var(--floating-scale));
-  color: color-mix(in srgb, var(--floating-primary) 62%, var(--radar-action-color) 38%);
+  color: var(--radar-action-color);
 }
 
 .floating-radar-dot {

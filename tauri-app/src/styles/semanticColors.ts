@@ -57,7 +57,7 @@ export function radarScoreAccent(point: RadarScorePoint): string {
 }
 
 export function radarActionAccent(action: string | null | undefined): string {
-  switch (action?.trim().toLowerCase()) {
+  switch ((action ?? "").trim().toLowerCase().replace(/[\-_]+/g, " ").replace(/\s+/g, " ")) {
     case "wait":
     case "waiting":
     case "hold":
@@ -73,6 +73,11 @@ export function radarActionAccent(action: string | null | undefined): string {
       return ACCENT_COLORS.green;
     case "closed":
     case "关闭":
+    case "use window":
+    case "use windows":
+    case "usewindow":
+    case "usewindows":
+    case "速登窗口":
       return ACCENT_COLORS.red;
     default:
       return ACCENT_COLORS.blue;

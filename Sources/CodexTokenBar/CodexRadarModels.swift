@@ -1,9 +1,19 @@
 import Foundation
 
 enum CodexRadarPresentationText {
+    static func actionKey(_ rawValue: String?) -> String {
+        (rawValue ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+
     static func action(_ rawValue: String?) -> String {
         let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        switch value.lowercased() {
+        switch actionKey(value) {
         case "wait", "waiting":
             return "等待"
         case "hold":
@@ -16,6 +26,8 @@ enum CodexRadarPresentationText {
             return "开放"
         case "closed":
             return "关闭"
+        case "use window", "use windows", "usewindow", "usewindows":
+            return "速登窗口"
         default:
             return value.isEmpty ? "--" : value
         }

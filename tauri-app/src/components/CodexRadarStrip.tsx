@@ -313,7 +313,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       <CodexRadarDiagnosticsNotice diagnostics={diagnostics} snapshot={snapshot} />
 
       <div className="codex-radar-grid">
-        <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速蹬窗口">
+        <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速登窗口">
           <strong>{snapshot ? (snapshot.window.message || "暂无窗口信息") : "等待 Codex 雷达"}</strong>
           <div className="radar-mini-row">
             <RadarMini accentColor={radarActionAccent(snapshot?.recommendedAction)} label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
@@ -588,18 +588,21 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
     <div className="codex-radar-detail-stack">
       <CodexRadarDiagnosticsNotice snapshot={snapshot} />
       <CrowdRadarDetail error={crowdRadarError} snapshot={crowdRadar} status={crowdRadarStatus} />
-      <RadarDetailSection icon="bolt.badge.clock" title="速蹬窗口与预测">
+      <RadarDetailSection icon="bolt.badge.clock" title="速登窗口与预测">
         <RadarDetailSubsection title="窗口摘要">
-          <RadarKeyValueGrid rows={[
-            ["窗口状态", snapshot.window.message || "--"],
-            ["建议动作", radarActionDisplayText(snapshot.recommendedAction)],
-            ["24h 概率", percentText(probability24h)],
-            ["48h 概率", percentText(probability48h)],
-            ["预计窗口", snapshot.prediction.expectedWindow || "--"],
-            ["范围", snapshot.window.scope || "--"],
-            ["上次关闭", snapshot.window.closedAt || "--"],
-            ["来源", snapshot.window.sourceUrl || "--"],
-          ]} />
+          <RadarKeyValueGrid
+            rows={[
+              ["窗口状态", snapshot.window.message || "--"],
+              ["建议动作", radarActionDisplayText(snapshot.recommendedAction)],
+              ["24h 概率", percentText(probability24h)],
+              ["48h 概率", percentText(probability48h)],
+              ["预计窗口", snapshot.prediction.expectedWindow || "--"],
+              ["范围", snapshot.window.scope || "--"],
+              ["上次关闭", snapshot.window.closedAt || "--"],
+              ["来源", snapshot.window.sourceUrl || "--"],
+            ]}
+            valueColors={{ "建议动作": radarActionAccent(snapshot.recommendedAction) }}
+          />
         </RadarDetailSubsection>
         <RadarDetailSubsection title="预测说明">
           <p className="codex-radar-paragraph">{snapshot.prediction.summary || "--"}</p>
@@ -915,11 +918,11 @@ function RadarMini({ accentColor, label, value }: { accentColor?: string; label:
   );
 }
 
-function RadarDetailItem({ label, value }: { label: string; value: string }) {
+function RadarDetailItem({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <span>
       <em>{label}</em>
-      <b>{value}</b>
+      <b style={valueColor ? { "--radar-kv-value-color": valueColor } as CSSProperties : undefined}>{value}</b>
     </span>
   );
 }
@@ -945,10 +948,10 @@ function RadarDetailSubsection({ children, title }: { children: ReactNode; title
   );
 }
 
-function RadarKeyValueGrid({ rows }: { rows: Array<[string, string]> }) {
+function RadarKeyValueGrid({ rows, valueColors = {} }: { rows: Array<[string, string]>; valueColors?: Record<string, string> }) {
   return (
     <div className="codex-radar-kv-grid">
-      {rows.map(([label, value]) => <RadarDetailItem key={label} label={label} value={value} />)}
+      {rows.map(([label, value]) => <RadarDetailItem key={label} label={label} value={value} valueColor={valueColors[label]} />)}
     </div>
   );
 }
