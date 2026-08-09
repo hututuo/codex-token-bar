@@ -37,6 +37,15 @@ test("quota refresh cadence is shared through app settings and surface events", 
   assert.equal(statusPanel.includes("onAppSettingsChanged"), true);
 });
 
+test("floating appearance changes target both live compact surfaces immediately", async () => {
+  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
+  const desktopEvents = await readFile(new URL("../platform/desktopEvents.ts", import.meta.url), "utf8");
+
+  assert.match(shellSettings, /setFloatingSettings\(next\);[\s\S]*publishFloatingSettings\(next\);[\s\S]*schedule\(next\)/);
+  assert.match(desktopEvents, /emitPlatformEventTo\([\s\S]*FLOATING_WINDOW_LABEL/);
+  assert.match(desktopEvents, /emitPlatformEventTo\([\s\S]*STATUS_WINDOW_LABEL/);
+});
+
 test("floating toggle follows saved preference instead of transient visibility", async () => {
   const hook = await readFile(new URL("./useFloatingWindowSurface.ts", import.meta.url), "utf8");
   const model = await readFile(new URL("./floatingWindowSurfaceModel.ts", import.meta.url), "utf8");

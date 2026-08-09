@@ -7684,8 +7684,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: calc(11px * var(--floating-scale));
   font-weight: var(--weight-semibold);
   line-height: 1;
+  opacity: 1;
   transform: scaleX(0.58);
   transform-origin: center;
+  transition: opacity 160ms ease-out;
+}
+
+.floating-page-switch.is-glyph-hidden > span {
+  opacity: 0;
 }
 
 .floating-page-layout-row.is-paged:hover .floating-page-switch {

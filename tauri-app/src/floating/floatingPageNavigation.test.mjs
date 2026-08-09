@@ -67,8 +67,14 @@ test("floating model row switches share and cost without starting panel drag", a
           snapshot: floatingSnapshotFixture(),
           unreadEffect: "off",
         })));
-        assert.equal(container.querySelector('button[aria-label="显示上一项"]'), null);
-        assert.equal(container.querySelector('button[aria-label="显示下一项"]'), null);
+        const hiddenPrevious = container.querySelector('button[aria-label="显示上一项"]');
+        const hiddenNext = container.querySelector('button[aria-label="显示下一项"]');
+        assert.ok(hiddenPrevious);
+        assert.ok(hiddenNext);
+        assert.equal(hiddenPrevious.classList.contains("is-glyph-hidden"), true);
+        assert.equal(hiddenNext.classList.contains("is-glyph-hidden"), true);
+        await React.act(async () => hiddenNext.click());
+        assert.match(container.textContent, /Sol\$3\.25/);
       } finally {
         await React.act(async () => root.unmount());
       }

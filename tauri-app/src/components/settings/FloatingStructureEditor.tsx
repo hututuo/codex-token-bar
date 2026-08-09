@@ -269,7 +269,7 @@ export function FloatingStructureEditor({
           <span>每一行就是悬浮窗的一行；拖动行排序，拖到“已隐藏”即可隐藏。</span>
         </div>
         <div className="floating-structure-actions">
-          <label className="fs-arrow-toggle">
+          <label className="fs-arrow-toggle" title="关闭后只隐藏箭头图案，左右边缘仍可点击翻页">
             <input
               checked={visibility.showPageNavigationArrows}
               onChange={(event) => commit(

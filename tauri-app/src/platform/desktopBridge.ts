@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { clearCommandFailure, recordCommandFailure } from "../diagnostics/localDiagnostics";
 import { isTauriRuntimeAvailable, withTimeout } from "./runtime";
 
@@ -70,6 +70,26 @@ export async function emitPlatformEvent<T>(
 
   try {
     await emit(eventName, payload);
+    clearPlatformFailure(diagnosticKey);
+    return true;
+  } catch (error) {
+    warnPlatformFailure(diagnosticKey, error);
+    return false;
+  }
+}
+
+export async function emitPlatformEventTo<T>(
+  target: string,
+  eventName: string,
+  diagnosticKey: string,
+  payload?: T,
+): Promise<boolean> {
+  if (!isTauriRuntimeAvailable()) {
+    return false;
+  }
+
+  try {
+    await emitTo(target, eventName, payload);
     clearPlatformFailure(diagnosticKey);
     return true;
   } catch (error) {

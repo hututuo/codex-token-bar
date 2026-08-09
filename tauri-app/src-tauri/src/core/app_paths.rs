@@ -9,10 +9,22 @@ const TAURI_USAGE_CACHE_NAMESPACE_PREFIX: &str = "tauri-usage-cache-";
 const HISTORY_REPAIR_DIRECTORY_NAME: &str = "CodexHistoryRepair";
 
 pub fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+    system_home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn non_empty_env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
+}
+
+fn system_home_dir() -> Option<PathBuf> {
+    non_empty_env_path("HOME")
+        .or_else(|| non_empty_env_path("USERPROFILE"))
+        .or_else(dirs::home_dir)
+        .filter(|path| path.is_absolute())
 }
 
 pub fn settings_path() -> Option<PathBuf> {
@@ -204,23 +216,15 @@ fn app_support_base_dir() -> Option<PathBuf> {
     }
 
     if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA")
-            .map(PathBuf::from)
+        non_empty_env_path("APPDATA")
             .or_else(|| {
-                std::env::var_os("USERPROFILE")
-                    .map(|home| PathBuf::from(home).join("AppData").join("Roaming"))
+                system_home_dir().map(|home| home.join("AppData").join("Roaming"))
             })
     } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library").join("Application Support"))
+        system_home_dir().map(|home| home.join("Library").join("Application Support"))
     } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|home| PathBuf::from(home).join(".local").join("share"))
-            })
+        non_empty_env_path("XDG_DATA_HOME")
+            .or_else(|| system_home_dir().map(|home| home.join(".local").join("share")))
     }
 }
 
@@ -233,19 +237,14 @@ fn app_cache_base_dir() -> Option<PathBuf> {
     }
 
     if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("APPDATA"))
-            .map(PathBuf::from)
+        non_empty_env_path("LOCALAPPDATA")
+            .or_else(|| non_empty_env_path("APPDATA"))
+            .or_else(|| system_home_dir().map(|home| home.join("AppData").join("Local")))
     } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join("Library").join("Caches"))
+        system_home_dir().map(|home| home.join("Library").join("Caches"))
     } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache"))
-            })
+        non_empty_env_path("XDG_CACHE_HOME")
+            .or_else(|| system_home_dir().map(|home| home.join(".cache")))
     }
 }
 #[cfg(test)]
@@ -288,5 +287,27 @@ impl Drop for AppPathTestEnvGuard {
                 None => std::env::remove_var(key),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_home_environment_falls_back_to_absolute_system_paths() {
+        let expected_home = dirs::home_dir().expect("the test user must have an OS home");
+        let _environment = app_path_test_env_guard(&[
+            ("HOME", PathBuf::new()),
+            ("USERPROFILE", PathBuf::new()),
+            ("APPDATA", PathBuf::new()),
+            ("LOCALAPPDATA", PathBuf::new()),
+            ("XDG_DATA_HOME", PathBuf::new()),
+            ("XDG_CACHE_HOME", PathBuf::new()),
+        ]);
+
+        assert_eq!(home_dir(), expected_home);
+        assert!(settings_path().expect("settings path").is_absolute());
+        assert!(startup_trace_log_path().expect("trace path").is_absolute());
     }
 }

@@ -9,6 +9,7 @@ import type {
 } from "../types/dashboard";
 import {
   emitPlatformEvent,
+  emitPlatformEventTo,
   listenToEvent,
   listenToEventResult,
   type EventSubscriptionResult,
@@ -22,6 +23,8 @@ const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
 const APP_SETTINGS_EVENT = "app-settings-changed";
 const OPEN_APP_SETTINGS_EVENT = "open-app-settings";
+const FLOATING_WINDOW_LABEL = "floating";
+const STATUS_WINDOW_LABEL = "status";
 export const CODEX_HOME_SOURCE_CHANGED_EVENT = "codex-home-source-changed";
 
 export function notifyFloatingWindowHidden(): Promise<boolean> {
@@ -52,8 +55,22 @@ export function onUnreadSummaryChanged(
   return listenToEvent<UnreadSummaryChangedPayload>(UNREAD_SUMMARY_CHANGED_EVENT, handler);
 }
 
-export function publishFloatingSettings(settings: FloatingWindowSettings): Promise<boolean> {
-  return emitPlatformEvent(FLOATING_SETTINGS_EVENT, "publish-floating-settings", settings);
+export async function publishFloatingSettings(settings: FloatingWindowSettings): Promise<boolean> {
+  const results = await Promise.all([
+    emitPlatformEventTo(
+      FLOATING_WINDOW_LABEL,
+      FLOATING_SETTINGS_EVENT,
+      "publish-floating-settings:floating",
+      settings,
+    ),
+    emitPlatformEventTo(
+      STATUS_WINDOW_LABEL,
+      FLOATING_SETTINGS_EVENT,
+      "publish-floating-settings:status",
+      settings,
+    ),
+  ]);
+  return results.every(Boolean);
 }
 
 export function onFloatingSettingsChanged(handler: (settings: FloatingWindowSettings) => void): Promise<Unlisten> {

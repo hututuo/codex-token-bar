@@ -1154,6 +1154,7 @@ struct DashboardView: View {
             floatingPanelShowRadar ? "1" : "0",
             floatingPanelShowCrowdRadar ? "1" : "0",
             floatingPanelPagePairsRaw,
+            floatingPanelShowPageNavigationArrows ? "1" : "0",
             interfaceScaleAutoEnabled ? "1" : "0",
             String(interfaceScaleManualMultiplier),
             floatingPanelLocked ? "1" : "0",

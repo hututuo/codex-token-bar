@@ -2005,11 +2005,19 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .center()
         .visible(false)
         .on_page_load(move |window, payload| {
-            if matches!(payload.event(), PageLoadEvent::Finished) {
-                page_presented_on_load.store(true, Ordering::Release);
+            let event = payload.event();
+            if matches!(event, PageLoadEvent::Started) {
+                startup_trace::mark("dashboard page load started");
+            }
+            if matches!(event, PageLoadEvent::Finished) {
                 startup_trace::mark("dashboard page load finished");
-                let _ = window.set_title("Codex Token Bar");
+            }
+            let _ = window.set_title("Codex Token Bar");
+            if dashboard_page_event_presents(event)
+                && !page_presented_on_load.swap(true, Ordering::AcqRel)
+            {
                 if let Err(error) = window.show() {
+                    page_presented_on_load.store(false, Ordering::Release);
                     startup_trace::mark(&format!("dashboard page load show failed: {error}"));
                     return;
                 }
@@ -2034,6 +2042,10 @@ fn create_dashboard_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+fn dashboard_page_event_presents(event: PageLoadEvent) -> bool {
+    matches!(event, PageLoadEvent::Started | PageLoadEvent::Finished)
+}
+
 fn schedule_dashboard_visibility_watchdog(
     app: tauri::AppHandle,
     page_presented: Arc<AtomicBool>,
@@ -2053,7 +2065,7 @@ fn schedule_dashboard_visibility_watchdog(
                 return;
             };
             startup_trace::mark("dashboard visibility watchdog fired");
-            let _ = window.set_title("Codex Token Bar · 页面加载超时");
+            let _ = window.set_title("Codex Token Bar · 正在启动");
             if let Err(error) = window.show() {
                 startup_trace::mark(&format!(
                     "dashboard visibility watchdog show failed: {error}"
@@ -2383,6 +2395,12 @@ mod tests {
                 floating: FloatingStartupAction::CreateAndShow,
             }
         );
+    }
+
+    #[test]
+    fn dashboard_boot_shell_is_presentable_before_page_load_finishes() {
+        assert!(dashboard_page_event_presents(PageLoadEvent::Started));
+        assert!(dashboard_page_event_presents(PageLoadEvent::Finished));
     }
 
     #[test]

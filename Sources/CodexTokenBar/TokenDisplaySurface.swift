@@ -452,11 +452,21 @@ struct TokenDisplayCard: View {
             // outside a padded parent's hit-test bounds.
             .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)
 
-            if row.isPaged, visibility.showPageNavigationArrows {
+            if row.isPaged {
                 HStack {
-                    pageButton(systemImage: "chevron.left", row: row, delta: -1)
+                    pageButton(
+                        systemImage: "chevron.left",
+                        row: row,
+                        delta: -1,
+                        showsGlyph: visibility.showPageNavigationArrows
+                    )
                     Spacer(minLength: 0)
-                    pageButton(systemImage: "chevron.right", row: row, delta: 1)
+                    pageButton(
+                        systemImage: "chevron.right",
+                        row: row,
+                        delta: 1,
+                        showsGlyph: visibility.showPageNavigationArrows
+                    )
                 }
             }
         }
@@ -516,7 +526,8 @@ struct TokenDisplayCard: View {
     private func pageButton(
         systemImage: String,
         row: FloatingPanelPresentationRow,
-        delta: Int
+        delta: Int,
+        showsGlyph: Bool
     ) -> some View {
         let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing
 
@@ -538,6 +549,7 @@ struct TokenDisplayCard: View {
                     Image(systemName: systemImage)
                         .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
                         .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
+                        .opacity(showsGlyph ? 1 : 0)
                         .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
                         .frame(
                             width: 14.scaled(by: displayScale),

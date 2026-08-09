@@ -1418,7 +1418,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains("height: 24.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("Rectangle()\n                .fill(Color.black.opacity(0.001))"))
         XCTAssertTrue(source.contains(".buttonStyle(.plain)\n        .contentShape(Rectangle())"))
-        XCTAssertTrue(source.contains("if row.isPaged, visibility.showPageNavigationArrows"))
+        XCTAssertTrue(source.contains("if row.isPaged {"))
+        XCTAssertTrue(source.contains("showsGlyph: visibility.showPageNavigationArrows"))
+        XCTAssertTrue(source.contains(".opacity(showsGlyph ? 1 : 0)"))
+
+        let dashboard = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(dashboard.contains("floatingPanelShowPageNavigationArrows ? \"1\" : \"0\""))
     }
 
     func testStructureEditorShowsInsertionPreviewAndAcceptsHiddenDrops() throws {

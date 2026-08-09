@@ -310,6 +310,7 @@ function FloatingPagedContentRow({
   const safeIndex = selectedIndex % row.groups.length;
   const group = row.groups[safeIndex];
   const paged = row.groups.length > 1;
+  const showsArrowGlyphs = props.settings.contentVisibility.showPageNavigationArrows !== false;
   const cycle = (delta: -1 | 1) => setSelectedIndex((current) => (
     current + delta + row.groups.length
   ) % row.groups.length);
@@ -324,11 +325,11 @@ function FloatingPagedContentRow({
       } : undefined}
     >
       <FloatingContentRow {...props} group={group} />
-      {paged && props.settings.contentVisibility.showPageNavigationArrows !== false ? (
+      {paged ? (
         <>
           <button
             aria-label="显示上一项"
-            className="floating-page-switch floating-page-switch--previous"
+            className={`floating-page-switch floating-page-switch--previous${showsArrowGlyphs ? "" : " is-glyph-hidden"}`}
             onClick={() => cycle(-1)}
             onDoubleClick={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
@@ -336,7 +337,7 @@ function FloatingPagedContentRow({
           ><span aria-hidden="true">‹</span></button>
           <button
             aria-label="显示下一项"
-            className="floating-page-switch floating-page-switch--next"
+            className={`floating-page-switch floating-page-switch--next${showsArrowGlyphs ? "" : " is-glyph-hidden"}`}
             onClick={() => cycle(1)}
             onDoubleClick={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}

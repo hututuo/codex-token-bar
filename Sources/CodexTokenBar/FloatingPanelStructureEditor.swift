@@ -53,6 +53,7 @@ struct FloatingPanelStructureEditor: View {
                         .controlSize(.mini)
                         .font(.system(size: 9.5, weight: .medium))
                         .fixedSize()
+                        .help("关闭后只隐藏箭头图案，左右边缘仍可点击翻页")
                     Button("恢复默认布局") {
                         resetConfirmationPresented = true
                     }
