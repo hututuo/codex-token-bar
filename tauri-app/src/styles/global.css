@@ -7954,6 +7954,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: calc(8px * var(--floating-scale));
 }
 
+.floating-model-usage-more {
+  cursor: help;
+}
+
 .floating-running-threads--stale,
 .floating-running-threads--unavailable {
   color: var(--floating-muted);

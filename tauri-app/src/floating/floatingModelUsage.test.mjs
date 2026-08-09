@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   floatingModelUsageAccessibilityText,
+  floatingModelUsageOverflowText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
 } from "./floatingModelUsage.ts";
@@ -62,6 +63,23 @@ test("cold-start empty model rows remain pending until a trusted summary exists"
     floatingTodayModelUsageItems([], "gpt56Sol", { showPlaceholders: true }).length,
     4,
   );
+});
+
+test("model usage overflow explains every hidden model", () => {
+  const items = floatingTodayModelUsageItems([
+    row("gpt-5.6-sol", 1_000_000, 0, 0, 1_000_000, 1),
+    row("gpt-5.6-luna", 500_000, 0, 0, 500_000, 1),
+    row("gpt-5.6-terra", 400_000, 0, 0, 400_000, 1),
+    row("codex-auto-review", 300_000, 0, 0, 300_000, 1),
+    row("gpt-5.5", 1, 0, 0, 1, 1),
+  ], "gpt56Sol", { showPlaceholders: true });
+
+  assert.equal(items.length, 5);
+  assert.equal(
+    floatingModelUsageOverflowText(items),
+    "更多模型\ngpt-5.5 · 1 tokens · 占比 <0.1% · $0.00",
+  );
+  assert.equal(floatingModelUsageOverflowText(items.slice(0, 4)), null);
 });
 
 function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls) {

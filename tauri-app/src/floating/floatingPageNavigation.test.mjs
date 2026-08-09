@@ -38,6 +38,9 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.doesNotMatch(container.textContent, /Sol\$3\.25/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
         assert.doesNotMatch(container.textContent, /费用/);
+        const moreModels = container.querySelector(".floating-model-usage-more");
+        assert.equal(moreModels?.textContent?.trim(), "+1");
+        assert.match(moreModels?.getAttribute("title") ?? "", /5\.5 · 1 tokens · 占比 <0\.1%/);
 
         await React.act(async () => next.dispatchEvent(new dom.MouseEvent("mousedown", {
           bubbles: true,
@@ -121,6 +124,36 @@ function floatingSnapshotFixture() {
           cachedInputTokens: 0,
           outputTokens: 100_000,
           totalTokens: 1_100_000,
+          calls: 1,
+        },
+      },
+      {
+        model: "gpt-5.6-terra",
+        breakdown: {
+          inputTokens: 1_000,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 1_000,
+          calls: 1,
+        },
+      },
+      {
+        model: "codex-auto-review",
+        breakdown: {
+          inputTokens: 1_000,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 1_000,
+          calls: 1,
+        },
+      },
+      {
+        model: "gpt-5.5",
+        breakdown: {
+          inputTokens: 1,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 1,
           calls: 1,
         },
       },

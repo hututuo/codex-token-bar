@@ -30,7 +30,9 @@ import { floatingGradientBackground } from "./floatingSettings";
 import { crowdRadarModelLabel, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 import type { OfficialAPIPriceModel } from "../settings/quotaPriceModel";
 import {
+  FLOATING_MODEL_USAGE_VISIBLE_LIMIT,
   floatingModelUsageAccessibilityText,
+  floatingModelUsageOverflowText,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   type FloatingModelUsagePage,
@@ -507,6 +509,7 @@ function FloatingTodayModelUsageRow({
   style: CSSProperties;
 }) {
   const items = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders });
+  const overflowText = floatingModelUsageOverflowText(items);
   return (
     <div
       aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
@@ -517,14 +520,22 @@ function FloatingTodayModelUsageRow({
         <span className="floating-model-usage-empty">今日模型待读取</span>
       ) : (
         <span className="floating-model-usage-items">
-          {items.slice(0, 4).map((item) => (
+          {items.slice(0, FLOATING_MODEL_USAGE_VISIBLE_LIMIT).map((item) => (
             <span className="floating-model-usage-item" key={item.key}>
               <i aria-hidden="true" style={{ background: item.color }} />
               <em>{item.label}</em>
               <strong>{floatingModelUsageValue(item, page)}</strong>
             </span>
           ))}
-          {items.length > 4 ? <small>+{items.length - 4}</small> : null}
+          {overflowText ? (
+            <small
+              aria-label={overflowText}
+              className="floating-model-usage-more"
+              title={overflowText}
+            >
+              +{items.length - FLOATING_MODEL_USAGE_VISIBLE_LIMIT}
+            </small>
+          ) : null}
         </span>
       )}
     </div>

@@ -34,6 +34,8 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 }
 
 enum FloatingTodayModelUsagePresentation {
+    static let visibleItemLimit = 4
+
     /// Keep the compact model strip useful even when the current day only
     /// contains one model. Spark is intentionally not part of this default
     /// paid-model set: it has its own quota and remains an explicit row only
@@ -125,6 +127,33 @@ enum FloatingTodayModelUsagePresentation {
             .joined(separator: "，")
         return "今日模型\(page.compactTitle)：\(detail)"
     }
+
+    static func overflowDetailText(
+        items: [FloatingTodayModelUsageItem],
+        visibleLimit: Int = visibleItemLimit
+    ) -> String? {
+        let hiddenItems = items.dropFirst(max(visibleLimit, 0))
+        guard !hiddenItems.isEmpty else { return nil }
+
+        let details = hiddenItems.map { item in
+            let cost = item.usesIndependentQuota
+                ? "独立额度"
+                : (item.costUSD ?? 0).quotaEstimatorMoneyText
+            return "\(item.label) · \(item.tokens.abbreviatedTokens) tokens · 占比 \(detailedShareText(item.share)) · \(cost)"
+        }
+        return (["更多模型"] + details).joined(separator: "\n")
+    }
+
+    private static func detailedShareText(_ share: Double) -> String {
+        let percent = max(0, share) * 100
+        if percent > 0, percent < 0.1 {
+            return "<0.1%"
+        }
+        if percent < 10, percent.rounded() != percent {
+            return String(format: "%.1f%%", percent)
+        }
+        return "\(Int(percent.rounded()))%"
+    }
 }
 
 struct FloatingTodayModelUsageRow: View {
@@ -142,6 +171,11 @@ struct FloatingTodayModelUsageRow: View {
             fallbackModel: fallbackModel,
             showPlaceholders: showPlaceholders
         )
+        let visibleLimit = FloatingTodayModelUsagePresentation.visibleItemLimit
+        let overflowDetail = FloatingTodayModelUsagePresentation.overflowDetailText(
+            items: items,
+            visibleLimit: visibleLimit
+        )
         HStack(spacing: 5.scaled(by: displayScale)) {
             if items.isEmpty {
                 Text("今日模型待读取")
@@ -150,7 +184,7 @@ struct FloatingTodayModelUsageRow: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 HStack(spacing: 6.scaled(by: displayScale)) {
-                    ForEach(Array(items.prefix(4))) { item in
+                    ForEach(Array(items.prefix(visibleLimit))) { item in
                         HStack(spacing: 2.scaled(by: displayScale)) {
                             Circle()
                                 .fill(item.color)
@@ -168,10 +202,12 @@ struct FloatingTodayModelUsageRow: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     }
-                    if items.count > 4 {
-                        Text("+\(items.count - 4)")
+                    if let overflowDetail {
+                        Text("+\(items.count - visibleLimit)")
                             .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
                             .foregroundStyle(textPalette.mutedColor)
+                            .help(overflowDetail)
+                            .accessibilityLabel(overflowDetail)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)

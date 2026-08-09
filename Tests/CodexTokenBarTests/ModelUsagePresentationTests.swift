@@ -138,6 +138,32 @@ final class ModelUsagePresentationTests: XCTestCase {
         )
     }
 
+    func testFloatingTodayModelUsageOverflowExplainsHiddenModels() throws {
+        let rows = [
+            rowWithBreakdown("gpt-5.6-sol", inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000),
+            rowWithBreakdown("gpt-5.6-luna", inputTokens: 500_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 500_000),
+            rowWithBreakdown("gpt-5.6-terra", inputTokens: 400_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 400_000),
+            rowWithBreakdown("codex-auto-review", inputTokens: 300_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 300_000),
+            rowWithBreakdown("gpt-5.5", inputTokens: 1, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1),
+        ]
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: .gpt56Sol,
+            showPlaceholders: true
+        )
+
+        XCTAssertEqual(items.count, 5)
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.overflowDetailText(items: items),
+            "更多模型\ngpt-5.5 · 1 tokens · 占比 <0.1% · $0.00"
+        )
+        XCTAssertNil(
+            FloatingTodayModelUsagePresentation.overflowDetailText(
+                items: Array(items.prefix(FloatingTodayModelUsagePresentation.visibleItemLimit))
+            )
+        )
+    }
+
     private func rowWithBreakdown(
         _ model: String,
         inputTokens: Int,

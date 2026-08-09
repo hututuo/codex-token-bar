@@ -10,6 +10,7 @@ import {
   officialAPICostUSD,
   type OfficialAPIPriceModel,
 } from "../settings/quotaPriceModel.ts";
+import { formatTokens } from "../utils/format.ts";
 
 export type FloatingModelUsagePage = "share" | "cost";
 
@@ -22,6 +23,8 @@ export interface FloatingModelUsageItem {
   usesIndependentQuota: boolean;
   color: string;
 }
+
+export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
 
 interface CombinedModelUsage {
   model: string | null;
@@ -149,10 +152,30 @@ export function floatingModelUsageAccessibilityText(
   return `今日模型${title}：${items.map((item) => `${item.label} ${floatingModelUsageValue(item, page)}`).join("，")}`;
 }
 
+export function floatingModelUsageOverflowText(
+  items: FloatingModelUsageItem[],
+  visibleLimit = FLOATING_MODEL_USAGE_VISIBLE_LIMIT,
+): string | null {
+  const hiddenItems = items.slice(Math.max(visibleLimit, 0));
+  if (hiddenItems.length === 0) return null;
+  const details = hiddenItems.map((item) => {
+    const cost = item.usesIndependentQuota ? "独立额度" : moneyText(item.costUSD ?? 0);
+    return `${item.label} · ${formatTokens(item.tokens)} tokens · 占比 ${detailedShareText(item.share)} · ${cost}`;
+  });
+  return ["更多模型", ...details].join("\n");
+}
+
 function moneyText(value: number): string {
   if (value >= 100) return `$${value.toFixed(0)}`;
   if (value >= 10) return `$${value.toFixed(1)}`;
   return `$${value.toFixed(2)}`;
+}
+
+function detailedShareText(share: number): string {
+  const percent = Math.max(0, share) * 100;
+  if (percent > 0 && percent < 0.1) return "<0.1%";
+  if (percent < 10 && Math.round(percent) !== percent) return `${percent.toFixed(1)}%`;
+  return `${Math.round(percent)}%`;
 }
 
 function finiteNonnegative(value: unknown): number {
