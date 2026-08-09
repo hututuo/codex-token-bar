@@ -9,7 +9,7 @@ import {
 } from "./floatingContent.ts";
 
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
-export const FLOATING_BASE_WIDTH = 258;
+export const FLOATING_BASE_WIDTH = 276;
 export const FLOATING_MIN_HEIGHT = 88;
 export const FLOATING_DEFAULT_HEIGHT = 141;
 

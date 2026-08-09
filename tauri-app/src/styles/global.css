@@ -7616,7 +7616,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   --floating-muted: rgba(72, 84, 100, 0.68);
   --floating-divider: rgba(33, 42, 55, 0.18);
   position: relative;
-  width: min(calc(258px * var(--floating-scale)), calc(100vw - 2px));
+  width: min(calc(276px * var(--floating-scale)), calc(100vw - 2px));
   padding: calc(6px * var(--floating-scale)) calc(10px * var(--floating-scale));
   border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: calc(14px * var(--floating-scale));
@@ -7753,25 +7753,25 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-topline {
   display: grid;
-  grid-template-columns: calc(86px * var(--floating-scale)) minmax(0, 1fr);
-  column-gap: calc(3px * var(--floating-scale));
+  grid-template-columns: calc(92px * var(--floating-scale)) minmax(0, 1fr);
+  column-gap: calc(8px * var(--floating-scale));
   padding-right: calc(17px * var(--floating-scale));
 }
 
 .floating-rate-readout {
   display: grid;
-  grid-template-columns: calc(58px * var(--floating-scale)) calc(20px * var(--floating-scale));
+  grid-template-columns: calc(64px * var(--floating-scale)) calc(22px * var(--floating-scale));
   align-items: baseline;
-  column-gap: calc(2px * var(--floating-scale));
+  column-gap: calc(4px * var(--floating-scale));
   min-width: 0;
   white-space: nowrap;
 }
 
 .floating-topline strong {
   display: block;
-  width: calc(58px * var(--floating-scale));
+  width: calc(64px * var(--floating-scale));
   color: var(--floating-primary);
-  font-size: calc(19px * var(--floating-scale));
+  font-size: calc(20px * var(--floating-scale));
   font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
   line-height: 0.98;
@@ -7790,7 +7790,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-rate-readout > span {
   color: var(--floating-secondary);
-  font-size: calc(8.5px * var(--floating-scale));
+  font-size: calc(8.6px * var(--floating-scale));
   font-weight: var(--weight-medium);
   transform: translateY(calc(3.5px * var(--floating-scale)));
 }
@@ -7961,9 +7961,8 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   align-items: center;
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
-  border-top: 1px solid var(--floating-divider);
   color: var(--floating-primary);
-  font-size: calc(8.4px * var(--floating-scale));
+  font-size: calc(8.6px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   font-weight: var(--weight-medium);
 }
@@ -8010,7 +8009,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-model-usage-items small {
   color: var(--floating-muted);
-  font-size: calc(7.6px * var(--floating-scale));
+  font-size: calc(8px * var(--floating-scale));
 }
 
 .floating-running-threads--stale,
@@ -8064,9 +8063,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-radar {
   align-items: stretch;
-  min-height: calc(26px * var(--floating-scale));
-  border-top: 1px solid var(--floating-divider);
-  padding-top: calc(3px * var(--floating-scale));
+  min-height: calc(24px * var(--floating-scale));
   color: var(--floating-secondary);
   font-size: calc(9.8px * var(--floating-scale));
 }
@@ -8075,9 +8072,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   align-items: center;
   min-width: 0;
   min-height: calc(20px * var(--floating-scale));
-  border-top: 1px solid var(--floating-divider);
-  padding-top: calc(1px * var(--floating-scale));
-  font-size: calc(8px * var(--floating-scale));
+  font-size: calc(8.2px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
 }
 
@@ -8094,7 +8089,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   grid-template-rows: repeat(2, minmax(0, 1fr));
   align-content: center;
   min-width: 0;
-  line-height: 1;
+  line-height: 1.05;
   white-space: nowrap;
 }
 
@@ -8125,6 +8120,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   gap: calc(2px * var(--floating-scale));
   align-content: center;
   min-width: 0;
+  line-height: 1.05;
 }
 
 .floating-radar-action > span {
