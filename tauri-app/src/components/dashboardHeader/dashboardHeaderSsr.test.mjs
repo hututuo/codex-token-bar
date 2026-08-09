@@ -8,15 +8,19 @@ function renderComponent(Component, props) {
   return renderToStaticMarkup(React.createElement(Component, props));
 }
 
-test("DashboardHeader renders one product card with compact primary actions and status strip", async () => {
+test("DashboardHeader keeps the account identity above the compact product card", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
     const html = renderComponent(DashboardHeader, headerProps());
 
-    assert.match(html, /class="dashboard-header dash-head"/);
-    assert.match(html, /class="dash-head__top"/);
+    assert.match(html, /class="dashboard-header"/);
+    assert.match(html, /class="brand-mark">CX/);
+    assert.match(html, /class="account-row"/);
+    assert.match(html, /class="account-name">Test User/);
+    assert.match(html, /class="dash-head"/);
+    assert.match(html, /class="dash-head__top dash-head__top--actions-only"/);
     assert.match(html, /class="dash-head__strip"/);
-    assert.match(html, /class="dash-head__mark">CX/);
+    assert.match(html, /class="dash-head__platform"/);
     assert.match(html, />Codex Token Bar</);
     assert.match(html, /总 5 · 主 2 · 子 3/);
     assert.match(html, /class="platform-badge">跨平台版/);
@@ -24,6 +28,8 @@ test("DashboardHeader renders one product card with compact primary actions and 
     assert.match(html, /立即刷新/);
     assert.match(html, />设置<\/button>/);
     assert.match(html, /aria-label="更多操作"/);
+    assert.doesNotMatch(html, /dash-head__mark|dash-head__identity|dash-head__name/);
+    assert.ok(html.indexOf('class="account-row"') < html.indexOf('class="dash-head"'));
     assert.doesNotMatch(html, /role="menu"|启用侧栏删除|启用会话删除/);
   });
 });

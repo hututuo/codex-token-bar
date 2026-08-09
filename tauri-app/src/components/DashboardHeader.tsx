@@ -154,124 +154,126 @@ export function DashboardHeader({
   }
 
   return (
-    <header className="dashboard-header dash-head">
-      <div className="dash-head__top">
-        <div className="dash-head__identity">
-          <div aria-hidden="true" className="dash-head__mark">CX</div>
-          <div className="dash-head__product">
-            <strong>Codex Token Bar</strong>
-            <span>
-              <i aria-hidden="true" className="platform-indicator" />
-              <b className="platform-badge">跨平台版</b>
-              <b className="plan-badge">{account.planLabel}</b>
-            </span>
-          </div>
-        </div>
-
-        <div aria-label="常用操作" className="dash-head__actions">
-          <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">
-            {refreshing ? "刷新中…" : "立即刷新"}
+    <header className="dashboard-header">
+      <div className="floating-title-spacer" />
+      <div aria-hidden="true" className="brand-mark">CX</div>
+      <div className="account-row">
+        {editingDisplayName ? (
+          <input
+            autoFocus
+            aria-label="昵称"
+            className="account-name-edit"
+            onBlur={commitDisplayName}
+            onChange={(event) => setDisplayNameDraft(event.currentTarget.value)}
+            onKeyDown={handleDisplayNameKeyDown}
+            value={displayNameDraft}
+          />
+        ) : (
+          <button className="account-name-button" onClick={beginEditDisplayName} title="修改显示昵称" type="button">
+            <span aria-hidden="true" className="account-name-pencil account-name-pencil--spacer">✎</span>
+            <span className="account-name">{resolvedDisplayName}</span>
+            <span aria-hidden="true" className="account-name-pencil">✎</span>
           </button>
-          <button className="dash-head__action" onClick={() => onOpenSettings("general")} type="button">设置</button>
-          <div className="dash-head__more" ref={moreMenuRef}>
-            <button
-              aria-expanded={moreMenuOpen}
-              aria-haspopup="menu"
-              aria-label="更多操作"
-              className="dash-head__action dash-head__action--more"
-              onClick={() => setMoreMenuOpen((current) => !current)}
-              type="button"
-            >
-              更多
-              {updateNeedsAttention ? <i aria-label="更新需要处理" className="dash-head__attention" /> : null}
-            </button>
-            {moreMenuOpen ? (
-              <div className="dash-head__menu" role="menu">
-                <div className="dash-head__menu-group">
-                  <span>会话</span>
-                  <button onClick={() => runMenuAction(onOpenSessionManagement)} role="menuitem" type="button">会话管理</button>
-                  <button onClick={() => runMenuAction(onOpenProviderRepair)} role="menuitem" title="找回消失的历史会话" type="button">会话消失修复</button>
-                  <button onClick={() => runMenuAction(() => onOpenSettings("session"))} role="menuitem" title={threadDeleteBridgeStatus.message} type="button">
-                    会话增强{threadDeleteBridgeStatus.connected ? " · 已连接" : ""}
-                  </button>
-                  <button onClick={() => runMenuAction(() => onOpenSettings("automation"))} role="menuitem" type="button">
-                    自动续跑{autoResumeEnabled ? " · 已开启" : ""}
-                  </button>
-                </div>
-                <div className="dash-head__menu-group">
-                  <span>数据</span>
-                  <button onClick={() => runMenuAction(() => setEditingPath((value) => !value))} role="menuitem" type="button">{editingPath ? "收起目录" : "更改目录"}</button>
-                  <button onClick={() => runMenuAction(onExportCsv)} role="menuitem" type="button">导出 CSV</button>
-                  <button onClick={() => runMenuAction(onExportPng)} role="menuitem" type="button">导出 PNG</button>
-                </div>
-                <div className="dash-head__menu-group">
-                  <span>应用</span>
-                  <button
-                    className={updateNeedsAttention ? `update-action--${appUpdateState.kind}` : undefined}
-                    disabled={updateBusy}
-                    onClick={() => runMenuAction(() => { void onCheckForUpdate(); })}
-                    role="menuitem"
-                    title={appUpdateState.message || undefined}
-                    type="button"
-                  >{updateButtonLabel}</button>
-                  <button
-                    aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
-                    aria-pressed={autostartStatus.enabled}
-                    disabled={!autostartStatus.available}
-                    onClick={() => runMenuAction(onToggleAutostart)}
-                    role="menuitem"
-                    title={autostartStatus.message}
-                    type="button"
-                  >开机自启：{autostartStatus.enabled ? "开" : "关"}</button>
-                  {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        </div>
+        )}
       </div>
 
-      <div aria-label="运行信息" className="dash-head__strip">
-        <div className="dash-head__name">
-          {editingDisplayName ? (
-            <input
-              autoFocus
-              aria-label="昵称"
-              className="account-name-edit"
-              onBlur={commitDisplayName}
-              onChange={(event) => setDisplayNameDraft(event.currentTarget.value)}
-              onKeyDown={handleDisplayNameKeyDown}
-              value={displayNameDraft}
-            />
-          ) : (
-            <button className="account-name-button" onClick={beginEditDisplayName} title="修改显示昵称" type="button">
-              <span className="account-name">{resolvedDisplayName}</span>
-              <span aria-hidden="true" className="account-name-pencil">✎</span>
+      <div className="dash-head">
+        <div className="dash-head__top dash-head__top--actions-only">
+          <div aria-label="常用操作" className="dash-head__actions">
+            <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">
+              {refreshing ? "刷新中…" : "立即刷新"}
             </button>
-          )}
+            <button className="dash-head__action" onClick={() => onOpenSettings("general")} type="button">设置</button>
+            <div className="dash-head__more" ref={moreMenuRef}>
+              <button
+                aria-expanded={moreMenuOpen}
+                aria-haspopup="menu"
+                aria-label="更多操作"
+                className="dash-head__action dash-head__action--more"
+                onClick={() => setMoreMenuOpen((current) => !current)}
+                type="button"
+              >
+                更多
+                {updateNeedsAttention ? <i aria-label="更新需要处理" className="dash-head__attention" /> : null}
+              </button>
+              {moreMenuOpen ? (
+                <div className="dash-head__menu" role="menu">
+                  <div className="dash-head__menu-group">
+                    <span>会话</span>
+                    <button onClick={() => runMenuAction(onOpenSessionManagement)} role="menuitem" type="button">会话管理</button>
+                    <button onClick={() => runMenuAction(onOpenProviderRepair)} role="menuitem" title="找回消失的历史会话" type="button">会话消失修复</button>
+                    <button onClick={() => runMenuAction(() => onOpenSettings("session"))} role="menuitem" title={threadDeleteBridgeStatus.message} type="button">
+                      会话增强{threadDeleteBridgeStatus.connected ? " · 已连接" : ""}
+                    </button>
+                    <button onClick={() => runMenuAction(() => onOpenSettings("automation"))} role="menuitem" type="button">
+                      自动续跑{autoResumeEnabled ? " · 已开启" : ""}
+                    </button>
+                  </div>
+                  <div className="dash-head__menu-group">
+                    <span>数据</span>
+                    <button onClick={() => runMenuAction(() => setEditingPath((value) => !value))} role="menuitem" type="button">{editingPath ? "收起目录" : "更改目录"}</button>
+                    <button onClick={() => runMenuAction(onExportCsv)} role="menuitem" type="button">导出 CSV</button>
+                    <button onClick={() => runMenuAction(onExportPng)} role="menuitem" type="button">导出 PNG</button>
+                  </div>
+                  <div className="dash-head__menu-group">
+                    <span>应用</span>
+                    <button
+                      className={updateNeedsAttention ? `update-action--${appUpdateState.kind}` : undefined}
+                      disabled={updateBusy}
+                      onClick={() => runMenuAction(() => { void onCheckForUpdate(); })}
+                      role="menuitem"
+                      title={appUpdateState.message || undefined}
+                      type="button"
+                    >{updateButtonLabel}</button>
+                    <button
+                      aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
+                      aria-pressed={autostartStatus.enabled}
+                      disabled={!autostartStatus.available}
+                      onClick={() => runMenuAction(onToggleAutostart)}
+                      role="menuitem"
+                      title={autostartStatus.message}
+                      type="button"
+                    >开机自启：{autostartStatus.enabled ? "开" : "关"}</button>
+                    {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
-        <button className="dash-head__source" onClick={() => setEditingPath((value) => !value)} title={codexHome.path} type="button">
-          <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
-          <span>{sourceLabel}</span>
-          <strong>{codexHome.path}</strong>
-        </button>
-        <span aria-live="polite" className={`dash-head__threads is-${runningThreads.status}`} title={runningThreads.detail}>
-          <small>运行线程</small>
-          <strong>{runningThreadHeaderText(runningThreads)}</strong>
-        </span>
-        <span className="dash-head__freshness">
-          <small>本地统计</small>
-          <strong>更新于 {updatedLabel}</strong>
-        </span>
+
+        <div aria-label="运行信息" className="dash-head__strip">
+          <span className="dash-head__platform">
+            <small>Codex Token Bar</small>
+            <strong>
+              <i aria-hidden="true" className="platform-indicator" />
+              <span className="platform-badge">跨平台版</span>
+              <span className="plan-badge">{account.planLabel}</span>
+            </strong>
+          </span>
+          <button className="dash-head__source" onClick={() => setEditingPath((value) => !value)} title={codexHome.path} type="button">
+            <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
+            <span>{sourceLabel}</span>
+            <strong>{codexHome.path}</strong>
+          </button>
+          <span aria-live="polite" className={`dash-head__threads is-${runningThreads.status}`} title={runningThreads.detail}>
+            <small>运行线程</small>
+            <strong>{runningThreadHeaderText(runningThreads)}</strong>
+          </span>
+          <span className="dash-head__freshness">
+            <small>本地统计</small>
+            <strong>更新于 {updatedLabel}</strong>
+          </span>
+        </div>
+        {editingPath ? (
+          <CodexHomeEditor
+            codexHome={codexHome}
+            onCodexHomeChange={onCodexHomeChange}
+            onCodexHomeReset={onCodexHomeReset}
+            onDone={() => setEditingPath(false)}
+          />
+        ) : null}
       </div>
-      {editingPath ? (
-        <CodexHomeEditor
-          codexHome={codexHome}
-          onCodexHomeChange={onCodexHomeChange}
-          onCodexHomeReset={onCodexHomeReset}
-          onDone={() => setEditingPath(false)}
-        />
-      ) : null}
     </header>
   );
 }
