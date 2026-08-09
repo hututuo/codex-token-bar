@@ -437,6 +437,7 @@ function FloatingContentRow({
           page="share"
           priceModel={priceModel}
           rows={snapshot.todayModelBreakdowns}
+          showPlaceholders={todayModelUsageReady(snapshot)}
           style={style}
         />
       );
@@ -446,6 +447,7 @@ function FloatingContentRow({
           page="cost"
           priceModel={priceModel}
           rows={snapshot.todayModelBreakdowns}
+          showPlaceholders={todayModelUsageReady(snapshot)}
           style={style}
         />
       );
@@ -495,38 +497,45 @@ function FloatingTodayModelUsageRow({
   page,
   priceModel,
   rows,
+  showPlaceholders,
   style,
 }: {
   page: FloatingModelUsagePage;
   priceModel: OfficialAPIPriceModel;
   rows: FloatingPanelSnapshot["todayModelBreakdowns"];
+  showPlaceholders: boolean;
   style: CSSProperties;
 }) {
-  const items = floatingTodayModelUsageItems(rows, priceModel);
-  const title = page === "share" ? "占比" : "费用";
+  const items = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders });
   return (
     <div
-      aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel)}
+      aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
       className="floating-row floating-model-usage"
       style={style}
     >
-      <span className="floating-model-usage-title">{title}</span>
       {items.length === 0 ? (
         <span className="floating-model-usage-empty">今日模型待读取</span>
       ) : (
         <span className="floating-model-usage-items">
-          {items.slice(0, 3).map((item) => (
+          {items.slice(0, 4).map((item) => (
             <span className="floating-model-usage-item" key={item.key}>
               <i aria-hidden="true" style={{ background: item.color }} />
               <em>{item.label}</em>
               <strong>{floatingModelUsageValue(item, page)}</strong>
             </span>
           ))}
-          {items.length > 3 ? <small>+{items.length - 3}</small> : null}
+          {items.length > 4 ? <small>+{items.length - 4}</small> : null}
         </span>
       )}
     </div>
   );
+}
+
+// A numeric `今` label means a trusted summary exists (including a valid
+// zero-usage day); the pending label is the genuine cold-start state where an
+// empty row is allowed.
+function todayModelUsageReady(snapshot: FloatingPanelSnapshot): boolean {
+  return !snapshot.todayTokensLabel.includes("待读取");
 }
 
 export function floatingRunningThreadLabels(summary: RunningThreadSummary): string[] {

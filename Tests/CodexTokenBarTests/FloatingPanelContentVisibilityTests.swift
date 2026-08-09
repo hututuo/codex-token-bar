@@ -1372,6 +1372,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains(".scaleEffect(x: 0.58, y: 0.92, anchor: .center)"))
         XCTAssertTrue(source.contains("width: 14.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("height: 20.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("width: 28.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("height: 24.scaled(by: displayScale)"))
     }
 
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {

@@ -485,13 +485,15 @@ struct TokenDisplayCard: View {
             FloatingTodayModelUsageRow(
                 page: .share,
                 rows: snapshot.todayModelBreakdowns,
-                fallbackModel: fallbackPriceModel
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
             )
         case .todayModelCost:
             FloatingTodayModelUsageRow(
                 page: .cost,
                 rows: snapshot.todayModelBreakdowns,
-                fallbackModel: fallbackPriceModel
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
             )
         case .quota:
             TokenQuotaMiniStrip(snapshot: snapshot.quota)
@@ -516,14 +518,23 @@ struct TokenDisplayCard: View {
             let current = selectedPageIndexByRowID[row.id, default: 0]
             selectedPageIndexByRowID[row.id] = (current + delta + row.groups.count) % row.groups.count
         } label: {
-            Image(systemName: systemImage)
-                .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
-                .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
-                .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
-                .frame(
-                    width: 14.scaled(by: displayScale),
-                    height: 20.scaled(by: displayScale)
-                )
+            ZStack {
+                // Keep the glyph visually narrow while giving the button a
+                // forgiving edge hit target. This overlay does not take part
+                // in row layout, so it cannot squeeze model text.
+                Image(systemName: systemImage)
+                    .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
+                    .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
+                    .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
+                    .frame(
+                        width: 14.scaled(by: displayScale),
+                        height: 20.scaled(by: displayScale)
+                    )
+            }
+            .frame(
+                width: 28.scaled(by: displayScale),
+                height: 24.scaled(by: displayScale)
+            )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

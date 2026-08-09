@@ -7666,11 +7666,13 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-page-switch {
   position: absolute;
   z-index: 4;
-  top: 0;
-  bottom: 0;
+  top: calc(-2px * var(--floating-scale));
+  bottom: calc(-2px * var(--floating-scale));
   display: grid;
   place-items: center;
-  width: calc(14px * var(--floating-scale));
+  /* The glyph remains thin; the transparent button is intentionally wider
+     so the whole edge gutter is easy to click without changing row layout. */
+  width: calc(24px * var(--floating-scale));
   border: 0;
   background: transparent;
   color: var(--floating-secondary);
@@ -7707,11 +7709,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-page-switch--previous {
-  left: calc(-9px * var(--floating-scale));
+  left: calc(-8px * var(--floating-scale));
 }
 
 .floating-page-switch--next {
-  right: calc(-9px * var(--floating-scale));
+  right: calc(-8px * var(--floating-scale));
 }
 
 .floating-row {
@@ -7945,13 +7947,6 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: calc(8.4px * var(--floating-scale));
   font-variant-numeric: tabular-nums;
   font-weight: var(--weight-medium);
-}
-
-.floating-model-usage-title {
-  flex: 0 0 calc(25px * var(--floating-scale));
-  color: var(--floating-muted);
-  font-size: calc(7.8px * var(--floating-scale));
-  font-weight: var(--weight-semibold);
 }
 
 .floating-model-usage-empty {

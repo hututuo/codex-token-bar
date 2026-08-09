@@ -1822,6 +1822,84 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(store.preciseTimeSeriesFresh)
     }
 
+    func testCompactSummaryRefreshRetainsModelRowsWhileProjectionIsTemporarilyEmpty() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-model-cache/.codex"),
+            origin: .defaultHome
+        )
+        let generatedAt = Date()
+        let modelEvent = TokenCacheAttributionEvent(
+            id: "model-cache-sol",
+            start: generatedAt,
+            model: "gpt-5.6-sol",
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0,
+                totalTokens: 100,
+                calls: 1
+            )
+        )
+        let initial = DashboardSnapshot(
+            stats: DashboardStats(
+                totalTokens: 100,
+                peakDayTokens: 100,
+                peakThreadTokens: 100,
+                currentStreakDays: 1,
+                longestStreakDays: 1,
+                totalCalls: 1,
+                totalThreads: 1,
+                mostUsedReasoning: "",
+                skillsExplored: 0,
+                totalSkillsUsed: 0
+            ),
+            dailyUsage: [DayUsage(date: generatedAt, tokens: 100, calls: 1)],
+            recentBins: [],
+            hourlyUsage: [],
+            pluginUsage: [],
+            cacheUsage: TokenCacheUsage(
+                total: .empty,
+                daily: [],
+                hourly: [],
+                recentBins: [],
+                sessions: [],
+                turns: [],
+                attributionEvents: [modelEvent],
+                attributionEventsComplete: true
+            ),
+            generatedAt: generatedAt
+        )
+        let emptyProjection = CodexUsageAnalyzer.CompactUsageSummary(
+            totalTokens: 120,
+            todayTokens: 120,
+            todayCalls: 2,
+            todayModelBreakdowns: [],
+            generatedAt: generatedAt
+        )
+        let loader = CompactSummarySequenceProbeLoader(
+            precise: [initial],
+            summaries: [emptyProjection]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("initial model snapshot") {
+            !store.isRefreshing && store.todayModelBreakdowns.count == 1
+        }
+        store.setOnlyCompactSurfaceVisible(true)
+        store.refresh()
+        await waitUntil("empty model projection refresh") {
+            !store.isRefreshing && store.snapshot.stats.totalTokens == 120
+        }
+
+        XCTAssertEqual(store.todayModelBreakdowns.map(\.model), ["gpt-5.6-sol"])
+    }
+
     func testFirstLoadTakesTheFullPathEvenWhenOnlyCompactSurfaceIsVisible() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-first-load/.codex"),
@@ -2172,6 +2250,35 @@ private actor CompactSummaryProbeLoader: DashboardSnapshotLoading {
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         compactSummaryCount += 1
         return summary
+    }
+}
+
+private actor CompactSummarySequenceProbeLoader: DashboardSnapshotLoading {
+    private var preciseResults: [DashboardSnapshot]
+    private var summaries: [CodexUsageAnalyzer.CompactUsageSummary]
+
+    init(
+        precise: [DashboardSnapshot],
+        summaries: [CodexUsageAnalyzer.CompactUsageSummary]
+    ) {
+        self.preciseResults = precise
+        self.summaries = summaries
+    }
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
+        return preciseResults.removeFirst()
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        guard !summaries.isEmpty else { return nil }
+        return summaries.removeFirst()
     }
 }
 
