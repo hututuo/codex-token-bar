@@ -367,7 +367,7 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
         return 14;
       case "todayModelShare":
       case "todayModelCost":
-        return 20;
+        return 17;
       case "radar":
         return 24;
       case "crowdRadar":

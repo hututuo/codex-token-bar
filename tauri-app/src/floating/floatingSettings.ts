@@ -9,9 +9,9 @@ import {
 } from "./floatingContent.ts";
 
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
-export const FLOATING_BASE_WIDTH = 276;
+export const FLOATING_BASE_WIDTH = 288;
 export const FLOATING_MIN_HEIGHT = 88;
-export const FLOATING_DEFAULT_HEIGHT = 141;
+export const FLOATING_DEFAULT_HEIGHT = 138;
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,

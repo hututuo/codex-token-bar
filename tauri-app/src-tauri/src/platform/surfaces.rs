@@ -33,9 +33,9 @@ use tauri::{
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 
-const FLOATING_WINDOW_WIDTH: f64 = 276.0;
+const FLOATING_WINDOW_WIDTH: f64 = 288.0;
 const FLOATING_WINDOW_MIN_HEIGHT: f64 = 88.0;
-const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 141.0;
+const FLOATING_WINDOW_DEFAULT_HEIGHT: f64 = 138.0;
 const FLOATING_WINDOW_MIN_SCALE: f64 = 0.9;
 const FLOATING_WINDOW_MAX_SCALE: f64 = 1.38;
 const FLOATING_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "floating-window-visibility-changed";
@@ -2423,10 +2423,10 @@ mod tests {
 
     #[test]
     fn floating_window_dimensions_keep_compact_swift_proportions_without_clipping_default_content() {
-        assert_eq!(FLOATING_WINDOW_WIDTH, 276.0);
+        assert_eq!(FLOATING_WINDOW_WIDTH, 288.0);
         assert_eq!(FLOATING_WINDOW_MIN_HEIGHT, 88.0);
-        assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 141.0);
-        assert!(FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE >= 141.0 * 1.38);
+        assert_eq!(FLOATING_WINDOW_DEFAULT_HEIGHT, 138.0);
+        assert!(FLOATING_WINDOW_DEFAULT_HEIGHT * FLOATING_WINDOW_MAX_SCALE >= 138.0 * 1.38);
     }
 
     #[test]

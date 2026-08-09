@@ -7616,7 +7616,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   --floating-muted: rgba(72, 84, 100, 0.68);
   --floating-divider: rgba(33, 42, 55, 0.18);
   position: relative;
-  width: min(calc(276px * var(--floating-scale)), calc(100vw - 2px));
+  width: min(calc(288px * var(--floating-scale)), calc(100vw - 2px));
   padding: calc(6px * var(--floating-scale)) calc(10px * var(--floating-scale));
   border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: calc(14px * var(--floating-scale));
@@ -7960,7 +7960,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: calc(20px * var(--floating-scale));
+  min-height: calc(17px * var(--floating-scale));
   color: var(--floating-primary);
   font-size: calc(8.6px * var(--floating-scale));
   font-variant-numeric: tabular-nums;

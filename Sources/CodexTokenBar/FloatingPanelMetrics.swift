@@ -1,7 +1,7 @@
 import AppKit
 
 enum FloatingTokenPanelMetrics {
-    static let baseSize = NSSize(width: 258, height: 141)
+    static let baseSize = NSSize(width: 258, height: 138)
     static let minimumControlSize = NSSize(width: 72, height: 34)
     static let baseCornerRadius: CGFloat = 14
     static let horizontalPadding: CGFloat = 10
@@ -13,7 +13,7 @@ enum FloatingTokenPanelMetrics {
     static let usageStatusRowHeight: CGFloat = 20
     static let metricRowHeight: CGFloat = 13
     static let runningThreadsRowHeight: CGFloat = 14
-    static let todayModelRowHeight: CGFloat = 20
+    static let todayModelRowHeight: CGFloat = 17
     static let quotaRowHeight: CGFloat = 15.5
     static let radarRowHeight: CGFloat = 24
     static let crowdRadarRowHeight: CGFloat = 20

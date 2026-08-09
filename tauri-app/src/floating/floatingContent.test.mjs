@@ -113,7 +113,7 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 141);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 138);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {

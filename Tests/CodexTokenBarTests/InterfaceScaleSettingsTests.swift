@@ -10,8 +10,8 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         XCTAssertEqual(scale.value, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.effectiveScale, 1.3, accuracy: 0.001)
         XCTAssertEqual(layout.size.width, 336, accuracy: 0.001)
-        // The shared 13pt metrics row keeps both clients on a 141pt base height.
-        XCTAssertEqual(layout.size.height, 184, accuracy: 0.001)
+        // The compact model row keeps the default panel on a 138pt base height.
+        XCTAssertEqual(layout.size.height, 180, accuracy: 0.001)
         XCTAssertEqual(layout.cornerRadius, 18.2, accuracy: 0.001)
     }
 

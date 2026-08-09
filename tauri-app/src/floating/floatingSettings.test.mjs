@@ -10,9 +10,9 @@ import {
 } from "./floatingSettings.ts";
 
 test("floating dimensions keep compact Swift-style proportions", () => {
-  assert.equal(FLOATING_BASE_WIDTH, 276);
+  assert.equal(FLOATING_BASE_WIDTH, 288);
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 141);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 138);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
