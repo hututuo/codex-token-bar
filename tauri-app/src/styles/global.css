@@ -7712,8 +7712,16 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   left: calc(-8px * var(--floating-scale));
 }
 
+.floating-page-switch--previous > span {
+  transform: translateX(calc(-6px * var(--floating-scale))) scaleX(0.58);
+}
+
 .floating-page-switch--next {
   right: calc(-8px * var(--floating-scale));
+}
+
+.floating-page-switch--next > span {
+  transform: translateX(calc(6px * var(--floating-scale))) scaleX(0.58);
 }
 
 .floating-row {

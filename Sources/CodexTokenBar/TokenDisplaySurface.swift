@@ -526,6 +526,10 @@ struct TokenDisplayCard: View {
                     .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
                     .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
+                    // Keep the enlarged hit target centered on the edge gutter,
+                    // but push the visible glyph back to the outer-edge position
+                    // used before the hit-area expansion.
+                    .offset(x: (delta < 0 ? -7 : 7).scaled(by: displayScale))
                     .frame(
                         width: 14.scaled(by: displayScale),
                         height: 20.scaled(by: displayScale)

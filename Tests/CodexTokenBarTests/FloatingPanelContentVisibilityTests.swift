@@ -1370,6 +1370,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
 
         XCTAssertTrue(source.contains(".padding(.horizontal, -9.scaled(by: displayScale))"))
         XCTAssertTrue(source.contains(".scaleEffect(x: 0.58, y: 0.92, anchor: .center)"))
+        XCTAssertTrue(source.contains(".offset(x: (delta < 0 ? -7 : 7).scaled(by: displayScale))"))
         XCTAssertTrue(source.contains("width: 14.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("height: 20.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("width: 28.scaled(by: displayScale)"))
