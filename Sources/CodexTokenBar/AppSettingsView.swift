@@ -570,10 +570,6 @@ struct AppSettingsView: View {
 
     private var floatingPanelSettings: some View {
         Group {
-            settingsSection(title: "实时预览", subtitle: "颜色、透明度和尺寸会直接反映在这里") {
-                floatingPanelPreview
-            }
-
             settingsSection(title: "窗口行为", subtitle: "调整悬浮窗的位置与占用空间") {
                 settingsToggle("锁定悬浮窗位置", systemImage: "lock", isOn: $floatingPanelLocked)
                 settingsSlider(
@@ -621,12 +617,15 @@ struct AppSettingsView: View {
             radarPresentation: floatingPreviewRadarPresentation,
             opacity: floatingPanelOpacity,
             scale: floatingPanelScale,
+            textTone: floatingPanelTextTone,
             appearance: FloatingPanelAppearance(
                 startHex: gradientStartHex,
                 endHex: gradientEndHex,
                 directionRaw: gradientDirection,
                 styleRaw: gradientStyle
-            )
+            ),
+            quotaColorMode: quotaColorMode,
+            quotaFixedHex: quotaFixedHex
         )
     }
 
@@ -741,86 +740,6 @@ struct AppSettingsView: View {
             }
 
         }
-    }
-
-    private var floatingPanelPreview: some View {
-        let appearance = FloatingPanelAppearance(
-            startHex: gradientStartHex,
-            endHex: gradientEndHex,
-            directionRaw: gradientDirection,
-            styleRaw: gradientStyle
-        )
-        let tone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextTone)
-        let palette = tone.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
-            ?? FloatingPanelReadableTextPalette(
-                backgroundLuminance: appearance.readableTextPalette.backgroundLuminance,
-                automaticStrength: tone.automaticStrength
-            )
-        let quotaStyle = FloatingQuotaColorStyle(
-            modeRaw: quotaColorMode,
-            fixedHex: quotaFixedHex,
-            gradientAppearance: appearance
-        )
-        let scaleProgress = (FloatingTokenPanelMetrics.clampedScale(floatingPanelScale) - 0.75) / 1.25
-        let previewWidth = 350 + 150 * scaleProgress
-
-        return VStack(spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(appearance.gradientShapeStyle)
-                    .opacity(floatingPanelOpacity)
-
-                VStack(spacing: 9) {
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("实时速率")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(palette.secondaryColor)
-                            Text("128 token/s")
-                                .font(.system(size: 18, weight: .semibold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(palette.primaryColor)
-                        }
-                        Spacer(minLength: 12)
-                        Text("额度 72%")
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(palette.primaryColor)
-                    }
-
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(palette.primaryColor.opacity(0.16))
-                            Capsule()
-                                .fill(quotaStyle.fillStyle(remainingPercent: 72, expectedRemainingPercent: 68))
-                                .frame(width: proxy.size.width * 0.72)
-                        }
-                    }
-                    .frame(height: 6)
-
-                    HStack {
-                        Text("本次 1,248 token")
-                        Spacer(minLength: 8)
-                        Text("今日 42.6K")
-                    }
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(palette.secondaryColor)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 13)
-            }
-            .frame(width: previewWidth, height: 116 + 12 * scaleProgress)
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(AppTheme.borderStrong.opacity(0.45), lineWidth: 1)
-            )
-
-            Text("示例数据 · 实际悬浮窗内容由“内容与排序”控制")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .padding(.horizontal, 12)
     }
 
     private var loginItemBinding: Binding<Bool> {

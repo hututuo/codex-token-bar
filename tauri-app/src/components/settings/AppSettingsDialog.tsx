@@ -11,8 +11,6 @@ import {
 import type { ThreadDeleteBridgeStatus } from "../../api/threadDeleteClient";
 import { sanitizeFloatingContentVisibility } from "../../floating/floatingContent";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
-import { floatingGradientBackground } from "../../floating/floatingSettings";
-import { floatingTextPaletteForGroup } from "../../floating/floatingTextPalette";
 import {
   DEFAULT_STATUS_METRIC_ORDER,
   DEFAULT_STATUS_SUMMARY_ORDER,
@@ -1829,15 +1827,6 @@ function FloatingAppearanceSettings({
   const scalePercent = Math.round(floatingSettings.scale * 100);
   const textToneValue = Math.round(floatingSettings.textTone * 100);
   const textToneLabel = textToneValue < 0 ? `自动 ${Math.abs(textToneValue)}%` : `手动 ${textToneValue}%`;
-  const previewPalette = floatingTextPaletteForGroup(floatingSettings, "rateAndBar", 0, 1);
-  const previewStyle = {
-    background: floatingGradientBackground(floatingSettings),
-    color: previewPalette.primary,
-    opacity: floatingSettings.opacity,
-    transform: `scale(${Math.min(1.08, Math.max(0.92, floatingSettings.scale))})`,
-    "--preview-secondary": previewPalette.secondary,
-    "--preview-muted": previewPalette.muted,
-  } as CSSProperties;
 
   return (
     <>
@@ -1941,15 +1930,6 @@ function FloatingAppearanceSettings({
         </div>
       </SettingsGroup>
 
-      <div className="app-settings-preview-wrap" aria-label="悬浮窗外观预览">
-        <span>实时预览</span>
-        <div className="app-settings-preview" style={previewStyle}>
-          <strong>Codex Token Bar</strong>
-          <span>128 tok/s</span>
-          <i><b /></i>
-          <small>7d 61% · 均速正常</small>
-        </div>
-      </div>
     </>
   );
 }

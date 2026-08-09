@@ -111,6 +111,8 @@ test("floating settings combine appearance, content, paging, and the real previe
     assert.match(panel.textContent, /今日模型费用/);
     assert.match(panel.textContent, /默认页/);
     assert.equal(panel.querySelectorAll(".floating-panel-surface--preview").length, 1);
+    assert.equal(panel.querySelector('[aria-label="悬浮窗外观预览"]'), null);
+    assert.equal(panel.querySelector(".app-settings-preview"), null);
     assert.equal(panel.querySelectorAll(".floating-structure-shell select").length, 0);
 
     const hideModelRow = panel.querySelector('button[aria-label="隐藏今日模型占比 · 今日模型费用"]');

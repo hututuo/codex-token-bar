@@ -4051,64 +4051,6 @@ button.quota-side-card:hover {
   line-height: 1.4;
 }
 
-.app-settings-preview-wrap {
-  display: grid;
-  gap: 7px;
-  justify-items: center;
-  margin-top: 4px;
-}
-
-.app-settings-preview-wrap > span {
-  color: var(--muted);
-  font-size: 9.5px;
-  font-weight: var(--weight-medium);
-}
-
-.app-settings-preview {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 10px;
-  width: min(290px, 88%);
-  border: 1px solid color-mix(in srgb, var(--line-strong) 58%, transparent);
-  border-radius: 10px;
-  padding: 12px 14px;
-  transform-origin: center;
-}
-
-.app-settings-preview strong {
-  font-size: 11px;
-  font-weight: var(--weight-semibold);
-}
-
-.app-settings-preview > span {
-  color: var(--preview-secondary);
-  font-size: 10.5px;
-  font-weight: var(--weight-semibold);
-}
-
-.app-settings-preview i {
-  grid-column: 1 / -1;
-  height: 4px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: color-mix(in srgb, var(--preview-muted) 24%, transparent);
-}
-
-.app-settings-preview i b {
-  display: block;
-  width: 64%;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--preview-secondary);
-}
-
-.app-settings-preview small {
-  grid-column: 1 / -1;
-  color: var(--preview-muted);
-  font-size: 9px;
-  font-weight: var(--weight-medium);
-}
-
 .app-settings-content-list {
   display: grid;
 }

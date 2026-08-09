@@ -8,7 +8,10 @@ struct FloatingPanelStructureEditor: View {
     let radarPresentation: CodexRadarPresentationState
     let opacity: Double
     let scale: Double
+    let textTone: Double
     let appearance: FloatingPanelAppearance
+    let quotaColorMode: String
+    let quotaFixedHex: String
 
     @State private var draggedItem: DraggedItem?
     @State private var selectedRowID: String?
@@ -321,9 +324,27 @@ struct FloatingPanelStructureEditor: View {
     private var previewCard: some View {
         let previewScale = min(0.82, max(0.72, FloatingTokenPanelMetrics.clampedScale(scale)))
         let size = FloatingTokenPanelMetrics.size(scale: Double(previewScale), visibility: visibility)
-        let palette = FloatingPanelReadableTextPalette(
-            backgroundLuminance: appearance.readableTextPalette.backgroundLuminance,
-            automaticStrength: 1
+        let textTonePreference = FloatingPanelTextTonePreference.mode(for: textTone)
+        let automaticPalettes = appearance.textPalettes(
+            panelSize: size,
+            scale: previewScale,
+            opacity: opacity,
+            automaticStrength: textTonePreference.automaticStrength,
+            visibility: visibility,
+            hasPreciseTokenUsage: snapshot.hasPreciseTokenUsage
+        )
+        let overridePalette = textTonePreference.manualWhite.map(FloatingPanelReadableTextPalette.init(fixedWhite:))
+        let baseTextPalette = overridePalette ?? automaticPalettes.controlPalette
+        let rowTextPalettes = overridePalette.map { palette in
+            Dictionary(uniqueKeysWithValues: FloatingPanelContentGroup.allCases.map { ($0, palette) })
+        } ?? automaticPalettes.rowPalettes
+        let metricTextPalettes = overridePalette.map { palette in
+            Dictionary(uniqueKeysWithValues: FloatingPanelMetricTextRegion.allCases.map { ($0, palette) })
+        } ?? automaticPalettes.metricPalettes
+        let quotaColorStyle = FloatingQuotaColorStyle(
+            modeRaw: quotaColorMode,
+            fixedHex: quotaFixedHex,
+            gradientAppearance: appearance
         )
 
         return ZStack {
@@ -342,7 +363,20 @@ struct FloatingPanelStructureEditor: View {
                 onPreviewRowSelect: { selectedRowID = $0 }
             )
             .environment(\.tokenDisplayScale, previewScale)
-            .environment(\.tokenDisplayTextPalette, palette)
+            .environment(\.tokenDisplayTextPalette, baseTextPalette)
+            .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
+            .environment(\.tokenDisplayMetricTextPalettes, metricTextPalettes)
+            .environment(\.tokenDisplayQuotaColorStyle, quotaColorStyle)
+            .environment(
+                \.tokenDisplayEmbeddedUsageStatusTextPalette,
+                overridePalette ?? automaticPalettes.embeddedUsageStatusPalette
+            )
+            .environment(
+                \.tokenDisplayStandaloneUsageStatusTextPalette,
+                overridePalette ?? automaticPalettes.standaloneUsageStatusPalette
+            )
+            .environment(\.tokenDisplayRadarActionTextPalette, overridePalette ?? automaticPalettes.radarActionPalette)
+            .environment(\.tokenDisplayRadarModelTextPalette, overridePalette ?? automaticPalettes.radarModelPalette)
             .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * previewScale)
         }
         .frame(width: size.width, height: size.height)
