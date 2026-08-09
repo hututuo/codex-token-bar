@@ -514,37 +514,32 @@ struct TokenDisplayCard: View {
         row: FloatingPanelPresentationRow,
         delta: Int
     ) -> some View {
-        Button {
+        let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing
+
+        return Button {
             let current = selectedPageIndexByRowID[row.id, default: 0]
             selectedPageIndexByRowID[row.id] = (current + delta + row.groups.count) % row.groups.count
         } label: {
-            ZStack {
-                // Keep the glyph visually narrow while giving the button a
-                // forgiving edge hit target. This overlay does not take part
-                // in row layout, so it cannot squeeze model text.
-                // `Color.clear` still lets AppKit mouse-hit only the image's
-                // un-offset bounds. A non-zero but imperceptible alpha makes
-                // the entire label a real hit surface, including the visible
-                // chevron and the narrow strip between it and the window edge.
-                Color.black.opacity(0.001)
-
-                Image(systemName: systemImage)
-                    .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
-                    .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
-                    .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
-                    // Keep the enlarged hit target centered on the edge gutter,
-                    // but push the visible glyph back to the outer-edge position
-                    // used before the hit-area expansion.
-                    .offset(x: (delta < 0 ? -17 : 17).scaled(by: displayScale))
-                    .frame(
-                        width: 14.scaled(by: displayScale),
-                        height: 20.scaled(by: displayScale)
-                    )
-            }
-            .frame(
-                width: 48.scaled(by: displayScale),
-                height: 24.scaled(by: displayScale)
-            )
+            // Make the full edge gutter the label's concrete layout instead of
+            // rendering the chevron outside its real bounds with `offset`.
+            // This keeps the existing large inward target while making both
+            // the visible glyph and the strip out to the window edge clickable.
+            Rectangle()
+                .fill(Color.black.opacity(0.001))
+                .frame(
+                    width: 48.scaled(by: displayScale),
+                    height: 24.scaled(by: displayScale)
+                )
+                .overlay(alignment: edgeAlignment) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
+                        .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
+                        .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
+                        .frame(
+                            width: 14.scaled(by: displayScale),
+                            height: 20.scaled(by: displayScale)
+                        )
+                }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
