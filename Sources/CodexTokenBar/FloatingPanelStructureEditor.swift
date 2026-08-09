@@ -343,7 +343,6 @@ struct FloatingPanelStructureEditor: View {
             )
             .environment(\.tokenDisplayScale, previewScale)
             .environment(\.tokenDisplayTextPalette, palette)
-            .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * previewScale)
             .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * previewScale)
         }
         .frame(width: size.width, height: size.height)

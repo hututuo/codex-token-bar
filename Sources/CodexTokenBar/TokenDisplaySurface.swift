@@ -446,6 +446,11 @@ struct TokenDisplayCard: View {
                 radarPresentation: radarPresentation
             )
             .environment(\.tokenDisplayTextPalette, palette(for: selectedGroup))
+            // Keep text and bars at the established inset while the row itself
+            // spans the full panel. Page controls can then receive mouse events
+            // all the way to the real window edge instead of merely rendering
+            // outside a padded parent's hit-test bounds.
+            .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)
 
             if row.isPaged {
                 HStack {
@@ -453,7 +458,6 @@ struct TokenDisplayCard: View {
                     Spacer(minLength: 0)
                     pageButton(systemImage: "chevron.right", row: row, delta: 1)
                 }
-                .padding(.horizontal, -10.scaled(by: displayScale))
             }
         }
         .frame(height: rowHeight, alignment: .center)

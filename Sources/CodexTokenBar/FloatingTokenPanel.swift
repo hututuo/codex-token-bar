@@ -564,7 +564,6 @@ struct FloatingTokenPanelView: View {
                 onToggleLock: nil
             )
                 .environment(\.tokenDisplayScale, scale)
-                .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)
                 .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .zIndex(2)

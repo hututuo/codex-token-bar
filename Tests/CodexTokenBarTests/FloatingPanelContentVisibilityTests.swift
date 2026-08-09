@@ -1371,8 +1371,19 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             .deletingLastPathComponent()
         let surface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurface.swift")
         let source = try String(contentsOf: surface, encoding: .utf8)
+        let panel = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingTokenPanel.swift"),
+            encoding: .utf8
+        )
+        let editor = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift"),
+            encoding: .utf8
+        )
 
-        XCTAssertTrue(source.contains(".padding(.horizontal, -10.scaled(by: displayScale))"))
+        XCTAssertFalse(source.contains(".padding(.horizontal, -10.scaled(by: displayScale))"))
+        XCTAssertTrue(source.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)"))
+        XCTAssertFalse(panel.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)"))
+        XCTAssertFalse(editor.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * previewScale)"))
         XCTAssertTrue(source.contains(".scaleEffect(x: 0.58, y: 0.92, anchor: .center)"))
         XCTAssertTrue(source.contains("let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing"))
         XCTAssertTrue(source.contains(".overlay(alignment: edgeAlignment)"))
