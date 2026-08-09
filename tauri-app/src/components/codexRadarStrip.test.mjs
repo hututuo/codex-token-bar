@@ -15,7 +15,7 @@ test("Codex Radar header keeps the Swift-style source credit", () => {
 });
 
 test("Codex Radar detail card keeps the full human-readable feed breakdown", () => {
-  for (const title of ["众测雷达", "速蹬窗口与预测", "降智雷达", "预估额度", "环境压力与资讯", "窗口摘要", "预测说明", "信号拆分", "模型对比", "近日日志", "套餐预估", "趋势明细", "RSS 提醒历史", "来源"]) {
+  for (const title of ["众测雷达", "速登窗口与预测", "降智雷达", "预估额度", "环境压力与资讯", "窗口摘要", "预测说明", "信号拆分", "模型对比", "近日日志", "套餐预估", "趋势明细", "RSS 提醒历史", "来源"]) {
     assert.match(source, new RegExp(`title="${title}"`));
   }
 
@@ -34,4 +34,11 @@ test("Codex Radar summary and detail share one crowd snapshot", () => {
   assert.match(source, /crowdRadarStatus\.startsWith\("众测刷新失败"\)/);
   assert.match(source, /codex-radar-stale-note/);
   assert.doesNotMatch(overlaySource, /readCodexCrowdRadarSnapshot\(/);
+  assert.match(overlaySource, /valueColors=\{\{ "建议动作": radarActionAccent\(snapshot\.recommendedAction\) \}\}/);
+});
+
+test("Codex Radar refreshes the public summary and crowd source on the ten-minute cadence", () => {
+  assert.match(source, /const RADAR_REFRESH_INTERVAL_MS = 600_000/);
+  assert.match(source, /window\.setInterval\(\(\) => \{[\s\S]*?void refresh\(true\)/);
+  assert.match(source, /const crowdRefresh = refreshCrowdRadar\(\)/);
 });

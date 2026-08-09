@@ -80,6 +80,21 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("CodexRadarTableContainer"))
     }
 
+    func testRadarActionUsesUrgentAccentInDetailAndCompactSurfaces() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
+        let compactSurface = projectRoot.appendingPathComponent("Sources/CodexTokenBar/TokenDisplaySurfaceComponents.swift")
+        let radarSource = try String(contentsOf: radarView, encoding: .utf8)
+        let compactSource = try String(contentsOf: compactSurface, encoding: .utf8)
+
+        XCTAssertTrue(radarSource.contains("valueColors: [\"建议动作\": AppTheme.radarActionColor(snapshot.recommendedAction)]"))
+        XCTAssertTrue(compactSource.contains("let actionPrimaryColor = AppTheme.radarActionRole(snapshot?.recommendedAction) == .red"))
+        XCTAssertTrue(compactSource.contains(".foregroundStyle(actionPrimaryColor)"))
+    }
+
     func testRadarDetailChartsUseAxesAndSelectableModelSeries() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

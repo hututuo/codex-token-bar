@@ -9,14 +9,19 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const intervals = new Map();
+  const intervalDelays = new Map();
   let nextIntervalId = 1;
-  window.setInterval = (callback) => {
+  window.setInterval = (callback, delay) => {
     const id = nextIntervalId;
     nextIntervalId += 1;
     intervals.set(id, callback);
+    intervalDelays.set(id, delay);
     return id;
   };
-  window.clearInterval = (id) => intervals.delete(id);
+  window.clearInterval = (id) => {
+    intervals.delete(id);
+    intervalDelays.delete(id);
+  };
 
   try {
     const React = await import("react");
@@ -56,6 +61,7 @@ test("floating Radar pauses hidden, refreshes once on show, and retains its last
         await waitFor(() => container.textContent === "radar-1");
         assert.equal(reads, 1);
         assert.equal(intervals.size, 1);
+        assert.equal(intervalDelays.get([...intervals.keys()][0]), 600_000);
 
         await React.act(async () => {
           sharedListener?.({ snapshot: { testLabel: "radar-shared" } });

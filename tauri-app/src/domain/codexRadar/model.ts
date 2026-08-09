@@ -635,7 +635,7 @@ export function modelDisplayName(point: CodexRadarModelIQPoint): string {
 }
 
 export function radarActionDisplayText(action: string | null | undefined): string {
-  const normalized = action?.trim().toLowerCase() ?? "";
+  const normalized = normalizeRadarActionKey(action);
   const localized: Record<string, string> = {
     wait: "等待",
     waiting: "等待",
@@ -644,8 +644,20 @@ export function radarActionDisplayText(action: string | null | undefined): strin
     go: "可运行",
     open: "开放",
     closed: "关闭",
+    "use window": "速登窗口",
+    "use windows": "速登窗口",
+    usewindow: "速登窗口",
+    usewindows: "速登窗口",
   };
   return localized[normalized] ?? (action?.trim() || "--");
+}
+
+function normalizeRadarActionKey(action: string | null | undefined): string {
+  return (action ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\-_]+/g, " ")
+    .replace(/\s+/g, " ");
 }
 
 export function compactRadarModelName(label: string): string {
