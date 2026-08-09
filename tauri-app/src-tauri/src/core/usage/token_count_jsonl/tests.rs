@@ -3435,6 +3435,50 @@ fn exact_index_resumed_building_generation_appends_without_full_rescan() {
 }
 
 #[test]
+fn exact_index_installs_the_published_summary_covering_index() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019esummary-covering-index-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        120
+    );
+    drop(index);
+
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let connection = Connection::open(index_path).unwrap();
+    let columns = connection
+        .prepare("PRAGMA index_info('events_file_summary_idx')")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(2))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        columns,
+        ["file_generation", "file_path", "timestamp", "tokens"],
+        "the status summary must stay on a semantics-preserving covering index"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

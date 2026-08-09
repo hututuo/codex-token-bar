@@ -1152,14 +1152,9 @@ impl ExactUsageIndex {
                 r#"
                 SELECT
                     COALESCE(SUM(tokens), 0),
-                    COALESCE(SUM(CASE WHEN bucket_start >= ?1 AND bucket_start < ?2 THEN tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN bucket_start >= ?1 AND bucket_start < ?2 THEN calls ELSE 0 END), 0)
-                FROM attribution_source_buckets
-                WHERE provenance_epoch = (
-                    SELECT value
-                    FROM metadata
-                    WHERE key = 'attribution_provenance_epoch'
-                )
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
+                FROM published_events
                 "#,
                 params![start, end],
                 |row| {
@@ -1170,7 +1165,7 @@ impl ExactUsageIndex {
                     ))
                 },
             )
-            .map_err(|error| format!("无法从精确归因账本汇总 token 用量：{error}"))?;
+            .map_err(|error| format!("无法汇总精确 token 用量：{error}"))?;
         Ok(TokenUsageSummary {
             total_tokens: nonnegative_u64(total),
             today_tokens: nonnegative_u64(today_tokens),
@@ -6197,6 +6192,12 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 ON files(path, generation DESC);
             CREATE INDEX IF NOT EXISTS events_timestamp_idx
                 ON events(timestamp);
+            -- The status-bar summary joins events to the small published-files
+            -- selector by physical file identity, then reads only timestamp and
+            -- tokens. Keeping those columns in one covering index avoids a full
+            -- event-table scan without changing current-history semantics.
+            CREATE INDEX IF NOT EXISTS events_file_summary_idx
+                ON events(file_generation, file_path, timestamp, tokens);
             CREATE INDEX IF NOT EXISTS events_session_idx
                 ON events(session_id, timestamp, file_generation, file_path, ordinal);
 
