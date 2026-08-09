@@ -148,6 +148,7 @@ test("paged row arrows hug the outer edge while keeping a forgiving hit target",
   assert.match(previewSource, />\s*<span aria-hidden="true">‹<\/span><\/button>/);
   assert.match(previewSource, />\s*<span aria-hidden="true">›<\/span><\/button>/);
   assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?width: calc\(48px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?background: rgba\(0, 0, 0, 0\.001\);/);
   assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?top: calc\(-2px \* var\(--floating-scale\)\);[\s\S]*?bottom: calc\(-2px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-page-switch > span\s*{[\s\S]*?transform: scaleX\(0\.58\);/);
   assert.match(stylesSource, /\.floating-page-switch--previous\s*{[^}]*left: calc\(-8px \* var\(--floating-scale\)\);/s);

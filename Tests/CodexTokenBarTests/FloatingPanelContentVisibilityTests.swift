@@ -894,9 +894,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let appSettingsSource = try String(contentsOf: appSettingsView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
 
-        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "内容与翻页", "提醒与更新", "数据与维护"] {
+        for category in ["常规", "会话增强", "Codex 实例", "自动续跑", "显示面", "状态栏", "监控与额度", "悬浮窗", "提醒与更新", "数据与维护"] {
             XCTAssertTrue(appSettingsSource.contains("return \"\(category)\""), category)
         }
+        XCTAssertFalse(AppSettingsCategory.allCases.contains(.content))
+        XCTAssertEqual(AppSettingsCategory.content.canonical, .floatingPanel)
+        XCTAssertTrue(appSettingsSource.contains("case .floatingPanel, .content:"))
+        XCTAssertTrue(appSettingsSource.contains("contentSettings"))
         XCTAssertTrue(appSettingsSource.contains("ForEach(AppSettingsCategory.allCases)"))
         XCTAssertTrue(appSettingsSource.contains("@Binding var tokenRateFullScale: Double"))
         XCTAssertTrue(appSettingsSource.contains("TokenRateScaleSettings.displayValue(tokenRateFullScale)"))
@@ -1375,6 +1379,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains("height: 20.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("width: 48.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains("height: 24.scaled(by: displayScale)"))
+        XCTAssertTrue(source.contains("Color.clear"))
+        XCTAssertTrue(source.contains(".buttonStyle(.plain)\n        .contentShape(Rectangle())"))
     }
 
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {

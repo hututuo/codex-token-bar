@@ -7682,7 +7682,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
      so the whole edge gutter is easy to click without changing row layout. */
   width: calc(48px * var(--floating-scale));
   border: 0;
-  background: transparent;
+  /* Keep the whole overlaid gutter in WebView hit testing even though only
+     the translated chevron is visible. */
+  background: rgba(0, 0, 0, 0.001);
   color: var(--floating-secondary);
   cursor: pointer;
   opacity: 0.2;

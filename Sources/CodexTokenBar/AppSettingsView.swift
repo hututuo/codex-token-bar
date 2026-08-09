@@ -10,11 +10,30 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
     case statusBar
     case monitoring
     case floatingPanel
+    // Legacy route kept for requests created by older builds. It is omitted
+    // from the sidebar and resolves to the unified floating-panel page.
     case content
     case alertsAndUpdates
     case dataAndMaintenance
 
+    static let allCases: [AppSettingsCategory] = [
+        .general,
+        .sessionEnhancements,
+        .codexInstances,
+        .autoResume,
+        .surfaces,
+        .statusBar,
+        .monitoring,
+        .floatingPanel,
+        .alertsAndUpdates,
+        .dataAndMaintenance,
+    ]
+
     var id: String { rawValue }
+
+    var canonical: AppSettingsCategory {
+        self == .content ? .floatingPanel : self
+    }
 
     var title: String {
         switch self {
@@ -25,8 +44,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "显示面"
         case .statusBar: return "状态栏"
         case .monitoring: return "监控与额度"
-        case .floatingPanel: return "悬浮窗"
-        case .content: return "内容与翻页"
+        case .floatingPanel, .content: return "悬浮窗"
         case .alertsAndUpdates: return "提醒与更新"
         case .dataAndMaintenance: return "数据与维护"
         }
@@ -41,8 +59,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "主界面与辅助显示面"
         case .statusBar: return "顶部指标、顺序与紧凑显示"
         case .monitoring: return "实时速率、统计与刷新"
-        case .floatingPanel: return "位置、尺寸与视觉样式"
-        case .content: return "显示、顺序、组合与默认页"
+        case .floatingPanel, .content: return "位置、外观、内容与翻页"
         case .alertsAndUpdates: return "未读反馈与版本检查"
         case .dataAndMaintenance: return "目录与修复工具"
         }
@@ -57,8 +74,7 @@ enum AppSettingsCategory: String, CaseIterable, Identifiable {
         case .surfaces: return "rectangle.3.group"
         case .statusBar: return "menubar.rectangle"
         case .monitoring: return "speedometer"
-        case .floatingPanel: return "rectangle.on.rectangle"
-        case .content: return "list.bullet.rectangle"
+        case .floatingPanel, .content: return "rectangle.on.rectangle"
         case .alertsAndUpdates: return "bell.badge"
         case .dataAndMaintenance: return "wrench.and.screwdriver"
         }
@@ -80,7 +96,7 @@ enum AppSettingsRouteRequest {
     static func consume(defaults: UserDefaults = .standard) -> AppSettingsCategory? {
         guard let rawValue = defaults.string(forKey: pendingCategoryKey) else { return nil }
         defaults.removeObject(forKey: pendingCategoryKey)
-        return AppSettingsCategory(rawValue: rawValue)
+        return AppSettingsCategory(rawValue: rawValue)?.canonical
     }
 }
 
@@ -157,6 +173,7 @@ struct AppSettingsView: View {
         .background(AppTheme.panelBackground)
         .onExitCommand(perform: onClose)
         .onAppear {
+            selectedCategory = selectedCategory.canonical
             sharedAccountRadarTierRaw = SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw).rawValue
             sharedAccountPriceModelRaw = OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw).rawValue
             if selectedCategory == .autoResume {
@@ -164,6 +181,10 @@ struct AppSettingsView: View {
             }
         }
         .onChange(of: selectedCategory) {
+            if selectedCategory != selectedCategory.canonical {
+                selectedCategory = selectedCategory.canonical
+                return
+            }
             if selectedCategory == .autoResume {
                 autoResumeController.refreshThreads()
             }
@@ -298,10 +319,8 @@ struct AppSettingsView: View {
                 statusBarSettings
             case .monitoring:
                 monitoringSettings
-            case .floatingPanel:
+            case .floatingPanel, .content:
                 floatingPanelSettings
-            case .content:
-                contentSettings
             case .alertsAndUpdates:
                 alertsAndUpdateSettings
             case .dataAndMaintenance:
@@ -590,6 +609,8 @@ struct AppSettingsView: View {
                     settingsColor("额度固定色", systemImage: "circle.fill", hex: $quotaFixedHex, fallback: FloatingQuotaColorStyle.defaultFixedHex)
                 }
             }
+
+            contentSettings
         }
     }
 

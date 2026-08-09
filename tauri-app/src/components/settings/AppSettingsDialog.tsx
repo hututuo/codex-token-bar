@@ -80,8 +80,10 @@ export type AppSettingsCategory =
   | "alerts"
   | "data";
 
+type VisibleAppSettingsCategory = Exclude<AppSettingsCategory, "content">;
+
 interface SettingsCategoryDefinition {
-  id: AppSettingsCategory;
+  id: VisibleAppSettingsCategory;
   label: string;
   description: string;
 }
@@ -94,11 +96,14 @@ const SETTINGS_CATEGORIES: SettingsCategoryDefinition[] = [
   { id: "surfaces", label: "显示面", description: "主窗口、悬浮窗与状态栏" },
   { id: "status", label: "状态栏与托盘", description: "指标、顺序与紧缩预览" },
   { id: "monitoring", label: "监控与额度", description: "实时速率与额度刷新" },
-  { id: "floating", label: "悬浮窗", description: "尺寸、颜色与额度条" },
-  { id: "content", label: "内容与翻页", description: "显示、顺序、组合与默认页" },
+  { id: "floating", label: "悬浮窗", description: "尺寸、外观、内容与翻页" },
   { id: "alerts", label: "提醒与更新", description: "未读提示与版本更新" },
   { id: "data", label: "数据与维护", description: "目录、修复与连接状态" },
 ];
+
+function normalizeSettingsCategory(category: AppSettingsCategory): VisibleAppSettingsCategory {
+  return category === "content" ? "floating" : category;
+}
 
 interface AppUpdateViewState {
   kind: "idle" | "checking" | "available" | "installing" | "error";
@@ -208,7 +213,9 @@ export function AppSettingsDialog({
   onStatusMetricLabelStyleChange,
   onStatusSummaryOrderChange,
 }: AppSettingsDialogProps) {
-  const [selectedCategory, setSelectedCategory] = useState<AppSettingsCategory>(initialCategory);
+  const [selectedCategory, setSelectedCategory] = useState<VisibleAppSettingsCategory>(
+    normalizeSettingsCategory(initialCategory),
+  );
   const [sessionEnableConfirmationOpen, setSessionEnableConfirmationOpen] = useState(false);
   const sessionEnableConfirmationOpenRef = useRef(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -245,7 +252,7 @@ export function AppSettingsDialog({
       setSessionEnableConfirmationOpen(false);
       return;
     }
-    setSelectedCategory(initialCategory);
+    setSelectedCategory(normalizeSettingsCategory(initialCategory));
   }, [initialCategory, open]);
 
   useEffect(() => {
@@ -437,21 +444,21 @@ export function AppSettingsDialog({
                 />
               ) : null}
               {selectedCategory === "floating" ? (
-                <FloatingAppearanceSettings
-                  floatingSettings={floatingSettings}
-                  onFloatingGradientChange={onFloatingGradientChange}
-                  onFloatingOpacityChange={onFloatingOpacityChange}
-                  onFloatingScaleChange={onFloatingScaleChange}
-                  onFloatingTextToneChange={onFloatingTextToneChange}
-                />
-              ) : null}
-              {selectedCategory === "content" ? (
-                <ContentSettings
-                  floatingSettings={floatingSettings}
-                  floatingPreviewSnapshot={floatingPreviewSnapshot}
-                  floatingPreviewRunningThreads={floatingPreviewRunningThreads}
-                  onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
-                />
+                <>
+                  <FloatingAppearanceSettings
+                    floatingSettings={floatingSettings}
+                    onFloatingGradientChange={onFloatingGradientChange}
+                    onFloatingOpacityChange={onFloatingOpacityChange}
+                    onFloatingScaleChange={onFloatingScaleChange}
+                    onFloatingTextToneChange={onFloatingTextToneChange}
+                  />
+                  <ContentSettings
+                    floatingSettings={floatingSettings}
+                    floatingPreviewSnapshot={floatingPreviewSnapshot}
+                    floatingPreviewRunningThreads={floatingPreviewRunningThreads}
+                    onFloatingContentVisibilityChange={onFloatingContentVisibilityChange}
+                  />
+                </>
               ) : null}
               {selectedCategory === "alerts" ? (
                 <AlertAndUpdateSettings

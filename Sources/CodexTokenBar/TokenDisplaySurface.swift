@@ -522,6 +522,11 @@ struct TokenDisplayCard: View {
                 // Keep the glyph visually narrow while giving the button a
                 // forgiving edge hit target. This overlay does not take part
                 // in row layout, so it cannot squeeze model text.
+                // A concrete clear layer is required here: with a plain Button,
+                // contentShape alone exposes the large accessibility frame but
+                // AppKit still mouse-hits only the small image bounds.
+                Color.clear
+
                 Image(systemName: systemImage)
                     .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
                     .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
@@ -539,9 +544,10 @@ struct TokenDisplayCard: View {
                 width: 48.scaled(by: displayScale),
                 height: 24.scaled(by: displayScale)
             )
-                .contentShape(Rectangle())
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
         .help(delta < 0 ? "上一项" : "下一项")
         .accessibilityLabel(delta < 0 ? "显示上一项" : "显示下一项")
     }

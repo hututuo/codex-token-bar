@@ -14,12 +14,11 @@ const SETTINGS_CATEGORIES = [
   "状态栏与托盘",
   "监控与额度",
   "悬浮窗",
-  "内容与翻页",
   "提醒与更新",
   "数据与维护",
 ];
 
-test("global settings exposes eleven categorized tabs and defaults to general", async () => {
+test("global settings exposes ten categorized tabs and defaults to general", async () => {
   await withSsrModules(async (load) => {
     const { AppSettingsDialog } = await load("/src/components/settings/AppSettingsDialog.tsx");
     const { DEFAULT_FLOATING_SETTINGS } = await load("/src/floating/floatingSettings.ts");
@@ -93,24 +92,26 @@ test("settings tabs switch by click and support ArrowUp, ArrowDown, Home, and En
     assert.equal(tabName(selectedTab(container)), "常规");
     assert.equal(document.activeElement, generalTab);
 
-    await click(act, tabByName(container, "内容与翻页"), window);
-    assert.equal(tabName(selectedTab(container)), "内容与翻页");
+    await click(act, tabByName(container, "悬浮窗"), window);
+    assert.equal(tabName(selectedTab(container)), "悬浮窗");
     assert.match(activePanel(container).textContent, /速率|额度|雷达/);
     assert.match(activePanel(container).textContent, /运行线程/);
   });
 });
 
-test("floating content settings expose the WYSIWYG row editor and real preview", async () => {
+test("floating settings combine appearance, content, paging, and the real preview", async () => {
   await withMountedSettings(async ({ act, calls, container, window }) => {
-    await click(act, tabByName(container, "内容与翻页"), window);
+    await click(act, tabByName(container, "悬浮窗"), window);
     const panel = activePanel(container);
+    assert.match(panel.textContent, /透明度/);
+    assert.match(panel.textContent, /颜色与额度条/);
     assert.match(panel.textContent, /结构编辑器/);
     assert.match(panel.textContent, /实时预览/);
     assert.match(panel.textContent, /今日模型占比/);
     assert.match(panel.textContent, /今日模型费用/);
     assert.match(panel.textContent, /默认页/);
     assert.equal(panel.querySelectorAll(".floating-panel-surface--preview").length, 1);
-    assert.equal(panel.querySelectorAll("select").length, 0);
+    assert.equal(panel.querySelectorAll(".floating-structure-shell select").length, 0);
 
     const hideModelRow = panel.querySelector('button[aria-label="隐藏今日模型占比 · 今日模型费用"]');
     assert.ok(hideModelRow);
@@ -121,6 +122,14 @@ test("floating content settings expose the WYSIWYG row editor and real preview",
     assert.deepEqual(changed.pagePairs, [["todayModelShare", "todayModelCost"]]);
     assert.match(panel.textContent, /撤销/);
   });
+});
+
+test("legacy content route opens the unified floating settings page", async () => {
+  await withMountedSettings(async ({ container }) => {
+    assert.equal(tabName(selectedTab(container)), "悬浮窗");
+    assert.match(activePanel(container).textContent, /透明度/);
+    assert.match(activePanel(container).textContent, /结构编辑器/);
+  }, { initialCategory: "content" });
 });
 
 test("status indicator settings preview, select, reorder and restore through one callback", async () => {
