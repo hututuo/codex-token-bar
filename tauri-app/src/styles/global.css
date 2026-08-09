@@ -7727,6 +7727,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-paging-guide {
+  --floating-paging-guide-surface: rgba(225, 236, 250, 0.97);
+  --floating-paging-guide-primary: #102b4d;
+  --floating-paging-guide-secondary: #355473;
+  --floating-paging-guide-accent: #145cb1;
+  --floating-paging-guide-border: rgba(35, 102, 181, 0.64);
   position: absolute !important;
   inset: 0;
   z-index: 7 !important;
@@ -7747,32 +7752,32 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-paging-guide-edge--left {
   left: 0;
-  background: linear-gradient(90deg, rgba(31, 110, 210, 0.4), rgba(31, 110, 210, 0.08), transparent);
-  box-shadow: calc(-5px * var(--floating-scale)) 0 calc(14px * var(--floating-scale)) rgba(31, 110, 210, 0.34);
+  background: linear-gradient(90deg, rgba(20, 92, 177, 0.62), rgba(20, 92, 177, 0.16), transparent);
+  box-shadow: calc(-5px * var(--floating-scale)) 0 calc(15px * var(--floating-scale)) rgba(20, 92, 177, 0.52);
 }
 
 .floating-paging-guide-edge--right {
   right: 0;
-  background: linear-gradient(270deg, rgba(31, 110, 210, 0.4), rgba(31, 110, 210, 0.08), transparent);
-  box-shadow: calc(5px * var(--floating-scale)) 0 calc(14px * var(--floating-scale)) rgba(31, 110, 210, 0.34);
+  background: linear-gradient(270deg, rgba(20, 92, 177, 0.62), rgba(20, 92, 177, 0.16), transparent);
+  box-shadow: calc(5px * var(--floating-scale)) 0 calc(15px * var(--floating-scale)) rgba(20, 92, 177, 0.52);
 }
 
 .floating-paging-guide-card {
   position: relative;
   z-index: 2;
   display: grid;
-  width: calc(172px * var(--floating-scale));
+  width: calc(180px * var(--floating-scale));
   box-sizing: border-box;
   gap: calc(3px * var(--floating-scale));
   padding: calc(7px * var(--floating-scale)) calc(9px * var(--floating-scale));
-  border: 1px solid rgba(255, 255, 255, 0.56);
+  border: 1px solid var(--floating-paging-guide-border);
   border-radius: calc(11px * var(--floating-scale));
-  background: rgba(247, 251, 255, 0.92);
+  background: var(--floating-paging-guide-surface);
   backdrop-filter: blur(calc(14px * var(--floating-scale))) saturate(1.12);
   box-shadow:
-    0 calc(4px * var(--floating-scale)) calc(14px * var(--floating-scale)) rgba(22, 35, 54, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.42);
-  color: var(--floating-primary);
+    0 calc(4px * var(--floating-scale)) calc(15px * var(--floating-scale)) rgba(16, 43, 77, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.58);
+  color: var(--floating-paging-guide-primary);
   pointer-events: auto;
   text-align: center;
   -webkit-app-region: no-drag;
@@ -7786,7 +7791,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 
 .floating-paging-guide-card > p {
   margin: 0;
-  color: var(--floating-secondary);
+  color: var(--floating-paging-guide-secondary);
   font-size: calc(8.8px * var(--floating-scale));
   font-weight: var(--weight-semibold);
   line-height: 1.1;
@@ -7805,6 +7810,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   gap: calc(3px * var(--floating-scale));
   font-size: calc(8.6px * var(--floating-scale));
   font-weight: var(--weight-semibold);
+  color: var(--floating-paging-guide-primary);
   white-space: nowrap;
 }
 
@@ -7812,14 +7818,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   width: calc(11px * var(--floating-scale));
   height: calc(11px * var(--floating-scale));
   margin: 0;
-  accent-color: #1f6ed2;
+  accent-color: var(--floating-paging-guide-accent);
 }
 
 .floating-paging-guide-actions button {
   min-height: calc(19px * var(--floating-scale));
   border: 0;
   border-radius: calc(7px * var(--floating-scale));
-  background: linear-gradient(135deg, #2f83e9, #1764c5);
+  background: linear-gradient(135deg, #2776d3, #1454a4);
   box-shadow: 0 calc(2px * var(--floating-scale)) calc(5px * var(--floating-scale)) rgba(24, 92, 179, 0.24);
   color: white;
   cursor: pointer;
@@ -7835,24 +7841,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-paging-guide-card > small {
-  color: #c43c35;
+  color: #9d2f2a;
   font-size: calc(7.4px * var(--floating-scale));
   font-weight: var(--weight-semibold);
   line-height: 1;
-}
-
-@media (prefers-color-scheme: dark) {
-  .floating-paging-guide-card {
-    border-color: rgba(255, 255, 255, 0.18);
-    background: rgba(20, 29, 42, 0.92);
-    box-shadow:
-      0 calc(4px * var(--floating-scale)) calc(14px * var(--floating-scale)) rgba(0, 0, 0, 0.42),
-      inset 0 1px 0 rgba(255, 255, 255, 0.11);
-  }
-
-  .floating-paging-guide-card > small {
-    color: #ff8e87;
-  }
 }
 
 .floating-paging-guide-pointer {
@@ -7861,7 +7853,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   left: 50%;
   width: calc(19px * var(--floating-scale));
   height: calc(19px * var(--floating-scale));
-  background: #1f6ed2;
+  background: var(--floating-paging-guide-accent);
   filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.82));
   -webkit-mask: url("/floating-paging-touch.png") center / contain no-repeat;
   mask: url("/floating-paging-touch.png") center / contain no-repeat;

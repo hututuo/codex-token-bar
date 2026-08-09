@@ -19,6 +19,11 @@ struct FloatingPanelPagingGuide: View {
     let targetY: CGFloat
     let onComplete: () -> Void
 
+    private let guideSurface = Color(red: 0.882, green: 0.925, blue: 0.980)
+    private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)
+    private let guideSecondaryText = Color(red: 0.208, green: 0.329, blue: 0.451)
+    private let guideAccent = Color(red: 0.078, green: 0.361, blue: 0.694)
+
     var body: some View {
         GeometryReader { proxy in
             ZStack {
@@ -29,33 +34,39 @@ struct FloatingPanelPagingGuide: View {
                 VStack(spacing: 3.scaled(by: scale)) {
                     Text("点两侧即可翻页")
                         .font(.system(size: 11.4.scaled(by: scale), weight: .bold))
+                        .foregroundStyle(guidePrimaryText)
                     Text("点击阴影边缘试一下")
                         .font(.system(size: 8.4.scaled(by: scale), weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(guideSecondaryText)
 
                     HStack(spacing: 7.scaled(by: scale)) {
-                        Toggle("显示箭头", isOn: $showsArrowGlyphs)
+                        Toggle("显示翻页箭头", isOn: $showsArrowGlyphs)
                             .toggleStyle(.switch)
                             .controlSize(.mini)
                             .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                            .foregroundStyle(guidePrimaryText)
+                            .tint(guideAccent)
                             .fixedSize()
 
                         Button("开始体验", action: onComplete)
                             .buttonStyle(.borderedProminent)
                             .controlSize(.mini)
                             .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                            .tint(guideAccent)
                     }
                 }
-                .foregroundStyle(Color.primary.opacity(0.94))
                 .padding(.horizontal, 9.scaled(by: scale))
                 .padding(.vertical, 7.scaled(by: scale))
-                .frame(width: 168.scaled(by: scale))
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous))
+                .frame(width: 176.scaled(by: scale))
+                .background(
+                    guideSurface,
+                    in: RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous)
-                        .stroke(Color.white.opacity(0.48), lineWidth: 0.8.scaled(by: scale))
+                        .stroke(guideAccent.opacity(0.62), lineWidth: 0.9.scaled(by: scale))
                 )
-                .shadow(color: Color.black.opacity(0.2), radius: 10.scaled(by: scale), y: 4.scaled(by: scale))
+                .shadow(color: guidePrimaryText.opacity(0.34), radius: 11.scaled(by: scale), y: 4.scaled(by: scale))
                 .contentShape(RoundedRectangle(cornerRadius: 11.scaled(by: scale), style: .continuous))
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -68,14 +79,14 @@ struct FloatingPanelPagingGuide: View {
         let alignment: Alignment = isLeading ? .leading : .trailing
         return LinearGradient(
             colors: isLeading
-                ? [AppTheme.accentBlue.opacity(0.38), AppTheme.accentBlue.opacity(0.08), .clear]
-                : [.clear, AppTheme.accentBlue.opacity(0.08), AppTheme.accentBlue.opacity(0.38)],
+                ? [guideAccent.opacity(0.62), guideAccent.opacity(0.16), .clear]
+                : [.clear, guideAccent.opacity(0.16), guideAccent.opacity(0.62)],
             startPoint: .leading,
             endPoint: .trailing
         )
         .frame(width: 42.scaled(by: scale))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
-        .shadow(color: AppTheme.accentBlue.opacity(0.42), radius: 8.scaled(by: scale))
+        .shadow(color: guideAccent.opacity(0.56), radius: 9.scaled(by: scale))
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -87,7 +98,7 @@ struct FloatingPanelPagingGuide: View {
             Image(systemName: "cursorarrow.click.2")
                 .font(.system(size: 16.scaled(by: scale), weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(AppTheme.accentBlue)
+                .foregroundStyle(guideAccent)
                 .shadow(color: Color.white.opacity(0.72), radius: 2.scaled(by: scale))
                 .scaleEffect(motion.isClicking ? 0.84 : 1)
                 .position(

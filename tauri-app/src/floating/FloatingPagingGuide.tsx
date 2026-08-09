@@ -47,7 +47,7 @@ export function FloatingPagingGuide({
               onChange={(event) => onArrowVisibilityChange(event.currentTarget.checked)}
               type="checkbox"
             />
-            <span>显示箭头</span>
+            <span>显示翻页箭头</span>
           </label>
           <button disabled={saving} onClick={onComplete} type="button">
             {saving ? "保存中" : "开始体验"}

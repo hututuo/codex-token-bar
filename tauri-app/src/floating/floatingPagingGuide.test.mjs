@@ -43,6 +43,7 @@ test("floating paging guide keeps the panel draggable area isolated and exposes 
 
         assert.match(container.textContent, /点两侧即可翻页/);
         assert.match(container.textContent, /点击阴影边缘试一下/);
+        assert.match(container.textContent, /显示翻页箭头/);
         const card = container.querySelector(".floating-paging-guide-card");
         const checkbox = container.querySelector('input[type="checkbox"]');
         const button = container.querySelector("button");
@@ -92,6 +93,10 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(styles, /mask: url\("\/floating-paging-touch\.png"\)/);
   assert.match(styles, /calc\(-50% \+ var\(--floating-paging-guide-target-x\)\)/);
   assert.match(styles, /calc\(-50% - var\(--floating-paging-guide-target-x\)\)/);
+  assert.match(styles, /--floating-paging-guide-surface: rgba\(225, 236, 250, 0\.97\);/);
+  assert.match(styles, /--floating-paging-guide-primary: #102b4d;/);
+  assert.match(styles, /\.floating-paging-guide-card\s*{[\s\S]*?background: var\(--floating-paging-guide-surface\);[\s\S]*?color: var\(--floating-paging-guide-primary\);/);
+  assert.doesNotMatch(styles, /@media \(prefers-color-scheme: dark\)\s*{\s*\.floating-paging-guide-card/);
   assert.doesNotMatch(styles, /color-mix\([^)]*var\(--floating-gradient-background\)/);
   assert.match(styles, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(22px \* var\(--floating-scale\)\);/);
   assert.match(styles, /\.floating-model-usage\s*{[\s\S]*?font-size: calc\(9\.7px \* var\(--floating-scale\)\);/);
