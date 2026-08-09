@@ -32,6 +32,19 @@ test("unknown and custom models remain visible with stable colors", () => {
   assert.deepEqual(new Set(first.map((slice) => slice.label)), new Set(["未知模型", "custom-model"]));
 });
 
+test("auto review uses the current GPT-5.4 profile without merging real GPT-5.3", () => {
+  const slices = modelUsageSlices([
+    row("codex-auto-review", 600, 2),
+    row("gpt-5.4", 100, 1),
+    row("gpt-5.3-codex", 300, 1),
+  ]);
+
+  assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
+    { label: "5.4", tokens: 700 },
+    { label: "5.3", tokens: 300 },
+  ]);
+});
+
 function row(model, totalTokens, calls) {
   return {
     model,

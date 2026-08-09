@@ -267,7 +267,10 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case "gpt-5.3-codex", "gpt5.3-codex", "gpt53-codex", "gpt53codex":
             return .gpt53Codex
         case "codex-auto-review", "codexautoreview":
-            return .gpt53Codex
+            // The current Codex catalog (verified 2026-08-09) gives this
+            // hidden approval-review alias GPT-5.4's complete capability
+            // profile. Keep it explicit so real GPT-5.3 usage stays separate.
+            return .gpt54Legacy
         case "gpt-5.2-codex", "gpt5.2-codex", "gpt52-codex", "gpt52codex":
             return .gpt52Codex
         case "gpt-5.4", "gpt54":

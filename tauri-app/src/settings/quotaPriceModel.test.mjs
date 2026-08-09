@@ -63,8 +63,8 @@ test("official aliases and legacy models keep their own price cards", () => {
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.6"), "gpt56Sol");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.3-codex"), "gpt53Codex");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.2-codex"), "gpt52Codex");
-  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review"), "gpt53Codex");
-  assert.equal(detectedOfficialAPIPriceModel("codex_auto_review"), "gpt53Codex");
+  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review"), "gpt54Legacy");
+  assert.equal(detectedOfficialAPIPriceModel("codex_auto_review"), "gpt54Legacy");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.3-codex-spark"), null);
   assert.equal(independentQuotaModelName("gpt-5.3-codex-spark"), "gpt-5.3-codex-spark");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.4"), "gpt54Legacy");
@@ -110,8 +110,8 @@ test("mixed model coverage prices Codex aliases, excludes Spark, and falls back 
     "gpt56Terra",
   );
 
-  assert.equal(estimate.costUSD, 12.45);
-  assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra", "gpt56Luna", "gpt53Codex", "gpt52Codex"]);
+  assert.equal(estimate.costUSD, 13.2);
+  assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra", "gpt56Luna", "gpt53Codex", "gpt52Codex", "gpt54Legacy"]);
   assert.equal(estimate.fallbackCalls, 0);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate.excludedCalls, 1);

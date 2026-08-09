@@ -27,7 +27,7 @@ test("Spark stays visible in share but is labelled as independent quota in cost"
     row("gpt-5.3-codex-spark", 800, 0, 200, 1_000, 1),
     row("codex-auto-review", 800, 0, 200, 1_000, 1),
   ], "gpt56Sol");
-  assert.deepEqual(items.map((item) => item.label), ["5.3", "Spark"]);
+  assert.deepEqual(items.map((item) => item.label), ["5.4", "Spark"]);
   const spark = items.find((item) => item.label === "Spark");
   assert.ok(spark);
   assert.equal(floatingModelUsageValue(spark, "cost"), "独立");
@@ -47,7 +47,7 @@ test("today model usage keeps four core placeholders and shares one cost order",
     { label: "Sol", tokens: 2_000_000 },
     { label: "Luna", tokens: 2_000_000 },
     { label: "Terra", tokens: 0 },
-    { label: "5.3", tokens: 0 },
+    { label: "5.4", tokens: 0 },
   ]);
   assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0, 0]);
   assert.deepEqual(

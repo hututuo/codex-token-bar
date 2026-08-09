@@ -65,6 +65,12 @@ enum ModelUsagePresentation {
         if OfficialAPIPriceModel.detected(from: normalized) == .gpt52Codex {
             return "gpt-5.2-codex"
         }
+        if OfficialAPIPriceModel.detected(from: normalized) == .gpt54MiniLegacy {
+            return "gpt-5.4-mini"
+        }
+        if OfficialAPIPriceModel.detected(from: normalized) == .gpt54Legacy {
+            return "gpt-5.4"
+        }
         if normalized.contains("gpt-5.6") {
             if normalized.contains("luna") { return "gpt-5.6-luna" }
             if normalized.contains("terra") { return "gpt-5.6-terra" }

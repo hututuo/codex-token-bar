@@ -379,8 +379,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6"), .gpt56Sol)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4"), .gpt54Legacy)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4-mini"), .gpt54MiniLegacy)
-        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex-auto-review"), .gpt53Codex)
-        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex_auto_review"), .gpt53Codex)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex-auto-review"), .gpt54Legacy)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex_auto_review"), .gpt54Legacy)
         let breakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
             cachedInputTokens: 0,
@@ -481,8 +481,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 12.45, accuracy: 0.0001)
-        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
+        XCTAssertEqual(estimate.costUSD, 13.2, accuracy: 0.0001)
+        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex, .gpt54Legacy])
         XCTAssertEqual(estimate.fallbackCalls, 0)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 1)

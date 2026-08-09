@@ -26,6 +26,19 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(slices.reduce(0) { $0 + $1.tokens }, 100)
     }
 
+    func testAutoReviewUsesCurrentGPT54ProfileWithoutMergingRealGPT53() {
+        let rows = [
+            row("codex-auto-review", tokens: 600, calls: 2),
+            row("gpt-5.4", tokens: 100, calls: 1),
+            row("gpt-5.3-codex", tokens: 300, calls: 1),
+        ]
+
+        let slices = ModelUsagePresentation.slices(from: rows)
+
+        XCTAssertEqual(slices.map(\.label), ["5.4", "5.3"])
+        XCTAssertEqual(slices.map(\.tokens), [700, 300])
+    }
+
     func testFloatingTodayModelUsagePricesDetectedModelsWithCacheAndExcludesSpark() throws {
         let rows = [
             ModelTokenBreakdown(
@@ -111,7 +124,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
 
-        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Terra", "5.3"])
+        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Terra", "5.4"])
         XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0, 0])
         XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%", "0%"])
         XCTAssertEqual(

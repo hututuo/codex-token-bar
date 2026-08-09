@@ -39,7 +39,7 @@ export const FLOATING_DEFAULT_MODEL_KEYS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
-  "gpt-5.3-codex",
+  "gpt-5.4",
 ] as const;
 
 const FLOATING_DEFAULT_MODEL_ORDER: ReadonlyMap<string, number> = new Map(

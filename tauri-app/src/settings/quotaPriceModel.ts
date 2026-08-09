@@ -176,7 +176,9 @@ export function detectedOfficialAPIPriceModel(value: string | null | undefined):
       return "gpt53Codex";
     case "codex-auto-review":
     case "codexautoreview":
-      return "gpt53Codex";
+      // The current Codex catalog (verified 2026-08-09) gives this hidden
+      // approval-review alias GPT-5.4's complete capability profile.
+      return "gpt54Legacy";
     case "gpt-5.2-codex":
     case "gpt5.2-codex":
     case "gpt52-codex":

@@ -79,7 +79,8 @@ export function modelUsageKey(model: string | null | undefined): string {
   if (!normalized) return "unknown";
   const compact = normalized.replace(/[^a-z0-9]/g, "");
   if (compact === "gpt53codexspark") return "gpt-5.3-codex-spark";
-  if (compact === "codexautoreview" || compact === "gpt53codex") return "gpt-5.3-codex";
+  if (compact === "codexautoreview") return "gpt-5.4";
+  if (compact === "gpt53codex") return "gpt-5.3-codex";
   if (compact === "gpt52codex") return "gpt-5.2-codex";
   if (normalized.includes("gpt-5.6")) {
     if (normalized.includes("luna")) return "gpt-5.6-luna";
