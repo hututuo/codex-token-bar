@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 enum FloatingPanelPagingGuideState {
+    static let setupGuideCompletedKey = "setupGuideCompletedV01"
+
     static func shouldPresent(
         setupGuideCompleted: Bool,
         completedRevision: Int,
@@ -234,30 +236,5 @@ struct FloatingPanelPagingGuide: View {
         let isClicking = half >= 1.55 && half <= 1.92
         let fade = half < 2.22 ? 1 : max(0, (2.6 - half) / 0.38)
         return (direction, eased, isClicking, fade)
-    }
-}
-
-struct FloatingPanelInteractionBridge: NSViewRepresentable {
-    let guidePresented: Bool
-    let isLocked: Bool
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        updatePanel(from: view)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        updatePanel(from: nsView)
-    }
-
-    private func updatePanel(from view: NSView) {
-        if let panel = view.window as? FloatingTokenPanelWindow {
-            panel.allowsBackgroundDrag = !guidePresented && !isLocked
-        } else {
-            DispatchQueue.main.async {
-                (view.window as? FloatingTokenPanelWindow)?.allowsBackgroundDrag = !guidePresented && !isLocked
-            }
-        }
     }
 }

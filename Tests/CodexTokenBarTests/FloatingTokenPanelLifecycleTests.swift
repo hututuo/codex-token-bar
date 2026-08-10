@@ -81,6 +81,19 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
             "右侧透明命中区向内容侧扩展后仍必须交给分页按钮"
         )
 
+        panel.suppressesBackgroundMouseActions = true
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 120, y: 40)),
+            .passThrough,
+            "翻页引导显示时，中央单击必须交给 SwiftUI 按钮"
+        )
+        XCTAssertEqual(
+            panel.mouseDownAction(clickCount: 2, location: NSPoint(x: 120, y: 40)),
+            .passThrough,
+            "翻页引导显示时，中央双击也不能抢走 SwiftUI 按钮事件"
+        )
+
+        panel.suppressesBackgroundMouseActions = false
         panel.allowsBackgroundDrag = false
         XCTAssertEqual(
             panel.mouseDownAction(clickCount: 1, location: NSPoint(x: 120, y: 40)),
@@ -112,6 +125,11 @@ final class FloatingTokenPanelLifecycleTests: XCTestCase {
         panel.sendEvent(doubleClick)
 
         XCTAssertEqual(openCount, 1)
+
+        panel.suppressesBackgroundMouseActions = true
+        panel.sendEvent(doubleClick)
+
+        XCTAssertEqual(openCount, 1, "翻页引导显示时，窗口层不能再拦截双击打开主界面")
     }
 
     func testEventSourcesInstallOncePerPresentationAndAreRemovedOnClose() {

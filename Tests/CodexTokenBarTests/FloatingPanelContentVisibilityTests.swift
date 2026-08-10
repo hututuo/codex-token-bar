@@ -1492,9 +1492,21 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(panel.components(separatedBy: "pagingGuideSessionState: pagingGuideSessionState").count - 1, 2)
         XCTAssertTrue(panel.contains("let immediatePagingGuideCompletion = pagingGuideSessionState.completion("))
         XCTAssertTrue(panel.contains("immediatePagingGuideCompletion?.showsArrowGlyphs"))
+        XCTAssertTrue(panel.contains("var suppressesBackgroundMouseActions = false"))
+        XCTAssertTrue(panel.contains("guard !suppressesBackgroundMouseActions else { return .passThrough }"))
+        XCTAssertEqual(
+            panel.components(separatedBy: "panel.suppressesBackgroundMouseActions = pagingGuidePresented").count - 1,
+            2
+        )
+        XCTAssertEqual(
+            panel.components(separatedBy: "onPagingGuidePresentationChanged: { [weak self] presented in").count - 1,
+            2
+        )
+        XCTAssertTrue(panel.contains("onPagingGuidePresentationChanged(false)"))
         XCTAssertTrue(guide.contains("@State private var completionTriggered = false"))
         XCTAssertTrue(guide.contains("Button(action: completeImmediately)"))
         XCTAssertTrue(guide.contains("completionTriggered = true\n        onComplete()"))
+        XCTAssertFalse(guide.contains("FloatingPanelInteractionBridge"))
         XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: true)"))
         XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: false)"))
         XCTAssertTrue(guide.contains("refreshArrowCueEmphasis"))

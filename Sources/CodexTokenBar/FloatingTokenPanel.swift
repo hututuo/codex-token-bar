@@ -51,6 +51,7 @@ enum FloatingPanelMouseDownAction: Equatable {
 @MainActor
 final class FloatingTokenPanelWindow: NSPanel {
     var allowsBackgroundDrag = true
+    var suppressesBackgroundMouseActions = false
     var controlExclusionSize: CGFloat = 52
     var onOpenDashboard: (() -> Void)?
 
@@ -94,6 +95,7 @@ final class FloatingTokenPanelWindow: NSPanel {
     }
 
     func mouseDownAction(clickCount: Int, location: NSPoint) -> FloatingPanelMouseDownAction {
+        guard !suppressesBackgroundMouseActions else { return .passThrough }
         guard !isInControlCorner(location) else { return .passThrough }
         if clickCount == 2 {
             return .openDashboard
@@ -319,6 +321,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         self.onToggleLock = onToggleLock
         self.onOpenDashboard = onOpenDashboard
         let layout = FloatingTokenPanelLayout(scale: scale, visibility: visibility)
+        let pagingGuidePresented = shouldPresentPagingGuide(visibility: visibility)
 
         if panel == nil {
             let hostingController = NSHostingController(
@@ -333,6 +336,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
                     pagingGuideSessionState: pagingGuideSessionState,
+                    onPagingGuidePresentationChanged: { [weak self] presented in
+                        self?.setPagingGuidePresented(presented)
+                    },
                     onToggleLock: { [weak self] in
                         self?.onToggleLock?()
                     },
@@ -357,6 +363,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
             panel.isOpaque = false
             panel.hasShadow = false
             panel.allowsBackgroundDrag = !isLocked
+            panel.suppressesBackgroundMouseActions = pagingGuidePresented
             panel.controlExclusionSize = 52 * layout.effectiveScale
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
@@ -376,6 +383,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
         if let panel = panel as? FloatingTokenPanelWindow {
             panel.allowsBackgroundDrag = !isLocked
+            panel.suppressesBackgroundMouseActions = pagingGuidePresented
             panel.controlExclusionSize = 52 * layout.effectiveScale
             panel.onOpenDashboard = { [weak self] in
                 self?.onOpenDashboard?()
@@ -394,6 +402,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
                 pagingGuideSessionState: pagingGuideSessionState,
+                onPagingGuidePresentationChanged: { [weak self] presented in
+                    self?.setPagingGuidePresented(presented)
+                },
                 onToggleLock: { [weak self] in
                     self?.onToggleLock?()
                 },
@@ -409,6 +420,26 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         panel?.orderFrontRegardless()
         isPresented = true
         eventSourceLifecycle.activate()
+    }
+
+    private func shouldPresentPagingGuide(
+        visibility: FloatingPanelContentVisibility
+    ) -> Bool {
+        let revision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        return pagingGuideSessionState.completion(for: revision) == nil
+            && FloatingPanelPagingGuideState.shouldPresent(
+                setupGuideCompleted: UserDefaults.standard.bool(
+                    forKey: FloatingPanelPagingGuideState.setupGuideCompletedKey
+                ),
+                completedRevision: UserDefaults.standard.integer(
+                    forKey: FloatingPanelContentVisibility.pagingGuideRevisionKey
+                ),
+                hasPagedRows: visibility.layoutRows.contains(where: \.isPaged)
+            )
+    }
+
+    private func setPagingGuidePresented(_ presented: Bool) {
+        (panel as? FloatingTokenPanelWindow)?.suppressesBackgroundMouseActions = presented
     }
 
     func updateSize(layout: FloatingTokenPanelLayout) {
@@ -472,6 +503,7 @@ struct FloatingTokenPanelView: View {
     let isLocked: Bool
     var lockTargetDescription: String?
     @ObservedObject var pagingGuideSessionState: FloatingPanelPagingGuideSessionState
+    let onPagingGuidePresentationChanged: (Bool) -> Void
     let onToggleLock: () -> Void
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
@@ -483,7 +515,7 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelAppearance.unreadEffectKey) private var floatingPanelUnreadEffect = FloatingPanelAppearance.defaultUnreadEffect
     @AppStorage(FloatingPanelAppearance.unreadPreviewUntilKey) private var floatingPanelUnreadPreviewUntil = 0.0
     @AppStorage(FloatingPanelAppearance.textWhiteOverrideKey) private var floatingPanelTextWhiteOverride = FloatingPanelAppearance.defaultTextWhiteOverride
-    @AppStorage("setupGuideCompletedV01") private var setupGuideCompleted = false
+    @AppStorage(FloatingPanelPagingGuideState.setupGuideCompletedKey) private var setupGuideCompleted = false
     @AppStorage(FloatingPanelContentVisibility.pagingGuideRevisionKey) private var pagingGuideRevision = 0
     @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var persistedPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
     @State private var pagingGuideShowsArrowGlyphs = false
@@ -634,12 +666,12 @@ struct FloatingTokenPanelView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .zIndex(8)
         }
-        .background(
-            FloatingPanelInteractionBridge(
-                guidePresented: pagingGuidePresented,
-                isLocked: isLocked
-            )
-        )
+        .onAppear {
+            onPagingGuidePresentationChanged(pagingGuidePresented)
+        }
+        .onChange(of: pagingGuidePresented) { _, presented in
+            onPagingGuidePresentationChanged(presented)
+        }
         .environment(\.tokenDisplayTextPalette, baseTextPalette)
         .environment(\.tokenDisplayRowTextPalettes, rowTextPalettes)
         .environment(\.tokenDisplayMetricTextPalettes, metricTextPalettes)
@@ -656,6 +688,7 @@ struct FloatingTokenPanelView: View {
 
     private func completePagingGuide() {
         let revision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        onPagingGuidePresentationChanged(false)
         pagingGuideSessionState.complete(
             revision: revision,
             showsArrowGlyphs: pagingGuideShowsArrowGlyphs
