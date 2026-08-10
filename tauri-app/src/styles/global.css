@@ -7948,20 +7948,18 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: calc(42px * var(--floating-scale));
-  opacity: 0.94;
+  width: calc(24px * var(--floating-scale));
+  background: rgba(60, 65, 72, 0.24);
 }
 
 .floating-paging-guide-edge--left {
   left: 0;
-  background: linear-gradient(90deg, rgba(20, 92, 177, 0.62), rgba(20, 92, 177, 0.16), transparent);
-  box-shadow: calc(-5px * var(--floating-scale)) 0 calc(15px * var(--floating-scale)) rgba(20, 92, 177, 0.52);
+  box-shadow: calc(4px * var(--floating-scale)) 0 calc(6px * var(--floating-scale)) rgba(38, 42, 48, 0.38);
 }
 
 .floating-paging-guide-edge--right {
   right: 0;
-  background: linear-gradient(270deg, rgba(20, 92, 177, 0.62), rgba(20, 92, 177, 0.16), transparent);
-  box-shadow: calc(5px * var(--floating-scale)) 0 calc(15px * var(--floating-scale)) rgba(20, 92, 177, 0.52);
+  box-shadow: calc(-4px * var(--floating-scale)) 0 calc(6px * var(--floating-scale)) rgba(38, 42, 48, 0.38);
 }
 
 .floating-paging-guide-card {

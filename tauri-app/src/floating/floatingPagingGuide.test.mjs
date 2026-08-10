@@ -96,6 +96,10 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(styles, /--floating-paging-guide-surface: rgba\(225, 236, 250, 0\.97\);/);
   assert.match(styles, /--floating-paging-guide-primary: #102b4d;/);
   assert.match(styles, /\.floating-paging-guide-card\s*{[\s\S]*?background: var\(--floating-paging-guide-surface\);[\s\S]*?color: var\(--floating-paging-guide-primary\);/);
+  assert.match(styles, /\.floating-paging-guide-edge\s*{[\s\S]*?width: calc\(24px \* var\(--floating-scale\)\);[\s\S]*?background: rgba\(60, 65, 72, 0\.24\);/);
+  assert.match(styles, /\.floating-paging-guide-edge--left\s*{[\s\S]*?box-shadow: calc\(4px \* var\(--floating-scale\)\) 0 calc\(6px \* var\(--floating-scale\)\) rgba\(38, 42, 48, 0\.38\);/);
+  assert.match(styles, /\.floating-paging-guide-edge--right\s*{[\s\S]*?box-shadow: calc\(-4px \* var\(--floating-scale\)\) 0 calc\(6px \* var\(--floating-scale\)\) rgba\(38, 42, 48, 0\.38\);/);
+  assert.doesNotMatch(styles, /\.floating-paging-guide-edge--(?:left|right)\s*{[^}]*background: (?:linear|radial)-gradient/);
   assert.doesNotMatch(styles, /@media \(prefers-color-scheme: dark\)\s*{\s*\.floating-paging-guide-card/);
   assert.doesNotMatch(styles, /color-mix\([^)]*var\(--floating-gradient-background\)/);
   assert.match(styles, /\.floating-topline strong\s*{[\s\S]*?font-size: calc\(22px \* var\(--floating-scale\)\);/);

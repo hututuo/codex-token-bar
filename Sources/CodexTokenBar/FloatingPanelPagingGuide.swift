@@ -23,12 +23,13 @@ struct FloatingPanelPagingGuide: View {
     private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)
     private let guideSecondaryText = Color(red: 0.208, green: 0.329, blue: 0.451)
     private let guideAccent = Color(red: 0.078, green: 0.361, blue: 0.694)
+    private let guideEdgeShade = Color(red: 0.235, green: 0.255, blue: 0.282)
 
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                edgeGlow(isLeading: true)
-                edgeGlow(isLeading: false)
+                edgeShadow(isLeading: true)
+                edgeShadow(isLeading: false)
                 animatedPointer(in: proxy.size)
 
                 VStack(spacing: 3.scaled(by: scale)) {
@@ -75,18 +76,17 @@ struct FloatingPanelPagingGuide: View {
         .accessibilityLabel("悬浮窗翻页引导")
     }
 
-    private func edgeGlow(isLeading: Bool) -> some View {
+    private func edgeShadow(isLeading: Bool) -> some View {
         let alignment: Alignment = isLeading ? .leading : .trailing
-        return LinearGradient(
-            colors: isLeading
-                ? [guideAccent.opacity(0.62), guideAccent.opacity(0.16), .clear]
-                : [.clear, guideAccent.opacity(0.16), guideAccent.opacity(0.62)],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-        .frame(width: 42.scaled(by: scale))
+        return Rectangle()
+        .fill(guideEdgeShade.opacity(0.24))
+        .frame(width: 24.scaled(by: scale))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
-        .shadow(color: guideAccent.opacity(0.56), radius: 9.scaled(by: scale))
+        .shadow(
+            color: guideEdgeShade.opacity(0.38),
+            radius: 6.scaled(by: scale),
+            x: (isLeading ? 4 : -4).scaled(by: scale)
+        )
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

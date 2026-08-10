@@ -1465,8 +1465,11 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(guide.contains("private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)"))
         XCTAssertFalse(guide.contains(".background(.ultraThinMaterial"))
         XCTAssertTrue(guide.contains("TimelineView"))
-        XCTAssertTrue(guide.contains("edgeGlow(isLeading: true)"))
-        XCTAssertTrue(guide.contains("edgeGlow(isLeading: false)"))
+        XCTAssertTrue(guide.contains("edgeShadow(isLeading: true)"))
+        XCTAssertTrue(guide.contains("edgeShadow(isLeading: false)"))
+        XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.24)"))
+        XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.38)"))
+        XCTAssertFalse(guide.contains("LinearGradient("))
 
         let dashboard = try String(
             contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift"),
