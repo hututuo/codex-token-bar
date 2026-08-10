@@ -133,6 +133,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var onClose: (() -> Void)?
     private var onToggleLock: (() -> Void)?
     private var onOpenDashboard: (() -> Void)?
+    private let pagingGuideSessionState = FloatingPanelPagingGuideSessionState()
     var lastExternalActivePID: pid_t?
     var lastExternalClickLocation: NSPoint?
     var lastExternalClickAt: Date?
@@ -331,6 +332,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                     visibility: visibility,
                     isLocked: isLocked,
                     lockTargetDescription: lockTargetDescription,
+                    pagingGuideSessionState: pagingGuideSessionState,
                     onToggleLock: { [weak self] in
                         self?.onToggleLock?()
                     },
@@ -391,6 +393,7 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
                 visibility: visibility,
                 isLocked: isLocked,
                 lockTargetDescription: lockTargetDescription,
+                pagingGuideSessionState: pagingGuideSessionState,
                 onToggleLock: { [weak self] in
                     self?.onToggleLock?()
                 },
@@ -468,6 +471,7 @@ struct FloatingTokenPanelView: View {
     let visibility: FloatingPanelContentVisibility
     let isLocked: Bool
     var lockTargetDescription: String?
+    @ObservedObject var pagingGuideSessionState: FloatingPanelPagingGuideSessionState
     let onToggleLock: () -> Void
     @AppStorage("floatingPanelOpacity") private var floatingPanelOpacity = 0.88
     @AppStorage(FloatingPanelAppearance.startHexKey) private var floatingPanelGradientStartHex = FloatingPanelAppearance.defaultStartHex
@@ -483,7 +487,6 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelContentVisibility.pagingGuideRevisionKey) private var pagingGuideRevision = 0
     @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var persistedPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
     @State private var pagingGuideShowsArrowGlyphs = false
-    @State private var pagingGuideDismissed = false
     let onClose: () -> Void
 
     var body: some View {
@@ -534,16 +537,23 @@ struct FloatingTokenPanelView: View {
         let standaloneUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.standaloneUsageStatusPalette
         let radarActionTextPalette = overridePalette ?? automaticTextPalettes.radarActionPalette
         let radarModelTextPalette = overridePalette ?? automaticTextPalettes.radarModelPalette
-        let pagingGuidePresented = !pagingGuideDismissed
+        let currentPagingGuideRevision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        let immediatePagingGuideCompletion = pagingGuideSessionState.completion(
+            for: currentPagingGuideRevision
+        )
+        let pagingGuidePresented = immediatePagingGuideCompletion == nil
             && FloatingPanelPagingGuideState.shouldPresent(
                 setupGuideCompleted: setupGuideCompleted,
                 completedRevision: pagingGuideRevision,
                 hasPagedRows: visibility.layoutRows.contains(where: \.isPaged)
             )
+        let immediatelyAppliedArrowGlyphs = pagingGuideRevision < currentPagingGuideRevision
+            ? immediatePagingGuideCompletion?.showsArrowGlyphs
+            : nil
         var presentedVisibility = visibility
         presentedVisibility.showPageNavigationArrows = pagingGuidePresented
             ? pagingGuideShowsArrowGlyphs
-            : persistedPageNavigationArrows
+            : (immediatelyAppliedArrowGlyphs ?? persistedPageNavigationArrows)
         let pagingGuideTargetY = FloatingTokenPanelMetrics.firstPagedRowCenterY(
             visibility: visibility,
             panelHeight: size.height,
@@ -645,9 +655,13 @@ struct FloatingTokenPanelView: View {
     }
 
     private func completePagingGuide() {
-        pagingGuideDismissed = true
+        let revision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        pagingGuideSessionState.complete(
+            revision: revision,
+            showsArrowGlyphs: pagingGuideShowsArrowGlyphs
+        )
         persistedPageNavigationArrows = pagingGuideShowsArrowGlyphs
-        pagingGuideRevision = FloatingPanelContentVisibility.currentPagingGuideRevision
+        pagingGuideRevision = revision
     }
 
     func withLockTarget(_ description: String?) -> FloatingTokenPanelView {

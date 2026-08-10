@@ -53,6 +53,23 @@ export function sanitizeFloatingSettings(
   };
 }
 
+export function floatingSettingsCompletingPagingGuide(
+  settings: FloatingWindowSettings,
+  showPageNavigationArrows: boolean,
+): FloatingWindowSettings {
+  return sanitizeFloatingSettings({
+    ...settings,
+    pagingGuideRevision: Math.max(
+      settings.pagingGuideRevision,
+      CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+    ),
+    contentVisibility: {
+      ...settings.contentVisibility,
+      showPageNavigationArrows,
+    },
+  });
+}
+
 function sanitizeNonnegativeInteger(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return fallback;

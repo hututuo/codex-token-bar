@@ -53,6 +53,24 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testPagingGuideSessionCompletionPublishesTheChosenArrowStateImmediately() {
+        let state = FloatingPanelPagingGuideSessionState()
+
+        XCTAssertNil(state.completion(for: 3))
+
+        state.complete(revision: 3, showsArrowGlyphs: true)
+
+        XCTAssertEqual(
+            state.completion(for: 3),
+            FloatingPanelPagingGuideSessionState.Completion(
+                revision: 3,
+                showsArrowGlyphs: true
+            )
+        )
+        XCTAssertNil(state.completion(for: 4))
+    }
+
     func testPageNavigationArrowsCanBeHiddenWithoutChangingPagePairs() {
         let visibility = FloatingPanelContentVisibility(
             showRateAndBar: true,
@@ -1470,9 +1488,13 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(guide.contains("minWidth: 58.scaled(by: scale)"))
         XCTAssertFalse(guide.contains("Button(\"开始体验\", action: onComplete)"))
         XCTAssertFalse(guide.contains(".controlSize(.mini)"))
-        XCTAssertTrue(panel.contains("@State private var pagingGuideDismissed = false"))
-        XCTAssertTrue(panel.contains("let pagingGuidePresented = !pagingGuideDismissed"))
-        XCTAssertTrue(panel.contains("pagingGuideDismissed = true"))
+        XCTAssertTrue(panel.contains("private let pagingGuideSessionState = FloatingPanelPagingGuideSessionState()"))
+        XCTAssertEqual(panel.components(separatedBy: "pagingGuideSessionState: pagingGuideSessionState").count - 1, 2)
+        XCTAssertTrue(panel.contains("let immediatePagingGuideCompletion = pagingGuideSessionState.completion("))
+        XCTAssertTrue(panel.contains("immediatePagingGuideCompletion?.showsArrowGlyphs"))
+        XCTAssertTrue(guide.contains("@State private var completionTriggered = false"))
+        XCTAssertTrue(guide.contains("Button(action: completeImmediately)"))
+        XCTAssertTrue(guide.contains("completionTriggered = true\n        onComplete()"))
         XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: true)"))
         XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: false)"))
         XCTAssertTrue(guide.contains("refreshArrowCueEmphasis"))

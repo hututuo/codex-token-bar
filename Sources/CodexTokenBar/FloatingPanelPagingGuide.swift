@@ -13,6 +13,27 @@ enum FloatingPanelPagingGuideState {
     }
 }
 
+@MainActor
+final class FloatingPanelPagingGuideSessionState: ObservableObject {
+    struct Completion: Equatable {
+        let revision: Int
+        let showsArrowGlyphs: Bool
+    }
+
+    @Published private(set) var completion: Completion?
+
+    func complete(revision: Int, showsArrowGlyphs: Bool) {
+        completion = Completion(
+            revision: revision,
+            showsArrowGlyphs: showsArrowGlyphs
+        )
+    }
+
+    func completion(for revision: Int) -> Completion? {
+        completion?.revision == revision ? completion : nil
+    }
+}
+
 struct FloatingPanelPagingGuide: View {
     @Binding var showsArrowGlyphs: Bool
     let scale: CGFloat
@@ -21,6 +42,7 @@ struct FloatingPanelPagingGuide: View {
 
     @State private var arrowCueEmphasized = false
     @State private var arrowCueFadeTask: Task<Void, Never>?
+    @State private var completionTriggered = false
 
     private let guideSurface = Color(red: 0.882, green: 0.925, blue: 0.980)
     private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)
@@ -77,7 +99,7 @@ struct FloatingPanelPagingGuide: View {
                         .accessibilityValue(showsArrowGlyphs ? "已开启" : "已关闭")
                         .help("显示翻页箭头")
 
-                        Button(action: onComplete) {
+                        Button(action: completeImmediately) {
                             Text("开始体验")
                                 .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
                                 .foregroundStyle(.white)
@@ -122,8 +144,16 @@ struct FloatingPanelPagingGuide: View {
         .onDisappear {
             arrowCueFadeTask?.cancel()
         }
+        .opacity(completionTriggered ? 0 : 1)
+        .allowsHitTesting(!completionTriggered)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("悬浮窗翻页引导")
+    }
+
+    private func completeImmediately() {
+        guard !completionTriggered else { return }
+        completionTriggered = true
+        onComplete()
     }
 
     private func edgeShadow(isLeading: Bool) -> some View {
@@ -222,8 +252,12 @@ struct FloatingPanelInteractionBridge: NSViewRepresentable {
     }
 
     private func updatePanel(from view: NSView) {
-        DispatchQueue.main.async {
-            (view.window as? FloatingTokenPanelWindow)?.allowsBackgroundDrag = !guidePresented && !isLocked
+        if let panel = view.window as? FloatingTokenPanelWindow {
+            panel.allowsBackgroundDrag = !guidePresented && !isLocked
+        } else {
+            DispatchQueue.main.async {
+                (view.window as? FloatingTokenPanelWindow)?.allowsBackgroundDrag = !guidePresented && !isLocked
+            }
         }
     }
 }

@@ -100,6 +100,8 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
 
   assert.match(windowSource, /CURRENT_FLOATING_PAGING_GUIDE_REVISION/);
   assert.match(windowSource, /completeFloatingPagingGuide\(pagingGuideShowsArrowGlyphs\)/);
+  assert.match(windowSource, /flushSync\(\(\) => \{\s*setSettings\(immediatelyAppliedSettings\);\s*setPagingGuideDismissed\(true\);/s);
+  assert.match(windowSource, /const saved = await completeFloatingPagingGuide\(pagingGuideShowsArrowGlyphs\);/);
   assert.match(windowSource, /const \[pagingGuideDismissed, setPagingGuideDismissed\] = useState\(false\);/);
   assert.match(windowSource, /const pagingGuidePresented = !pagingGuideDismissed/);
   assert.match(windowSource, /setPagingGuideDismissed\(true\);/);
@@ -130,6 +132,23 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.ok(asset.size > 0);
   assert.match(provenance, /Google Material Design Icons/);
   assert.match(provenance, /Apache License 2\.0/);
+});
+
+test("paging guide completion applies revision and arrow choice before persistence returns", async () => {
+  await withSsrModules(async (load) => {
+    const {
+      CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+      DEFAULT_FLOATING_SETTINGS,
+      floatingSettingsCompletingPagingGuide,
+    } = await load("/src/floating/floatingSettings.ts");
+
+    const next = floatingSettingsCompletingPagingGuide(DEFAULT_FLOATING_SETTINGS, true);
+
+    assert.equal(next.pagingGuideRevision, CURRENT_FLOATING_PAGING_GUIDE_REVISION);
+    assert.equal(next.contentVisibility.showPageNavigationArrows, true);
+    assert.equal(DEFAULT_FLOATING_SETTINGS.pagingGuideRevision, 0);
+    assert.equal(DEFAULT_FLOATING_SETTINGS.contentVisibility.showPageNavigationArrows, false);
+  });
 });
 
 function installDomGlobals(dom) {

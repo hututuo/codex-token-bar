@@ -1,4 +1,5 @@
 import { type CSSProperties, type MouseEvent, useEffect, useMemo, useReducer, useState } from "react";
+import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { completeFloatingPagingGuide, readAppSettings, recordStartupEvent } from "../api/client";
 import { desktopPlatform } from "../platform/desktop";
@@ -17,6 +18,7 @@ import {
   FLOATING_BASE_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
   floatingGradientBackground,
+  floatingSettingsCompletingPagingGuide,
   sanitizeFloatingSettings,
   type FloatingWindowSettings,
 } from "./floatingSettings";
@@ -233,9 +235,17 @@ export function FloatingWindowApp() {
     if (!pagingGuidePresented || pagingGuideSaving) {
       return;
     }
-    setPagingGuideDismissed(true);
-    setPagingGuideSaving(true);
-    setPagingGuideError(null);
+    const previousSettings = settings;
+    const immediatelyAppliedSettings = floatingSettingsCompletingPagingGuide(
+      previousSettings,
+      pagingGuideShowsArrowGlyphs,
+    );
+    flushSync(() => {
+      setSettings(immediatelyAppliedSettings);
+      setPagingGuideDismissed(true);
+      setPagingGuideSaving(true);
+      setPagingGuideError(null);
+    });
     try {
       const saved = await completeFloatingPagingGuide(pagingGuideShowsArrowGlyphs);
       const next = sanitizeFloatingSettings(saved.floatingWindow);
@@ -246,11 +256,15 @@ export function FloatingWindowApp() {
         showPageNavigationArrows: next.contentVisibility.showPageNavigationArrows,
       });
     } catch (error) {
-      setPagingGuideDismissed(false);
-      setPagingGuideError(`保存失败：${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setPagingGuideSaving(false);
+      flushSync(() => {
+        setSettings(previousSettings);
+        setPagingGuideDismissed(false);
+        setPagingGuideSaving(false);
+        setPagingGuideError(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+      });
+      return;
     }
+    setPagingGuideSaving(false);
   }
 
   const gradientBackground = floatingGradientBackground(presentedSettings);
