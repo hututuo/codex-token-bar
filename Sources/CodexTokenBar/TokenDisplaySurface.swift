@@ -314,6 +314,8 @@ struct TokenDisplayCard: View {
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)
     private var fallbackPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var selectedPageIndexByRowID: [String: Int] = [:]
+    @State private var pageNavigationCueEmphasized = false
+    @State private var pageNavigationCueFadeTask: Task<Void, Never>?
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
     @Environment(\.tokenDisplayRowTextPalettes) private var rowTextPalettes
@@ -394,6 +396,15 @@ struct TokenDisplayCard: View {
             radarPresentation: resolvedRadarPresentation,
             fallbackPriceModel: fallbackPriceModel
         ).accessibilityValue)
+        .onAppear {
+            refreshPageNavigationCueEmphasis(isVisible: visibility.showPageNavigationArrows)
+        }
+        .onChange(of: visibility.showPageNavigationArrows) { _, isVisible in
+            refreshPageNavigationCueEmphasis(isVisible: isVisible)
+        }
+        .onDisappear {
+            pageNavigationCueFadeTask?.cancel()
+        }
     }
 
     private var fallbackPriceModel: OfficialAPIPriceModel {
@@ -531,6 +542,10 @@ struct TokenDisplayCard: View {
         showsGlyph: Bool
     ) -> some View {
         let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing
+        let restingColor = palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.62)
+        let cueColor = pageNavigationCueEmphasized
+            ? Color(red: 0.078, green: 0.361, blue: 0.694)
+            : restingColor
 
         return Button {
             let current = selectedPageIndexByRowID[row.id, default: 0]
@@ -548,15 +563,23 @@ struct TokenDisplayCard: View {
                     height: 24.scaled(by: displayScale)
                 )
                 .overlay(alignment: edgeAlignment) {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.45))
-                        .opacity(showsGlyph ? 1 : 0)
-                        .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
-                        .frame(
-                            width: 14.scaled(by: displayScale),
-                            height: 20.scaled(by: displayScale)
-                        )
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 4.scaled(by: displayScale), style: .continuous)
+                            .fill(cueColor.opacity(pageNavigationCueEmphasized ? 0.17 : 0.08))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 4.scaled(by: displayScale), style: .continuous)
+                                    .stroke(cueColor, lineWidth: 1.scaled(by: displayScale))
+                            }
+                        Image(systemName: systemImage)
+                            .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold))
+                            .foregroundStyle(cueColor)
+                            .scaleEffect(x: 0.58, y: 0.92, anchor: .center)
+                    }
+                    .frame(
+                        width: 14.scaled(by: displayScale),
+                        height: 20.scaled(by: displayScale)
+                    )
+                    .opacity(showsGlyph ? 1 : 0)
                 }
             .contentShape(Rectangle())
         }
@@ -564,6 +587,22 @@ struct TokenDisplayCard: View {
         .contentShape(Rectangle())
         .help(delta < 0 ? "上一项" : "下一项")
         .accessibilityLabel(delta < 0 ? "显示上一项" : "显示下一项")
+    }
+
+    private func refreshPageNavigationCueEmphasis(isVisible: Bool) {
+        pageNavigationCueFadeTask?.cancel()
+        guard isVisible else {
+            pageNavigationCueEmphasized = false
+            return
+        }
+        pageNavigationCueEmphasized = true
+        pageNavigationCueFadeTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(950))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.85)) {
+                pageNavigationCueEmphasized = false
+            }
+        }
     }
 
     private func rateRow(usageStatus: String?) -> some View {

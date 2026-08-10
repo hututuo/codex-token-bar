@@ -7863,47 +7863,53 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   z-index: 4;
   top: calc(-2px * var(--floating-scale));
   bottom: calc(-2px * var(--floating-scale));
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
   /* The glyph remains thin; the transparent button is intentionally wider
      so the whole edge gutter is easy to click without changing row layout. */
   width: calc(48px * var(--floating-scale));
   border: 0;
-  /* Keep the whole overlaid gutter in WebView hit testing even though only
-     the translated chevron is visible. */
+  /* Keep the whole overlaid gutter in WebView hit testing while the cue frame
+     itself stays in real layout at the window edge. */
   background: rgba(0, 0, 0, 0.001);
-  color: var(--floating-secondary);
   cursor: pointer;
-  opacity: 0.2;
   padding: 0;
   pointer-events: auto;
-  transition: opacity 160ms ease-out, color 160ms ease-out;
   -webkit-app-region: no-drag;
 }
 
-.floating-page-switch > span {
+.floating-page-switch-frame {
+  display: grid;
+  width: calc(14px * var(--floating-scale));
+  height: calc(20px * var(--floating-scale));
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--floating-secondary) 48%, transparent);
+  border-radius: calc(4px * var(--floating-scale));
+  background: color-mix(in srgb, var(--floating-secondary) 8%, transparent);
+  color: color-mix(in srgb, var(--floating-secondary) 62%, transparent);
+  animation: floating-page-switch-cue 1.8s ease-out;
+  transition: border-color 160ms ease-out, background 160ms ease-out, color 160ms ease-out, opacity 160ms ease-out;
+}
+
+.floating-page-switch-glyph {
   display: block;
   font-size: calc(11px * var(--floating-scale));
   font-weight: var(--weight-semibold);
   line-height: 1;
-  opacity: 1;
   transform: scaleX(0.58);
   transform-origin: center;
-  transition: opacity 160ms ease-out;
 }
 
-.floating-page-switch.is-glyph-hidden > span {
+.floating-page-switch.is-glyph-hidden .floating-page-switch-frame {
   opacity: 0;
+  animation: none;
 }
 
-.floating-page-layout-row.is-paged:hover .floating-page-switch {
-  opacity: 0.45;
-}
-
-.floating-page-switch:hover,
-.floating-page-switch:focus-visible {
-  color: var(--floating-primary);
-  opacity: 0.68;
+.floating-page-switch:hover .floating-page-switch-frame,
+.floating-page-switch:focus-visible .floating-page-switch-frame {
+  border-color: color-mix(in srgb, var(--accent) 76%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
 }
 
 .floating-page-switch:focus-visible {
@@ -7913,19 +7919,26 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-page-switch--previous {
-  left: calc(-8px * var(--floating-scale));
-}
-
-.floating-page-switch--previous > span {
-  transform: translateX(calc(-18px * var(--floating-scale))) scaleX(0.58);
+  left: 0;
+  justify-content: flex-start;
 }
 
 .floating-page-switch--next {
-  right: calc(-8px * var(--floating-scale));
+  right: 0;
+  justify-content: flex-end;
 }
 
-.floating-page-switch--next > span {
-  transform: translateX(calc(18px * var(--floating-scale))) scaleX(0.58);
+@keyframes floating-page-switch-cue {
+  0%, 36% {
+    border-color: rgba(20, 112, 218, 0.96);
+    background: rgba(20, 112, 218, 0.18);
+    color: #1470da;
+  }
+  100% {
+    border-color: color-mix(in srgb, var(--floating-secondary) 48%, transparent);
+    background: color-mix(in srgb, var(--floating-secondary) 8%, transparent);
+    color: color-mix(in srgb, var(--floating-secondary) 62%, transparent);
+  }
 }
 
 .floating-paging-guide {
@@ -7960,6 +7973,38 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-paging-guide-edge--right {
   right: 0;
   box-shadow: calc(-4px * var(--floating-scale)) 0 calc(6px * var(--floating-scale)) rgba(38, 42, 48, 0.38);
+}
+
+.floating-paging-guide-arrow-cue {
+  position: absolute;
+  z-index: 4;
+  width: calc(18px * var(--floating-scale));
+  height: calc(24px * var(--floating-scale));
+  border: 1px solid rgba(20, 92, 177, 0.96);
+  border-radius: calc(5px * var(--floating-scale));
+  background: rgba(20, 92, 177, 0.10);
+  animation: floating-paging-guide-arrow-cue 1.8s ease-out;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.floating-paging-guide-arrow-cue--left {
+  left: 0;
+}
+
+.floating-paging-guide-arrow-cue--right {
+  right: 0;
+}
+
+@keyframes floating-paging-guide-arrow-cue {
+  0%, 36% {
+    border-color: rgba(20, 92, 177, 0.96);
+    background: rgba(20, 92, 177, 0.10);
+  }
+  100% {
+    border-color: rgba(60, 65, 72, 0.54);
+    background: rgba(60, 65, 72, 0.05);
+  }
 }
 
 .floating-paging-guide-card {
@@ -8008,15 +8053,21 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: inline-flex;
   align-items: center;
   gap: calc(3px * var(--floating-scale));
+  min-height: calc(24px * var(--floating-scale));
+  padding: 0 calc(6px * var(--floating-scale));
+  border: 1px solid rgba(20, 92, 177, 0.34);
+  border-radius: calc(7px * var(--floating-scale));
+  background: rgba(255, 255, 255, 0.18);
   font-size: calc(8.6px * var(--floating-scale));
   font-weight: var(--weight-semibold);
   color: var(--floating-paging-guide-primary);
+  cursor: pointer;
   white-space: nowrap;
 }
 
 .floating-paging-guide-actions input {
-  width: calc(11px * var(--floating-scale));
-  height: calc(11px * var(--floating-scale));
+  width: calc(13px * var(--floating-scale));
+  height: calc(13px * var(--floating-scale));
   margin: 0;
   accent-color: var(--floating-paging-guide-accent);
 }
@@ -8076,6 +8127,11 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .floating-page-switch-frame,
+  .floating-paging-guide-arrow-cue {
+    animation: none;
+  }
+
   .floating-paging-guide-pointer {
     animation: none;
     opacity: 1;

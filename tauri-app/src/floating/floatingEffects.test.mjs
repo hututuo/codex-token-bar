@@ -175,16 +175,16 @@ test("floating quota uses the Swift-style single filled segment instead of neste
 });
 
 test("paged row arrows hug the outer edge while keeping a forgiving hit target", () => {
-  assert.match(previewSource, />\s*<span aria-hidden="true">‹<\/span><\/button>/);
-  assert.match(previewSource, />\s*<span aria-hidden="true">›<\/span><\/button>/);
+  assert.match(previewSource, /className="floating-page-switch-frame"/);
+  assert.match(previewSource, /className="floating-page-switch-glyph">‹<\/span>/);
+  assert.match(previewSource, /className="floating-page-switch-glyph">›<\/span>/);
   assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?width: calc\(48px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?background: rgba\(0, 0, 0, 0\.001\);/);
   assert.match(stylesSource, /\.floating-page-switch\s*{[\s\S]*?top: calc\(-2px \* var\(--floating-scale\)\);[\s\S]*?bottom: calc\(-2px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-page-switch > span\s*{[\s\S]*?transform: scaleX\(0\.58\);/);
-  assert.match(stylesSource, /\.floating-page-switch--previous\s*{[^}]*left: calc\(-8px \* var\(--floating-scale\)\);/s);
-  assert.match(stylesSource, /\.floating-page-switch--previous > span\s*{[^}]*translateX\(calc\(-18px \* var\(--floating-scale\)\)\) scaleX\(0\.58\);/s);
-  assert.match(stylesSource, /\.floating-page-switch--next\s*{[^}]*right: calc\(-8px \* var\(--floating-scale\)\);/s);
-  assert.match(stylesSource, /\.floating-page-switch--next > span\s*{[^}]*translateX\(calc\(18px \* var\(--floating-scale\)\)\) scaleX\(0\.58\);/s);
+  assert.match(stylesSource, /\.floating-page-switch-frame\s*\{[^}]*width: calc\(14px \* var\(--floating-scale\)\);[^}]*height: calc\(20px \* var\(--floating-scale\)\);/s);
+  assert.match(stylesSource, /\.floating-page-switch-glyph\s*\{[^}]*transform: scaleX\(0\.58\);/s);
+  assert.match(stylesSource, /\.floating-page-switch--previous\s*\{[^}]*left: 0;[^}]*justify-content: flex-start;/s);
+  assert.match(stylesSource, /\.floating-page-switch--next\s*\{[^}]*right: 0;[^}]*justify-content: flex-end;/s);
 });
 
 test("floating pace text keeps the Swift-style status and card count in one line", () => {

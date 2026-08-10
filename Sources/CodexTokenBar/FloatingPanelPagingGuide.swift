@@ -19,6 +19,9 @@ struct FloatingPanelPagingGuide: View {
     let targetY: CGFloat
     let onComplete: () -> Void
 
+    @State private var arrowCueEmphasized = false
+    @State private var arrowCueFadeTask: Task<Void, Never>?
+
     private let guideSurface = Color(red: 0.882, green: 0.925, blue: 0.980)
     private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)
     private let guideSecondaryText = Color(red: 0.208, green: 0.329, blue: 0.451)
@@ -30,6 +33,10 @@ struct FloatingPanelPagingGuide: View {
             ZStack {
                 edgeShadow(isLeading: true)
                 edgeShadow(isLeading: false)
+                if showsArrowGlyphs {
+                    edgeArrowCue(in: proxy.size, isLeading: true)
+                    edgeArrowCue(in: proxy.size, isLeading: false)
+                }
                 animatedPointer(in: proxy.size)
 
                 VStack(spacing: 3.scaled(by: scale)) {
@@ -41,13 +48,34 @@ struct FloatingPanelPagingGuide: View {
                         .foregroundStyle(guideSecondaryText)
 
                     HStack(spacing: 7.scaled(by: scale)) {
-                        Toggle("显示翻页箭头", isOn: $showsArrowGlyphs)
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
-                            .foregroundStyle(guidePrimaryText)
-                            .tint(guideAccent)
-                            .fixedSize()
+                        Button {
+                            showsArrowGlyphs.toggle()
+                        } label: {
+                            HStack(spacing: 3.scaled(by: scale)) {
+                                Image(systemName: showsArrowGlyphs ? "checkmark.square.fill" : "square")
+                                    .font(.system(size: 10.scaled(by: scale), weight: .semibold))
+                                    .foregroundStyle(guideAccent)
+                                Text("显示翻页箭头")
+                                    .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                                    .foregroundStyle(guidePrimaryText)
+                            }
+                            .frame(
+                                minWidth: 88.scaled(by: scale),
+                                minHeight: 24.scaled(by: scale)
+                            )
+                            .background(
+                                Color.white.opacity(0.001),
+                                in: RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                                    .stroke(guideAccent.opacity(0.34), lineWidth: 0.8.scaled(by: scale))
+                            }
+                            .contentShape(RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(showsArrowGlyphs ? "已开启" : "已关闭")
+                        .help("显示翻页箭头")
 
                         Button("开始体验", action: onComplete)
                             .buttonStyle(.borderedProminent)
@@ -72,6 +100,15 @@ struct FloatingPanelPagingGuide: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
+        .onAppear {
+            refreshArrowCueEmphasis(isVisible: showsArrowGlyphs)
+        }
+        .onChange(of: showsArrowGlyphs) { _, isVisible in
+            refreshArrowCueEmphasis(isVisible: isVisible)
+        }
+        .onDisappear {
+            arrowCueFadeTask?.cancel()
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("悬浮窗翻页引导")
     }
@@ -89,6 +126,39 @@ struct FloatingPanelPagingGuide: View {
         )
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    private func edgeArrowCue(in size: CGSize, isLeading: Bool) -> some View {
+        let cueColor = arrowCueEmphasized ? guideAccent : guideEdgeShade.opacity(0.72)
+        return RoundedRectangle(cornerRadius: 5.scaled(by: scale), style: .continuous)
+        .fill(cueColor.opacity(arrowCueEmphasized ? 0.10 : 0.05))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5.scaled(by: scale), style: .continuous)
+                .stroke(cueColor, lineWidth: 1.scaled(by: scale))
+        }
+        .frame(width: 18.scaled(by: scale), height: 24.scaled(by: scale))
+        .position(
+            x: isLeading ? 9.scaled(by: scale) : size.width - 9.scaled(by: scale),
+            y: min(max(targetY, 12.scaled(by: scale)), size.height - 12.scaled(by: scale))
+        )
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func refreshArrowCueEmphasis(isVisible: Bool) {
+        arrowCueFadeTask?.cancel()
+        guard isVisible else {
+            arrowCueEmphasized = false
+            return
+        }
+        arrowCueEmphasized = true
+        arrowCueFadeTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(950))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.85)) {
+                arrowCueEmphasized = false
+            }
+        }
     }
 
     private func animatedPointer(in size: CGSize) -> some View {

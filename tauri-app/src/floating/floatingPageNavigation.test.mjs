@@ -40,6 +40,7 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.ok(next);
         assert.ok(previous);
         assert.ok(container.querySelector(".floating-page-content"));
+        assert.ok(container.querySelector(".floating-page-switch-frame"));
         assert.match(container.textContent, /Sol50%/);
         assert.doesNotMatch(container.textContent, /Sol\$3\.25/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
@@ -98,10 +99,14 @@ test("floating model row switches share and cost without starting panel drag", a
   }
 });
 
-test("paged floating rows use the same short fade cadence as Swift and respect reduced motion", async () => {
+test("paged floating rows use the same short fade cadence and edge cue as Swift", async () => {
   const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
   assert.match(styles, /\.floating-page-content\s*\{[^}]*animation: floating-page-content-fade 160ms ease-out both;/);
   assert.match(styles, /@keyframes floating-page-content-fade/);
+  assert.match(styles, /\.floating-page-switch-frame\s*\{[^}]*width: calc\(14px \* var\(--floating-scale\)\);[^}]*height: calc\(20px \* var\(--floating-scale\)\);[^}]*animation: floating-page-switch-cue 1\.8s ease-out;/);
+  assert.match(styles, /@keyframes floating-page-switch-cue/);
+  assert.match(styles, /\.floating-page-switch--previous\s*\{[^}]*left: 0;[^}]*justify-content: flex-start;/s);
+  assert.match(styles, /\.floating-page-switch--next\s*\{[^}]*right: 0;[^}]*justify-content: flex-end;/s);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.floating-page-content\s*\{[^}]*animation: none;/);
 });
 

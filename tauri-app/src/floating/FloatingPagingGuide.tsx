@@ -23,6 +23,20 @@ export function FloatingPagingGuide({
     <div className="floating-paging-guide" role="dialog" aria-label="悬浮窗翻页引导">
       <span className="floating-paging-guide-edge floating-paging-guide-edge--left" aria-hidden="true" />
       <span className="floating-paging-guide-edge floating-paging-guide-edge--right" aria-hidden="true" />
+      {showsArrowGlyphs ? (
+        <>
+          <span
+            className="floating-paging-guide-arrow-cue floating-paging-guide-arrow-cue--left"
+            aria-hidden="true"
+            style={{ top: targetY }}
+          />
+          <span
+            className="floating-paging-guide-arrow-cue floating-paging-guide-arrow-cue--right"
+            aria-hidden="true"
+            style={{ top: targetY }}
+          />
+        </>
+      ) : null}
       <span
         className="floating-paging-guide-pointer"
         aria-hidden="true"

@@ -21,7 +21,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     }
 
     func testPagingGuideAppearsOnceAfterSetupWhenPagedRowsExist() {
-        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 2)
+        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 3)
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: false,
             completedRevision: 0,
@@ -1457,10 +1457,18 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains(".buttonStyle(.plain)\n        .contentShape(Rectangle())"))
         XCTAssertTrue(source.contains("if row.isPaged {"))
         XCTAssertTrue(source.contains("showsGlyph: visibility.showPageNavigationArrows"))
+        XCTAssertTrue(source.contains("pageNavigationCueEmphasized"))
+        XCTAssertTrue(source.contains("refreshPageNavigationCueEmphasis"))
+        XCTAssertTrue(source.contains("RoundedRectangle(cornerRadius: 4.scaled(by: displayScale)"))
         XCTAssertTrue(source.contains(".opacity(showsGlyph ? 1 : 0)"))
         XCTAssertTrue(source.contains("onPageNavigation?()"))
         XCTAssertTrue(guide.contains("点两侧即可翻页"))
-        XCTAssertTrue(guide.contains("Toggle(\"显示翻页箭头\""))
+        XCTAssertTrue(guide.contains("Text(\"显示翻页箭头\")"))
+        XCTAssertTrue(guide.contains("minWidth: 88.scaled(by: scale)"))
+        XCTAssertTrue(guide.contains("minHeight: 24.scaled(by: scale)"))
+        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: true)"))
+        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: false)"))
+        XCTAssertTrue(guide.contains("refreshArrowCueEmphasis"))
         XCTAssertTrue(guide.contains("private let guideSurface = Color(red: 0.882, green: 0.925, blue: 0.980)"))
         XCTAssertTrue(guide.contains("private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)"))
         XCTAssertFalse(guide.contains(".background(.ultraThinMaterial"))

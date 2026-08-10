@@ -351,7 +351,11 @@ function FloatingPagedContentRow({
             onDoubleClick={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             type="button"
-          ><span aria-hidden="true">‹</span></button>
+          >
+            <span className="floating-page-switch-frame" aria-hidden="true">
+              <span className="floating-page-switch-glyph">‹</span>
+            </span>
+          </button>
           <button
             aria-label="显示下一项"
             className={`floating-page-switch floating-page-switch--next${showsArrowGlyphs ? "" : " is-glyph-hidden"}`}
@@ -359,7 +363,11 @@ function FloatingPagedContentRow({
             onDoubleClick={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             type="button"
-          ><span aria-hidden="true">›</span></button>
+          >
+            <span className="floating-page-switch-frame" aria-hidden="true">
+              <span className="floating-page-switch-glyph">›</span>
+            </span>
+          </button>
         </>
       ) : null}
     </div>

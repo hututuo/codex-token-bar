@@ -60,7 +60,22 @@ test("floating paging guide keeps the panel draggable area isolated and exposes 
 
         await React.act(async () => checkbox.click());
         assert.equal(arrowChanges, 1);
-        await React.act(async () => button.click());
+        await React.act(async () => root.render(React.createElement(FloatingPagingGuide, {
+          error: null,
+          saving: false,
+          showsArrowGlyphs: true,
+          targetX: 120,
+          targetY: 60,
+          onArrowVisibilityChange: (visible) => {
+            arrowChanges += visible ? 1 : -1;
+          },
+          onComplete: () => {
+            completions += 1;
+          },
+        })));
+        assert.equal(container.querySelectorAll(".floating-paging-guide-arrow-cue").length, 2);
+        assert.equal(container.querySelector('input[type="checkbox"]')?.checked, true);
+        await React.act(async () => container.querySelector("button")?.click());
         assert.equal(completions, 1);
       } finally {
         await React.act(async () => root.unmount());
@@ -88,7 +103,7 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(windowSource, /onPageNavigation=\{\(\) => \{/);
   assert.match(settingsClient, /complete_floating_paging_guide/);
   assert.match(desktopEvents, /floating-paging-guide-completed/);
-  assert.match(styles, /\.floating-page-switch\.is-glyph-hidden > span\s*{\s*opacity: 0;/);
+  assert.match(styles, /\.floating-page-switch\.is-glyph-hidden \.floating-page-switch-frame\s*{\s*opacity: 0;/);
   assert.match(styles, /\.floating-page-switch\s*{[\s\S]*?pointer-events: auto;/);
   assert.match(styles, /mask: url\("\/floating-paging-touch\.png"\)/);
   assert.match(styles, /calc\(-50% \+ var\(--floating-paging-guide-target-x\)\)/);
@@ -99,6 +114,8 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(styles, /\.floating-paging-guide-edge\s*{[\s\S]*?width: calc\(24px \* var\(--floating-scale\)\);[\s\S]*?background: rgba\(60, 65, 72, 0\.24\);/);
   assert.match(styles, /\.floating-paging-guide-edge--left\s*{[\s\S]*?box-shadow: calc\(4px \* var\(--floating-scale\)\) 0 calc\(6px \* var\(--floating-scale\)\) rgba\(38, 42, 48, 0\.38\);/);
   assert.match(styles, /\.floating-paging-guide-edge--right\s*{[\s\S]*?box-shadow: calc\(-4px \* var\(--floating-scale\)\) 0 calc\(6px \* var\(--floating-scale\)\) rgba\(38, 42, 48, 0\.38\);/);
+  assert.match(styles, /\.floating-paging-guide-arrow-cue\s*{[^}]*width: calc\(18px \* var\(--floating-scale\)\);[^}]*height: calc\(24px \* var\(--floating-scale\)\);[^}]*animation: floating-paging-guide-arrow-cue 1\.8s ease-out;/s);
+  assert.match(styles, /\.floating-paging-guide-actions label\s*{[^}]*min-height: calc\(24px \* var\(--floating-scale\)\);/s);
   assert.doesNotMatch(styles, /\.floating-paging-guide-edge--(?:left|right)\s*{[^}]*background: (?:linear|radial)-gradient/);
   assert.doesNotMatch(styles, /@media \(prefers-color-scheme: dark\)\s*{\s*\.floating-paging-guide-card/);
   assert.doesNotMatch(styles, /color-mix\([^)]*var\(--floating-gradient-background\)/);
