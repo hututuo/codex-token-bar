@@ -5,7 +5,7 @@ final class CodexRadarModelsTests: XCTestCase {
     func testCompactRadarPresentationLocalizesActionsAndKeepsModelReasoningEffort() {
         XCTAssertEqual(CodexRadarPresentationText.action("wait"), "等待")
         XCTAssertEqual(CodexRadarPresentationText.action("run"), "运行")
-        for rawValue in ["Use Windows", "use_window", "use-window", "use windows"] {
+        for rawValue in ["Use Windows", "use_window", "use-window", "use windows", "use_remaining_tokens"] {
             XCTAssertEqual(CodexRadarPresentationText.action(rawValue), "速登窗口")
         }
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol max")

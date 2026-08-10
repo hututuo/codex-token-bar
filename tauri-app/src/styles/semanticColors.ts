@@ -77,6 +77,7 @@ export function radarActionAccent(action: string | null | undefined): string {
     case "use windows":
     case "usewindow":
     case "usewindows":
+    case "use remaining tokens":
     case "速登窗口":
       return ACCENT_COLORS.red;
     default:

@@ -185,7 +185,7 @@ enum AppTheme {
             return .amber
         case "run", "go", "open", "运行", "可运行", "开放":
             return .green
-        case "closed", "关闭", "use window", "use windows", "usewindow", "usewindows", "速登窗口":
+        case "closed", "关闭", "use window", "use windows", "usewindow", "usewindows", "use remaining tokens", "速登窗口":
             return .red
         default:
             return .blue

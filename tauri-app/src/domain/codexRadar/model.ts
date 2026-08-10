@@ -648,6 +648,7 @@ export function radarActionDisplayText(action: string | null | undefined): strin
     "use windows": "速登窗口",
     usewindow: "速登窗口",
     usewindows: "速登窗口",
+    "use remaining tokens": "速登窗口",
   };
   return localized[normalized] ?? (action?.trim() || "--");
 }

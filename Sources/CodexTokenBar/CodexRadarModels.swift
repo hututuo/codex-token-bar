@@ -26,7 +26,7 @@ enum CodexRadarPresentationText {
             return "开放"
         case "closed":
             return "关闭"
-        case "use window", "use windows", "usewindow", "usewindows":
+        case "use window", "use windows", "usewindow", "usewindows", "use remaining tokens":
             return "速登窗口"
         default:
             return value.isEmpty ? "--" : value

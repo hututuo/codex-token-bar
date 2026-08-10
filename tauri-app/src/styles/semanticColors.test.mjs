@@ -38,6 +38,7 @@ test("actions and pace labels use restrained fixed semantic accents", () => {
   assert.equal(radarActionAccent("closed"), "rgb(202 60 73)");
   assert.equal(radarActionAccent("Use Windows"), "rgb(202 60 73)");
   assert.equal(radarActionAccent("use_window"), "rgb(202 60 73)");
+  assert.equal(radarActionAccent("use_remaining_tokens"), "rgb(202 60 73)");
   assert.equal(radarActionAccent("unknown"), "rgb(20 105 204)");
   assert.equal(quotaPaceAccent("用得太快，先省着"), "rgb(202 60 73)");
   assert.equal(quotaPaceAccent("最后几小时，别梭哈"), "rgb(202 60 73)");
