@@ -49,12 +49,11 @@ export function FloatingPagingGuide({
       <section
         className="floating-paging-guide-card"
         onDoubleClick={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
       >
         <strong>点两侧即可翻页</strong>
         <p>点击阴影边缘试一下</p>
         <div className="floating-paging-guide-actions">
-          <label>
+          <label onMouseDown={(event) => event.stopPropagation()}>
             <input
               checked={showsArrowGlyphs}
               disabled={saving}
@@ -63,7 +62,12 @@ export function FloatingPagingGuide({
             />
             <span>显示翻页箭头</span>
           </label>
-          <button disabled={saving} onClick={onComplete} type="button">
+          <button
+            disabled={saving}
+            onClick={onComplete}
+            onMouseDown={(event) => event.stopPropagation()}
+            type="button"
+          >
             {saving ? "保存中" : "开始体验"}
           </button>
         </div>

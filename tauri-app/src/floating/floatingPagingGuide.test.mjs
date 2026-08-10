@@ -5,7 +5,7 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("floating paging guide keeps the panel draggable area isolated and exposes the arrow choice", async () => {
+test("floating paging guide lets card background drag while controls stay interactive", async () => {
   const dom = new Window({ url: "http://localhost/?surface=floating" });
   const restoreGlobals = installDomGlobals(dom);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,11 +21,15 @@ test("floating paging guide keeps the panel draggable area isolated and exposes 
       let arrowChanges = 0;
       let completions = 0;
       let dragStarts = 0;
+      let dashboardOpens = 0;
 
       try {
         await React.act(async () => root.render(React.createElement("div", {
           onMouseDown: () => {
             dragStarts += 1;
+          },
+          onDoubleClick: () => {
+            dashboardOpens += 1;
           },
         }, React.createElement(FloatingPagingGuide, {
           error: null,
@@ -56,7 +60,19 @@ test("floating paging guide keeps the panel draggable area isolated and exposes 
           bubbles: true,
           cancelable: true,
         })));
-        assert.equal(dragStarts, 0);
+        assert.equal(dragStarts, 1);
+
+        await React.act(async () => card.dispatchEvent(new dom.MouseEvent("dblclick", {
+          bubbles: true,
+          cancelable: true,
+        })));
+        assert.equal(dashboardOpens, 0);
+
+        await React.act(async () => checkbox.dispatchEvent(new dom.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        })));
+        assert.equal(dragStarts, 1);
 
         await React.act(async () => checkbox.click());
         assert.equal(arrowChanges, 1);
@@ -75,6 +91,16 @@ test("floating paging guide keeps the panel draggable area isolated and exposes 
         })));
         assert.equal(container.querySelectorAll(".floating-paging-guide-arrow-cue").length, 2);
         assert.equal(container.querySelector('input[type="checkbox"]')?.checked, true);
+        await React.act(async () => container.querySelector("label")?.dispatchEvent(new dom.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        })));
+        assert.equal(dragStarts, 1);
+        await React.act(async () => container.querySelector("button")?.dispatchEvent(new dom.MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+        })));
+        assert.equal(dragStarts, 1);
         await React.act(async () => container.querySelector("button")?.click());
         assert.equal(completions, 1);
       } finally {
