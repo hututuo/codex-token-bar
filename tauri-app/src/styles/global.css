@@ -8073,7 +8073,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-paging-guide-actions button {
-  min-height: calc(19px * var(--floating-scale));
+  min-width: calc(58px * var(--floating-scale));
+  min-height: calc(24px * var(--floating-scale));
+  box-sizing: border-box;
   border: 0;
   border-radius: calc(7px * var(--floating-scale));
   background: linear-gradient(135deg, #2776d3, #1454a4);

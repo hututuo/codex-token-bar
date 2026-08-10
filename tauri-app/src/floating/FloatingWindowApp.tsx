@@ -45,6 +45,7 @@ export function FloatingWindowApp() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [setupGuideCompleted, setSetupGuideCompleted] = useState(false);
   const [pagingGuideShowsArrowGlyphs, setPagingGuideShowsArrowGlyphs] = useState(false);
+  const [pagingGuideDismissed, setPagingGuideDismissed] = useState(false);
   const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
   const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
   const { settings: attributionSettings } = useSharedAccountAttributionSettings();
@@ -178,7 +179,8 @@ export function FloatingWindowApp() {
     };
   }, []);
 
-  const pagingGuidePresented = settingsLoaded
+  const pagingGuidePresented = !pagingGuideDismissed
+    && settingsLoaded
     && setupGuideCompleted
     && settings.pagingGuideRevision < CURRENT_FLOATING_PAGING_GUIDE_REVISION
     && layoutFloatingContentRows(settings.contentVisibility).some((row) => row.groups.length > 1);
@@ -231,6 +233,7 @@ export function FloatingWindowApp() {
     if (!pagingGuidePresented || pagingGuideSaving) {
       return;
     }
+    setPagingGuideDismissed(true);
     setPagingGuideSaving(true);
     setPagingGuideError(null);
     try {
@@ -243,6 +246,7 @@ export function FloatingWindowApp() {
         showPageNavigationArrows: next.contentVisibility.showPageNavigationArrows,
       });
     } catch (error) {
+      setPagingGuideDismissed(false);
       setPagingGuideError(`保存失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setPagingGuideSaving(false);

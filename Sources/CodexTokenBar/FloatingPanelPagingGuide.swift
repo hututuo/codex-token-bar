@@ -77,11 +77,24 @@ struct FloatingPanelPagingGuide: View {
                         .accessibilityValue(showsArrowGlyphs ? "已开启" : "已关闭")
                         .help("显示翻页箭头")
 
-                        Button("开始体验", action: onComplete)
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.mini)
-                            .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
-                            .tint(guideAccent)
+                        Button(action: onComplete) {
+                            Text("开始体验")
+                                .font(.system(size: 8.2.scaled(by: scale), weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(
+                                    minWidth: 58.scaled(by: scale),
+                                    minHeight: 24.scaled(by: scale)
+                                )
+                                .background(
+                                    guideAccent,
+                                    in: RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                                )
+                                .contentShape(
+                                    RoundedRectangle(cornerRadius: 7.scaled(by: scale), style: .continuous)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help("关闭引导并保存选择")
                     }
                 }
                 .padding(.horizontal, 9.scaled(by: scale))

@@ -483,6 +483,7 @@ struct FloatingTokenPanelView: View {
     @AppStorage(FloatingPanelContentVisibility.pagingGuideRevisionKey) private var pagingGuideRevision = 0
     @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var persistedPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
     @State private var pagingGuideShowsArrowGlyphs = false
+    @State private var pagingGuideDismissed = false
     let onClose: () -> Void
 
     var body: some View {
@@ -533,11 +534,12 @@ struct FloatingTokenPanelView: View {
         let standaloneUsageStatusTextPalette = overridePalette ?? automaticTextPalettes.standaloneUsageStatusPalette
         let radarActionTextPalette = overridePalette ?? automaticTextPalettes.radarActionPalette
         let radarModelTextPalette = overridePalette ?? automaticTextPalettes.radarModelPalette
-        let pagingGuidePresented = FloatingPanelPagingGuideState.shouldPresent(
-            setupGuideCompleted: setupGuideCompleted,
-            completedRevision: pagingGuideRevision,
-            hasPagedRows: visibility.layoutRows.contains(where: \.isPaged)
-        )
+        let pagingGuidePresented = !pagingGuideDismissed
+            && FloatingPanelPagingGuideState.shouldPresent(
+                setupGuideCompleted: setupGuideCompleted,
+                completedRevision: pagingGuideRevision,
+                hasPagedRows: visibility.layoutRows.contains(where: \.isPaged)
+            )
         var presentedVisibility = visibility
         presentedVisibility.showPageNavigationArrows = pagingGuidePresented
             ? pagingGuideShowsArrowGlyphs
@@ -643,6 +645,7 @@ struct FloatingTokenPanelView: View {
     }
 
     private func completePagingGuide() {
+        pagingGuideDismissed = true
         persistedPageNavigationArrows = pagingGuideShowsArrowGlyphs
         pagingGuideRevision = FloatingPanelContentVisibility.currentPagingGuideRevision
     }
