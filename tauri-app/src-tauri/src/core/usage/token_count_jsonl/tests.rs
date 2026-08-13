@@ -556,7 +556,7 @@ fn precise_refresh_raw_and_symlink_alias_share_one_canonical_coordinator() {
 }
 
 #[test]
-fn precise_refresh_full_after_promotion_cutoff_retries_without_missing_full_result() {
+fn precise_refresh_full_after_promotion_cutoff_attaches_without_second_sync() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
@@ -614,7 +614,7 @@ fn precise_refresh_full_after_promotion_cutoff_retries_without_missing_full_resu
     assert!(observed_rejection);
     assert_eq!(summary.unwrap().total_tokens, 120);
     assert_eq!(full.unwrap().stats.total_tokens, 120);
-    assert_eq!(precise_refresh_sync_call_count_for_testing(), 2);
+    assert_eq!(precise_refresh_sync_call_count_for_testing(), 1);
     wait_for_usage_summary_refreshes_for_testing();
     fs::remove_dir_all(root).unwrap();
 }
@@ -727,13 +727,14 @@ fn usage_summary_snapshot_returns_cache_before_background_sync_scans_sources() {
     let (started_rx, gate, calls) = install_blocking_precise_refresh_hook(&[root.clone()]);
 
     let cached = usage_summary_snapshot(&root);
+    schedule_usage_summary_refresh(&root).unwrap();
     let started = started_rx.recv_timeout(StdDuration::from_secs(5));
     let scans_before_release = dashboard_scan_signature_count_for_testing();
     gate.release(20);
     wait_for_usage_summary_refreshes_for_testing();
     set_precise_refresh_sync_hook_for_testing(None);
 
-    assert_eq!(cached.unwrap().total_tokens, 120);
+    assert_eq!(cached.unwrap().unwrap().total_tokens, 120);
     assert!(started.is_ok());
     assert_eq!(scans_before_release, 0);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -5454,7 +5455,13 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     assert!(json.get("preciseObserverEpoch").is_none());
 
     reset_dashboard_aggregate_build_count_for_testing();
+    let integrity_receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    fs::remove_file(&integrity_receipt).unwrap();
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_quick_check_count_for_testing();
     let startup = cached_dashboard_snapshot_for_startup(&root).unwrap();
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
+    assert!(!integrity_receipt.exists());
     assert_eq!(startup.recent_usage_24h.len(), full.recent_usage_24h.len());
     assert!(startup.cache_usage.turns.is_empty());
     assert!(!startup.precise_recent_usage_fresh);
@@ -5477,6 +5484,58 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     assert!(rebuilt.precise_recent_usage_covered_at.is_some());
     assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 1);
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn v19_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let cache_path = root.join("dashboard-aggregate.json");
+    let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ev19-monotonic-startup.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    for key in ["revision", "published_generation"] {
+        let current = connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE metadata SET value = ?2 WHERE key = ?1",
+                params![key, current.saturating_add(1).to_string()],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    let receipt_before = fs::read(&receipt).unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    let stale = cached_dashboard_snapshot_for_startup(&root)
+        .expect("same-provenance monotonic advance should retain stale V19 numerics");
+
+    assert_eq!(stale.stats.total_tokens, 120);
+    assert!(!stale.precise_recent_usage_fresh);
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
+    assert_eq!(fs::read(receipt).unwrap(), receipt_before);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -5797,7 +5856,7 @@ fn legacy_dashboard_envelope_accepts_public_v16_v17_v18_and_sanitizes_stale_rest
 }
 
 #[test]
-fn public_v16_stale_restore_migrates_schema6_to8_and_atomically_writes_v19_without_jsonl_scan() {
+fn public_v16_schema6_is_rejected_at_startup_then_upgraded_without_jsonl_scan() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -5855,10 +5914,10 @@ fn public_v16_stale_restore_migrates_schema6_to8_and_atomically_writes_v19_witho
     drop(connection);
 
     reset_dashboard_aggregate_build_count_for_testing();
-    let stale = cached_dashboard_snapshot_for_startup(&root)
-        .expect("V16 stale snapshot should restore before the first full refresh");
-    assert!(!stale.precise_recent_usage_fresh);
-    assert!(stale.cache_usage.sessions.is_empty());
+    assert!(
+        cached_dashboard_snapshot_for_startup(&root).is_none(),
+        "a stale envelope bound to the wrong exact schema must not be shown"
+    );
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let rebuilt = dashboard_snapshot(&root).unwrap();
@@ -5981,6 +6040,7 @@ fn legacy_startup_requires_exact_home_and_revision_signature() {
         &home_b,
         &safety_b,
         &physical_b,
+        None,
     )
     .is_none());
     drop(index_b);
@@ -5994,10 +6054,18 @@ fn legacy_startup_requires_exact_home_and_revision_signature() {
         &home_a,
         &safety_a,
         &physical_a,
+        None,
     )
     .is_none());
     assert!(
-        cached_dashboard_startup_snapshot(&signature_a, &home_a, &safety_a, &physical_a,).is_some()
+        cached_dashboard_startup_snapshot(
+            &signature_a,
+            &home_a,
+            &safety_a,
+            &physical_a,
+            None,
+        )
+        .is_some()
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -6087,32 +6155,70 @@ fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
         .expect("full dashboard should publish V19 JSON");
     assert_eq!(baseline["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
 
-    let mut assert_miss = |candidate: serde_json::Value| {
-        fs::write(&cache_path, serde_json::to_vec(&candidate).unwrap()).unwrap();
-        reset_dashboard_aggregate_build_count_for_testing();
-        assert!(
-            cached_dashboard_snapshot_for_startup(&root).is_none(),
-            "mismatched V19 binding must not hydrate startup numerics: {candidate}"
-        );
-    };
+    {
+        let assert_miss = |candidate: serde_json::Value| {
+            fs::write(&cache_path, serde_json::to_vec(&candidate).unwrap()).unwrap();
+            reset_dashboard_aggregate_build_count_for_testing();
+            assert!(
+                cached_dashboard_snapshot_for_startup(&root).is_none(),
+                "mismatched V19 binding must not hydrate startup numerics: {candidate}"
+            );
+        };
 
-    let mut revision = baseline.clone();
-    revision["signature"]["index_revision"] = serde_json::json!(u64::MAX);
-    assert_miss(revision);
-    let mut local_date = baseline.clone();
-    local_date["signature"]["local_date"] = serde_json::json!("2099-01-01");
-    assert_miss(local_date);
-    let mut utc_offset = baseline.clone();
-    utc_offset["signature"]["utc_offset_seconds"] = serde_json::json!(9 * 60 * 60);
-    assert_miss(utc_offset);
-    let mut canonical_home = baseline.clone();
-    canonical_home["canonicalHome"] = serde_json::json!(root.join("other-home"));
-    assert_miss(canonical_home);
-    let mut physical_home = baseline.clone();
-    physical_home["physicalHomeIdentity"] = serde_json::json!("not-the-same-home");
-    assert_miss(physical_home);
-    assert_miss(serde_json::json!({"version": 19, "truncated": true}));
-    fs::write(&cache_path, b"{").unwrap();
+        let mut revision = baseline.clone();
+        revision["signature"]["index_revision"] = serde_json::json!(u64::MAX);
+        assert_miss(revision);
+        let mut local_date = baseline.clone();
+        local_date["signature"]["local_date"] = serde_json::json!("2099-01-01");
+        assert_miss(local_date);
+        let mut utc_offset = baseline.clone();
+        utc_offset["signature"]["utc_offset_seconds"] = serde_json::json!(9 * 60 * 60);
+        assert_miss(utc_offset);
+        let mut canonical_home = baseline.clone();
+        canonical_home["canonicalHome"] = serde_json::json!(root.join("other-home"));
+        assert_miss(canonical_home);
+        let mut physical_home = baseline.clone();
+        physical_home["physicalHomeIdentity"] = serde_json::json!("not-the-same-home");
+        assert_miss(physical_home);
+        let mut provenance = baseline.clone();
+        provenance["preciseAttributionProvenanceEpoch"] =
+            serde_json::json!(Uuid::new_v4().to_string());
+        assert_miss(provenance);
+        assert_miss(serde_json::json!({"version": 19, "truncated": true}));
+        fs::write(&cache_path, b"{").unwrap();
+        reset_dashboard_aggregate_build_count_for_testing();
+        assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
+    }
+
+    fs::write(&cache_path, serde_json::to_vec(&baseline).unwrap()).unwrap();
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('fork_replay_boundary_revision', 'wrong-parser')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    reset_dashboard_aggregate_build_count_for_testing();
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
+
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'fork_replay_boundary_revision'",
+            params![STAGED_FULL_REBUILD_PARSER_REVISION],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '7' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
     reset_dashboard_aggregate_build_count_for_testing();
     assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
     fs::remove_dir_all(root).unwrap();
@@ -6141,7 +6247,7 @@ fn v19_startup_rejects_symlink_cache_without_following_it() {
     fs::rename(&cache_path, &target_path).unwrap();
     symlink(&target_path, &cache_path).unwrap();
     reset_dashboard_aggregate_build_count_for_testing();
-    assert!(load_persistent_dashboard_aggregate().is_none());
+    assert!(load_persistent_dashboard_aggregate().is_err());
     assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
     assert_eq!(fs::read(&target_path).unwrap(), baseline);
     fs::remove_dir_all(root).unwrap();
@@ -6283,7 +6389,10 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
 
     assert_eq!(snapshot_b.stats.total_tokens, 30);
     assert_eq!(
-        usage_summary_snapshot(&home_b).unwrap().total_tokens,
+        usage_summary_snapshot(&home_b)
+            .unwrap()
+            .unwrap()
+            .total_tokens,
         30,
         "home B should use its own rebuilt precise aggregate"
     );
@@ -6311,18 +6420,26 @@ fn cached_usage_summary_scope_rejects_date_and_offset_changes() {
     );
     assert_eq!(
         cached_dashboard_usage_summary_at(&root, now, offset)
+            .expect("cache read should succeed")
             .expect("matching lightweight scope should reuse the trusted summary")
             .total_tokens,
         120
     );
     assert!(
-        cached_dashboard_usage_summary_at(&root, now + time::Duration::days(1), offset,).is_none()
+        cached_dashboard_usage_summary_at(&root, now + time::Duration::days(1), offset,)
+            .unwrap()
+            .is_none()
     );
     assert!(
         cached_dashboard_usage_summary_at(&root, now, UtcOffset::from_hms(9, 0, 0).unwrap(),)
+            .unwrap()
             .is_none()
     );
-    assert!(cached_dashboard_usage_summary_at(&root.join("other-home"), now, offset).is_none());
+    assert!(
+        cached_dashboard_usage_summary_at(&root.join("other-home"), now, offset)
+            .unwrap()
+            .is_none()
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -6348,10 +6465,22 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
 
     let first = dashboard_snapshot(&root).unwrap();
     assert_eq!(first.stats.total_tokens, 120);
-    assert_eq!(usage_summary_snapshot(&root).unwrap().total_tokens, 120);
+    assert_eq!(
+        usage_summary_snapshot(&root)
+            .unwrap()
+            .unwrap()
+            .total_tokens,
+        120
+    );
 
     reset_dashboard_aggregate_build_count_for_testing();
-    assert_eq!(usage_summary_snapshot(&root).unwrap().total_tokens, 120);
+    assert_eq!(
+        usage_summary_snapshot(&root)
+            .unwrap()
+            .unwrap()
+            .total_tokens,
+        120
+    );
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
@@ -6378,10 +6507,16 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
         120
     );
     assert_eq!(
-        usage_summary_snapshot(&root).unwrap().total_tokens,
+        usage_summary_snapshot(&root)
+            .unwrap()
+            .unwrap()
+            .total_tokens,
         120,
-        "signature drift should return stale-safe trusted totals while scheduling one rebuild"
+        "signature drift should retain the stale-safe trusted totals"
     );
+    schedule_usage_summary_refresh(&root).unwrap();
+    schedule_usage_summary_refresh(&root).unwrap();
+    schedule_usage_summary_refresh(&root).unwrap();
     assert!(started_rx.recv_timeout(StdDuration::from_secs(5)).is_ok());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     gate.release(1);
@@ -6389,7 +6524,9 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
 
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        if usage_summary_snapshot(&root).is_ok_and(|summary| summary.total_tokens == 260) {
+        if usage_summary_snapshot(&root)
+            .is_ok_and(|summary| summary.is_some_and(|summary| summary.total_tokens == 260))
+        {
             assert_eq!(
                 dashboard_aggregate_build_count_for_testing(&root),
                 0,
@@ -6450,6 +6587,7 @@ fn dashboard_aggregate_cache_save_does_not_clobber_existing_temp_file() {
     assert!(cache_path.exists());
     assert_eq!(
         load_persistent_dashboard_aggregate()
+            .unwrap()
             .unwrap()
             .summary
             .total_tokens,
@@ -7031,13 +7169,14 @@ fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refres
     );
 
     reset_dashboard_aggregate_build_count_for_testing();
-    let _ = usage_summary_snapshot(&root);
-    let _ = usage_summary_snapshot(&root);
-    let _ = usage_summary_snapshot(&root);
+    assert!(matches!(usage_summary_snapshot(&root), Ok(None)));
+    schedule_usage_summary_refresh(&root).unwrap();
+    schedule_usage_summary_refresh(&root).unwrap();
+    schedule_usage_summary_refresh(&root).unwrap();
 
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
-        if let Ok(summary) = usage_summary_snapshot(&root) {
+        if let Ok(Some(summary)) = usage_summary_snapshot(&root) {
             assert_eq!(summary.total_tokens, 120);
             assert_eq!(
                 dashboard_aggregate_build_count_for_testing(&root),
@@ -7046,8 +7185,8 @@ fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refres
             );
             wait_for_usage_summary_refreshes_for_testing();
             let completed_scans = dashboard_scan_signature_count_for_testing();
-            let _ = usage_summary_snapshot(&root);
-            let _ = usage_summary_snapshot(&root);
+            schedule_usage_summary_refresh(&root).unwrap();
+            schedule_usage_summary_refresh(&root).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(50));
             assert_eq!(
                 dashboard_scan_signature_count_for_testing(),

@@ -92,7 +92,14 @@ export function acknowledgeAttributionSafety(
 export function readUsageSummarySnapshot(
   sourceToken: CodexHomeSourceToken,
 ): Promise<UsageSummarySnapshot | null> {
-  return callCommandOptional("read_usage_summary_snapshot", { sourceToken }, 8_000);
+  // Native `Ok(None)` is an expected initializing/cache-miss state. A rejected
+  // command remains a real I/O/schema/source failure and must stay visible in
+  // diagnostics, so do not collapse both cases through callCommandOptional.
+  return callCommandStrict<UsageSummarySnapshot | null>(
+    "read_usage_summary_snapshot",
+    { sourceToken },
+    8_000,
+  );
 }
 
 export function readUsageCacheStatus(): Promise<UsageCacheStatus> {

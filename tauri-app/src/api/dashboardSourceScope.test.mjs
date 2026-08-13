@@ -12,6 +12,7 @@ test("usage, quota, reset credits, and attribution safety IPC calls forward the 
       __TAURI_INTERNALS__: {
         invoke(command, args) {
           calls.push({ args, command });
+          if (command === "read_usage_summary_snapshot") return Promise.resolve(null);
           if (command === "read_account_quota") return Promise.resolve({ quota: {} });
           if (command === "read_account_reset_credits") return Promise.resolve({ successful: true });
           if (command === "acknowledge_attribution_safety") return Promise.resolve(true);
@@ -38,7 +39,7 @@ test("usage, quota, reset credits, and attribution safety IPC calls forward the 
         transitionGeneration: 7,
       };
 
-      await readUsageSummarySnapshot(sourceToken);
+      assert.equal(await readUsageSummarySnapshot(sourceToken), null);
       await readAccountQuota(sourceToken, true);
       await readAccountResetCredits(sourceToken, true);
       assert.equal(await acknowledgeAttributionSafety(

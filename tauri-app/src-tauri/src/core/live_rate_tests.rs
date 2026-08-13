@@ -233,10 +233,16 @@ fn live_rate_ticks_leave_precise_summary_rebuild_to_usage_refresh() {
         "live-rate ticks must not scan the session tree"
     );
 
-    assert!(crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root).is_err());
+    assert!(matches!(
+        crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root),
+        Ok(None)
+    ));
+    crate::core::usage::token_count_jsonl::schedule_usage_summary_refresh(&root).unwrap();
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(20));
-        if let Ok(summary) = crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root) {
+        if let Ok(Some(summary)) =
+            crate::core::usage::token_count_jsonl::usage_summary_snapshot(&root)
+        {
             assert_eq!(summary.today_tokens, 40);
             assert_eq!(summary.today_requests, 1);
             assert_eq!(summary.total_tokens, 1_040);

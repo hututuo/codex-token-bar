@@ -138,17 +138,24 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     const requestSourceKey = sourceKey;
     const requestSourceToken = sourceToken;
     const refreshUsageSummary = async () => {
-      const summary = await dependencies.readUsageSummary(requestSourceToken);
+      let summary: UsageSummarySnapshot | null = null;
+      try {
+        summary = await dependencies.readUsageSummary(requestSourceToken);
+      } catch {
+        // The command client records the native failure for diagnostics.
+      }
       if (cancelled || sourceKeyRef.current !== requestSourceKey) {
         return;
       }
-
       if (summary) {
         usageSummaryRef.current = summary;
         setRawSnapshot((current) => mergeFloatingUsageSummary(current, summary));
         return;
       }
 
+      // Both expected initialization and a background refresh failure retain
+      // the last trusted numeric summary. The command layer distinguishes the
+      // two for diagnostics; the compact surface must never regress to dashes.
       setRawSnapshot(preserveFloatingUsageSummary);
     };
 

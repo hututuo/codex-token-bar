@@ -98,6 +98,17 @@ pub(super) struct AttributionSafetyState {
     pub(super) current_scan_incomplete: bool,
 }
 
+/// Read-only identity used to validate a persisted numeric startup envelope.
+/// This deliberately does not construct `ExactUsageIndex`: startup must not
+/// run schema migration, orphan repair, receipt publication, or quick_check
+/// before it can show a trusted last-good snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct StartupIndexIdentity {
+    pub(super) revision: u64,
+    pub(super) published_generation: u64,
+    pub(super) attribution_safety: AttributionSafetyState,
+}
+
 #[derive(Default)]
 struct ExactScanCompleteness {
     incomplete_source_scan: bool,
@@ -2130,6 +2141,178 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法读取轮次缓存候选：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法解码轮次缓存候选：{error}"))
+    }
+}
+
+pub(super) fn peek_startup_identity(
+    codex_home: &Path,
+) -> Result<Option<StartupIndexIdentity>, String> {
+    let path = database_path(codex_home)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "拒绝只读检查符号链接形式的精确 token 索引：{}",
+                path.display()
+            ));
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(format!("精确 token 索引路径不是普通文件：{}", path.display()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "无法检查精确 token 索引 {}：{error}",
+                path.display()
+            ));
+        }
+    }
+
+    let connection = sqlite::open_read_only(&path, StdDuration::from_millis(100))
+        .map_err(|error| format!("无法只读打开精确 token 索引 {}：{error}", path.display()))?;
+    let schema_version = required_startup_metadata_i64(&connection, "schema_version")?;
+    if schema_version != INDEX_SCHEMA_VERSION {
+        return Err(format!(
+            "精确 token 启动缓存要求 schema {}，当前为 {}",
+            INDEX_SCHEMA_VERSION, schema_version
+        ));
+    }
+    // A freshly staged full index is built with the current parser and is
+    // atomically published without these one-time migration markers. An
+    // existing index gets the markers on normal open. Missing is therefore
+    // valid for a V19 envelope that independently matches this exact
+    // revision/generation/provenance; an explicitly incompatible marker is
+    // never valid.
+    let parser_revision = metadata_text(&connection, "fork_replay_boundary_revision")?;
+    if parser_revision
+        .as_deref()
+        .is_some_and(|revision| revision != EXACT_SESSION_PARSER_REVISION)
+    {
+        return Err(format!(
+            "精确 token 启动缓存 parser revision 不兼容：{}",
+            parser_revision.as_deref().unwrap_or_default()
+        ));
+    }
+    let orphan_repair_revision = metadata_text(&connection, ORPHAN_REPAIR_REVISION_KEY)?;
+    if orphan_repair_revision
+        .as_deref()
+        .is_some_and(|revision| revision != ORPHAN_REPAIR_REVISION)
+    {
+        return Err(format!(
+            "精确 token 启动缓存逻辑完整性版本不兼容：{}",
+            orphan_repair_revision.as_deref().unwrap_or_default()
+        ));
+    }
+    let canonical_home = fs::canonicalize(codex_home).map_err(|error| {
+        format!(
+            "无法确认精确 token 启动缓存 Home {}：{error}",
+            codex_home.display()
+        )
+    })?;
+    let expected_home_identity = canonical_home.to_string_lossy();
+    let stored_home_identity =
+        required_startup_metadata_text(&connection, "codex_home_identity")?;
+    if stored_home_identity != expected_home_identity {
+        return Err("精确 token 启动缓存 Home identity 不匹配".into());
+    }
+
+    let revision = required_startup_metadata_u64(&connection, "revision")?;
+    let published_generation =
+        required_startup_metadata_u64(&connection, "published_generation")?;
+    let attribution_safety = startup_attribution_safety_state(&connection, published_generation)?;
+    Ok(Some(StartupIndexIdentity {
+        revision,
+        published_generation,
+        attribution_safety,
+    }))
+}
+
+fn startup_attribution_safety_state(
+    connection: &Connection,
+    published_generation: u64,
+) -> Result<AttributionSafetyState, String> {
+    let provenance_epoch =
+        required_startup_metadata_text(connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?;
+    if Uuid::parse_str(&provenance_epoch).is_err() {
+        return Err("精确 token 启动缓存来源谱系标识无效".into());
+    }
+    let unsafe_epoch = metadata_text(connection, ATTRIBUTION_UNSAFE_EPOCH_KEY)?;
+    if unsafe_epoch
+        .as_deref()
+        .is_some_and(|value| Uuid::parse_str(value).is_err())
+    {
+        return Err("精确 token 启动缓存 unsafe 谱系标识无效".into());
+    }
+    let unsafe_generation = optional_startup_metadata_u64(
+        connection,
+        ATTRIBUTION_UNSAFE_GENERATION_KEY,
+    )?;
+    let unsafe_id = metadata_text(connection, ATTRIBUTION_UNSAFE_ID_KEY)?;
+    if unsafe_id
+        .as_deref()
+        .is_some_and(|value| Uuid::parse_str(value).is_err())
+    {
+        return Err("精确 token 启动缓存 unsafe 事件标识无效".into());
+    }
+    let current_scan_unsafe_cause_detected =
+        startup_metadata_bool(connection, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?;
+    let current_scan_incomplete =
+        startup_metadata_bool(connection, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?;
+    let unresolved_matches_current = unsafe_epoch.as_deref() == Some(provenance_epoch.as_str())
+        && unsafe_generation.is_some()
+        && unsafe_id.is_some();
+    if (unsafe_epoch.is_some() || unsafe_generation.is_some() || unsafe_id.is_some())
+        && !unresolved_matches_current
+    {
+        return Err("精确 token 启动缓存 unsafe 谱系元数据不完整".into());
+    }
+    Ok(AttributionSafetyState {
+        provenance_epoch,
+        generation: published_generation,
+        unsafe_since_generation: unresolved_matches_current
+            .then_some(unsafe_generation)
+            .flatten(),
+        unsafe_id: unresolved_matches_current.then_some(unsafe_id).flatten(),
+        current_scan_unsafe_cause_detected,
+        current_scan_incomplete,
+    })
+}
+
+fn required_startup_metadata_text(connection: &Connection, key: &str) -> Result<String, String> {
+    metadata_text(connection, key)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("精确 token 启动缓存索引元数据 {key} 缺失"))
+}
+
+fn required_startup_metadata_i64(connection: &Connection, key: &str) -> Result<i64, String> {
+    let raw = required_startup_metadata_text(connection, key)?;
+    raw.parse::<i64>()
+        .map_err(|_| format!("精确 token 启动缓存索引元数据 {key} 无效"))
+}
+
+fn required_startup_metadata_u64(connection: &Connection, key: &str) -> Result<u64, String> {
+    let raw = required_startup_metadata_text(connection, key)?;
+    raw.parse::<u64>()
+        .map_err(|_| format!("精确 token 启动缓存索引元数据 {key} 无效"))
+}
+
+fn optional_startup_metadata_u64(
+    connection: &Connection,
+    key: &str,
+) -> Result<Option<u64>, String> {
+    metadata_text(connection, key)?
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| format!("精确 token 启动缓存索引元数据 {key} 无效"))
+        })
+        .transpose()
+}
+
+fn startup_metadata_bool(connection: &Connection, key: &str) -> Result<bool, String> {
+    match metadata_text(connection, key)?.as_deref() {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(format!("精确 token 启动缓存索引元数据 {key} 无效")),
     }
 }
 

@@ -1634,11 +1634,13 @@ pub async fn read_usage_summary_snapshot(
     window: tauri::WebviewWindow,
     app: AppHandle,
     source_token: CodexHomeSourceToken,
-) -> Result<TokenUsageSummary, String> {
+) -> Result<Option<TokenUsageSummary>, String> {
     require_window_label(&window, "read_usage_summary_snapshot")?;
     let started = Instant::now();
     let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
-        token_count_jsonl::usage_summary_snapshot(&codex_home)
+        let cached = token_count_jsonl::usage_summary_snapshot(&codex_home)?;
+        token_count_jsonl::schedule_usage_summary_refresh(&codex_home)?;
+        Ok(cached)
     })
     .await;
     startup_trace::mark_performance(format!(
