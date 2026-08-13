@@ -1,6 +1,48 @@
 import AppKit
 import SwiftUI
 
+/// Decides whether a stale exact-time-series marker actually needs another
+/// scan for the current quota observation. Compact summaries intentionally
+/// leave the heavy time series at its last exact coverage; that alone must not
+/// turn every compact tick into a full rebuild. The caller still keeps the
+/// explicit continuity-recovery path separate and fail-closed.
+enum DashboardPreciseCatchUpPolicy {
+    static let recentBinDuration: TimeInterval = 5 * 60
+    static let sevenDayDuration: TimeInterval = 7 * 24 * 60 * 60
+
+    static func needsPreciseCoverage(
+        quotaUpdatedAt: Date?,
+        resetAt: Date?,
+        preciseCoverageAt: Date?,
+        requiredLocalObservationAfter: Date?
+    ) -> Bool {
+        guard let quotaUpdatedAt,
+              let resetAt else {
+            // Without a usable quota observation there is no new account
+            // boundary to compare against; wait for the normal quota path.
+            return false
+        }
+        let cycleStart = resetAt.addingTimeInterval(-sevenDayDuration)
+        let comparisonBoundary = min(
+            resetAt,
+            max(
+                cycleStart,
+                Date(
+                    timeIntervalSince1970: floor(
+                        quotaUpdatedAt.timeIntervalSince1970 / recentBinDuration
+                    ) * recentBinDuration
+                )
+            )
+        )
+        let requiredCoverage = max(
+            comparisonBoundary,
+            requiredLocalObservationAfter ?? comparisonBoundary
+        )
+        guard let preciseCoverageAt else { return true }
+        return preciseCoverageAt < requiredCoverage
+    }
+}
+
 struct DashboardView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var loginItemStore: LoginItemStore
@@ -815,14 +857,25 @@ struct DashboardView: View {
             result = estimate(segment: advanced, highWatermark: highWatermark)
         }
 
-        if SharedAccountUsageAttributionAutoRefreshPolicy.shouldRequestPreciseCatchUp(
-            result: result,
-            continuityLossID: continuityLossID,
-            segment: segment
-        ),
+        let attributionCatchUpRequested =
+            SharedAccountUsageAttributionAutoRefreshPolicy.shouldRequestPreciseCatchUp(
+                result: result,
+                continuityLossID: continuityLossID,
+                segment: segment
+            )
+        let explicitContinuityRecovery = continuityLossID != nil
+            && attributionCatchUpRequested
+        let quotaCoverageNeedsCatchUp = DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
+            quotaUpdatedAt: quota.updatedAt,
+            resetAt: quota.sevenDay?.resetsAt,
+            preciseCoverageAt: store.snapshot.preciseTimeSeriesGeneratedAt,
+            requiredLocalObservationAfter: segment?.requiredLocalObservationAfter
+        )
+        if attributionCatchUpRequested,
            sharedAccountAttributionEnabled,
            !store.isUsageRefreshOrDetailHydrationActive,
-           !quota.staleDataDisplayed {
+           !quota.staleDataDisplayed,
+           (explicitContinuityRecovery || quotaCoverageNeedsCatchUp) {
             // A manual/global refresh starts local usage and quota reads next to
             // each other, so the quota observation can finish a moment later.
             // Run one explicit full time-series pass after that point instead of

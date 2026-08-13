@@ -615,6 +615,45 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
     }
 
+    func testCompactSummaryDoesNotForceScanWhenExactCoverageStillReachesQuotaBoundary() {
+        let quotaUpdatedAt = now.addingTimeInterval(60)
+
+        XCTAssertFalse(
+            DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
+                quotaUpdatedAt: quotaUpdatedAt,
+                resetAt: resetAt,
+                preciseCoverageAt: now,
+                requiredLocalObservationAfter: nil
+            ),
+            "a compact projection must not trigger a full scan when its old exact coverage still reaches the closed quota bucket"
+        )
+        XCTAssertTrue(
+            DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
+                quotaUpdatedAt: quotaUpdatedAt,
+                resetAt: resetAt,
+                preciseCoverageAt: now.addingTimeInterval(-1),
+                requiredLocalObservationAfter: nil
+            )
+        )
+        XCTAssertTrue(
+            DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
+                quotaUpdatedAt: quotaUpdatedAt,
+                resetAt: resetAt,
+                preciseCoverageAt: now,
+                requiredLocalObservationAfter: now.addingTimeInterval(300)
+            ),
+            "a released quota movement still requires coverage after its explicit observation boundary"
+        )
+        XCTAssertFalse(
+            DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
+                quotaUpdatedAt: nil,
+                resetAt: resetAt,
+                preciseCoverageAt: nil,
+                requiredLocalObservationAfter: nil
+            )
+        )
+    }
+
     func testLocalUsageNewerThanQuotaSnapshotWaitsForQuotaRefresh() throws {
         let result = SharedAccountUsageAttributionEstimator.estimate(
             enabled: true,
