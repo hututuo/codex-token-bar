@@ -821,7 +821,7 @@ struct DashboardView: View {
             segment: segment
         ),
            sharedAccountAttributionEnabled,
-           !store.isRefreshing,
+           !store.isUsageRefreshOrDetailHydrationActive,
            !quota.staleDataDisplayed {
             // A manual/global refresh starts local usage and quota reads next to
             // each other, so the quota observation can finish a moment later.

@@ -837,6 +837,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var legacyExactObject = try XCTUnwrap(
             JSONSerialization.jsonObject(with: validData) as? [String: Any]
         )
+        let compatibility = CodexUsageHistoryIndex.persistentSnapshotCompatibility
+        XCTAssertEqual(
+            legacyExactObject["indexSchemaVersion"] as? String,
+            compatibility.indexSchemaVersion
+        )
+        XCTAssertEqual(
+            legacyExactObject["parserRevision"] as? String,
+            compatibility.parserRevision
+        )
+        XCTAssertEqual(
+            legacyExactObject["provenanceRevision"] as? String,
+            compatibility.provenanceRevision
+        )
         legacyExactObject["payloadVersion"] = 1
         for key in [
             "homeIdentityKey",

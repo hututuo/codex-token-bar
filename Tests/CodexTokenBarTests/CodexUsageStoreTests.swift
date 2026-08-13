@@ -494,6 +494,25 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(source.contains("正在扫描 \\(dataSource.displayPath)/sessions"))
     }
 
+    func testAttributionCatchUpWaitsForDetailHydrationToFinish() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let dashboardView = projectRoot.appendingPathComponent(
+            "Sources/CodexTokenBar/DashboardView.swift"
+        )
+        let source = try String(contentsOf: dashboardView, encoding: .utf8)
+
+        XCTAssertTrue(
+            source.contains("!store.isUsageRefreshOrDetailHydrationActive")
+        )
+        XCTAssertFalse(
+            source.contains("sharedAccountAttributionEnabled,\n           !store.isRefreshing")
+        )
+    }
+
     func testUsageCacheInitializationUsesInlineNoticeInsteadOfBlockingOverlay() throws {
         let testFile = URL(fileURLWithPath: #filePath)
         let projectRoot = testFile

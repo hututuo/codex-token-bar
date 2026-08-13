@@ -294,6 +294,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
     private static let attributionProvenanceRevision = "source-bucket-v4-fork-replay-boundary-v2"
+
+    struct PersistentSnapshotCompatibility: Equatable, Sendable {
+        let indexSchemaVersion: String
+        let parserRevision: String
+        let provenanceRevision: String
+    }
+
+    /// One source of truth for deciding whether a persisted numeric snapshot
+    /// can be reused after an upgrade. Keeping these identities beside the
+    /// index/parser revisions prevents a future parser bump from silently
+    /// leaving the fast-start compatibility gate on an older literal.
+    static var persistentSnapshotCompatibility: PersistentSnapshotCompatibility {
+        PersistentSnapshotCompatibility(
+            indexSchemaVersion: schemaVersion,
+            parserRevision: "token-event-v2-\(forkReplayBoundaryRevision)",
+            provenanceRevision: attributionProvenanceRevision
+        )
+    }
+
     private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
     private static let explicitSubagentFirstLineLimit = 256 * 1_024

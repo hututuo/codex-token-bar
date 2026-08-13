@@ -211,11 +211,13 @@ extension CodexUsageAnalyzer {
         private struct PersistentExactSnapshot: Codable {
             static let legacyExactOnlyPayloadVersion = 1
             static let currentPayloadVersion = 2
-            static let exactIndexSchemaVersion = "5"
-            static let exactParserRevision =
-                "token-event-v2-explicit-subagent-delayed-context-v3"
-            static let attributionProvenanceRevision =
-                "source-bucket-v4-fork-replay-boundary-v2"
+
+            private typealias SnapshotCompatibility =
+                CodexUsageHistoryIndex.PersistentSnapshotCompatibility
+
+            private static var compatibility: SnapshotCompatibility {
+                CodexUsageHistoryIndex.persistentSnapshotCompatibility
+            }
 
             let payloadVersion: Int
             let root: String
@@ -251,9 +253,9 @@ extension CodexUsageAnalyzer {
                 payloadVersion = Self.currentPayloadVersion
                 self.root = root
                 self.homeIdentityKey = homeIdentityKey
-                indexSchemaVersion = Self.exactIndexSchemaVersion
-                parserRevision = Self.exactParserRevision
-                provenanceRevision = Self.attributionProvenanceRevision
+                indexSchemaVersion = Self.compatibility.indexSchemaVersion
+                parserRevision = Self.compatibility.parserRevision
+                provenanceRevision = Self.compatibility.provenanceRevision
                 self.signature = signature
                 stats = snapshot.stats
                 dailyUsage = snapshot.dailyUsage
@@ -319,9 +321,10 @@ extension CodexUsageAnalyzer {
                 guard supportedVersion else { return nil }
 
                 if payloadVersion == Self.currentPayloadVersion {
-                    guard indexSchemaVersion == Self.exactIndexSchemaVersion,
-                          parserRevision == Self.exactParserRevision,
-                          provenanceRevision == Self.attributionProvenanceRevision,
+                    let compatibility = Self.compatibility
+                    guard indexSchemaVersion == compatibility.indexSchemaVersion,
+                          parserRevision == compatibility.parserRevision,
+                          provenanceRevision == compatibility.provenanceRevision,
                           homeIdentityKey == currentHomeIdentityKey else {
                         return nil
                     }
