@@ -8,13 +8,16 @@ import type {
   QuotaHistoryPoint,
   RecentUsagePoint,
 } from "../types/dashboard";
+import type { ResetCreditBundle } from "../types/quota";
 import type { DashboardAppState } from "./dashboardState";
 import {
   mergeQuotaDiagnostics,
   mergeWarnings,
   removeUsagePrecisionWarnings,
-  replaceQuotaDiagnostics,
-  replaceQuotaWarnings,
+  replaceAccountQuotaDiagnostics,
+  replaceAccountQuotaWarnings,
+  replaceResetCreditDiagnostics,
+  replaceResetCreditWarnings,
 } from "./dashboardWarnings";
 
 export function mergePreciseDashboard(
@@ -64,17 +67,55 @@ export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle):
           quotaUpdatedAt: quota.updatedAt,
           attributionIdentity: quota.attributionIdentity ?? null,
           account: quota.account,
-          quota: quota.quota,
+          quota: {
+            ...quota.quota,
+            resetCredit: state.dashboard.quota.resetCredit,
+          },
           activityDays: mergeActivityQuotaHistory(state.dashboard.activityDays, quota.quotaHistoryDaily),
           recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota.quotaHistory24h),
           recentUsage7d: mergeQuotaHistory(state.dashboard.recentUsage7d, quota.quotaHistory7d),
           recentUsage30d: mergeQuotaHistory(state.dashboard.recentUsage30d, quota.quotaHistory30d),
-          warnings: replaceQuotaWarnings(state.dashboard.warnings, quota.warnings),
-          diagnostics: replaceQuotaDiagnostics(state.dashboard.diagnostics ?? [], quota.diagnostics ?? []),
+          warnings: replaceAccountQuotaWarnings(state.dashboard.warnings, quota.warnings),
+          diagnostics: replaceAccountQuotaDiagnostics(
+            state.dashboard.diagnostics ?? [],
+            quota.diagnostics ?? [],
+          ),
         };
   return {
     ...state,
     dashboard,
+  };
+}
+
+export function mergeResetCredits(
+  state: DashboardAppState,
+  reset: ResetCreditBundle,
+): DashboardAppState {
+  if (state.dashboard === null) {
+    return state;
+  }
+  const previous = state.dashboard.quota.resetCredit;
+  const resetCredit = reset.successful
+    ? { ...reset.resetCredit, updatedAt: reset.updatedAt }
+    : {
+        ...previous,
+        status: reset.resetCredit.status,
+        updatedAt: previous.updatedAt ?? null,
+      };
+  return {
+    ...state,
+    dashboard: {
+      ...state.dashboard,
+      quota: {
+        ...state.dashboard.quota,
+        resetCredit,
+      },
+      warnings: replaceResetCreditWarnings(state.dashboard.warnings, reset.warnings),
+      diagnostics: replaceResetCreditDiagnostics(
+        state.dashboard.diagnostics ?? [],
+        reset.diagnostics ?? [],
+      ),
+    },
   };
 }
 

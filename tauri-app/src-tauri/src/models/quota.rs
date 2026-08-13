@@ -20,6 +20,17 @@ pub struct AccountQuotaBundle {
     pub diagnostics: Vec<QuotaDiagnostic>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetCreditBundle {
+    pub updated_at: String,
+    pub reset_credit: ResetCreditSummary,
+    pub warnings: Vec<LocalDataWarning>,
+    #[serde(default)]
+    pub diagnostics: Vec<QuotaDiagnostic>,
+    pub successful: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaAttributionIdentity {

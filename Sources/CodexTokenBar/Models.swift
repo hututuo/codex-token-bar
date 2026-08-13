@@ -247,11 +247,22 @@ struct ModelTokenBreakdown: Codable, Equatable, Sendable {
     let breakdown: TokenCacheBreakdown
 }
 
+/// Exact per-model usage for one local calendar day. This is a compact
+/// 365-day projection produced during the existing streaming aggregation;
+/// it never adds another history scan or duplicates conversation text.
+struct ModelTokenBucket: Codable, Identifiable, Equatable, Sendable {
+    var id: Date { start }
+    let start: Date
+    let modelBreakdowns: [ModelTokenBreakdown]
+}
+
 struct TokenCacheUsage: Codable {
     let total: TokenCacheBreakdown
     /// Lifetime exact usage grouped by the recorded model. An empty array
     /// means an older/approximate snapshot and must fall back to `total`.
     let modelBreakdowns: [ModelTokenBreakdown]
+    /// Last 365 local calendar days, grouped by recorded model.
+    let dailyModelBreakdowns: [ModelTokenBucket]
     let daily: [TokenCacheBucket]
     let hourly: [TokenCacheBucket]
     let recentBins: [TokenCacheBucket]
@@ -287,6 +298,7 @@ struct TokenCacheUsage: Codable {
     init(
         total: TokenCacheBreakdown,
         modelBreakdowns: [ModelTokenBreakdown] = [],
+        dailyModelBreakdowns: [ModelTokenBucket] = [],
         daily: [TokenCacheBucket],
         hourly: [TokenCacheBucket],
         recentBins: [TokenCacheBucket],
@@ -302,6 +314,7 @@ struct TokenCacheUsage: Codable {
     ) {
         self.total = total
         self.modelBreakdowns = modelBreakdowns
+        self.dailyModelBreakdowns = dailyModelBreakdowns
         self.daily = daily
         self.hourly = hourly
         self.recentBins = recentBins
@@ -320,6 +333,7 @@ struct TokenCacheUsage: Codable {
     private enum CodingKeys: String, CodingKey {
         case total
         case modelBreakdowns
+        case dailyModelBreakdowns
         case daily
         case hourly
         case recentBins
@@ -340,6 +354,10 @@ struct TokenCacheUsage: Codable {
         modelBreakdowns = try container.decodeIfPresent(
             [ModelTokenBreakdown].self,
             forKey: .modelBreakdowns
+        ) ?? []
+        dailyModelBreakdowns = try container.decodeIfPresent(
+            [ModelTokenBucket].self,
+            forKey: .dailyModelBreakdowns
         ) ?? []
         daily = try container.decode([TokenCacheBucket].self, forKey: .daily)
         hourly = try container.decode([TokenCacheBucket].self, forKey: .hourly)
@@ -380,6 +398,7 @@ struct TokenCacheUsage: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(total, forKey: .total)
         try container.encode(modelBreakdowns, forKey: .modelBreakdowns)
+        try container.encode(dailyModelBreakdowns, forKey: .dailyModelBreakdowns)
         try container.encode(daily, forKey: .daily)
         try container.encode(hourly, forKey: .hourly)
         try container.encode(recentBins, forKey: .recentBins)

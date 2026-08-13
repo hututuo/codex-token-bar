@@ -2,6 +2,27 @@ import XCTest
 @testable import CodexTokenBar
 
 final class FloatingPanelContentVisibilityTests: XCTestCase {
+    func testStructureDragLifecycleRejectsStaleEndCallbacksAndCanRestart() {
+        var lifecycle = FloatingStructureDragLifecycle()
+        let firstSession = UUID()
+        let secondSession = UUID()
+
+        lifecycle.begin(firstSession)
+
+        XCTAssertEqual(lifecycle.activeSessionID, firstSession)
+        XCTAssertFalse(lifecycle.finish(secondSession))
+        XCTAssertEqual(lifecycle.activeSessionID, firstSession)
+        XCTAssertTrue(lifecycle.finish(firstSession))
+        XCTAssertNil(lifecycle.activeSessionID)
+        XCTAssertFalse(lifecycle.finish(firstSession))
+
+        lifecycle.begin(secondSession)
+
+        XCTAssertEqual(lifecycle.activeSessionID, secondSession)
+        XCTAssertTrue(lifecycle.finish())
+        XCTAssertNil(lifecycle.activeSessionID)
+    }
+
     func testDefaultVisibilityShowsAllFloatingPanelGroups() {
         let visibility = FloatingPanelContentVisibility.default
 
@@ -506,6 +527,35 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
+    func testStructureEditorRightDropKeepsFullPagePairAndPlacesStandaloneRowAfterIt() {
+        let visibility = FloatingPanelContentVisibility.default
+        let target = visibility.layoutRows.first { $0.groups == [.todayModelShare, .todayModelCost] }!
+
+        var next = visibility
+        // This is the safe commit used by the editor for a full pair's
+        // rightmost third slot: the V01 pair remains exactly two pages.
+        next.pagePairs = FloatingPanelContentVisibility.splittingPage(
+            in: visibility.pagePairs,
+            group: .quota
+        )
+        next.groupOrder = FloatingPanelContentVisibility.movingRow(
+            in: visibility.groupOrder,
+            groups: [.quota],
+            relativeTo: target.groups,
+            placement: .after
+        )
+
+        XCTAssertEqual(next.pagePairs, visibility.pagePairs)
+        XCTAssertEqual(
+            next.groupOrder,
+            [.rateAndBar, .usageStatus, .metrics, .runningThreads, .todayModelShare, .todayModelCost, .quota, .radar, .crowdRadar]
+        )
+        XCTAssertEqual(
+            next.layoutRows.map(\.groups),
+            [[.rateAndBar], [.metrics], [.todayModelShare, .todayModelCost], [.quota], [.radar], [.crowdRadar]]
+        )
+    }
+
     func testStructureEditorMergeSplitAndGroupedVisibilityPreserveV01Pairs() {
         var visibility = FloatingPanelContentVisibility.default
         visibility.pagePairs = FloatingPanelContentVisibility.mergingPage(
@@ -928,7 +978,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settingsSource.contains("struct FloatingPanelContentDropDelegate"))
         XCTAssertTrue(settingsSource.contains("settingsSubtitle"))
         XCTAssertTrue(visibilitySource.contains("与速率相邻会吸附"))
-        XCTAssertTrue(settingsSource.contains(".onDrag {"))
+        XCTAssertTrue(settingsSource.contains("FloatingStructureDragSource("))
+        XCTAssertFalse(settingsSource.contains(".onDrag {"))
         XCTAssertTrue(settingsSource.contains(".onDrop(of:"))
         XCTAssertFalse(settingsSource.contains(".draggable(group.rawValue)"))
         XCTAssertFalse(settingsSource.contains(".dropDestination(for: String.self)"))
@@ -951,7 +1002,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(structureEditorSource.contains(".environment(\\.tokenDisplayQuotaColorStyle, quotaColorStyle)"))
         XCTAssertTrue(structureEditorSource.contains("已隐藏"))
         XCTAssertTrue(structureEditorSource.contains("恢复默认布局"))
-        XCTAssertTrue(structureEditorSource.contains(".onDrag"))
+        XCTAssertTrue(structureEditorSource.contains("FloatingStructureDragSource("))
         XCTAssertTrue(structureEditorSource.contains(".onDrop"))
         XCTAssertFalse(liveRateControls.contains("AccountQuotaRefreshCadencePicker"))
         XCTAssertFalse(settingsSource.contains("AccountQuotaRefreshCadencePicker"))
@@ -1541,12 +1592,105 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(editor.contains("case pageSlot("))
         XCTAssertTrue(editor.contains("pagePlaceholder(group, isDefault:"))
         XCTAssertTrue(editor.contains("FloatingStructurePageSlotDropDelegate"))
-        XCTAssertTrue(editor.contains("Text(\"放这里\")"))
-        XCTAssertTrue(editor.contains(".stroke(AppTheme.accentBlue.opacity(0.86), lineWidth: 1.3)"))
+        XCTAssertTrue(editor.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"))
+        XCTAssertTrue(editor.contains("if target.isPaged, placement == .after"))
+        XCTAssertTrue(editor.contains("splittingPage("))
+        XCTAssertTrue(editor.contains("置于此翻页行之后"))
+        XCTAssertTrue(editor.contains(".accessibilityLabel(\"\\(group.title)可放置位置\")"))
+        XCTAssertFalse(editor.contains("Text(\"放这里\")"))
+        XCTAssertTrue(editor.contains("private static let editorRowHeight: CGFloat = 42"))
+        XCTAssertTrue(editor.contains("private static let editorGapHeight: CGFloat = 7"))
+        XCTAssertTrue(editor.contains(".frame(height: Self.editorRowHeight)"))
+        XCTAssertTrue(editor.contains(".frame(height: Self.editorGapHeight)"))
+        XCTAssertTrue(editor.contains("canonicalGapPreview(target:"))
+        XCTAssertFalse(editor.contains("rowDropPlacement"))
+        XCTAssertFalse(editor.contains("isTarget ? 34 : 5"))
         XCTAssertTrue(editor.contains("FloatingStructureHiddenDropDelegate"))
         XCTAssertTrue(editor.contains("Text(isDropTarget ? \"松手即可隐藏\" : \"拖到这里隐藏\")"))
         XCTAssertTrue(editor.contains("canDropOnRow"))
         XCTAssertTrue(editor.contains("canDropIntoGap"))
+    }
+
+    func testStructureEditorDragPreviewAndCleanupCoverSuccessCancellationAndInvalidDrops() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let editor = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelStructureEditor.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(editor.contains("FloatingStructureDragSource("))
+        XCTAssertTrue(editor.contains("rowDragPreview(row:"))
+        XCTAssertTrue(editor.contains("pageDragPreview(group)"))
+        XCTAssertTrue(editor.contains("private func renderedPreview() -> NSImage"))
+        XCTAssertTrue(editor.contains("endedAt screenPoint: NSPoint"))
+        XCTAssertTrue(editor.contains("finishDrag(sessionID: sessionID)"))
+        XCTAssertTrue(editor.contains("clearDropPreviewAfterExit"))
+        XCTAssertTrue(editor.contains("session.animatesToStartingPositionsOnCancelOrFail = false"))
+
+        let delegateStart = try XCTUnwrap(editor.range(of: "private struct FloatingStructureRowDropDelegate:")?.lowerBound)
+        let dropDelegates = String(editor[delegateStart...])
+        XCTAssertGreaterThanOrEqual(dropDelegates.components(separatedBy: "finishDrag()").count - 1, 8)
+
+        let rowEditor = try XCTUnwrap(sourceSlice(
+            from: "private func editorRow(",
+            endingBefore: "private func beginDrag(",
+            in: editor
+        ))
+        XCTAssertFalse(rowEditor.contains("rowDropPlacement"))
+        XCTAssertFalse(rowEditor.contains("AppTheme.accentBlue.opacity(0.05)"))
+        XCTAssertTrue(rowEditor.contains("previewForPlacement:"))
+
+        let gap = try XCTUnwrap(sourceSlice(
+            from: "private func rowDropGap(",
+            endingBefore: "private var hiddenZone:",
+            in: editor
+        ))
+        XCTAssertTrue(gap.contains("Capsule()"))
+        XCTAssertTrue(gap.contains(".frame(height: 2)"))
+        XCTAssertFalse(gap.contains("Text("))
+        XCTAssertFalse(gap.contains("RoundedRectangle"))
+    }
+
+    func testLegacyFloatingShortcutOnlyPersistsReorderAfterSuccessfulDrop() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let settings = try String(
+            contentsOf: projectRoot.appendingPathComponent("Sources/CodexTokenBar/FloatingPanelAppearanceSettingsView.swift"),
+            encoding: .utf8
+        )
+        let delegate = try XCTUnwrap(sourceSlice(
+            from: "private struct FloatingPanelContentDropDelegate:",
+            endingBefore: "private struct FloatingAppearanceMiniButtonLabel:",
+            in: settings
+        ))
+        let dropEntered = try XCTUnwrap(sourceSlice(
+            from: "func dropEntered(info:",
+            endingBefore: "func dropUpdated(info:",
+            in: delegate
+        ))
+        let performDrop = try XCTUnwrap(sourceSlice(
+            from: "func performDrop(info:",
+            endingBefore: "private func placement(for dragged:",
+            in: delegate
+        ))
+
+        XCTAssertEqual(dropEntered.components(separatedBy: "dropTarget = target").count - 1, 1)
+        XCTAssertFalse(dropEntered.contains("orderRaw ="))
+        XCTAssertFalse(dropEntered.contains("reorderedOrder("))
+        XCTAssertTrue(performDrop.contains("reorderedOrder("))
+        XCTAssertTrue(performDrop.contains("orderRaw = FloatingPanelContentVisibility.encodedOrder(reordered)"))
+        XCTAssertGreaterThanOrEqual(performDrop.components(separatedBy: "finishDrag()").count - 1, 2)
+        XCTAssertTrue(settings.contains("FloatingStructureDragSource("))
+        XCTAssertTrue(settings.contains("dragLifecycle.activeSessionID != nil"))
+        XCTAssertTrue(settings.contains("finishDrag(sessionID: sessionID)"))
+        XCTAssertTrue(settings.contains("dropPlacement: dropTarget == group ? dropPlacement : nil"))
+        XCTAssertTrue(settings.contains(".overlay(alignment: dropPlacement == .before ? .top : .bottom)"))
+        XCTAssertFalse(settings.contains(".fill(isDropTarget ? AppTheme.accentBlue"))
     }
 
     func testFloatingSettingsKeepControlsScrollableBesideAFixedLivePreview() throws {
@@ -1568,6 +1712,11 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(settings.contains("proxy.scrollTo(\"floating-structure-row:"))
         XCTAssertTrue(settings.contains("FloatingPanelLivePreview("))
         XCTAssertTrue(settings.contains("showsPreview: false"))
+        XCTAssertTrue(settings.contains("LazyVGrid(columns: floatingCompactGridColumns"))
+        XCTAssertTrue(settings.contains("floatingCompactSliderCard("))
+        XCTAssertTrue(settings.contains(".frame(width: 1040, height: 680)"))
+        XCTAssertTrue(settings.contains("GridItem(.flexible(minimum: 210)"))
+        XCTAssertTrue(settings.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertTrue(editor.contains("struct FloatingPanelLivePreview: View"))
         XCTAssertTrue(editor.contains("预览固定在这里"))
     }
@@ -1575,6 +1724,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     private func sourceBlock(named name: String, in source: String, endingBefore marker: String) -> String? {
         guard let start = source.range(of: "struct \(name)")?.lowerBound,
               let end = source[start...].range(of: marker)?.lowerBound
+        else {
+            return nil
+        }
+        return String(source[start..<end])
+    }
+
+    private func sourceSlice(from startMarker: String, endingBefore endMarker: String, in source: String) -> String? {
+        guard let start = source.range(of: startMarker)?.lowerBound,
+              let end = source[start...].range(of: endMarker)?.lowerBound
         else {
             return nil
         }

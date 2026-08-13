@@ -9,7 +9,7 @@ final class TokenActivitySectionTests: XCTestCase {
             ActivityModeOptionPresentation(mode: mode, isSelected: mode == .weekly)
         }
 
-        XCTAssertEqual(presentations.map(\.visibleTitle), ["每日", "每周", "累计", "模型", "命中率", "额度"])
+        XCTAssertEqual(presentations.map(\.visibleTitle), ["每日", "每周", "累计", "模型", "费用", "命中率", "额度"])
         XCTAssertEqual(
             presentations.map(\.accessibilityLabel),
             [
@@ -17,13 +17,14 @@ final class TokenActivitySectionTests: XCTestCase {
                 "Token 活动模式 每周",
                 "Token 活动模式 累计",
                 "Token 活动模式 模型",
+                "Token 活动模式 费用",
                 "Token 活动模式 命中率",
                 "Token 活动模式 额度",
             ]
         )
         XCTAssertEqual(
             presentations.map(\.accessibilityValue),
-            ["未选择", "已选择", "未选择", "未选择", "未选择", "未选择"]
+            ["未选择", "已选择", "未选择", "未选择", "未选择", "未选择", "未选择"]
         )
         XCTAssertEqual(Set(presentations.map(\.accessibilityLabel)).count, ActivityMode.allCases.count)
     }
@@ -50,7 +51,7 @@ final class TokenActivitySectionTests: XCTestCase {
     }
 
     @MainActor
-    func testHostedModeSelectorExposesSixActionableAccessibilityButtons() throws {
+    func testHostedModeSelectorExposesSevenActionableAccessibilityButtons() throws {
         var selectedMode = ActivityMode.weekly
         let hostingView = NSHostingView(
             rootView: HostedActivityModeSelectorHarness(
@@ -76,7 +77,7 @@ final class TokenActivitySectionTests: XCTestCase {
         XCTAssertEqual(buttons.count, ActivityMode.allCases.count)
         XCTAssertEqual(buttons.compactMap { $0.accessibilityLabel() }.sorted(), expectedLabels.sorted())
         XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "已选择" }.count, 1)
-        XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "未选择" }.count, 5)
+        XCTAssertEqual(buttons.filter { ($0.accessibilityValue() as? String) == "未选择" }.count, 6)
         XCTAssertTrue(buttons.allSatisfy { $0.accessibilityRole() == .button })
 
         let dailyButton = try XCTUnwrap(
@@ -126,6 +127,64 @@ final class TokenActivitySectionTests: XCTestCase {
         XCTAssertTrue(summary.isModelShare)
         XCTAssertEqual(summary.modelBreakdowns.first?.model, "gpt-5.6-sol")
         XCTAssertEqual(ModelUsagePresentation.compactText(from: summary.modelBreakdowns), "Sol 100%")
+    }
+
+    @MainActor
+    func testModelCostHeatmapUsesDailyModelProjectionAndExcludesSpark() throws {
+        let day = Calendar.current.startOfDay(for: Date())
+        let sol = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 500_000,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_100_000,
+            calls: 2
+        )
+        let spark = TokenCacheBreakdown(
+            inputTokens: 700_000,
+            cachedInputTokens: 0,
+            outputTokens: 50_000,
+            reasoningOutputTokens: 0,
+            totalTokens: 750_000,
+            calls: 1
+        )
+        let prepared = TokenHeatmap.prepare(
+            dailyUsage: [DayUsage(date: day, tokens: 1_850_000, calls: 3)],
+            cacheDaily: [],
+            dailyModelBreakdowns: [
+                ModelTokenBucket(
+                    start: day,
+                    modelBreakdowns: [
+                        ModelTokenBreakdown(model: "gpt-5.6-sol", breakdown: sol),
+                        ModelTokenBreakdown(model: "gpt-5.3-codex-spark", breakdown: spark),
+                    ]
+                ),
+            ],
+            quotaDaily: [],
+            mode: .modelCost
+        )
+
+        let summary = try XCTUnwrap(prepared.summaries.first)
+        XCTAssertTrue(summary.isModelCost)
+        XCTAssertEqual(try XCTUnwrap(summary.modelCostUSD), 5.75, accuracy: 0.0001)
+        XCTAssertEqual(summary.modelBreakdowns.count, 2)
+    }
+
+    @MainActor
+    func testModelCostHeatmapMarksActiveLegacyDayWithoutProjectionUnavailable() throws {
+        let day = Calendar.current.startOfDay(for: Date())
+        let prepared = TokenHeatmap.prepare(
+            dailyUsage: [DayUsage(date: day, tokens: 900, calls: 1)],
+            cacheDaily: [],
+            dailyModelBreakdowns: [],
+            quotaDaily: [],
+            mode: .modelCost
+        )
+
+        let summary = try XCTUnwrap(prepared.summaries.first)
+        XCTAssertTrue(summary.isModelCost)
+        XCTAssertNil(summary.modelCostUSD)
+        XCTAssertTrue(summary.modelBreakdowns.isEmpty)
     }
 }
 

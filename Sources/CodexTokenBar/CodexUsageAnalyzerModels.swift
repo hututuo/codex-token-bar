@@ -221,6 +221,9 @@ extension CodexUsageAnalyzer {
             let pluginUsage: [PluginUsage]
             let cacheTotal: TokenCacheBreakdown
             let cacheModelBreakdowns: [ModelTokenBreakdown]
+            /// Optional keeps v1 fast-start payloads readable. Missing values
+            /// hydrate after the normal exact refresh without rebuilding the index.
+            let cacheDailyModelBreakdowns: [ModelTokenBucket]?
             let cacheDaily: [TokenCacheBucket]
             let cacheHourly: [TokenCacheBucket]
             let cacheRecentBins: [TokenCacheBucket]
@@ -241,6 +244,7 @@ extension CodexUsageAnalyzer {
                 pluginUsage = snapshot.pluginUsage
                 cacheTotal = snapshot.cacheUsage.total
                 cacheModelBreakdowns = snapshot.cacheUsage.modelBreakdowns
+                cacheDailyModelBreakdowns = snapshot.cacheUsage.dailyModelBreakdowns
                 cacheDaily = snapshot.cacheUsage.daily
                 cacheHourly = snapshot.cacheUsage.hourly
                 cacheRecentBins = snapshot.cacheUsage.recentBins
@@ -254,6 +258,7 @@ extension CodexUsageAnalyzer {
                 let cacheUsage = TokenCacheUsage(
                     total: cacheTotal,
                     modelBreakdowns: cacheModelBreakdowns,
+                    dailyModelBreakdowns: cacheDailyModelBreakdowns ?? [],
                     daily: cacheDaily,
                     hourly: cacheHourly,
                     recentBins: cacheRecentBins,

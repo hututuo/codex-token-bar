@@ -42,3 +42,23 @@ test("Codex Radar refreshes the public summary and crowd source on the ten-minut
   assert.match(source, /window\.setInterval\(\(\) => \{[\s\S]*?void refresh\(true\)/);
   assert.match(source, /const crowdRefresh = refreshCrowdRadar\(\)/);
 });
+
+test("Codex Radar detail failures use persistent independent recovery", () => {
+  assert.match(source, /detailRecoveryAttemptRef/);
+  assert.match(source, /nextCodexRadarDetailRecoveryDelayMs\(detailRecoveryAttemptRef\.current\)/);
+  assert.match(source, /clearDetailRecovery\(\)/);
+  assert.match(source, /clearDetailRecoveryTimer\(\)/);
+  assert.match(source, /detailLifecycleGenerationRef/);
+  assert.match(source, /if \(!requestIsCurrent\(\)\)/);
+  assert.match(source, /detailMountedRef\.current = false/);
+  assert.match(source, /const inheritedRecoverySlot = mode === "manual"/);
+  assert.match(source, /scheduleDetailRecovery\(recoverySlot\)/);
+});
+
+test("Codex Radar summary and crowd reads cannot publish or reschedule after unmount", () => {
+  assert.match(source, /radarLifecycleGenerationRef/);
+  assert.match(source, /if \(!radarMountedRef\.current \|\| crowdRefreshingRef\.current\)/);
+  assert.match(source, /if \(!radarMountedRef\.current \|\| refreshingRef\.current\)/);
+  assert.match(source, /radarMountedRef\.current = false/);
+  assert.match(source, /radarLifecycleGenerationRef\.current \+= 1/);
+});

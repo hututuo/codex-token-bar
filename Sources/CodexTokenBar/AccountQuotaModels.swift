@@ -268,6 +268,8 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var limitCards: [AccountQuotaLimitCard] = []
     var resetCreditsAvailableCount: Int?
     var resetCredits: [AccountQuotaResetCredit] = []
+    var resetCreditStatus: String = "重置卡未读取"
+    var resetCreditUpdatedAt: Date?
     var diagnostics: [AccountQuotaDiagnostic] = []
     var status: String = "额度未读取"
     var updatedAt: Date?
@@ -292,7 +294,15 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
 
     var staleDataDisplayed: Bool {
         diagnostics.contains { diagnostic in
-            diagnostic.staleDataDisplayed || diagnostic.category == .staleCachedData
+            diagnostic.source != .resetCredit
+                && (diagnostic.staleDataDisplayed || diagnostic.category == .staleCachedData)
+        }
+    }
+
+    var resetCreditStaleDataDisplayed: Bool {
+        diagnostics.contains { diagnostic in
+            diagnostic.source == .resetCredit
+                && (diagnostic.staleDataDisplayed || diagnostic.category == .staleCachedData)
         }
     }
 
@@ -349,7 +359,9 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
 
     var compactResetCreditSummary: String? {
         guard resetCreditsAvailableCount != nil || !resetCredits.isEmpty else {
-            return "获取失败"
+            return resetCreditStatus.hasPrefix("正在") || resetCreditStatus == "重置卡未读取"
+                ? "读取中"
+                : "获取失败"
         }
         let count = availableResetCreditCount
         guard count > 0 else { return "0 张重置卡" }
@@ -578,4 +590,11 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
             )
         }
     }
+}
+
+struct AccountQuotaResetCreditSnapshot: Equatable, Sendable {
+    let availableCount: Int
+    let credits: [AccountQuotaResetCredit]
+    let status: String
+    let updatedAt: Date
 }

@@ -41,9 +41,9 @@ enum CodexRadarDetailRefreshSchedule {
         if let lastSuccessfulRefreshAt, lastSuccessfulRefreshAt >= latestSlot {
             return false
         }
-        if let lastAttemptedSlotAt, lastAttemptedSlotAt >= latestSlot {
-            return false
-        }
+        // An attempted slot is diagnostic state, not a retry budget. A failed
+        // automatic read must remain eligible for the persistent recovery lane.
+        _ = lastAttemptedSlotAt
         return true
     }
 

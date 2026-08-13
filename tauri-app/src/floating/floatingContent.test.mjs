@@ -114,7 +114,7 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 138);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 142);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
@@ -173,7 +173,7 @@ test("page navigation arrow visibility defaults off and preserves explicit choic
 });
 
 test("paging guide pointer targets the first real paged row", () => {
-  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 59.5);
+  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 61.5);
   assert.equal(firstPagedFloatingRowCenterY(sanitizeFloatingContentVisibility({
     showTodayModelShare: false,
     showTodayModelCost: false,

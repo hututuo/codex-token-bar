@@ -92,6 +92,24 @@ final class UsageRefreshCadenceRecoverySchedulerTests: XCTestCase {
         UsageRefreshCadenceRecoveryScheduler.cancel(&task)
     }
 
+    func testThrowingSleepDoesNotRunRecoveryAction() async {
+        var task: Task<Void, Never>?
+        var recoveryCount = 0
+
+        UsageRefreshCadenceRecoveryScheduler.schedule(
+            replacing: &task,
+            after: 1,
+            sleep: { _ in throw CancellationError() }
+        ) {
+            recoveryCount += 1
+        }
+
+        await Task.yield()
+        await Task.yield()
+        XCTAssertEqual(recoveryCount, 0)
+        UsageRefreshCadenceRecoveryScheduler.cancel(&task)
+    }
+
     private func waitUntil(
         _ label: String,
         timeout: TimeInterval = 1,

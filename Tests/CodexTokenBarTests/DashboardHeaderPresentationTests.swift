@@ -130,6 +130,32 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         )
     }
 
+    func testSecondaryModelCostCardsNeverReplaceModelDetailsWithEllipsis() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let headerFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
+        let source = try String(contentsOf: headerFile, encoding: .utf8)
+        let rowStart = try XCTUnwrap(source.range(of: "struct DashboardModelCostRow"))
+        let rowEnd = try XCTUnwrap(
+            source.range(of: "private struct DashboardPrimaryModelCostCard", range: rowStart.upperBound..<source.endIndex)
+        )
+        let rowSource = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
+        let start = try XCTUnwrap(source.range(of: "private struct DashboardSecondaryModelCostChip"))
+        let end = try XCTUnwrap(
+            source.range(of: "struct StatCell", range: start.upperBound..<source.endIndex)
+        )
+        let chipSource = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(rowSource.contains("LazyVGrid("))
+        XCTAssertTrue(rowSource.contains(".layoutPriority(1)"))
+        XCTAssertTrue(chipSource.contains("ViewThatFits(in: .horizontal)"))
+        XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: true, vertical: false)"))
+        XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: false, vertical: true)"))
+        XCTAssertFalse(chipSource.contains(".lineLimit(1)"))
+    }
+
     @MainActor
     func testHostedAutomaticSourceBadgeKeepsStableSingleLineFrame() {
         let hostingView = NSHostingView(

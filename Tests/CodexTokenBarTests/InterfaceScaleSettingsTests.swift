@@ -141,7 +141,7 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         hostingView.layoutSubtreeIfNeeded()
 
         let fittingHeight = hostingView.fittingSize.height
-        XCTAssertLessThanOrEqual(fittingHeight, 96, "Stat strip should not expand into a giant row at 130% scale.")
-        XCTAssertGreaterThanOrEqual(fittingHeight, 70, "Stat strip should keep its normal readable height.")
+        XCTAssertLessThanOrEqual(fittingHeight, 116, "Stat strip plus the new model-cost row should remain compact at 130% scale.")
+        XCTAssertGreaterThanOrEqual(fittingHeight, 90, "Stat strip should reserve readable space for the model-cost row.")
     }
 }

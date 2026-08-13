@@ -260,7 +260,7 @@ struct ExportSnapshotView: View {
                     interfaceScaleManualMultiplier: .constant(InterfaceScaleSettings.defaultManualMultiplier),
                     showingResetCreditDetails: .constant(false)
                 )
-                StatStrip(snapshot: snapshot)
+                StatStrip(snapshot: snapshot, showsModelCostRow: false)
                 ActivitySection(
                     dailyUsage: snapshot.dailyUsage,
                     cacheDaily: snapshot.cacheUsage.daily,

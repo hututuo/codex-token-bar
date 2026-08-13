@@ -5,6 +5,7 @@ import {
   CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY,
   latestCodexRadarDetailSlot,
   millisecondsUntilNextCodexRadarDetailSlot,
+  nextCodexRadarDetailRecoveryDelayMs,
   shouldRefreshCodexRadarDetail,
 } from "../api/codexRadarDetailRefreshPlan";
 import { readCodexRadarState, subscribeCodexRadarState } from "../api/codexRadarClient";
@@ -70,17 +71,77 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const crowdRadarRef = useRef<CodexCrowdRadarSnapshot | null>(null);
   const detailSnapshotRef = useRef<CodexRadarSnapshot | null>(null);
   const detailAttemptedSlotRef = useRef<string | null>(null);
+  const detailRecoveryAttemptRef = useRef(0);
+  const detailRecoveryTimerRef = useRef<number | null>(null);
+  const detailRecoverySlotRef = useRef<string | null>(null);
+  const detailMountedRef = useRef(false);
+  const detailLifecycleGenerationRef = useRef(0);
+  const radarMountedRef = useRef(false);
+  const radarLifecycleGenerationRef = useRef(0);
 
-  async function refreshCrowdRadar() {
-    if (crowdRefreshingRef.current) {
+  function clearDetailRecoveryTimer() {
+    if (detailRecoveryTimerRef.current !== null) {
+      window.clearTimeout(detailRecoveryTimerRef.current);
+      detailRecoveryTimerRef.current = null;
+    }
+  }
+
+  function prepareAutomaticDetailAttempt(slot: string) {
+    if (detailRecoverySlotRef.current !== slot) {
+      clearDetailRecoveryTimer();
+      detailRecoveryAttemptRef.current = 0;
+      detailRecoverySlotRef.current = slot;
       return;
     }
+    // A foreground/regular trigger supersedes the pending timer while keeping
+    // the accumulated failure count for this slot.
+    clearDetailRecoveryTimer();
+  }
+
+  function clearDetailRecovery() {
+    clearDetailRecoveryTimer();
+    detailRecoveryAttemptRef.current = 0;
+    detailRecoverySlotRef.current = null;
+  }
+
+  function scheduleDetailRecovery(slot: string) {
+    if (!detailMountedRef.current) {
+      return;
+    }
+    if (detailRecoverySlotRef.current !== slot) {
+      clearDetailRecoveryTimer();
+      detailRecoveryAttemptRef.current = 0;
+      detailRecoverySlotRef.current = slot;
+    }
+    if (detailRecoveryTimerRef.current !== null) {
+      return;
+    }
+    const delayMs = nextCodexRadarDetailRecoveryDelayMs(detailRecoveryAttemptRef.current);
+    detailRecoveryAttemptRef.current += 1;
+    detailRecoveryTimerRef.current = window.setTimeout(() => {
+      detailRecoveryTimerRef.current = null;
+      refreshDetailIfDue();
+    }, delayMs);
+  }
+
+  async function refreshCrowdRadar() {
+    if (!radarMountedRef.current || crowdRefreshingRef.current) {
+      return;
+    }
+    const requestGeneration = radarLifecycleGenerationRef.current;
+    const requestIsCurrent = () => (
+      radarMountedRef.current
+      && radarLifecycleGenerationRef.current === requestGeneration
+    );
     crowdRefreshingRef.current = true;
     startTransition(() => {
       setCrowdRadarStatus(crowdRadarRef.current ? "正在更新众测雷达..." : "正在读取众测雷达...");
     });
     try {
       const next = await readCodexCrowdRadarSnapshot();
+      if (!requestIsCurrent()) {
+        return;
+      }
       crowdRadarRef.current = next;
       crowdRecoveryAttemptRef.current = 0;
       setCrowdRadarError(null);
@@ -99,6 +160,9 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
             : "众测数据已更新");
       });
     } catch (error) {
+      if (!requestIsCurrent()) {
+        return;
+      }
       const detail = error instanceof Error ? error.message : String(error);
       setCrowdRadarError(detail);
       startTransition(() => {
@@ -117,14 +181,21 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         }
       }
     } finally {
-      crowdRefreshingRef.current = false;
+      if (requestIsCurrent()) {
+        crowdRefreshingRef.current = false;
+      }
     }
   }
 
   async function refresh(force = false) {
-    if (refreshingRef.current) {
+    if (!radarMountedRef.current || refreshingRef.current) {
       return;
     }
+    const requestGeneration = radarLifecycleGenerationRef.current;
+    const requestIsCurrent = () => (
+      radarMountedRef.current
+      && radarLifecycleGenerationRef.current === requestGeneration
+    );
     refreshingRef.current = true;
     startTransition(() => {
       setRefreshing(true);
@@ -133,6 +204,9 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     const crowdRefresh = refreshCrowdRadar();
     try {
       const next = await readCodexRadarState(snapshotRef.current, { force });
+      if (!requestIsCurrent()) {
+        return;
+      }
       snapshotRef.current = next.snapshot;
       startTransition(() => {
         setSnapshot(next.snapshot);
@@ -140,24 +214,43 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
         setStatus(next.statusText);
       });
     } catch (error) {
+      if (!requestIsCurrent()) {
+        return;
+      }
       startTransition(() => {
         setStatus(`Codex 雷达读取失败：${error instanceof Error ? error.message : String(error)}`);
       });
     } finally {
       await crowdRefresh;
-      refreshingRef.current = false;
-      startTransition(() => {
-        setRefreshing(false);
-      });
+      if (requestIsCurrent()) {
+        refreshingRef.current = false;
+        startTransition(() => {
+          setRefreshing(false);
+        });
+      }
     }
   }
 
   async function refreshDetail(mode: "automatic" | "manual" = "manual", attemptedSlotAt?: string) {
-    if (detailRefreshingRef.current) {
+    if (!detailMountedRef.current || detailRefreshingRef.current) {
       return;
+    }
+    const requestGeneration = detailLifecycleGenerationRef.current;
+    const requestIsCurrent = () => (
+      detailMountedRef.current
+      && detailLifecycleGenerationRef.current === requestGeneration
+    );
+    const inheritedRecoverySlot = mode === "manual"
+      ? detailRecoverySlotRef.current
+      : null;
+    if (inheritedRecoverySlot !== null) {
+      // The manual request replaces the timer, then inherits its recovery
+      // obligation if the manual read also fails.
+      clearDetailRecoveryTimer();
     }
     detailRefreshingRef.current = true;
     if (mode === "automatic" && attemptedSlotAt) {
+      prepareAutomaticDetailAttempt(attemptedSlotAt);
       detailAttemptedSlotRef.current = attemptedSlotAt;
       writeLastDetailAttemptedSlotAt(attemptedSlotAt);
     }
@@ -167,27 +260,43 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     });
     try {
       const next = await readCodexRadarFullSnapshot();
+      if (!requestIsCurrent()) {
+        return;
+      }
       detailSnapshotRef.current = next;
       writeLastDetailRefreshAt(new Date().toISOString());
+      clearDetailRecovery();
       startTransition(() => {
         setDetailSnapshot(next);
         setDetailStatus("详细信息已更新");
       });
     } catch {
+      if (!requestIsCurrent()) {
+        return;
+      }
       startTransition(() => {
         setDetailStatus(detailSnapshotRef.current
           ? "详细信息刷新失败，继续显示上次详细信息。"
           : "详细信息暂不可用，继续显示公开摘要。");
       });
+      const recoverySlot = mode === "automatic" ? attemptedSlotAt : inheritedRecoverySlot;
+      if (recoverySlot) {
+        scheduleDetailRecovery(recoverySlot);
+      }
     } finally {
-      detailRefreshingRef.current = false;
-      startTransition(() => {
-        setDetailRefreshing(false);
-      });
+      if (requestIsCurrent()) {
+        detailRefreshingRef.current = false;
+        startTransition(() => {
+          setDetailRefreshing(false);
+        });
+      }
     }
   }
 
   function refreshDetailIfDue() {
+    if (!detailMountedRef.current) {
+      return;
+    }
     const now = new Date();
     const latestSlot = latestCodexRadarDetailSlot(now).toISOString();
     if (shouldRefreshCodexRadarDetail({
@@ -200,7 +309,13 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   }
 
   useEffect(() => {
+    radarMountedRef.current = true;
+    radarLifecycleGenerationRef.current += 1;
+    const lifecycleGeneration = radarLifecycleGenerationRef.current;
     const unsubscribe = subscribeCodexRadarState((next) => {
+      if (!radarMountedRef.current || radarLifecycleGenerationRef.current !== lifecycleGeneration) {
+        return;
+      }
       snapshotRef.current = next.snapshot;
       startTransition(() => {
         setSnapshot(next.snapshot);
@@ -214,6 +329,10 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       void refresh(true);
     }, RADAR_REFRESH_INTERVAL_MS);
     return () => {
+      radarMountedRef.current = false;
+      radarLifecycleGenerationRef.current += 1;
+      refreshingRef.current = false;
+      crowdRefreshingRef.current = false;
       unsubscribe();
       window.clearInterval(timer);
       if (crowdRecoveryTimerRef.current !== null) {
@@ -225,6 +344,8 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   }, []);
 
   useEffect(() => {
+    detailMountedRef.current = true;
+    detailLifecycleGenerationRef.current += 1;
     refreshDetailIfDue();
     let timer: number | undefined;
     const scheduleNext = () => {
@@ -242,9 +363,13 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
     window.addEventListener("focus", refreshDetailIfDue);
     document.addEventListener("visibilitychange", onForeground);
     return () => {
+      detailMountedRef.current = false;
+      detailLifecycleGenerationRef.current += 1;
+      detailRefreshingRef.current = false;
       if (timer !== undefined) {
         window.clearTimeout(timer);
       }
+      clearDetailRecoveryTimer();
       window.removeEventListener("focus", refreshDetailIfDue);
       document.removeEventListener("visibilitychange", onForeground);
     };

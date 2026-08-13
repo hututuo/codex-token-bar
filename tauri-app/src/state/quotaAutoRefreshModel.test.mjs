@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("quota auto refresh plan uses the selected cadence when the dashboard is ready", () => {
+test("quota auto refresh plan clamps legacy cadence to one minute when the dashboard is ready", () => {
   return withSsrModules(async (load) => {
     const { makeQuotaAutoRefreshPlan } = await load("/src/state/quotaAutoRefreshModel.ts");
 
@@ -13,7 +13,7 @@ test("quota auto refresh plan uses the selected cadence when the dashboard is re
         intervalMs: 180_000,
         loading: false,
       }),
-      { active: true, intervalMs: 180_000 },
+      { active: true, intervalMs: 60_000 },
     );
   });
 });

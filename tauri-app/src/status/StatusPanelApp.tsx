@@ -75,6 +75,9 @@ export function StatusPanelApp() {
   ]);
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const floatingSettingsGenerationRef = useRef(0);
+  const displaySettingsGenerationRef = useRef(0);
+  const appSettingsGenerationRef = useRef(0);
   const { sourceReady, sourceToken } = useCompactPanelSource(active);
   const radarSnapshot = useFloatingRadar(
     active && sourceReady && dataInterests.radar,
@@ -116,6 +119,7 @@ export function StatusPanelApp() {
     let unsubscribeAppSettings: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
+      floatingSettingsGenerationRef.current += 1;
       setSettings(sanitizeFloatingSettings(payload));
     }).then((handler) => {
       if (disposed) {
@@ -126,6 +130,7 @@ export function StatusPanelApp() {
     });
 
     void desktopPlatform.onDisplaySurfacesChanged((payload) => {
+      displaySettingsGenerationRef.current += 1;
       setDisplaySurfaces(sanitizeDisplaySurfaces(payload));
     }).then((handler) => {
       if (disposed) {
@@ -136,6 +141,11 @@ export function StatusPanelApp() {
     });
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
+      floatingSettingsGenerationRef.current += 1;
+      displaySettingsGenerationRef.current += 1;
+      appSettingsGenerationRef.current += 1;
+      setSettings(sanitizeFloatingSettings(payload.floatingWindow));
+      setDisplaySurfaces(sanitizeDisplaySurfaces(payload.displaySurfaces));
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
     }).then((handler) => {
       if (disposed) {
@@ -145,14 +155,27 @@ export function StatusPanelApp() {
       unsubscribeAppSettings = handler;
     });
 
+    const startingFloatingSettingsGeneration = floatingSettingsGenerationRef.current;
+    const startingDisplaySettingsGeneration = displaySettingsGenerationRef.current;
+    const startingAppSettingsGeneration = appSettingsGenerationRef.current;
     void readAppSettings().then((snapshot) => {
-      if (snapshot?.floatingWindow) {
+      if (
+        snapshot?.floatingWindow
+        && startingFloatingSettingsGeneration === 0
+        && floatingSettingsGenerationRef.current === 0
+      ) {
         setSettings(sanitizeFloatingSettings(snapshot.floatingWindow));
       }
-      if (snapshot?.displaySurfaces) {
+      if (
+        snapshot?.displaySurfaces
+        && startingDisplaySettingsGeneration === 0
+        && displaySettingsGenerationRef.current === 0
+      ) {
         setDisplaySurfaces(sanitizeDisplaySurfaces(snapshot.displaySurfaces));
       }
-      setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(snapshot?.quotaRefreshIntervalMs));
+      if (startingAppSettingsGeneration === 0 && appSettingsGenerationRef.current === 0) {
+        setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(snapshot?.quotaRefreshIntervalMs));
+      }
     }).catch(() => {
       // 保持默认展示设置；失败已由命令诊断链路记录。
     });

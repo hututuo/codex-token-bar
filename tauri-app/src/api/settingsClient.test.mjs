@@ -17,7 +17,7 @@ test("readAppSettings distinguishes browser absence from a native read failure",
     });
 
     await withSsrModules(async (load) => {
-      const { readAppSettings } = await load("/src/api/settingsClient.ts");
+      const { completeFloatingPagingGuide, readAppSettings } = await load("/src/api/settingsClient.ts");
       assert.equal(
         await readAppSettings(),
         null,
@@ -32,6 +32,15 @@ test("readAppSettings distinguishes browser absence from a native read failure",
       };
       assert.deepEqual(await readAppSettings(), { setupGuideCompleted: true });
       assert.deepEqual(calls, [{ command: "read_app_settings", args: {} }]);
+
+      assert.deepEqual(
+        await completeFloatingPagingGuide(true, 3),
+        { setupGuideCompleted: true },
+      );
+      assert.deepEqual(calls[1], {
+        command: "complete_floating_paging_guide",
+        args: { showPageNavigationArrows: true, pagingGuideRevision: 3 },
+      });
 
       globalThis.window.__TAURI_INTERNALS__.invoke = () => Promise.reject("settings unreadable");
       await assert.rejects(

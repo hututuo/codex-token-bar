@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  dashboardPrimaryModelUsageItems,
+  dashboardSecondaryModelUsageItems,
   floatingModelUsageAccessibilityText,
   floatingModelUsageOverflowText,
   floatingModelUsageValue,
@@ -80,6 +82,23 @@ test("model usage overflow explains every hidden model", () => {
     "更多模型\ngpt-5.5 · 1 tokens · 占比 <0.1% · $0.00",
   );
   assert.equal(floatingModelUsageOverflowText(items.slice(0, 4)), null);
+});
+
+test("dashboard groups keep Sol Terra Luna expanded and wrap used secondary models", () => {
+  const items = floatingTodayModelUsageItems([
+    row("gpt-5.6-sol", 1_000, 0, 0, 1_000, 1),
+    row("gpt-5.4", 500, 0, 0, 500, 1),
+    row("gpt-5.3-codex", 250, 0, 0, 250, 1),
+  ], "gpt56Sol");
+
+  assert.deepEqual(
+    dashboardPrimaryModelUsageItems(items).map((item) => item.label),
+    ["Sol", "Terra", "Luna"],
+  );
+  assert.deepEqual(
+    dashboardSecondaryModelUsageItems(items).map((item) => item.label),
+    ["5.4", "5.3"],
+  );
 });
 
 function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls) {

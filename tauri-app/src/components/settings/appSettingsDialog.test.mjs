@@ -115,6 +115,7 @@ test("floating settings combine appearance, content, paging, and the real previe
     assert.ok(panel.querySelector(".floating-settings-workspace"));
     assert.ok(panel.querySelector(".floating-settings-controls"));
     assert.ok(panel.querySelector(".floating-settings-preview-column"));
+    assert.match(panel.querySelector(".floating-panel-surface--preview")?.textContent ?? "", /12\.4|3\.2亿|420万|5h 42%/);
     assert.ok(panel.querySelector(".floating-structure-grid.is-controls-only"));
     assert.equal(panel.querySelector('[aria-label="悬浮窗外观预览"]'), null);
     assert.equal(panel.querySelector(".app-settings-preview"), null);

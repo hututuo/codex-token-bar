@@ -4,10 +4,15 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 
-test("DashboardHeader keeps three primary actions and groups lower-frequency actions in More", async () => {
+test("DashboardHeader exposes Swift-parity daily actions and keeps secondary application actions in More", async () => {
   await withMountedHeader(async ({ act, container, document, render, window, calls }) => {
     assert.deepEqual(visibleButtonNames(container), [
       "立即刷新",
+      "更改目录",
+      "会话消失修复",
+      "会话管理",
+      "会话增强",
+      "自动续跑",
       "设置",
       "更多操作",
     ]);
@@ -16,11 +21,6 @@ test("DashboardHeader keeps three primary actions and groups lower-frequency act
     await click(act, buttonByName(container, "更多操作"), window);
     assert.ok(container.querySelector('[role="menu"]'));
     assert.deepEqual([...container.querySelectorAll('[role="menuitem"]')].map((button) => button.textContent.trim()), [
-      "会话管理",
-      "会话消失修复",
-      "会话增强",
-      "自动续跑",
-      "更改目录",
       "导出 CSV",
       "导出 PNG",
       "检查更新",
@@ -30,12 +30,9 @@ test("DashboardHeader keeps three primary actions and groups lower-frequency act
     assert.equal(calls.update, 1);
     await click(act, buttonByName(container, "设置"), window);
     assert.deepEqual(calls.settings, ["general"]);
-    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "会话管理"), window);
     assert.equal(calls.sessionManagement, 1);
-    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "会话增强"), window);
-    await click(act, buttonByName(container, "更多操作"), window);
     await click(act, buttonByName(container, "自动续跑"), window);
     assert.deepEqual(calls.settings, ["general", "session", "automation"]);
     await click(act, buttonByName(container, "更多操作"), window);
@@ -200,6 +197,6 @@ function buttonByNameOrNull(container, name) {
 }
 
 function visibleButtonNames(container) {
-  return [...container.querySelectorAll(".dash-head__actions > button, .dash-head__more > button")]
+  return [...container.querySelectorAll(".dash-head__action-group > button, .dash-head__more > button")]
     .map((button) => button.getAttribute("aria-label") || button.textContent.trim());
 }

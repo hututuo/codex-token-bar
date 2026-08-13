@@ -9,9 +9,11 @@ import {
 } from "./floatingContent.ts";
 
 export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
-export const FLOATING_BASE_WIDTH = 288;
+// Keep enough room for the four-model and quota rows while the Radar IQ type
+// follows Swift's compact scale. Native and CSS dimensions must stay aligned.
+export const FLOATING_BASE_WIDTH = 308;
 export const FLOATING_MIN_HEIGHT = 88;
-export const FLOATING_DEFAULT_HEIGHT = 138;
+export const FLOATING_DEFAULT_HEIGHT = 142;
 export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 3;
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
@@ -29,6 +31,28 @@ export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   pagingGuideRevision: 0,
   contentVisibility: DEFAULT_FLOATING_CONTENT_VISIBILITY,
 };
+
+export interface FloatingPagingGuidePresentationInput {
+  settingsLoaded: boolean;
+  setupGuideCompleted: boolean;
+  pagingGuideDismissed: boolean;
+  pagingGuideRevision: number;
+  hasPagedRows: boolean;
+}
+
+export function shouldPresentFloatingPagingGuide({
+  settingsLoaded,
+  setupGuideCompleted,
+  pagingGuideDismissed,
+  pagingGuideRevision,
+  hasPagedRows,
+}: FloatingPagingGuidePresentationInput): boolean {
+  return settingsLoaded
+    && !pagingGuideDismissed
+    && setupGuideCompleted
+    && pagingGuideRevision < CURRENT_FLOATING_PAGING_GUIDE_REVISION
+    && hasPagedRows;
+}
 
 export function sanitizeFloatingSettings(
   settings: Partial<FloatingWindowSettings>,

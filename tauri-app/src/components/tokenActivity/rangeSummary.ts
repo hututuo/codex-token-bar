@@ -1,14 +1,22 @@
 import type { ActivityDay } from "../../types/dashboard";
-import { formatPercent, formatTokens } from "../../utils/format";
+import { formatPercent, formatTokens } from "../../utils/format.ts";
 import type { ActivityMode } from "./types";
 import { modelUsageCompactText } from "../modelUsagePresentation.ts";
 import type { ModelTokenBreakdown } from "../../types/dashboard";
+import {
+  floatingModelUsageMoneyText,
+  floatingModelUsageValue,
+  floatingTodayModelUsageItems,
+} from "../../floating/floatingModelUsage.ts";
+import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
 export function summarizeRange(
   selectedDays: ActivityDay[],
   rangeStart: string | null,
   rangeEnd: string | null,
   mode: ActivityMode,
+  fallbackModel: OfficialAPIPriceModel = "gpt56Sol",
+  modelCostDataAvailable = true,
 ) {
   if (rangeStart === null) {
     return {
@@ -43,6 +51,32 @@ export function summarizeRange(
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
       value: `${formatTokens(tokens)} · ${modelUsageCompactText(combineModelRows(selectedDays)) ?? "暂无模型明细"}`,
+    };
+  }
+  if (mode === "modelCost") {
+    if (!modelCostDataAvailable) {
+      return {
+        hint: `${rangeStart} - ${rangeEnd}`,
+        value: "模型费用待读取",
+      };
+    }
+    const missingDetail = selectedDays.some((day) => (
+      day.tokens > 0 && (!day.modelBreakdowns || day.modelBreakdowns.length === 0)
+    ));
+    if (missingDetail) {
+      return {
+        hint: `${rangeStart} - ${rangeEnd}`,
+        value: "所选日期模型明细待读取",
+      };
+    }
+    const items = floatingTodayModelUsageItems(combineModelRows(selectedDays), fallbackModel);
+    const total = items.reduce((sum, item) => sum + (item.costUSD ?? 0), 0);
+    return {
+      hint: `${rangeStart} - ${rangeEnd}`,
+      value: [
+        `模型费用 ${floatingModelUsageMoneyText(total)}`,
+        ...items.map((item) => `${item.label} ${floatingModelUsageValue(item, "cost")}`),
+      ].join(" · "),
     };
   }
   return {

@@ -2,7 +2,34 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct FloatingStructureDragLifecycle: Equatable {
+    private(set) var activeSessionID: UUID?
+
+    mutating func begin(_ sessionID: UUID) {
+        activeSessionID = sessionID
+    }
+
+    @discardableResult
+    mutating func finish(_ sessionID: UUID? = nil) -> Bool {
+        guard let activeSessionID else { return false }
+        if let sessionID, sessionID != activeSessionID {
+            return false
+        }
+        self.activeSessionID = nil
+        return true
+    }
+}
+
 struct FloatingPanelStructureEditor: View {
+    private static let editorRowHeight: CGFloat = 42
+    private static let editorGapHeight: CGFloat = 7
+    private final class DropPreviewRevision {
+        var value = 0
+
+        func advance() {
+            value &+= 1
+        }
+    }
     @Binding var visibility: FloatingPanelContentVisibility
     let snapshot: TokenDisplaySnapshot
     let radarPresentation: CodexRadarPresentationState
@@ -17,6 +44,8 @@ struct FloatingPanelStructureEditor: View {
 
     @State private var draggedItem: DraggedItem?
     @State private var dropPreview: DropPreview?
+    @State private var dropPreviewRevision = DropPreviewRevision()
+    @State private var dragLifecycle = FloatingStructureDragLifecycle()
     @State private var undoState: UndoState?
     @State private var resetConfirmationPresented = false
 
@@ -131,6 +160,9 @@ struct FloatingPanelStructureEditor: View {
             }
             selectedRowID = visibility.layoutRows.first?.id
         }
+        .onDisappear {
+            finishDrag()
+        }
     }
 
     private var editorColumn: some View {
@@ -139,7 +171,7 @@ struct FloatingPanelStructureEditor: View {
                 .font(.system(size: 9.5, weight: .semibold))
                 .foregroundStyle(.secondary)
 
-            VStack(spacing: 5) {
+            VStack(spacing: 0) {
                 ForEach(Array(visibility.layoutRows.enumerated()), id: \.element.id) { index, row in
                     rowDropGap(target: row, placement: .before)
                     editorRow(row, index: index)
@@ -158,6 +190,7 @@ struct FloatingPanelStructureEditor: View {
         let inlineGroups = Set(groups).subtracting(row.groups)
         let isSelected = selectedRowID == row.id && draggedItem == nil
         let pageItems = pageChipItems(for: row, groups: groups, inlineGroups: inlineGroups)
+        let dragPreviewWidth = rowDragPreviewWidth(for: groups)
         let previewsPageSlot: Bool = {
             if case let .pageSlot(targetID, _, _) = dropPreview {
                 return targetID == row.id
@@ -165,6 +198,10 @@ struct FloatingPanelStructureEditor: View {
             return false
         }()
         let displaysPaging = row.isPaged || previewsPageSlot
+        let isDragSource: Bool = {
+            if case let .row(id, _) = draggedItem { return id == row.id }
+            return false
+        }()
 
         return HStack(spacing: 7) {
             Image(systemName: "line.3.horizontal")
@@ -172,10 +209,20 @@ struct FloatingPanelStructureEditor: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 18, height: 28)
                 .contentShape(Rectangle())
-                .onDrag {
-                    draggedItem = .row(id: row.id, groups: groups)
-                    dropPreview = nil
-                    return NSItemProvider(object: "row:\(row.id)" as NSString)
+                .overlay {
+                    FloatingStructureDragSource(
+                        payload: "row:\(row.id)",
+                        previewSize: NSSize(width: dragPreviewWidth, height: Self.editorRowHeight),
+                        cursorAnchor: NSPoint(x: 18, y: Self.editorRowHeight / 2),
+                        onBegin: { sessionID in
+                            beginDrag(.row(id: row.id, groups: groups), sessionID: sessionID)
+                        },
+                        onEnd: { sessionID in
+                            finishDrag(sessionID: sessionID)
+                        }
+                    ) {
+                        rowDragPreview(row: row, groups: groups, inlineGroups: inlineGroups, width: dragPreviewWidth)
+                    }
                 }
                 .help("拖动整行")
 
@@ -201,6 +248,7 @@ struct FloatingPanelStructureEditor: View {
                         pageDropZone(target: row, placement: .before)
                         pageDropZone(target: row, placement: .after)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .animation(.easeOut(duration: 0.12), value: dropPreview)
@@ -234,7 +282,7 @@ struct FloatingPanelStructureEditor: View {
             .accessibilityLabel("\(groups.map(\.title).joined(separator: "、"))更多操作")
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .frame(height: Self.editorRowHeight)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(isSelected ? AppTheme.selectedControlBackground : AppTheme.calloutOptionBackground)
@@ -243,9 +291,10 @@ struct FloatingPanelStructureEditor: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(
                     isSelected ? AppTheme.accentBlue.opacity(0.42) : AppTheme.border.opacity(0.6),
-                    lineWidth: 1
+                    style: StrokeStyle(lineWidth: 1, dash: isDragSource ? [4, 3] : [])
                 )
         )
+        .opacity(isDragSource ? 0.44 : 1)
         .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .id("floating-structure-row:\(row.id)")
         .onTapGesture { selectedRowID = row.id }
@@ -254,11 +303,61 @@ struct FloatingPanelStructureEditor: View {
             delegate: FloatingStructureRowDropDelegate(
                 target: row,
                 draggedItem: $draggedItem,
-                dropPreview: $dropPreview,
                 canDrop: { item, placement in canDropOnRow(item, target: row, placement: placement) },
-                onDrop: { item, placement in handleDrop(item, on: row, placement: placement) }
+                previewForPlacement: { placement in canonicalGapPreview(target: row, placement: placement) },
+                showPreview: showDropPreview,
+                clearPreview: clearDropPreview,
+                clearPreviewAfterExit: clearDropPreviewAfterExit,
+                onDrop: { item, placement in handleDrop(item, on: row, placement: placement) },
+                finishDrag: { finishDrag() }
             )
         )
+    }
+
+    private func beginDrag(_ item: DraggedItem, sessionID: UUID) {
+        dragLifecycle.begin(sessionID)
+        draggedItem = item
+        clearDropPreview()
+    }
+
+    private func finishDrag(sessionID: UUID? = nil) {
+        let finishedActiveSession = dragLifecycle.finish(sessionID)
+        guard finishedActiveSession || sessionID == nil else { return }
+        draggedItem = nil
+        clearDropPreview()
+    }
+
+    private func showDropPreview(_ preview: DropPreview) {
+        dropPreviewRevision.advance()
+        guard dropPreview != preview else { return }
+        dropPreview = preview
+    }
+
+    private func clearDropPreview() {
+        dropPreviewRevision.advance()
+        guard dropPreview != nil else { return }
+        dropPreview = nil
+    }
+
+    private func clearDropPreviewAfterExit(_ preview: DropPreview) {
+        let revision = dropPreviewRevision.value
+        DispatchQueue.main.async {
+            guard dropPreviewRevision.value == revision, dropPreview == preview else { return }
+            dropPreviewRevision.advance()
+            dropPreview = nil
+        }
+    }
+
+    private func canonicalGapPreview(
+        target: FloatingPanelLayoutRow,
+        placement: FloatingPanelContentDropPlacement
+    ) -> DropPreview {
+        guard placement == .after,
+              let targetIndex = visibility.layoutRows.firstIndex(where: { $0.id == target.id }),
+              visibility.layoutRows.indices.contains(targetIndex + 1) else {
+            return .gap(targetID: target.id, placement: placement)
+        }
+        return .gap(targetID: visibility.layoutRows[targetIndex + 1].id, placement: .before)
     }
 
     private func pageChip(
@@ -267,7 +366,8 @@ struct FloatingPanelStructureEditor: View {
         isInline: Bool,
         isPaged: Bool
     ) -> some View {
-        HStack(spacing: 3) {
+        let dragPreviewWidth = pageDragPreviewWidth(for: group)
+        return HStack(spacing: 3) {
             if isDefault {
                 Image(systemName: "star.fill")
                     .font(.system(size: 7))
@@ -292,13 +392,27 @@ struct FloatingPanelStructureEditor: View {
             Capsule()
                 .stroke(isDefault ? AppTheme.accentBlue.opacity(0.34) : AppTheme.border, lineWidth: 1)
         )
-        .onDrag {
-            guard group.supportsPaging, !isInline else {
-                return NSItemProvider(object: "inline:\(group.rawValue)" as NSString)
+        .overlay {
+            if group.supportsPaging, !isInline {
+                FloatingStructureDragSource(
+                    payload: "page:\(group.rawValue)",
+                    previewSize: NSSize(width: dragPreviewWidth, height: 34),
+                    cursorAnchor: NSPoint(x: 20, y: 17),
+                    onBegin: { sessionID in
+                        beginDrag(.page(group), sessionID: sessionID)
+                    },
+                    onEnd: { sessionID in
+                        finishDrag(sessionID: sessionID)
+                    },
+                    onDoubleClick: {
+                        if isPaged, !isDefault {
+                            swapDefault(group)
+                        }
+                    }
+                ) {
+                    pageDragPreview(group)
+                }
             }
-            draggedItem = .page(group)
-            dropPreview = nil
-            return NSItemProvider(object: "page:\(group.rawValue)" as NSString)
         }
         .onTapGesture(count: 2) {
             if isPaged && !isDefault {
@@ -306,6 +420,77 @@ struct FloatingPanelStructureEditor: View {
             }
         }
         .help(group.supportsPaging && !isInline ? "拖到另一行组合，拖到行间拆分" : "内联内容随整行移动")
+    }
+
+    private func rowDragPreview(
+        row: FloatingPanelLayoutRow,
+        groups: [FloatingPanelContentGroup],
+        inlineGroups: Set<FloatingPanelContentGroup>,
+        width: CGFloat
+    ) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+
+            HStack(spacing: 5) {
+                ForEach(Array(groups.enumerated()), id: \.element) { index, group in
+                    FloatingStructureDragPreviewChip(
+                        group: group,
+                        isDefault: row.isPaged && index == 0,
+                        isInline: inlineGroups.contains(group)
+                    )
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            if row.isPaged {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(width: width, height: Self.editorRowHeight)
+        .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(AppTheme.accentBlue.opacity(0.48), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.18), radius: 5, y: 2)
+    }
+
+    private func pageDragPreview(_ group: FloatingPanelContentGroup) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: group.systemImage)
+                .font(.system(size: 10, weight: .semibold))
+            Text(group.title)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+            Text("翻页项")
+                .font(.system(size: 7.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 30)
+        .foregroundStyle(Color.primary)
+        .background(AppTheme.solidControlBackground, in: Capsule())
+        .overlay(Capsule().stroke(AppTheme.accentBlue.opacity(0.52), lineWidth: 1))
+        .padding(2)
+        .shadow(color: Color.black.opacity(0.16), radius: 4, y: 2)
+    }
+
+    private func rowDragPreviewWidth(for groups: [FloatingPanelContentGroup]) -> CGFloat {
+        let titleWidth = groups.reduce(CGFloat.zero) { partial, group in
+            partial + CGFloat(group.title.count) * 10.5 + 35
+        }
+        return min(620, max(280, titleWidth + 72))
+    }
+
+    private func pageDragPreviewWidth(for group: FloatingPanelContentGroup) -> CGFloat {
+        max(132, CGFloat(group.title.count) * 11 + 82)
     }
 
     private func pageChipItems(
@@ -318,6 +503,15 @@ struct FloatingPanelStructureEditor: View {
               let targetGroup = pageMergeTarget(for: draggedGroup, in: row),
               targetGroup != draggedGroup else {
             return groups.map(PageChipRenderItem.group)
+        }
+
+        // `pagePairs` is intentionally a two-page V01 format. A full paged
+        // row therefore cannot absorb a third page without changing the
+        // persisted contract. Keep both existing chips in their stored
+        // order and show the dropped item as a third, same-sized right slot;
+        // the drop handler turns it into the adjacent standalone row.
+        if row.isPaged, placement == .after, !row.groups.contains(draggedGroup) {
+            return groups.map(PageChipRenderItem.group) + [.placeholder(draggedGroup)]
         }
 
         let pair: [PageChipRenderItem]
@@ -345,16 +539,18 @@ struct FloatingPanelStructureEditor: View {
             Text(group.title)
                 .font(.system(size: 9.5, weight: .semibold))
                 .lineLimit(1)
-            Text("放这里")
-                .font(.system(size: 7.2, weight: .semibold))
-                .foregroundStyle(.secondary)
+            if isDefault {
+                Text("默认")
+                    .font(.system(size: 7.2, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 7)
         .frame(height: 25)
-        .foregroundStyle(AppTheme.accentBlue)
-        .background(Capsule().fill(AppTheme.accentBlue.opacity(0.13)))
-        .overlay(Capsule().stroke(AppTheme.accentBlue.opacity(0.82), lineWidth: 1.3))
-        .shadow(color: AppTheme.accentBlue.opacity(0.13), radius: 2)
+        .foregroundStyle(AppTheme.accentBlue.opacity(0.82))
+        .background(Capsule().fill(AppTheme.accentBlue.opacity(0.07)))
+        .overlay(Capsule().stroke(AppTheme.accentBlue.opacity(0.42), lineWidth: 1))
+        .shadow(color: AppTheme.accentBlue.opacity(0.05), radius: 1)
         .transition(.scale(scale: 0.92).combined(with: .opacity))
         .accessibilityLabel("\(group.title)可放置位置")
     }
@@ -366,15 +562,19 @@ struct FloatingPanelStructureEditor: View {
         Rectangle()
             .fill(Color.black.opacity(0.001))
             .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onDrop(
                 of: [UTType.text.identifier],
                 delegate: FloatingStructurePageSlotDropDelegate(
                     target: target,
                     placement: placement,
                     draggedItem: $draggedItem,
-                    dropPreview: $dropPreview,
                     canDrop: { item in canDropPage(item, target: target, placement: placement) },
-                    onDrop: { item in handlePageDrop(item, target: target, placement: placement) }
+                    showPreview: showDropPreview,
+                    clearPreview: clearDropPreview,
+                    clearPreviewAfterExit: clearDropPreviewAfterExit,
+                    onDrop: { item in handlePageDrop(item, target: target, placement: placement) },
+                    finishDrag: { finishDrag() }
                 )
             )
     }
@@ -383,53 +583,34 @@ struct FloatingPanelStructureEditor: View {
         target: FloatingPanelLayoutRow,
         placement: FloatingPanelContentDropPlacement
     ) -> some View {
-        let isTarget = dropPreview == .gap(targetID: target.id, placement: placement)
-        return ZStack(alignment: .leading) {
+        let preview = canonicalGapPreview(target: target, placement: placement)
+        let isTarget = dropPreview == preview
+        return ZStack {
             if isTarget {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: 8, weight: .semibold))
-                    Text(draggedItemTitle)
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(AppTheme.accentBlue)
-                .padding(.horizontal, 9)
-                .frame(height: 27)
-                .background(AppTheme.accentBlue.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(AppTheme.accentBlue.opacity(0.86), lineWidth: 1.3)
-                )
-                .shadow(color: AppTheme.accentBlue.opacity(0.13), radius: 2)
+                Capsule()
+                    .fill(AppTheme.accentBlue.opacity(0.9))
+                    .frame(height: 2)
+                    .padding(.horizontal, 7)
             }
         }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: draggedItem == nil ? 1 : (isTarget ? 34 : 5))
+            .frame(height: Self.editorGapHeight)
             .padding(.horizontal, 4)
-            .animation(.easeOut(duration: 0.12), value: isTarget)
             .onDrop(
                 of: [UTType.text.identifier],
                 delegate: FloatingStructureGapDropDelegate(
                     target: target,
                     placement: placement,
                     draggedItem: $draggedItem,
-                    dropPreview: $dropPreview,
                     canDrop: { item in canDropIntoGap(item, target: target, placement: placement) },
-                    onDrop: { item in handleGapDrop(item, target: target, placement: placement) }
+                    preview: preview,
+                    showPreview: showDropPreview,
+                    clearPreview: clearDropPreview,
+                    clearPreviewAfterExit: clearDropPreviewAfterExit,
+                    onDrop: { item in handleGapDrop(item, target: target, placement: placement) },
+                    finishDrag: { finishDrag() }
                 )
             )
-    }
-
-    private var draggedItemTitle: String {
-        switch draggedItem {
-        case let .row(_, groups):
-            return groups.map(\.title).joined(separator: " · ")
-        case let .page(group):
-            return group.title
-        case nil:
-            return "放到这里"
-        }
     }
 
     private var hiddenZone: some View {
@@ -482,8 +663,11 @@ struct FloatingPanelStructureEditor: View {
             of: [UTType.text.identifier],
             delegate: FloatingStructureHiddenDropDelegate(
                 draggedItem: $draggedItem,
-                dropPreview: $dropPreview,
-                onDrop: handleHiddenDrop
+                showPreview: showDropPreview,
+                clearPreview: clearDropPreview,
+                clearPreviewAfterExit: clearDropPreviewAfterExit,
+                onDrop: handleHiddenDrop,
+                finishDrag: { finishDrag() }
             )
         )
     }
@@ -573,10 +757,31 @@ struct FloatingPanelStructureEditor: View {
         target: FloatingPanelLayoutRow,
         placement: FloatingPanelContentDropPlacement
     ) -> Bool {
-        guard case let .page(group) = item,
-              let targetGroup = pageMergeTarget(for: group, in: target),
+        guard case let .page(group) = item, group.supportsPaging else { return false }
+
+        // `pagePairs` is intentionally a two-page V01 format. Dropping into
+        // the full row's rightmost slot must not replace either stored page;
+        // preview it as a third chip and commit it as the adjacent standalone
+        // row instead.
+        if target.isPaged, placement == .after {
+            guard !target.groups.contains(group) else { return false }
+            var next = visibility
+            next.pagePairs = FloatingPanelContentVisibility.splittingPage(
+                in: visibility.pagePairs,
+                group: group
+            )
+            next.groupOrder = FloatingPanelContentVisibility.movingRow(
+                in: visibility.groupOrder,
+                groups: [group],
+                relativeTo: visibility.editorGroups(for: target),
+                placement: .after
+            )
+            next.setVisible(true, for: [group])
+            return next != visibility
+        }
+
+        guard let targetGroup = pageMergeTarget(for: group, in: target),
               group != targetGroup,
-              group.supportsPaging,
               targetGroup.supportsPaging else { return false }
         var next = visibility
         next.pagePairs = FloatingPanelContentVisibility.mergingPage(
@@ -605,8 +810,27 @@ struct FloatingPanelStructureEditor: View {
         target: FloatingPanelLayoutRow,
         placement: FloatingPanelContentDropPlacement
     ) {
-        guard case let .page(group) = item,
-              let targetGroup = pageMergeTarget(for: group, in: target),
+        guard case let .page(group) = item, group.supportsPaging else { return }
+
+        if target.isPaged, placement == .after {
+            guard !target.groups.contains(group) else { return }
+            var next = visibility
+            next.pagePairs = FloatingPanelContentVisibility.splittingPage(
+                in: visibility.pagePairs,
+                group: group
+            )
+            next.groupOrder = FloatingPanelContentVisibility.movingRow(
+                in: visibility.groupOrder,
+                groups: [group],
+                relativeTo: visibility.editorGroups(for: target),
+                placement: .after
+            )
+            next.setVisible(true, for: [group])
+            commit(next, message: "已将\(group.title)拆成独立一行，置于此翻页行之后")
+            return
+        }
+
+        guard let targetGroup = pageMergeTarget(for: group, in: target),
               group != targetGroup,
               targetGroup.supportsPaging else { return }
         var next = visibility
@@ -875,12 +1099,181 @@ struct FloatingPanelLivePreview: View {
     }
 }
 
+private struct FloatingStructureDragPreviewChip: View {
+    let group: FloatingPanelContentGroup
+    let isDefault: Bool
+    let isInline: Bool
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if isDefault {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 7))
+            }
+            Text(group.title)
+                .font(.system(size: 9.5, weight: .semibold))
+                .lineLimit(1)
+            if isDefault || isInline {
+                Text(isInline ? "内联" : "默认")
+                    .font(.system(size: 7.2, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 25)
+        .foregroundStyle(isDefault ? AppTheme.accentBlue : Color.primary)
+        .background(
+            Capsule()
+                .fill(isDefault ? AppTheme.accentBlue.opacity(0.1) : AppTheme.solidControlBackground)
+        )
+        .overlay(
+            Capsule()
+                .stroke(isDefault ? AppTheme.accentBlue.opacity(0.34) : AppTheme.border, lineWidth: 1)
+        )
+    }
+}
+
+struct FloatingStructureDragSource: NSViewRepresentable {
+    let payload: String
+    let previewSize: NSSize
+    let cursorAnchor: NSPoint
+    let preview: AnyView
+    let onBegin: (UUID) -> Void
+    let onEnd: (UUID) -> Void
+    let onDoubleClick: (() -> Void)?
+
+    init<Preview: View>(
+        payload: String,
+        previewSize: NSSize,
+        cursorAnchor: NSPoint,
+        onBegin: @escaping (UUID) -> Void,
+        onEnd: @escaping (UUID) -> Void,
+        onDoubleClick: (() -> Void)? = nil,
+        @ViewBuilder preview: () -> Preview
+    ) {
+        self.payload = payload
+        self.previewSize = previewSize
+        self.cursorAnchor = cursorAnchor
+        self.preview = AnyView(preview())
+        self.onBegin = onBegin
+        self.onEnd = onEnd
+        self.onDoubleClick = onDoubleClick
+    }
+
+    func makeNSView(context: Context) -> FloatingStructureDragSourceView {
+        let view = FloatingStructureDragSourceView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: FloatingStructureDragSourceView, context: Context) {
+        configure(nsView)
+    }
+
+    private func configure(_ view: FloatingStructureDragSourceView) {
+        view.payload = payload
+        view.previewSize = previewSize
+        view.cursorAnchor = cursorAnchor
+        view.preview = preview
+        view.onBegin = onBegin
+        view.onEnd = onEnd
+        view.onDoubleClick = onDoubleClick
+    }
+}
+
+final class FloatingStructureDragSourceView: NSView, NSDraggingSource {
+    var payload = ""
+    var previewSize = NSSize(width: 1, height: 1)
+    var cursorAnchor = NSPoint.zero
+    var preview = AnyView(EmptyView())
+    var onBegin: ((UUID) -> Void)?
+    var onEnd: ((UUID) -> Void)?
+    var onDoubleClick: (() -> Void)?
+
+    private var activeSessionID: UUID?
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseDragged(with event: NSEvent) {
+        guard activeSessionID == nil else { return }
+
+        let pasteboardItem = NSPasteboardItem()
+        guard pasteboardItem.setString(payload, forType: .string) else { return }
+
+        let image = renderedPreview()
+        let sessionID = UUID()
+        activeSessionID = sessionID
+        onBegin?(sessionID)
+
+        let location = convert(event.locationInWindow, from: nil)
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(
+            NSRect(
+                x: location.x - cursorAnchor.x,
+                y: location.y - cursorAnchor.y,
+                width: previewSize.width,
+                height: previewSize.height
+            ),
+            contents: image
+        )
+
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        session.draggingFormation = .none
+        session.animatesToStartingPositionsOnCancelOrFail = false
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?()
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        guard let sessionID = activeSessionID else { return }
+        activeSessionID = nil
+        onEnd?(sessionID)
+    }
+
+    private func renderedPreview() -> NSImage {
+        let hostingView = NSHostingView(rootView: preview)
+        hostingView.frame = NSRect(origin: .zero, size: previewSize)
+        hostingView.appearance = effectiveAppearance
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
+
+        if let image = NSImage(data: hostingView.dataWithPDF(inside: hostingView.bounds)) {
+            image.size = previewSize
+            return image
+        }
+        return NSImage(size: previewSize)
+    }
+}
+
 private struct FloatingStructureRowDropDelegate: DropDelegate {
     let target: FloatingPanelLayoutRow
     @Binding var draggedItem: FloatingPanelStructureEditor.DraggedItem?
-    @Binding var dropPreview: FloatingPanelStructureEditor.DropPreview?
     let canDrop: (FloatingPanelStructureEditor.DraggedItem, FloatingPanelContentDropPlacement) -> Bool
+    let previewForPlacement: (FloatingPanelContentDropPlacement) -> FloatingPanelStructureEditor.DropPreview
+    let showPreview: (FloatingPanelStructureEditor.DropPreview) -> Void
+    let clearPreview: () -> Void
+    let clearPreviewAfterExit: (FloatingPanelStructureEditor.DropPreview) -> Void
     let onDrop: (FloatingPanelStructureEditor.DraggedItem, FloatingPanelContentDropPlacement) -> Void
+    let finishDrag: () -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
         switch draggedItem {
@@ -894,35 +1287,30 @@ private struct FloatingStructureRowDropDelegate: DropDelegate {
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        let placement = placement(info)
         guard let draggedItem,
               validateDrop(info: info),
-              canDrop(draggedItem, placement(info)) else {
-            dropPreview = nil
+              canDrop(draggedItem, placement) else {
             return nil
         }
-        switch draggedItem {
-        case .row:
-            dropPreview = .gap(targetID: target.id, placement: placement(info))
-        case .page:
-            return nil
-        }
+        showPreview(previewForPlacement(placement))
         return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
-        if case let .gap(targetID, _) = dropPreview, targetID == target.id {
-            dropPreview = nil
-        }
+        clearPreviewAfterExit(previewForPlacement(.before))
+        clearPreviewAfterExit(previewForPlacement(.after))
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let draggedItem, canDrop(draggedItem, placement(info)) else {
-            dropPreview = nil
+        let placement = placement(info)
+        guard let draggedItem, canDrop(draggedItem, placement) else {
+            clearPreview()
+            finishDrag()
             return false
         }
-        onDrop(draggedItem, placement(info))
-        self.draggedItem = nil
-        dropPreview = nil
+        onDrop(draggedItem, placement)
+        finishDrag()
         return true
     }
 
@@ -935,9 +1323,12 @@ private struct FloatingStructurePageSlotDropDelegate: DropDelegate {
     let target: FloatingPanelLayoutRow
     let placement: FloatingPanelContentDropPlacement
     @Binding var draggedItem: FloatingPanelStructureEditor.DraggedItem?
-    @Binding var dropPreview: FloatingPanelStructureEditor.DropPreview?
     let canDrop: (FloatingPanelStructureEditor.DraggedItem) -> Bool
+    let showPreview: (FloatingPanelStructureEditor.DropPreview) -> Void
+    let clearPreview: () -> Void
+    let clearPreviewAfterExit: (FloatingPanelStructureEditor.DropPreview) -> Void
     let onDrop: (FloatingPanelStructureEditor.DraggedItem) -> Void
+    let finishDrag: () -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
         guard let draggedItem, case .page = draggedItem else { return false }
@@ -948,26 +1339,24 @@ private struct FloatingStructurePageSlotDropDelegate: DropDelegate {
         guard let draggedItem, case let .page(group) = draggedItem, canDrop(draggedItem) else {
             return nil
         }
-        dropPreview = .pageSlot(targetID: target.id, placement: placement, group: group)
+        showPreview(.pageSlot(targetID: target.id, placement: placement, group: group))
         return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
-        if case let .pageSlot(targetID, currentPlacement, _) = dropPreview,
-           targetID == target.id,
-           currentPlacement == placement {
-            dropPreview = nil
+        if case let .page(group) = draggedItem {
+            clearPreviewAfterExit(.pageSlot(targetID: target.id, placement: placement, group: group))
         }
     }
 
     func performDrop(info: DropInfo) -> Bool {
         guard let draggedItem, case .page = draggedItem, canDrop(draggedItem) else {
-            dropPreview = nil
+            clearPreview()
+            finishDrag()
             return false
         }
         onDrop(draggedItem)
-        self.draggedItem = nil
-        dropPreview = nil
+        finishDrag()
         return true
     }
 }
@@ -976,9 +1365,13 @@ private struct FloatingStructureGapDropDelegate: DropDelegate {
     let target: FloatingPanelLayoutRow
     let placement: FloatingPanelContentDropPlacement
     @Binding var draggedItem: FloatingPanelStructureEditor.DraggedItem?
-    @Binding var dropPreview: FloatingPanelStructureEditor.DropPreview?
     let canDrop: (FloatingPanelStructureEditor.DraggedItem) -> Bool
+    let preview: FloatingPanelStructureEditor.DropPreview
+    let showPreview: (FloatingPanelStructureEditor.DropPreview) -> Void
+    let clearPreview: () -> Void
+    let clearPreviewAfterExit: (FloatingPanelStructureEditor.DropPreview) -> Void
     let onDrop: (FloatingPanelStructureEditor.DraggedItem) -> Void
+    let finishDrag: () -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
         guard let draggedItem else { return false }
@@ -987,55 +1380,58 @@ private struct FloatingStructureGapDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard let draggedItem, canDrop(draggedItem) else {
-            dropPreview = nil
             return nil
         }
-        dropPreview = .gap(targetID: target.id, placement: placement)
+        showPreview(preview)
         return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
-        if dropPreview == .gap(targetID: target.id, placement: placement) {
-            dropPreview = nil
-        }
+        clearPreviewAfterExit(preview)
     }
 
     func performDrop(info: DropInfo) -> Bool {
         guard let draggedItem, canDrop(draggedItem) else {
-            dropPreview = nil
+            clearPreview()
+            finishDrag()
             return false
         }
         onDrop(draggedItem)
-        self.draggedItem = nil
-        dropPreview = nil
+        finishDrag()
         return true
     }
 }
 
 private struct FloatingStructureHiddenDropDelegate: DropDelegate {
     @Binding var draggedItem: FloatingPanelStructureEditor.DraggedItem?
-    @Binding var dropPreview: FloatingPanelStructureEditor.DropPreview?
+    let showPreview: (FloatingPanelStructureEditor.DropPreview) -> Void
+    let clearPreview: () -> Void
+    let clearPreviewAfterExit: (FloatingPanelStructureEditor.DropPreview) -> Void
     let onDrop: (FloatingPanelStructureEditor.DraggedItem) -> Void
+    let finishDrag: () -> Void
 
     func validateDrop(info: DropInfo) -> Bool { draggedItem != nil }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard draggedItem != nil else { return nil }
-        dropPreview = .hidden
+        guard draggedItem != nil else {
+            return nil
+        }
+        showPreview(.hidden)
         return DropProposal(operation: .move)
     }
 
     func dropExited(info: DropInfo) {
-        if dropPreview == .hidden {
-            dropPreview = nil
-        }
+        clearPreviewAfterExit(.hidden)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let draggedItem else { return false }
+        guard let draggedItem else {
+            clearPreview()
+            finishDrag()
+            return false
+        }
         onDrop(draggedItem)
-        self.draggedItem = nil
-        dropPreview = nil
+        finishDrag()
         return true
     }
 }

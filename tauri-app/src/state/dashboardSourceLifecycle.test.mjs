@@ -374,6 +374,7 @@ function dashboardSource(options) {
       ?? (() => Promise.resolve(null)),
     readUsageCacheStatus: () => Promise.resolve({ namespace: "test", initialized: true, initializedAt: null }),
     readAccountQuota: () => Promise.resolve(null),
+    readAccountResetCredits: () => Promise.resolve(null),
     readLiveRateSnapshot: () => Promise.resolve(null),
     readLiveThreadOptions: () => Promise.resolve([]),
     acknowledgeUnreadSummary: () => Promise.resolve(null),

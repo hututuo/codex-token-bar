@@ -29,10 +29,16 @@ test("DashboardHeader keeps the account identity above the compact product card"
     assert.ok(html.indexOf('class="plan-badge"') < html.indexOf('class="platform-badge"'));
     assert.match(html, /class="dash-head__actions"/);
     assert.match(html, /立即刷新/);
+    assert.match(html, />更改目录<\/button>/);
+    assert.match(html, />会话消失修复<\/button>/);
+    assert.match(html, />会话管理<\/button>/);
+    assert.match(html, /aria-label="会话增强"/);
+    assert.match(html, /aria-label="自动续跑"/);
     assert.match(html, />设置<\/button>/);
     assert.match(html, /aria-label="更多操作"/);
     assert.doesNotMatch(html, /dash-head__mark|dash-head__identity|dash-head__name/);
     assert.ok(html.indexOf('class="account-row"') < html.indexOf('class="dash-head"'));
+    assert.ok(html.indexOf('class="dash-head__strip"') < html.indexOf('class="dash-head__top dash-head__top--actions-only"'));
     assert.doesNotMatch(html, /role="menu"|启用侧栏删除|启用会话删除/);
   });
 });

@@ -947,6 +947,7 @@ struct DashboardView: View {
 
             StatStrip(
                 snapshot: store.snapshot,
+                todayModelBreakdowns: store.todayModelBreakdowns,
                 planLabel: quotaStore.snapshot.planType ?? "",
                 isPreparingUsageCache: store.isPreparingUsageCache,
                 cacheStatus: store.status
@@ -981,6 +982,7 @@ struct DashboardView: View {
             ActivitySection(
                 dailyUsage: store.snapshot.dailyUsage,
                 cacheDaily: store.snapshot.cacheUsage.daily,
+                dailyModelBreakdowns: store.snapshot.cacheUsage.dailyModelBreakdowns,
                 attributionEvents: store.snapshot.cacheUsage.attributionEvents,
                 quotaDaily: quotaHistoryStore.snapshot.daily,
                 selectedMode: $store.selectedMode

@@ -1,3 +1,8 @@
+import {
+  MAX_BACKGROUND_REFRESH_DELAY_MS,
+  persistentRefreshDelayMs,
+} from "../utils/persistentRefreshBackoff.ts";
+
 export const CODEX_RADAR_DETAIL_REFRESH_STORAGE_KEY = "codexRadarDetailLastSuccessfulRefreshAt";
 export const CODEX_RADAR_DETAIL_ATTEMPT_STORAGE_KEY = "codexRadarDetailLastAttemptedSlotAt";
 
@@ -53,20 +58,19 @@ export function shouldRefreshCodexRadarDetail({
     return true;
   }
   const latestSlot = latestCodexRadarDetailSlot(now);
+  // Attempts are retained for diagnostics only. They must never become a
+  // finite retry budget that suppresses recovery for the rest of the slot.
+  void lastAttemptedSlotAt;
   if (!lastSuccessfulRefreshAt) {
-    return !isAtOrAfterSlot(lastAttemptedSlotAt, latestSlot);
+    return true;
   }
   const last = new Date(lastSuccessfulRefreshAt);
   if (!Number.isFinite(last.getTime())) {
-    return !isAtOrAfterSlot(lastAttemptedSlotAt, latestSlot);
+    return true;
   }
-  return last.getTime() < latestSlot.getTime() && !isAtOrAfterSlot(lastAttemptedSlotAt, latestSlot);
+  return last.getTime() < latestSlot.getTime();
 }
 
-function isAtOrAfterSlot(value: string | null | undefined, slot: Date): boolean {
-  if (!value) {
-    return false;
-  }
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) && timestamp >= slot.getTime();
+export function nextCodexRadarDetailRecoveryDelayMs(failureCount: number): number {
+  return persistentRefreshDelayMs(failureCount, MAX_BACKGROUND_REFRESH_DELAY_MS);
 }

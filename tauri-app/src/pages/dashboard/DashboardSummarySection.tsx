@@ -77,6 +77,7 @@ export function DashboardSummarySection({
   sourceHomeIdentity,
   usageCacheInitializing,
 }: DashboardSummarySectionProps) {
+  const todayActivity = dashboard.activityDays.at(-1);
   return (
     <>
       <QuotaStrip
@@ -109,7 +110,10 @@ export function DashboardSummarySection({
       />
       <StatsStrip
         planLabel={dashboard.account.planLabel}
+        preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
         stats={dashboard.stats}
+        todayModelBreakdowns={todayActivity?.modelBreakdowns ?? []}
+        todayTokens={todayActivity?.tokens ?? 0}
         warnings={dashboard.warnings}
       />
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />

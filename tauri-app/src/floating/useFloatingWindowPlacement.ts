@@ -15,6 +15,8 @@ export function useFloatingWindowPlacement() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let movementGeneration = 0;
+    let restoringStoredPosition = false;
     const positionPersistence = createFloatingPositionPersistence((position) =>
       saveFloatingPosition({
         ...position,
@@ -22,24 +24,34 @@ export function useFloatingWindowPlacement() {
       }),
     );
 
-    void readAppSettings().then((settings) => {
-      if (!disposed && settings !== null && isStoredPosition(settings.floatingPosition)) {
-        positionPersistence.setPersisted(settings.floatingPosition);
-        void desktopPlatform.setFloatingWindowPosition(settings.floatingPosition);
-      }
-    }).catch(() => {
-      // 保持当前窗口位置；失败已由命令诊断链路记录。
-    });
-
     void desktopPlatform.onFloatingWindowMoved((position) => {
+      if (restoringStoredPosition) return;
       if (isValidCoordinate(position.x) && isValidCoordinate(position.y)) {
+        movementGeneration += 1;
         positionPersistence.schedule(position);
       }
-    }).then((listener) => {
+    }).then(async (listener) => {
       if (disposed) {
         listener();
       } else {
         unlisten = listener;
+        const restoreGeneration = movementGeneration;
+        try {
+          const settings = await readAppSettings();
+          if (
+            disposed
+            || movementGeneration !== restoreGeneration
+            || settings === null
+            || !isStoredPosition(settings.floatingPosition)
+          ) return;
+          positionPersistence.setPersisted(settings.floatingPosition);
+          restoringStoredPosition = true;
+          await desktopPlatform.setFloatingWindowPosition(settings.floatingPosition);
+          restoringStoredPosition = false;
+        } catch {
+          restoringStoredPosition = false;
+          // 保持当前窗口位置；失败已由命令诊断链路记录。
+        }
       }
     });
 

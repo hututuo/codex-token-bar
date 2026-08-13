@@ -133,7 +133,9 @@ struct AccountQuotaDiagnostic: LocalizedError, Equatable, Sendable {
             source: source,
             category: .staleCachedData,
             severity: .warning,
-            message: "显示上次成功读取的额度",
+            message: source == .resetCredit
+                ? "显示上次成功读取的重置卡"
+                : "显示上次成功读取的额度",
             rawCause: rawCause,
             retryable: true,
             occurredAt: occurredAt,

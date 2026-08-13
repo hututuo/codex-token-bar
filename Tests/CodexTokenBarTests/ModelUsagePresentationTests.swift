@@ -164,6 +164,27 @@ final class ModelUsagePresentationTests: XCTestCase {
         )
     }
 
+    func testDashboardModelCostGroupsKeepCoreModelsExpandedAndMoveUsedOthersBelow() {
+        let rows = [
+            rowWithBreakdown("gpt-5.6-sol", inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000),
+            rowWithBreakdown("gpt-5.4", inputTokens: 500, cachedInputTokens: 0, outputTokens: 0, totalTokens: 500),
+            rowWithBreakdown("gpt-5.3-codex", inputTokens: 250, cachedInputTokens: 0, outputTokens: 0, totalTokens: 250),
+        ]
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: .gpt56Sol
+        )
+
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: items).map(\.label),
+            ["Sol", "Terra", "Luna"]
+        )
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: items).map(\.label),
+            ["5.4", "5.3"]
+        )
+    }
+
     private func rowWithBreakdown(
         _ model: String,
         inputTokens: Int,

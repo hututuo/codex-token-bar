@@ -5,6 +5,7 @@ import {
   useState,
   type DragEvent,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import type {
   FloatingContentGroup,
@@ -12,6 +13,9 @@ import type {
   FloatingPanelSnapshot,
   RunningThreadSummary,
 } from "../../types/dashboard";
+import type { CodexRadarSnapshot } from "../../domain/codexRadar/model";
+import type { CodexCrowdRadarSnapshot } from "../../api/codexCrowdRadarClient";
+import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel";
 import type { FloatingWindowSettings } from "../../floating/floatingSettings";
 import {
   DEFAULT_FLOATING_CONTENT_VISIBILITY,
@@ -40,11 +44,48 @@ interface FloatingStructureEditorProps {
   showPreview?: boolean;
   selectedRowId?: string | null;
   onSelectedRowIdChange?: (rowId: string | null) => void;
+  radarSnapshot?: CodexRadarSnapshot | null;
+  crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
+  priceModel?: OfficialAPIPriceModel;
 }
 
 type EditorDragState =
   | { kind: "row"; groups: FloatingContentGroup[]; rowId: string }
   | { kind: "page"; group: FloatingContentGroup };
+
+interface PointerDragSession {
+  active: boolean;
+  pointerId: number;
+  source: EditorDragState;
+  startX: number;
+  startY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  ghostWidth: number;
+  ghostHeight: number;
+  visualElement: HTMLElement;
+  geometry: PointerDropGeometry;
+}
+
+interface ClientRectSnapshot {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+}
+
+interface PointerDropRowGeometry {
+  rowId: string;
+  rect: ClientRectSnapshot;
+  pagesRect: ClientRectSnapshot | null;
+}
+
+interface PointerDropGeometry {
+  rowsRect: ClientRectSnapshot | null;
+  rows: PointerDropRowGeometry[];
+}
 
 interface EditorRow {
   id: string;
@@ -67,8 +108,17 @@ export function FloatingStructureEditor({
   showPreview = true,
   selectedRowId: controlledSelectedRowId,
   onSelectedRowIdChange,
+  radarSnapshot,
+  crowdRadarSnapshot,
+  priceModel,
 }: FloatingStructureEditorProps) {
-  const visibility = sanitizeFloatingContentVisibility(rawVisibility);
+  const rawVisibilitySignature = JSON.stringify(sanitizeFloatingContentVisibility(rawVisibility));
+  const normalizedRawVisibility = useMemo(
+    () => sanitizeFloatingContentVisibility(JSON.parse(rawVisibilitySignature) as FloatingContentVisibility),
+    [rawVisibilitySignature],
+  );
+  const [draftVisibility, setDraftVisibility] = useState(normalizedRawVisibility);
+  const visibility = draftVisibility;
   const rows = useMemo<EditorRow[]>(() => layoutFloatingContentRows(visibility).map((layoutRow) => ({
     id: layoutRow.id,
     layoutRow,
@@ -85,7 +135,19 @@ export function FloatingStructureEditor({
   const [undoState, setUndoState] = useState<UndoState | null>(null);
   const [resetPending, setResetPending] = useState(false);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const rowsContainerRef = useRef<HTMLDivElement>(null);
+  const hiddenZoneRef = useRef<HTMLDivElement>(null);
+  const pointerDragRef = useRef<PointerDragSession | null>(null);
+  const dragGhostRef = useRef<HTMLDivElement | null>(null);
+  const pointerWindowCleanupRef = useRef<(() => void) | null>(null);
+  const dropTargetIdRef = useRef<string | null>(null);
   const menuRootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setDraftVisibility((current) => (
+      JSON.stringify(current) === rawVisibilitySignature ? current : normalizedRawVisibility
+    ));
+  }, [normalizedRawVisibility, rawVisibilitySignature]);
 
   useEffect(() => {
     if (selectedRowId !== null && rows.some((row) => row.id === selectedRowId)) return;
@@ -112,10 +174,18 @@ export function FloatingStructureEditor({
     return () => document.removeEventListener("pointerdown", close);
   }, [menuRowId]);
 
+  useEffect(() => () => {
+    pointerWindowCleanupRef.current?.();
+    pointerWindowCleanupRef.current = null;
+    dragGhostRef.current?.remove();
+    dragGhostRef.current = null;
+  }, []);
+
   const commit = (nextValue: FloatingContentVisibility, message: string) => {
     const next = sanitizeFloatingContentVisibility(nextValue);
     if (JSON.stringify(next) === JSON.stringify(visibility)) return;
     setUndoState({ previous: visibility, message, token: Date.now() });
+    setDraftVisibility(next);
     onChange(next);
   };
 
@@ -137,24 +207,46 @@ export function FloatingStructureEditor({
     }, `已移动「${rowTitle(row)}」`);
   };
 
-  const clearDragState = () => {
-    setDragState(null);
-    setDropTargetId(null);
+  const setActiveDropTarget = (targetId: string | null) => {
+    if (dropTargetIdRef.current === targetId) return;
+    dropTargetIdRef.current = targetId;
+    setDropTargetId(targetId);
   };
 
-  const canDropIntoGap = (target: EditorRow, placement: FloatingContentRowPlacement) => {
-    if (dragState?.kind === "page") {
-      const nextPairs = splitFloatingPage(visibility.pagePairs, dragState.group);
-      const nextOrder = moveFloatingRow(visibility.order, [dragState.group], target.groups, placement);
+  const removeDragGhost = () => {
+    dragGhostRef.current?.remove();
+    dragGhostRef.current = null;
+  };
+
+  const clearDragState = () => {
+    pointerWindowCleanupRef.current?.();
+    pointerWindowCleanupRef.current = null;
+    removeDragGhost();
+    pointerDragRef.current = null;
+    setDragState(null);
+    setActiveDropTarget(null);
+  };
+
+  const canDragStateDropIntoGap = (
+    source: EditorDragState,
+    target: EditorRow,
+    placement: FloatingContentRowPlacement,
+  ) => {
+    if (source.kind === "page") {
+      const nextPairs = splitFloatingPage(visibility.pagePairs, source.group);
+      const nextOrder = moveFloatingRow(visibility.order, [source.group], target.groups, placement);
       return JSON.stringify(nextPairs) !== JSON.stringify(visibility.pagePairs)
         || JSON.stringify(nextOrder) !== JSON.stringify(visibility.order);
     }
-    if (dragState?.kind !== "row") return false;
-    const source = rows.find((row) => row.id === dragState.rowId);
-    if (!source || source.id === target.id) return false;
-    const nextOrder = moveFloatingRow(visibility.order, source.groups, target.groups, placement);
+    const sourceRow = rows.find((row) => row.id === source.rowId);
+    if (!sourceRow || sourceRow.id === target.id) return false;
+    const nextOrder = moveFloatingRow(visibility.order, sourceRow.groups, target.groups, placement);
     return JSON.stringify(nextOrder) !== JSON.stringify(visibility.order);
   };
+
+  const canDropIntoGap = (target: EditorRow, placement: FloatingContentRowPlacement) => (
+    dragState !== null && canDragStateDropIntoGap(dragState, target, placement)
+  );
 
   const mergeTargetForRow = (group: FloatingContentGroup, row: EditorRow) => (
     row.layoutRow.groups.find((candidate) => candidate !== group)
@@ -300,6 +392,291 @@ export function FloatingStructureEditor({
     clearDragState();
   };
 
+  const capturePointerDropGeometry = (): PointerDropGeometry => ({
+    rowsRect: snapshotClientRect(rowsContainerRef.current?.getBoundingClientRect()),
+    rows: rows.flatMap((row) => {
+      const node = rowRefs.current.get(row.id);
+      if (!node) return [];
+      return [{
+        rowId: row.id,
+        rect: snapshotClientRect(node.getBoundingClientRect())!,
+        pagesRect: snapshotClientRect(node.querySelector<HTMLElement>(".fs-row-pages")?.getBoundingClientRect()),
+      }];
+    }),
+  });
+
+  const pointerDropTarget = (
+    source: EditorDragState,
+    clientX: number,
+    clientY: number,
+    geometry: PointerDropGeometry,
+  ): string | null => {
+    const liveHiddenRect = snapshotClientRect(hiddenZoneRef.current?.getBoundingClientRect());
+    if (liveHiddenRect && pointInsideRect(clientX, clientY, liveHiddenRect)) return "hidden";
+
+    // Resolve against the geometry captured before the drag changes any visual
+    // state. This keeps insertion slots stable and makes the horizontal editor
+    // padding a deliberate cancellation area.
+    if (!geometry.rowsRect || !pointInsideRect(clientX, clientY, geometry.rowsRect)) return null;
+    if (!geometry.rows.some(({ rect }) => pointInsideHorizontalRect(clientX, rect))) return null;
+
+    const targetForGapIndex = (gapIndex: number): string | null => {
+      if (geometry.rows.length === 0 || gapIndex < 0 || gapIndex > geometry.rows.length) return null;
+      const targetGeometry = gapIndex === geometry.rows.length
+        ? geometry.rows[geometry.rows.length - 1]
+        : geometry.rows[gapIndex];
+      const placement: FloatingContentRowPlacement = gapIndex === geometry.rows.length ? "after" : "before";
+      const target = rows.find((row) => row.id === targetGeometry.rowId);
+      if (!target || !canDragStateDropIntoGap(source, target, placement)) return null;
+      return `gap:${target.id}:${placement}`;
+    };
+
+    const hoveredRowIndex = geometry.rows.findIndex(({ rect }) => pointInsideRect(clientX, clientY, rect));
+    if (hoveredRowIndex >= 0) {
+      const hoveredGeometry = geometry.rows[hoveredRowIndex];
+      const target = rows.find((row) => row.id === hoveredGeometry.rowId);
+      if (!target) return null;
+      if (source.kind === "page") {
+        // Releasing inside the source row is a no-op. Releasing on row actions
+        // outside the page strip is also a cancellation, not an implicit merge.
+        if (target.groups.includes(source.group)) return null;
+        const pagesRect = hoveredGeometry.pagesRect ?? hoveredGeometry.rect;
+        if (!pointInsideHorizontalRect(clientX, pagesRect)) return null;
+        const placement = pagePlacementForRect(pagesRect, clientX);
+        return canMergePageInto(source.group, target, placement)
+          ? `page:${target.id}:${placement}`
+          : null;
+      }
+      return targetForGapIndex(
+        clientY < hoveredGeometry.rect.top + hoveredGeometry.rect.height / 2
+          ? hoveredRowIndex
+          : hoveredRowIndex + 1,
+      );
+    }
+
+    const first = geometry.rows[0];
+    if (!first) return null;
+    if (clientY < first.rect.top) return targetForGapIndex(0);
+    for (let index = 1; index < geometry.rows.length; index += 1) {
+      const previous = geometry.rows[index - 1];
+      const current = geometry.rows[index];
+      if (clientY >= previous.rect.bottom && clientY <= current.rect.top) {
+        return targetForGapIndex(index);
+      }
+    }
+    const last = geometry.rows[geometry.rows.length - 1];
+    return clientY > last.rect.bottom ? targetForGapIndex(geometry.rows.length) : null;
+  };
+
+  const updateDragGhost = (session: PointerDragSession, clientX: number, clientY: number) => {
+    const ghost = dragGhostRef.current;
+    if (!ghost) return;
+    const viewportWidth = Math.max(document.documentElement.clientWidth, window.innerWidth, session.ghostWidth + 16);
+    const viewportHeight = Math.max(document.documentElement.clientHeight, window.innerHeight, session.ghostHeight + 16);
+    const left = clampDragGhostPosition(
+      clientX - session.grabOffsetX,
+      session.ghostWidth,
+      viewportWidth,
+    );
+    const top = clampDragGhostPosition(
+      clientY - session.grabOffsetY,
+      session.ghostHeight,
+      viewportHeight,
+    );
+    ghost.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+  };
+
+  const createDragGhost = (session: PointerDragSession, clientX: number, clientY: number) => {
+    removeDragGhost();
+    const ghost = document.createElement("div");
+    ghost.className = `fs-drag-ghost fs-drag-ghost--${session.source.kind}`;
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.style.width = `${session.ghostWidth}px`;
+    ghost.style.height = `${session.ghostHeight}px`;
+
+    const clone = session.visualElement.cloneNode(true) as HTMLElement;
+    clone.classList.remove("is-selected", "is-drag-source", "is-drop-target");
+    clone.querySelector(".fs-row-menu")?.remove();
+    if (clone.matches("button, input, select, textarea, [tabindex]")) clone.tabIndex = -1;
+    clone.querySelectorAll<HTMLElement>("button, input, select, textarea, [tabindex]").forEach((node) => {
+      node.tabIndex = -1;
+    });
+    ghost.append(clone);
+    document.body.append(ghost);
+    dragGhostRef.current = ghost;
+    updateDragGhost(session, clientX, clientY);
+  };
+
+  const commitPointerDrop = (source: EditorDragState, targetId: string | null) => {
+    if (targetId === null) return;
+    if (targetId === "hidden") {
+      if (source.kind === "row") {
+        commit(
+          setFloatingGroupsVisible(visibility, source.groups, false),
+          `已隐藏「${source.groups.map(title).join(" · ")}」`,
+        );
+      } else {
+        commit(
+          setFloatingGroupsVisible(visibility, [source.group], false),
+          `已隐藏「${title(source.group)}」`,
+        );
+      }
+      return;
+    }
+
+    const [kind, rowId, rawPlacement] = targetId.split(":");
+    const placement = rawPlacement === "before" ? "before" : "after";
+    const target = rows.find((row) => row.id === rowId);
+    if (!target) return;
+    if (kind === "page" && source.kind === "page") {
+      mergePageInto(source.group, target, placement);
+      return;
+    }
+    if (kind !== "gap") return;
+    if (source.kind === "row") {
+      const sourceRow = rows.find((row) => row.id === source.rowId);
+      if (sourceRow && sourceRow.id !== target.id) moveRowRelative(sourceRow, target, placement);
+      return;
+    }
+    const nextPairs = splitFloatingPage(visibility.pagePairs, source.group);
+    const nextOrder = moveFloatingRow(visibility.order, [source.group], target.groups, placement);
+    commit(
+      { ...visibility, order: nextOrder, pagePairs: nextPairs },
+      `已将「${title(source.group)}」拆成单独一行`,
+    );
+  };
+
+  const beginPointerDrag = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    source: EditorDragState,
+  ) => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    const visualElement = source.kind === "row"
+      ? event.currentTarget.closest<HTMLElement>(".fs-row") ?? event.currentTarget
+      : event.currentTarget;
+    const visualRect = snapshotClientRect(visualElement.getBoundingClientRect());
+    const ownerRect = snapshotClientRect(
+      event.currentTarget.closest<HTMLElement>(".fs-row")?.getBoundingClientRect(),
+    );
+    const ownerWidth = ownerRect && ownerRect.width > 0 ? ownerRect.width : 320;
+    const ownerHeight = ownerRect && ownerRect.height > 0 ? ownerRect.height : 43;
+    const ghostWidth = visualRect && visualRect.width > 0
+      ? visualRect.width
+      : source.kind === "page" ? Math.min(180, ownerWidth) : ownerWidth;
+    const ghostHeight = visualRect && visualRect.height > 0
+      ? visualRect.height
+      : source.kind === "page" ? Math.min(30, ownerHeight) : ownerHeight;
+    const visualLeft = visualRect && visualRect.width > 0
+      ? visualRect.left
+      : event.clientX - Math.min(ghostWidth / 2, source.kind === "page" ? 24 : ghostWidth / 2);
+    const visualTop = visualRect && visualRect.height > 0
+      ? visualRect.top
+      : event.clientY - Math.min(ghostHeight / 2, 12);
+    pointerDragRef.current = {
+      active: false,
+      pointerId: event.pointerId,
+      source,
+      startX: event.clientX,
+      startY: event.clientY,
+      grabOffsetX: Math.max(0, Math.min(ghostWidth, event.clientX - visualLeft)),
+      grabOffsetY: Math.max(0, Math.min(ghostHeight, event.clientY - visualTop)),
+      ghostWidth,
+      ghostHeight,
+      visualElement,
+      geometry: capturePointerDropGeometry(),
+    };
+    installPointerWindowListeners();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Older macOS WebViews may expose PointerEvent without pointer capture.
+    }
+  };
+
+  const movePointerDragAt = (pointerId: number, clientX: number, clientY: number) => {
+    const session = pointerDragRef.current;
+    if (!session || session.pointerId !== pointerId) return false;
+    if (!session.active) {
+      const distance = Math.hypot(clientX - session.startX, clientY - session.startY);
+      if (distance < 4) return false;
+      session.active = true;
+      setDragState(session.source);
+      setMenuRowId(null);
+      createDragGhost(session, clientX, clientY);
+    }
+    updateDragGhost(session, clientX, clientY);
+    setActiveDropTarget(pointerDropTarget(session.source, clientX, clientY, session.geometry));
+    return true;
+  };
+
+  const finishPointerDragAt = (pointerId: number, clientX: number, clientY: number) => {
+    const session = pointerDragRef.current;
+    if (!session || session.pointerId !== pointerId) return false;
+    if (session.active) {
+      updateDragGhost(session, clientX, clientY);
+      // Commit the last target the user actually saw. Switching from a gap
+      // preview to the hidden zone can collapse the item-sized gap and move
+      // the hidden zone before pointerup is delivered; recomputing here would
+      // otherwise turn a visible “松手即可隐藏” state into a silent no-op.
+      const finalTarget = dropTargetIdRef.current
+        ?? pointerDropTarget(session.source, clientX, clientY, session.geometry);
+      commitPointerDrop(session.source, finalTarget);
+    }
+    const wasActive = session.active;
+    clearDragState();
+    return wasActive;
+  };
+
+  const movePointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!movePointerDragAt(event.pointerId, event.clientX, event.clientY)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const endPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const handled = finishPointerDragAt(event.pointerId, event.clientX, event.clientY);
+    if (handled) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional in older macOS WebViews.
+    }
+  };
+
+  const cancelPointerDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (pointerDragRef.current?.pointerId === event.pointerId) clearDragState();
+  };
+
+  const installPointerWindowListeners = () => {
+    pointerWindowCleanupRef.current?.();
+    // WKWebView versions differ in pointer-capture support. Window listeners
+    // keep the drag alive when capture is unavailable and the pointer leaves
+    // the small handle/chip that initiated it.
+    const move = (event: PointerEvent) => {
+      if (movePointerDragAt(event.pointerId, event.clientX, event.clientY)) event.preventDefault();
+    };
+    const end = (event: PointerEvent) => {
+      if (finishPointerDragAt(event.pointerId, event.clientX, event.clientY)) event.preventDefault();
+    };
+    const cancel = (event: PointerEvent) => {
+      if (pointerDragRef.current?.pointerId === event.pointerId) clearDragState();
+    };
+    const cancelOnBlur = () => clearDragState();
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", end, { passive: false });
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancelOnBlur);
+    pointerWindowCleanupRef.current = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("blur", cancelOnBlur);
+    };
+  };
+
   return (
     <div className={`floating-structure-shell${dragState ? " is-dragging" : ""}`}>
       <header className="floating-structure-intro">
@@ -326,7 +703,7 @@ export function FloatingStructureEditor({
       <div className={`floating-structure-grid${showPreview ? "" : " is-controls-only"}`}>
         <section aria-label="悬浮窗结构编辑器" className="floating-structure-editor">
           <div className="floating-structure-editor__label">结构编辑器</div>
-          <div className="floating-structure-rows">
+          <div className="floating-structure-rows" ref={rowsContainerRef}>
             {rows.map((row, index) => {
               const paged = row.layoutRow.groups.length > 1;
               const inline = row.groups.length > row.layoutRow.groups.length;
@@ -360,10 +737,10 @@ export function FloatingStructureEditor({
                 : row.groups.map((group) => ({ group, placeholder: false }));
               const displayPaged = paged || pagePlacement !== null;
               return (
-                <div key={row.id}>
+                <div className="fs-row-slot" key={row.id}>
                   <div
                     aria-hidden="true"
-                    className={`fs-drop-gap${dropTargetId === `gap:${row.id}:before` ? " is-target" : ""}`}
+                    className={`fs-drop-gap fs-drop-gap--before${dropTargetId === `gap:${row.id}:before` ? " is-target" : ""}`}
                     onDragEnter={() => canDropIntoGap(row, "before") && setDropTargetId(`gap:${row.id}:before`)}
                     onDragOver={(event) => {
                       if (!canDropIntoGap(row, "before")) return;
@@ -377,7 +754,7 @@ export function FloatingStructureEditor({
                     ) : null}
                   </div>
                   <div
-                    className={`fs-row${displayPaged ? " is-paged" : ""}${inline ? " is-inline" : ""}${selectedRowId === row.id ? " is-selected" : ""}`}
+                    className={`fs-row${displayPaged ? " is-paged" : ""}${inline ? " is-inline" : ""}${selectedRowId === row.id ? " is-selected" : ""}${pagePlacement !== null ? " is-drop-target" : ""}${dragState?.kind === "row" && dragState.rowId === row.id ? " is-drag-source" : ""}`}
                     data-row-id={row.id}
                     onDragOver={(event) => {
                       if (dragState?.kind === "row") {
@@ -403,7 +780,7 @@ export function FloatingStructureEditor({
                     }}
                     onDrop={(event) => dropOnRow(event, row)}
                     onMouseEnter={() => {
-                      if (!dragState) selectEditorRow(row.id);
+                      if (pointerDragRef.current === null) selectEditorRow(row.id);
                     }}
                     ref={(node) => {
                       if (node) rowRefs.current.set(row.id, node);
@@ -414,13 +791,14 @@ export function FloatingStructureEditor({
                     <button
                       aria-label={`拖动整行：${rowTitle(row)}`}
                       className="fs-row-handle"
-                      draggable
-                      onDragEnd={clearDragState}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData("text/plain", `row:${row.id}`);
-                        setDragState({ kind: "row", groups: row.groups, rowId: row.id });
-                      }}
+                      draggable={false}
+                      onPointerCancel={cancelPointerDrag}
+                      onPointerDown={(event) => beginPointerDrag(
+                        event,
+                        { kind: "row", groups: row.groups, rowId: row.id },
+                      )}
+                      onPointerMove={movePointerDrag}
+                      onPointerUp={endPointerDrag}
                       onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
                         if (!event.ctrlKey) return;
                         if (event.key === "ArrowUp") {
@@ -448,22 +826,22 @@ export function FloatingStructureEditor({
                             >
                               {isDefault ? <span aria-hidden="true">★</span> : null}
                               <strong>{title(group)}</strong>
-                              <em>放这里</em>
+                              {isDefault ? <em>默认页</em> : null}
                             </span>
                           );
                         }
                         return (
                           <button
                             className={`fs-chip${isDefault ? " is-default" : ""}${isInline ? " is-inline" : ""}${canPage ? " is-draggable" : ""}`}
-                            draggable={canPage}
+                            draggable={false}
                             key={`${row.id}:${group}`}
-                            onDragEnd={clearDragState}
-                            onDragStart={canPage ? (event) => {
-                              event.stopPropagation();
-                              event.dataTransfer.effectAllowed = "move";
-                              event.dataTransfer.setData("text/plain", `page:${group}`);
-                              setDragState({ kind: "page", group });
-                            } : undefined}
+                            onPointerCancel={canPage ? cancelPointerDrag : undefined}
+                            onPointerDown={canPage ? (event) => beginPointerDrag(
+                              event,
+                              { kind: "page", group },
+                            ) : undefined}
+                            onPointerMove={canPage ? movePointerDrag : undefined}
+                            onPointerUp={canPage ? endPointerDrag : undefined}
                             onDoubleClick={!isDefault && paged ? () => swapDefault(group) : undefined}
                             title={canPage ? "拖到另一行成组，拖到行间拆分" : "内联内容随整行移动"}
                             type="button"
@@ -530,6 +908,7 @@ export function FloatingStructureEditor({
               setDropTargetId("hidden");
             }}
             onDrop={dropIntoHidden}
+            ref={hiddenZoneRef}
           >
             <div>
               <strong>已隐藏</strong>
@@ -546,7 +925,10 @@ export function FloatingStructureEditor({
 
         {showPreview ? (
           <FloatingStructurePreview
+            crowdRadarSnapshot={crowdRadarSnapshot}
             onSelectedRowIdChange={selectPreviewRow}
+            priceModel={priceModel}
+            radarSnapshot={radarSnapshot}
             runningThreads={runningThreads}
             selectedRowId={selectedRowId}
             settings={settings}
@@ -564,6 +946,7 @@ export function FloatingStructureEditor({
         <div aria-live="polite" className="fs-undo-bar">
           <span>{undoState.message}</span>
           <button onClick={() => {
+            setDraftVisibility(undoState.previous);
             onChange(undoState.previous);
             setUndoState(null);
           }} type="button">撤销</button>
@@ -591,6 +974,9 @@ interface FloatingStructurePreviewProps {
   visibility: FloatingContentVisibility;
   selectedRowId: string | null;
   onSelectedRowIdChange: (rowId: string) => void;
+  radarSnapshot?: CodexRadarSnapshot | null;
+  crowdRadarSnapshot?: CodexCrowdRadarSnapshot | null;
+  priceModel?: OfficialAPIPriceModel;
 }
 
 export function FloatingStructurePreview({
@@ -600,6 +986,9 @@ export function FloatingStructurePreview({
   visibility,
   selectedRowId,
   onSelectedRowIdChange,
+  radarSnapshot,
+  crowdRadarSnapshot,
+  priceModel,
 }: FloatingStructurePreviewProps) {
   return (
     <section aria-label="悬浮窗实时预览" className="floating-structure-preview">
@@ -609,8 +998,11 @@ export function FloatingStructurePreview({
       </div>
       <div className="floating-structure-preview__stage">
         <FloatingPanelSurface
+          crowdRadarSnapshot={crowdRadarSnapshot}
           previewMode
           onPreviewRowSelect={onSelectedRowIdChange}
+          priceModel={priceModel}
+          radarSnapshot={radarSnapshot}
           runningThreads={runningThreads}
           selectedPreviewRowId={selectedRowId}
           settings={{ ...settings, contentVisibility: visibility }}
@@ -625,7 +1017,39 @@ export function FloatingStructurePreview({
 function pagePlacementForRow(row: HTMLDivElement, clientX: number): FloatingContentRowPlacement {
   const pages = row.querySelector<HTMLElement>(".fs-row-pages");
   const rect = (pages ?? row).getBoundingClientRect();
+  return pagePlacementForRect(rect, clientX);
+}
+
+function pagePlacementForRect(rect: ClientRectSnapshot, clientX: number): FloatingContentRowPlacement {
   return clientX < rect.left + rect.width / 2 ? "before" : "after";
+}
+
+function snapshotClientRect(rect: DOMRect | undefined | null): ClientRectSnapshot | null {
+  if (!rect) return null;
+  return {
+    bottom: rect.bottom,
+    height: rect.height,
+    left: rect.left,
+    right: rect.right,
+    top: rect.top,
+    width: rect.width,
+  };
+}
+
+function pointInsideRect(clientX: number, clientY: number, rect: ClientRectSnapshot): boolean {
+  return clientX >= rect.left
+    && clientX <= rect.right
+    && clientY >= rect.top
+    && clientY <= rect.bottom;
+}
+
+function pointInsideHorizontalRect(clientX: number, rect: ClientRectSnapshot): boolean {
+  return clientX >= rect.left && clientX <= rect.right;
+}
+
+function clampDragGhostPosition(position: number, itemSize: number, viewportSize: number): number {
+  const margin = 8;
+  return Math.min(Math.max(margin, viewportSize - itemSize - margin), Math.max(margin, position));
 }
 
 function draggedItemLabel(dragState: EditorDragState | null): string {

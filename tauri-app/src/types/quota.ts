@@ -38,6 +38,7 @@ export interface ResetCreditSummary {
   availableCount: number;
   status: string;
   credits: ResetCreditDetail[];
+  updatedAt?: string | null;
 }
 
 export interface ResetCreditDetail {
@@ -78,4 +79,12 @@ export interface AccountQuotaBundle {
   quotaHistory30d: QuotaHistoryPoint[];
   warnings: LocalDataWarning[];
   diagnostics: QuotaDiagnostic[];
+}
+
+export interface ResetCreditBundle {
+  updatedAt: string;
+  resetCredit: ResetCreditSummary;
+  warnings: LocalDataWarning[];
+  diagnostics: QuotaDiagnostic[];
+  successful: boolean;
 }

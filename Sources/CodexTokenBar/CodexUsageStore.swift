@@ -1362,13 +1362,14 @@ enum ActivityMode: String, CaseIterable, Identifiable {
     case weekly = "每周"
     case cumulative = "累计"
     case modelShare = "模型"
+    case modelCost = "费用"
     case cacheHitRate = "命中率"
     case quotaRemaining = "额度"
 
     var id: String { rawValue }
 
     var isSpecial: Bool {
-        self == .modelShare || self == .cacheHitRate || self == .quotaRemaining
+        self == .modelShare || self == .modelCost || self == .cacheHitRate || self == .quotaRemaining
     }
 }
 

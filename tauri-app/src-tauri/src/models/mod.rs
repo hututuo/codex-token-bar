@@ -36,7 +36,8 @@ pub use provider_repair::{
 };
 pub use quota::{
     AccountQuotaBundle, QuotaAttributionIdentity, QuotaAvailability, QuotaHistoryDailyPoint,
-    QuotaHistoryPoint, QuotaLimit, QuotaSnapshot, ResetCreditDetail, ResetCreditSummary,
+    QuotaHistoryPoint, QuotaLimit, QuotaSnapshot, ResetCreditBundle, ResetCreditDetail,
+    ResetCreditSummary,
 };
 pub use session_management::{
     SessionActionItemResult, SessionBatchActionResult, SessionContextMessage,

@@ -1705,6 +1705,30 @@ pub async fn read_account_quota(
     result
 }
 
+#[tauri::command]
+pub async fn read_account_reset_credits(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    force_refresh: Option<bool>,
+) -> Result<crate::models::ResetCreditBundle, String> {
+    require_window_label(&window, "read_account_reset_credits")?;
+    let started = Instant::now();
+    let forced = force_refresh.unwrap_or(false);
+    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
+            .read_account_reset_credits(forced)
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "read_account_reset_credits force={} {}ms {}",
+        forced,
+        started.elapsed().as_millis(),
+        result_status(&result)
+    ));
+    result
+}
+
 fn result_status<T>(result: &Result<T, String>) -> &'static str {
     if result.is_ok() {
         "ok"

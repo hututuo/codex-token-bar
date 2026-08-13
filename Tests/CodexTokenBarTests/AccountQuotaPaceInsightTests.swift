@@ -48,10 +48,10 @@ final class AccountQuotaPaceInsightTests: XCTestCase {
     }
 
     @MainActor
-    func testHostedReachableLongestPaceUsesBudgetedWidthWithTenMinuteCadence() {
+    func testHostedReachableLongestPaceUsesBudgetedWidthWithOneMinuteCadence() {
         let defaults = UserDefaults.standard
         let previousValue = defaults.object(forKey: AccountQuotaRefreshCadence.storageKey)
-        defaults.set(AccountQuotaRefreshCadence.tenMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+        defaults.set(AccountQuotaRefreshCadence.oneMinute.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
         defer {
             if let previousValue {
                 defaults.set(previousValue, forKey: AccountQuotaRefreshCadence.storageKey)
@@ -72,8 +72,8 @@ final class AccountQuotaPaceInsightTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(hostingView.fittingSize.height, 42)
         XCTAssertEqual(
-            AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: AccountQuotaRefreshCadence.tenMinutes.rawValue).visibleLabel,
-            "额度刷新 10 分钟"
+            AccountQuotaRefreshCadenceMenuPresentation(selectionRaw: AccountQuotaRefreshCadence.oneMinute.rawValue).visibleLabel,
+            "额度刷新 1 分钟"
         )
     }
 

@@ -16,6 +16,8 @@ test("activity modes expose the current choice with aria-pressed", async () => {
     assertButtonPressed(html, "每日", false);
     assertButtonPressed(html, "每周", true);
     assertButtonPressed(html, "累计", false);
+    assertButtonPressed(html, "模型", false);
+    assertButtonPressed(html, "费用", false);
     assertButtonPressed(html, "命中率", false);
     assertButtonPressed(html, "额度", false);
   });

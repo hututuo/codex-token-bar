@@ -622,11 +622,11 @@ final class AccountQuotaStoreTests: XCTestCase {
             await reader.currentReadCount() == 1
         }
 
-        store.setAutomaticRefreshInterval(300)
+        store.setAutomaticRefreshInterval(30)
         try? await Task.sleep(nanoseconds: 100_000_000)
 
-        XCTAssertEqual(store.automaticRefreshInterval, 300)
-        XCTAssertEqual(timerScheduler.scheduledIntervals, [60, 300])
+        XCTAssertEqual(store.automaticRefreshInterval, 30)
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [60, 30])
         XCTAssertTrue(timerScheduler.tokens.first?.isInvalidated == true)
         let readCount = await reader.currentReadCount()
         XCTAssertEqual(readCount, 1)
@@ -672,7 +672,7 @@ final class AccountQuotaStoreTests: XCTestCase {
         let suiteName = "AccountQuotaStoreTests-\(UUID().uuidString)"
         let userDefaults = UserDefaults(suiteName: suiteName)!
         defer { userDefaults.removePersistentDomain(forName: suiteName) }
-        userDefaults.set(AccountQuotaRefreshCadence.fiveMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+        userDefaults.set("300", forKey: AccountQuotaRefreshCadence.storageKey)
 
         let store = AccountQuotaStore(
             quotaReader: SequentialQuotaReader(results: []),
@@ -680,7 +680,7 @@ final class AccountQuotaStoreTests: XCTestCase {
             observesUserDefaults: false
         )
 
-        XCTAssertEqual(store.automaticRefreshInterval, 300)
+        XCTAssertEqual(store.automaticRefreshInterval, 60)
     }
 
     func testPersistedCadenceChangeReschedulesRunningTimerWithoutImmediateQuotaRequest() async {
@@ -699,10 +699,10 @@ final class AccountQuotaStoreTests: XCTestCase {
             await reader.currentReadCount() == 1
         }
 
-        userDefaults.set(AccountQuotaRefreshCadence.fiveMinutes.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
+        userDefaults.set(AccountQuotaRefreshCadence.thirtySeconds.rawValue, forKey: AccountQuotaRefreshCadence.storageKey)
         NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: userDefaults)
         await waitUntil("persisted cadence reschedule") {
-            timerScheduler.scheduledIntervals == [60, 300]
+            timerScheduler.scheduledIntervals == [60, 30]
         }
 
         let readCount = await reader.currentReadCount()

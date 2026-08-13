@@ -60,10 +60,14 @@ pub async fn save_floating_settings(
 pub async fn complete_floating_paging_guide(
     window: tauri::WebviewWindow,
     show_page_navigation_arrows: bool,
+    paging_guide_revision: u32,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "complete_floating_paging_guide")?;
     run_blocking_command(move || {
-        platform::complete_floating_paging_guide(show_page_navigation_arrows)
+        platform::complete_floating_paging_guide(
+            show_page_navigation_arrows,
+            paging_guide_revision,
+        )
     })
     .await
 }

@@ -26,8 +26,14 @@ export function saveFloatingSettings(settings: FloatingWindowSettings): Promise<
   return callCommandStrict<AppSettingsSnapshot>("save_floating_settings", { settings });
 }
 
-export function completeFloatingPagingGuide(showPageNavigationArrows: boolean): Promise<AppSettingsSnapshot> {
-  return callCommandStrict<AppSettingsSnapshot>("complete_floating_paging_guide", { showPageNavigationArrows });
+export function completeFloatingPagingGuide(
+  showPageNavigationArrows: boolean,
+  pagingGuideRevision: number,
+): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("complete_floating_paging_guide", {
+    showPageNavigationArrows,
+    pagingGuideRevision,
+  });
 }
 
 export function saveFloatingPosition(position: FloatingWindowPosition): Promise<AppSettingsSnapshot> {

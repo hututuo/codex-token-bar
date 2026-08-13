@@ -213,10 +213,15 @@ final class CodexRadarStore: ObservableObject {
     private let refreshInterval: TimeInterval
     private let detailRefreshDefaults: UserDefaults
     private let detailRefreshCalendar: Calendar
+    private let detailRetrySleep: UsageRefreshCadenceRecoveryScheduler.Sleep
+    private let detailNow: @Sendable () -> Date
     private var timer: Timer?
     private var detailTimer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var detailRefreshTask: Task<Void, Never>?
+    private var detailRetryTask: Task<Void, Never>?
+    private var detailRetryBackoff = PersistentRefreshBackoff(steps: PersistentRefreshBackoff.backgroundSteps)
+    private var detailRetrySlotAt: Date?
     private var refreshGeneration = 0
     private var detailRefreshGeneration = 0
 
@@ -227,7 +232,11 @@ final class CodexRadarStore: ObservableObject {
         crowdReader: any CodexCrowdRadarReading = LiveCodexCrowdRadarReader(),
         refreshInterval: TimeInterval = 600,
         detailRefreshDefaults: UserDefaults = .standard,
-        detailRefreshCalendar: Calendar = .current
+        detailRefreshCalendar: Calendar = .current,
+        detailRetrySleep: @escaping UsageRefreshCadenceRecoveryScheduler.Sleep = { nanoseconds in
+            try await Task.sleep(nanoseconds: nanoseconds)
+        },
+        detailNow: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.reader = reader
         self.feedReader = feedReader
@@ -236,6 +245,8 @@ final class CodexRadarStore: ObservableObject {
         self.refreshInterval = refreshInterval
         self.detailRefreshDefaults = detailRefreshDefaults
         self.detailRefreshCalendar = detailRefreshCalendar
+        self.detailRetrySleep = detailRetrySleep
+        self.detailNow = detailNow
         if detailRefreshDefaults.object(forKey: Self.detailRefreshDefaultsKey) != nil {
             self.lastSuccessfulDetailRefreshAt = Date(
                 timeIntervalSince1970: detailRefreshDefaults.double(forKey: Self.detailRefreshDefaultsKey)
@@ -289,8 +300,11 @@ final class CodexRadarStore: ObservableObject {
         detailRefreshGeneration += 1
         refreshTask?.cancel()
         detailRefreshTask?.cancel()
+        UsageRefreshCadenceRecoveryScheduler.cancel(&detailRetryTask)
         refreshTask = nil
         detailRefreshTask = nil
+        detailRetryBackoff.recordSuccess()
+        detailRetrySlotAt = nil
         isRefreshing = false
         isDetailRefreshing = false
     }
@@ -418,16 +432,31 @@ final class CodexRadarStore: ObservableObject {
         ) else {
             return
         }
+        if detailRetrySlotAt != latestSlot {
+            UsageRefreshCadenceRecoveryScheduler.cancel(&detailRetryTask)
+            detailRetryBackoff.recordSuccess()
+            detailRetrySlotAt = latestSlot
+        } else {
+            // A foreground/regular cadence attempt supersedes the pending retry,
+            // but keeps the accumulated backoff for this slot.
+            UsageRefreshCadenceRecoveryScheduler.cancel(&detailRetryTask)
+        }
         lastAttemptedDetailSlotAt = latestSlot
         detailRefreshDefaults.set(latestSlot.timeIntervalSince1970, forKey: Self.detailAttemptDefaultsKey)
-        refreshDetail(recordedAt: now)
+        refreshDetail(recordedAt: now, automaticSlotAt: latestSlot)
     }
 
     func refreshDetail() {
-        refreshDetail(recordedAt: Date())
+        // A manual attempt may replace the pending automatic timer, but it
+        // inherits that recovery responsibility if it also fails.
+        let recoverySlot = detailRetrySlotAt
+        if recoverySlot != nil {
+            UsageRefreshCadenceRecoveryScheduler.cancel(&detailRetryTask)
+        }
+        refreshDetail(recordedAt: Date(), automaticSlotAt: recoverySlot)
     }
 
-    private func refreshDetail(recordedAt: Date) {
+    private func refreshDetail(recordedAt: Date, automaticSlotAt: Date?) {
         guard !isDetailRefreshing else { return }
         detailRefreshGeneration += 1
         let generation = detailRefreshGeneration
@@ -442,14 +471,18 @@ final class CodexRadarStore: ObservableObject {
                     guard self.detailRefreshGeneration == generation else {
                         return
                     }
+                    let completedAt = self.detailNow()
                     self.detailSnapshot = snapshot
-                    self.lastSuccessfulDetailRefreshAt = recordedAt
-                    self.detailRefreshDefaults.set(recordedAt.timeIntervalSince1970, forKey: Self.detailRefreshDefaultsKey)
+                    self.lastSuccessfulDetailRefreshAt = completedAt
+                    self.detailRefreshDefaults.set(completedAt.timeIntervalSince1970, forKey: Self.detailRefreshDefaultsKey)
                     self.detailDiagnostics = []
                     self.detailStaleDataDisplayed = false
-                    self.detailStatus = "Codex 雷达详情 · 更新于 \(DateFormatter.statusString(from: recordedAt))"
+                    self.detailStatus = "Codex 雷达详情 · 更新于 \(DateFormatter.statusString(from: completedAt))"
                     self.isDetailRefreshing = false
                     self.detailRefreshTask = nil
+                    UsageRefreshCadenceRecoveryScheduler.cancel(&self.detailRetryTask)
+                    self.detailRetryBackoff.recordSuccess()
+                    self.detailRetrySlotAt = nil
                 }
             } catch {
                 await MainActor.run {
@@ -468,8 +501,25 @@ final class CodexRadarStore: ObservableObject {
                     self.detailStatus = "Codex 雷达详情读取失败：\(error.localizedDescription)"
                     self.isDetailRefreshing = false
                     self.detailRefreshTask = nil
+                    if let automaticSlotAt {
+                        self.scheduleDetailRetry(for: automaticSlotAt)
+                    }
                 }
             }
+        }
+    }
+
+    private func scheduleDetailRetry(for slot: Date) {
+        guard detailRetrySlotAt == slot else { return }
+        let delay = detailRetryBackoff.recordFailure(maximumDelay: 600)
+        UsageRefreshCadenceRecoveryScheduler.schedule(
+            replacing: &detailRetryTask,
+            after: delay,
+            sleep: detailRetrySleep
+        ) { [weak self] in
+            guard let self else { return }
+            self.detailRetryTask = nil
+            self.refreshScheduledDetailIfNeeded(now: self.detailNow())
         }
     }
 

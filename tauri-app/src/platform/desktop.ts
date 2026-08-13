@@ -10,12 +10,16 @@ import {
   onLiveRateSnapshot,
   onOpenAppSettings,
   onUnreadSummaryChanged,
+  onAccountQuotaChanged,
+  onAccountResetCreditsChanged,
   publishAppSettings,
   publishDisplaySurfaces,
   publishFloatingSettings,
   publishFloatingPagingGuideCompleted,
   publishOpenAppSettings,
   publishUnreadSummaryChanged,
+  publishAccountQuotaChanged,
+  publishAccountResetCreditsChanged,
 } from "./desktopEvents";
 import { isDesktopRuntimeAvailable } from "./desktopBridge";
 import {
@@ -81,6 +85,10 @@ export const desktopPlatform = {
   onOpenAppSettings,
   publishUnreadSummaryChanged,
   onUnreadSummaryChanged,
+  publishAccountQuotaChanged,
+  onAccountQuotaChanged,
+  publishAccountResetCreditsChanged,
+  onAccountResetCreditsChanged,
 };
 
 function getSurfaceMode(): SurfaceMode {

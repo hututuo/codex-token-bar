@@ -25,6 +25,11 @@ export interface FloatingModelUsageItem {
 }
 
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
+export const DASHBOARD_PRIMARY_MODEL_KEYS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+] as const;
 
 interface CombinedModelUsage {
   model: string | null;
@@ -137,7 +142,7 @@ export function floatingModelUsageValue(
 ): string {
   if (page === "share") return `${Math.round(item.share * 100)}%`;
   if (item.usesIndependentQuota) return "独立";
-  return moneyText(item.costUSD ?? 0);
+  return floatingModelUsageMoneyText(item.costUSD ?? 0);
 }
 
 export function floatingModelUsageAccessibilityText(
@@ -152,6 +157,22 @@ export function floatingModelUsageAccessibilityText(
   return `今日模型${title}：${items.map((item) => `${item.label} ${floatingModelUsageValue(item, page)}`).join("，")}`;
 }
 
+export function dashboardPrimaryModelUsageItems(
+  items: FloatingModelUsageItem[],
+): FloatingModelUsageItem[] {
+  const byKey = new Map(items.map((item) => [item.key, item]));
+  return DASHBOARD_PRIMARY_MODEL_KEYS.map((key) => (
+    byKey.get(key) ?? dashboardModelUsagePlaceholder(key)
+  ));
+}
+
+export function dashboardSecondaryModelUsageItems(
+  items: FloatingModelUsageItem[],
+): FloatingModelUsageItem[] {
+  const primaryKeys = new Set<string>(DASHBOARD_PRIMARY_MODEL_KEYS);
+  return items.filter((item) => !primaryKeys.has(item.key) && item.tokens > 0);
+}
+
 export function floatingModelUsageOverflowText(
   items: FloatingModelUsageItem[],
   visibleLimit = FLOATING_MODEL_USAGE_VISIBLE_LIMIT,
@@ -159,13 +180,13 @@ export function floatingModelUsageOverflowText(
   const hiddenItems = items.slice(Math.max(visibleLimit, 0));
   if (hiddenItems.length === 0) return null;
   const details = hiddenItems.map((item) => {
-    const cost = item.usesIndependentQuota ? "独立额度" : moneyText(item.costUSD ?? 0);
+    const cost = item.usesIndependentQuota ? "独立额度" : floatingModelUsageMoneyText(item.costUSD ?? 0);
     return `${item.label} · ${formatTokens(item.tokens)} tokens · 占比 ${detailedShareText(item.share)} · ${cost}`;
   });
   return ["更多模型", ...details].join("\n");
 }
 
-function moneyText(value: number): string {
+export function floatingModelUsageMoneyText(value: number): string {
   if (value >= 100) return `$${value.toFixed(0)}`;
   if (value >= 10) return `$${value.toFixed(1)}`;
   return `$${value.toFixed(2)}`;
@@ -180,4 +201,16 @@ function detailedShareText(share: number): string {
 
 function finiteNonnegative(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function dashboardModelUsagePlaceholder(key: string): FloatingModelUsageItem {
+  return {
+    key,
+    label: modelUsageLabel(key),
+    tokens: 0,
+    share: 0,
+    costUSD: 0,
+    usesIndependentQuota: false,
+    color: modelUsageColor(key),
+  };
 }

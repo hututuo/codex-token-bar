@@ -125,15 +125,22 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   ]);
 
   assert.match(windowSource, /CURRENT_FLOATING_PAGING_GUIDE_REVISION/);
-  assert.match(windowSource, /completeFloatingPagingGuide\(pagingGuideShowsArrowGlyphs\)/);
+  assert.match(
+    windowSource,
+    /completeFloatingPagingGuide\(\s*pagingGuideShowsArrowGlyphs,\s*CURRENT_FLOATING_PAGING_GUIDE_REVISION,\s*\)/s,
+  );
   assert.match(windowSource, /flushSync\(\(\) => \{\s*setSettings\(immediatelyAppliedSettings\);\s*setPagingGuideDismissed\(true\);/s);
-  assert.match(windowSource, /const saved = await completeFloatingPagingGuide\(pagingGuideShowsArrowGlyphs\);/);
+  assert.match(
+    windowSource,
+    /const saved = await completeFloatingPagingGuide\(\s*pagingGuideShowsArrowGlyphs,\s*CURRENT_FLOATING_PAGING_GUIDE_REVISION,\s*\);/s,
+  );
   assert.match(windowSource, /const \[pagingGuideDismissed, setPagingGuideDismissed\] = useState\(false\);/);
-  assert.match(windowSource, /const pagingGuidePresented = !pagingGuideDismissed/);
+  assert.match(windowSource, /const pagingGuidePresented = shouldPresentFloatingPagingGuide\(/);
   assert.match(windowSource, /setPagingGuideDismissed\(true\);/);
   assert.match(windowSource, /setPagingGuideDismissed\(false\);/);
   assert.match(windowSource, /onPageNavigation=\{\(\) => \{/);
   assert.match(settingsClient, /complete_floating_paging_guide/);
+  assert.match(settingsClient, /pagingGuideRevision/);
   assert.match(desktopEvents, /floating-paging-guide-completed/);
   assert.match(styles, /\.floating-page-switch\.is-glyph-hidden \.floating-page-switch-frame\s*{\s*opacity: 0;/);
   assert.match(styles, /\.floating-page-switch\s*{[\s\S]*?pointer-events: auto;/);

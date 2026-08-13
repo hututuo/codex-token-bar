@@ -78,6 +78,7 @@ import {
 } from "./quota/resetCredits";
 import { quotaReadWarnings } from "./quota/quotaWarnings";
 import { quotaPaceAccent, semanticMetricColor } from "../styles/semanticColors";
+import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 
 interface QuotaStripProps {
   attributionIdentity?: QuotaAttributionIdentity | null;
@@ -492,9 +493,7 @@ function QuotaStripView({
   const { settings: attributionSettings } = useSharedAccountAttributionSettings();
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
-  const quotaDataStale = diagnostics.some((diagnostic) => (
-    diagnostic.staleDataDisplayed || diagnostic.category === "stale_cached_data"
-  ));
+  const quotaDataStale = hasStaleAccountQuotaData(diagnostics);
   const radarDataStale = radarSnapshot?.staleDataDisplayed === true;
   const quotaRadar = radarSnapshot?.modelIq.quotaRadar ?? null;
   const attributionCompatibilitySignature = sharedAccountAttributionInputSignature(

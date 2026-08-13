@@ -104,6 +104,34 @@ test("status presentation keeps selected unavailable and zero metrics visible", 
   assert.equal(result.title, "—/s · 5H— · 7D— · 1 — / 2 — · 跑0 · 未—");
 });
 
+test("sidebar-unavailable unread stays hidden while an authoritative empty sidebar is zero", () => {
+  const unavailable = buildStatusMetricStates({
+    liveRateEnabled: true,
+    sourceReady: true,
+    snapshot: {
+      ...BASE_SNAPSHOT,
+      unreadSummary: {
+        ...BASE_SNAPSHOT.unreadSummary,
+        source: "codex_sidebar_unavailable",
+      },
+    },
+  });
+  const authoritativeEmpty = buildStatusMetricStates({
+    liveRateEnabled: true,
+    sourceReady: true,
+    snapshot: {
+      ...BASE_SNAPSHOT,
+      unreadSummary: {
+        ...BASE_SNAPSHOT.unreadSummary,
+        source: "codex_unread_state",
+      },
+    },
+  });
+
+  assert.deepEqual(unavailable.unread, { available: false, value: "—" });
+  assert.deepEqual(authoritativeEmpty.unread, { available: true, value: "0" });
+});
+
 test("status presentation replaces IQ score with a structured two-row model ranking", () => {
   const snapshot = {
     ...BASE_SNAPSHOT,
@@ -347,6 +375,23 @@ test("stale cached quota diagnostics replace retained percentages with two unava
   });
   assert.equal(result.title, "5H— · 7D—");
   assert.deepEqual(result.visibleItems.map((item) => item.id), ["fiveHour", "sevenDay"]);
+});
+
+test("stale reset-credit diagnostics never hide healthy 5h and 7d quota", () => {
+  const snapshot = statusSnapshotForQuotaDiagnostics(BASE_SNAPSHOT, [{
+    category: "stale_cached_data",
+    message: "重置卡刷新失败，暂时显示上次成功结果。",
+    occurredAt: "2026-08-11T08:20:35Z",
+    retryable: true,
+    severity: "warning",
+    source: "reset_credit",
+    staleDataDisplayed: true,
+  }]);
+
+  assert.equal(snapshot.fiveHourAvailability, BASE_SNAPSHOT.fiveHourAvailability);
+  assert.equal(snapshot.fiveHourRemainingPercent, BASE_SNAPSHOT.fiveHourRemainingPercent);
+  assert.equal(snapshot.sevenDayAvailability, BASE_SNAPSHOT.sevenDayAvailability);
+  assert.equal(snapshot.sevenDayRemainingPercent, BASE_SNAPSHOT.sevenDayRemainingPercent);
 });
 
 test("empty metric order produces icon-only output without inventing a metric", () => {

@@ -4,6 +4,7 @@ import { RecentUsageChart } from "../../components/RecentUsageChart";
 import { TokenActivitySection } from "../../components/TokenActivitySection";
 import type { DashboardSnapshot } from "../../types/dashboard";
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
+import { modelCostProjectionAvailable } from "../../components/tokenActivity/modelCostAvailability";
 
 interface DashboardAnalyticsSectionProps {
   dashboard: DashboardSnapshot;
@@ -13,7 +14,13 @@ interface DashboardAnalyticsSectionProps {
 function DashboardAnalyticsSectionView({ dashboard, sharedAccountAttribution }: DashboardAnalyticsSectionProps) {
   return (
     <>
-      <TokenActivitySection days={dashboard.activityDays} />
+      <TokenActivitySection
+        days={dashboard.activityDays}
+        modelCostDataAvailable={modelCostProjectionAvailable(
+          dashboard.activityDays,
+          dashboard.preciseRecentUsageFresh,
+        )}
+      />
       <RecentUsageChart
         fiveHourQuotaPresent={dashboard.quota.fiveHour.availability !== "absent"}
         recentUsage24h={dashboard.recentUsage24h}

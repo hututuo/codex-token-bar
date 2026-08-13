@@ -9,6 +9,7 @@ import type {
   UsageSummarySnapshot,
   UsageCacheStatus,
 } from "../types/dashboard";
+import type { ResetCreditBundle } from "../types/quota";
 import {
   emptyDashboardSnapshot,
   fallbackPlatformCapabilities,
@@ -110,5 +111,16 @@ export function readAccountQuota(
     "read_account_quota",
     { forceRefresh, sourceToken },
     90_000,
+  );
+}
+
+export function readAccountResetCredits(
+  sourceToken: CodexHomeSourceToken,
+  forceRefresh = false,
+): Promise<ResetCreditBundle | null> {
+  return callCommandOptional(
+    "read_account_reset_credits",
+    { forceRefresh, sourceToken },
+    30_000,
   );
 }

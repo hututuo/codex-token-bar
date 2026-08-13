@@ -13,17 +13,26 @@ struct HeatmapMonthMarker: Identifiable {
 struct HeatmapPreparedData {
     let summaries: [HeatmapUsageSummary]
     let maxTokens: Int
+    let maxModelCostUSD: Double
     let columns: [[Int]]
     let monthMarkers: [HeatmapMonthMarker]
 
-    static let empty = HeatmapPreparedData(summaries: [], maxTokens: 1, columns: [], monthMarkers: [])
+    static let empty = HeatmapPreparedData(
+        summaries: [],
+        maxTokens: 1,
+        maxModelCostUSD: 0,
+        columns: [],
+        monthMarkers: []
+    )
 }
 
 struct TokenHeatmap: View {
     let dailyUsage: [DayUsage]
     let cacheDaily: [TokenCacheBucket]
+    let dailyModelBreakdowns: [ModelTokenBucket]
     let attributionEvents: [TokenCacheAttributionEvent]
     let quotaDaily: [QuotaHistoryDailyBucket]
+    let fallbackModel: OfficialAPIPriceModel
     let mode: ActivityMode
     @State private var hoveredIndex: Int?
     @State private var rangeStartIndex: Int?
@@ -37,14 +46,18 @@ struct TokenHeatmap: View {
     init(
         dailyUsage: [DayUsage],
         cacheDaily: [TokenCacheBucket],
+        dailyModelBreakdowns: [ModelTokenBucket] = [],
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
+        fallbackModel: OfficialAPIPriceModel = .gpt56Sol,
         mode: ActivityMode
     ) {
         self.dailyUsage = dailyUsage
         self.cacheDaily = cacheDaily
+        self.dailyModelBreakdowns = dailyModelBreakdowns
         self.attributionEvents = attributionEvents
         self.quotaDaily = quotaDaily
+        self.fallbackModel = fallbackModel
         self.mode = mode
         _preparedData = State(initialValue: .empty)
     }
@@ -69,7 +82,7 @@ struct TokenHeatmap: View {
                                     if let dayIndex = columns[columnIndex][safe: rowIndex],
                                        let summary = summaries[safe: dayIndex] {
                                         RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(color(for: summary, maxTokens: preparedData.maxTokens))
+                                            .fill(fillStyle(for: summary, preparedData: preparedData))
                                             .frame(width: cellSize, height: cellSize)
                                     } else {
                                         RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -147,7 +160,8 @@ struct TokenHeatmap: View {
                 HeatmapHoverInfo(
                     summary: hoveredIndex.flatMap { summaries[safe: $0] } ?? summaries.last,
                     rangeSummary: rangeSummary,
-                    hasRangeStart: rangeStartIndex != nil
+                    hasRangeStart: rangeStartIndex != nil,
+                    fallbackModel: fallbackModel
                 )
             }
         }
@@ -161,12 +175,19 @@ struct TokenHeatmap: View {
             clearRangeSelection()
             refreshPreparedData()
         }
+        .onChange(of: dailyModelBreakdowns) { _, _ in
+            clearRangeSelection()
+            refreshPreparedData()
+        }
         .onChange(of: attributionEvents) { _, _ in
             clearRangeSelection()
             refreshPreparedData()
         }
         .onChange(of: quotaDaily) { _, _ in
             clearRangeSelection()
+            refreshPreparedData()
+        }
+        .onChange(of: fallbackModel) { _, _ in
             refreshPreparedData()
         }
         .onChange(of: mode) { _, _ in
@@ -214,6 +235,13 @@ struct TokenHeatmap: View {
             let models = ModelUsagePresentation.compactText(from: summary.modelBreakdowns) ?? "暂无模型明细"
             return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，模型占比 \(models)"
         }
+        if summary.isModelCost {
+            guard let cost = summary.modelCostUSD else {
+                return "\(summary.title)，模型明细待读取"
+            }
+            let detail = modelCostAccessibilityText(summary.modelBreakdowns)
+            return "\(summary.title)，模型费用 \(cost.quotaEstimatorMoneyText)，\(detail)"
+        }
         return "\(summary.title)，\(summary.tokens.abbreviatedTokens) token，\(summary.calls) 次调用，平均 \(summary.average.abbreviatedTokens)"
     }
 
@@ -223,6 +251,12 @@ struct TokenHeatmap: View {
         }
         if let quotaAverage = rangeSummary.quotaAverageRemainingPercent {
             return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，7 天额度平均剩余 \(Int(quotaAverage.rounded()))%，\(rangeSummary.calls) 个采样"
+        }
+        if rangeSummary.isModelCost {
+            guard let cost = rangeSummary.modelCostUSD else {
+                return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，模型明细待读取"
+            }
+            return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，模型费用 \(cost.quotaEstimatorMoneyText)，\(modelCostAccessibilityText(rangeSummary.modelBreakdowns))"
         }
         if !rangeSummary.modelBreakdowns.isEmpty {
             let models = ModelUsagePresentation.compactText(from: rangeSummary.modelBreakdowns) ?? "暂无模型明细"
@@ -294,12 +328,57 @@ struct TokenHeatmap: View {
         return AppTheme.heatmapColor(ratio: ratio)
     }
 
+    private func fillStyle(
+        for summary: HeatmapUsageSummary,
+        preparedData: HeatmapPreparedData
+    ) -> AnyShapeStyle {
+        guard summary.isModelCost else {
+            return AnyShapeStyle(color(for: summary, maxTokens: preparedData.maxTokens))
+        }
+        guard summary.modelCostUSD != nil else {
+            return AnyShapeStyle(AppTheme.emptyCell)
+        }
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: summary.modelBreakdowns,
+            fallbackModel: fallbackModel
+        )
+        let paid = items.filter { ($0.costUSD ?? 0) > 0 }
+        guard !paid.isEmpty else {
+            if let independent = items.first(where: \.usesIndependentQuota) {
+                return AnyShapeStyle(independent.color.opacity(summary.tokens > 0 ? 0.46 : 0))
+            }
+            return AnyShapeStyle(AppTheme.emptyCell)
+        }
+        let total = paid.reduce(0) { $0 + ($1.costUSD ?? 0) }
+        guard total > 0 else { return AnyShapeStyle(AppTheme.emptyCell) }
+        let intensity = min(1, total / max(preparedData.maxModelCostUSD, 0.000_001))
+        let opacity = 0.30 + intensity * 0.70
+        var cursor = 0.0
+        var stops: [Gradient.Stop] = []
+        for item in paid {
+            let color = item.color.opacity(opacity)
+            let next = min(1, cursor + (item.costUSD ?? 0) / total)
+            stops.append(Gradient.Stop(color: color, location: cursor))
+            stops.append(Gradient.Stop(color: color, location: next))
+            cursor = next
+        }
+        return AnyShapeStyle(
+            LinearGradient(
+                gradient: Gradient(stops: stops),
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
     private func refreshPreparedData() {
         preparedData = Self.prepare(
             dailyUsage: dailyUsage,
             cacheDaily: cacheDaily,
+            dailyModelBreakdowns: dailyModelBreakdowns,
             attributionEvents: attributionEvents,
             quotaDaily: quotaDaily,
+            fallbackModel: fallbackModel,
             mode: mode
         )
     }
@@ -371,12 +450,29 @@ struct TokenHeatmap: View {
             )
         }
 
-        if mode == .modelShare {
-            let start = Calendar.current.startOfDay(for: firstDay.date)
-            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: lastDay.date)) ?? lastDay.date
-            let rows = ModelUsagePresentation.rows(from: attributionEvents.filter {
-                $0.start >= start && $0.start < end
+        if mode == .modelShare || mode == .modelCost {
+            let calendar = Calendar.current
+            let start = calendar.startOfDay(for: firstDay.date)
+            let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: lastDay.date)) ?? lastDay.date
+            let modelBucketsByDay = Dictionary(uniqueKeysWithValues: dailyModelBreakdowns.map { bucket in
+                (calendar.startOfDay(for: bucket.start), bucket.modelBreakdowns)
             })
+            let rows = mode == .modelCost
+                ? days.flatMap { day in
+                    modelBucketsByDay[calendar.startOfDay(for: day.date)] ?? []
+                }
+                : ModelUsagePresentation.rows(from: attributionEvents.filter {
+                    $0.start >= start && $0.start < end
+                })
+            let hasMissingModelDetail = mode == .modelCost && days.contains { day in
+                day.tokens > 0 && modelBucketsByDay[calendar.startOfDay(for: day.date)] == nil
+            }
+            let cost = mode == .modelCost && !hasMissingModelDetail
+                ? FloatingTodayModelUsagePresentation.items(
+                    from: rows,
+                    fallbackModel: fallbackModel
+                ).compactMap(\.costUSD).reduce(0, +)
+                : nil
             return HeatmapRangeSummary(
                 title: title,
                 dayCount: days.count,
@@ -384,7 +480,9 @@ struct TokenHeatmap: View {
                 calls: days.reduce(0) { $0 + $1.calls },
                 cacheBreakdown: nil,
                 quotaAverageRemainingPercent: nil,
-                modelBreakdowns: rows
+                modelBreakdowns: rows,
+                modelCostUSD: cost,
+                isModelCost: mode == .modelCost
             )
         }
 
@@ -398,6 +496,17 @@ struct TokenHeatmap: View {
             cacheBreakdown: nil,
             quotaAverageRemainingPercent: nil
         )
+    }
+
+    private func modelCostAccessibilityText(_ rows: [ModelTokenBreakdown]) -> String {
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: fallbackModel
+        )
+        guard !items.isEmpty else { return "暂无模型明细" }
+        return items.map { item in
+            "\(item.label) \(item.valueText(for: .cost))"
+        }.joined(separator: "，")
     }
 
     private func rangeTitle(first: Date, last: Date) -> String {

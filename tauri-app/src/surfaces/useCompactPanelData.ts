@@ -22,6 +22,7 @@ interface CompactPanelDataOptions {
   quotaEnabled?: boolean;
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
+  quotaSource?: "dashboard" | "direct";
   runningEnabled?: boolean;
   snapshotEnabled?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
@@ -48,6 +49,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const quotaEnabled = options.quotaEnabled ?? true;
   const quotaInitialDelayMs = options.quotaInitialDelayMs ?? DEFAULT_QUOTA_INITIAL_DELAY_MS;
   const quotaIntervalMs = options.quotaIntervalMs ?? DEFAULT_QUOTA_INTERVAL_MS;
+  const quotaSource = options.quotaSource ?? "dashboard";
   const runningEnabled = options.runningEnabled ?? true;
   const snapshotEnabled = options.snapshotEnabled ?? true;
   const sourceToken = options.sourceToken ?? null;
@@ -64,6 +66,7 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
     enabled: quotaEnabled,
     initialDelayMs: quotaInitialDelayMs,
     intervalMs: quotaIntervalMs,
+    followDashboardUpdates: quotaSource === "dashboard",
     sourceToken,
   });
   const runningThreads = useRunningThreadSummary({

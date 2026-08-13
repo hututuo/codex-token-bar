@@ -224,7 +224,7 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
     const html = renderComponent(QuotaStrip, {
       onQuotaRefreshIntervalChange: () => {},
-      quotaRefreshIntervalMs: 180_000,
+      quotaRefreshIntervalMs: 30_000,
       snapshot: quotaSnapshot,
       warnings: [],
     });
@@ -233,11 +233,9 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     assert.match(html, /class="quota-side-card quota-pace quota-pace--with-cadence"[\s\S]*class="quota-refresh-cadence"/);
     assert.doesNotMatch(html, /class="quota-refresh-row"/);
     assert.match(html, /aria-label="刷新频率"/);
-    assert.match(html, /<option value="30000">额度刷新 30 秒<\/option>/);
     assert.match(html, /<option value="60000">额度刷新 1 分钟<\/option>/);
-    assert.match(html, /<option value="180000" selected="">额度刷新 3 分钟<\/option>/);
-    assert.match(html, /<option value="300000">额度刷新 5 分钟<\/option>/);
-    assert.match(html, /<option value="600000">额度刷新 10 分钟<\/option>/);
+    assert.match(html, /<option value="30000" selected="">额度刷新 30 秒<\/option>/);
+    assert.doesNotMatch(html, /value="180000"|value="300000"|value="600000"/);
   });
 });
 
@@ -251,7 +249,7 @@ test("QuotaStrip releases cadence space when no save handler is provided", async
   });
 });
 
-test("QuotaStrip keeps the longest production pace copy beside the longest cadence option", async () => {
+test("QuotaStrip keeps the longest production pace copy beside the one-minute maximum", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
     const html = renderComponent(QuotaStrip, {
@@ -266,7 +264,7 @@ test("QuotaStrip keeps the longest production pace copy beside the longest caden
 
     assert.match(html, />用得太快，先省着（低 100%）<\/strong>/);
     assert.match(html, />7d 均速比较<\/span>/);
-    assert.match(html, /<option value="600000" selected="">额度刷新 10 分钟<\/option>/);
+    assert.match(html, /<option value="60000" selected="">额度刷新 1 分钟<\/option>/);
   });
 });
 
@@ -478,7 +476,7 @@ test("DashboardSummarySection renders usage precision warning as a wait note out
   });
 });
 
-test("DashboardSummarySection passes structured quota diagnostics through to QuotaStrip rendering", async () => {
+test("DashboardSummarySection renders only the primary structured quota diagnostic", async () => {
   await withSsrModules(async (load) => {
     const { DashboardSummarySection } = await load("/src/pages/dashboard/DashboardSummarySection.tsx");
     const dashboard = dashboardFixture();
@@ -541,7 +539,9 @@ test("DashboardSummarySection passes structured quota diagnostics through to Quo
       selectedLiveThreadId: "",
     });
 
-    assert.match(html, /登录凭证缺失；Codex Home 与额度登录来源不一致；重置卡读取失败：网络连接失败/);
+    assert.match(html, /登录凭证缺失/);
+    assert.doesNotMatch(html, /Codex Home 与额度登录来源不一致/);
+    assert.doesNotMatch(html, /重置卡读取失败：网络连接失败/);
     assert.doesNotMatch(html, /旧账户额度读取失败/);
   });
 });

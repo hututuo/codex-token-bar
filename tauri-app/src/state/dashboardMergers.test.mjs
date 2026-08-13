@@ -323,16 +323,24 @@ test("mergeQuota replaces stale quota warnings and diagnostics after a successfu
   });
 });
 
-test("mergeQuota replaces old quota diagnostics with the latest quota diagnostic", () => {
+test("mergeQuota clears only main quota diagnostics and preserves the reset-credit channel", () => {
   return withSsrModules(async (load) => {
     const { mergeQuota } = await load("/src/state/dashboardMergers.ts");
     const state = stateWithDashboard({
-      warnings: [{ source: "account_quota", message: "登录凭证缺失" }],
+      warnings: [
+        { source: "account_quota", message: "登录凭证缺失" },
+        { source: "reset_credit", message: "旧重置卡错误" },
+      ],
       diagnostics: [
         quotaDiagnostic({
           source: "account_quota",
           category: "auth_missing",
           message: "登录凭证缺失",
+        }),
+        quotaDiagnostic({
+          source: "reset_credit",
+          category: "reset_credit_failure",
+          message: "旧重置卡错误",
         }),
       ],
     });
@@ -350,8 +358,65 @@ test("mergeQuota replaces old quota diagnostics with the latest quota diagnostic
 
     const next = mergeQuota(state, quota);
 
-    assert.deepEqual(next.dashboard.warnings, [{ source: "reset_credit", message: "重置卡读取失败：网络连接失败" }]);
-    assert.deepEqual(next.dashboard.diagnostics.map((diagnostic) => diagnostic.category), ["reset_credit_failure"]);
+    assert.deepEqual(next.dashboard.warnings, [{ source: "reset_credit", message: "旧重置卡错误" }]);
+    assert.deepEqual(next.dashboard.diagnostics.map((diagnostic) => diagnostic.message), ["旧重置卡错误"]);
+  });
+});
+
+test("mergeResetCredits changes only reset data and reset diagnostics", () => {
+  return withSsrModules(async (load) => {
+    const { mergeResetCredits } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      quotaUpdatedAt: "2026-08-11T01:00:00Z",
+      quota: quotaSnapshotFixture({
+        paceLabel: "主额度保持",
+        resetCredit: { availableCount: 1, status: "旧卡", credits: [] },
+      }),
+      warnings: [{ source: "account_quota", message: "主额度错误" }],
+      diagnostics: [quotaDiagnostic({ source: "account_quota", message: "主额度错误" })],
+    });
+    const next = mergeResetCredits(state, {
+      updatedAt: "2026-08-11T01:01:00Z",
+      resetCredit: { availableCount: 3, status: "重置卡已更新", credits: [] },
+      warnings: [],
+      diagnostics: [],
+      successful: true,
+    });
+
+    assert.equal(next.dashboard.quotaUpdatedAt, "2026-08-11T01:00:00Z");
+    assert.equal(next.dashboard.quota.paceLabel, "主额度保持");
+    assert.equal(next.dashboard.quota.resetCredit.availableCount, 3);
+    assert.equal(next.dashboard.quota.resetCredit.updatedAt, "2026-08-11T01:01:00Z");
+    assert.deepEqual(next.dashboard.warnings, [{ source: "account_quota", message: "主额度错误" }]);
+    assert.deepEqual(next.dashboard.diagnostics.map((item) => item.message), ["主额度错误"]);
+  });
+});
+
+test("failed reset refresh preserves prior cards without changing main quota", () => {
+  return withSsrModules(async (load) => {
+    const { mergeResetCredits } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      quota: quotaSnapshotFixture({
+        paceLabel: "主额度保持",
+        resetCredit: { availableCount: 2, status: "旧卡已更新", credits: [{ cardId: "kept" }] },
+      }),
+    });
+    const next = mergeResetCredits(state, {
+      updatedAt: "2026-08-11T01:02:00Z",
+      resetCredit: { availableCount: 0, status: "重置卡读取失败", credits: [] },
+      warnings: [{ source: "reset_credit", message: "重置卡读取失败" }],
+      diagnostics: [quotaDiagnostic({
+        source: "reset_credit",
+        category: "reset_credit_failure",
+        message: "重置卡读取失败",
+      })],
+      successful: false,
+    });
+
+    assert.equal(next.dashboard.quota.paceLabel, "主额度保持");
+    assert.equal(next.dashboard.quota.resetCredit.availableCount, 2);
+    assert.deepEqual(next.dashboard.quota.resetCredit.credits, [{ cardId: "kept" }]);
+    assert.equal(next.dashboard.quota.resetCredit.status, "重置卡读取失败");
   });
 });
 

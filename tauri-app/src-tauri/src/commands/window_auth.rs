@@ -68,6 +68,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "record_performance_event",
     "read_platform_capabilities",
     "read_account_quota",
+    "read_account_reset_credits",
     "read_codex_crowd_radar_payload",
     "read_usage_summary_snapshot",
     "read_live_rate_snapshot",

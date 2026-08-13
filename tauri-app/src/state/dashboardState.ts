@@ -85,4 +85,5 @@ export {
   markPreciseRecentUsageStale,
   mergePreciseDashboard,
   mergeQuota,
+  mergeResetCredits,
 } from "./dashboardMergers";

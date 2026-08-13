@@ -627,11 +627,14 @@ struct StatStripStatusLinePresentation: Equatable {
 
 struct StatStrip: View {
     let snapshot: DashboardSnapshot
+    var todayModelBreakdowns: [ModelTokenBreakdown] = []
+    var showsModelCostRow = true
     var planLabel = ""
     var isPreparingUsageCache = false
     var cacheStatus = ""
 
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
+    @State private var modelCostScope: DashboardModelCostScope = .today
 
     private var stats: DashboardStats {
         snapshot.stats
@@ -702,8 +705,20 @@ struct StatStrip: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
             }
+
+            if showsModelCostRow {
+                DashboardModelCostRow(
+                    scope: $modelCostScope,
+                    todayRows: todayModelBreakdowns,
+                    lifetimeRows: snapshot.cacheUsage.modelBreakdowns,
+                    todayTokens: snapshot.dailyUsage.last(where: { Calendar.current.isDateInToday($0.date) })?.tokens ?? 0,
+                    lifetimeTokens: snapshot.stats.totalTokens,
+                    fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
+                    dataAvailable: snapshot.hasPreciseTokenUsage
+                )
+            }
         }
-        .frame(height: 70)
+        .padding(.bottom, 7)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(AppTheme.panelBackground)
@@ -712,8 +727,268 @@ struct StatStrip: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(AppTheme.border, lineWidth: 1)
         )
+        .frame(minHeight: showsModelCostRow ? nil : 70)
         .frame(maxWidth: 980)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+enum DashboardModelCostScope: String, CaseIterable, Identifiable {
+    case today = "今日"
+    case lifetime = "累计"
+
+    var id: String { rawValue }
+}
+
+struct DashboardModelCostRow: View {
+    @Binding var scope: DashboardModelCostScope
+    let todayRows: [ModelTokenBreakdown]
+    let lifetimeRows: [ModelTokenBreakdown]
+    let todayTokens: Int
+    let lifetimeTokens: Int
+    let fallbackModel: OfficialAPIPriceModel
+    let dataAvailable: Bool
+
+    private var sourceRows: [ModelTokenBreakdown] {
+        scope == .today ? todayRows : lifetimeRows
+    }
+
+    private var items: [FloatingTodayModelUsageItem] {
+        guard dataAvailable, hasModelDetail else { return [] }
+        return FloatingTodayModelUsagePresentation.items(
+            from: sourceRows,
+            fallbackModel: fallbackModel
+        )
+    }
+
+    private var totalCost: Double {
+        items.compactMap(\.costUSD).reduce(0, +)
+    }
+
+    private var primaryItems: [FloatingTodayModelUsageItem] {
+        FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: items)
+    }
+
+    private var secondaryItems: [FloatingTodayModelUsageItem] {
+        FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: items)
+    }
+
+    private var expectedTokens: Int {
+        scope == .today ? todayTokens : lifetimeTokens
+    }
+
+    private var hasModelDetail: Bool {
+        expectedTokens == 0 || !sourceRows.isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 9) {
+                Picker("模型费用范围", selection: $scope) {
+                    ForEach(DashboardModelCostScope.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 86)
+
+                Text("各模型 API 等值费用")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+
+                Spacer(minLength: 4)
+
+                if dataAvailable, hasModelDetail, !items.isEmpty {
+                    Text("合计 \(totalCost.quotaEstimatorMoneyText)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                        .monospacedDigit()
+                        .fixedSize()
+                }
+            }
+
+            if !dataAvailable {
+                Text("待读取")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if !hasModelDetail {
+                Text(scope == .today ? "今日模型明细待读取" : "逐模型历史待读取")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if items.isEmpty {
+                Text(scope == .today ? "今日暂无模型用量" : "暂无逐模型历史")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .top, spacing: 10) {
+                    Text("主力")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .frame(width: 28, alignment: .leading)
+
+                    HStack(spacing: 7) {
+                        ForEach(primaryItems) { item in
+                            DashboardPrimaryModelCostCard(item: item)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if !secondaryItems.isEmpty {
+                    HStack(alignment: .top, spacing: 10) {
+                        Text("其他")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                            .frame(width: 28, alignment: .leading)
+
+                        LazyVGrid(
+                            columns: Array(
+                                repeating: GridItem(.flexible(minimum: 108), spacing: 6),
+                                count: 4
+                            ),
+                            alignment: .leading,
+                            spacing: 6
+                        ) {
+                            ForEach(secondaryItems) { item in
+                                DashboardSecondaryModelCostChip(item: item)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(AppTheme.insetBackground)
+        )
+        .padding(.horizontal, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(scope.rawValue)各模型 API 等值费用")
+    }
+}
+
+private struct DashboardPrimaryModelCostCard: View {
+    let item: FloatingTodayModelUsageItem
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(item.color)
+                .frame(width: 7, height: 7)
+
+            Text(item.label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 2)
+
+            Text(item.valueText(for: .cost))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+                .monospacedDigit()
+
+            Text(item.valueText(for: .share))
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+        }
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 30)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(item.color.opacity(0.075))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(item.color.opacity(0.16), lineWidth: 1)
+        )
+    }
+}
+
+private struct DashboardSecondaryModelCostChip: View {
+    let item: FloatingTodayModelUsageItem
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 5) {
+                modelIndicator
+                modelLabel
+                    .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 4)
+                costText
+                    .fixedSize(horizontal: true, vertical: false)
+                shareText
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    modelIndicator
+                    modelLabel
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 7) {
+                    costText
+                        .fixedSize(horizontal: true, vertical: false)
+                    shareText
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.system(size: 10.5, weight: .semibold))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(AppTheme.panelBackground.opacity(0.72))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(AppTheme.border.opacity(0.8), lineWidth: 1)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "\(item.label)，费用 \(item.valueText(for: .cost))，占比 \(item.valueText(for: .share))"
+        )
+    }
+
+    private var modelIndicator: some View {
+        Circle()
+            .fill(item.color)
+            .frame(width: 6, height: 6)
+    }
+
+    private var modelLabel: some View {
+        Text(item.label)
+            .foregroundStyle(.secondary)
+    }
+
+    private var costText: some View {
+        Text(item.valueText(for: .cost))
+            .foregroundStyle(.primary)
+            .monospacedDigit()
+    }
+
+    private var shareText: some View {
+        Text(item.valueText(for: .share))
+            .foregroundStyle(.tertiary)
+            .monospacedDigit()
     }
 }
 

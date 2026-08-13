@@ -246,6 +246,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             let stableCacheUsage = TokenCacheUsage(
                 total: cached.cacheUsage.total,
                 modelBreakdowns: cached.cacheUsage.modelBreakdowns,
+                dailyModelBreakdowns: cached.cacheUsage.dailyModelBreakdowns,
                 daily: cached.cacheUsage.daily,
                 hourly: cached.cacheUsage.hourly,
                 recentBins: cached.cacheUsage.recentBins,
@@ -420,6 +421,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let numericCacheUsage = TokenCacheUsage(
             total: aggregatedCacheUsage.total,
             modelBreakdowns: aggregatedCacheUsage.modelBreakdowns,
+            dailyModelBreakdowns: aggregatedCacheUsage.dailyModelBreakdowns,
             daily: aggregatedCacheUsage.daily,
             hourly: aggregatedCacheUsage.hourly,
             recentBins: aggregatedCacheUsage.recentBins,

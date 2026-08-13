@@ -27,6 +27,7 @@ import type {
   PreciseDashboardRequestRevision,
   UsageCacheStatus,
 } from "../types/dashboard";
+import type { ResetCreditBundle } from "../types/quota";
 import {
   disabledLiveRateSnapshot,
   initialDashboardState,
@@ -35,6 +36,7 @@ import {
   markPreciseRecentUsageStale,
   mergePreciseDashboard,
   mergeQuota,
+  mergeResetCredits,
   pendingLiveRateSnapshot,
   pendingRepairSnapshot,
   visibleDashboardState,
@@ -66,6 +68,7 @@ import { useDashboardActions } from "./useDashboardActions";
 import { useDeferredDashboardLoads } from "./useDeferredDashboardLoads";
 import { useLiveRateFeed } from "./useLiveRateFeed";
 import { useRunningThreadSummary } from "./useRunningThreadSummary";
+import { hasStaleAccountQuotaData } from "./dashboardWarnings";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
 
@@ -301,6 +304,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       ? { ...current, loading: true }
       : current);
     setSourceLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
+    setForceNextQuotaLoad(true);
+    setQuotaLoadGeneration((current) => isSourceTokenCurrent(token) ? current + 1 : current);
     requestPreciseRefresh(true, "source-change", token.transitionGeneration);
   }, [isSourceTokenCurrent, requestPreciseRefresh]);
   const reconcileCodexHomeSource = useCallback(async () => {
@@ -400,16 +405,15 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   }, [isSourceTokenCurrent, sourceToken]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
-    if (!isSourceTokenCurrent(sourceToken)) {
+    if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) {
       return;
     }
+    void desktopPlatform.publishAccountQuotaChanged({ quota, sourceToken });
     markRenderCommit("frontend quota dashboard");
     const comparison = advanceQuotaComparisonObservation(
       quotaComparisonObservationRef.current,
       {
-        quotaDataFresh: !quota.diagnostics.some((diagnostic) => (
-          diagnostic.staleDataDisplayed || diagnostic.category === "stale_cached_data"
-        )),
+        quotaDataFresh: !hasStaleAccountQuotaData(quota.diagnostics),
         updatedAt: quota.updatedAt,
         resetAtUnix: quota.quota.sevenDay.resetsAtUnix,
         usedPercent: quota.quota.sevenDay.usedPercent,
@@ -442,6 +446,22 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       );
     }
   }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
+
+  const mergeResetCreditSnapshot = useCallback((reset: ResetCreditBundle) => {
+    if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) {
+      return;
+    }
+    void desktopPlatform.publishAccountResetCreditsChanged({
+      resetCredits: reset,
+      sourceToken,
+    });
+    markRenderCommit("frontend reset-credit dashboard");
+    startTransition(() => {
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? mergeResetCredits(current, reset)
+        : current);
+    });
+  }, [isSourceTokenCurrent, markRenderCommit, sourceToken]);
 
   const refreshAttributionPreciseUsage = useCallback((comparisonUpdatedAt: string) => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -902,6 +922,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     onUsageCacheStatus: updateUsageCacheStatus,
     onPreciseRequestStarted: markPreciseRequestStarted,
     onQuota: mergeQuotaSnapshot,
+    onResetCredits: mergeResetCreditSnapshot,
     onLiveThreadOptions: mergeThreadOptions,
     onForceQuotaRefreshConsumed: consumeForcedQuotaRefresh,
     onRefreshTaskStart: beginRefreshTask,

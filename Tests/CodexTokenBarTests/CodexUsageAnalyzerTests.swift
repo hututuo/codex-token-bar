@@ -152,6 +152,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             snapshot.cacheUsage.modelBreakdowns.reduce(0) { $0 + $1.breakdown.calls },
             2
         )
+        XCTAssertEqual(snapshot.cacheUsage.dailyModelBreakdowns.count, 1)
+        XCTAssertEqual(
+            Set(snapshot.cacheUsage.dailyModelBreakdowns[0].modelBreakdowns.compactMap(\.model)),
+            ["gpt-5.6-sol", "gpt-5.6-terra"]
+        )
         XCTAssertTrue(snapshot.cacheUsage.attributionEventsComplete)
         XCTAssertEqual(
             snapshot.cacheUsage.attributionEvents.reduce(0) {
@@ -224,6 +229,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(numeric.hourlyUsage, final.hourlyUsage)
         XCTAssertEqual(numeric.cacheUsage.total, final.cacheUsage.total)
         XCTAssertEqual(numeric.cacheUsage.modelBreakdowns, final.cacheUsage.modelBreakdowns)
+        XCTAssertEqual(numeric.cacheUsage.dailyModelBreakdowns, final.cacheUsage.dailyModelBreakdowns)
         XCTAssertFalse(numeric.cacheUsage.attributionEventsComplete)
         XCTAssertTrue(numeric.cacheUsage.sessions.isEmpty)
         XCTAssertTrue(numeric.cacheUsage.turns.isEmpty)
@@ -582,6 +588,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(fast.hourlyUsage, initial.hourlyUsage)
         XCTAssertEqual(fast.cacheUsage.total, initial.cacheUsage.total)
         XCTAssertEqual(fast.cacheUsage.modelBreakdowns, initial.cacheUsage.modelBreakdowns)
+        XCTAssertEqual(fast.cacheUsage.dailyModelBreakdowns, initial.cacheUsage.dailyModelBreakdowns)
         XCTAssertFalse(fast.cacheUsage.attributionEventsComplete)
         XCTAssertTrue(fast.cacheUsage.sessions.isEmpty)
         XCTAssertTrue(fast.cacheUsage.turns.isEmpty)

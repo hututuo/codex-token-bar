@@ -2,7 +2,7 @@ use crate::core::process_tail::ProcessPipeTail;
 use crate::core::quota_history;
 use crate::models::{
     AccountInfo, AccountQuotaBundle, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot,
-    ResetCreditSummary,
+    ResetCreditBundle, ResetCreditSummary,
 };
 use auth::{read_local_account_name, read_local_auth_observation};
 #[cfg(test)]
@@ -28,13 +28,14 @@ const MAX_SUCCESS_FRESHNESS: Duration = Duration::from_secs(30);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
 const HISTORY_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const FORCED_REFRESH_COALESCE_TTL: Duration = Duration::from_secs(5);
-const RATE_LIMIT_READ_ATTEMPTS: usize = 3;
 const RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(12);
-const RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_millis(350);
 const STDERR_TAIL_LIMIT_BYTES: usize = 16 * 1024;
 const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(500);
-pub(super) const RESET_CREDIT_READ_ATTEMPTS: usize = 3;
 pub(super) const RESET_CREDIT_TIMEOUT: Duration = Duration::from_secs(14);
+const RESET_CREDIT_SUCCESS_CACHE_TTL: Duration = Duration::from_secs(30);
+const RESET_CREDIT_FAILURE_CACHE_TTL: Duration = Duration::from_secs(5);
+const RESET_CREDIT_CACHE_RETENTION: Duration = Duration::from_secs(10 * 60);
+const RESET_CREDIT_CACHE_LIMIT: usize = 32;
 const QUOTA_CHILD_ENV_REMOVE: &[&str] = &[
     "ELECTRON_RUN_AS_NODE",
     "NODE_OPTIONS",
@@ -50,6 +51,10 @@ mod reset_credit;
 static QUOTA_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, QuotaCacheEntry>>> = OnceLock::new();
 static QUOTA_HISTORY_CACHE: OnceLock<QuotaHistoryCacheCoordinator> = OnceLock::new();
 static QUOTA_READ_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+static RESET_CREDIT_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, ResetCreditCacheEntry>>> =
+    OnceLock::new();
+static RESET_CREDIT_READ_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    OnceLock::new();
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct QuotaCacheScope {
@@ -94,6 +99,14 @@ struct LoadedAccountQuota {
 struct QuotaCacheEntry {
     scope: QuotaCacheScope,
     result: Result<AccountQuotaBundle, String>,
+    cached_at: Instant,
+}
+
+#[derive(Clone)]
+struct ResetCreditCacheEntry {
+    scope: QuotaCacheScope,
+    bundle: ResetCreditBundle,
+    last_success: Option<ResetCreditSummary>,
     cached_at: Instant,
 }
 
@@ -180,6 +193,153 @@ pub fn read_account_quota(
             .map(|settings| settings.quota_refresh_interval_ms)
             .unwrap_or(DEFAULT_QUOTA_REFRESH_CADENCE_MS)
     })
+}
+
+pub fn read_account_reset_credits(
+    codex_home: &Path,
+    force_refresh: bool,
+) -> Result<ResetCreditBundle, String> {
+    read_account_reset_credits_with_loader(codex_home, force_refresh, read_reset_credits)
+}
+
+fn read_account_reset_credits_with_loader<L>(
+    codex_home: &Path,
+    force_refresh: bool,
+    loader: L,
+) -> Result<ResetCreditBundle, String>
+where
+    L: FnOnce(&Path) -> Result<ResetCreditSummary, String>,
+{
+    let requested_at = Instant::now();
+    let initial_scope = observed_quota_cache_scope(codex_home);
+    if let Some(cached) = cached_reset_credit_bundle(&initial_scope, force_refresh, false, requested_at)? {
+        return Ok(cached);
+    }
+
+    let gate = reset_credit_read_gate(&initial_scope.codex_home)?;
+    let _read_guard = match gate.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => {
+            let guard = gate.lock().map_err(|error| error.to_string())?;
+            let joined_scope = observed_quota_cache_scope(codex_home);
+            if !initial_scope.allows_flight_reuse(&joined_scope) {
+                return Ok(identity_changed_reset_credit_bundle());
+            }
+            if let Some(cached) =
+                cached_reset_credit_bundle(&joined_scope, force_refresh, true, requested_at)?
+            {
+                return Ok(cached);
+            }
+            guard
+        }
+        Err(TryLockError::Poisoned(error)) => return Err(error.to_string()),
+    };
+
+    let scope = observed_quota_cache_scope(codex_home);
+    if !initial_scope.allows_flight_reuse(&scope) {
+        return Ok(identity_changed_reset_credit_bundle());
+    }
+    if let Some(cached) = cached_reset_credit_bundle(&scope, force_refresh, false, requested_at)? {
+        return Ok(cached);
+    }
+
+    let previous_success = cached_successful_reset_credit(&scope)?;
+    let had_previous_success = previous_success.is_some();
+    let loaded = loader(codex_home);
+    let completed_scope = observed_quota_cache_scope(codex_home);
+    if !scope.allows_flight_reuse(&completed_scope) {
+        return Ok(identity_changed_reset_credit_bundle());
+    }
+    let bundle = match loaded {
+        Ok(reset_credit) => ResetCreditBundle {
+            updated_at: diagnostic_timestamp(),
+            reset_credit,
+            warnings: Vec::new(),
+            diagnostics: Vec::new(),
+            successful: true,
+        },
+        Err(error) => reset_credit_failure_bundle(&error, had_previous_success),
+    };
+
+    let cache = RESET_CREDIT_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().map_err(|error| error.to_string())?;
+    guard.retain(|path, entry| {
+        path == &completed_scope.codex_home || entry.cached_at.elapsed() <= RESET_CREDIT_CACHE_RETENTION
+    });
+    guard.insert(
+        completed_scope.codex_home.clone(),
+        ResetCreditCacheEntry {
+            scope: completed_scope,
+            last_success: if bundle.successful {
+                Some(bundle.reset_credit.clone())
+            } else {
+                previous_success
+            },
+            bundle: bundle.clone(),
+            cached_at: Instant::now(),
+        },
+    );
+    while guard.len() > RESET_CREDIT_CACHE_LIMIT {
+        let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, entry)| entry.cached_at)
+            .map(|(path, _)| path.clone())
+        else {
+            break;
+        };
+        guard.remove(&oldest);
+    }
+    Ok(bundle)
+}
+
+fn reset_credit_read_gate(canonical_home: &Path) -> Result<Arc<Mutex<()>>, String> {
+    let gates = RESET_CREDIT_READ_GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut gates = gates.lock().map_err(|error| error.to_string())?;
+    gates.retain(|path, gate| path == canonical_home || Arc::strong_count(gate) > 1);
+    Ok(gates
+        .entry(canonical_home.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
+fn cached_reset_credit_bundle(
+    scope: &QuotaCacheScope,
+    force_refresh: bool,
+    after_inflight: bool,
+    requested_at: Instant,
+) -> Result<Option<ResetCreditBundle>, String> {
+    let cache = RESET_CREDIT_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = cache.lock().map_err(|error| error.to_string())?;
+    let Some(entry) = guard.get(&scope.codex_home) else {
+        return Ok(None);
+    };
+    if !entry.scope.allows_success_reuse(scope) {
+        return Ok(None);
+    }
+    let completed_for_request = entry.cached_at >= requested_at;
+    if after_inflight && completed_for_request {
+        return Ok(Some(entry.bundle.clone()));
+    }
+    if force_refresh {
+        return Ok(None);
+    }
+    let ttl = if entry.bundle.successful {
+        RESET_CREDIT_SUCCESS_CACHE_TTL
+    } else {
+        RESET_CREDIT_FAILURE_CACHE_TTL
+    };
+    Ok((entry.cached_at.elapsed() <= ttl).then(|| entry.bundle.clone()))
+}
+
+fn cached_successful_reset_credit(
+    scope: &QuotaCacheScope,
+) -> Result<Option<ResetCreditSummary>, String> {
+    let cache = RESET_CREDIT_READ_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = cache.lock().map_err(|error| error.to_string())?;
+    Ok(guard
+        .get(&scope.codex_home)
+        .filter(|entry| entry.scope.allows_success_reuse(scope))
+        .and_then(|entry| entry.last_success.clone()))
 }
 
 fn read_account_quota_with_policy<F>(
@@ -336,7 +496,7 @@ fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
 
 fn success_freshness_for_cadence_ms(cadence_ms: u64) -> Duration {
     let sanitized = match cadence_ms {
-        30_000 | 60_000 | 180_000 | 300_000 | 600_000 => cadence_ms,
+        30_000 | 60_000 => cadence_ms,
         _ => DEFAULT_QUOTA_REFRESH_CADENCE_MS,
     };
     Duration::from_millis(sanitized / 2).min(MAX_SUCCESS_FRESHNESS)
@@ -466,27 +626,15 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
 }
 
 fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, String> {
-    let (mut bundle, history_limit_id) = match read_rate_limits(codex_home) {
+    let (bundle, history_limit_id) = match read_rate_limits(codex_home) {
         Ok(ParsedRateLimits {
-            mut quota,
+            quota,
             plan_label,
             limit_id,
         }) => {
             // Capture the rate-limit snapshot time immediately after the provider read.
-            // Later reset-credit/history work must not make a cached snapshot look newer.
+            // Later history work must not make a cached snapshot look newer.
             let updated_at = diagnostic_timestamp();
-            let mut warnings = Vec::new();
-            let mut diagnostics = Vec::new();
-            quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
-                let diagnostic = reset_credit_diagnostic(&error);
-                warnings.push(warning_from_diagnostic(&diagnostic));
-                diagnostics.push(diagnostic);
-                ResetCreditSummary {
-                    available_count: 0,
-                    status: reset_credit_failure_status(&error),
-                    credits: Vec::new(),
-                }
-            });
             (
                 AccountQuotaBundle {
                     updated_at,
@@ -497,27 +645,14 @@ fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, Strin
                     quota_history_24h: Vec::new(),
                     quota_history_7d: Vec::new(),
                     quota_history_30d: Vec::new(),
-                    warnings,
-                    diagnostics,
+                    warnings: Vec::new(),
+                    diagnostics: Vec::new(),
                 },
                 Some(limit_id),
             )
         }
         Err(error) => (quota_failure_bundle(codex_home, error), None),
     };
-
-    if bundle.quota.reset_credit.status == "重置卡待读取" {
-        bundle.quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|error| {
-            let diagnostic = reset_credit_diagnostic(&error);
-            bundle.warnings.push(warning_from_diagnostic(&diagnostic));
-            bundle.diagnostics.push(diagnostic);
-            ResetCreditSummary {
-                available_count: 0,
-                status: reset_credit_failure_status(&error),
-                credits: Vec::new(),
-            }
-        });
-    }
 
     Ok(LoadedAccountQuota {
         bundle,
@@ -573,19 +708,60 @@ fn identity_changed_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
     }
 }
 
+fn identity_changed_reset_credit_bundle() -> ResetCreditBundle {
+    let diagnostic = QuotaDiagnostic {
+        source: "reset_credit".into(),
+        category: "identity_changed".into(),
+        severity: "warning".into(),
+        message: "重置卡读取期间登录身份发生变化，本次结果已丢弃，请重新刷新。".into(),
+        raw_cause: None,
+        underlying_category: None,
+        attempts: None,
+        http_status: None,
+        retryable: true,
+        occurred_at: diagnostic_timestamp(),
+        stale_data_displayed: false,
+    };
+    ResetCreditBundle {
+        updated_at: diagnostic_timestamp(),
+        reset_credit: ResetCreditSummary {
+            available_count: 0,
+            status: diagnostic.message.clone(),
+            credits: Vec::new(),
+        },
+        warnings: diagnostics_to_warnings(std::slice::from_ref(&diagnostic)),
+        diagnostics: vec![diagnostic],
+        successful: false,
+    }
+}
+
+fn reset_credit_failure_bundle(error: &str, stale_data_displayed: bool) -> ResetCreditBundle {
+    let mut diagnostic = reset_credit_diagnostic(error);
+    diagnostic.stale_data_displayed = stale_data_displayed;
+    let mut diagnostics = vec![diagnostic.clone()];
+    if stale_data_displayed {
+        diagnostics.push(stale_cached_reset_credit_diagnostic(
+            diagnostic.raw_cause.clone(),
+        ));
+    }
+    ResetCreditBundle {
+        updated_at: diagnostic_timestamp(),
+        reset_credit: ResetCreditSummary {
+            available_count: 0,
+            status: diagnostic.message.clone(),
+            credits: Vec::new(),
+        },
+        warnings: diagnostics_to_warnings(&diagnostics),
+        diagnostics,
+        successful: false,
+    }
+}
+
 fn quota_failure_bundle(codex_home: &Path, error: String) -> AccountQuotaBundle {
     let updated_at = diagnostic_timestamp();
     let mut quota = placeholder_quota();
     quota.pace_label = "额度读取失败".into();
-    let mut diagnostics = vec![classify_quota_error("account_quota", &error)];
-    quota.reset_credit = read_reset_credits(codex_home).unwrap_or_else(|reset_error| {
-        diagnostics.push(reset_credit_diagnostic(&reset_error));
-        ResetCreditSummary {
-            available_count: 0,
-            status: reset_credit_failure_status(&reset_error),
-            credits: Vec::new(),
-        }
-    });
+    let diagnostics = vec![classify_quota_error("account_quota", &error)];
 
     let bundle = AccountQuotaBundle {
         updated_at,
@@ -606,7 +782,12 @@ fn stale_quota_bundle(
     mut previous: AccountQuotaBundle,
     failure: AccountQuotaBundle,
 ) -> AccountQuotaBundle {
-    previous.quota.reset_credit = failure.quota.reset_credit;
+    let previous_reset_diagnostics = previous
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.source == "reset_credit")
+        .cloned()
+        .collect::<Vec<_>>();
     let raw_cause = failure
         .diagnostics
         .iter()
@@ -620,6 +801,7 @@ fn stale_quota_bundle(
         diagnostic.stale_data_displayed = true;
     }
     diagnostics.push(stale_cached_quota_diagnostic(raw_cause));
+    diagnostics.extend(previous_reset_diagnostics);
     previous.diagnostics = diagnostics;
     previous.warnings = diagnostics_to_warnings(&previous.diagnostics);
     previous
@@ -671,10 +853,6 @@ fn warning_from_diagnostic(diagnostic: &QuotaDiagnostic) -> LocalDataWarning {
 
 fn diagnostics_to_warnings(diagnostics: &[QuotaDiagnostic]) -> Vec<LocalDataWarning> {
     diagnostics.iter().map(warning_from_diagnostic).collect()
-}
-
-fn reset_credit_failure_status(error: &str) -> String {
-    reset_credit_diagnostic(error).message
 }
 
 fn compact_error_message(error: &str) -> String {
@@ -745,9 +923,28 @@ fn stale_cached_quota_diagnostic(raw_cause: Option<String>) -> QuotaDiagnostic {
     }
 }
 
+fn stale_cached_reset_credit_diagnostic(raw_cause: Option<String>) -> QuotaDiagnostic {
+    QuotaDiagnostic {
+        source: "reset_credit".into(),
+        category: "stale_cached_data".into(),
+        severity: "warning".into(),
+        message: "重置卡刷新失败，暂时显示上次成功结果。".into(),
+        raw_cause,
+        underlying_category: None,
+        attempts: None,
+        http_status: None,
+        retryable: true,
+        occurred_at: diagnostic_timestamp(),
+        stale_data_displayed: true,
+    }
+}
+
 fn diagnostic_category(compact: &str) -> String {
     let lower = compact.to_lowercase();
 
+    if compact.contains("Codex app-server 不可用") {
+        return "app_server_unavailable".into();
+    }
     if lower.contains("未找到 access token") || lower.contains("access token") {
         return "auth_missing".into();
     }
@@ -870,21 +1067,36 @@ fn quota_deadline_error(timeout: Duration, stderr: Option<&str>) -> String {
     }
 }
 
-fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
-    let mut errors = Vec::new();
-    for attempt in 1..=RATE_LIMIT_READ_ATTEMPTS {
-        match read_rate_limits_once(codex_home, RATE_LIMIT_READ_TIMEOUT) {
-            Ok(snapshot) => return Ok(snapshot),
-            Err(error) => errors.push(format!("第 {attempt} 次：{}", compact_error_message(&error))),
-        }
-        if attempt < RATE_LIMIT_READ_ATTEMPTS {
-            thread::sleep(RATE_LIMIT_RETRY_DELAY);
-        }
+fn quota_app_server_unavailable_error(
+    child: &mut QuotaChildGuard<Child>,
+    reason: impl Into<String>,
+) -> String {
+    let exit_info = match child.child_mut().try_wait() {
+        Ok(Some(status)) => Some(format!("退出状态：{status}")),
+        Ok(None) => None,
+        Err(error) => Some(format!("读取退出状态失败：{error}")),
+    };
+    let stderr_tail = child.cleanup();
+    let mut details = vec![reason.into()];
+    if let Some(exit_info) = exit_info {
+        details.push(exit_info);
     }
-    Err(format!(
-        "额度读取失败，已重试 {RATE_LIMIT_READ_ATTEMPTS} 次：{}",
-        errors.join("；")
-    ))
+    if let Some(stderr) =
+        (!stderr_tail.trim().is_empty()).then(|| compact_error_message(&stderr_tail))
+    {
+        details.push(format!("Codex app-server stderr：{stderr}"));
+    }
+    format!("Codex app-server 不可用：{}", details.join("；"))
+}
+
+enum QuotaStdoutEvent {
+    Message(Value),
+    Eof,
+    IoError(String),
+}
+
+fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
+    read_rate_limits_once(codex_home, RATE_LIMIT_READ_TIMEOUT)
 }
 
 fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedRateLimits, String> {
@@ -907,33 +1119,61 @@ fn read_rate_limits_from_command(
         .map_err(|error| format!("启动 Codex 失败：{error}"))?;
     let mut child = QuotaChildGuard::new(child);
 
-    let stderr = child
-        .child_mut()
-        .stderr
-        .take()
-        .ok_or_else(|| "Codex stderr 不可用".to_string())?;
+    let stderr = match child.child_mut().stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            return Err(quota_app_server_unavailable_error(
+                &mut child,
+                "Codex stderr 不可用",
+            ));
+        }
+    };
     child.collect_stderr(stderr);
-    let stdout = child
-        .child_mut()
-        .stdout
-        .take()
-        .ok_or_else(|| "Codex stdout 不可用".to_string())?;
-    let mut stdin = child
-        .child_mut()
-        .stdin
-        .take()
-        .ok_or_else(|| "Codex stdin 不可用".to_string())?;
+    let stdout = match child.child_mut().stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            return Err(quota_app_server_unavailable_error(
+                &mut child,
+                "Codex stdout 不可用",
+            ));
+        }
+    };
+    let mut stdin = match child.child_mut().stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            return Err(quota_app_server_unavailable_error(
+                &mut child,
+                "Codex stdin 不可用",
+            ));
+        }
+    };
     let (sender, receiver) = mpsc::channel();
 
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                let _ = sender.send(value);
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => {
+                    let _ = sender.send(QuotaStdoutEvent::Eof);
+                    break;
+                }
+                Ok(_) => {
+                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                        if sender.send(QuotaStdoutEvent::Message(value)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(QuotaStdoutEvent::IoError(error.to_string()));
+                    break;
+                }
             }
         }
     });
 
-    write_json_line(
+    if let Err(error) = write_json_line(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
@@ -951,26 +1191,121 @@ fn read_rate_limits_from_command(
                 }
             }
         }),
-    )?;
+    ) {
+        return Err(quota_app_server_unavailable_error(
+            &mut child,
+            format!("写入 initialize 请求失败：{error}"),
+        ));
+    }
 
     let deadline = Instant::now() + timeout;
     let mut read_sent = false;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let Ok(message) = receiver.recv_timeout(remaining.min(Duration::from_millis(500))) else {
-            continue;
+        let event = match receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                match child.child_mut().try_wait() {
+                    Ok(Some(_)) => {
+                        let grace = deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(25));
+                        if grace.is_zero() {
+                            break;
+                        }
+                        match receiver.recv_timeout(grace) {
+                            Ok(event) => event,
+                            Err(mpsc::RecvTimeoutError::Timeout)
+                                if Instant::now() >= deadline => break,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                return Err(quota_app_server_unavailable_error(
+                                    &mut child,
+                                    "app-server 在额度响应前提前退出".to_string(),
+                                ));
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                return Err(quota_app_server_unavailable_error(
+                                    &mut child,
+                                    "stdout 读取线程提前结束".to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    Ok(None) => continue,
+                    Err(error) => {
+                        return Err(quota_app_server_unavailable_error(
+                            &mut child,
+                            format!("无法确认 app-server 进程状态：{error}"),
+                        ));
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(quota_app_server_unavailable_error(
+                    &mut child,
+                    "stdout 读取线程提前结束".to_string(),
+                ));
+            }
         };
 
-        if message.get("id").and_then(Value::as_i64) == Some(1)
-            && message.get("result").is_some()
-            && !read_sent
-        {
-            write_json_line(&mut stdin, &json!({"jsonrpc": "2.0", "method": "initialized"}))?;
-            write_json_line(
-                &mut stdin,
-                &json!({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"}),
-            )?;
-            read_sent = true;
+        let message = match event {
+            QuotaStdoutEvent::Message(message) => message,
+            QuotaStdoutEvent::Eof => {
+                return Err(quota_app_server_unavailable_error(
+                    &mut child,
+                    "stdout EOF：app-server 在额度响应前结束".to_string(),
+                ));
+            }
+            QuotaStdoutEvent::IoError(error) => {
+                return Err(quota_app_server_unavailable_error(
+                    &mut child,
+                    format!("stdout 读取失败：{error}"),
+                ));
+            }
+        };
+
+        if message.get("id").and_then(Value::as_i64) == Some(1) {
+            if let Some(error) = message.get("error") {
+                let detail = error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| error.to_string());
+                return Err(quota_app_server_unavailable_error(
+                    &mut child,
+                    format!("initialize 返回 error：{detail}"),
+                ));
+            }
+            if message.get("result").is_none() {
+                return Err(quota_app_server_unavailable_error(
+                    &mut child,
+                    "initialize 响应缺少 result".to_string(),
+                ));
+            }
+            if !read_sent {
+                if let Err(error) = write_json_line(
+                    &mut stdin,
+                    &json!({"jsonrpc": "2.0", "method": "initialized"}),
+                ) {
+                    return Err(quota_app_server_unavailable_error(
+                        &mut child,
+                        format!("写入 initialized 通知失败：{error}"),
+                    ));
+                }
+                if let Err(error) = write_json_line(
+                    &mut stdin,
+                    &json!({"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"}),
+                ) {
+                    return Err(quota_app_server_unavailable_error(
+                        &mut child,
+                        format!("写入额度读取请求失败：{error}"),
+                    ));
+                }
+                read_sent = true;
+            }
             continue;
         }
 
@@ -1091,6 +1426,7 @@ fn write_json_line(stdin: &mut std::process::ChildStdin, value: &Value) -> Resul
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn automatic_success_freshness_uses_half_cadence_capped_at_thirty_seconds() {
@@ -1911,11 +2247,8 @@ mod tests {
     }
 
     #[test]
-    fn quota_read_timeouts_match_swift_retry_budget() {
-        assert_eq!(RATE_LIMIT_READ_ATTEMPTS, 3);
+    fn quota_reads_are_single_bounded_attempts_with_frontend_owned_retry() {
         assert_eq!(RATE_LIMIT_READ_TIMEOUT, Duration::from_secs(12));
-        assert_eq!(RATE_LIMIT_RETRY_DELAY, Duration::from_millis(350));
-        assert_eq!(RESET_CREDIT_READ_ATTEMPTS, 3);
         assert_eq!(RESET_CREDIT_TIMEOUT, Duration::from_secs(14));
     }
 
@@ -1942,6 +2275,83 @@ mod tests {
         };
 
         assert_eq!(error, "fixture rpc error");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_initialize_rpc_error_returns_immediately_as_app_server_unavailable() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            r#"
+IFS= read -r _
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"fixture initialize failure"}}'
+printf 'initialize-stderr-marker\n' >&2
+"#,
+        );
+        let started = Instant::now();
+        let error = match read_rate_limits_from_command(command, Duration::from_secs(3)) {
+            Ok(_) => panic!("fixture initialize error unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("fixture initialize failure"));
+        assert!(error.contains("initialize-stderr-marker"));
+        assert_eq!(
+            classify_quota_error("account_quota", &error).category,
+            "app_server_unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_initialize_response_without_result_returns_structured_app_server_error() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            r#"
+IFS= read -r _
+printf '%s\n' '{"jsonrpc":"2.0","id":1}'
+"#,
+        );
+        let started = Instant::now();
+        let error = match read_rate_limits_from_command(command, Duration::from_secs(3)) {
+            Ok(_) => panic!("fixture initialize response unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("initialize 响应缺少 result"));
+        assert_eq!(
+            classify_quota_error("account_quota", &error).category,
+            "app_server_unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quota_stdout_eof_before_response_returns_immediately_with_exit_details() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            r#"
+IFS= read -r _
+printf 'early-exit-stderr-marker\n' >&2
+exit 17
+"#,
+        );
+        let started = Instant::now();
+        let error = match read_rate_limits_from_command(command, Duration::from_secs(3)) {
+            Ok(_) => panic!("fixture early exit unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("stdout EOF"));
+        assert!(error.contains("early-exit-stderr-marker"));
+        assert!(error.contains("17"));
+        assert_eq!(
+            classify_quota_error("account_quota", &error).category,
+            "app_server_unavailable"
+        );
     }
 
     #[cfg(unix)]
@@ -2086,15 +2496,8 @@ printf '%s\n' "$1"
                     .as_deref()
                     .is_some_and(|raw| raw.contains("Codex stdout 不可用 请确认 Codex Desktop 已启动"))
         }));
-        assert!(bundle
-            .warnings
-            .iter()
-            .any(|warning| warning.source == "reset_credit" && warning.message.contains("重置卡读取失败")));
-        assert!(bundle
-            .quota
-            .reset_credit
-            .status
-            .starts_with("重置卡读取失败"));
+        assert!(!bundle.warnings.iter().any(|warning| warning.source == "reset_credit"));
+        assert_eq!(bundle.quota.reset_credit.status, "重置卡待读取");
     }
 
     #[test]
@@ -2123,6 +2526,12 @@ printf '%s\n' "$1"
         let cases = [
             ("未找到 access token", "auth_missing", None, false),
             ("未找到 Codex，可在 CODEX_CLI_PATH 指定 codex.exe", "app_server_unavailable", None, true),
+            (
+                "Codex app-server 不可用：initialize 返回 error：network unavailable",
+                "app_server_unavailable",
+                None,
+                true,
+            ),
             ("额度读取超时（12 秒）", "timeout", None, true),
             ("error sending request for url: dns error", "network_send_fetch", None, true),
             ("HTTP 401 Unauthorized", "http_auth", Some(401), false),
@@ -2222,6 +2631,121 @@ printf '%s\n' "$1"
     }
 
     #[test]
+    fn reset_credit_channel_failure_is_structured_without_mutating_main_quota() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-reset-failure-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "reset-failure");
+
+        let bundle = read_account_reset_credits_with_loader(&root, true, |_| {
+            Err("error sending request for url: dns error".into())
+        })
+        .unwrap();
+
+        assert!(!bundle.successful);
+        assert_eq!(bundle.reset_credit.available_count, 0);
+        assert!(bundle.diagnostics.iter().any(|diagnostic| {
+            diagnostic.source == "reset_credit"
+                && diagnostic.category == "reset_credit_failure"
+                && diagnostic.underlying_category.as_deref() == Some("network_send_fetch")
+        }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reset_credit_cache_reuses_success_and_force_refresh_bypasses_it() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-reset-cache-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "reset-cache");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let first_calls = calls.clone();
+        let first = read_account_reset_credits_with_loader(&root, false, move |_| {
+            first_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(reset_credit_summary_fixture(1))
+        })
+        .unwrap();
+        let cached_calls = calls.clone();
+        let cached = read_account_reset_credits_with_loader(&root, false, move |_| {
+            cached_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(reset_credit_summary_fixture(99))
+        })
+        .unwrap();
+        let forced_calls = calls.clone();
+        let forced = read_account_reset_credits_with_loader(&root, true, move |_| {
+            forced_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(reset_credit_summary_fixture(2))
+        })
+        .unwrap();
+
+        assert_eq!(first.reset_credit.available_count, 1);
+        assert_eq!(cached.reset_credit.available_count, 1);
+        assert_eq!(forced.reset_credit.available_count, 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_forced_reset_credit_reads_join_one_flight() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-token-bar-reset-flight-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_auth_subject(&root, "reset-flight");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first_root = root.clone();
+        let first_calls = calls.clone();
+        let first = thread::spawn(move || {
+            read_account_reset_credits_with_loader(&first_root, true, move |_| {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(reset_credit_summary_fixture(1))
+            })
+            .unwrap()
+        });
+        entered_rx.recv().unwrap();
+
+        let second_root = root.clone();
+        let second_calls = calls.clone();
+        let second = thread::spawn(move || {
+            read_account_reset_credits_with_loader(&second_root, true, move |_| {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(reset_credit_summary_fixture(2))
+            })
+            .unwrap()
+        });
+        thread::sleep(Duration::from_millis(30));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        release_tx.send(()).unwrap();
+
+        let first_bundle = first.join().unwrap();
+        let second_bundle = second.join().unwrap();
+        assert_eq!(first_bundle.reset_credit.available_count, 1);
+        assert_eq!(second_bundle.reset_credit.available_count, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn quota_failure_bundle_projects_structured_diagnostics_to_warnings() {
         let codex_home = std::env::temp_dir().join(format!(
             "codex-token-bar-quota-diagnostic-{}",
@@ -2247,20 +2771,18 @@ printf '%s\n' "$1"
                 && diagnostic.raw_cause.as_deref() == Some("HTTP 429 Too Many Requests")
                 && diagnostic.http_status == Some(429)
                 && diagnostic.retryable));
-        assert!(bundle
+        assert!(!bundle
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.source == "reset_credit"
-                && diagnostic.category == "reset_credit_failure"
-                && diagnostic.underlying_category.is_some()));
+            .any(|diagnostic| diagnostic.source == "reset_credit"));
         assert!(bundle.warnings.iter().any(|warning| {
             warning.source == "account_quota"
                 && warning.message.contains("请求过于频繁")
         }));
-        assert!(bundle.warnings.iter().any(|warning| {
-            warning.source == "reset_credit"
-                && warning.message.contains("重置卡读取失败")
-        }));
+        assert!(!bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.source == "reset_credit"));
     }
 
     #[test]
@@ -2515,5 +3037,13 @@ printf '%s\n' "$1"
             format!(r#"{{"tokens":{{"id_token":"header.{payload}.signature"}}}}"#),
         )
         .unwrap();
+    }
+
+    fn reset_credit_summary_fixture(available_count: u32) -> ResetCreditSummary {
+        ResetCreditSummary {
+            available_count,
+            status: "重置卡已更新".into(),
+            credits: Vec::new(),
+        }
     }
 }

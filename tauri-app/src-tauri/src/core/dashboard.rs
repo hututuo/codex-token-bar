@@ -1,7 +1,7 @@
 use crate::core::{live_rate, provider_repair, quota, unread, usage};
 use crate::models::{
     AccountQuotaBundle, DashboardSnapshot, LiveThreadOption, ProviderRepairSnapshot,
-    UnreadSummary,
+    ResetCreditBundle, UnreadSummary,
 };
 use std::path::{Path, PathBuf};
 
@@ -10,6 +10,7 @@ pub trait DashboardDataSource {
     fn read_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String>;
     fn read_precise_dashboard_snapshot(&self) -> Result<DashboardSnapshot, String>;
     fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String>;
+    fn read_account_reset_credits(&self, force_refresh: bool) -> Result<ResetCreditBundle, String>;
     fn try_read_live_thread_options(&self) -> Result<Vec<LiveThreadOption>, String>;
     fn read_unread_summary(&self) -> UnreadSummary;
     fn scan_provider_repair(&self) -> ProviderRepairSnapshot;
@@ -47,6 +48,10 @@ impl DashboardDataSource for LocalCodexDataSource {
 
     fn read_account_quota(&self, force_refresh: bool) -> Result<AccountQuotaBundle, String> {
         quota::read_account_quota(self.codex_home(), force_refresh)
+    }
+
+    fn read_account_reset_credits(&self, force_refresh: bool) -> Result<ResetCreditBundle, String> {
+        quota::read_account_reset_credits(self.codex_home(), force_refresh)
     }
 
     fn try_read_live_thread_options(&self) -> Result<Vec<LiveThreadOption>, String> {

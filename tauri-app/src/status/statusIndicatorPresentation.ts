@@ -79,8 +79,13 @@ export function buildStatusMetricStates({
     && snapshot.liveRateAvailable === true
     && snapshot.liveRateStatusKind !== "failure"
     && Number.isFinite(snapshot.tokensPerSecond);
+  const unreadSource = snapshot.unreadSummary.source;
+  const unreadUnavailable = unreadSource === "pending"
+    || unreadSource.startsWith("codex_sidebar_unavailable")
+    || unreadSource.startsWith("unread_error")
+    || unreadSource.endsWith("_hidden");
   const unreadAvailable = sourceReady
-    && snapshot.unreadSummary.source !== "pending"
+    && !unreadUnavailable
     && Number.isFinite(snapshot.unreadSummary.count);
 
   return {
@@ -106,7 +111,7 @@ export function statusSnapshotForQuotaDiagnostics(
 ): FloatingPanelSnapshot {
   const staleQuotaDisplayed = diagnostics.some((diagnostic) => (
     diagnostic.staleDataDisplayed === true
-    && (diagnostic.source === "account_quota" || diagnostic.category === "stale_cached_data")
+    && diagnostic.source === "account_quota"
   ));
   if (!staleQuotaDisplayed) {
     return snapshot;

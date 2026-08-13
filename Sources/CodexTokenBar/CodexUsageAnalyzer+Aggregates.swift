@@ -74,6 +74,7 @@ extension CodexUsageAnalyzer {
         var total = TokenCacheAccumulator()
         var byModel: [String: TokenCacheAccumulator] = [:]
         var daily: [Date: TokenCacheAccumulator] = [:]
+        var dailyByModel: [Date: [String: TokenCacheAccumulator]] = [:]
         var hourly: [Date: TokenCacheAccumulator] = [:]
         var recent: [Date: TokenCacheAccumulator] = [:]
         var sessions: [String: TokenCacheAccumulator] = [:]
@@ -88,6 +89,9 @@ extension CodexUsageAnalyzer {
 
             let day = calendar.startOfDay(for: event.timestamp)
             daily[day, default: TokenCacheAccumulator()].add(event)
+            var models = dailyByModel[day] ?? [:]
+            models[event.model ?? "", default: TokenCacheAccumulator()].add(event)
+            dailyByModel[day] = models
 
             if let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
                 hourly[hour, default: TokenCacheAccumulator()].add(event)
@@ -112,6 +116,20 @@ extension CodexUsageAnalyzer {
         let dailyBuckets = daily
             .map { date, accumulator in
                 TokenCacheBucket(start: date, breakdown: accumulator.breakdown)
+            }
+            .sorted { $0.start < $1.start }
+        let dailyModelBuckets = dailyByModel
+            .map { date, models in
+                ModelTokenBucket(
+                    start: date,
+                    modelBreakdowns: models.map { model, accumulator in
+                        ModelTokenBreakdown(
+                            model: model.isEmpty ? nil : model,
+                            breakdown: accumulator.breakdown
+                        )
+                    }
+                    .sorted { ($0.model ?? "") < ($1.model ?? "") }
+                )
             }
             .sorted { $0.start < $1.start }
 
@@ -190,6 +208,7 @@ extension CodexUsageAnalyzer {
                 )
             }
             .sorted { ($0.model ?? "") < ($1.model ?? "") },
+            dailyModelBreakdowns: dailyModelBuckets,
             daily: dailyBuckets,
             hourly: hourlyBuckets,
             recentBins: recentBuckets,

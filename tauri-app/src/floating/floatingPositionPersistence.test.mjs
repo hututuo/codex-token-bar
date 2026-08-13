@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createFloatingPositionPersistence } from "./floatingPositionPersistence.ts";
+import { readFileSync } from "node:fs";
+
+const placementSource = readFileSync(new URL("./useFloatingWindowPlacement.ts", import.meta.url), "utf8");
+
+test("startup restore waits for the move listener and rejects a stale position after user movement", () => {
+  assert.match(placementSource, /onFloatingWindowMoved/);
+  assert.match(placementSource, /const restoreGeneration = movementGeneration/);
+  assert.match(placementSource, /movementGeneration !== restoreGeneration/);
+  assert.match(placementSource, /restoringStoredPosition/);
+});
 
 test("floating position persistence deduplicates coordinates and trails the final move", async () => {
   let scheduled = null;

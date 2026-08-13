@@ -9,6 +9,7 @@ import type {
   PreciseDashboardRequestRevision,
   UsageCacheStatus,
 } from "../types/dashboard";
+import type { ResetCreditBundle } from "../types/quota";
 import { useDeferredQuotaLoad } from "./useDeferredQuotaLoad";
 import { useLiveThreadOptionsLoad } from "./useLiveThreadOptionsLoad";
 import { usePreciseDashboardLoad } from "./usePreciseDashboardLoad";
@@ -32,6 +33,7 @@ interface DeferredDashboardLoadsOptions {
     | "readPreciseDashboardSourceProbe"
     | "readUsageCacheStatus"
     | "readAccountQuota"
+    | "readAccountResetCredits"
     | "readLiveThreadOptions"
   >;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
@@ -48,6 +50,7 @@ interface DeferredDashboardLoadsOptions {
     dedupeKey?: string,
   ) => void;
   onQuota: (quota: AccountQuotaBundle) => void;
+  onResetCredits: (reset: ResetCreditBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
   onForceQuotaRefreshConsumed: () => void;
   onRefreshTaskEnd?: () => void;
@@ -75,6 +78,7 @@ export function useDeferredDashboardLoads({
   onUsageCacheStatus,
   onPreciseRequestStarted,
   onQuota,
+  onResetCredits,
   onLiveThreadOptions,
   onForceQuotaRefreshConsumed,
   onRefreshTaskEnd,
@@ -110,6 +114,7 @@ export function useDeferredDashboardLoads({
     loading,
     onForceQuotaRefreshConsumed,
     onQuota,
+    onResetCredits,
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,

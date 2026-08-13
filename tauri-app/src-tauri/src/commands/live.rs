@@ -403,6 +403,29 @@ impl LiveRateMonitorRegistry {
             }
             Err(error) => {
                 let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
+                if unread::is_sidebar_snapshot_unavailable_error(&error) {
+                    let unavailable = sidebar_unavailable_unread_summary(&error);
+                    let failed_attempts = cache.get(&source_scope_key).map_or(1, |cached| {
+                        if cached.summary.source == "codex_sidebar_unavailable" {
+                            cached.failed_attempts.saturating_add(1)
+                        } else {
+                            1
+                        }
+                    });
+                    cache.retain(|key, _| key == &source_scope_key);
+                    cache.insert(
+                        source_scope_key,
+                        CachedUnreadSummary {
+                            summary: unavailable.clone(),
+                            refreshed_at: attempted_at - UNREAD_OBSERVATION_CADENCE,
+                            last_attempt: attempted_at,
+                            retry_after: Some(attempted_at + unread_retry_backoff(failed_attempts)),
+                            failed_attempts,
+                            last_error: None,
+                        },
+                    );
+                    return Ok(unavailable);
+                }
                 if let Some(cached) = cache.get_mut(&source_scope_key) {
                     cached.last_attempt = attempted_at;
                     cached.failed_attempts = cached.failed_attempts.saturating_add(1);
@@ -1069,7 +1092,11 @@ fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
         count: 0,
         label: "未读状态暂不可用".into(),
         detail: format!("当前侧栏未读快照不可用，已隐藏上次状态：{error}"),
-        source: format!("{}_hidden", summary.source.trim_end_matches("_stale")),
+        source: if summary.source == "codex_sidebar_unavailable" {
+            summary.source.clone()
+        } else {
+            format!("{}_hidden", summary.source.trim_end_matches("_stale"))
+        },
     }
 }
 
@@ -1108,6 +1135,16 @@ fn neutral_unread_summary(error: &str) -> UnreadSummary {
         label: "Unread unavailable".into(),
         detail: format!("Unread refresh failed; retry is scheduled: {error}"),
         source: "unread_error_cached".into(),
+    }
+}
+
+fn sidebar_unavailable_unread_summary(error: &str) -> UnreadSummary {
+    UnreadSummary {
+        active: false,
+        count: 0,
+        label: "未读状态暂不可用".into(),
+        detail: format!("Codex 左侧栏实时未读快照暂不可用，已停止提醒并继续重试：{error}"),
+        source: "codex_sidebar_unavailable".into(),
     }
 }
 
@@ -1270,11 +1307,13 @@ fn acknowledge_pinned_unread(
     after_pin: impl FnOnce() -> Result<(), String>,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
+    let observation_home = captured.codex_home.clone();
     let pinned = pin_captured_codex_home_source(&captured)?;
     after_pin()?;
     match pinned.observation() {
         Some(observation) => unread::acknowledge_current_unread_for_observation(
             observation,
+            &observation_home,
             &pinned.source_scope_key,
             validate_before_write,
         ),
@@ -2534,6 +2573,57 @@ mod tests {
             assert!(summary.source.starts_with("unread_error_cached"));
         }
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn forced_unread_read_soft_fails_only_while_sidebar_snapshot_is_unavailable() {
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "sidebar-unavailable".into(),
+                physical_home_key: "physical-sidebar-unavailable".into(),
+                transition_generation: 1,
+            },
+            codex_home: PathBuf::from("sidebar-unavailable"),
+            source_path: PathBuf::from("sidebar-unavailable"),
+        };
+
+        let summary = registry
+            .unread_summary_for_source_with_refresh(&captured, true, || {
+                Err(unread::SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR.into())
+            })
+            .unwrap();
+
+        assert!(!summary.active);
+        assert_eq!(summary.count, 0);
+        assert_eq!(summary.source, "codex_sidebar_unavailable");
+        let cache = registry.unread_cache.lock().unwrap();
+        let cached = cache.values().next().unwrap();
+        assert!(cached.retry_after.is_some());
+        assert_eq!(cached.failed_attempts, 1);
+        assert!(cached.last_error.is_none());
+    }
+
+    #[test]
+    fn forced_unread_read_still_reports_unexpected_failures() {
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "unexpected-unread-failure".into(),
+                physical_home_key: "physical-unexpected-unread-failure".into(),
+                transition_generation: 1,
+            },
+            codex_home: PathBuf::from("unexpected-unread-failure"),
+            source_path: PathBuf::from("unexpected-unread-failure"),
+        };
+
+        let error = registry
+            .unread_summary_for_source_with_refresh(&captured, true, || {
+                Err("injected persistence failure".into())
+            })
+            .unwrap_err();
+
+        assert_eq!(error, "injected persistence failure");
     }
 
     #[test]

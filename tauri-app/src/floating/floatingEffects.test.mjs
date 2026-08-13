@@ -14,6 +14,25 @@ const settingsPanelSource = readFileSync(
   "utf8",
 );
 
+test("floating settings events win over a stale startup settings read", () => {
+  assert.match(floatingWindowSource, /settingsEventGenerationRef/);
+  assert.match(floatingWindowSource, /displaySettingsEventGenerationRef/);
+  assert.match(floatingWindowSource, /appSettingsEventGenerationRef/);
+  assert.match(floatingWindowSource, /settingsEventGenerationRef\.current \+= 1/);
+  assert.match(
+    floatingWindowSource,
+    /startingSettingsGeneration === 0 && settingsEventGenerationRef\.current === 0/,
+  );
+  assert.match(
+    floatingWindowSource,
+    /startingAppSettingsGeneration === 0[\s\S]*?appSettingsEventGenerationRef\.current === 0/,
+  );
+  assert.match(
+    floatingWindowSource,
+    /startingDisplaySettingsGeneration === 0[\s\S]*?displaySettingsEventGenerationRef\.current === 0/,
+  );
+});
+
 test("crowd radar compares three compact results without a visual title or lower-value coverage fields", () => {
   const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
   assert.match(crowdRow, /rankedCodexCrowdRadarModels\(snapshot, 3\)/);
@@ -25,7 +44,7 @@ test("crowd radar compares three compact results without a visual title or lower
   assert.doesNotMatch(crowdRow, /IQ .*model\.scoreSamples.*判/);
   assert.doesNotMatch(crowdRow, /IQ .*model\.graded.*判/);
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
-  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
+  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-2px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(4px \* var\(--floating-scale\)\);/);
@@ -111,6 +130,14 @@ test("ripple atlas rebuilds on color changes without waiting for resize", () => 
   assert.match(previewSource, /}, \[normalizedEffectRgb\]\);/);
 });
 
+test("settings preview owns the same visual variables as the real floating window", () => {
+  assert.match(previewSource, /"--floating-card-opacity": settings\.opacity\.toFixed\(2\)/);
+  assert.match(previewSource, /"--floating-gradient-background": floatingGradientBackground\(settings\)/);
+  assert.match(previewSource, /"--floating-effect-color": effectHexColor\(effectRgb\)/);
+  assert.match(previewSource, /"--floating-effect-rgb": `\$\{effectRgb\.red\}, \$\{effectRgb\.green\}, \$\{effectRgb\.blue\}`/);
+  assert.match(stylesSource, /\.floating-panel-surface::before\s*{[^}]*background: var\(--floating-gradient-background\);[^}]*opacity: var\(--floating-card-opacity\);/s);
+});
+
 test("ripple atlas ignores stale async render results", () => {
   assert.match(previewSource, /renderGenerationRef/);
   assert.match(previewSource, /const generation = renderGenerationRef\.current \+ 1/);
@@ -121,7 +148,7 @@ test("ripple atlas ignores stale async render results", () => {
 
 test("floating panel keeps compact Swift proportions with complete readable text", () => {
   assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?border-radius: calc\(14px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?width: min\(calc\(288px \* var\(--floating-scale\)\), calc\(100vw - 2px\)\);/);
+  assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?width: min\(calc\(308px \* var\(--floating-scale\)\), calc\(100vw - 2px\)\);/);
   assert.match(previewSource, /className="floating-rate-readout"/);
   assert.match(stylesSource, /\.floating-topline\s*{[\s\S]*?grid-template-columns: calc\(92px \* var\(--floating-scale\)\) minmax\(0, 1fr\);[\s\S]*?column-gap: calc\(8px \* var\(--floating-scale\)\);[\s\S]*?padding-right: calc\(17px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-rate-readout\s*{[\s\S]*?grid-template-columns: calc\(64px \* var\(--floating-scale\)\) calc\(22px \* var\(--floating-scale\)\);[\s\S]*?column-gap: calc\(4px \* var\(--floating-scale\)\);/);
@@ -211,11 +238,15 @@ test("floating radar shows multiple sorted model IQ scores", () => {
   assert.match(previewSource, /compactRadarModelName\(row\.label\).*displayRadarNumber\(row\.point\.score, 1\)/s);
   assert.doesNotMatch(previewSource, /function floatingRadar(?:Primary|Short)ModelLabel/);
   assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?display: block;[\s\S]*?text-overflow: clip;/);
-  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(0, 0\.74fr\) minmax\(0, 1\.26fr\);/);
+  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(previewSource, /className="floating-radar-dot"/);
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: calc\(4px \* var\(--floating-scale\)\) max-content minmax\(0, 1fr\);/);
   assert.match(stylesSource, /\.floating-radar-action > span\s*{[\s\S]*?color: var\(--floating-primary\);/);
   assert.match(stylesSource, /\.floating-radar-iq strong > span\s*{[\s\S]*?color: var\(--floating-primary\);/);
+  assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?font-size: calc\(11\.8px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-radar strong em\s*{[\s\S]*?font-size: calc\(8\.4px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?font-size: calc\(8\.1px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-crowd-radar-result em\s*{[\s\S]*?font-size: calc\(7\.4px \* var\(--floating-scale\)\);/);
 });
 
 test("clickable disclosure arrows are right aligned and vertically centered", () => {

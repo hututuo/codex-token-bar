@@ -58,18 +58,27 @@ final class CodexRadarDetailRefreshScheduleTests: XCTestCase {
         ))
     }
 
-    func testShouldNotAttemptSameSlotAfterAutomaticFailureWasAttempted() throws {
+    func testShouldKeepSameSlotEligibleAfterAutomaticFailureWasAttempted() throws {
         let calendar = Self.calendar
         let now = try Self.date("2026-07-07 09:00")
         let previousSuccess = try Self.date("2026-07-06 18:00")
         let attemptedMorning = try Self.date("2026-07-07 08:00")
 
-        XCTAssertFalse(CodexRadarDetailRefreshSchedule.shouldAttempt(
+        XCTAssertTrue(CodexRadarDetailRefreshSchedule.shouldAttempt(
             now: now,
             lastSuccessfulRefreshAt: previousSuccess,
             lastAttemptedSlotAt: attemptedMorning,
             calendar: calendar
         ))
+    }
+
+    func testBackgroundRecoveryBackoffPlateausAtTenMinutesWithoutStopping() {
+        var backoff = PersistentRefreshBackoff(steps: PersistentRefreshBackoff.backgroundSteps)
+        let delays = (0..<12).map { _ in
+            backoff.recordFailure(maximumDelay: 600)
+        }
+
+        XCTAssertEqual(delays, [1, 2, 5, 10, 30, 60, 120, 300, 600, 600, 600, 600])
     }
 
     func testShouldAttemptNextSlotAfterPreviousSlotWasAttempted() throws {

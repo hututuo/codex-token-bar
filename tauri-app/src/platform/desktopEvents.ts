@@ -1,10 +1,13 @@
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
 import { FLOATING_SETTINGS_EVENT } from "../floating/floatingSettings";
 import type {
+  AccountQuotaBundle,
   AppSettingsSnapshot,
   CodexHomeSourceEnvelope,
+  CodexHomeSourceToken,
   DisplaySurfaceSettings,
   LiveRateSnapshot,
+  ResetCreditBundle,
   UnreadSummaryChangedPayload,
 } from "../types/dashboard";
 import {
@@ -20,6 +23,8 @@ const FLOATING_WINDOW_HIDDEN_EVENT = "floating-window-hidden";
 const FLOATING_WINDOW_VISIBILITY_EVENT = "floating-window-visibility-changed";
 const LIVE_RATE_SNAPSHOT_EVENT = "live-rate-snapshot";
 const UNREAD_SUMMARY_CHANGED_EVENT = "unread-summary-changed";
+const ACCOUNT_QUOTA_CHANGED_EVENT = "account-quota-changed";
+const ACCOUNT_RESET_CREDITS_CHANGED_EVENT = "account-reset-credits-changed";
 const DISPLAY_SURFACES_EVENT = "display-surfaces-changed";
 const APP_SETTINGS_EVENT = "app-settings-changed";
 const OPEN_APP_SETTINGS_EVENT = "open-app-settings";
@@ -55,6 +60,42 @@ export function onUnreadSummaryChanged(
   handler: (payload: UnreadSummaryChangedPayload) => void,
 ): Promise<Unlisten> {
   return listenToEvent<UnreadSummaryChangedPayload>(UNREAD_SUMMARY_CHANGED_EVENT, handler);
+}
+
+export interface AccountQuotaChangedPayload {
+  quota: AccountQuotaBundle;
+  sourceToken: CodexHomeSourceToken;
+}
+
+export interface AccountResetCreditsChangedPayload {
+  resetCredits: ResetCreditBundle;
+  sourceToken: CodexHomeSourceToken;
+}
+
+export function publishAccountQuotaChanged(payload: AccountQuotaChangedPayload): Promise<boolean> {
+  return emitPlatformEvent(ACCOUNT_QUOTA_CHANGED_EVENT, "publish-account-quota", payload);
+}
+
+export function onAccountQuotaChanged(
+  handler: (payload: AccountQuotaChangedPayload) => void,
+): Promise<Unlisten> {
+  return listenToEvent<AccountQuotaChangedPayload>(ACCOUNT_QUOTA_CHANGED_EVENT, handler);
+}
+
+export function publishAccountResetCreditsChanged(
+  payload: AccountResetCreditsChangedPayload,
+): Promise<boolean> {
+  return emitPlatformEvent(
+    ACCOUNT_RESET_CREDITS_CHANGED_EVENT,
+    "publish-account-reset-credits",
+    payload,
+  );
+}
+
+export function onAccountResetCreditsChanged(
+  handler: (payload: AccountResetCreditsChangedPayload) => void,
+): Promise<Unlisten> {
+  return listenToEvent<AccountResetCreditsChangedPayload>(ACCOUNT_RESET_CREDITS_CHANGED_EVENT, handler);
 }
 
 export async function publishFloatingSettings(settings: FloatingWindowSettings): Promise<boolean> {

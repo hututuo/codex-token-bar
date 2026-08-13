@@ -8,6 +8,7 @@ export {
   acknowledgeAttributionSafety,
   getCodexHome,
   readAccountQuota,
+  readAccountResetCredits,
   readDashboardSnapshot,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,

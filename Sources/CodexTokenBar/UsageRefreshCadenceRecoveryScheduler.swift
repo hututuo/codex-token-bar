@@ -16,7 +16,11 @@ enum UsageRefreshCadenceRecoveryScheduler {
 
         let nanoseconds = sleepNanoseconds(for: delay)
         task = Task { @MainActor in
-            try? await sleep(nanoseconds)
+            do {
+                try await sleep(nanoseconds)
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
             action()
         }

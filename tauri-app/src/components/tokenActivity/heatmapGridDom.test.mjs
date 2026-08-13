@@ -221,6 +221,7 @@ function heatmapProps(days, onDayHover) {
     days,
     hoveredDate: null,
     mode: "daily",
+    priceModel: "gpt56Sol",
     monthMarkers: [],
     onDateSelect() {},
     onDayHover,

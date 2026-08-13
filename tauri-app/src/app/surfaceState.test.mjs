@@ -37,11 +37,27 @@ test("quota refresh cadence is shared through app settings and surface events", 
   assert.equal(statusPanel.includes("onAppSettingsChanged"), true);
 });
 
+test("dashboard owns quota polling while compact surfaces consume shared quota events", async () => {
+  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
+  const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
+  const desktopEvents = await readFile(new URL("../platform/desktopEvents.ts", import.meta.url), "utf8");
+
+  assert.match(dashboardData, /publishAccountQuotaChanged/);
+  assert.match(dashboardData, /publishAccountResetCreditsChanged/);
+  assert.match(compactData, /followDashboardUpdates: quotaSource === "dashboard"/);
+  assert.match(compactQuota, /onAccountQuotaChanged/);
+  assert.match(compactQuota, /onAccountResetCreditsChanged/);
+  assert.match(desktopEvents, /ACCOUNT_QUOTA_CHANGED_EVENT = "account-quota-changed"/);
+  assert.match(desktopEvents, /ACCOUNT_RESET_CREDITS_CHANGED_EVENT = "account-reset-credits-changed"/);
+});
+
 test("floating appearance changes target both live compact surfaces immediately", async () => {
   const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
   const desktopEvents = await readFile(new URL("../platform/desktopEvents.ts", import.meta.url), "utf8");
 
   assert.match(shellSettings, /setFloatingSettings\(next\);[\s\S]*publishFloatingSettings\(next\);[\s\S]*schedule\(next\)/);
+  assert.match(shellSettings, /onLatestPersisted: \(value\) => \{[\s\S]*publishFloatingSettings\(value\)/);
   assert.match(desktopEvents, /emitPlatformEventTo\([\s\S]*FLOATING_WINDOW_LABEL/);
   assert.match(desktopEvents, /emitPlatformEventTo\([\s\S]*STATUS_WINDOW_LABEL/);
 });
@@ -173,7 +189,9 @@ test("dashboard quota refreshes independently through the shared cadence model",
   assert.equal(dashboardData.includes("setForceNextQuotaLoad(true)"), true);
   assert.equal(dashboardClient.includes("90_000"), true);
   assert.equal(deferredLoads.includes("quotaGeneration"), true);
-  assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaGeneration.current === null"), true);
+  assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaRequestKey.current === null"), true);
+  assert.equal(quotaLoad.includes("source.readAccountResetCredits"), true);
+  assert.equal(quotaLoad.includes("persistentRefreshDelayMs"), true);
 });
 
 test("quota warning retry affordance remains wired to the dashboard quota action", async () => {
@@ -228,7 +246,7 @@ test("cache hit ranking exposes latest sort affordance", async () => {
   assert.equal(ranking.includes("低命中"), true);
 });
 
-test("compact surfaces refresh quota every minute", async () => {
+test("direct compact quota fallback remains capped at one-minute refreshes", async () => {
   const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
   const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
 
@@ -237,7 +255,7 @@ test("compact surfaces refresh quota every minute", async () => {
   assert.equal(compactQuota.includes("refreshQuota(true)"), true);
 });
 
-test("dashboard and compact quota force refresh after system wake", async () => {
+test("dashboard and direct compact quota fallback force refresh after system wake", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
   const wakeRefresh = await readFile(new URL("../utils/useWakeRefresh.ts", import.meta.url), "utf8");
@@ -398,6 +416,8 @@ test("manual dashboard refresh keeps the current snapshot visible", async () => 
   assert.equal(reloadAll.includes("loading: true"), false);
   assert.equal(reloadAll.includes("loadInitialDashboardState"), false);
   assert.equal(refreshCurrentSource.includes("setSourceLoadGeneration"), true);
+  assert.equal(refreshCurrentSource.includes("setForceNextQuotaLoad(true)"), true);
+  assert.equal(refreshCurrentSource.includes("setQuotaLoadGeneration"), true);
   assert.equal(refreshCurrentSource.includes("setFastSnapshotLoaded"), false);
   assert.equal(refreshCurrentSource.includes("setSelectedLiveThreadId"), false);
   assert.equal(dashboardData.includes("loadInitialDashboardState({"), true);

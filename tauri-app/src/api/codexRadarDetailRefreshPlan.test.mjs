@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   latestCodexRadarDetailSlot,
   millisecondsUntilNextCodexRadarDetailSlot,
+  nextCodexRadarDetailRecoveryDelayMs,
   shouldRefreshCodexRadarDetail,
 } from "./codexRadarDetailRefreshPlan.ts";
 
@@ -42,7 +43,7 @@ test("shouldRefreshCodexRadarDetail catches up once after a missed slot", () => 
   }), true);
 });
 
-test("shouldRefreshCodexRadarDetail does not retry-loop the same automatic slot", () => {
+test("shouldRefreshCodexRadarDetail keeps a failed automatic slot eligible for recovery", () => {
   const morningNow = new Date("2026-07-07T08:05:00+08:00");
   const morningSlot = latestCodexRadarDetailSlot(morningNow).toISOString();
 
@@ -55,7 +56,7 @@ test("shouldRefreshCodexRadarDetail does not retry-loop the same automatic slot"
     lastAttemptedSlotAt: morningSlot,
     lastSuccessfulRefreshAt: null,
     now: morningNow,
-  }), false);
+  }), true);
   assert.equal(shouldRefreshCodexRadarDetail({
     lastAttemptedSlotAt: morningSlot,
     lastSuccessfulRefreshAt: null,
@@ -66,6 +67,15 @@ test("shouldRefreshCodexRadarDetail does not retry-loop the same automatic slot"
     lastSuccessfulRefreshAt: "2026-07-07T08:02:00+08:00",
     now: morningNow,
   }), false);
+});
+
+test("Codex Radar detail recovery progresses to ten minutes and never stops", () => {
+  assert.deepEqual(
+    Array.from({ length: 12 }, (_, failureCount) => (
+      nextCodexRadarDetailRecoveryDelayMs(failureCount)
+    )),
+    [1_000, 2_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000, 600_000, 600_000, 600_000],
+  );
 });
 
 test("manual Codex Radar detail refresh ignores the automatic attempt guard", () => {

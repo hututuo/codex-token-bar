@@ -36,7 +36,7 @@ export function quotaReadWarnings(
     .map((diagnostic) => diagnostic.message);
 
   if (diagnosticMessages.length > 0) {
-    return dedupeMessages(diagnosticMessages);
+    return summarizedDiagnosticMessages(diagnostics);
   }
 
   return warnings
@@ -45,6 +45,46 @@ export function quotaReadWarnings(
     .filter((message) => message.length > 0)
     .filter((message, index, messages) => messages.indexOf(message) === index)
     .slice(0, 2);
+}
+
+function summarizedDiagnosticMessages(diagnostics: QuotaDiagnostic[]): string[] {
+  const relevant = diagnostics
+    .filter((diagnostic) => QUOTA_DIAGNOSTIC_SOURCES.has(diagnostic.source))
+    .filter((diagnostic) => diagnostic.message.trim().length > 0);
+  const staleSources = new Set(relevant
+    .filter((diagnostic) => (
+      diagnostic.staleDataDisplayed === true || diagnostic.category === "stale_cached_data"
+    ))
+    .map((diagnostic) => diagnostic.source));
+  const causes = relevant
+    .filter((diagnostic) => (
+      diagnostic.staleDataDisplayed !== true && diagnostic.category !== "stale_cached_data"
+    ))
+    .sort((left, right) => rootCausePriority(left) - rootCausePriority(right));
+  const primaryCause = causes[0]?.message;
+  const staleMessage = combinedStaleMessage(staleSources);
+  return dedupeMessages([primaryCause, staleMessage].filter((message): message is string => Boolean(message)));
+}
+
+function rootCausePriority(diagnostic: QuotaDiagnostic): number {
+  const category = diagnostic.underlyingCategory ?? diagnostic.category;
+  if (category === "network_send_fetch") return 25;
+  return CATEGORY_PRIORITY.get(category) ?? CATEGORY_PRIORITY.get("unknown") ?? 200;
+}
+
+function combinedStaleMessage(sources: ReadonlySet<string>): string | null {
+  const quotaStale = sources.has("account_quota") || sources.has("frontend_command");
+  const resetStale = sources.has("reset_credit");
+  if (quotaStale && resetStale) {
+    return "额度和重置卡刷新失败，暂时显示上次成功结果。";
+  }
+  if (quotaStale) {
+    return "额度刷新失败，暂时显示上次成功额度。";
+  }
+  if (resetStale) {
+    return "重置卡刷新失败，暂时显示上次成功结果。";
+  }
+  return null;
 }
 
 function diagnosticPriority(diagnostic: QuotaDiagnostic): number {

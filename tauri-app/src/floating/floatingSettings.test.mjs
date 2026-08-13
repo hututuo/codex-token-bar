@@ -8,12 +8,13 @@ import {
   DEFAULT_FLOATING_SETTINGS,
   floatingGradientBackground,
   sanitizeFloatingSettings,
+  shouldPresentFloatingPagingGuide,
 } from "./floatingSettings.ts";
 
 test("floating dimensions keep compact Swift-style proportions", () => {
-  assert.equal(FLOATING_BASE_WIDTH, 288);
+  assert.equal(FLOATING_BASE_WIDTH, 308);
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 138);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 142);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {
@@ -96,6 +97,49 @@ test("sanitizeFloatingSettings clamps invalid paging guide revisions without rep
   assert.equal(sanitizeFloatingSettings({ pagingGuideRevision: -3 }).pagingGuideRevision, 0);
   assert.equal(sanitizeFloatingSettings({ pagingGuideRevision: Number.NaN }).pagingGuideRevision, 0);
   assert.equal(sanitizeFloatingSettings({ pagingGuideRevision: 4.9 }).pagingGuideRevision, 4);
+});
+
+test("floating paging guide shows once per revision and reappears only after a revision upgrade", () => {
+  const base = {
+    settingsLoaded: true,
+    setupGuideCompleted: true,
+    pagingGuideDismissed: false,
+    hasPagedRows: true,
+  };
+
+  assert.equal(
+    shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 0 }),
+    true,
+    "a completed setup with an unseen revision shows the guide",
+  );
+  assert.equal(
+    shouldPresentFloatingPagingGuide({
+      ...base,
+      pagingGuideRevision: CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+    }),
+    false,
+    "completion at the current revision hides the guide on later launches",
+  );
+  assert.equal(
+    shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 2 }),
+    true,
+    "a code revision upgrade reopens the guide for an older completion",
+  );
+  assert.equal(
+    shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 4 }),
+    false,
+    "a completion from a newer revision never replays an older guide",
+  );
+  assert.equal(
+    shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 0, pagingGuideDismissed: true }),
+    false,
+    "an in-flight completion dismissal prevents a stale settings event from reviving the guide",
+  );
+  assert.equal(
+    shouldPresentFloatingPagingGuide({ ...base, pagingGuideRevision: 0, settingsLoaded: false }),
+    false,
+    "startup does not present before the authoritative settings read or event",
+  );
 });
 
 test("sanitizeFloatingSettings migrates legacy content order with running threads visible after metrics", () => {

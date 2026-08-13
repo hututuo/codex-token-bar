@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("usage, quota, and attribution safety IPC calls forward the exact source token", async () => {
+test("usage, quota, reset credits, and attribution safety IPC calls forward the exact source token", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const calls = [];
   Object.defineProperty(globalThis, "window", {
@@ -13,6 +13,7 @@ test("usage, quota, and attribution safety IPC calls forward the exact source to
         invoke(command, args) {
           calls.push({ args, command });
           if (command === "read_account_quota") return Promise.resolve({ quota: {} });
+          if (command === "read_account_reset_credits") return Promise.resolve({ successful: true });
           if (command === "acknowledge_attribution_safety") return Promise.resolve(true);
           return Promise.resolve({ totalTokens: 1 });
         },
@@ -28,6 +29,7 @@ test("usage, quota, and attribution safety IPC calls forward the exact source to
       const {
         acknowledgeAttributionSafety,
         readAccountQuota,
+        readAccountResetCredits,
         readUsageSummarySnapshot,
       } = await load("/src/api/dashboardClient.ts");
       const sourceToken = {
@@ -38,6 +40,7 @@ test("usage, quota, and attribution safety IPC calls forward the exact source to
 
       await readUsageSummarySnapshot(sourceToken);
       await readAccountQuota(sourceToken, true);
+      await readAccountResetCredits(sourceToken, true);
       assert.equal(await acknowledgeAttributionSafety(
         sourceToken,
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -52,6 +55,10 @@ test("usage, quota, and attribution safety IPC calls forward the exact source to
         },
         {
           command: "read_account_quota",
+          args: { forceRefresh: true, sourceToken },
+        },
+        {
+          command: "read_account_reset_credits",
           args: { forceRefresh: true, sourceToken },
         },
         {

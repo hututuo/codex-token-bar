@@ -6,7 +6,8 @@ import {
   type FocusEvent,
   type KeyboardEvent,
 } from "react";
-import { cellColor, cellLabel, isInRange, modelCellColor, type ActivityMode, type HeatmapDay, type MonthMarker } from "./model";
+import { cellColor, cellLabel, isInRange, modelCellColor, modelCostCellBackground, type ActivityMode, type HeatmapDay, type MonthMarker } from "./model";
+import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel";
 import {
   heatmapKeyboardAction,
   resolveHeatmapFocusDate,
@@ -16,6 +17,8 @@ import {
 interface HeatmapGridProps {
   days: HeatmapDay[];
   mode: ActivityMode;
+  modelCostDataAvailable?: boolean;
+  priceModel: OfficialAPIPriceModel;
   monthMarkers: MonthMarker[];
   onDateSelect: (date: string) => void;
   onDayHover: (day: HeatmapDay["day"] | null) => void;
@@ -27,6 +30,8 @@ interface HeatmapGridProps {
 export function HeatmapGrid({
   days,
   mode,
+  modelCostDataAvailable = true,
+  priceModel,
   monthMarkers,
   onDateSelect,
   onDayHover,
@@ -124,7 +129,7 @@ export function HeatmapGrid({
           ].filter(Boolean).join(" ");
           return (
             <button
-              aria-label={cellLabel(day, mode)}
+              aria-label={cellLabel(day, mode, priceModel, modelCostDataAvailable)}
               aria-pressed={selected}
               className={classes}
               key={day.date}
@@ -144,9 +149,15 @@ export function HeatmapGrid({
                   cellRefs.current.delete(day.date);
                 }
               }}
-              style={{ backgroundColor: mode === "model" ? modelCellColor(day, intensity) : cellColor(mode, intensity) }}
+              style={{
+                background: mode === "modelCost"
+                  ? modelCostCellBackground(day, intensity, priceModel, modelCostDataAvailable)
+                  : mode === "model"
+                    ? modelCellColor(day, intensity)
+                    : cellColor(mode, intensity),
+              }}
               tabIndex={validFocusedDate === day.date ? 0 : -1}
-              title={cellLabel(day, mode)}
+              title={cellLabel(day, mode, priceModel, modelCostDataAvailable)}
               type="button"
             />
           );

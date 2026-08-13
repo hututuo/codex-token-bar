@@ -270,7 +270,9 @@ final class DashboardRuntime: ObservableObject {
         usageStore: CodexUsageStore = CodexUsageStore(
             continuitySafetyDatabase: .shared
         ),
-        quotaStore: AccountQuotaStore = AccountQuotaStore(),
+        quotaStore: AccountQuotaStore = AccountQuotaStore(
+            resetCreditReader: LiveAccountQuotaResetCreditReader()
+        ),
         quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(),
         radarStore: CodexRadarStore = CodexRadarStore(),
         providerSyncStore: ProviderSyncStore = ProviderSyncStore(),

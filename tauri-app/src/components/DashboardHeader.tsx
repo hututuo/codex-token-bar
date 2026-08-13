@@ -178,70 +178,6 @@ export function DashboardHeader({
       </div>
 
       <div className="dash-head">
-        <div className="dash-head__top dash-head__top--actions-only">
-          <div aria-label="常用操作" className="dash-head__actions">
-            <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">
-              {refreshing ? "刷新中…" : "立即刷新"}
-            </button>
-            <button className="dash-head__action" onClick={() => onOpenSettings("general")} type="button">设置</button>
-            <div className="dash-head__more" ref={moreMenuRef}>
-              <button
-                aria-expanded={moreMenuOpen}
-                aria-haspopup="menu"
-                aria-label="更多操作"
-                className="dash-head__action dash-head__action--more"
-                onClick={() => setMoreMenuOpen((current) => !current)}
-                type="button"
-              >
-                更多
-                {updateNeedsAttention ? <i aria-label="更新需要处理" className="dash-head__attention" /> : null}
-              </button>
-              {moreMenuOpen ? (
-                <div className="dash-head__menu" role="menu">
-                  <div className="dash-head__menu-group">
-                    <span>会话</span>
-                    <button onClick={() => runMenuAction(onOpenSessionManagement)} role="menuitem" type="button">会话管理</button>
-                    <button onClick={() => runMenuAction(onOpenProviderRepair)} role="menuitem" title="找回消失的历史会话" type="button">会话消失修复</button>
-                    <button onClick={() => runMenuAction(() => onOpenSettings("session"))} role="menuitem" title={threadDeleteBridgeStatus.message} type="button">
-                      会话增强{threadDeleteBridgeStatus.connected ? " · 已连接" : ""}
-                    </button>
-                    <button onClick={() => runMenuAction(() => onOpenSettings("automation"))} role="menuitem" type="button">
-                      自动续跑{autoResumeEnabled ? " · 已开启" : ""}
-                    </button>
-                  </div>
-                  <div className="dash-head__menu-group">
-                    <span>数据</span>
-                    <button onClick={() => runMenuAction(() => setEditingPath((value) => !value))} role="menuitem" type="button">{editingPath ? "收起目录" : "更改目录"}</button>
-                    <button onClick={() => runMenuAction(onExportCsv)} role="menuitem" type="button">导出 CSV</button>
-                    <button onClick={() => runMenuAction(onExportPng)} role="menuitem" type="button">导出 PNG</button>
-                  </div>
-                  <div className="dash-head__menu-group">
-                    <span>应用</span>
-                    <button
-                      className={updateNeedsAttention ? `update-action--${appUpdateState.kind}` : undefined}
-                      disabled={updateBusy}
-                      onClick={() => runMenuAction(() => { void onCheckForUpdate(); })}
-                      role="menuitem"
-                      title={appUpdateState.message || undefined}
-                      type="button"
-                    >{updateButtonLabel}</button>
-                    <button
-                      aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
-                      aria-pressed={autostartStatus.enabled}
-                      disabled={!autostartStatus.available}
-                      onClick={() => runMenuAction(onToggleAutostart)}
-                      role="menuitem"
-                      title={autostartStatus.message}
-                      type="button"
-                    >开机自启：{autostartStatus.enabled ? "开" : "关"}</button>
-                    {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-
         <div aria-label="运行信息" className="dash-head__strip">
           <span className="dash-head__platform">
             <small>
@@ -267,6 +203,90 @@ export function DashboardHeader({
             <small>本地统计</small>
             <strong>更新于 {updatedLabel}</strong>
           </span>
+        </div>
+
+        <div className="dash-head__top dash-head__top--actions-only">
+          <div aria-label="常用操作" className="dash-head__actions">
+            <div className="dash-head__action-group">
+              <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">
+                {refreshing ? "刷新中…" : "立即刷新"}
+              </button>
+            </div>
+            <div className="dash-head__action-group">
+              <button className="dash-head__action" onClick={() => setEditingPath((value) => !value)} type="button">
+                {editingPath ? "收起目录" : "更改目录"}
+              </button>
+              <button className="dash-head__action" onClick={onOpenProviderRepair} title="找回消失的历史会话" type="button">会话消失修复</button>
+            </div>
+            <div className="dash-head__action-group">
+              <button className="dash-head__action dash-head__action--accent" onClick={onOpenSessionManagement} title="按项目浏览上下文，管理归档、恢复包和容量清理" type="button">会话管理</button>
+              <button
+                aria-label="会话增强"
+                className={`dash-head__action${threadDeleteBridgeStatus.connected ? " is-enabled" : ""}`}
+                onClick={() => onOpenSettings("session")}
+                title={threadDeleteBridgeStatus.message}
+                type="button"
+              >
+                会话增强{threadDeleteBridgeStatus.connected ? " · 已连接" : ""}
+              </button>
+              <button
+                aria-label="自动续跑"
+                aria-pressed={autoResumeEnabled}
+                className={`dash-head__action${autoResumeEnabled ? " is-enabled" : ""}`}
+                onClick={() => onOpenSettings("automation")}
+                title={autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理失败中断、定时和额度恢复续跑"}
+                type="button"
+              >
+                自动续跑{autoResumeEnabled ? " · 已开启" : ""}
+              </button>
+            </div>
+            <div className="dash-head__action-group">
+              <button className="dash-head__action dash-head__action--accent" onClick={() => onOpenSettings("general")} type="button">设置</button>
+              <div className="dash-head__more" ref={moreMenuRef}>
+                <button
+                  aria-expanded={moreMenuOpen}
+                  aria-haspopup="menu"
+                  aria-label="更多操作"
+                  className="dash-head__action dash-head__action--more"
+                  onClick={() => setMoreMenuOpen((current) => !current)}
+                  type="button"
+                >
+                  更多
+                  {updateNeedsAttention ? <i aria-label="更新需要处理" className="dash-head__attention" /> : null}
+                </button>
+                {moreMenuOpen ? (
+                  <div className="dash-head__menu" role="menu">
+                    <div className="dash-head__menu-group">
+                      <span>数据</span>
+                      <button onClick={() => runMenuAction(onExportCsv)} role="menuitem" type="button">导出 CSV</button>
+                      <button onClick={() => runMenuAction(onExportPng)} role="menuitem" type="button">导出 PNG</button>
+                    </div>
+                    <div className="dash-head__menu-group">
+                      <span>应用</span>
+                      <button
+                        className={updateNeedsAttention ? `update-action--${appUpdateState.kind}` : undefined}
+                        disabled={updateBusy}
+                        onClick={() => runMenuAction(() => { void onCheckForUpdate(); })}
+                        role="menuitem"
+                        title={appUpdateState.message || undefined}
+                        type="button"
+                      >{updateButtonLabel}</button>
+                      <button
+                        aria-describedby={autostartStatus.message ? autostartHelpId : undefined}
+                        aria-pressed={autostartStatus.enabled}
+                        disabled={!autostartStatus.available}
+                        onClick={() => runMenuAction(onToggleAutostart)}
+                        role="menuitem"
+                        title={autostartStatus.message}
+                        type="button"
+                      >开机自启：{autostartStatus.enabled ? "开" : "关"}</button>
+                      {autostartStatus.message ? <span className="visually-hidden" id={autostartHelpId}>{autostartStatus.message}</span> : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
         </div>
         {editingPath ? (
           <CodexHomeEditor

@@ -35,6 +35,11 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 
 enum FloatingTodayModelUsagePresentation {
     static let visibleItemLimit = 4
+    static let dashboardPrimaryModelKeys = [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
 
     /// Keep the compact model strip useful even when the current day only
     /// contains one model. Spark is intentionally not part of this default
@@ -126,6 +131,36 @@ enum FloatingTodayModelUsagePresentation {
         let detail = items.map { "\($0.label) \($0.valueText(for: page))" }
             .joined(separator: "，")
         return "今日模型\(page.compactTitle)：\(detail)"
+    }
+
+    static func dashboardPrimaryItems(
+        from items: [FloatingTodayModelUsageItem]
+    ) -> [FloatingTodayModelUsageItem] {
+        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        return dashboardPrimaryModelKeys.map { key in
+            byID[key] ?? dashboardPlaceholder(for: key)
+        }
+    }
+
+    static func dashboardSecondaryItems(
+        from items: [FloatingTodayModelUsageItem]
+    ) -> [FloatingTodayModelUsageItem] {
+        let primaryIDs = Set(dashboardPrimaryModelKeys)
+        return items.filter { !primaryIDs.contains($0.id) && $0.tokens > 0 }
+    }
+
+    private static func dashboardPlaceholder(
+        for key: String
+    ) -> FloatingTodayModelUsageItem {
+        FloatingTodayModelUsageItem(
+            id: key,
+            label: ModelUsagePresentation.label(for: key),
+            tokens: 0,
+            share: 0,
+            costUSD: 0,
+            usesIndependentQuota: false,
+            color: ModelUsagePresentation.color(for: key)
+        )
     }
 
     static func overflowDetailText(
@@ -224,5 +259,36 @@ struct FloatingTodayModelUsageRow: View {
                 showPlaceholders: showPlaceholders
             )
         )
+    }
+}
+
+struct ModelCostInlineSummary: View {
+    let rows: [ModelTokenBreakdown]
+    let fallbackModel: OfficialAPIPriceModel
+    var limit = 3
+
+    var body: some View {
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: fallbackModel
+        )
+        HStack(spacing: 7) {
+            ForEach(Array(items.prefix(max(limit, 1)))) { item in
+                HStack(spacing: 3) {
+                    Circle()
+                        .fill(item.color)
+                        .frame(width: 6, height: 6)
+                    Text("\(item.label) \(item.valueText(for: .cost))")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if items.count > max(limit, 1) {
+                Text("+\(items.count - max(limit, 1))")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .lineLimit(1)
     }
 }

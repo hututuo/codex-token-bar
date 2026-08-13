@@ -78,19 +78,23 @@ private final class ActivityModeAccessibilityButton: NSButton {
 struct ActivitySection: View {
     let dailyUsage: [DayUsage]
     let cacheDaily: [TokenCacheBucket]
+    let dailyModelBreakdowns: [ModelTokenBucket]
     let attributionEvents: [TokenCacheAttributionEvent]
     let quotaDaily: [QuotaHistoryDailyBucket]
     @Binding var selectedMode: ActivityMode
+    @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
 
     init(
         dailyUsage: [DayUsage],
         cacheDaily: [TokenCacheBucket],
+        dailyModelBreakdowns: [ModelTokenBucket] = [],
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
         selectedMode: Binding<ActivityMode>
     ) {
         self.dailyUsage = dailyUsage
         self.cacheDaily = cacheDaily
+        self.dailyModelBreakdowns = dailyModelBreakdowns
         self.attributionEvents = attributionEvents
         self.quotaDaily = quotaDaily
         _selectedMode = selectedMode
@@ -108,8 +112,10 @@ struct ActivitySection: View {
             TokenHeatmap(
                 dailyUsage: dailyUsage,
                 cacheDaily: cacheDaily,
+                dailyModelBreakdowns: dailyModelBreakdowns,
                 attributionEvents: attributionEvents,
                 quotaDaily: quotaDaily,
+                fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
                 mode: selectedMode
             )
         }
@@ -121,7 +127,7 @@ struct ActivityModeSelector: View {
     @Binding var selectedMode: ActivityMode
 
     private let regularModes: [ActivityMode] = [.daily, .weekly, .cumulative]
-    private let specialModes: [ActivityMode] = [.modelShare, .cacheHitRate, .quotaRemaining]
+    private let specialModes: [ActivityMode] = [.modelShare, .modelCost, .cacheHitRate, .quotaRemaining]
 
     var body: some View {
         HStack(spacing: 4) {

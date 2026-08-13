@@ -17,6 +17,7 @@ extension CodexUsageAnalyzer {
 
         private var total = TokenCacheAccumulator()
         private var cacheByModel: [String: TokenCacheAccumulator] = [:]
+        private var cacheByDayAndModel: [DailyModelKey: TokenCacheAccumulator] = [:]
         private var dailyUsageByDate: [Date: (tokens: Int, calls: Int)] = [:]
         private var recentUsageByStart: [Date: (tokens: Int, calls: Int)] = [:]
         private var hourlyUsageByStart: [Date: (tokens: Int, calls: Int)] = [:]
@@ -125,6 +126,10 @@ extension CodexUsageAnalyzer {
                 let day = calendar.startOfDay(for: event.timestamp)
                 let current = dailyUsageByDate[day] ?? (0, 0)
                 dailyUsageByDate[day] = (current.tokens + event.tokens, current.calls + 1)
+                cacheByDayAndModel[
+                    DailyModelKey(date: day, model: event.model),
+                    default: TokenCacheAccumulator()
+                ].add(event)
             }
 
             if let recentStart,
@@ -249,6 +254,22 @@ extension CodexUsageAnalyzer {
                     TokenCacheBucket(start: date, breakdown: accumulator.breakdown)
                 }
                 .sorted { $0.start < $1.start }
+            let dailyModels = Dictionary(grouping: cacheByDayAndModel) { entry in
+                entry.key.date
+            }
+            .map { date, entries in
+                ModelTokenBucket(
+                    start: date,
+                    modelBreakdowns: entries.map { entry in
+                        ModelTokenBreakdown(
+                            model: entry.key.model,
+                            breakdown: entry.value.breakdown
+                        )
+                    }
+                    .sorted { ($0.model ?? "") < ($1.model ?? "") }
+                )
+            }
+            .sorted { $0.start < $1.start }
             let hourly = cacheHourlyByStart
                 .map { date, accumulator in
                     TokenCacheBucket(start: date, breakdown: accumulator.breakdown)
@@ -323,6 +344,7 @@ extension CodexUsageAnalyzer {
                     )
                 }
                 .sorted { ($0.model ?? "") < ($1.model ?? "") },
+                dailyModelBreakdowns: dailyModels,
                 daily: daily,
                 hourly: hourly,
                 recentBins: recent,
@@ -342,6 +364,11 @@ extension CodexUsageAnalyzer {
         private struct AttributionSourceBucketKey: Hashable {
             let sourceID: String
             let start: Date
+            let model: String?
+        }
+
+        private struct DailyModelKey: Hashable {
+            let date: Date
             let model: String?
         }
     }

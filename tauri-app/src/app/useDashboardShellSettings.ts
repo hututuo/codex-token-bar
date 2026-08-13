@@ -128,7 +128,8 @@ export function useDashboardShellSettings({
       {
         equals: sameFloatingSettings,
         persistedValue: (_requested, result) => sanitizeFloatingSettings(result.floatingWindow),
-        onLatestPersisted: () => {
+        onLatestPersisted: (value) => {
+          void desktopPlatform.publishFloatingSettings(value);
           setSettingsError((current) => (
             current?.startsWith("保存悬浮窗设置失败") ? null : current
           ));

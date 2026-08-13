@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("unread summary reads propagate persistence failures instead of returning an empty fallback", async () => {
+test("unread summary reads stay strict while backend soft-handles only a missing live sidebar", async () => {
   const source = await readFile(new URL("./liveClient.ts", import.meta.url), "utf8");
   const commands = await readFile(
     new URL("../../src-tauri/src/commands/live.rs", import.meta.url),
@@ -11,6 +11,9 @@ test("unread summary reads propagate persistence failures instead of returning a
 
   assert.match(source, /callCommandStrict<UnreadSummary>\("read_unread_summary"/);
   assert.doesNotMatch(source, /callCommand\("read_unread_summary", emptyUnreadSummary/);
+  assert.match(commands, /is_sidebar_snapshot_unavailable_error\(&error\)/);
+  assert.match(commands, /source: "codex_sidebar_unavailable"/);
+  assert.match(commands, /return Err\(error\)/);
   assert.match(commands, /pin_captured_codex_home_source\(&captured\)/);
   assert.match(commands, /unread::try_read_unread_summary_for_source\(/);
   assert.match(commands, /&pinned\.source_scope_key/);

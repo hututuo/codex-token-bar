@@ -171,7 +171,9 @@ struct FloatingPanelContentSettingsMenu: View {
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var showCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var orderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @State private var dropTarget: FloatingPanelContentGroup?
+    @State private var dropPlacement: FloatingPanelContentDropPlacement?
     @State private var draggingGroup: FloatingPanelContentGroup?
+    @State private var dragLifecycle = FloatingStructureDragLifecycle()
     let closeAction: () -> Void
 
     var body: some View {
@@ -206,15 +208,19 @@ struct FloatingPanelContentSettingsMenu: View {
                     FloatingPanelContentSettingsRow(
                         group: group,
                         isOn: isOnBinding(for: group),
-                        isDropTarget: dropTarget == group,
-                        draggingGroup: $draggingGroup
+                        dropPlacement: dropTarget == group ? dropPlacement : nil,
+                        onDragBegin: { sessionID in beginDrag(group, sessionID: sessionID) },
+                        onDragEnd: { sessionID in finishDrag(sessionID: sessionID) }
                     )
                     .onDrop(of: [UTType.text.identifier],
                         delegate: FloatingPanelContentDropDelegate(
                             target: group,
                             orderRaw: $orderRaw,
                             draggingGroup: $draggingGroup,
-                            dropTarget: $dropTarget
+                            dropTarget: $dropTarget,
+                            dropPlacement: $dropPlacement,
+                            dragLifecycle: $dragLifecycle,
+                            finishDrag: { finishDrag() }
                         )
                     )
                 }
@@ -230,6 +236,9 @@ struct FloatingPanelContentSettingsMenu: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(AppTheme.border.opacity(0.58), lineWidth: 1)
         )
+        .onDisappear {
+            finishDrag()
+        }
     }
 
     private var orderedGroups: [FloatingPanelContentGroup] {
@@ -258,20 +267,43 @@ struct FloatingPanelContentSettingsMenu: View {
             return $showCrowdRadar
         }
     }
+
+    private func beginDrag(_ group: FloatingPanelContentGroup, sessionID: UUID) {
+        dragLifecycle.begin(sessionID)
+        draggingGroup = group
+        dropTarget = nil
+        dropPlacement = nil
+    }
+
+    private func finishDrag(sessionID: UUID? = nil) {
+        let finishedActiveSession = dragLifecycle.finish(sessionID)
+        guard finishedActiveSession || sessionID == nil else { return }
+        draggingGroup = nil
+        dropTarget = nil
+        dropPlacement = nil
+    }
 }
 
 private struct FloatingPanelContentSettingsRow: View {
     let group: FloatingPanelContentGroup
     @Binding var isOn: Bool
-    let isDropTarget: Bool
-    @Binding var draggingGroup: FloatingPanelContentGroup?
+    let dropPlacement: FloatingPanelContentDropPlacement?
+    let onDragBegin: (UUID) -> Void
+    let onDragEnd: (UUID) -> Void
 
     var body: some View {
         HStack(spacing: 9) {
             FloatingPanelContentDragHandle()
-                .onDrag {
-                    draggingGroup = group
-                    return NSItemProvider(object: group.rawValue as NSString)
+                .overlay {
+                    FloatingStructureDragSource(
+                        payload: "quick-page:\(group.rawValue)",
+                        previewSize: NSSize(width: 220, height: group.settingsSubtitle == nil ? 34 : 41),
+                        cursorAnchor: NSPoint(x: 14, y: group.settingsSubtitle == nil ? 17 : 20.5),
+                        onBegin: onDragBegin,
+                        onEnd: onDragEnd
+                    ) {
+                        FloatingPanelContentDragPreview(group: group)
+                    }
                 }
 
             Image(systemName: group.systemImage)
@@ -306,12 +338,57 @@ private struct FloatingPanelContentSettingsRow: View {
         .frame(minHeight: group.settingsSubtitle == nil ? 32 : 39)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isDropTarget ? AppTheme.accentBlue.opacity(0.12) : AppTheme.calloutOptionBackground)
+                .fill(AppTheme.calloutOptionBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isDropTarget ? AppTheme.accentBlue.opacity(0.34) : AppTheme.border.opacity(0.42), lineWidth: 1)
+                .stroke(AppTheme.border.opacity(0.42), lineWidth: 1)
         )
+        .overlay(alignment: dropPlacement == .before ? .top : .bottom) {
+            if dropPlacement != nil {
+                Capsule()
+                    .fill(AppTheme.accentBlue.opacity(0.9))
+                    .frame(height: 2)
+                    .padding(.horizontal, 7)
+            }
+        }
+    }
+}
+
+private struct FloatingPanelContentDragPreview: View {
+    let group: FloatingPanelContentGroup
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            Image(systemName: group.systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(AppTheme.accentBlue)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(group.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                if let settingsSubtitle = group.settingsSubtitle {
+                    Text(settingsSubtitle)
+                        .font(.system(size: 8.6, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 9)
+        .frame(width: 220, height: group.settingsSubtitle == nil ? 34 : 41)
+        .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(AppTheme.accentBlue.opacity(0.48), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.16), radius: 4, y: 2)
     }
 }
 
@@ -332,47 +409,69 @@ private struct FloatingPanelContentDropDelegate: DropDelegate {
     @Binding var orderRaw: String
     @Binding var draggingGroup: FloatingPanelContentGroup?
     @Binding var dropTarget: FloatingPanelContentGroup?
+    @Binding var dropPlacement: FloatingPanelContentDropPlacement?
+    @Binding var dragLifecycle: FloatingStructureDragLifecycle
+    let finishDrag: () -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
-        draggingGroup != nil
+        dragLifecycle.activeSessionID != nil && draggingGroup != nil
     }
 
     func dropEntered(info: DropInfo) {
-        guard let dragged = draggingGroup,
+        guard dragLifecycle.activeSessionID != nil,
+              let dragged = draggingGroup,
               dragged != target
         else { return }
 
-        let order = FloatingPanelContentVisibility.order(from: orderRaw)
-        guard let sourceIndex = order.firstIndex(of: dragged),
-              let targetIndex = order.firstIndex(of: target)
-        else { return }
-
         dropTarget = target
-        let placement: FloatingPanelContentDropPlacement = sourceIndex < targetIndex ? .after : .before
+        dropPlacement = placement(for: dragged)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard dragLifecycle.activeSessionID != nil,
+              let dragged = draggingGroup,
+              dragged != target else { return nil }
+        dropTarget = target
+        dropPlacement = placement(for: dragged)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if dropTarget == target {
+            dropTarget = nil
+            dropPlacement = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let order = FloatingPanelContentVisibility.order(from: orderRaw)
+        guard let dragged = draggingGroup,
+              dragLifecycle.activeSessionID != nil,
+              let sourceIndex = order.firstIndex(of: dragged),
+              let targetIndex = order.firstIndex(of: target)
+        else {
+            finishDrag()
+            return false
+        }
+        let placement = dropPlacement ?? (sourceIndex < targetIndex ? .after : .before)
         let reordered = FloatingPanelContentVisibility.reorderedOrder(
             order,
             moving: dragged,
             relativeTo: target,
             placement: placement
         )
-        guard reordered != order else { return }
         orderRaw = FloatingPanelContentVisibility.encodedOrder(reordered)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        if dropTarget == target {
-            dropTarget = nil
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        dropTarget = nil
-        draggingGroup = nil
+        finishDrag()
         return true
+    }
+
+    private func placement(for dragged: FloatingPanelContentGroup) -> FloatingPanelContentDropPlacement {
+        let order = FloatingPanelContentVisibility.order(from: orderRaw)
+        guard let sourceIndex = order.firstIndex(of: dragged),
+              let targetIndex = order.firstIndex(of: target) else {
+            return .before
+        }
+        return sourceIndex < targetIndex ? .after : .before
     }
 }
 

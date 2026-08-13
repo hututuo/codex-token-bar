@@ -35,7 +35,7 @@ test("quotaReadWarnings ignores usage precision metadata-only warnings", () => {
   assert.deepEqual(quotaReadWarnings(warnings), []);
 });
 
-test("quotaReadWarnings prefers structured diagnostics and keeps all quota categories visible", () => {
+test("quotaReadWarnings prefers the primary cause and one combined cached-data status", () => {
   const warnings = [
     { source: "account_quota", message: "旧账户额度读取失败" },
     { source: "reset_credit", message: "旧重置卡读取失败" },
@@ -75,9 +75,42 @@ test("quotaReadWarnings prefers structured diagnostics and keeps all quota categ
 
   assert.deepEqual(quotaReadWarnings(warnings, diagnostics), [
     "登录凭证缺失",
-    "Codex Home 与额度登录来源不一致",
-    "正在显示上次缓存的额度",
+    "额度刷新失败，暂时显示上次成功额度。",
+  ]);
+});
+
+test("quotaReadWarnings collapses the observed timeout/network cascade into two useful lines", () => {
+  const diagnostics = [
+    diagnostic({
+      source: "account_quota",
+      category: "stale_cached_data",
+      message: "额度刷新失败，暂时显示上次成功额度。请稍后点立即刷新重试。",
+      staleDataDisplayed: true,
+    }),
+    diagnostic({
+      source: "account_quota",
+      category: "timeout",
+      message: "读取超时：本地 Codex 或网络接口在限定时间内没有返回。",
+      rawCause: "额度读取超时；error sending request for url",
+    }),
+    diagnostic({
+      source: "reset_credit",
+      category: "stale_cached_data",
+      message: "重置卡刷新失败，暂时显示上次成功结果。",
+      staleDataDisplayed: true,
+    }),
+    diagnostic({
+      source: "reset_credit",
+      category: "reset_credit_failure",
+      message: "重置卡读取失败：网络连接失败",
+      underlyingCategory: "network_send_fetch",
+      rawCause: "error sending request for url",
+    }),
+  ];
+
+  assert.deepEqual(quotaReadWarnings([], diagnostics), [
     "重置卡读取失败：网络连接失败",
+    "额度和重置卡刷新失败，暂时显示上次成功结果。",
   ]);
 });
 

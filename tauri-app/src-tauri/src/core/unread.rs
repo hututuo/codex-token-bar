@@ -25,6 +25,12 @@ use state::read_unread_thread_ids;
 static ACKNOWLEDGEMENT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static TRUSTED_SUMMARIES: OnceLock<Mutex<HashMap<String, UnreadSummary>>> = OnceLock::new();
 const PINNED_RECENT_COMPLETION_MARKER_LIMIT: usize = 4_096;
+pub(crate) const SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR: &str =
+    "current Codex sidebar unread state is unavailable; refusing atom/completion fallback";
+
+pub(crate) fn is_sidebar_snapshot_unavailable_error(error: &str) -> bool {
+    error.trim() == SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR
+}
 
 // Unit tests exercise the persisted-state parser without a running Codex
 // desktop page.  Production must always use the read-only CDP snapshot; the
@@ -200,8 +206,7 @@ where
     V: FnOnce() -> Result<(), String>,
 {
     let native_thread_ids = current_sidebar_unread_thread_ids(observation_home).ok_or_else(|| {
-        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
-            .to_string()
+        SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR.to_string()
     })?;
     #[cfg(not(test))]
     {
@@ -323,8 +328,7 @@ where
     V: FnOnce() -> Result<(), String>,
 {
     let native_thread_ids = current_sidebar_unread_thread_ids(codex_home).ok_or_else(|| {
-        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
-            .to_string()
+        SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR.to_string()
     })?;
     #[cfg(not(test))]
     {
@@ -370,8 +374,7 @@ pub fn acknowledge_current_unread_for_source(
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
     let native_thread_ids = current_sidebar_unread_thread_ids(observation_home).ok_or_else(|| {
-        "current Codex sidebar unread state is unavailable; refusing atom/completion fallback"
-            .to_string()
+        SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR.to_string()
     })?;
     let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
@@ -392,13 +395,13 @@ pub fn acknowledge_current_unread_for_source(
 }
 
 pub fn acknowledge_current_unread_for_observation(
-    observation: &UnreadObservation,
+    _observation: &UnreadObservation,
+    observation_home: &Path,
     source_scope_key: &str,
     validate_before_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<UnreadSummary, String> {
-    let native_thread_ids = observation.native_thread_ids.as_ref().ok_or_else(|| {
-        "native unread state is unavailable; refusing completion fallback".to_string()
-    })?;
+    let native_thread_ids = current_sidebar_unread_thread_ids(observation_home)
+        .ok_or_else(|| SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR.to_string())?;
     let summary = acknowledgement_transaction(validate_before_write, |acknowledgement| {
         let home_acknowledgement = acknowledgement
             .by_codex_home
@@ -720,6 +723,78 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn sidebar_snapshot_unavailable_classification_is_exact() {
+        assert!(is_sidebar_snapshot_unavailable_error(
+            SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR
+        ));
+        assert!(!is_sidebar_snapshot_unavailable_error(
+            "current Codex sidebar unread state is corrupt"
+        ));
+        assert!(!is_sidebar_snapshot_unavailable_error(
+            "读取未读基线失败：permission denied"
+        ));
+    }
+
+    #[test]
+    fn pinned_observation_cannot_acknowledge_without_current_sidebar_snapshot() {
+        let root = temp_root("pinned-observation-live-sidebar-required");
+        let support = root.join("support");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&support).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        let observation = UnreadObservation {
+            native_thread_ids: Some(HashSet::from([
+                "019eaaaa-0000-0000-0000-00000000c0de".to_string(),
+            ])),
+            recent_completions: Vec::new(),
+        };
+
+        let error = acknowledge_current_unread_for_observation(
+            &observation,
+            &root,
+            "canonical|physical",
+            || Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, SIDEBAR_SNAPSHOT_UNAVAILABLE_ERROR);
+        assert!(!support.join("unread-acknowledgement.json").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pinned_observation_acknowledges_current_sidebar_ids_not_stale_atom_ids() {
+        let root = temp_root("pinned-observation-current-sidebar");
+        let support = root.join("support");
+        let sessions = root.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(&support).unwrap();
+        let _support_env = TauriSupportEnvGuard::new(&support);
+        let stale = "019eaaaa-0000-0000-0000-00000000dead";
+        let current = "019eaaaa-0000-0000-0000-00000000beef";
+        write_unread_state(&root, &[current]);
+        write_session_meta(&sessions.join("current.jsonl"), current, false);
+        let observation = UnreadObservation {
+            native_thread_ids: Some(HashSet::from([stale.to_string()])),
+            recent_completions: Vec::new(),
+        };
+
+        let summary = acknowledge_current_unread_for_observation(
+            &observation,
+            &root,
+            "canonical|physical",
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(summary.count, 0);
+        let persisted = fs::read_to_string(support.join("unread-acknowledgement.json")).unwrap();
+        assert!(persisted.contains(current));
+        assert!(!persisted.contains(stale));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn reads_unread_state_and_filters_non_user_visible_threads() {

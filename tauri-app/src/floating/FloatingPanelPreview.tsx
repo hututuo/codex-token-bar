@@ -229,6 +229,10 @@ export function FloatingPanelSurface({
     [settings.gradientStart, settings.gradientEnd],
   );
   const rootStyle = {
+    "--floating-card-opacity": settings.opacity.toFixed(2),
+    "--floating-gradient-background": floatingGradientBackground(settings),
+    "--floating-effect-color": effectHexColor(effectRgb),
+    "--floating-effect-rgb": `${effectRgb.red}, ${effectRgb.green}, ${effectRgb.blue}`,
     "--floating-primary": rootPalette.primary,
     "--floating-secondary": rootPalette.secondary,
     "--floating-muted": rootPalette.muted,
@@ -1104,6 +1108,12 @@ function effectRgbFromGradient(start: string, end: string): RippleRGB {
     green: Math.max(0, Math.round(mixed.green * 0.82)),
     blue: Math.min(255, Math.round(mixed.blue * 1.08 + 18)),
   });
+}
+
+function effectHexColor(color: RippleRGB): string {
+  return `#${[color.red, color.green, color.blue]
+    .map((channel) => clampColorChannel(channel).toString(16).padStart(2, "0"))
+    .join("")}`;
 }
 
 function parseRippleHexColor(value: string): RippleRGB {

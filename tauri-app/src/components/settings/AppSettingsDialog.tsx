@@ -64,6 +64,10 @@ import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements"
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
 import { CodexInstancesSettings } from "./CodexInstancesSettings";
 import { FloatingStructureEditor, FloatingStructurePreview } from "./FloatingStructureEditor";
+import { isTauriRuntimeAvailable } from "../../platform/runtime";
+import { useCompactPanelSource } from "../../surfaces/useCompactPanelSource";
+import { useCompactPanelData } from "../../surfaces/useCompactPanelData";
+import { useFloatingCrowdRadar, useFloatingRadar } from "../../floating/useFloatingRadar";
 
 export type AppSettingsCategory =
   | "general"
@@ -1859,17 +1863,149 @@ function FloatingSettingsWorkspace({
         />
       </div>
       <div className="floating-settings-preview-column">
-        <FloatingStructurePreview
+        <FloatingSettingsPreviewPane
+          fallbackRunningThreads={floatingPreviewRunningThreads}
+          fallbackSnapshot={floatingPreviewSnapshot}
           onSelectedRowIdChange={selectPreviewRow}
-          runningThreads={floatingPreviewRunningThreads}
           selectedRowId={selectedRowId}
           settings={floatingSettings}
-          snapshot={floatingPreviewSnapshot}
           visibility={visibility}
         />
       </div>
     </div>
   );
+}
+
+function FloatingSettingsPreviewPane({
+  fallbackSnapshot,
+  fallbackRunningThreads,
+  settings,
+  visibility,
+  selectedRowId,
+  onSelectedRowIdChange,
+}: {
+  fallbackSnapshot: FloatingPanelSnapshot;
+  fallbackRunningThreads: RunningThreadSummary;
+  settings: FloatingWindowSettings;
+  visibility: FloatingContentVisibility;
+  selectedRowId: string | null;
+  onSelectedRowIdChange: (rowId: string) => void;
+}) {
+  if (typeof window !== "undefined" && isTauriRuntimeAvailable()) {
+    return (
+      <LiveFloatingSettingsPreview
+        fallbackRunningThreads={fallbackRunningThreads}
+        fallbackSnapshot={fallbackSnapshot}
+        onSelectedRowIdChange={onSelectedRowIdChange}
+        selectedRowId={selectedRowId}
+        settings={settings}
+        visibility={visibility}
+      />
+    );
+  }
+  return (
+    <FloatingStructurePreview
+      onSelectedRowIdChange={onSelectedRowIdChange}
+      runningThreads={fallbackRunningThreads}
+      selectedRowId={selectedRowId}
+      settings={settings}
+      snapshot={fallbackSnapshot}
+      visibility={visibility}
+    />
+  );
+}
+
+function LiveFloatingSettingsPreview({
+  fallbackSnapshot,
+  fallbackRunningThreads,
+  settings,
+  visibility,
+  selectedRowId,
+  onSelectedRowIdChange,
+}: {
+  fallbackSnapshot: FloatingPanelSnapshot;
+  fallbackRunningThreads: RunningThreadSummary;
+  settings: FloatingWindowSettings;
+  visibility: FloatingContentVisibility;
+  selectedRowId: string | null;
+  onSelectedRowIdChange: (rowId: string) => void;
+}) {
+  const { sourceReady, sourceToken } = useCompactPanelSource(true);
+  const live = useCompactPanelData({
+    active: sourceReady,
+    // The dashboard already owns the live-rate stream. This preview reads the
+    // compact usage/quota stores without stealing that owner lease.
+    liveRateEnabled: false,
+    liveRateOwnerToken: "floating-settings-preview",
+    quotaInitialDelayMs: 0,
+    quotaIntervalMs: 60_000,
+    sourceToken,
+  });
+  const radarSnapshot = useFloatingRadar(sourceReady);
+  const crowdRadarSnapshot = useFloatingCrowdRadar(sourceReady);
+  const { settings: attributionSettings } = useSharedAccountAttributionSettings();
+  const snapshot = mergeLiveFloatingPreviewSnapshot(live.snapshot, fallbackSnapshot);
+  const runningThreads = live.runningThreads.status === "scanning"
+    && fallbackRunningThreads.status !== "scanning"
+    ? fallbackRunningThreads
+    : live.runningThreads;
+
+  return (
+    <FloatingStructurePreview
+      crowdRadarSnapshot={crowdRadarSnapshot}
+      onSelectedRowIdChange={onSelectedRowIdChange}
+      priceModel={attributionSettings.priceModel}
+      radarSnapshot={radarSnapshot}
+      runningThreads={runningThreads}
+      selectedRowId={selectedRowId}
+      settings={settings}
+      snapshot={snapshot}
+      visibility={visibility}
+    />
+  );
+}
+
+function mergeLiveFloatingPreviewSnapshot(
+  live: FloatingPanelSnapshot,
+  fallback: FloatingPanelSnapshot,
+): FloatingPanelSnapshot {
+  const usageReady = !live.totalTokensLabel.includes("待读取")
+    && !live.todayTokensLabel.includes("待读取")
+    && !live.requestsLabel.includes("待读取");
+  const fiveHourReady = live.fiveHourAvailability === "measured"
+    || fallback.fiveHourAvailability !== "measured";
+  const sevenDayReady = live.sevenDayAvailability === "measured"
+    || fallback.sevenDayAvailability !== "measured";
+  const unreadReady = live.unreadSummary.source !== "pending";
+  const liveRateReady = live.liveRateAvailable || !fallback.liveRateAvailable;
+
+  return {
+    ...fallback,
+    ...live,
+    tokensPerSecond: liveRateReady ? live.tokensPerSecond : fallback.tokensPerSecond,
+    maxTokensPerSecond: liveRateReady ? live.maxTokensPerSecond : fallback.maxTokensPerSecond,
+    liveRateAvailable: liveRateReady ? live.liveRateAvailable : fallback.liveRateAvailable,
+    liveRateStatusKind: liveRateReady ? live.liveRateStatusKind : fallback.liveRateStatusKind,
+    liveRateStatusLabel: liveRateReady ? live.liveRateStatusLabel : fallback.liveRateStatusLabel,
+    totalTokensLabel: usageReady ? live.totalTokensLabel : fallback.totalTokensLabel,
+    todayTokensLabel: usageReady ? live.todayTokensLabel : fallback.todayTokensLabel,
+    requestsLabel: usageReady ? live.requestsLabel : fallback.requestsLabel,
+    todayModelBreakdowns: usageReady ? live.todayModelBreakdowns : fallback.todayModelBreakdowns,
+    fiveHourLabel: fiveHourReady ? live.fiveHourLabel : fallback.fiveHourLabel,
+    fiveHourAvailability: fiveHourReady ? live.fiveHourAvailability : fallback.fiveHourAvailability,
+    fiveHourRemainingPercent: fiveHourReady ? live.fiveHourRemainingPercent : fallback.fiveHourRemainingPercent,
+    fiveHourExpectedRemainingPercent: fiveHourReady
+      ? live.fiveHourExpectedRemainingPercent
+      : fallback.fiveHourExpectedRemainingPercent,
+    sevenDayLabel: sevenDayReady ? live.sevenDayLabel : fallback.sevenDayLabel,
+    sevenDayAvailability: sevenDayReady ? live.sevenDayAvailability : fallback.sevenDayAvailability,
+    sevenDayRemainingPercent: sevenDayReady ? live.sevenDayRemainingPercent : fallback.sevenDayRemainingPercent,
+    sevenDayExpectedRemainingPercent: sevenDayReady
+      ? live.sevenDayExpectedRemainingPercent
+      : fallback.sevenDayExpectedRemainingPercent,
+    unread: unreadReady ? live.unread : fallback.unread,
+    unreadSummary: unreadReady ? live.unreadSummary : fallback.unreadSummary,
+  };
 }
 
 function FloatingAppearanceSettings({

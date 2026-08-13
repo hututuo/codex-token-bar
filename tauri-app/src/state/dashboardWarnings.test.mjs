@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergeQuotaDiagnostics } from "./dashboardWarnings.ts";
+import {
+  hasStaleAccountQuotaData,
+  mergeQuotaDiagnostics,
+  replaceAccountQuotaDiagnostics,
+  replaceResetCreditDiagnostics,
+} from "./dashboardWarnings.ts";
 
 test("mergeQuotaDiagnostics dedupes structured quota diagnostics without hiding categories", () => {
   const authMissing = diagnostic({
@@ -23,6 +28,34 @@ test("mergeQuotaDiagnostics dedupes structured quota diagnostics without hiding 
     mergeQuotaDiagnostics([authMissing], [authMissing, resetFailure]).map((item) => item.category),
     ["auth_missing", "reset_credit_failure"],
   );
+});
+
+test("channel replacement cannot clear or inject the other quota channel", () => {
+  const account = diagnostic({ source: "account_quota", message: "主额度失败" });
+  const reset = diagnostic({ source: "reset_credit", message: "重置卡失败" });
+  const incomingReset = diagnostic({ source: "reset_credit", message: "不应由主额度写入" });
+
+  assert.deepEqual(
+    replaceAccountQuotaDiagnostics([account, reset], [incomingReset]).map((item) => item.message),
+    ["重置卡失败"],
+  );
+  assert.deepEqual(
+    replaceResetCreditDiagnostics([account, reset], []).map((item) => item.message),
+    ["主额度失败"],
+  );
+});
+
+test("reset-credit stale data never marks the main account quota stale", () => {
+  assert.equal(hasStaleAccountQuotaData([diagnostic({
+    source: "reset_credit",
+    category: "stale_cached_data",
+    staleDataDisplayed: true,
+  })]), false);
+  assert.equal(hasStaleAccountQuotaData([diagnostic({
+    source: "account_quota",
+    category: "stale_cached_data",
+    staleDataDisplayed: true,
+  })]), true);
 });
 
 function diagnostic(overrides = {}) {

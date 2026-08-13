@@ -358,12 +358,15 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
   }
 
   const rowHeights = rows.map(floatingContentRowHeight);
-  const verticalPadding = 12;
+  // The floating surface uses border-box sizing: 6 px padding plus a 1 px
+  // border on both vertical edges. Keep the native window at least as tall
+  // as the actual CSS box so the last row is never clipped.
+  const verticalChrome = 14;
   const gaps = rows.slice(1).reduce(
     (sum, row, index) => sum + floatingContentGap(rows[index].primaryGroup, row.primaryGroup),
     0,
   );
-  return Math.max(88, Math.ceil(verticalPadding + gaps + rowHeights.reduce((sum, height) => sum + height, 0)));
+  return Math.max(88, Math.ceil(verticalChrome + gaps + rowHeights.reduce((sum, height) => sum + height, 0)));
 }
 
 export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibility): number | null {
@@ -385,7 +388,7 @@ export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibili
 function floatingContentRowHeight(row: FloatingContentLayoutRow): number {
   return Math.max(...row.groups.map((group) => {
     switch (group) {
-      case "rateAndBar": return 28;
+      case "rateAndBar": return 30;
       case "usageStatus": return 20;
       case "metrics": return 13;
       case "runningThreads": return 14;

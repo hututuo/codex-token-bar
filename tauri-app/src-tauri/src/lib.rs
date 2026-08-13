@@ -124,6 +124,7 @@ pub fn run() {
             commands::startup::record_performance_event,
             commands::dashboard::read_platform_capabilities,
             commands::dashboard::read_account_quota,
+            commands::dashboard::read_account_reset_credits,
             commands::dashboard::read_dashboard_snapshot,
             commands::dashboard::read_precise_dashboard_snapshot,
             commands::dashboard::read_precise_dashboard_source_probe,

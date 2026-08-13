@@ -188,17 +188,19 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         XCTAssertNil(stats.firstUsageAt)
     }
 
-    func testTokenCacheUsageDecodesSnapshotWrittenBeforeModelBreakdownsExisted() throws {
+    func testTokenCacheUsageDecodesSnapshotWrittenBeforeModelProjectionsExisted() throws {
         let encoded = try JSONEncoder().encode(TokenCacheUsage.empty)
         var object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
         object.removeValue(forKey: "modelBreakdowns")
+        object.removeValue(forKey: "dailyModelBreakdowns")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(TokenCacheUsage.self, from: legacyData)
 
         XCTAssertTrue(decoded.modelBreakdowns.isEmpty)
+        XCTAssertTrue(decoded.dailyModelBreakdowns.isEmpty)
         XCTAssertEqual(decoded.total, .empty)
     }
 }

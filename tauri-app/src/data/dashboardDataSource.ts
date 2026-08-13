@@ -2,6 +2,7 @@ import {
   acknowledgeAttributionSafety,
   getCodexHome,
   readAccountQuota,
+  readAccountResetCredits,
   readDashboardSnapshot,
   readLiveRateSnapshot,
   readLiveThreadOptions,
@@ -27,6 +28,7 @@ import type {
   ProviderRepairSnapshot,
   UsageCacheStatus,
 } from "../types/dashboard";
+import type { ResetCreditBundle } from "../types/quota";
 
 export interface DashboardDataSource {
   acknowledgeAttributionSafety: (
@@ -52,6 +54,10 @@ export interface DashboardDataSource {
     sourceToken: CodexHomeSourceToken,
     forceRefresh?: boolean,
   ) => Promise<AccountQuotaBundle | null>;
+  readAccountResetCredits: (
+    sourceToken: CodexHomeSourceToken,
+    forceRefresh?: boolean,
+  ) => Promise<ResetCreditBundle | null>;
   readLiveRateSnapshot: (selectedThreadId?: string | null) => Promise<LiveRateSnapshot>;
   readLiveThreadOptions: () => Promise<LiveThreadOption[]>;
   acknowledgeUnreadSummary: (
@@ -71,6 +77,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   readAccountQuota,
+  readAccountResetCredits,
   readLiveRateSnapshot,
   readLiveThreadOptions,
   acknowledgeUnreadSummary,

@@ -1,4 +1,4 @@
-import { type CSSProperties, type MouseEvent, useEffect, useMemo, useReducer, useState } from "react";
+import { type CSSProperties, type MouseEvent, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { completeFloatingPagingGuide, readAppSettings, recordStartupEvent } from "../api/client";
@@ -20,6 +20,7 @@ import {
   floatingGradientBackground,
   floatingSettingsCompletingPagingGuide,
   sanitizeFloatingSettings,
+  shouldPresentFloatingPagingGuide,
   type FloatingWindowSettings,
 } from "./floatingSettings";
 import { FloatingPanelSurface } from "./FloatingPanelPreview";
@@ -50,6 +51,9 @@ export function FloatingWindowApp() {
   const [pagingGuideDismissed, setPagingGuideDismissed] = useState(false);
   const [pagingGuideSaving, setPagingGuideSaving] = useState(false);
   const [pagingGuideError, setPagingGuideError] = useState<string | null>(null);
+  const settingsEventGenerationRef = useRef(0);
+  const displaySettingsEventGenerationRef = useRef(0);
+  const appSettingsEventGenerationRef = useRef(0);
   const { settings: attributionSettings } = useSharedAccountAttributionSettings();
   const radarSnapshot = useFloatingRadar(surfaceLifecycle.active && sourceReady);
   const crowdRadarSnapshot = useFloatingCrowdRadar(surfaceLifecycle.active && sourceReady);
@@ -112,6 +116,7 @@ export function FloatingWindowApp() {
     let unlistenAppSettings: (() => void) | null = null;
 
     void desktopPlatform.onFloatingSettingsChanged((payload) => {
+      settingsEventGenerationRef.current += 1;
       setSettings(sanitizeFloatingSettings(payload));
     }).then((listener) => {
       if (disposed) {
@@ -122,6 +127,7 @@ export function FloatingWindowApp() {
     });
 
     void desktopPlatform.onDisplaySurfacesChanged((payload) => {
+      displaySettingsEventGenerationRef.current += 1;
       setLiveRateEnabled(payload.liveRateEnabled);
       dispatchSurfaceLifecycle({ type: "enabled", value: payload.floatingWindowEnabled });
     }).then((listener) => {
@@ -133,9 +139,13 @@ export function FloatingWindowApp() {
     });
 
     void desktopPlatform.onAppSettingsChanged((payload) => {
+      settingsEventGenerationRef.current += 1;
+      displaySettingsEventGenerationRef.current += 1;
+      appSettingsEventGenerationRef.current += 1;
       setSettings(sanitizeFloatingSettings(payload.floatingWindow));
       setSettingsLoaded(true);
       setSetupGuideCompleted(payload.setupGuideCompleted);
+      setLiveRateEnabled(payload.displaySurfaces.liveRateEnabled);
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(payload.quotaRefreshIntervalMs));
       dispatchSurfaceLifecycle({
         type: "enabled",
@@ -159,18 +169,33 @@ export function FloatingWindowApp() {
 
   useEffect(() => {
     let cancelled = false;
+    const startingSettingsGeneration = settingsEventGenerationRef.current;
+    const startingDisplaySettingsGeneration = displaySettingsEventGenerationRef.current;
+    const startingAppSettingsGeneration = appSettingsEventGenerationRef.current;
 
     void readAppSettings().then((settings) => {
       if (!cancelled && settings !== null) {
-        setSettings(sanitizeFloatingSettings(settings.floatingWindow));
-        setSettingsLoaded(true);
-        setSetupGuideCompleted(settings.setupGuideCompleted);
-        setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
-        dispatchSurfaceLifecycle({
-          type: "enabled",
-          value: settings.displaySurfaces.floatingWindowEnabled,
-        });
-        setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+        if (startingSettingsGeneration === 0 && settingsEventGenerationRef.current === 0) {
+          setSettings(sanitizeFloatingSettings(settings.floatingWindow));
+        }
+        if (
+          startingAppSettingsGeneration === 0
+          && appSettingsEventGenerationRef.current === 0
+        ) {
+          setSettingsLoaded(true);
+          setSetupGuideCompleted(settings.setupGuideCompleted);
+          setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+        }
+        if (
+          startingDisplaySettingsGeneration === 0
+          && displaySettingsEventGenerationRef.current === 0
+        ) {
+          setLiveRateEnabled(settings.displaySurfaces.liveRateEnabled);
+          dispatchSurfaceLifecycle({
+            type: "enabled",
+            value: settings.displaySurfaces.floatingWindowEnabled,
+          });
+        }
       }
     }).catch(() => {
       // 保持默认悬浮窗设置；失败已由命令诊断链路记录。
@@ -181,11 +206,14 @@ export function FloatingWindowApp() {
     };
   }, []);
 
-  const pagingGuidePresented = !pagingGuideDismissed
-    && settingsLoaded
-    && setupGuideCompleted
-    && settings.pagingGuideRevision < CURRENT_FLOATING_PAGING_GUIDE_REVISION
-    && layoutFloatingContentRows(settings.contentVisibility).some((row) => row.groups.length > 1);
+  const pagingGuidePresented = shouldPresentFloatingPagingGuide({
+    settingsLoaded,
+    setupGuideCompleted,
+    pagingGuideDismissed,
+    pagingGuideRevision: settings.pagingGuideRevision,
+    hasPagedRows: layoutFloatingContentRows(settings.contentVisibility)
+      .some((row) => row.groups.length > 1),
+  });
   const presentedSettings = useMemo(
     () => pagingGuidePresented
       ? floatingSettingsWithPagingGuideChoice(settings, pagingGuideShowsArrowGlyphs)
@@ -247,7 +275,10 @@ export function FloatingWindowApp() {
       setPagingGuideError(null);
     });
     try {
-      const saved = await completeFloatingPagingGuide(pagingGuideShowsArrowGlyphs);
+      const saved = await completeFloatingPagingGuide(
+        pagingGuideShowsArrowGlyphs,
+        CURRENT_FLOATING_PAGING_GUIDE_REVISION,
+      );
       const next = sanitizeFloatingSettings(saved.floatingWindow);
       setSettings(next);
       void desktopPlatform.publishFloatingSettings(next);

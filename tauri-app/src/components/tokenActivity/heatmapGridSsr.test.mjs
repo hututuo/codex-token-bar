@@ -40,6 +40,7 @@ function heatmapProps(overrides = {}) {
     days: calendarDays().map((day) => ({ day, intensity: day.tokens > 0 ? 1 : 0 })),
     hoveredDate: null,
     mode: "daily",
+    priceModel: "gpt56Sol",
     monthMarkers: [],
     onDateSelect() {},
     onDayHover() {},

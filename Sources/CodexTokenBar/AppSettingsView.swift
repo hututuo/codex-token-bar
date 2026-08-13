@@ -172,7 +172,7 @@ struct AppSettingsView: View {
 
             settingsContent
         }
-        .frame(width: 920, height: 650)
+        .frame(width: 1040, height: 680)
         .background(AppTheme.panelBackground)
         .onExitCommand(perform: onClose)
         .onAppear {
@@ -578,47 +578,197 @@ struct AppSettingsView: View {
 
     private var floatingPanelSettings: some View {
         VStack(spacing: 14) {
-            settingsSection(title: "窗口行为", subtitle: "调整悬浮窗的位置与占用空间") {
-                settingsToggle("锁定悬浮窗位置", systemImage: "lock", isOn: $floatingPanelLocked)
-                settingsSlider(
-                    "透明度",
-                    systemImage: "circle.lefthalf.filled",
-                    value: $floatingPanelOpacity,
-                    range: 0.45...0.98,
-                    display: "\(Int((floatingPanelOpacity * 100).rounded()))%",
-                    compact: true
-                )
-                settingsSlider(
-                    "大小",
-                    systemImage: "arrow.up.left.and.arrow.down.right",
-                    value: $floatingPanelScale,
-                    range: FloatingTokenPanelMetrics.scaleRange,
-                    display: "\(Int((floatingPanelScale * 100).rounded()))%",
-                    compact: true
-                )
+            settingsSection(title: "窗口与文字", subtitle: "常用设置两列排布，减少纵向占用") {
+                LazyVGrid(columns: floatingCompactGridColumns, spacing: 9) {
+                    floatingCompactToggleCard(
+                        "锁定位置",
+                        systemImage: "lock",
+                        isOn: $floatingPanelLocked
+                    )
+                    floatingCompactSliderCard(
+                        "透明度",
+                        systemImage: "circle.lefthalf.filled",
+                        value: $floatingPanelOpacity,
+                        range: 0.45...0.98,
+                        display: "\(Int((floatingPanelOpacity * 100).rounded()))%"
+                    )
+                    floatingCompactSliderCard(
+                        "大小",
+                        systemImage: "arrow.up.left.and.arrow.down.right",
+                        value: $floatingPanelScale,
+                        range: FloatingTokenPanelMetrics.scaleRange,
+                        display: "\(Int((floatingPanelScale * 100).rounded()))%"
+                    )
+                    floatingCompactSliderCard(
+                        "字体颜色",
+                        systemImage: "textformat",
+                        value: $floatingPanelTextTone,
+                        range: -1...1,
+                        display: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextTone)
+                    )
+                }
+                .padding(10)
             }
 
             settingsSection(title: "外观", subtitle: "统一设置文字、背景渐变和额度条配色") {
-                settingsSlider(
-                    "字体颜色",
-                    systemImage: "textformat",
-                    value: $floatingPanelTextTone,
-                    range: -1...1,
-                    display: FloatingPanelTextTonePreference.displayText(for: floatingPanelTextTone),
-                    compact: true
-                )
-                settingsColor("起始色", systemImage: "circle.fill", hex: $gradientStartHex, fallback: FloatingPanelAppearance.defaultStartHex)
-                settingsColor("结束色", systemImage: "circle.lefthalf.filled", hex: $gradientEndHex, fallback: FloatingPanelAppearance.defaultEndHex)
-                settingsPicker("渐变方向", systemImage: "arrow.up.right", selection: $gradientDirection, options: FloatingPanelGradientDirection.allCases.map { ($0.rawValue, $0.label) })
-                settingsPicker("渐变类型", systemImage: "swirl.circle.righthalf.filled", selection: $gradientStyle, options: FloatingPanelGradientStyle.allCases.map { ($0.rawValue, $0.label) })
-                settingsPicker("额度条配色", systemImage: "chart.bar.fill", selection: $quotaColorMode, options: FloatingQuotaColorMode.allCases.map { ($0.rawValue, $0.label) })
-                if quotaColorMode == FloatingQuotaColorMode.fixed.rawValue {
-                    settingsColor("额度固定色", systemImage: "circle.fill", hex: $quotaFixedHex, fallback: FloatingQuotaColorStyle.defaultFixedHex)
+                LazyVGrid(columns: floatingCompactGridColumns, spacing: 9) {
+                    floatingCompactColorCard(
+                        "起始色",
+                        systemImage: "circle.fill",
+                        hex: $gradientStartHex,
+                        fallback: FloatingPanelAppearance.defaultStartHex
+                    )
+                    floatingCompactColorCard(
+                        "结束色",
+                        systemImage: "circle.lefthalf.filled",
+                        hex: $gradientEndHex,
+                        fallback: FloatingPanelAppearance.defaultEndHex
+                    )
+                    floatingCompactPickerCard(
+                        "渐变方向",
+                        systemImage: "arrow.up.right",
+                        selection: $gradientDirection,
+                        options: FloatingPanelGradientDirection.allCases.map { ($0.rawValue, $0.label) }
+                    )
+                    floatingCompactPickerCard(
+                        "渐变类型",
+                        systemImage: "swirl.circle.righthalf.filled",
+                        selection: $gradientStyle,
+                        options: FloatingPanelGradientStyle.allCases.map { ($0.rawValue, $0.label) }
+                    )
+                    floatingCompactPickerCard(
+                        "额度条配色",
+                        systemImage: "chart.bar.fill",
+                        selection: $quotaColorMode,
+                        options: FloatingQuotaColorMode.allCases.map { ($0.rawValue, $0.label) }
+                    )
+                    if quotaColorMode == FloatingQuotaColorMode.fixed.rawValue {
+                        floatingCompactColorCard(
+                            "额度固定色",
+                            systemImage: "circle.fill",
+                            hex: $quotaFixedHex,
+                            fallback: FloatingQuotaColorStyle.defaultFixedHex
+                        )
+                    }
                 }
+                .padding(10)
             }
 
             contentSettings
         }
+    }
+
+    private var floatingCompactGridColumns: [GridItem] {
+        [
+            GridItem(.flexible(minimum: 210), spacing: 9),
+            GridItem(.flexible(minimum: 210), spacing: 9),
+        ]
+    }
+
+    private func floatingCompactToggleCard(
+        _ title: String,
+        systemImage: String,
+        isOn: Binding<Bool>
+    ) -> some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+            Spacer(minLength: 6)
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .accessibilityLabel(title)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 52)
+        .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AppTheme.border.opacity(0.8), lineWidth: 1))
+    }
+
+    private func floatingCompactSliderCard(
+        _ title: String,
+        systemImage: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        display: String
+    ) -> some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 6) {
+                Label(title, systemImage: systemImage)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
+                Text(display)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+            Slider(value: value, in: range, step: 0.01)
+                .accessibilityLabel(title)
+                .accessibilityValue(display)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 52)
+        .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AppTheme.border.opacity(0.8), lineWidth: 1))
+    }
+
+    private func floatingCompactPickerCard(
+        _ title: String,
+        systemImage: String,
+        selection: Binding<String>,
+        options: [(String, String)]
+    ) -> some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            Picker("", selection: selection) {
+                ForEach(options, id: \.0) { value, label in Text(label).tag(value) }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(title)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 44)
+        .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AppTheme.border.opacity(0.8), lineWidth: 1))
+    }
+
+    private func floatingCompactColorCard(
+        _ title: String,
+        systemImage: String,
+        hex: Binding<String>,
+        fallback: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+            Spacer(minLength: 6)
+            ColorPicker("", selection: colorBinding(hex: hex, fallback: fallback), supportsOpacity: false)
+                .labelsHidden()
+                .accessibilityLabel(title)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 44)
+        .background(AppTheme.calloutOptionBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(AppTheme.border.opacity(0.8), lineWidth: 1))
     }
 
     private var floatingPanelSettingsWorkspace: some View {

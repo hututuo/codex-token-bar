@@ -1,8 +1,15 @@
 import type { ActivityDay } from "../../types/dashboard";
 import type { ActivityMode } from "./types";
 import { modelUsageCompactText } from "../modelUsagePresentation.ts";
+import { modelCostSummaryText } from "./heatmap.ts";
+import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
-export function hoverSummary(day: ActivityDay, mode: ActivityMode): string {
+export function hoverSummary(
+  day: ActivityDay,
+  mode: ActivityMode,
+  fallbackModel: OfficialAPIPriceModel = "gpt56Sol",
+  modelCostDataAvailable = true,
+): string {
   if (mode === "cache") {
     return `${day.date} · 命中率 ${formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
   }
@@ -14,6 +21,9 @@ export function hoverSummary(day: ActivityDay, mode: ActivityMode): string {
   }
   if (mode === "model") {
     return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(day.modelBreakdowns) ?? "暂无模型明细"}`;
+  }
+  if (mode === "modelCost") {
+    return `${day.date} · ${modelCostSummaryText(day, fallbackModel, modelCostDataAvailable)}`;
   }
 
   return `${day.date} · ${formatTokens(day.tokens)} tokens · ${day.calls} calls`;

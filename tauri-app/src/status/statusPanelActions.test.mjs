@@ -24,6 +24,13 @@ test("Status panel mirrors the official sidebar unread state without a local ack
   assert.doesNotMatch(source, /summaryUpdatedAt\s*=\s*useMemo\(\(\)\s*=>\s*new Date/);
   assert.match(source, /publishOpenAppSettings/);
   assert.match(source, />设置<\/button>/);
+  assert.match(source, /floatingSettingsGenerationRef/);
+  assert.match(source, /displaySettingsGenerationRef/);
+  assert.match(source, /appSettingsGenerationRef/);
+  assert.match(
+    source,
+    /startingFloatingSettingsGeneration === 0[\s\S]*?floatingSettingsGenerationRef\.current === 0/,
+  );
 });
 
 test("Unread acknowledgement publishes to the shared compact panel and dashboard listeners", async () => {

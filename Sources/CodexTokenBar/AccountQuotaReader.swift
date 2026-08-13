@@ -7,6 +7,20 @@ struct LiveAccountQuotaReader: QuotaReading {
     }
 }
 
+protocol AccountQuotaResetCreditReading: Sendable {
+    func readResetCredits(
+        dataSource: CodexDataSource?
+    ) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic>
+}
+
+struct LiveAccountQuotaResetCreditReader: AccountQuotaResetCreditReading {
+    func readResetCredits(
+        dataSource: CodexDataSource?
+    ) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic> {
+        await AccountQuotaReader.readResetCredits(dataSource: dataSource)
+    }
+}
+
 struct AccountQuotaReaderDependencies: Sendable {
     let transport: any AccountQuotaProcessTransport
     let locateCodexBinary: @Sendable () throws -> String
@@ -46,8 +60,8 @@ struct AccountQuotaReaderDependencies: Sendable {
         locateCodexBinary: { try CodexBinaryLocator.findExecutable() },
         timeout: 12,
         retryDelayNanoseconds: 350_000_000,
-        maxAttempts: 3,
-        shouldReadResetCredits: true,
+        maxAttempts: 1,
+        shouldReadResetCredits: false,
         localAccountNameLookup: { AccountQuotaReader.readLocalAccountName(dataSource: $0) },
         historyIdentityLookup: { dataSource, planType, limitID in
             AccountQuotaReader.readHistoryIdentity(
@@ -1088,6 +1102,8 @@ enum AccountQuotaReader {
         case .success(let resetCredits):
             enriched.resetCreditsAvailableCount = resetCredits.availableCount
             enriched.resetCredits = resetCredits.credits
+            enriched.resetCreditStatus = resetCredits.status
+            enriched.resetCreditUpdatedAt = resetCredits.updatedAt
             trace?.end("ok", metadata: [
                 "available": String(resetCredits.availableCount),
                 "credits": String(resetCredits.credits.count)
@@ -1123,11 +1139,31 @@ enum AccountQuotaReader {
             status: "额度已更新",
             updatedAt: Date()
         )
+        if let resetCredits = parseEmbeddedResetCredits(result["rateLimitResetCredits"]) {
+            snapshot.resetCreditsAvailableCount = resetCredits.availableCount
+            snapshot.resetCredits = resetCredits.credits
+            snapshot.resetCreditStatus = resetCredits.status
+            snapshot.resetCreditUpdatedAt = resetCredits.updatedAt
+        }
         snapshot.selectedLimitID = primaryCard?.id
         if primary == nil && secondary == nil {
             snapshot.status = "额度暂无数据"
         }
         return snapshot
+    }
+
+    private static func parseEmbeddedResetCredits(_ value: Any?) -> AccountQuotaResetCreditSnapshot? {
+        guard let object = value as? [String: Any] else { return nil }
+        let credits = parseResetCredits(object["credits"])
+        let availableCount = (object["availableCount"] as? NSNumber)?.intValue
+            ?? (object["available_count"] as? NSNumber)?.intValue
+            ?? credits.filter(\.isAvailable).count
+        return AccountQuotaResetCreditSnapshot(
+            availableCount: max(0, availableCount),
+            credits: credits,
+            status: "重置卡已更新",
+            updatedAt: Date()
+        )
     }
 
     private static func selectedLimitCard(from cards: [AccountQuotaLimitCard]) -> AccountQuotaLimitCard? {
@@ -1302,11 +1338,6 @@ enum AccountQuotaReader {
         return trimmed.caseInsensitiveCompare("codex") == .orderedSame ? "codex" : trimmed
     }
 
-    private struct ResetCreditsSnapshot: Sendable {
-        let availableCount: Int
-        let credits: [AccountQuotaResetCredit]
-    }
-
     static func makeResetCreditSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -1318,7 +1349,9 @@ enum AccountQuotaReader {
         return URLSession(configuration: configuration)
     }
 
-    private static func readResetCredits(dataSource: CodexDataSource?) async -> Result<ResetCreditsSnapshot, AccountQuotaDiagnostic> {
+    static func readResetCredits(
+        dataSource: CodexDataSource?
+    ) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic> {
         let trace = RefreshPerformanceProbe.begin("accountQuotaReader.readResetCredits")
         trace?.mark("readAccessToken.begin")
         guard let accessToken = readAccessToken(dataSource: dataSource) else {
@@ -1415,9 +1448,11 @@ enum AccountQuotaReader {
             let availableCount = (object["available_count"] as? NSNumber)?.intValue
                 ?? (object["available_count"] as? Int)
                 ?? credits.filter(\.isAvailable).count
-            let snapshot = ResetCreditsSnapshot(
+            let snapshot = AccountQuotaResetCreditSnapshot(
                 availableCount: max(0, availableCount),
-                credits: credits
+                credits: credits,
+                status: "重置卡已更新",
+                updatedAt: Date()
             )
             trace?.end("ok", metadata: [
                 "available": String(snapshot.availableCount),
@@ -1465,16 +1500,26 @@ enum AccountQuotaReader {
         return AccountQuotaResetCredit(
             id: id,
             status: (raw["status"] as? String) ?? "",
-            resetType: raw["reset_type"] as? String,
-            grantedAt: parseISODate(raw["granted_at"] as? String),
-            expiresAt: parseISODate(raw["expires_at"] as? String),
-            redeemStartedAt: parseISODate(raw["redeem_started_at"] as? String),
-            redeemedAt: parseISODate(raw["redeemed_at"] as? String),
+            resetType: (raw["reset_type"] as? String) ?? (raw["resetType"] as? String),
+            grantedAt: parseFlexibleDate(raw["granted_at"] ?? raw["grantedAt"]),
+            expiresAt: parseFlexibleDate(raw["expires_at"] ?? raw["expiresAt"]),
+            redeemStartedAt: parseFlexibleDate(raw["redeem_started_at"] ?? raw["redeemStartedAt"]),
+            redeemedAt: parseFlexibleDate(raw["redeemed_at"] ?? raw["redeemedAt"]),
             title: raw["title"] as? String,
             descriptionText: raw["description"] as? String,
-            profileUserID: raw["profile_user_id"] as? String,
-            profileImageURL: raw["profile_image_url"] as? String
+            profileUserID: (raw["profile_user_id"] as? String) ?? (raw["profileUserId"] as? String),
+            profileImageURL: (raw["profile_image_url"] as? String) ?? (raw["profileImageUrl"] as? String)
         )
+    }
+
+    private static func parseFlexibleDate(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber {
+            return Date(timeIntervalSince1970: number.doubleValue)
+        }
+        if let number = value as? Int {
+            return Date(timeIntervalSince1970: TimeInterval(number))
+        }
+        return parseISODate(value as? String)
     }
 
     private static func parseISODate(_ value: String?) -> Date? {

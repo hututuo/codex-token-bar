@@ -4,21 +4,26 @@ extension TokenHeatmap {
     static func prepare(
         dailyUsage: [DayUsage],
         cacheDaily: [TokenCacheBucket],
+        dailyModelBreakdowns: [ModelTokenBucket] = [],
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
+        fallbackModel: OfficialAPIPriceModel = .gpt56Sol,
         mode: ActivityMode
     ) -> HeatmapPreparedData {
         let summaries = makeSummaries(
             dailyUsage: dailyUsage,
             cacheDaily: cacheDaily,
+            dailyModelBreakdowns: dailyModelBreakdowns,
             attributionEvents: attributionEvents,
             quotaDaily: quotaDaily,
+            fallbackModel: fallbackModel,
             mode: mode
         )
         let columns = makeColumnIndices(dayCount: summaries.count)
         return HeatmapPreparedData(
             summaries: summaries,
             maxTokens: max(summaries.map(\.tokens).max() ?? 1, 1),
+            maxModelCostUSD: max(summaries.compactMap(\.modelCostUSD).max() ?? 0, 0),
             columns: columns,
             monthMarkers: monthMarkers(dailyUsage: dailyUsage, endColumn: max(columns.count, 1))
         )
@@ -33,8 +38,10 @@ extension TokenHeatmap {
     private static func makeSummaries(
         dailyUsage: [DayUsage],
         cacheDaily: [TokenCacheBucket],
+        dailyModelBreakdowns: [ModelTokenBucket],
         attributionEvents: [TokenCacheAttributionEvent],
         quotaDaily: [QuotaHistoryDailyBucket],
+        fallbackModel: OfficialAPIPriceModel,
         mode: ActivityMode
     ) -> [HeatmapUsageSummary] {
         switch mode {
@@ -64,10 +71,51 @@ extension TokenHeatmap {
             }
         case .modelShare:
             return modelShareSummaries(dailyUsage: dailyUsage, attributionEvents: attributionEvents)
+        case .modelCost:
+            return modelCostSummaries(
+                dailyUsage: dailyUsage,
+                dailyModelBreakdowns: dailyModelBreakdowns,
+                fallbackModel: fallbackModel
+            )
         case .cacheHitRate:
             return cacheHitRateSummaries(dailyUsage: dailyUsage, cacheDaily: cacheDaily)
         case .quotaRemaining:
             return quotaRemainingSummaries(dailyUsage: dailyUsage, quotaDaily: quotaDaily)
+        }
+    }
+
+    private static func modelCostSummaries(
+        dailyUsage: [DayUsage],
+        dailyModelBreakdowns: [ModelTokenBucket],
+        fallbackModel: OfficialAPIPriceModel
+    ) -> [HeatmapUsageSummary] {
+        let calendar = Calendar.current
+        let modelsByDay = Dictionary(uniqueKeysWithValues: dailyModelBreakdowns.map { bucket in
+            (calendar.startOfDay(for: bucket.start), bucket.modelBreakdowns)
+        })
+        return dailyUsage.map { day in
+            let date = calendar.startOfDay(for: day.date)
+            let recordedRows = modelsByDay[date]
+            let rows = recordedRows ?? []
+            let items = FloatingTodayModelUsagePresentation.items(
+                from: rows,
+                fallbackModel: fallbackModel
+            )
+            // Old fast-start payloads do not contain this compact projection.
+            // An active day with no projection must stay unavailable instead
+            // of being silently reported as a real $0 day.
+            let cost = day.tokens > 0 && recordedRows == nil
+                ? nil
+                : items.compactMap(\.costUSD).reduce(0, +)
+            return HeatmapUsageSummary(
+                title: DateFormatter.fullDay.string(from: day.date),
+                tokens: day.tokens,
+                calls: day.calls,
+                iconName: "dollarsign.circle.fill",
+                modelBreakdowns: rows,
+                modelCostUSD: cost,
+                isModelCost: true
+            )
         }
     }
 

@@ -11,6 +11,8 @@ struct HeatmapUsageSummary {
     let isQuotaRemaining: Bool
     let modelBreakdowns: [ModelTokenBreakdown]
     let isModelShare: Bool
+    let modelCostUSD: Double?
+    let isModelCost: Bool
 
     init(
         title: String,
@@ -22,7 +24,9 @@ struct HeatmapUsageSummary {
         quotaRemainingPercent: Double? = nil,
         isQuotaRemaining: Bool = false,
         modelBreakdowns: [ModelTokenBreakdown] = [],
-        isModelShare: Bool = false
+        isModelShare: Bool = false,
+        modelCostUSD: Double? = nil,
+        isModelCost: Bool = false
     ) {
         self.title = title
         self.tokens = tokens
@@ -34,6 +38,8 @@ struct HeatmapUsageSummary {
         self.isQuotaRemaining = isQuotaRemaining
         self.modelBreakdowns = modelBreakdowns
         self.isModelShare = isModelShare
+        self.modelCostUSD = modelCostUSD
+        self.isModelCost = isModelCost
     }
 
     var average: Int {
@@ -49,6 +55,8 @@ struct HeatmapRangeSummary {
     let cacheBreakdown: TokenCacheBreakdown?
     let quotaAverageRemainingPercent: Double?
     let modelBreakdowns: [ModelTokenBreakdown]
+    let modelCostUSD: Double?
+    let isModelCost: Bool
 
     init(
         title: String,
@@ -57,7 +65,9 @@ struct HeatmapRangeSummary {
         calls: Int,
         cacheBreakdown: TokenCacheBreakdown?,
         quotaAverageRemainingPercent: Double?,
-        modelBreakdowns: [ModelTokenBreakdown] = []
+        modelBreakdowns: [ModelTokenBreakdown] = [],
+        modelCostUSD: Double? = nil,
+        isModelCost: Bool = false
     ) {
         self.title = title
         self.dayCount = dayCount
@@ -66,6 +76,8 @@ struct HeatmapRangeSummary {
         self.cacheBreakdown = cacheBreakdown
         self.quotaAverageRemainingPercent = quotaAverageRemainingPercent
         self.modelBreakdowns = modelBreakdowns
+        self.modelCostUSD = modelCostUSD
+        self.isModelCost = isModelCost
     }
 
     var average: Int {
@@ -85,6 +97,7 @@ struct HeatmapHoverInfo: View {
     let summary: HeatmapUsageSummary?
     let rangeSummary: HeatmapRangeSummary?
     let hasRangeStart: Bool
+    let fallbackModel: OfficialAPIPriceModel
 
     var body: some View {
         GeometryReader { proxy in
@@ -141,6 +154,20 @@ struct HeatmapHoverInfo: View {
                     Text("\(summary.calls) samples")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
+                } else if summary.isModelCost {
+                    if let cost = summary.modelCostUSD {
+                        Text(cost.quotaEstimatorMoneyText)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? .secondary)
+                        ModelCostInlineSummary(
+                            rows: summary.modelBreakdowns,
+                            fallbackModel: fallbackModel
+                        )
+                    } else {
+                        Text("模型明细待读取")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 } else if summary.isModelShare {
                     Text("\(summary.tokens.abbreviatedTokens) tokens")
                         .font(.system(size: 13, weight: .semibold))
@@ -207,6 +234,20 @@ struct HeatmapHoverInfo: View {
                     Text("\(rangeSummary.calls) samples")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
+                } else if rangeSummary.isModelCost {
+                    if let cost = rangeSummary.modelCostUSD {
+                        Text(cost.quotaEstimatorMoneyText)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(ModelUsagePresentation.dominantColor(from: rangeSummary.modelBreakdowns) ?? .secondary)
+                        ModelCostInlineSummary(
+                            rows: rangeSummary.modelBreakdowns,
+                            fallbackModel: fallbackModel
+                        )
+                    } else {
+                        Text("所选日期模型明细待读取")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 } else if !rangeSummary.modelBreakdowns.isEmpty {
                     Text("\(rangeSummary.tokens.abbreviatedTokens) tokens")
                         .font(.system(size: 13, weight: .semibold))
