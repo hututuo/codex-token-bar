@@ -811,7 +811,7 @@ final class CodexUsageStoreTests: XCTestCase {
         let numeric = makeSnapshot(
             totalTokens: 1_000,
             dayTokens: 100,
-            preciseTimeSeriesGeneratedAt: nil,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 2_500),
             attributionEventsComplete: false
         )
         let final = makeSnapshot(
@@ -853,8 +853,10 @@ final class CodexUsageStoreTests: XCTestCase {
         }
         XCTAssertEqual(store.snapshot.stats.totalTokens, numeric.stats.totalTokens)
         XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
-        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertFalse(store.isRefreshing)
+        XCTAssertTrue(store.isDetailHydrating)
+        XCTAssertTrue(store.isUsageRefreshOrDetailHydrationActive)
         let phaseLoadCountAfterNumeric = await loader.phasedLoadCountValue()
         XCTAssertEqual(phaseLoadCountAfterNumeric, 1)
 
@@ -867,6 +869,8 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(store.snapshot.cacheUsage.attributionEventsComplete)
         XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertFalse(store.isRefreshing)
+        XCTAssertFalse(store.isDetailHydrating)
+        XCTAssertFalse(store.isUsageRefreshOrDetailHydrationActive)
         XCTAssertEqual(publishedTokens, [numeric.stats.totalTokens, final.stats.totalTokens])
         let phaseLoadCountAfterFinal = await loader.phasedLoadCountValue()
         XCTAssertEqual(phaseLoadCountAfterFinal, 1)
@@ -880,7 +884,7 @@ final class CodexUsageStoreTests: XCTestCase {
         let numeric = makeSnapshot(
             totalTokens: 2_000,
             dayTokens: 200,
-            preciseTimeSeriesGeneratedAt: nil,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 3_500),
             attributionEventsComplete: false
         )
         let loader = BarrierPhasedDashboardSnapshotLoader(
@@ -905,8 +909,10 @@ final class CodexUsageStoreTests: XCTestCase {
         await loader.yieldNumeric()
         await fulfillment(of: [numericPublished], timeout: 1)
         await waitUntilYielding("numeric lifecycle before detail failure") {
-            !store.isRefreshing
+            !store.isRefreshing && store.isDetailHydrating
         }
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.isUsageRefreshOrDetailHydrationActive)
         await loader.yieldFinal()
         await waitUntilYielding("failed final phase") {
             !store.isRefreshing && store.status.contains("会话明细暂不可用")
@@ -914,7 +920,9 @@ final class CodexUsageStoreTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot.stats.totalTokens, numeric.stats.totalTokens)
         XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
-        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.isDetailHydrating)
+        XCTAssertFalse(store.isUsageRefreshOrDetailHydrationActive)
         XCTAssertTrue(store.status.contains("数值已更新"), store.status)
         XCTAssertFalse(store.status.contains("读取失败"), store.status)
         XCTAssertFalse(store.status.contains("当前显示已陈旧"), store.status)
@@ -927,7 +935,11 @@ final class CodexUsageStoreTests: XCTestCase {
             ),
             origin: .defaultHome
         )
-        let lastGood = makeSnapshot(totalTokens: 42_000, dayTokens: 4_200)
+        let lastGood = makeSnapshot(
+            totalTokens: 42_000,
+            dayTokens: 4_200,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 4_000)
+        )
         let loader = SuspendedDashboardSnapshotLoader(
             fastResult: DashboardFastSnapshotResult(
                 snapshot: lastGood,
@@ -947,10 +959,54 @@ final class CodexUsageStoreTests: XCTestCase {
         }
 
         XCTAssertTrue(store.snapshot.hasPreciseTokenUsage)
-        XCTAssertTrue(store.status.contains("用量已陈旧"), store.status)
-        XCTAssertTrue(store.status.contains("正在增量核对"), store.status)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.status.contains("正在核对上次精确数据"), store.status)
+        XCTAssertTrue(store.status.contains("保留旧值"), store.status)
+        XCTAssertFalse(store.status.contains("用量已陈旧"), store.status)
         XCTAssertFalse(store.status.contains("仅显示会话元数据"), store.status)
         store.setBackgroundActivityEnabled(false)
+    }
+
+    func testCurrentPreciseRefreshPreservesFreshnessWithoutStaleStatus() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/current-refresh-fresh/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let current = makeSnapshot(
+            totalTokens: 45_000,
+            dayTokens: 4_500,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 4_500),
+            attributionEventsComplete: true
+        )
+        let loader = MultiRequestPhasedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await loader.waitUntilRequestCount(1)
+        await loader.yield(current, request: 0)
+        await loader.finish(request: 0)
+        await waitUntilYielding("current precise baseline") {
+            store.preciseTimeSeriesFresh
+                && !store.isUsageRefreshOrDetailHydrationActive
+        }
+
+        store.refresh()
+        await loader.waitUntilRequestCount(2)
+
+        XCTAssertTrue(store.isRefreshing)
+        XCTAssertFalse(store.isDetailHydrating)
+        XCTAssertTrue(store.isUsageRefreshOrDetailHydrationActive)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.status.contains("正在增量更新 token"), store.status)
+        XCTAssertFalse(store.status.contains("用量已陈旧"), store.status)
+        store.setBackgroundActivityEnabled(false)
+        XCTAssertFalse(store.isUsageRefreshOrDetailHydrationActive)
     }
 
     func testActiveAppendStartsNextNumericFlightBeforeEarlierDetailCompletes() async {
@@ -997,7 +1053,10 @@ final class CodexUsageStoreTests: XCTestCase {
         await waitUntilYielding("first numeric completion") {
             store.snapshot.stats.totalTokens == firstNumeric.stats.totalTokens
                 && !store.isRefreshing
+                && store.isDetailHydrating
         }
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.isUsageRefreshOrDetailHydrationActive)
 
         // The first request still has no final/detail phase. A dirty/manual
         // refresh must nevertheless create the next numeric owner.
@@ -1007,6 +1066,7 @@ final class CodexUsageStoreTests: XCTestCase {
         await waitUntilYielding("active append numeric catch-up") {
             store.snapshot.stats.totalTokens == secondNumeric.stats.totalTokens
                 && !store.isRefreshing
+                && store.isDetailHydrating
         }
 
         XCTAssertEqual(store.snapshot.stats.totalTokens, 51_418)
@@ -1014,13 +1074,14 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 1_115)
         XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.calls }, 7_361)
         XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertTrue(store.status.contains("正在补齐会话明细"), store.status)
 
         await loader.yield(secondFinal, request: 1)
         await loader.finish(request: 1)
         await waitUntilYielding("second detail completion") {
             store.snapshot.cacheUsage.attributionEventsComplete
-                && !store.isRefreshing
+                && !store.isUsageRefreshOrDetailHydrationActive
         }
         XCTAssertEqual(store.snapshot.stats.totalTokens, secondNumeric.stats.totalTokens)
         XCTAssertEqual(store.snapshot.stats.totalCalls, secondNumeric.stats.totalCalls)

@@ -57,8 +57,11 @@ final class CodexUsageStore: ObservableObject {
     private var todayModelBreakdownsDay: Date?
     @Published private(set) var status: String = "正在加载本地 Codex 用量..."
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isDetailHydrating = false
     @Published private(set) var isInitialLoading = true
     @Published private(set) var isPreparingUsageCache = false
+    /// Exact numeric time-series coverage; intentionally independent of
+    /// attribution-event and excerpt/detail readiness.
     @Published private(set) var preciseTimeSeriesFresh = false
     @Published private(set) var preciseTimeSeriesContinuityLostAt: Date? = nil
     @Published private(set) var preciseTimeSeriesContinuityLossID: UUID? = nil
@@ -117,6 +120,10 @@ final class CodexUsageStore: ObservableObject {
 
     var currentDataSource: CodexDataSource? {
         dataSource
+    }
+
+    var isUsageRefreshOrDetailHydrationActive: Bool {
+        isRefreshing || isDetailHydrating
     }
 
     init(
@@ -349,6 +356,7 @@ final class CodexUsageStore: ObservableObject {
         activeRefreshCompactOnly = false
         pendingFullRefresh = false
         isRefreshing = false
+        isDetailHydrating = false
         isPreparingUsageCache = false
         preciseTimeSeriesFresh = false
         todayModelBreakdownsDay = nil
@@ -426,6 +434,7 @@ final class CodexUsageStore: ObservableObject {
             transientDatabaseRecoveryTask = nil
             refreshGeneration += 1
             isRefreshing = false
+            isDetailHydrating = false
             trace?.mark("cancelled-stale-refresh")
         } else if refreshTask != nil {
             // A numeric phase releases the visible refresh lifecycle before
@@ -434,6 +443,7 @@ final class CodexUsageStore: ObservableObject {
             // trailing detail task.
             refreshTask?.cancel()
             refreshTask = nil
+            isDetailHydrating = false
             trace?.mark("cancelled-superseded-detail")
         }
         setDataSource(resolvedDataSource)
@@ -444,6 +454,7 @@ final class CodexUsageStore: ObservableObject {
             activeRefreshSourceID = nil
             activeRefreshCompactOnly = false
             pendingFullRefresh = false
+            isDetailHydrating = false
             snapshot = .empty
             todayModelBreakdowns = []
             todayModelBreakdownsDay = nil
@@ -487,14 +498,12 @@ final class CodexUsageStore: ObservableObject {
             && snapshot.hasPreciseTokenUsage
             && snapshotSourceID == sourceID
         isRefreshing = true
+        isDetailHydrating = false
         refreshGeneration += 1
         let generation = refreshGeneration
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
         isPreparingUsageCache = needsCacheInitialization
-        if effectiveIncludePreciseScan {
-            preciseTimeSeriesFresh = false
-        }
         if isFirstLoad {
             isInitialLoading = true
             status = needsCacheInitialization
@@ -531,6 +540,7 @@ final class CodexUsageStore: ObservableObject {
                                 return
                             }
                             self.publish(quick.snapshot, sourceID: sourceID)
+                            self.applyFastSnapshotFreshness(quick)
                             self.status = self.fastSnapshotStatus(
                                 quick,
                                 origin: source.originLabel,
@@ -558,6 +568,7 @@ final class CodexUsageStore: ObservableObject {
                             return
                         }
                         self.publish(quick.snapshot, sourceID: sourceID)
+                        self.applyFastSnapshotFreshness(quick)
                         self.status = self.fastSnapshotStatus(
                             quick,
                             origin: source.originLabel,
@@ -626,9 +637,9 @@ final class CodexUsageStore: ObservableObject {
                                 self.publish(loaded, sourceID: sourceID)
                                 if loaded.cacheUsage.attributionEventsComplete {
                                     sawFinalPrecisePhase = true
+                                    self.isDetailHydrating = false
                                     self.preciseTimeSeriesFresh =
                                         loaded.preciseTimeSeriesGeneratedAt != nil
-                                            && loaded.cacheUsage.attributionEventsComplete
                                     self.didRunPreciseScan = true
                                     UsageCacheLifecycle.markCurrentCachePrepared()
                                     self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
@@ -643,7 +654,9 @@ final class CodexUsageStore: ObservableObject {
                                     // hydration continues independently and
                                     // must not hold totals in a processing state.
                                     sawNumericPrecisePhase = true
-                                    self.preciseTimeSeriesFresh = false
+                                    self.isDetailHydrating = true
+                                    self.preciseTimeSeriesFresh =
+                                        loaded.preciseTimeSeriesGeneratedAt != nil
                                     self.didRunPreciseScan = true
                                     UsageCacheLifecycle.markCurrentCachePrepared()
                                     self.status = "\(source.originLabel) · token_count · 数值更新于 \(DateFormatter.statusString(from: loaded.generatedAt)) · 正在补齐会话明细..."
@@ -658,6 +671,7 @@ final class CodexUsageStore: ObservableObject {
                                     ])
                                 }
                             } else {
+                                self.isDetailHydrating = false
                                 self.preciseTimeSeriesFresh = false
                                 self.markPreciseTimeSeriesContinuityLoss(for: source)
                                 if !self.snapshot.hasPreciseTokenUsage {
@@ -674,6 +688,7 @@ final class CodexUsageStore: ObservableObject {
                         if !sawFinalPrecisePhase {
                             trace?.mark("preciseSnapshot.noFinalPhase")
                             if sawNumericPrecisePhase {
+                                self.isDetailHydrating = false
                                 self.status = "\(source.originLabel) · token_count · 数值已更新，会话明细待后续刷新"
                             }
                         }
@@ -693,13 +708,14 @@ final class CodexUsageStore: ObservableObject {
                     // Numeric aggregation already committed atomically. A
                     // detail-only error is not an exact-total failure, does
                     // not open continuity recovery, and does not stale totals.
-                    self.preciseTimeSeriesFresh = false
+                    self.isDetailHydrating = false
                     self.status = "\(source.originLabel) · token_count · 数值已更新，会话明细暂不可用"
                     shouldScheduleTransientDatabaseRecovery = false
                     trace?.end("detail-failed", metadata: [
                         "error": error.localizedDescription
                     ])
                 } else {
+                    self.isDetailHydrating = false
                     let retainedTrustedSnapshot = self.snapshotSourceID == sourceID
                         && self.hasDisplayableSnapshot(self.snapshot)
                     if !retainedTrustedSnapshot {
@@ -738,6 +754,7 @@ final class CodexUsageStore: ObservableObject {
                 self.pendingFullRefresh = false
                 self.activeRefreshCompactOnly = false
                 self.isRefreshing = false
+                self.isDetailHydrating = false
                 self.activeRefreshSourceID = nil
                 self.didFinishInitialLoad = true
                 self.isInitialLoading = false
@@ -880,6 +897,7 @@ final class CodexUsageStore: ObservableObject {
         activeRefreshCompactOnly = false
         pendingFullRefresh = false
         isRefreshing = false
+        isDetailHydrating = false
         isPreparingUsageCache = false
         refresh(includePreciseScan: true, forceFullTimeSeries: true)
     }
@@ -1260,6 +1278,18 @@ final class CodexUsageStore: ObservableObject {
         "\(origin) · state_5.sqlite · 仅显示会话元数据，精确 token 仍在读取..."
     }
 
+    private func applyFastSnapshotFreshness(
+        _ result: DashboardFastSnapshotResult
+    ) {
+        switch result.freshness {
+        case .current:
+            preciseTimeSeriesFresh = result.snapshot.hasPreciseTokenUsage
+                && result.snapshot.preciseTimeSeriesGeneratedAt != nil
+        case .staleCompatible, .unavailable:
+            preciseTimeSeriesFresh = false
+        }
+    }
+
     private func fastSnapshotStatus(
         _ result: DashboardFastSnapshotResult,
         origin: String,
@@ -1271,7 +1301,7 @@ final class CodexUsageStore: ObservableObject {
                 ? "\(origin) · token_count · \(preciseFollowUp)"
                 : metadataOnlyStatus(origin: origin)
         case .staleCompatible:
-            return "\(origin) · token_count · 用量已陈旧 · 正在增量核对..."
+            return "\(origin) · token_count · 正在核对上次精确数据（保留旧值）..."
         case .unavailable:
             return metadataOnlyStatus(origin: origin)
         }
@@ -1350,6 +1380,7 @@ final class CodexUsageStore: ObservableObject {
             activeRefreshCompactOnly = false
             pendingFullRefresh = false
             isRefreshing = false
+            isDetailHydrating = false
             isPreparingUsageCache = false
         }
     }
