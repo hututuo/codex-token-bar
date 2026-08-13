@@ -234,7 +234,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(numeric.cacheUsage.sessions.isEmpty)
         XCTAssertTrue(numeric.cacheUsage.turns.isEmpty)
         XCTAssertTrue(numeric.cacheUsage.attributionEvents.isEmpty)
-        XCTAssertNil(numeric.preciseTimeSeriesGeneratedAt)
+        XCTAssertEqual(
+            numeric.preciseTimeSeriesGeneratedAt,
+            final.preciseTimeSeriesGeneratedAt
+        )
         XCTAssertTrue(final.cacheUsage.attributionEventsComplete)
         XCTAssertEqual(final.cacheUsage.turns.count, 1)
         XCTAssertEqual(final.cacheUsage.turns.first?.userPrompt, "phase prompt")
@@ -521,6 +524,160 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(legacyCaches.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
     }
 
+    func testActiveAppendPublishesNextNumericTotalsBeforeEarlierDetailFinishes() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexNumericDetailBarrier")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019faaaa-bbbb-cccc-dddd-numeric-barrier"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-08-13-\(sessionID).jsonl")
+        let now = Date()
+        try [
+            messageLine(
+                timestamp: now.addingTimeInterval(-30),
+                type: "user_message",
+                message: "first active prompt"
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(-20),
+                type: "agent_message",
+                message: "first active answer"
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 130, cachedInput: 0, output: 0, reasoning: 0, total: 130),
+                last: Usage(input: 130, cachedInput: 0, output: 0, reasoning: 0, total: 130)
+            )
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let detailStarted = DispatchSemaphore(value: 0)
+        let releaseFirstDetail = DispatchSemaphore(value: 0)
+        let firstNumericPublished = DispatchSemaphore(value: 0)
+        let secondNumericPublished = DispatchSemaphore(value: 0)
+        let firstCompleted = DispatchSemaphore(value: 0)
+        let secondCompleted = DispatchSemaphore(value: 0)
+        let firstNumeric = DashboardSnapshotPhaseProbe()
+        let secondNumeric = DashboardSnapshotPhaseProbe()
+        let firstResult = DashboardSnapshotResultBox()
+        let secondResult = DashboardSnapshotResultBox()
+        CodexUsageAnalyzer.installDetailHydrationHookForTesting(
+            root: codexHome.path
+        ) {
+            detailStarted.signal()
+            _ = releaseFirstDetail.wait(timeout: .now() + 10)
+        }
+
+        let firstAnalyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        DispatchQueue.global(qos: .userInitiated).async {
+            firstResult.set(Result {
+                try firstAnalyzer.load { snapshot in
+                    firstNumeric.append(snapshot)
+                    firstNumericPublished.signal()
+                }
+            })
+            firstCompleted.signal()
+        }
+
+        XCTAssertEqual(firstNumericPublished.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(detailStarted.wait(timeout: .now() + 5), .success)
+        try appendLines([
+            messageLine(
+                timestamp: now,
+                type: "user_message",
+                message: "second active prompt"
+            ),
+            messageLine(
+                timestamp: now.addingTimeInterval(1),
+                type: "agent_message",
+                message: "second active answer"
+            ),
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(2),
+                total: Usage(input: 205, cachedInput: 0, output: 0, reasoning: 0, total: 205),
+                last: Usage(input: 75, cachedInput: 0, output: 0, reasoning: 0, total: 75)
+            )
+        ], to: sessionFile)
+
+        let secondAnalyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        DispatchQueue.global(qos: .userInitiated).async {
+            secondResult.set(Result {
+                try secondAnalyzer.load { snapshot in
+                    secondNumeric.append(snapshot)
+                    secondNumericPublished.signal()
+                }
+            })
+            secondCompleted.signal()
+        }
+
+        let caughtUpBeforeOldDetailReleased =
+            secondNumericPublished.wait(timeout: .now() + 5) == .success
+        releaseFirstDetail.signal()
+        XCTAssertTrue(caughtUpBeforeOldDetailReleased)
+        XCTAssertEqual(secondCompleted.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(firstCompleted.wait(timeout: .now() + 5), .success)
+
+        let published = try XCTUnwrap(secondNumeric.values.last)
+        XCTAssertEqual(published.stats.totalTokens, 205)
+        XCTAssertEqual(published.stats.totalCalls, 2)
+        XCTAssertEqual(published.dailyUsage.reduce(0) { $0 + $1.tokens }, 205)
+        XCTAssertEqual(published.dailyUsage.reduce(0) { $0 + $1.calls }, 2)
+        XCTAssertFalse(published.cacheUsage.attributionEventsComplete)
+
+        let firstFinished = try XCTUnwrap(firstResult.get()).get()
+        let secondFinished = try XCTUnwrap(secondResult.get()).get()
+        XCTAssertFalse(firstFinished.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(secondFinished.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(secondFinished.stats.totalTokens, 205)
+        let fast = try secondAnalyzer.loadFastSnapshotResult()
+        XCTAssertEqual(fast.freshness, .current)
+        XCTAssertEqual(fast.snapshot.stats.totalTokens, 205)
+        XCTAssertEqual(firstNumeric.values.first?.stats.totalTokens, 130)
+    }
+
+    func testExcerptHydrationDoesNotMergeDistantTurnHoles() throws {
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: try makeCodexHome()))
+        let file = URL(fileURLWithPath: "/tmp/excerpt-hydration-ranges.jsonl")
+        let ranges = analyzer.assistantExcerptHydrationRanges([
+            CodexUsageHistoryIndex.TurnSourceReference(
+                stableID: "first",
+                file: file,
+                eventOffset: 100,
+                userPromptOffset: nil,
+                assistantStartOffset: 10
+            ),
+            CodexUsageHistoryIndex.TurnSourceReference(
+                stableID: "overlap",
+                file: file,
+                eventOffset: 150,
+                userPromptOffset: nil,
+                assistantStartOffset: 90
+            ),
+            CodexUsageHistoryIndex.TurnSourceReference(
+                stableID: "distant",
+                file: file,
+                eventOffset: 4_000_000_050,
+                userPromptOffset: nil,
+                assistantStartOffset: 4_000_000_000
+            )
+        ])
+
+        XCTAssertEqual(ranges.count, 2)
+        XCTAssertEqual(ranges.map(\.start), [10, 4_000_000_000])
+        XCTAssertEqual(ranges.map(\.end), [150, 4_000_000_050])
+        XCTAssertEqual(Set(ranges[0].references.map(\.stableID)), ["first", "overlap"])
+        XCTAssertEqual(ranges[1].references.map(\.stableID), ["distant"])
+    }
+
     func testFastSnapshotDoesNotUseSQLiteTokenTotals() throws {
         let codexHome = try makeCodexHome()
         try seedStateDatabase(at: codexHome)
@@ -609,7 +766,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(rebuilt.cacheUsage.turns.first?.assistantResponse, "restart answer")
     }
 
-    func testPersistentExactSnapshotRejectsSignatureMismatchAndVersionOrCorruptPayload() throws {
+    func testPersistentExactSnapshotAcceptsCompatibleAdvanceAndRejectsIdentityOrCorruptPayload() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshotMismatch")
         setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
@@ -630,10 +787,33 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let precise = try analyzer.load()
-        let originalSessionData = try Data(contentsOf: sessionFile)
         let snapshotURL = try XCTUnwrap(try persistentExactSnapshotFiles(in: cacheRoot).first)
 
-        // Any source-tree mutation changes the bound SessionTreeSignature.
+        // A compatible published generation advance is also stale-readable;
+        // it must not collapse the numeric surface to metadata-only.
+        let exactDatabase = SQLiteDatabaseDriver(
+            url: try exactUsageDatabaseURL(in: cacheRoot)
+        )
+        let currentGeneration = try scalarInt(
+            "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'attribution_generation';",
+            in: exactDatabase
+        )
+        try exactDatabase.execute(
+            "UPDATE schema_meta SET value = '\(currentGeneration + 1)' WHERE key = 'attribution_generation';"
+        )
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let advancedGeneration = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(advancedGeneration.freshness, .staleCompatible)
+        XCTAssertEqual(
+            advancedGeneration.snapshot.stats.totalTokens,
+            precise.stats.totalTokens
+        )
+        _ = try analyzer.load()
+
+        // A monotonic append makes the durable numeric projection stale, not
+        // unusable: startup keeps exact last-good totals visible while the new
+        // source signature is reconciled.
         try appendLines([
             try tokenCountLine(
                 timestamp: Date(timeIntervalSince1970: 1_800_000_010),
@@ -643,16 +823,40 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         ], to: sessionFile)
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
-        let changed = try analyzer.loadFastSnapshot()
-        XCTAssertEqual(changed.usagePrecision, .metadataOnly)
-        XCTAssertNotEqual(changed.stats.totalTokens, precise.stats.totalTokens)
+        let changed = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(changed.freshness, .staleCompatible)
+        XCTAssertEqual(changed.snapshot.usagePrecision, .precise)
+        XCTAssertEqual(changed.snapshot.stats.totalTokens, precise.stats.totalTokens)
+        XCTAssertEqual(changed.snapshot.stats.totalCalls, precise.stats.totalCalls)
+        XCTAssertEqual(changed.snapshot.dailyUsage, precise.dailyUsage)
 
-        // Restore the source tree and run a complete exact refresh so the
-        // legal payload below is bound to the current file signature (rather
-        // than the intentionally mutated signature above).
-        try originalSessionData.write(to: sessionFile, options: [.atomic])
+        // Reconcile the append so malformed identity checks below start from
+        // an otherwise current, legal payload.
         _ = try analyzer.load()
         let validData = try Data(contentsOf: snapshotURL)
+        var legacyExactObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        )
+        legacyExactObject["payloadVersion"] = 1
+        for key in [
+            "homeIdentityKey",
+            "indexSchemaVersion",
+            "parserRevision",
+            "provenanceRevision"
+        ] {
+            legacyExactObject.removeValue(forKey: key)
+        }
+        try JSONSerialization.data(
+            withJSONObject: legacyExactObject,
+            options: [.sortedKeys]
+        ).write(to: snapshotURL, options: [.atomic])
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let legacyExact = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(legacyExact.freshness, .current)
+        XCTAssertEqual(legacyExact.snapshot.stats.totalTokens, 500)
+        try validData.write(to: snapshotURL, options: [.atomic])
+
         var wrongVersionObject = try XCTUnwrap(
             JSONSerialization.jsonObject(with: validData) as? [String: Any]
         )
@@ -662,13 +866,44 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             options: [.sortedKeys]
         )
         let truncatedData = Data(validData.dropLast())
-        let malformedPayloads = [wrongVersionData, truncatedData, Data("not-json".utf8)]
+        var wrongIdentityPayloads: [Data] = []
+        for key in [
+            "homeIdentityKey",
+            "indexSchemaVersion",
+            "parserRevision",
+            "provenanceRevision"
+        ] {
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: validData) as? [String: Any]
+            )
+            object[key] = "incompatible-identity"
+            wrongIdentityPayloads.append(try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys]
+            ))
+        }
+        var wrongEpochObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        )
+        var wrongEpochSignature = try XCTUnwrap(
+            wrongEpochObject["signature"] as? [String: Any]
+        )
+        wrongEpochSignature["attributionProvenanceEpoch"] = "wrong-provenance-epoch"
+        wrongEpochObject["signature"] = wrongEpochSignature
+        wrongIdentityPayloads.append(try JSONSerialization.data(
+            withJSONObject: wrongEpochObject,
+            options: [.sortedKeys]
+        ))
+
+        let malformedPayloads = wrongIdentityPayloads
+            + [wrongVersionData, truncatedData, Data("not-json".utf8)]
         for malformed in malformedPayloads {
             try malformed.write(to: snapshotURL, options: [.atomic])
             CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
             CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
-            let fallback = try analyzer.loadFastSnapshot()
-            XCTAssertEqual(fallback.usagePrecision, .metadataOnly)
+            let fallback = try analyzer.loadFastSnapshotResult()
+            XCTAssertEqual(fallback.freshness, .unavailable)
+            XCTAssertEqual(fallback.snapshot.usagePrecision, .metadataOnly)
             try validData.write(to: snapshotURL, options: [.atomic])
         }
 
@@ -679,8 +914,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: snapshotURL, withDestinationURL: outside)
         CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
         CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
-        let symlinkFallback = try analyzer.loadFastSnapshot()
-        XCTAssertEqual(symlinkFallback.usagePrecision, .metadataOnly)
+        let symlinkFallback = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(symlinkFallback.freshness, .unavailable)
+        XCTAssertEqual(symlinkFallback.snapshot.usagePrecision, .metadataOnly)
     }
 
     func testPersistentExactSnapshotsAreIsolatedAndRestoredPerCanonicalHome() throws {
@@ -1819,12 +2055,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let first = try analyzer.load()
         let buildCountAfterFirstLoad = CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting
+        let redundantHydrationCount = ThreadSafeCounter()
+        CodexUsageAnalyzer.installDetailHydrationHookForTesting(
+            root: codexHome.path
+        ) {
+            redundantHydrationCount.increment()
+        }
         let second = try analyzer.load()
 
         XCTAssertEqual(first.stats.totalTokens, 120)
         XCTAssertEqual(second.stats.totalTokens, 120)
         XCTAssertGreaterThanOrEqual(buildCountAfterFirstLoad, 1)
         XCTAssertEqual(CodexUsageAnalyzer.preciseSnapshotBuildCountForTesting, buildCountAfterFirstLoad)
+        XCTAssertEqual(redundantHydrationCount.value, 0)
     }
 
     func testPreciseJSONLScanRebuildsAChangedSourceExactly() throws {
@@ -5897,5 +6140,22 @@ private final class DashboardSnapshotPhaseProbe: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return snapshots
+    }
+}
+
+private final class DashboardSnapshotResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<DashboardSnapshot, Error>?
+
+    func set(_ result: Result<DashboardSnapshot, Error>) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func get() -> Result<DashboardSnapshot, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
     }
 }

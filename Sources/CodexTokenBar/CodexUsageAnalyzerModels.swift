@@ -209,10 +209,23 @@ extension CodexUsageAnalyzer {
         /// session/turn rows, and attribution locators never cross this
         /// boundary.
         private struct PersistentExactSnapshot: Codable {
-            static let currentPayloadVersion = 1
+            static let legacyExactOnlyPayloadVersion = 1
+            static let currentPayloadVersion = 2
+            static let exactIndexSchemaVersion = "5"
+            static let exactParserRevision =
+                "token-event-v2-explicit-subagent-delayed-context-v3"
+            static let attributionProvenanceRevision =
+                "source-bucket-v4-fork-replay-boundary-v2"
 
             let payloadVersion: Int
             let root: String
+            let homeIdentityKey: String?
+            /// V2 makes the relaxed last-good path fail closed across index,
+            /// event-parser, or attribution-parser changes. V1 is accepted
+            /// only when the complete legacy signature still matches.
+            let indexSchemaVersion: String?
+            let parserRevision: String?
+            let provenanceRevision: String?
             let signature: SessionTreeSignature
             let stats: DashboardStats
             let dailyUsage: [DayUsage]
@@ -232,10 +245,15 @@ extension CodexUsageAnalyzer {
             init(
                 snapshot: DashboardSnapshot,
                 root: String,
+                homeIdentityKey: String,
                 signature: SessionTreeSignature
             ) {
                 payloadVersion = Self.currentPayloadVersion
                 self.root = root
+                self.homeIdentityKey = homeIdentityKey
+                indexSchemaVersion = Self.exactIndexSchemaVersion
+                parserRevision = Self.exactParserRevision
+                provenanceRevision = Self.attributionProvenanceRevision
                 self.signature = signature
                 stats = snapshot.stats
                 dailyUsage = snapshot.dailyUsage
@@ -290,6 +308,72 @@ extension CodexUsageAnalyzer {
                     generatedAt: generatedAt
                 )
             }
+
+            func freshness(
+                for currentSignature: SessionTreeSignature,
+                currentHomeIdentityKey: String,
+                attributionState: CodexUsageHistoryIndex.AttributionState
+            ) -> DashboardFastSnapshotFreshness? {
+                let supportedVersion = payloadVersion == Self.currentPayloadVersion
+                    || payloadVersion == Self.legacyExactOnlyPayloadVersion
+                guard supportedVersion else { return nil }
+
+                if payloadVersion == Self.currentPayloadVersion {
+                    guard indexSchemaVersion == Self.exactIndexSchemaVersion,
+                          parserRevision == Self.exactParserRevision,
+                          provenanceRevision == Self.attributionProvenanceRevision,
+                          homeIdentityKey == currentHomeIdentityKey else {
+                        return nil
+                    }
+                }
+
+                if signature == currentSignature {
+                    return .current
+                }
+
+                // V1 did not persist explicit schema/parser identities, so it
+                // must never enter the relaxed compatibility path.
+                guard payloadVersion == Self.currentPayloadVersion,
+                      signature.attributionProvenanceEpoch
+                        == currentSignature.attributionProvenanceEpoch,
+                      signature.attributionGeneration
+                        <= currentSignature.attributionGeneration,
+                      attributionState.provenanceEpoch
+                        == currentSignature.attributionProvenanceEpoch,
+                      !attributionState.currentScanUnsafeCauseDetected,
+                      !attributionState.requiresSyntheticCutover,
+                      !signature.files.isEmpty,
+                      !currentSignature.files.isEmpty,
+                      sourceTreeIsMonotonicAdvance(to: currentSignature) else {
+                    return nil
+                }
+                return .staleCompatible
+            }
+
+            private func sourceTreeIsMonotonicAdvance(
+                to currentSignature: SessionTreeSignature
+            ) -> Bool {
+                var currentFiles: [String: SessionCacheKey] = [:]
+                for file in currentSignature.files {
+                    currentFiles[file.path] = file
+                }
+                return signature.files.allSatisfy { stored in
+                    guard let current = currentFiles[stored.path],
+                          stored.deviceID == current.deviceID,
+                          stored.inode == current.inode,
+                          stored.size <= current.size else {
+                        return false
+                    }
+                    // An equal-length file with changed metadata is a rewrite,
+                    // not an append-compatible dirty source.
+                    return stored.size < current.size || stored == current
+                }
+            }
+        }
+
+        struct PersistentExactSnapshotResult {
+            let snapshot: DashboardSnapshot
+            let freshness: DashboardFastSnapshotFreshness
         }
 
         private let lock = NSLock()
@@ -301,6 +385,7 @@ extension CodexUsageAnalyzer {
         private var snapshotBuildCount = 0
         private var fullSessionParseCount = 0
         private var incrementalSessionParseCount = 0
+        private var detailHydrationHooks: [String: @Sendable () -> Void] = [:]
         private var didLoadPersistentCache = false
         private var pendingPersistence: [String: PersistenceOperation] = [:]
         private var deletedPersistentPaths = Set<String>()
@@ -396,11 +481,17 @@ extension CodexUsageAnalyzer {
             return cached.snapshot
         }
 
-        func storeSnapshot(_ snapshot: DashboardSnapshot, for root: String, signature: SessionTreeSignature) {
+        func storeSnapshot(
+            _ snapshot: DashboardSnapshot,
+            for root: String,
+            homeIdentityKey: String,
+            signature: SessionTreeSignature
+        ) {
             let canonicalRoot = Self.canonicalRootPath(root)
             let persistentPayload = PersistentExactSnapshot(
                 snapshot: snapshot,
                 root: canonicalRoot,
+                homeIdentityKey: homeIdentityKey,
                 signature: signature
             )
             lock.lock()
@@ -418,11 +509,38 @@ extension CodexUsageAnalyzer {
             Self.persistPersistentExactSnapshot(persistentPayload)
         }
 
+        /// Commits the exact numeric phase independently of excerpt/detail
+        /// readiness. It intentionally does not populate `snapshotStorage`,
+        /// whose entries are completion receipts for hydrated detail.
+        func storeNumericSnapshot(
+            _ snapshot: DashboardSnapshot,
+            for root: String,
+            homeIdentityKey: String,
+            signature: SessionTreeSignature
+        ) {
+            let canonicalRoot = Self.canonicalRootPath(root)
+            let persistentPayload = PersistentExactSnapshot(
+                snapshot: snapshot,
+                root: canonicalRoot,
+                homeIdentityKey: homeIdentityKey,
+                signature: signature
+            )
+            lock.lock()
+            persistentExactSnapshotStorage[canonicalRoot] = (
+                signature,
+                persistentPayload
+            )
+            didLoadPersistentExactSnapshotRoots.insert(canonicalRoot)
+            lock.unlock()
+            Self.persistPersistentExactSnapshot(persistentPayload)
+        }
+
         func persistentExactSnapshot(
             for root: String,
+            homeIdentityKey: String,
             signature: SessionTreeSignature,
             attributionState: CodexUsageHistoryIndex.AttributionState
-        ) -> DashboardSnapshot? {
+        ) -> PersistentExactSnapshotResult? {
             guard !CodexUsageAnalyzer.isPersistentSessionEventCacheDisabled else {
                 return nil
             }
@@ -432,9 +550,18 @@ extension CodexUsageAnalyzer {
                 lock.lock()
                 if let cached = persistentExactSnapshotStorage[canonicalRoot] {
                     lock.unlock()
-                    guard cached.signature == signature else { return nil }
-                    return cached.payload.restoredSnapshot(
+                    guard let freshness = cached.payload.freshness(
+                        for: signature,
+                        currentHomeIdentityKey: homeIdentityKey,
                         attributionState: attributionState
+                    ) else {
+                        return nil
+                    }
+                    return PersistentExactSnapshotResult(
+                        snapshot: cached.payload.restoredSnapshot(
+                            attributionState: attributionState
+                        ),
+                        freshness: freshness
                     )
                 }
                 if didLoadPersistentExactSnapshotRoots.contains(canonicalRoot) {
@@ -454,8 +581,7 @@ extension CodexUsageAnalyzer {
                 lock.unlock()
 
                 let loaded = Self.loadPersistentExactSnapshot(
-                    root: canonicalRoot,
-                    signature: signature
+                    root: canonicalRoot
                 )
                 lock.lock()
                 if let loaded {
@@ -466,8 +592,19 @@ extension CodexUsageAnalyzer {
                 lock.unlock()
                 loading.leave()
 
-                return loaded?.payload.restoredSnapshot(
-                    attributionState: attributionState
+                guard let loaded,
+                      let freshness = loaded.payload.freshness(
+                        for: signature,
+                        currentHomeIdentityKey: homeIdentityKey,
+                        attributionState: attributionState
+                      ) else {
+                    return nil
+                }
+                return PersistentExactSnapshotResult(
+                    snapshot: loaded.payload.restoredSnapshot(
+                        attributionState: attributionState
+                    ),
+                    freshness: freshness
                 )
             }
         }
@@ -527,6 +664,24 @@ extension CodexUsageAnalyzer {
             lock.unlock()
         }
 
+        func installDetailHydrationHookForTesting(
+            root: String,
+            hook: @escaping @Sendable () -> Void
+        ) {
+            lock.lock()
+            detailHydrationHooks[Self.canonicalRootPath(root)] = hook
+            lock.unlock()
+        }
+
+        func runDetailHydrationHookForTesting(root: String) {
+            lock.lock()
+            let hook = detailHydrationHooks.removeValue(
+                forKey: Self.canonicalRootPath(root)
+            )
+            lock.unlock()
+            hook?()
+        }
+
         func clearForTesting() {
             lock.lock()
             storage.removeAll()
@@ -540,6 +695,7 @@ extension CodexUsageAnalyzer {
             persistentExactSnapshotStorage.removeAll()
             didLoadPersistentExactSnapshotRoots.removeAll()
             persistentExactSnapshotLoads.removeAll()
+            detailHydrationHooks.removeAll()
             shouldFinalizeLegacyV8Migration = false
             legacyV8MigrationFailed = false
             lock.unlock()
@@ -903,8 +1059,7 @@ extension CodexUsageAnalyzer {
         }
 
         private static func loadPersistentExactSnapshot(
-            root: String,
-            signature: SessionTreeSignature
+            root: String
         ) -> (signature: SessionTreeSignature, payload: PersistentExactSnapshot)? {
             guard let url = persistentExactSnapshotURL(for: root),
                   let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]),
@@ -914,9 +1069,7 @@ extension CodexUsageAnalyzer {
                       PersistentExactSnapshot.self,
                       from: data
                   ),
-                  payload.payloadVersion == PersistentExactSnapshot.currentPayloadVersion,
-                  payload.root == root,
-                  payload.signature == signature else {
+                  payload.root == root else {
                 return nil
             }
             return (payload.signature, payload)
@@ -1135,6 +1288,20 @@ extension CodexUsageAnalyzer {
 
     static func resetPersistentExactSnapshotStateForTesting() {
         sessionEventCache.resetPersistentExactSnapshotStateForTesting()
+    }
+
+    static func installDetailHydrationHookForTesting(
+        root: String,
+        hook: @escaping @Sendable () -> Void
+    ) {
+        sessionEventCache.installDetailHydrationHookForTesting(
+            root: root,
+            hook: hook
+        )
+    }
+
+    static func runDetailHydrationHookForTesting(root: String) {
+        sessionEventCache.runDetailHydrationHookForTesting(root: root)
     }
 
     struct OfficialThreadSummary {

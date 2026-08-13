@@ -427,6 +427,14 @@ final class CodexUsageStore: ObservableObject {
             refreshGeneration += 1
             isRefreshing = false
             trace?.mark("cancelled-stale-refresh")
+        } else if refreshTask != nil {
+            // A numeric phase releases the visible refresh lifecycle before
+            // its optional detail hydration finishes. A later dirty/manual
+            // refresh owns the newer numeric generation and cancels only that
+            // trailing detail task.
+            refreshTask?.cancel()
+            refreshTask = nil
+            trace?.mark("cancelled-superseded-detail")
         }
         setDataSource(resolvedDataSource)
 
@@ -500,9 +508,10 @@ final class CodexUsageStore: ObservableObject {
 
         refreshTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            let source = dataSource
             var shouldScheduleTransientDatabaseRecovery = false
+            var sawNumericPrecisePhase = false
             do {
-                let source = dataSource
                 trace?.mark("task.started", metadata: [
                     "source": source.displayPath,
                     "origin": source.originLabel
@@ -510,7 +519,9 @@ final class CodexUsageStore: ObservableObject {
                 if isFirstLoad || !effectiveIncludePreciseScan {
                     if effectiveIncludePreciseScan {
                         trace?.mark("fastSnapshot.begin")
-                        if let quickSnapshot = try? await self.snapshotLoader.loadFastSnapshot(dataSource: source) {
+                        if let quick = try? await self.snapshotLoader.loadFastSnapshotResult(
+                            dataSource: source
+                        ) {
                             guard self.isCurrentRefresh(
                                 generation: generation,
                                 bindingGeneration: bindingGeneration,
@@ -519,20 +530,25 @@ final class CodexUsageStore: ObservableObject {
                                 trace?.end("stale-after-fastSnapshot")
                                 return
                             }
-                            self.publish(quickSnapshot, sourceID: sourceID)
-                            self.status = quickSnapshot.hasPreciseTokenUsage
-                                ? (needsCacheInitialization
-                                    ? "\(source.originLabel) · state_5.sqlite · 正在初始化本地统计缓存..."
-                                    : "\(source.originLabel) · state_5.sqlite · 正在增量更新 token...")
-                                : self.metadataOnlyStatus(origin: source.originLabel)
+                            self.publish(quick.snapshot, sourceID: sourceID)
+                            self.status = self.fastSnapshotStatus(
+                                quick,
+                                origin: source.originLabel,
+                                preciseFollowUp: needsCacheInitialization
+                                    ? "正在初始化本地统计缓存..."
+                                    : "正在增量更新 token..."
+                            )
                             trace?.mark("fastSnapshot.end", metadata: [
-                                "tokens": String(quickSnapshot.stats.totalTokens),
-                                "threads": String(quickSnapshot.stats.totalThreads)
+                                "tokens": String(quick.snapshot.stats.totalTokens),
+                                "threads": String(quick.snapshot.stats.totalThreads),
+                                "freshness": String(describing: quick.freshness)
                             ])
                         }
                     } else {
                         trace?.mark("fastSnapshot.begin")
-                        let quickSnapshot = try await self.snapshotLoader.loadFastSnapshot(dataSource: source)
+                        let quick = try await self.snapshotLoader.loadFastSnapshotResult(
+                            dataSource: source
+                        )
                         guard self.isCurrentRefresh(
                             generation: generation,
                             bindingGeneration: bindingGeneration,
@@ -541,13 +557,16 @@ final class CodexUsageStore: ObservableObject {
                             trace?.end("stale-after-fastSnapshot")
                             return
                         }
-                        self.publish(quickSnapshot, sourceID: sourceID)
-                        self.status = quickSnapshot.hasPreciseTokenUsage
-                            ? "\(source.originLabel) · state_5.sqlite · 准备扫描精确 token..."
-                            : self.metadataOnlyStatus(origin: source.originLabel)
+                        self.publish(quick.snapshot, sourceID: sourceID)
+                        self.status = self.fastSnapshotStatus(
+                            quick,
+                            origin: source.originLabel,
+                            preciseFollowUp: "准备扫描精确 token..."
+                        )
                         trace?.mark("fastSnapshot.end", metadata: [
-                            "tokens": String(quickSnapshot.stats.totalTokens),
-                            "threads": String(quickSnapshot.stats.totalThreads)
+                            "tokens": String(quick.snapshot.stats.totalTokens),
+                            "threads": String(quick.snapshot.stats.totalThreads),
+                            "freshness": String(describing: quick.freshness)
                         ])
                     }
                 }
@@ -592,7 +611,6 @@ final class CodexUsageStore: ObservableObject {
                     if !compactSummaryApplied {
                         trace?.mark("preciseSnapshot.begin")
                         var sawFinalPrecisePhase = false
-                        var sawNumericPrecisePhase = false
                         for try await loaded in self.snapshotLoader.loadSnapshotPhases(
                             dataSource: source
                         ) {
@@ -620,12 +638,20 @@ final class CodexUsageStore: ObservableObject {
                                         "threads": String(loaded.stats.totalThreads)
                                     ])
                                 } else {
-                                    // Numeric phase: keep the dashboard useful
-                                    // while making the attribution freshness
-                                    // boundary explicit until the final phase.
+                                    // The exact numeric phase is a successful,
+                                    // durable refresh boundary. Detail/excerpt
+                                    // hydration continues independently and
+                                    // must not hold totals in a processing state.
                                     sawNumericPrecisePhase = true
                                     self.preciseTimeSeriesFresh = false
-                                    self.status = "\(source.originLabel) · token_count · 正在补齐会话明细..."
+                                    self.didRunPreciseScan = true
+                                    UsageCacheLifecycle.markCurrentCachePrepared()
+                                    self.status = "\(source.originLabel) · token_count · 数值更新于 \(DateFormatter.statusString(from: loaded.generatedAt)) · 正在补齐会话明细..."
+                                    self.isRefreshing = false
+                                    self.didFinishInitialLoad = true
+                                    self.isInitialLoading = false
+                                    self.isPreparingUsageCache = false
+                                    self.activeRefreshCompactOnly = false
                                     trace?.mark("preciseSnapshot.numericPhase", metadata: [
                                         "tokens": String(loaded.stats.totalTokens),
                                         "calls": String(loaded.stats.totalCalls)
@@ -645,18 +671,11 @@ final class CodexUsageStore: ObservableObject {
                                 ])
                             }
                         }
-                        if sawNumericPrecisePhase && !sawFinalPrecisePhase {
-                            throw NSError(
-                                domain: "CodexTokenBar",
-                                code: 7,
-                                userInfo: [
-                                    NSLocalizedDescriptionKey:
-                                        "精确数值阶段已发布，但会话明细阶段未完成"
-                                ]
-                            )
-                        }
                         if !sawFinalPrecisePhase {
                             trace?.mark("preciseSnapshot.noFinalPhase")
+                            if sawNumericPrecisePhase {
+                                self.status = "\(source.originLabel) · token_count · 数值已更新，会话明细待后续刷新"
+                            }
                         }
                     }
                 }
@@ -670,28 +689,43 @@ final class CodexUsageStore: ObservableObject {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
-                let retainedTrustedSnapshot = self.snapshotSourceID == sourceID
-                    && self.hasDisplayableSnapshot(self.snapshot)
-                if !retainedTrustedSnapshot {
-                    self.snapshot = .empty
-                    self.todayModelBreakdowns = []
-                    self.todayModelBreakdownsDay = nil
-                    self.snapshotSourceID = nil
+                if sawNumericPrecisePhase {
+                    // Numeric aggregation already committed atomically. A
+                    // detail-only error is not an exact-total failure, does
+                    // not open continuity recovery, and does not stale totals.
+                    self.preciseTimeSeriesFresh = false
+                    self.status = "\(source.originLabel) · token_count · 数值已更新，会话明细暂不可用"
+                    shouldScheduleTransientDatabaseRecovery = false
+                    trace?.end("detail-failed", metadata: [
+                        "error": error.localizedDescription
+                    ])
+                } else {
+                    let retainedTrustedSnapshot = self.snapshotSourceID == sourceID
+                        && self.hasDisplayableSnapshot(self.snapshot)
+                    if !retainedTrustedSnapshot {
+                        self.snapshot = .empty
+                        self.todayModelBreakdowns = []
+                        self.todayModelBreakdownsDay = nil
+                        self.snapshotSourceID = nil
+                    }
+                    self.preciseTimeSeriesFresh = false
+                    if includePreciseScan,
+                       (transientRecoveryAttempt == nil
+                            || self.preciseTimeSeriesContinuityLossID == nil),
+                       let currentSource = self.dataSource {
+                        self.markPreciseTimeSeriesContinuityLoss(for: currentSource)
+                    }
+                    self.status = retainedTrustedSnapshot
+                        ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
+                        : "读取失败：\(error.localizedDescription)"
+                    shouldScheduleTransientDatabaseRecovery =
+                        SQLiteReadRecovery.isTransientReadFailure(error)
+                        && (transientRecoveryAttempt ?? 0)
+                            < Self.maxTransientDatabaseRecoveryAttempts
+                    trace?.end("failed", metadata: [
+                        "error": error.localizedDescription
+                    ])
                 }
-                self.preciseTimeSeriesFresh = false
-                if includePreciseScan,
-                   (transientRecoveryAttempt == nil || self.preciseTimeSeriesContinuityLossID == nil),
-                   let currentSource = self.dataSource {
-                    self.markPreciseTimeSeriesContinuityLoss(for: currentSource)
-                }
-                self.status = retainedTrustedSnapshot
-                    ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
-                    : "读取失败：\(error.localizedDescription)"
-                shouldScheduleTransientDatabaseRecovery =
-                    SQLiteReadRecovery.isTransientReadFailure(error)
-                    && (transientRecoveryAttempt ?? 0)
-                        < Self.maxTransientDatabaseRecoveryAttempts
-                trace?.end("failed", metadata: ["error": error.localizedDescription])
             }
             if self.isCurrentRefresh(
                 generation: generation,
@@ -708,6 +742,7 @@ final class CodexUsageStore: ObservableObject {
                 self.didFinishInitialLoad = true
                 self.isInitialLoading = false
                 self.isPreparingUsageCache = false
+                self.refreshTask = nil
                 if shouldRunPendingFullRefresh {
                     self.refresh(
                         includePreciseScan: true,
@@ -1223,6 +1258,23 @@ final class CodexUsageStore: ObservableObject {
 
     private func metadataOnlyStatus(origin: String) -> String {
         "\(origin) · state_5.sqlite · 仅显示会话元数据，精确 token 仍在读取..."
+    }
+
+    private func fastSnapshotStatus(
+        _ result: DashboardFastSnapshotResult,
+        origin: String,
+        preciseFollowUp: String
+    ) -> String {
+        switch result.freshness {
+        case .current:
+            return result.snapshot.hasPreciseTokenUsage
+                ? "\(origin) · token_count · \(preciseFollowUp)"
+                : metadataOnlyStatus(origin: origin)
+        case .staleCompatible:
+            return "\(origin) · token_count · 用量已陈旧 · 正在增量核对..."
+        case .unavailable:
+            return metadataOnlyStatus(origin: origin)
+        }
     }
 
     private func staleMetadataOnlyStatus(origin: String) -> String {

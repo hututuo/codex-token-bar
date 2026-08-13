@@ -123,6 +123,16 @@ private struct IndexedSessionChunkHasher {
     }
 }
 
+struct AssistantExcerptHydrationRange {
+    var start: UInt64
+    var end: UInt64
+    var references: [CodexUsageHistoryIndex.TurnSourceReference]
+}
+
+private enum AssistantExcerptHydrationControl: Error {
+    case complete
+}
+
 private func isCompleteIndexedJSONLine(_ data: Data) -> Bool {
     guard !data.isEmpty else { return true }
     return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil
@@ -344,33 +354,43 @@ extension CodexUsageAnalyzer {
                 guard let start = $0.assistantStartOffset else { return false }
                 return start < $0.eventOffset
             }
-            guard let firstOffset = assistantReferences.compactMap(\.assistantStartOffset).min(),
-                  let lastOffset = assistantReferences.map(\.eventOffset).max() else {
-                continue
-            }
-
-            _ = try? streamIndexedSessionLines(
-                from: file,
-                startingAt: firstOffset,
-                endingAt: lastOffset
-            ) { lineOffset, lineString in
-                guard let message = parsePayloadMessageLine(
-                    lineString,
-                    expectedType: "agent_message"
-                )?.message else {
-                    return
-                }
-                for reference in assistantReferences {
-                    guard let start = reference.assistantStartOffset,
-                          lineOffset >= start,
-                          lineOffset < reference.eventOffset else {
-                        continue
+            // Scan only the union of actual turn intervals. The old
+            // min(start)...max(event) span could pull a multi-GiB hole between
+            // two selected turns in the same rollout file.
+            for range in assistantExcerptHydrationRanges(
+                assistantReferences
+            ) {
+                guard !Task.isCancelled else { break }
+                _ = try? streamIndexedSessionLines(
+                    from: file,
+                    startingAt: range.start,
+                    endingAt: range.end
+                ) { lineOffset, lineString in
+                    if Task.isCancelled { throw CancellationError() }
+                    guard let message = parsePayloadMessageLine(
+                        lineString,
+                        expectedType: "agent_message"
+                    )?.message else {
+                        return
                     }
-                    assistants[reference.stableID] = appendingExcerpt(
-                        assistants[reference.stableID] ?? "",
-                        value: message,
-                        limit: 220
-                    )
+                    for reference in range.references {
+                        guard let start = reference.assistantStartOffset,
+                              lineOffset >= start,
+                              lineOffset < reference.eventOffset,
+                              (assistants[reference.stableID]?.count ?? 0) < 220 else {
+                            continue
+                        }
+                        assistants[reference.stableID] = appendingExcerpt(
+                            assistants[reference.stableID] ?? "",
+                            value: message,
+                            limit: 220
+                        )
+                    }
+                    if range.references.allSatisfy({
+                        (assistants[$0.stableID]?.count ?? 0) >= 220
+                    }) {
+                        throw AssistantExcerptHydrationControl.complete
+                    }
                 }
             }
         }
@@ -406,6 +426,45 @@ extension CodexUsageAnalyzer {
                 cacheUsage.attributionCurrentScanUnsafeCauseDetected,
             attributionSourceMutationDetected: cacheUsage.attributionSourceMutationDetected
         )
+    }
+
+    func assistantExcerptHydrationRanges(
+        _ references: [CodexUsageHistoryIndex.TurnSourceReference]
+    ) -> [AssistantExcerptHydrationRange] {
+        let intervals = references.compactMap { reference
+            -> AssistantExcerptHydrationRange? in
+            guard let start = reference.assistantStartOffset,
+                  start < reference.eventOffset else {
+                return nil
+            }
+            return AssistantExcerptHydrationRange(
+                start: start,
+                end: reference.eventOffset,
+                references: [reference]
+            )
+        }.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            if $0.end != $1.end { return $0.end < $1.end }
+            return ($0.references.first?.stableID ?? "")
+                < ($1.references.first?.stableID ?? "")
+        }
+
+        var merged: [AssistantExcerptHydrationRange] = []
+        for interval in intervals {
+            guard var last = merged.popLast() else {
+                merged.append(interval)
+                continue
+            }
+            if interval.start <= last.end {
+                last.end = max(last.end, interval.end)
+                last.references.append(contentsOf: interval.references)
+                merged.append(last)
+            } else {
+                merged.append(last)
+                merged.append(interval)
+            }
+        }
+        return merged
     }
 
     func usageJSONLFiles() throws -> [URL] {

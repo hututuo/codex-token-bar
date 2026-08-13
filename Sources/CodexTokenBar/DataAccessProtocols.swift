@@ -40,8 +40,25 @@ protocol CodexDataSourceResolving {
 
 extension CodexDataSourceResolver: CodexDataSourceResolving {}
 
+enum DashboardFastSnapshotFreshness: Equatable, Sendable {
+    case current
+    case staleCompatible
+    case unavailable
+}
+
+struct DashboardFastSnapshotResult: Sendable {
+    let snapshot: DashboardSnapshot
+    let freshness: DashboardFastSnapshotFreshness
+}
+
 protocol DashboardSnapshotLoading: Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
+    /// Returns the same fast projection together with whether its exact
+    /// numeric identity is current or a safe same-Home last-good value. The
+    /// legacy method remains the required seam for existing loaders/tests.
+    func loadFastSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
     /// Streams a single full precise refresh. The stream may yield a numeric
     /// projection before the complete attribution/detail snapshot; the
@@ -63,6 +80,16 @@ protocol DashboardSnapshotLoading: Sendable {
 }
 
 extension DashboardSnapshotLoading {
+    func loadFastSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult {
+        let snapshot = try await loadFastSnapshot(dataSource: dataSource)
+        return DashboardFastSnapshotResult(
+            snapshot: snapshot,
+            freshness: snapshot.hasPreciseTokenUsage ? .current : .unavailable
+        )
+    }
+
     func loadSnapshotPhases(
         dataSource: CodexDataSource
     ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
@@ -104,6 +131,14 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
         }.value
     }
 
+    func loadFastSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult {
+        try await Task.detached(priority: .utility) {
+            try CodexUsageAnalyzer(dataSource: dataSource).loadFastSnapshotResult()
+        }.value
+    }
+
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).load()
@@ -121,7 +156,12 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
                             continuation.yield(numeric)
                         }
                     )
-                    continuation.yield(final)
+                    // A newer numeric owner may supersede detail hydration.
+                    // In that case `load` returns the already-published numeric
+                    // projection and the stream completes without duplicating it.
+                    if final.cacheUsage.attributionEventsComplete {
+                        continuation.yield(final)
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)

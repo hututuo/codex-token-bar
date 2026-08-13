@@ -848,9 +848,13 @@ final class CodexUsageStoreTests: XCTestCase {
         await loader.waitUntilPhaseRequestStarted()
         await loader.yieldNumeric()
         await fulfillment(of: [numericPublished], timeout: 1)
+        await waitUntilYielding("numeric refresh lifecycle released") {
+            !store.isRefreshing
+        }
         XCTAssertEqual(store.snapshot.stats.totalTokens, numeric.stats.totalTokens)
         XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
         XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.isRefreshing)
         let phaseLoadCountAfterNumeric = await loader.phasedLoadCountValue()
         XCTAssertEqual(phaseLoadCountAfterNumeric, 1)
 
@@ -900,15 +904,126 @@ final class CodexUsageStoreTests: XCTestCase {
         await loader.waitUntilPhaseRequestStarted()
         await loader.yieldNumeric()
         await fulfillment(of: [numericPublished], timeout: 1)
+        await waitUntilYielding("numeric lifecycle before detail failure") {
+            !store.isRefreshing
+        }
         await loader.yieldFinal()
         await waitUntilYielding("failed final phase") {
-            !store.isRefreshing && store.status.hasPrefix("读取失败")
+            !store.isRefreshing && store.status.contains("会话明细暂不可用")
         }
 
         XCTAssertEqual(store.snapshot.stats.totalTokens, numeric.stats.totalTokens)
         XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
         XCTAssertFalse(store.preciseTimeSeriesFresh)
-        XCTAssertTrue(store.status.contains("当前显示已陈旧"), store.status)
+        XCTAssertTrue(store.status.contains("数值已更新"), store.status)
+        XCTAssertFalse(store.status.contains("读取失败"), store.status)
+        XCTAssertFalse(store.status.contains("当前显示已陈旧"), store.status)
+    }
+
+    func testCompatibleLastGoodFastSnapshotStaysNumericAndMarkedRefreshing() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/stale-compatible-fast/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let lastGood = makeSnapshot(totalTokens: 42_000, dayTokens: 4_200)
+        let loader = SuspendedDashboardSnapshotLoader(
+            fastResult: DashboardFastSnapshotResult(
+                snapshot: lastGood,
+                freshness: .staleCompatible
+            )
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("stale-compatible fast snapshot") {
+            await loader.hasPendingPreciseRequest(for: source)
+                && store.snapshot.stats.totalTokens == 42_000
+        }
+
+        XCTAssertTrue(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertTrue(store.status.contains("用量已陈旧"), store.status)
+        XCTAssertTrue(store.status.contains("正在增量核对"), store.status)
+        XCTAssertFalse(store.status.contains("仅显示会话元数据"), store.status)
+        store.setBackgroundActivityEnabled(false)
+    }
+
+    func testActiveAppendStartsNextNumericFlightBeforeEarlierDetailCompletes() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/phased-active-append/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let firstNumeric = makeSnapshot(
+            totalTokens: 51_377,
+            dayTokens: 1_075,
+            totalCalls: 7_062,
+            dayCalls: 7_062,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 10_000),
+            attributionEventsComplete: false
+        )
+        let secondNumeric = makeSnapshot(
+            totalTokens: 51_418,
+            dayTokens: 1_115,
+            totalCalls: 7_361,
+            dayCalls: 7_361,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 10_240),
+            attributionEventsComplete: false
+        )
+        let secondFinal = makeSnapshot(
+            totalTokens: 51_418,
+            dayTokens: 1_115,
+            totalCalls: 7_361,
+            dayCalls: 7_361,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 10_240),
+            attributionEventsComplete: true
+        )
+        let loader = MultiRequestPhasedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await loader.waitUntilRequestCount(1)
+        await loader.yield(firstNumeric, request: 0)
+        await waitUntilYielding("first numeric completion") {
+            store.snapshot.stats.totalTokens == firstNumeric.stats.totalTokens
+                && !store.isRefreshing
+        }
+
+        // The first request still has no final/detail phase. A dirty/manual
+        // refresh must nevertheless create the next numeric owner.
+        store.refresh()
+        await loader.waitUntilRequestCount(2)
+        await loader.yield(secondNumeric, request: 1)
+        await waitUntilYielding("active append numeric catch-up") {
+            store.snapshot.stats.totalTokens == secondNumeric.stats.totalTokens
+                && !store.isRefreshing
+        }
+
+        XCTAssertEqual(store.snapshot.stats.totalTokens, 51_418)
+        XCTAssertEqual(store.snapshot.stats.totalCalls, 7_361)
+        XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 1_115)
+        XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.calls }, 7_361)
+        XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(store.status.contains("正在补齐会话明细"), store.status)
+
+        await loader.yield(secondFinal, request: 1)
+        await loader.finish(request: 1)
+        await waitUntilYielding("second detail completion") {
+            store.snapshot.cacheUsage.attributionEventsComplete
+                && !store.isRefreshing
+        }
+        XCTAssertEqual(store.snapshot.stats.totalTokens, secondNumeric.stats.totalTokens)
+        XCTAssertEqual(store.snapshot.stats.totalCalls, secondNumeric.stats.totalCalls)
     }
 
     func testStalePrecisePhaseCannotPublishAfterSourceBindingChanges() async {
@@ -2095,6 +2210,8 @@ final class CodexUsageStoreTests: XCTestCase {
     private func makeSnapshot(
         totalTokens: Int,
         dayTokens: Int,
+        totalCalls: Int = 3,
+        dayCalls: Int? = nil,
         usagePrecision: DashboardUsagePrecision = .precise,
         preciseTimeSeriesGeneratedAt: Date? = nil,
         generatedAt: Date = Date(timeIntervalSince1970: 1_800),
@@ -2112,15 +2229,27 @@ final class CodexUsageStoreTests: XCTestCase {
                 peakThreadTokens: 999,
                 currentStreakDays: 1,
                 longestStreakDays: 1,
-                totalCalls: 3,
+                totalCalls: totalCalls,
                 totalThreads: 2,
                 mostUsedReasoning: "中",
                 skillsExplored: 0,
                 totalSkillsUsed: 0
             ),
-            dailyUsage: [DayUsage(date: generatedAt, tokens: dayTokens, calls: 3)],
-            recentBins: [BinUsage(start: generatedAt, tokens: dayTokens, calls: 3)],
-            hourlyUsage: [BinUsage(start: generatedAt, tokens: dayTokens, calls: 3)],
+            dailyUsage: [DayUsage(
+                date: generatedAt,
+                tokens: dayTokens,
+                calls: dayCalls ?? totalCalls
+            )],
+            recentBins: [BinUsage(
+                start: generatedAt,
+                tokens: dayTokens,
+                calls: dayCalls ?? totalCalls
+            )],
+            hourlyUsage: [BinUsage(
+                start: generatedAt,
+                tokens: dayTokens,
+                calls: dayCalls ?? totalCalls
+            )],
             pluginUsage: [],
             cacheUsage: TokenCacheUsage(
                 total: .empty,
@@ -2449,10 +2578,26 @@ private actor SequentialDashboardSnapshotLoader: DashboardSnapshotLoading {
 }
 
 private actor SuspendedDashboardSnapshotLoader: DashboardSnapshotLoading {
+    private let fastResult: DashboardFastSnapshotResult
     private var preciseContinuations: [String: CheckedContinuation<DashboardSnapshot, Error>] = [:]
 
+    init(
+        fastResult: DashboardFastSnapshotResult = DashboardFastSnapshotResult(
+            snapshot: .empty,
+            freshness: .unavailable
+        )
+    ) {
+        self.fastResult = fastResult
+    }
+
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
-        .empty
+        fastResult.snapshot
+    }
+
+    func loadFastSnapshotResult(
+        dataSource: CodexDataSource
+    ) async throws -> DashboardFastSnapshotResult {
+        fastResult
     }
 
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
@@ -2539,6 +2684,64 @@ private actor BarrierPhasedDashboardSnapshotLoader: DashboardSnapshotLoading {
         phaseRequestStarted = true
         phaseRequestStartedContinuation?.resume()
         phaseRequestStartedContinuation = nil
+    }
+}
+
+private actor MultiRequestPhasedDashboardSnapshotLoader: DashboardSnapshotLoading {
+    private var continuations: [
+        Int: AsyncThrowingStream<DashboardSnapshot, Error>.Continuation
+    ] = [:]
+    private var requestCount = 0
+    private var requestCountWaiters: [
+        Int: [CheckedContinuation<Void, Never>]
+    ] = [:]
+
+    func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        .empty
+    }
+
+    func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        throw UsageStoreTestError()
+    }
+
+    nonisolated func loadSnapshotPhases(
+        dataSource: CodexDataSource
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            let registration = Task { [weak self] in
+                await self?.register(continuation)
+            }
+            continuation.onTermination = { _ in
+                registration.cancel()
+            }
+        }
+    }
+
+    func waitUntilRequestCount(_ expected: Int) async {
+        if requestCount >= expected { return }
+        await withCheckedContinuation { continuation in
+            requestCountWaiters[expected, default: []].append(continuation)
+        }
+    }
+
+    func yield(_ snapshot: DashboardSnapshot, request: Int) {
+        continuations[request]?.yield(snapshot)
+    }
+
+    func finish(request: Int) {
+        continuations.removeValue(forKey: request)?.finish()
+    }
+
+    private func register(
+        _ continuation: AsyncThrowingStream<DashboardSnapshot, Error>.Continuation
+    ) {
+        let request = requestCount
+        continuations[request] = continuation
+        requestCount += 1
+        let readyCounts = requestCountWaiters.keys.filter { $0 <= requestCount }
+        for count in readyCounts {
+            requestCountWaiters.removeValue(forKey: count)?.forEach { $0.resume() }
+        }
     }
 }
 

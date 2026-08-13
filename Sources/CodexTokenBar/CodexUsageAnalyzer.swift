@@ -73,14 +73,19 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     func loadFastSnapshot() throws -> DashboardSnapshot {
+        try loadFastSnapshotResult().snapshot
+    }
+
+    func loadFastSnapshotResult() throws -> DashboardFastSnapshotResult {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.loadFastSnapshot", metadata: [
             "source": dataSource.displayPath
         ])
         do {
             if let cachedPreciseSnapshot = try cachedPreciseSnapshot() {
                 trace?.end("precise-cache", metadata: [
-                    "tokens": String(cachedPreciseSnapshot.stats.totalTokens),
-                    "threads": String(cachedPreciseSnapshot.stats.totalThreads)
+                    "tokens": String(cachedPreciseSnapshot.snapshot.stats.totalTokens),
+                    "threads": String(cachedPreciseSnapshot.snapshot.stats.totalThreads),
+                    "freshness": String(describing: cachedPreciseSnapshot.freshness)
                 ])
                 return cachedPreciseSnapshot
             }
@@ -89,7 +94,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 "tokens": String(snapshot.stats.totalTokens),
                 "threads": String(snapshot.stats.totalThreads)
             ])
-            return snapshot
+            return DashboardFastSnapshotResult(
+                snapshot: snapshot,
+                freshness: .unavailable
+            )
         } catch {
             trace?.end("failed", metadata: ["error": error.localizedDescription])
             throw error
@@ -165,7 +173,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         }
     }
 
-    private func cachedPreciseSnapshot() throws -> DashboardSnapshot? {
+    private func cachedPreciseSnapshot() throws -> DashboardFastSnapshotResult? {
         let sessionFiles = try usageJSONLFiles()
         guard !sessionFiles.isEmpty else {
             return nil
@@ -181,31 +189,135 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             for: dataSource.codexHome.path,
             signature: signature
         ) {
-            return inMemory
+            return DashboardFastSnapshotResult(
+                snapshot: inMemory,
+                freshness: .current
+            )
         }
-        return Self.sessionEventCache.persistentExactSnapshot(
+        guard let persistent = Self.sessionEventCache.persistentExactSnapshot(
             for: dataSource.codexHome.path,
+            homeIdentityKey: dataSource.stableIdentityKey,
             signature: signature,
             attributionState: attributionState
+        ) else {
+            return nil
+        }
+        return DashboardFastSnapshotResult(
+            snapshot: persistent.snapshot,
+            freshness: persistent.freshness
         )
     }
 
     private func loadFromTokenCountJSONL(
         onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil
     ) throws -> DashboardSnapshot {
-        // Keep discovery, generation synchronization, event aggregation, excerpt lookup, and
-        // snapshot publication in one per-index scope. Releasing between synchronize and the
-        // reads would let another refresh delete or replace the generation being aggregated.
-        try CodexUsageHistoryIndex.withExclusiveAccess(codexHome: dataSource.codexHome) {
-            try loadFromTokenCountJSONLExclusively(
-                onNumericPhase: onNumericPhase
+        // Discovery, synchronization, numeric aggregation, and the durable
+        // numeric commit are one per-index phase. Excerpt hydration deliberately
+        // runs after this scope so an active append can start the next numeric
+        // phase without waiting for old detail work.
+        let prepared = try CodexUsageHistoryIndex.withExclusiveAccess(
+            codexHome: dataSource.codexHome
+        ) {
+            try loadFromTokenCountJSONLExclusively()
+        }
+        switch prepared {
+        case let .complete(snapshot):
+            return snapshot
+        case let .numeric(phase):
+            // The numeric file is already atomically replaced before this
+            // callback. Publishing outside the exact-index gate lets a new
+            // append refresh acquire the gate immediately.
+            onNumericPhase?(phase.snapshot)
+            guard !Task.isCancelled else { return phase.snapshot }
+
+            let detailTrace = RefreshPerformanceProbe.begin(
+                "usageAnalyzer.hydrateTurnExcerpts",
+                metadata: [
+                    "generation": String(phase.signature.attributionGeneration),
+                    "turns": String(phase.cacheUsage.turns.count)
+                ]
             )
+            Self.runDetailHydrationHookForTesting(root: dataSource.codexHome.path)
+            guard !Task.isCancelled else {
+                detailTrace?.end("cancelled-before-hydration")
+                return phase.snapshot
+            }
+            let hydratedCacheUsage = hydratingTurnExcerpts(
+                in: phase.cacheUsage,
+                from: phase.historyIndex
+            )
+            guard !Task.isCancelled else {
+                detailTrace?.end("cancelled-after-hydration")
+                return phase.snapshot
+            }
+
+            let finalSnapshot = DashboardSnapshot(
+                stats: phase.snapshot.stats,
+                dailyUsage: phase.snapshot.dailyUsage,
+                recentBins: phase.snapshot.recentBins,
+                hourlyUsage: phase.snapshot.hourlyUsage,
+                pluginUsage: phase.snapshot.pluginUsage,
+                cacheUsage: hydratedCacheUsage,
+                preciseTimeSeriesGeneratedAt: phase.preciseCoverageAt,
+                generatedAt: Date()
+            )
+
+            // A concurrent numeric owner may have advanced the source tree or
+            // generation while this detail phase was reading excerpts. Only a
+            // still-exact completion can become the in-memory detail receipt or
+            // replace the durable numeric last-good file.
+            let stored = (try? CodexUsageHistoryIndex.withExclusiveAccess(
+                codexHome: dataSource.codexHome
+            ) {
+                let currentState = try phase.historyIndex.attributionState()
+                guard currentState.provenanceEpoch
+                        == phase.signature.attributionProvenanceEpoch,
+                      currentState.generation
+                        == phase.signature.attributionGeneration else {
+                    return false
+                }
+                let currentFiles = try usageJSONLFiles()
+                let currentSignature = sessionTreeSignature(
+                    for: currentFiles,
+                    attributionProvenanceEpoch: currentState.provenanceEpoch,
+                    attributionGeneration: currentState.generation
+                )
+                guard currentSignature == phase.signature else { return false }
+                Self.sessionEventCache.recordSnapshotBuildForTesting()
+                Self.sessionEventCache.storeSnapshot(
+                    finalSnapshot,
+                    for: dataSource.codexHome.path,
+                    homeIdentityKey: dataSource.stableIdentityKey,
+                    signature: phase.signature
+                )
+                return true
+            }) ?? false
+            guard stored else {
+                detailTrace?.end("superseded")
+                return phase.snapshot
+            }
+            detailTrace?.end("complete", metadata: [
+                "sessions": String(hydratedCacheUsage.sessions.count),
+                "turns": String(hydratedCacheUsage.turns.count)
+            ])
+            return finalSnapshot
         }
     }
 
-    private func loadFromTokenCountJSONLExclusively(
-        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil
-    ) throws -> DashboardSnapshot {
+    private struct PreparedNumericPhase {
+        let snapshot: DashboardSnapshot
+        let cacheUsage: TokenCacheUsage
+        let historyIndex: CodexUsageHistoryIndex
+        let signature: SessionTreeSignature
+        let preciseCoverageAt: Date
+    }
+
+    private enum PreparedPreciseLoad {
+        case complete(DashboardSnapshot)
+        case numeric(PreparedNumericPhase)
+    }
+
+    private func loadFromTokenCountJSONLExclusively() throws -> PreparedPreciseLoad {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
@@ -266,7 +378,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 attributionSourceMutationDetected:
                     initialAttributionState.requiresSyntheticCutover
             )
-            return DashboardSnapshot(
+            return .complete(DashboardSnapshot(
                 stats: cached.stats,
                 dailyUsage: cached.dailyUsage,
                 recentBins: cached.recentBins,
@@ -275,7 +387,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 cacheUsage: stableCacheUsage,
                 preciseTimeSeriesGeneratedAt: preciseCoverageAt,
                 generatedAt: Date()
-            )
+            ))
         }
         trace?.mark("snapshot-cache-miss")
 
@@ -415,9 +527,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "peakThread": String(peakThreadTokens)
         ])
 
-        // Publish only the numeric projection at this boundary. It is never
-        // sent to SessionEventCache, so a partial phase cannot become the
-        // complete in-memory or persistent snapshot.
+        // Publish only the numeric projection at this boundary. It becomes the
+        // durable numeric last-good value, but never the in-memory completion
+        // receipt used to skip detail hydration.
         let numericCacheUsage = TokenCacheUsage(
             total: aggregatedCacheUsage.total,
             modelBreakdowns: aggregatedCacheUsage.modelBreakdowns,
@@ -447,53 +559,37 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             pluginUsage: metadata.plugins,
             cacheUsage: numericCacheUsage,
             usagePrecision: .precise,
-            // A numeric phase is displayable but must not claim fresh
-            // attribution/time-series coverage until the final phase lands.
-            preciseTimeSeriesGeneratedAt: nil,
-            generatedAt: Date()
-        )
-        onNumericPhase?(numericSnapshot)
-        trace?.mark("numericPhase.published", metadata: [
-            "tokens": String(numericSnapshot.stats.totalTokens),
-            "calls": String(numericSnapshot.stats.totalCalls)
-        ])
-
-        trace?.mark("hydrateTurnExcerpts.begin")
-        let cacheUsage = hydratingTurnExcerpts(
-            in: aggregatedCacheUsage,
-            from: historyIndex
-        )
-        trace?.mark("hydrateTurnExcerpts.end", metadata: [
-            "sessions": String(cacheUsage.sessions.count),
-            "turns": String(cacheUsage.turns.count)
-        ])
-
-        let snapshot = DashboardSnapshot(
-            stats: stats,
-            dailyUsage: daily,
-            recentBins: recentBins,
-            hourlyUsage: hourlyUsage,
-            pluginUsage: metadata.plugins,
-            cacheUsage: cacheUsage,
+            // Numeric time-series coverage is complete at this boundary.
+            // Event-level attribution/detail readiness remains represented by
+            // `attributionEventsComplete` and is intentionally independent.
             preciseTimeSeriesGeneratedAt: preciseCoverageAt,
             generatedAt: Date()
         )
-        Self.sessionEventCache.recordSnapshotBuildForTesting()
-        trace?.mark("storeSnapshot.begin")
         let synchronizedSignature = signature.withAttributionState(
             provenanceEpoch: synchronization.provenanceEpoch,
             generation: synchronization.attributionGeneration
         )
-        Self.sessionEventCache.storeSnapshot(
-            snapshot,
+        trace?.mark("numericPhase.persist.begin")
+        Self.sessionEventCache.storeNumericSnapshot(
+            numericSnapshot,
             for: dataSource.codexHome.path,
+            homeIdentityKey: dataSource.stableIdentityKey,
             signature: synchronizedSignature
         )
-        trace?.mark("storeSnapshot.end")
-        trace?.end("ok", metadata: [
+        trace?.mark("numericPhase.persist.end", metadata: [
+            "tokens": String(numericSnapshot.stats.totalTokens),
+            "calls": String(numericSnapshot.stats.totalCalls)
+        ])
+        trace?.end("numeric-ready", metadata: [
             "tokens": String(totalTokens),
             "calls": String(aggregation.totalCalls)
         ])
-        return snapshot
+        return .numeric(PreparedNumericPhase(
+            snapshot: numericSnapshot,
+            cacheUsage: aggregatedCacheUsage,
+            historyIndex: historyIndex,
+            signature: synchronizedSignature,
+            preciseCoverageAt: preciseCoverageAt
+        ))
     }
 }
