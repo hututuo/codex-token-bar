@@ -633,6 +633,7 @@ struct DashboardView: View {
             store.snapshot.usagePrecision.rawValue,
             usageGeneratedAt,
             store.preciseTimeSeriesFresh ? "precise-fresh" : "precise-stale",
+            store.isCompactSummaryPending ? "compact-pending" : "compact-settled",
             preciseTimeSeriesGeneratedAt,
             preciseContinuityLostAt,
             preciseContinuityLossID,
@@ -779,6 +780,29 @@ struct DashboardView: View {
         } else {
             segment = nil
         }
+        func needsQuotaCoverageCatchUp(
+            for segment: SharedAccountUsageSegment?
+        ) -> Bool {
+            DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
+                quotaUpdatedAt: quota.updatedAt,
+                resetAt: quota.sevenDay?.resetsAt,
+                preciseCoverageAt: store.snapshot.preciseTimeSeriesGeneratedAt,
+                requiredLocalObservationAfter: segment?.requiredLocalObservationAfter
+            )
+        }
+
+        func compactSummaryHasSafeCoverage(
+            for segment: SharedAccountUsageSegment?
+        ) -> Bool {
+            store.isCompactSummaryPending
+                && !needsQuotaCoverageCatchUp(for: segment)
+                && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
+                && !cacheUsage.attributionSourceMutationDetected
+                && cacheUsage.attributionUnsafeSinceGeneration == nil
+                && continuityLossID == nil
+                && segment?.effectiveCutoverReason.isContinuityRecovery != true
+                && store.sharedAccountSafetyRecoveryState == .idle
+        }
         func estimate(
             segment: SharedAccountUsageSegment?,
             highWatermark: SharedAccountUsageHighWatermarkRecord? = nil,
@@ -802,7 +826,8 @@ struct DashboardView: View {
                 radar: radar,
                 tier: tier,
                 model: model,
-                preciseUsageFresh: store.preciseTimeSeriesFresh,
+                preciseUsageFresh: store.preciseTimeSeriesFresh
+                    || compactSummaryHasSafeCoverage(for: segment),
                 persistenceHealthy: !forceStorageUnavailable
                     && storageCoordinationHealthy
                     && sharedAccountSafetyDatabase.persistenceHealthy
@@ -857,6 +882,8 @@ struct DashboardView: View {
             result = estimate(segment: advanced, highWatermark: highWatermark)
         }
 
+        let quotaCoverageNeedsCatchUp = needsQuotaCoverageCatchUp(for: segment)
+
         let attributionCatchUpRequested =
             SharedAccountUsageAttributionAutoRefreshPolicy.shouldRequestPreciseCatchUp(
                 result: result,
@@ -865,12 +892,6 @@ struct DashboardView: View {
             )
         let explicitContinuityRecovery = continuityLossID != nil
             && attributionCatchUpRequested
-        let quotaCoverageNeedsCatchUp = DashboardPreciseCatchUpPolicy.needsPreciseCoverage(
-            quotaUpdatedAt: quota.updatedAt,
-            resetAt: quota.sevenDay?.resetsAt,
-            preciseCoverageAt: store.snapshot.preciseTimeSeriesGeneratedAt,
-            requiredLocalObservationAfter: segment?.requiredLocalObservationAfter
-        )
         if attributionCatchUpRequested,
            sharedAccountAttributionEnabled,
            !store.isUsageRefreshOrDetailHydrationActive,

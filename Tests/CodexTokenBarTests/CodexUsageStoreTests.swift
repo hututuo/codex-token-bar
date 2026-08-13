@@ -889,6 +889,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertFalse(store.isRefreshing)
         XCTAssertFalse(store.isDetailHydrating)
+        XCTAssertFalse(store.isCompactSummaryPending)
         XCTAssertFalse(store.isUsageRefreshOrDetailHydrationActive)
         XCTAssertEqual(publishedTokens, [numeric.stats.totalTokens, final.stats.totalTokens])
         let phaseLoadCountAfterFinal = await loader.phasedLoadCountValue()
@@ -941,6 +942,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(store.snapshot.cacheUsage.attributionEventsComplete)
         XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertFalse(store.isDetailHydrating)
+        XCTAssertFalse(store.isCompactSummaryPending)
         XCTAssertFalse(store.isUsageRefreshOrDetailHydrationActive)
         XCTAssertTrue(store.status.contains("数值已更新"), store.status)
         XCTAssertFalse(store.status.contains("读取失败"), store.status)
@@ -979,6 +981,7 @@ final class CodexUsageStoreTests: XCTestCase {
 
         XCTAssertTrue(store.snapshot.hasPreciseTokenUsage)
         XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.isCompactSummaryPending)
         XCTAssertTrue(store.status.contains("正在核对上次精确数据"), store.status)
         XCTAssertTrue(store.status.contains("保留旧值"), store.status)
         XCTAssertFalse(store.status.contains("用量已陈旧"), store.status)
@@ -1273,6 +1276,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.stats.totalTokens, 12_345)
         XCTAssertEqual(store.snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }, 678)
         XCTAssertFalse(store.snapshot.dailyUsage.isEmpty)
+        XCTAssertFalse(store.isCompactSummaryPending)
         XCTAssertTrue(store.status.contains("当前显示已陈旧"))
 
         let display = TokenDisplaySnapshot.make(
@@ -1777,6 +1781,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.dataSourceIdentity, sourceB.stableIdentityKey)
         XCTAssertEqual(store.snapshot.stats.totalTokens, 0)
         XCTAssertFalse(store.snapshot.hasPreciseTokenUsage)
+        XCTAssertFalse(store.isCompactSummaryPending)
         XCTAssertFalse(store.status.contains("当前显示已陈旧"))
     }
 
@@ -2003,6 +2008,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
         XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.isCompactSummaryPending)
 
         // 仪表盘展开：立即触发一次全量刷新补齐重字段。
         store.setOnlyCompactSurfaceVisible(false)
@@ -2015,6 +2021,7 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(preciseCount, 2)
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, secondPreciseCoverageAt)
         XCTAssertTrue(store.preciseTimeSeriesFresh)
+        XCTAssertFalse(store.isCompactSummaryPending)
     }
 
     func testCompactSummaryRefreshRetainsModelRowsWhileProjectionIsTemporarilyEmpty() async {
