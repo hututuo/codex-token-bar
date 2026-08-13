@@ -219,6 +219,27 @@ test("QuotaStrip renders quota read warnings and retry affordance from filtered 
   });
 });
 
+test("QuotaStrip distinguishes a failed refresh attempt from the retained successful quota time", async () => {
+  await withSsrModules(async (load) => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {
+      diagnostics: [quotaDiagnostic({
+        category: "timeout",
+        message: "额度读取超时",
+        occurredAt: "2026-08-13T02:02:00Z",
+        staleDataDisplayed: true,
+      })],
+      quotaUpdatedAt: "2026-08-13T01:55:00Z",
+      snapshot: quotaSnapshot,
+      warnings: [],
+    });
+
+    assert.match(html, /自动重试中（最长 1 分钟）/);
+    assert.match(html, /上次尝试/);
+    assert.match(html, /上次成功/);
+  });
+});
+
 test("QuotaStrip renders the shared quota refresh cadence control", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");

@@ -111,7 +111,6 @@ export function useDeferredDashboardLoads({
     dashboardReady,
     forceQuotaRefresh,
     generation: quotaGeneration,
-    loading,
     onForceQuotaRefreshConsumed,
     onQuota,
     onResetCredits,

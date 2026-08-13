@@ -4,6 +4,13 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaReaderTests: XCTestCase {
+    func testQuotaOnlyAppServerDisablesUnrelatedPluginStartupFetch() {
+        XCTAssertEqual(
+            FoundationAccountQuotaProcessTransport.appServerArguments,
+            ["app-server", "--disable", "plugins", "--listen", "stdio://"]
+        )
+    }
+
     func testNoisyStderrLargerThanPipeCapacityDoesNotBlockSuccessfulRateLimitResponse() async throws {
         let fixture = try makeFakeAppServerScript(
             body: """

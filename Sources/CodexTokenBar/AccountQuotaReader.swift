@@ -475,6 +475,12 @@ final class AccountQuotaProcessLifecycle: @unchecked Sendable {
 }
 
 struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sendable {
+    static let appServerArguments = [
+        "app-server",
+        "--disable", "plugins",
+        "--listen", "stdio://",
+    ]
+
     private let stderrTailLimit: Int
     private let gracefulShutdownTimeout: TimeInterval
     private let forcedShutdownTimeout: TimeInterval
@@ -502,7 +508,10 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         let launchLease = try launchLeasePool.acquire()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexPath)
-        process.arguments = ["app-server", "--listen", "stdio://"]
+        // Quota reads do not consume suggested-plugin data. Keeping that optional
+        // startup fetch out of this short-lived process removes unrelated network
+        // noise without changing the account/rateLimits/read contract.
+        process.arguments = Self.appServerArguments
         if let dataSource {
             var environment = ProcessInfo.processInfo.environment
             environment["CODEX_HOME"] = dataSource.codexHome.path

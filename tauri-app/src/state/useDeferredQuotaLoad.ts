@@ -7,7 +7,6 @@ import { persistentRefreshDelayMs } from "../utils/persistentRefreshBackoff";
 interface DeferredQuotaLoadOptions {
   active: boolean;
   dashboardReady: boolean;
-  loading: boolean;
   generation: number;
   forceQuotaRefresh: boolean;
   sourceToken: CodexHomeSourceToken | null;
@@ -22,7 +21,6 @@ interface DeferredQuotaLoadOptions {
 export function useDeferredQuotaLoad({
   active,
   dashboardReady,
-  loading,
   generation,
   forceQuotaRefresh,
   sourceToken,
@@ -59,7 +57,6 @@ export function useDeferredQuotaLoad({
     if (
       !active
       || !dashboardReady
-      || loading
       || sourceToken === null
       || requestKey === null
       || quotaRequestKey.current === requestKey
@@ -125,7 +122,6 @@ export function useDeferredQuotaLoad({
     active,
     dashboardReady,
     generation,
-    loading,
     onForceQuotaRefreshConsumed,
     onLoadEnd,
     onLoadStart,
@@ -140,7 +136,6 @@ export function useDeferredQuotaLoad({
     if (
       !active
       || !dashboardReady
-      || loading
       || sourceToken === null
       || requestKey === null
       || resetRequestKey.current === requestKey
@@ -194,7 +189,6 @@ export function useDeferredQuotaLoad({
     active,
     dashboardReady,
     generation,
-    loading,
     onResetCredits,
     source,
     sourceKey,

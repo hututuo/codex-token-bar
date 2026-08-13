@@ -25,16 +25,28 @@ private struct DefaultAccountQuotaRetryScheduler: AccountQuotaRetryScheduling {
 }
 
 @MainActor
-private struct DefaultAccountQuotaTimerScheduler: AccountQuotaTimerScheduling {
+struct FoundationAccountQuotaTimerScheduler: AccountQuotaTimerScheduling {
+    typealias TimerRegistrar = @MainActor (Timer, RunLoop.Mode) -> Void
+
+    private let registerTimer: TimerRegistrar
+
+    init(registerTimer: @escaping TimerRegistrar = { timer, mode in
+        RunLoop.main.add(timer, forMode: mode)
+    }) {
+        self.registerTimer = registerTimer
+    }
+
     func scheduleRepeatingTimer(
         interval: TimeInterval,
         handler: @escaping @MainActor @Sendable () -> Void
     ) -> any AccountQuotaTimerToken {
-        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
             Task { @MainActor in
                 handler()
             }
         }
+        // Menu tracking and other event modes must not pause the quota clock.
+        registerTimer(timer, .common)
         return FoundationAccountQuotaTimerToken(timer: timer)
     }
 }
@@ -105,7 +117,7 @@ final class AccountQuotaStore: ObservableObject {
         quotaReader: any QuotaReading = LiveAccountQuotaReader(),
         resetCreditReader: (any AccountQuotaResetCreditReading)? = nil,
         automaticRefreshInterval: TimeInterval? = nil,
-        timerScheduler: any AccountQuotaTimerScheduling = DefaultAccountQuotaTimerScheduler(),
+        timerScheduler: any AccountQuotaTimerScheduling = FoundationAccountQuotaTimerScheduler(),
         retryScheduler: any AccountQuotaRetryScheduling = DefaultAccountQuotaRetryScheduler(),
         userDefaults: UserDefaults = .standard,
         observesUserDefaults: Bool = true
@@ -331,7 +343,10 @@ final class AccountQuotaStore: ObservableObject {
                     }
                     failed.diagnostics = quotaDiagnostics
                         + failed.diagnostics.filter { $0.source == .resetCredit }
-                    failed.status = "额度读取失败：\(diagnostic.message)"
+                    let retainedStatus = retainsSameSourceQuota
+                        ? "；自动重试中（最长 1 分钟），当前显示上次成功额度"
+                        : "；自动重试中（最长 1 分钟）"
+                    failed.status = "额度读取失败：\(diagnostic.message)\(retainedStatus)"
                     self.snapshot = failed
                     if !retainsSameSourceQuota {
                         self.snapshotSourceID = nil

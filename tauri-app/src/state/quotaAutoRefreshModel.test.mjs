@@ -11,7 +11,6 @@ test("quota auto refresh plan clamps legacy cadence to one minute when the dashb
         dashboardReady: true,
         fastSnapshotLoaded: true,
         intervalMs: 180_000,
-        loading: false,
       }),
       { active: true, intervalMs: 60_000 },
     );
@@ -25,13 +24,11 @@ test("quota auto refresh plan falls back to one minute and stays stable for the 
       dashboardReady: true,
       fastSnapshotLoaded: true,
       intervalMs: Number.NaN,
-      loading: false,
     });
     const second = makeQuotaAutoRefreshPlan({
       dashboardReady: true,
       fastSnapshotLoaded: true,
       intervalMs: 60_000,
-      loading: false,
     });
 
     assert.deepEqual(first, { active: true, intervalMs: 60_000 });
@@ -39,7 +36,7 @@ test("quota auto refresh plan falls back to one minute and stays stable for the 
   });
 });
 
-test("quota auto refresh plan is inactive before data is ready or while loading", () => {
+test("quota auto refresh plan is inactive only before quota prerequisites are ready", () => {
   return withSsrModules(async (load) => {
     const { makeQuotaAutoRefreshPlan } = await load("/src/state/quotaAutoRefreshModel.ts");
 
@@ -48,7 +45,6 @@ test("quota auto refresh plan is inactive before data is ready or while loading"
         dashboardReady: false,
         fastSnapshotLoaded: true,
         intervalMs: 30_000,
-        loading: false,
       }),
       { active: false, intervalMs: null },
     );
@@ -57,18 +53,24 @@ test("quota auto refresh plan is inactive before data is ready or while loading"
         dashboardReady: true,
         fastSnapshotLoaded: false,
         intervalMs: 30_000,
-        loading: false,
       }),
       { active: false, intervalMs: null },
     );
+  });
+});
+
+test("quota auto refresh plan remains active while unrelated precise loading is true", () => {
+  return withSsrModules(async (load) => {
+    const { makeQuotaAutoRefreshPlan } = await load("/src/state/quotaAutoRefreshModel.ts");
+
     assert.deepEqual(
       makeQuotaAutoRefreshPlan({
         dashboardReady: true,
         fastSnapshotLoaded: true,
-        intervalMs: 30_000,
+        intervalMs: 60_000,
         loading: true,
       }),
-      { active: false, intervalMs: null },
+      { active: true, intervalMs: 60_000 },
     );
   });
 });

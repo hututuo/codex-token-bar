@@ -47,6 +47,31 @@ export function quotaReadWarnings(
     .slice(0, 2);
 }
 
+export function quotaRefreshAttemptStatus(
+  lastSuccessfulAt: string | null | undefined,
+  diagnostics: QuotaDiagnostic[],
+): string | null {
+  const lastAttemptAt = diagnostics
+    .filter((diagnostic) => (
+      diagnostic.source === "account_quota" || diagnostic.source === "frontend_command"
+    ))
+    .filter((diagnostic) => diagnostic.category !== "stale_cached_data")
+    .map((diagnostic) => parsedTimestamp(diagnostic.occurredAt))
+    .filter((timestamp): timestamp is number => timestamp !== null)
+    .reduce<number | null>((latest, timestamp) => (
+      latest === null || timestamp > latest ? timestamp : latest
+    ), null);
+  if (lastAttemptAt === null) {
+    return null;
+  }
+
+  const successfulAt = parsedTimestamp(lastSuccessfulAt);
+  const successStatus = successfulAt === null
+    ? "尚无成功额度"
+    : `上次成功 ${formatTimestamp(successfulAt)}`;
+  return `自动重试中（最长 1 分钟） · 上次尝试 ${formatTimestamp(lastAttemptAt)} · ${successStatus}`;
+}
+
 function summarizedDiagnosticMessages(diagnostics: QuotaDiagnostic[]): string[] {
   const relevant = diagnostics
     .filter((diagnostic) => QUOTA_DIAGNOSTIC_SOURCES.has(diagnostic.source))
@@ -76,13 +101,13 @@ function combinedStaleMessage(sources: ReadonlySet<string>): string | null {
   const quotaStale = sources.has("account_quota") || sources.has("frontend_command");
   const resetStale = sources.has("reset_credit");
   if (quotaStale && resetStale) {
-    return "额度和重置卡刷新失败，暂时显示上次成功结果。";
+    return "额度和重置卡刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功结果。";
   }
   if (quotaStale) {
-    return "额度刷新失败，暂时显示上次成功额度。";
+    return "额度刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功额度。";
   }
   if (resetStale) {
-    return "重置卡刷新失败，暂时显示上次成功结果。";
+    return "重置卡刷新失败，自动重试中（最长 1 分钟）；当前显示上次成功结果。";
   }
   return null;
 }
@@ -93,4 +118,24 @@ function diagnosticPriority(diagnostic: QuotaDiagnostic): number {
 
 function dedupeMessages(messages: string[]): string[] {
   return messages.filter((message, index) => messages.indexOf(message) === index);
+}
+
+function parsedTimestamp(value: string | null | undefined): number | null {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatTimestamp(timestamp: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(timestamp));
 }

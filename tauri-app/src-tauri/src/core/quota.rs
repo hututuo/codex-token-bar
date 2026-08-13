@@ -1102,8 +1102,7 @@ fn read_rate_limits(codex_home: &Path) -> Result<ParsedRateLimits, String> {
 fn read_rate_limits_once(codex_home: &Path, timeout: Duration) -> Result<ParsedRateLimits, String> {
     let codex = find_codex_binary_with_report()?.path;
     let mut command = Command::new(codex);
-    configure_quota_child_process(&mut command, Some(codex_home));
-    command.args(["app-server", "--listen", "stdio://"]);
+    configure_quota_app_server_command(&mut command, Some(codex_home));
     read_rate_limits_from_command(command, timeout)
 }
 
@@ -1409,6 +1408,13 @@ fn configure_quota_child_process(command: &mut Command, codex_home: Option<&Path
     {
         let _ = command;
     }
+}
+
+fn configure_quota_app_server_command(command: &mut Command, codex_home: Option<&Path>) {
+    configure_quota_child_process(command, codex_home);
+    // This transient process only calls account/rateLimits/read. Suggested-plugin
+    // discovery is unrelated startup work and can add a failing network request.
+    command.args(["app-server", "--disable", "plugins", "--listen", "stdio://"]);
 }
 
 fn strip_quota_child_environment(command: &mut Command) {
@@ -2184,6 +2190,22 @@ mod tests {
             *name == OsStr::new("CODEX_HOME")
                 && value.is_some_and(|value| value == codex_home.as_os_str())
         }));
+    }
+
+    #[test]
+    fn quota_app_server_disables_unrelated_plugin_startup_fetch() {
+        let mut command = Command::new("codex");
+
+        configure_quota_app_server_command(&mut command, None);
+
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arguments,
+            ["app-server", "--disable", "plugins", "--listen", "stdio://"]
+        );
     }
 
     #[test]

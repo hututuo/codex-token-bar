@@ -807,9 +807,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       dashboardReady,
       fastSnapshotLoaded,
       intervalMs: quotaRefreshIntervalMs,
-      loading: state.loading,
     }),
-    [dashboardReady, fastSnapshotLoaded, quotaRefreshIntervalMs, state.loading],
+    [dashboardReady, fastSnapshotLoaded, quotaRefreshIntervalMs],
   );
 
   useEffect(() => {
@@ -827,7 +826,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   }, [quotaAutoRefreshPlan]);
 
   useEffect(() => {
-    if (!fastSnapshotLoaded || !dashboardReady || state.loading || state.dashboard === null) {
+    if (!fastSnapshotLoaded || !dashboardReady || state.dashboard === null) {
       return;
     }
 
@@ -849,7 +848,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     fastSnapshotLoaded,
     state.dashboard?.quota.fiveHour.resetsAtUnix,
     state.dashboard?.quota.sevenDay.resetsAtUnix,
-    state.loading,
   ]);
 
   const refreshAfterWake = useCallback(() => {

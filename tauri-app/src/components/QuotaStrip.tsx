@@ -76,7 +76,7 @@ import {
   resetCreditPanelModel,
   type ResetCreditDisplayItem,
 } from "./quota/resetCredits";
-import { quotaReadWarnings } from "./quota/quotaWarnings";
+import { quotaReadWarnings, quotaRefreshAttemptStatus } from "./quota/quotaWarnings";
 import { quotaPaceAccent, semanticMetricColor } from "../styles/semanticColors";
 import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 
@@ -493,6 +493,10 @@ function QuotaStripView({
   const { settings: attributionSettings } = useSharedAccountAttributionSettings();
   const resetCreditPanel = useMemo(() => resetCreditPanelModel(snapshot.resetCredit), [snapshot.resetCredit]);
   const quotaWarnings = useMemo(() => quotaReadWarnings(warnings, diagnostics), [diagnostics, warnings]);
+  const quotaAttemptStatus = useMemo(
+    () => quotaRefreshAttemptStatus(quotaUpdatedAt, diagnostics),
+    [diagnostics, quotaUpdatedAt],
+  );
   const quotaDataStale = hasStaleAccountQuotaData(diagnostics);
   const radarDataStale = radarSnapshot?.staleDataDisplayed === true;
   const quotaRadar = radarSnapshot?.modelIq.quotaRadar ?? null;
@@ -1687,7 +1691,10 @@ function QuotaStripView({
         <div className="quota-read-warning" role="status">
           <div className="quota-read-warning-main">
             <strong>读取失败原因</strong>
-            <span>{quotaWarnings.join("；")}</span>
+            <span>
+              {quotaWarnings.join("；")}
+              {quotaAttemptStatus ? <><br /><small>{quotaAttemptStatus}</small></> : null}
+            </span>
           </div>
           {onRetryQuotaRefresh ? (
             <button

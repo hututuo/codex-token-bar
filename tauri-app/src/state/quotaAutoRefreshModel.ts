@@ -4,7 +4,6 @@ interface QuotaAutoRefreshPlanInput {
   dashboardReady: boolean;
   fastSnapshotLoaded: boolean;
   intervalMs: unknown;
-  loading: boolean;
 }
 
 export interface QuotaAutoRefreshPlan {
@@ -16,9 +15,8 @@ export function makeQuotaAutoRefreshPlan({
   dashboardReady,
   fastSnapshotLoaded,
   intervalMs,
-  loading,
 }: QuotaAutoRefreshPlanInput): QuotaAutoRefreshPlan {
-  if (!fastSnapshotLoaded || !dashboardReady || loading) {
+  if (!fastSnapshotLoaded || !dashboardReady) {
     return { active: false, intervalMs: null };
   }
 

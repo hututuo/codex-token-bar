@@ -4,6 +4,19 @@ import XCTest
 
 @MainActor
 final class AccountQuotaRefreshIsolationTests: XCTestCase {
+    func testFoundationTimerSchedulerRegistersQuotaClockInCommonRunLoopMode() {
+        var registeredModes: [RunLoop.Mode] = []
+        let scheduler = FoundationAccountQuotaTimerScheduler { timer, mode in
+            registeredModes.append(mode)
+            timer.invalidate()
+        }
+
+        let token = scheduler.scheduleRepeatingTimer(interval: 60) {}
+
+        XCTAssertEqual(registeredModes, [.common])
+        token.invalidate()
+    }
+
     func testPersistentBackoffStartsFastAndRemainsAtOneMinuteForever() {
         var backoff = PersistentRefreshBackoff()
         let delays = (0..<10).map { _ in

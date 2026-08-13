@@ -192,6 +192,16 @@ test("dashboard quota refreshes independently through the shared cadence model",
   assert.equal(quotaLoad.includes("const isFirstQuotaLoad = quotaRequestKey.current === null"), true);
   assert.equal(quotaLoad.includes("source.readAccountResetCredits"), true);
   assert.equal(quotaLoad.includes("persistentRefreshDelayMs"), true);
+  assert.equal(quotaLoad.includes("loading"), false);
+  assert.doesNotMatch(
+    dashboardData,
+    /makeQuotaAutoRefreshPlan\(\{[^}]*\bloading:/,
+  );
+  const quotaLoadOptions = deferredLoads.match(
+    /useDeferredQuotaLoad\(\{([\s\S]*?)\n  \}\);/,
+  )?.[1];
+  assert.equal(typeof quotaLoadOptions, "string");
+  assert.doesNotMatch(quotaLoadOptions, /\bloading\b/);
 });
 
 test("quota warning retry affordance remains wired to the dashboard quota action", async () => {
