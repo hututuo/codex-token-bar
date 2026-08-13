@@ -718,7 +718,9 @@ struct StatStrip: View {
                 )
             }
         }
-        .padding(.bottom, 7)
+        // Keep the original overview row clear of the rounded card edge even
+        // when the model-cost section makes the card choose its intrinsic height.
+        .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(AppTheme.panelBackground)

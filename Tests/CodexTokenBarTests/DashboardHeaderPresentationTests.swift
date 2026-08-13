@@ -156,6 +156,23 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertFalse(chipSource.contains(".lineLimit(1)"))
     }
 
+    func testModelCostRowDoesNotRemoveTheOverviewRowsTopInset() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let headerFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
+        let source = try String(contentsOf: headerFile, encoding: .utf8)
+        let stripStart = try XCTUnwrap(source.range(of: "struct StatStrip: View"))
+        let stripEnd = try XCTUnwrap(
+            source.range(of: "enum DashboardModelCostScope", range: stripStart.upperBound..<source.endIndex)
+        )
+        let stripSource = String(source[stripStart.lowerBound..<stripEnd.lowerBound])
+
+        XCTAssertTrue(stripSource.contains(".padding(.vertical, 7)"))
+        XCTAssertFalse(stripSource.contains(".padding(.bottom, 7)"))
+    }
+
     @MainActor
     func testHostedAutomaticSourceBadgeKeepsStableSingleLineFrame() {
         let hostingView = NSHostingView(
