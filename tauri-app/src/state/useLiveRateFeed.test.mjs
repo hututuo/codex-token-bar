@@ -70,6 +70,25 @@ test("a failed strict initial read publishes failure instead of a fallback zero"
   });
 });
 
+test("an initial IPC budget expiry stays pending instead of publishing a stream failure", async () => {
+  await withMountedLiveRateFeed({
+    fastInitialTimeout: true,
+    invoke(command) {
+      if (command === "read_live_rate_snapshot") {
+        return new Promise(() => {});
+      }
+      return true;
+    },
+  }, async ({ snapshots, stoppedLeases, waitForStartup }) => {
+    await waitForStartup();
+
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].threadTitle, "实时速率正在连接");
+    assert.deepEqual(snapshots[0].warnings, []);
+    assert.deepEqual(stoppedLeases, []);
+  });
+});
+
 test("a failed initial read retains an external event that already succeeded", async () => {
   const initial = deferred();
   let initialRequests = 0;
@@ -158,6 +177,14 @@ test("source transition cleanup rejects a delayed initial read from the retired 
 
 async function withMountedLiveRateFeed(options, run) {
   const window = new Window({ url: "http://localhost/" });
+  if (options.fastInitialTimeout) {
+    const schedule = window.setTimeout.bind(window);
+    window.setTimeout = (handler, delay, ...args) => schedule(
+      handler,
+      delay === 1_500 ? 0 : delay,
+      ...args,
+    );
+  }
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const invocations = [];

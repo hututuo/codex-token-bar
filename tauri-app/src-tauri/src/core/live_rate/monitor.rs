@@ -1,6 +1,6 @@
 use super::{
-    read_floating_snapshot_from_live, read_snapshot_with_unread_scoped,
-    rollout::rollout_file_signatures, LiveRateSourceScope,
+    pending_snapshot_with_unread, read_floating_snapshot_from_live,
+    read_snapshot_with_unread_scoped, rollout::rollout_file_signatures, LiveRateSourceScope,
 };
 #[cfg(test)]
 use crate::core::unread;
@@ -13,9 +13,9 @@ use std::time::{Duration, Instant, SystemTime};
 const FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_REFRESH_HOLD: Duration = Duration::from_secs(10);
-// 等待刷新持有者的上限：慢盘上持有者可能长时间不返回，并发 IPC 超时后退化为
-// 绕过 single-flight 的直接读取（与丢失 claim 后的既有退化路径同语义）。
-const REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+// 该 waiter 只用来接住即将完成的 owner。冷启动不应让 native 等待
+// 吃完前端 IPC 预算；超时后返回已有数字或 typed pending，owner 稍后发事件升级。
+const REFRESH_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 
 pub struct LiveRateMonitorService {
     codex_home: PathBuf,
@@ -137,6 +137,34 @@ impl LiveRateMonitorService {
         self.snapshot_with_loaded_unread(selected_thread_id, unread_summary)
     }
 
+    pub fn immediate_snapshot_with_unread(
+        &self,
+        selected_thread_id: Option<&str>,
+        unread_summary: UnreadSummary,
+    ) -> LiveRateSnapshot {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(mut snapshot) = state.cached_snapshot(selected_thread_id) {
+            snapshot.unread_summary = unread_summary;
+            return snapshot;
+        }
+        if let Some(mut snapshot) = state.all_snapshot.clone() {
+            snapshot.selected_thread_id = selected_thread_id.map(ToOwned::to_owned);
+            snapshot.selected_thread_title = if selected_thread_id.is_some() {
+                "选中会话待读取".into()
+            } else {
+                "选择会话查看单会话速率".into()
+            };
+            snapshot.selected_tokens_per_second = 0.0;
+            snapshot.unread_summary = unread_summary;
+            return snapshot;
+        }
+        drop(state);
+        pending_snapshot_with_unread(selected_thread_id, unread_summary)
+    }
+
     fn snapshot_with_loaded_unread(
         &self,
         selected_thread_id: Option<&str>,
@@ -168,12 +196,7 @@ impl LiveRateMonitorService {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if wait_result.timed_out() && state.refresh_in_flight.is_some() {
                     drop(state);
-                    return read_snapshot_with_unread_scoped(
-                        &self.codex_home,
-                        &self.source_scope,
-                        selected_thread_id,
-                        unread_summary,
-                    );
+                    return self.immediate_snapshot_with_unread(selected_thread_id, unread_summary);
                 }
                 drop(state);
                 continue;
@@ -425,4 +448,54 @@ fn file_signature(path: &Path) -> FileSignature {
             len: 0,
             modified_at: None,
         })
+}
+
+#[cfg(test)]
+mod immediate_snapshot_tests {
+    use super::*;
+
+    fn unread(source: &str) -> UnreadSummary {
+        UnreadSummary {
+            active: false,
+            count: 0,
+            label: "none".into(),
+            detail: "none".into(),
+            source: source.into(),
+        }
+    }
+
+    #[test]
+    fn cold_immediate_snapshot_is_typed_pending_without_claiming_refresh() {
+        let monitor = LiveRateMonitorService::new(PathBuf::from("unused"));
+
+        let snapshot = monitor
+            .immediate_snapshot_with_unread(Some("thread-a"), unread("codex_sidebar_pending"));
+
+        assert_eq!(snapshot.thread_title, "实时速率正在连接");
+        assert_eq!(snapshot.selected_thread_id.as_deref(), Some("thread-a"));
+        assert_eq!(snapshot.unread_summary.source, "codex_sidebar_pending");
+        assert!(snapshot.warnings.is_empty());
+        assert_eq!(monitor.test_refresh_count(), 0);
+        assert_eq!(monitor.test_signature_count(), 0);
+    }
+
+    #[test]
+    fn immediate_snapshot_reuses_existing_live_numbers() {
+        let monitor = LiveRateMonitorService::new(PathBuf::from("unused"));
+        let mut cached = pending_snapshot_with_unread(None, unread("old"));
+        cached.thread_title = "cached live".into();
+        cached.tokens_per_second = 42.5;
+        monitor.inner.lock().unwrap().all_snapshot = Some(cached);
+
+        let snapshot = monitor.immediate_snapshot_with_unread(None, unread("current"));
+
+        assert_eq!(snapshot.tokens_per_second, 42.5);
+        assert_eq!(snapshot.thread_title, "cached live");
+        assert_eq!(snapshot.unread_summary.source, "current");
+    }
+
+    #[test]
+    fn native_refresh_wait_budget_is_below_initial_frontend_ipc_budget() {
+        assert!(REFRESH_WAIT_TIMEOUT < Duration::from_millis(1_500));
+    }
 }

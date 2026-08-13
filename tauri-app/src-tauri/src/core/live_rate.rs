@@ -160,6 +160,31 @@ fn idle_snapshot_with_warnings(
     }
 }
 
+pub(super) fn pending_snapshot_with_unread(
+    selected_thread_id: Option<&str>,
+    unread_summary: UnreadSummary,
+) -> LiveRateSnapshot {
+    LiveRateSnapshot {
+        scope_label: "全会话".into(),
+        thread_title: "实时速率正在连接".into(),
+        selected_thread_id: selected_thread_id.map(ToOwned::to_owned),
+        selected_thread_title: if selected_thread_id.is_some() {
+            "选中会话待读取".into()
+        } else {
+            "选择会话查看单会话速率".into()
+        },
+        selected_tokens_per_second: 0.0,
+        tokens_per_second: 0.0,
+        total_tokens: 0,
+        total_tokens_today: 0,
+        requests_today: 0,
+        max_tokens_per_second: MAX_TOKENS_PER_SECOND,
+        precise_enabled: false,
+        unread_summary,
+        warnings: Vec::new(),
+    }
+}
+
 fn read_snapshot_result(
     codex_home: &Path,
     source_scope: &LiveRateSourceScope,

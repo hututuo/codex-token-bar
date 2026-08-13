@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { readLiveRateSnapshotStrict } from "../api/liveClient";
+import { readInitialLiveRateSnapshot } from "../api/liveClient";
 import {
   changedLiveRateDisplayBucket,
   smoothLiveRateSnapshot,
@@ -30,7 +30,7 @@ interface LiveRateFeedDependencies {
     | "startLiveRateStreamCommand"
     | "stopLiveRateStream"
   >;
-  readInitialLiveRate: typeof readLiveRateSnapshotStrict;
+  readInitialLiveRate: typeof readInitialLiveRateSnapshot;
 }
 
 export function useLiveRateFeed({
@@ -43,7 +43,7 @@ export function useLiveRateFeed({
 dependencies: Partial<LiveRateFeedDependencies> = {},
 ) {
   const platform = dependencies.platform ?? desktopPlatform;
-  const readInitialLiveRate = dependencies.readInitialLiveRate ?? readLiveRateSnapshotStrict;
+  const readInitialLiveRate = dependencies.readInitialLiveRate ?? readInitialLiveRateSnapshot;
   const lastSmoothedSnapshotRef = useRef<LiveRateSnapshot | null>(null);
   const lastDisplayBucketRef = useRef("");
   const previousSourceTokenRef = useRef<DashboardSourceToken | null>(null);

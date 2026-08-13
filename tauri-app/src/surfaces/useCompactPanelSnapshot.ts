@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { emptyFloatingPanelSnapshot } from "../api/fallback";
 import { readUsageSummarySnapshot } from "../api/dashboardClient";
 import {
-  readLiveRateSnapshotStrict,
+  readInitialLiveRateSnapshot,
   readUnreadSummary,
 } from "../api/liveClient";
 import {
@@ -55,7 +55,7 @@ interface CompactPanelSnapshotDependencies {
     | "startLiveRateStreamCommand"
     | "stopLiveRateStream"
   >;
-  readInitialLiveRate: typeof readLiveRateSnapshotStrict;
+  readInitialLiveRate: typeof readInitialLiveRateSnapshot;
   readInitialUnread?: typeof readUnreadSummary;
   readUsageSummary: (
     sourceToken: CodexHomeSourceToken,
@@ -64,7 +64,7 @@ interface CompactPanelSnapshotDependencies {
 
 const DEFAULT_SNAPSHOT_DEPENDENCIES: CompactPanelSnapshotDependencies = {
   platform: desktopPlatform,
-  readInitialLiveRate: readLiveRateSnapshotStrict,
+  readInitialLiveRate: readInitialLiveRateSnapshot,
   readInitialUnread: readUnreadSummary,
   readUsageSummary: (sourceToken) => readUsageSummarySnapshot(sourceToken),
 };

@@ -19,6 +19,11 @@ test("unread summary reads stay strict while backend soft-handles only a missing
   assert.match(commands, /&pinned\.source_scope_key/);
   assert.match(commands, /validate_codex_home_source\(&completed_source_token\)/);
   assert.match(commands, /snapshot_at_with_unread\(/);
+  assert.match(commands, /immediate_unread_summary_for_source\(/);
+  assert.match(commands, /immediate_snapshot_at_with_unread\(/);
+  assert.match(commands, /UNREAD_SUMMARY_CHANGED_EVENT: &str = "unread-summary-changed"/);
+  assert.match(commands, /schedule_unread_refresh\(/);
+  assert.match(commands, /source_token\.transition_generation/);
   assert.match(commands, /floating_snapshot_with_unread\(/);
   assert.doesNotMatch(
     commands,
@@ -26,13 +31,18 @@ test("unread summary reads stay strict while backend soft-handles only a missing
   );
 });
 
-test("compact initial live-rate reads propagate timeout instead of returning empty fallback", async () => {
+test("initial live-rate IPC timeout becomes typed pending without hiding native failures", async () => {
   const source = await readFile(new URL("./liveClient.ts", import.meta.url), "utf8");
-  const strictRead = source.slice(
-    source.indexOf("export function readLiveRateSnapshotStrict"),
+  const initialRead = source.slice(
+    source.indexOf("export async function readInitialLiveRateSnapshot"),
     source.indexOf("export function readLiveThreadOptions"),
   );
 
-  assert.match(strictRead, /callCommandStrict<LiveRateSnapshot>/);
-  assert.doesNotMatch(strictRead, /emptyLiveRateSnapshot/);
+  assert.match(initialRead, /callCommandStrict<LiveRateSnapshot>/);
+  assert.match(initialRead, /sourceToken \},\s*null,/);
+  assert.match(initialRead, /withInitialLiveRateIpcBudget\(invocation\)/);
+  assert.match(initialRead, /error instanceof InitialLiveRateIpcTimeoutError/);
+  assert.match(initialRead, /emptyLiveRateSnapshot\(selectedThreadId\)/);
+  assert.match(initialRead, /threadTitle: "实时速率正在连接"/);
+  assert.match(source, /INITIAL_LIVE_RATE_IPC_TIMEOUT_MS = 1_500/);
 });

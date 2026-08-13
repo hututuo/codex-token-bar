@@ -13,7 +13,7 @@ use crate::models::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, U
 use crate::models::DisplaySurfaceSettingsSnapshot;
 use crate::platform;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -21,6 +21,7 @@ use tauri::async_runtime;
 use tauri::{AppHandle, Emitter, State};
 
 const LIVE_RATE_SNAPSHOT_EVENT: &str = "live-rate-snapshot";
+const UNREAD_SUMMARY_CHANGED_EVENT: &str = "unread-summary-changed";
 const FAST_STREAM_INTERVAL: Duration = Duration::from_millis(250);
 const WEBVIEW_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
@@ -28,7 +29,7 @@ const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
 const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(15);
 // 等待其他线程完成未读刷新的上限：慢盘上的刷新持有者可能长时间不返回，
 // 并发 IPC 超时后用过期缓存（或中性摘要）兜底，绝不无上限阻塞。
-const UNREAD_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const UNREAD_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 const UNREAD_REFRESH_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
@@ -37,6 +38,14 @@ pub struct LiveRateMonitorRegistry {
     stream: Arc<Mutex<LiveRateStreamState>>,
     unread_cache: Arc<Mutex<HashMap<String, CachedUnreadSummary>>>,
     unread_refreshes: Arc<Mutex<HashMap<String, Arc<UnreadRefreshSlot>>>>,
+    unread_background_refreshes: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UnreadSummaryChangedPayload {
+    source_token: CodexHomeSourceToken,
+    summary: UnreadSummary,
 }
 
 #[derive(Clone)]
@@ -69,6 +78,21 @@ impl Drop for UnreadRefreshOwner {
         *refreshing = false;
         drop(refreshing);
         self.slot.ready.notify_all();
+    }
+}
+
+struct UnreadBackgroundRefreshOwner {
+    sources: Arc<Mutex<HashSet<String>>>,
+    source_scope_key: String,
+}
+
+impl Drop for UnreadBackgroundRefreshOwner {
+    fn drop(&mut self) {
+        let mut sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        sources.remove(&self.source_scope_key);
     }
 }
 
@@ -271,6 +295,74 @@ impl LiveRateMonitorRegistry {
         })
     }
 
+    fn immediate_unread_summary_for_source(
+        &self,
+        source_token: &CodexHomeSourceToken,
+    ) -> Result<(UnreadSummary, bool), String> {
+        let source_scope_key = unread_registry_source_key(source_token);
+        let requested_at = Instant::now();
+        let cache = self
+            .unread_cache
+            .lock()
+            .map_err(|error| error.to_string())?;
+        match cached_unread_result(&cache, &source_scope_key, false, requested_at) {
+            Some(result) => Ok((result?, false)),
+            None => Ok((pending_unread_summary(), true)),
+        }
+    }
+
+    fn schedule_unread_refresh(
+        &self,
+        app: AppHandle,
+        captured: CapturedCodexHomeSource,
+        refresh_needed: bool,
+    ) -> Result<(), String> {
+        if !refresh_needed {
+            return Ok(());
+        }
+        let source_scope_key = unread_registry_source_key(&captured.source_token);
+        {
+            let mut sources = self
+                .unread_background_refreshes
+                .lock()
+                .map_err(|error| error.to_string())?;
+            if !sources.insert(source_scope_key.clone()) {
+                return Ok(());
+            }
+        }
+
+        let registry = self.clone();
+        async_runtime::spawn_blocking(move || {
+            let _owner = UnreadBackgroundRefreshOwner {
+                sources: registry.unread_background_refreshes.clone(),
+                source_scope_key,
+            };
+            let source_token = captured.source_token.clone();
+            match registry.unread_summary_for_source(&captured, false) {
+                Ok(summary) => match validate_codex_home_source(&source_token) {
+                    Ok(()) => {
+                        let payload = UnreadSummaryChangedPayload {
+                            source_token,
+                            summary,
+                        };
+                        if let Err(error) = app.emit(UNREAD_SUMMARY_CHANGED_EVENT, payload) {
+                            startup_trace::mark_performance(format!(
+                                "unread_background_event_error {error}"
+                            ));
+                        }
+                    }
+                    Err(error) => startup_trace::mark_performance(format!(
+                        "unread_background_source_retired {error}"
+                    )),
+                },
+                Err(error) => startup_trace::mark_performance(format!(
+                    "unread_background_refresh_error {error}"
+                )),
+            }
+        });
+        Ok(())
+    }
+
     fn unread_summary_for_source_with_validator(
         &self,
         captured: &CapturedCodexHomeSource,
@@ -301,11 +393,7 @@ impl LiveRateMonitorRegistry {
         force_refresh: bool,
         refresh: impl FnOnce() -> Result<UnreadSummary, String>,
     ) -> Result<UnreadSummary, String> {
-        let source_scope_key = format!(
-            "{}|{}",
-            captured.source_token.canonical_home_key,
-            captured.source_token.physical_home_key
-        );
+        let source_scope_key = unread_registry_source_key(&captured.source_token);
         let requested_at = Instant::now();
         let slot = loop {
             {
@@ -387,7 +475,6 @@ impl LiveRateMonitorRegistry {
                     return Ok(stale_unread_summary(&cached.summary, &error));
                 }
                 let neutral = neutral_unread_summary(&error);
-                cache.retain(|key, _| key == &source_scope_key);
                 cache.insert(
                     source_scope_key,
                     CachedUnreadSummary {
@@ -412,7 +499,6 @@ impl LiveRateMonitorRegistry {
                             1
                         }
                     });
-                    cache.retain(|key, _| key == &source_scope_key);
                     cache.insert(
                         source_scope_key,
                         CachedUnreadSummary {
@@ -434,7 +520,6 @@ impl LiveRateMonitorRegistry {
                     );
                     cached.last_error = Some(error.clone());
                 } else {
-                    cache.retain(|key, _| key == &source_scope_key);
                     cache.insert(
                         source_scope_key,
                         CachedUnreadSummary {
@@ -451,7 +536,6 @@ impl LiveRateMonitorRegistry {
             }
         };
         let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
-        cache.retain(|key, _| key == &source_scope_key);
         cache.insert(
             source_scope_key,
             CachedUnreadSummary {
@@ -471,12 +555,8 @@ impl LiveRateMonitorRegistry {
         source_token: &CodexHomeSourceToken,
         summary: UnreadSummary,
     ) -> Result<(), String> {
-        let source_scope_key = format!(
-            "{}|{}",
-            source_token.canonical_home_key, source_token.physical_home_key
-        );
+        let source_scope_key = unread_registry_source_key(source_token);
         let mut cache = self.unread_cache.lock().map_err(|error| error.to_string())?;
-        cache.retain(|key, _| key == &source_scope_key);
         cache.insert(
             source_scope_key,
             CachedUnreadSummary {
@@ -499,6 +579,17 @@ impl LiveRateMonitorRegistry {
     ) -> Result<LiveRateSnapshot, String> {
         let monitor = self.monitor_for_source(source_token, codex_home)?;
         Ok(monitor.snapshot_with_unread(selected_thread_id, unread_summary))
+    }
+
+    fn immediate_snapshot_at_with_unread(
+        &self,
+        source_token: CodexHomeSourceToken,
+        codex_home: PathBuf,
+        selected_thread_id: Option<&str>,
+        unread_summary: UnreadSummary,
+    ) -> Result<LiveRateSnapshot, String> {
+        let monitor = self.monitor_for_source(source_token, codex_home)?;
+        Ok(monitor.immediate_snapshot_with_unread(selected_thread_id, unread_summary))
     }
 
     fn floating_snapshot_with_unread(
@@ -879,22 +970,29 @@ impl LiveRateMonitorRegistry {
                     }
                 };
                 let started = Instant::now();
+                let unread_captured = captured.clone();
+                let needs_unread = snapshot_needs_unread(request.emit_webview);
                 let snapshot = async_runtime::spawn_blocking(move || {
-                    let unread_summary = if snapshot_needs_unread(request.emit_webview) {
-                        snapshot_registry.unread_summary_for_source(&captured, false)?
+                    let (unread_summary, refresh_needed) = if needs_unread {
+                        snapshot_registry
+                            .immediate_unread_summary_for_source(&captured.source_token)?
                     } else {
-                        neutral_unread_summary("native tray lightweight snapshot")
+                        (
+                            neutral_unread_summary("native tray lightweight snapshot"),
+                            false,
+                        )
                     };
-                    snapshot_registry.snapshot_at_with_unread(
+                    let snapshot = snapshot_registry.snapshot_at_with_unread(
                         captured.source_token.clone(),
                         captured.codex_home.clone(),
                         selected_for_snapshot.as_deref(),
                         unread_summary,
-                    )
+                    )?;
+                    Ok::<_, String>((snapshot, refresh_needed))
                 })
                 .await;
-                let snapshot = match snapshot {
-                    Ok(Ok(snapshot)) => snapshot,
+                let (snapshot, refresh_needed) = match snapshot {
+                    Ok(Ok(result)) => result,
                     Ok(Err(error)) => {
                         startup_trace::mark_performance(format!(
                             "live_rate_stream_tick {}ms error",
@@ -916,6 +1014,13 @@ impl LiveRateMonitorRegistry {
                         continue;
                     }
                 };
+                if let Err(error) =
+                    registry.schedule_unread_refresh(app.clone(), unread_captured, refresh_needed)
+                {
+                    startup_trace::mark_performance(format!(
+                        "unread_background_schedule_error {error}"
+                    ));
+                }
 
                 let elapsed_ms = started.elapsed().as_millis();
                 if elapsed_ms > 50 {
@@ -1082,6 +1187,15 @@ fn live_rate_source_scope(source_token: &CodexHomeSourceToken) -> LiveRateSource
     )
 }
 
+fn unread_registry_source_key(source_token: &CodexHomeSourceToken) -> String {
+    format!(
+        "{}|{}|{}",
+        source_token.transition_generation,
+        source_token.canonical_home_key,
+        source_token.physical_home_key
+    )
+}
+
 fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
     // A cached active value is not safe for this indicator: Codex Desktop's
     // sidebar is the authority, and a missing/failed CDP snapshot may mean
@@ -1135,6 +1249,16 @@ fn neutral_unread_summary(error: &str) -> UnreadSummary {
         label: "Unread unavailable".into(),
         detail: format!("Unread refresh failed; retry is scheduled: {error}"),
         source: "unread_error_cached".into(),
+    }
+}
+
+fn pending_unread_summary() -> UnreadSummary {
+    UnreadSummary {
+        active: false,
+        count: 0,
+        label: "未读状态读取中".into(),
+        detail: "正在读取 Codex 左侧列表的实时未读状态。".into(),
+        source: "codex_sidebar_pending".into(),
     }
 }
 
@@ -1353,19 +1477,24 @@ pub async fn read_live_rate_snapshot(
     emit_detected_source_transition(&app)?;
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let completed_source_token = captured.source_token.clone();
+    let unread_captured = captured.clone();
+    let snapshot_registry = registry.clone();
     let result = run_blocking_command(move || {
-        let unread_summary = registry.unread_summary_for_source(&captured, false)?;
-        registry.snapshot_at_with_unread(
+        let (unread_summary, refresh_needed) =
+            snapshot_registry.immediate_unread_summary_for_source(&captured.source_token)?;
+        let snapshot = snapshot_registry.immediate_snapshot_at_with_unread(
             captured.source_token.clone(),
             captured.codex_home.clone(),
             selected_thread_id.as_deref(),
             unread_summary,
-        )
+        )?;
+        Ok::<_, String>((snapshot, refresh_needed))
     })
     .await
-    .and_then(|snapshot| {
+    .and_then(|(snapshot, refresh_needed)| {
         emit_detected_source_transition(&app)?;
         validate_codex_home_source(&completed_source_token)?;
+        registry.schedule_unread_refresh(app.clone(), unread_captured, refresh_needed)?;
         Ok(snapshot)
     });
     startup_trace::mark_performance(format!(
@@ -2345,11 +2474,7 @@ mod tests {
             codex_home: root.clone(),
             source_path: root.clone(),
         };
-        let key = format!(
-            "{}|{}",
-            captured.source_token.canonical_home_key,
-            captured.source_token.physical_home_key
-        );
+        let key = unread_registry_source_key(&captured.source_token);
         let registry = LiveRateMonitorRegistry::default();
         registry.unread_cache.lock().unwrap().insert(
             key,
@@ -2433,6 +2558,119 @@ mod tests {
     }
 
     #[test]
+    fn immediate_unread_snapshot_is_typed_pending_until_cache_is_ready() {
+        let registry = LiveRateMonitorRegistry::default();
+        let captured = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "immediate-unread".into(),
+                physical_home_key: "physical-immediate-unread".into(),
+                transition_generation: 4,
+            },
+            codex_home: PathBuf::from("immediate-unread"),
+            source_path: PathBuf::from("immediate-unread"),
+        };
+
+        let (pending, refresh_needed) = registry
+            .immediate_unread_summary_for_source(&captured.source_token)
+            .unwrap();
+        assert!(refresh_needed);
+        assert!(!pending.active);
+        assert_eq!(pending.count, 0);
+        assert_eq!(pending.source, "codex_sidebar_pending");
+
+        registry
+            .unread_summary_for_source_with_refresh(&captured, false, || {
+                Ok(UnreadSummary {
+                    active: true,
+                    count: 2,
+                    label: "fresh".into(),
+                    detail: "fresh".into(),
+                    source: "codex_unread_state".into(),
+                })
+            })
+            .unwrap();
+        let (cached, refresh_needed) = registry
+            .immediate_unread_summary_for_source(&captured.source_token)
+            .unwrap();
+        assert!(!refresh_needed);
+        assert_eq!(cached.count, 2);
+        assert_eq!(cached.source, "codex_unread_state");
+    }
+
+    #[test]
+    fn retired_unread_attempt_cannot_evict_new_generation_cache() {
+        use std::sync::{Arc, Barrier};
+
+        let registry = LiveRateMonitorRegistry::default();
+        let old = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                canonical_home_key: "same-home".into(),
+                physical_home_key: "same-physical-home".into(),
+                transition_generation: 10,
+            },
+            codex_home: PathBuf::from("same-home"),
+            source_path: PathBuf::from("same-home"),
+        };
+        let current = CapturedCodexHomeSource {
+            source_token: CodexHomeSourceToken {
+                transition_generation: 11,
+                ..old.source_token.clone()
+            },
+            ..old.clone()
+        };
+        let started = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let old_refresh = {
+            let registry = registry.clone();
+            let old = old.clone();
+            let started = started.clone();
+            let release = release.clone();
+            std::thread::spawn(move || {
+                registry
+                    .unread_summary_for_source_with_refresh(&old, false, || {
+                        started.wait();
+                        release.wait();
+                        Ok(UnreadSummary {
+                            active: true,
+                            count: 1,
+                            label: "retired".into(),
+                            detail: "retired".into(),
+                            source: "retired".into(),
+                        })
+                    })
+                    .unwrap()
+            })
+        };
+        started.wait();
+        registry
+            .unread_summary_for_source_with_refresh(&current, false, || {
+                Ok(UnreadSummary {
+                    active: true,
+                    count: 7,
+                    label: "current".into(),
+                    detail: "current".into(),
+                    source: "current".into(),
+                })
+            })
+            .unwrap();
+        release.wait();
+        assert_eq!(old_refresh.join().unwrap().count, 1);
+
+        let (current_cached, refresh_needed) = registry
+            .immediate_unread_summary_for_source(&current.source_token)
+            .unwrap();
+        assert!(!refresh_needed);
+        assert_eq!(current_cached.count, 7);
+        assert_eq!(current_cached.source, "current");
+        assert_eq!(registry.unread_cache.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn native_unread_wait_budget_is_below_initial_frontend_ipc_budget() {
+        assert!(UNREAD_REFRESH_WAIT_TIMEOUT < Duration::from_millis(1_500));
+    }
+
+    #[test]
     fn unread_refresh_wait_times_out_and_hides_the_stale_summary() {
         use std::sync::{Arc, Barrier};
 
@@ -2446,11 +2684,7 @@ mod tests {
             codex_home: PathBuf::from("wait-timeout"),
             source_path: PathBuf::from("wait-timeout"),
         };
-        let key = format!(
-            "{}|{}",
-            captured.source_token.canonical_home_key,
-            captured.source_token.physical_home_key
-        );
+        let key = unread_registry_source_key(&captured.source_token);
         registry.unread_cache.lock().unwrap().insert(
             key,
             CachedUnreadSummary {
