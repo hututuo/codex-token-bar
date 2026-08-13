@@ -27,6 +27,7 @@ const WEBVIEW_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_STREAM_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVE_STREAM_HOLD: Duration = Duration::from_secs(10);
 const UNREAD_OBSERVATION_CADENCE: Duration = Duration::from_secs(15);
+const UNREAD_CACHE_LIMIT: usize = 8;
 // 等待其他线程完成未读刷新的上限：慢盘上的刷新持有者可能长时间不返回，
 // 并发 IPC 超时后用过期缓存（或中性摘要）兜底，绝不无上限阻塞。
 const UNREAD_REFRESH_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
@@ -486,6 +487,7 @@ impl LiveRateMonitorRegistry {
                         last_error: Some(error),
                     },
                 );
+                prune_unread_cache(&mut cache);
                 return Ok(neutral);
             }
             Err(error) => {
@@ -510,6 +512,7 @@ impl LiveRateMonitorRegistry {
                             last_error: None,
                         },
                     );
+                    prune_unread_cache(&mut cache);
                     return Ok(unavailable);
                 }
                 if let Some(cached) = cache.get_mut(&source_scope_key) {
@@ -531,6 +534,7 @@ impl LiveRateMonitorRegistry {
                             last_error: Some(error.clone()),
                         },
                     );
+                    prune_unread_cache(&mut cache);
                 }
                 return Err(error);
             }
@@ -547,6 +551,7 @@ impl LiveRateMonitorRegistry {
                 last_error: None,
             },
         );
+        prune_unread_cache(&mut cache);
         Ok(summary)
     }
 
@@ -568,6 +573,7 @@ impl LiveRateMonitorRegistry {
                 last_error: None,
             },
         );
+        prune_unread_cache(&mut cache);
         Ok(())
     }
     fn snapshot_at_with_unread(
@@ -1194,6 +1200,23 @@ fn unread_registry_source_key(source_token: &CodexHomeSourceToken) -> String {
         source_token.canonical_home_key,
         source_token.physical_home_key
     )
+}
+
+fn prune_unread_cache(cache: &mut HashMap<String, CachedUnreadSummary>) {
+    while cache.len() > UNREAD_CACHE_LIMIT {
+        let Some(oldest_key) = cache
+            .iter()
+            .min_by(|(left_key, left), (right_key, right)| {
+                left.last_attempt
+                    .cmp(&right.last_attempt)
+                    .then_with(|| left_key.cmp(right_key))
+            })
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest_key);
+    }
 }
 
 fn stale_unread_summary(summary: &UnreadSummary, error: &str) -> UnreadSummary {
@@ -2663,6 +2686,36 @@ mod tests {
         assert_eq!(current_cached.count, 7);
         assert_eq!(current_cached.source, "current");
         assert_eq!(registry.unread_cache.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn unread_cache_is_bounded_and_keeps_the_newest_generations() {
+        let now = Instant::now();
+        let mut cache = HashMap::new();
+        for generation in 0..(UNREAD_CACHE_LIMIT + 3) {
+            cache.insert(
+                format!("generation-{generation}"),
+                CachedUnreadSummary {
+                    summary: pending_unread_summary(),
+                    refreshed_at: now,
+                    last_attempt: now + Duration::from_millis(generation as u64),
+                    retry_after: None,
+                    failed_attempts: 0,
+                    last_error: None,
+                },
+            );
+        }
+
+        prune_unread_cache(&mut cache);
+
+        assert_eq!(cache.len(), UNREAD_CACHE_LIMIT);
+        assert!(!cache.contains_key("generation-0"));
+        assert!(!cache.contains_key("generation-1"));
+        assert!(!cache.contains_key("generation-2"));
+        assert!(cache.contains_key(&format!(
+            "generation-{}",
+            UNREAD_CACHE_LIMIT + 2
+        )));
     }
 
     #[test]
