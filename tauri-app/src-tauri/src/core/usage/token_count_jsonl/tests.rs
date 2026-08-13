@@ -5056,6 +5056,37 @@ fn dashboard_usage_summary_matches_dashboard_snapshot_metrics() {
 }
 
 #[test]
+fn live_cached_usage_summary_miss_does_not_open_exact_index() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019elive-cache-miss-0000-summary.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    drop(index);
+
+    // Force a subsequent ExactUsageIndex::open to perform its integrity check.
+    // The live-facing helper must return a cache miss without opening the index
+    // or consuming this startup-only work.
+    let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    let _ = fs::remove_file(receipt);
+    ExactUsageIndex::clear_integrity_signature_for_testing(&root);
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    assert!(cached_dashboard_usage_summary(&root).is_none());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_scan_signature_changes_when_local_date_changes() {
     let root = temp_root();
     fs::create_dir_all(&root).unwrap();

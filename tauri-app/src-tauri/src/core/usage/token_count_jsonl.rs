@@ -2130,18 +2130,14 @@ fn cached_dashboard_usage_summary_cache_only(
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
-    let local_offset = crate::core::localtime::local_offset();
+    // This helper is consumed by live-rate ticks. It may only consult the
+    // already-hydrated dashboard/summary cache; opening the exact index here
+    // would run startup integrity work (and potentially quick_check) on the
+    // live path. The explicit `usage_summary` owner remains the sole path that
+    // is allowed to open and synchronise the exact index after a cache miss.
     cached_dashboard_usage_summary_cache_only(codex_home)
         .ok()
         .flatten()
-        .or_else(|| {
-        let canonical_home = precise_refresh_home(codex_home).ok()?;
-        let index = ExactUsageIndex::open(&canonical_home).ok()?;
-        if index.is_empty().ok()? {
-            return None;
-        }
-        index.summary(OffsetDateTime::now_utc(), local_offset).ok()
-        })
 }
 
 pub(crate) fn cached_dashboard_snapshot_for_startup(
