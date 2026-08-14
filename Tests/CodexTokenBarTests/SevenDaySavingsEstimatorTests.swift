@@ -40,11 +40,12 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         return snapshot
     }
 
-    func testDefaultScopeIsSevenDayAndMalformedPreferenceDoesNotFallBackToLifetime() {
-        XCTAssertEqual(DashboardSavingsScope.defaultScope, .sevenDay)
-        XCTAssertEqual(DashboardSavingsScope.storedValue(for: nil), .sevenDay)
-        XCTAssertEqual(DashboardSavingsScope.storedValue(for: "unknown"), .sevenDay)
-        XCTAssertEqual(DashboardSavingsScope.storedValue(for: DashboardSavingsScope.lifetime.rawValue), .lifetime)
+    func testModelCostScopeDefaultsToSevenDay() {
+        XCTAssertEqual(DashboardModelCostScope.defaultScope, .sevenDay)
+        XCTAssertEqual(DashboardModelCostScope.allCases.first, .sevenDay)
+        XCTAssertEqual(DashboardModelCostScope.storedValue(for: nil), .sevenDay)
+        XCTAssertEqual(DashboardModelCostScope.storedValue(for: "invalid"), .sevenDay)
+        XCTAssertEqual(DashboardModelCostScope.storedValue(for: DashboardModelCostScope.lifetime.rawValue), .lifetime)
     }
 
     func testMeasuredSevenDayFiltersAtStartAndResetBoundary() {
@@ -116,6 +117,69 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         let presentation = SevenDayAPIValuePresentation(estimate: estimate)
         XCTAssertTrue(presentation.labelText.contains("估"))
         XCTAssertTrue(presentation.helpText.contains("回退估算"))
+    }
+
+    func testDashboardModelRowsUseCompleteEventsAndKeepSparkAsIndependentRow() {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60)
+        let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let sol = TokenCacheAttributionEvent(
+            id: "sol",
+            start: cycleStart,
+            model: "gpt-5.6-sol",
+            breakdown: breakdown(input: 1_000_000)
+        )
+        let spark = TokenCacheAttributionEvent(
+            id: "spark",
+            start: cycleStart.addingTimeInterval(10),
+            model: "gpt-5.3-codex-spark",
+            breakdown: breakdown(input: 2_000_000)
+        )
+        let outside = TokenCacheAttributionEvent(
+            id: "outside",
+            start: resetAt,
+            model: "gpt-5.6-terra",
+            breakdown: breakdown(input: 8_000_000)
+        )
+
+        let data = DashboardSevenDayModelData(
+            cacheUsage: usage(events: [outside, spark, sol], complete: true),
+            quotaSnapshot: quota(resetAt: resetAt),
+            now: now,
+            dataAvailable: true
+        )
+
+        XCTAssertTrue(data.dataAvailable)
+        XCTAssertEqual(data.tokens, 3_000_000)
+        XCTAssertEqual(data.rows.count, 2)
+        XCTAssertTrue(data.rows.contains { $0.model == "gpt-5.3-codex-spark" })
+        XCTAssertTrue(data.rows.contains { $0.model == "gpt-5.6-sol" })
+    }
+
+    func testDashboardModelRowsFailClosedForIncompleteEventsOrMissingReset() {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60)
+        let event = TokenCacheAttributionEvent(
+            id: "event",
+            start: now,
+            model: "gpt-5.6-sol",
+            breakdown: breakdown(input: 1_000_000)
+        )
+        let incomplete = DashboardSevenDayModelData(
+            cacheUsage: usage(events: [event], complete: false),
+            quotaSnapshot: quota(resetAt: resetAt),
+            now: now,
+            dataAvailable: true
+        )
+        let missingReset = DashboardSevenDayModelData(
+            cacheUsage: usage(events: [event], complete: true),
+            quotaSnapshot: quota(resetAt: nil),
+            now: now,
+            dataAvailable: true
+        )
+
+        XCTAssertFalse(incomplete.dataAvailable)
+        XCTAssertTrue(incomplete.rows.isEmpty)
+        XCTAssertFalse(missingReset.dataAvailable)
+        XCTAssertTrue(missingReset.rows.isEmpty)
     }
 
     func testMissingQuotaShowsWaitingInsteadOfLifetimeValue() {

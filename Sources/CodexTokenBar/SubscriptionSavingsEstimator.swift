@@ -167,31 +167,6 @@ struct SubscriptionSavingsPresentation: Equatable {
     }
 }
 
-/// The amount shown in the overview card can be scoped to the currently
-/// observed account quota cycle or to the existing lifetime savings value.
-/// Keep this as a persisted raw value rather than an implicit enum default so
-/// a malformed/old preference fails closed to the requested 7d default.
-enum DashboardSavingsScope: String, CaseIterable, Identifiable, Sendable {
-    case sevenDay
-    case lifetime
-
-    static let storageKey = "dashboardSavingsScopeV1"
-    static let defaultScope: DashboardSavingsScope = .sevenDay
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .sevenDay: return "本7d"
-        case .lifetime: return "累计"
-        }
-    }
-
-    static func storedValue(for rawValue: String?) -> DashboardSavingsScope {
-        DashboardSavingsScope(rawValue: rawValue ?? "") ?? defaultScope
-    }
-}
-
 enum SevenDayAPIValueQuality: Equatable, Sendable {
     /// The current 7d period was covered by a complete, model-aware scan.
     case measured
