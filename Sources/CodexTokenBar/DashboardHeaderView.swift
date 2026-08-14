@@ -627,6 +627,7 @@ struct StatStripStatusLinePresentation: Equatable {
 
 struct StatStrip: View {
     let snapshot: DashboardSnapshot
+    var quotaSnapshot: AccountQuotaSnapshot? = nil
     var todayModelBreakdowns: [ModelTokenBreakdown] = []
     var showsModelCostRow = true
     var planLabel = ""
@@ -634,7 +635,7 @@ struct StatStrip: View {
     var cacheStatus = ""
 
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
-    @State private var modelCostScope: DashboardModelCostScope = .today
+    @AppStorage(DashboardModelCostScope.storageKey) private var modelCostScopeRaw = DashboardModelCostScope.defaultScope.rawValue
 
     private var stats: DashboardStats {
         snapshot.stats
@@ -668,6 +669,22 @@ struct StatStrip: View {
             )
             : nil
         return SubscriptionSavingsPresentation(estimate: estimate)
+    }
+
+    private var sevenDayModelData: DashboardSevenDayModelData {
+        DashboardSevenDayModelData(
+            cacheUsage: snapshot.cacheUsage,
+            quotaSnapshot: quotaSnapshot,
+            now: snapshot.generatedAt,
+            dataAvailable: snapshot.hasPreciseTokenUsage
+        )
+    }
+
+    private var modelCostScopeBinding: Binding<DashboardModelCostScope> {
+        Binding(
+            get: { DashboardModelCostScope.storedValue(for: modelCostScopeRaw) },
+            set: { modelCostScopeRaw = $0.rawValue }
+        )
     }
 
     var body: some View {
@@ -708,13 +725,16 @@ struct StatStrip: View {
 
             if showsModelCostRow {
                 DashboardModelCostRow(
-                    scope: $modelCostScope,
+                    scope: modelCostScopeBinding,
                     todayRows: todayModelBreakdowns,
                     lifetimeRows: snapshot.cacheUsage.modelBreakdowns,
+                    sevenDayRows: sevenDayModelData.rows,
                     todayTokens: snapshot.dailyUsage.last(where: { Calendar.current.isDateInToday($0.date) })?.tokens ?? 0,
                     lifetimeTokens: snapshot.stats.totalTokens,
+                    sevenDayTokens: sevenDayModelData.tokens,
                     fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
-                    dataAvailable: snapshot.hasPreciseTokenUsage
+                    dataAvailable: snapshot.hasPreciseTokenUsage,
+                    sevenDayDataAvailable: sevenDayModelData.dataAvailable
                 )
             }
         }
@@ -736,27 +756,83 @@ struct StatStrip: View {
 }
 
 enum DashboardModelCostScope: String, CaseIterable, Identifiable {
+    case sevenDay = "本7d"
     case today = "今日"
     case lifetime = "累计"
 
+    static let defaultScope: DashboardModelCostScope = .sevenDay
+    static let storageKey = "dashboardModelCostScopeV1"
+
     var id: String { rawValue }
+
+    static func storedValue(for rawValue: String?) -> DashboardModelCostScope {
+        DashboardModelCostScope(rawValue: rawValue ?? "") ?? defaultScope
+    }
+}
+
+struct DashboardSevenDayModelData: Equatable {
+    let rows: [ModelTokenBreakdown]
+    let tokens: Int
+    let dataAvailable: Bool
+
+    init(
+        cacheUsage: TokenCacheUsage,
+        quotaSnapshot: AccountQuotaSnapshot?,
+        now: Date,
+        dataAvailable: Bool
+    ) {
+        guard dataAvailable,
+              let resetAt = quotaSnapshot?.sevenDay?.resetsAt,
+              resetAt.timeIntervalSince1970.isFinite,
+              resetAt > now,
+              cacheUsage.attributionEventsComplete,
+              !cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+              !cacheUsage.attributionSourceMutationDetected else {
+            rows = []
+            tokens = 0
+            self.dataAvailable = false
+            return
+        }
+
+        let start = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let events = cacheUsage.attributionEvents.filter {
+            $0.start >= start && $0.start < resetAt
+        }
+        rows = ModelUsagePresentation.rows(from: events)
+        tokens = events.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
+        self.dataAvailable = true
+    }
 }
 
 struct DashboardModelCostRow: View {
     @Binding var scope: DashboardModelCostScope
     let todayRows: [ModelTokenBreakdown]
     let lifetimeRows: [ModelTokenBreakdown]
+    let sevenDayRows: [ModelTokenBreakdown]
     let todayTokens: Int
     let lifetimeTokens: Int
+    let sevenDayTokens: Int
     let fallbackModel: OfficialAPIPriceModel
     let dataAvailable: Bool
+    let sevenDayDataAvailable: Bool
 
     private var sourceRows: [ModelTokenBreakdown] {
-        scope == .today ? todayRows : lifetimeRows
+        switch scope {
+        case .sevenDay: return sevenDayRows
+        case .today: return todayRows
+        case .lifetime: return lifetimeRows
+        }
+    }
+
+    private var selectedDataAvailable: Bool {
+        switch scope {
+        case .sevenDay: return dataAvailable && sevenDayDataAvailable
+        case .today, .lifetime: return dataAvailable
+        }
     }
 
     private var items: [FloatingTodayModelUsageItem] {
-        guard dataAvailable, hasModelDetail else { return [] }
+        guard selectedDataAvailable, hasModelDetail else { return [] }
         return FloatingTodayModelUsagePresentation.items(
             from: sourceRows,
             fallbackModel: fallbackModel
@@ -776,11 +852,31 @@ struct DashboardModelCostRow: View {
     }
 
     private var expectedTokens: Int {
-        scope == .today ? todayTokens : lifetimeTokens
+        switch scope {
+        case .sevenDay: return sevenDayTokens
+        case .today: return todayTokens
+        case .lifetime: return lifetimeTokens
+        }
     }
 
     private var hasModelDetail: Bool {
         expectedTokens == 0 || !sourceRows.isEmpty
+    }
+
+    private var missingDetailText: String {
+        switch scope {
+        case .sevenDay: return "本7d模型明细待读取"
+        case .today: return "今日模型明细待读取"
+        case .lifetime: return "逐模型历史待读取"
+        }
+    }
+
+    private var emptyDetailText: String {
+        switch scope {
+        case .sevenDay: return "本7d暂无模型用量"
+        case .today: return "今日暂无模型用量"
+        case .lifetime: return "暂无逐模型历史"
+        }
     }
 
     var body: some View {
@@ -802,7 +898,7 @@ struct DashboardModelCostRow: View {
 
                 Spacer(minLength: 4)
 
-                if dataAvailable, hasModelDetail, !items.isEmpty {
+                if selectedDataAvailable, hasModelDetail, !items.isEmpty {
                     Text("合计 \(totalCost.quotaEstimatorMoneyText)")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(AppTheme.accentBlue)
@@ -811,18 +907,25 @@ struct DashboardModelCostRow: View {
                 }
             }
 
-            if !dataAvailable {
-                Text("待读取")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if !selectedDataAvailable {
+                if scope == .sevenDay {
+                    Text("本7d模型明细待读取")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Text("待读取")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else if !hasModelDetail {
-                Text(scope == .today ? "今日模型明细待读取" : "逐模型历史待读取")
+                Text(missingDetailText)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if items.isEmpty {
-                Text(scope == .today ? "今日暂无模型用量" : "暂无逐模型历史")
+                Text(emptyDetailText)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
