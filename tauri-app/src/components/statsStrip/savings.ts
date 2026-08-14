@@ -1,4 +1,4 @@
-import type { DashboardStats, RecentUsagePoint } from "../../types/usage";
+import type { DashboardStats, ModelTokenBreakdown, RecentUsagePoint } from "../../types/usage";
 import {
   modelAwareAPICostUSD,
   priceModelTitle,
@@ -11,37 +11,7 @@ export {
   QUOTA_PRICE_MODEL_STORAGE_KEY,
 } from "../../settings/quotaPriceModel.ts";
 
-export type SavingsScope = "sevenDay" | "lifetime";
-
-export const SAVINGS_SCOPE_STORAGE_KEY = "statsStripSavingsScope";
-export const SAVINGS_SCOPE_EVENT = "codex-token-bar:stats-savings-scope";
-
 const SEVEN_DAY_SECONDS = 7 * 24 * 60 * 60;
-
-export function isSavingsScope(value: unknown): value is SavingsScope {
-  return value === "sevenDay" || value === "lifetime";
-}
-
-export function readStoredSavingsScope(storage?: Pick<Storage, "getItem"> | null): SavingsScope {
-  const target = storage ?? (typeof window === "undefined" ? null : window.localStorage);
-  if (!target) return "sevenDay";
-  try {
-    const stored = target.getItem(SAVINGS_SCOPE_STORAGE_KEY);
-    return isSavingsScope(stored) ? stored : "sevenDay";
-  } catch {
-    return "sevenDay";
-  }
-}
-
-export function writeStoredSavingsScope(scope: SavingsScope): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(SAVINGS_SCOPE_STORAGE_KEY, scope);
-    window.dispatchEvent(new CustomEvent(SAVINGS_SCOPE_EVENT, { detail: scope }));
-  } catch {
-    // Private/blocked storage should not prevent the dashboard from switching.
-  }
-}
 
 export interface LifetimeTokenBreakdown {
   inputTokens: number;
@@ -75,6 +45,7 @@ export interface LifetimeSavingsPresentation {
 export interface Recent7dSavingsEstimate {
   apiEquivalentUSD: number;
   priceModel: OfficialAPIPriceModel;
+  modelBreakdowns: ModelTokenBreakdown[];
   detectedModels: OfficialAPIPriceModel[];
   fallbackModelCalls: number;
   excludedModels: string[];
@@ -208,6 +179,13 @@ export function estimateRecent7dAPICost({
   return {
     apiEquivalentUSD: automaticPrice.costUSD,
     priceModel,
+    modelBreakdowns: rows.map((row) => ({
+      model: row.model,
+      breakdown: {
+        ...row.breakdown,
+        totalTokens: row.breakdown.inputTokens + row.breakdown.outputTokens,
+      },
+    })),
     detectedModels: automaticPrice.detectedModels,
     fallbackModelCalls: automaticPrice.fallbackCalls,
     excludedModels: automaticPrice.excludedModels,
@@ -215,33 +193,6 @@ export function estimateRecent7dAPICost({
     periodStartUnix,
     resetAtUnix,
     pointCount: usagePoints.length,
-  };
-}
-
-export function recent7dSavingsPresentation(
-  estimate: Recent7dSavingsEstimate | null,
-): LifetimeSavingsPresentation {
-  if (!estimate) {
-    return {
-      valueText: "待读取",
-      labelText: "本7d API 等值（估）",
-      helpText: "当前 7d 周期需要有效 resetAt 和逐模型用量；暂不可安全估算，不使用累计数据。",
-    };
-  }
-
-  const modelTitle = estimate.detectedModels.length > 0
-    ? estimate.detectedModels.map(priceModelTitle).join(" + ")
-    : priceModelTitle(estimate.priceModel);
-  const priceBasis = estimate.detectedModels.length > 0
-    ? `按当前 7d 周期内历史真实模型 ${modelTitle} API 单价自动估算${estimate.fallbackModelCalls > 0 ? `，另有 ${estimate.fallbackModelCalls} 次未知记录按当前默认单价回退` : ""}`
-    : `当前 7d 周期缺少可识别模型，按默认 ${modelTitle} API 单价估算`;
-  const excludedNote = estimate.excludedModels.length > 0
-    ? `；${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用属于独立额度，不参与 API 等值`
-    : "";
-  return {
-    valueText: compactMoney(estimate.apiEquivalentUSD),
-    labelText: "本7d API 等值（估）",
-    helpText: `${priceBasis}（${estimate.pointCount} 个用量点），API 等值为 ${fullMoney(estimate.apiEquivalentUSD)}；本口径不扣整月套餐成本${excludedNote}。`,
   };
 }
 

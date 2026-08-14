@@ -6,16 +6,10 @@ import type { OfficialAPIPriceModel } from "./recentUsageChart/model";
 import {
   estimateLifetimeSavings,
   estimateRecent7dAPICost,
-  isSavingsScope,
   isOfficialAPIPriceModel,
   QUOTA_PRICE_MODEL_EVENT,
-  readStoredSavingsScope,
   lifetimeBreakdownFromStats,
-  recent7dSavingsPresentation,
-  SAVINGS_SCOPE_EVENT,
   savingsPresentation,
-  type SavingsScope,
-  writeStoredSavingsScope,
 } from "./statsStrip/savings";
 import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 import {
@@ -46,7 +40,7 @@ const statsConfig: Array<[keyof DashboardStats, string, (value: number) => strin
   ["longestStreakDays", "最长连续天数", (value) => `${value} 天`],
 ];
 
-type ModelCostScope = "today" | "lifetime";
+type ModelCostScope = "today" | "sevenDay" | "lifetime";
 
 function StatsStripView({
   stats,
@@ -60,27 +54,35 @@ function StatsStripView({
 }: StatsStripProps) {
   const usageWarnings = usagePrecisionWarnings(warnings);
   const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt56Sol");
-  const [savingsScope, setSavingsScope] = useState<SavingsScope>("sevenDay");
-  const [modelCostScope, setModelCostScope] = useState<ModelCostScope>("today");
+  const [modelCostScope, setModelCostScope] = useState<ModelCostScope>("sevenDay");
   const lifetimeSavings = useMemo(() => savingsPresentation(estimateLifetimeSavings({
-      breakdown: lifetimeBreakdownFromStats(stats),
-      firstUsageAt: stats.firstUsageAt,
-      planLabel,
-      priceModel,
-      modelBreakdowns: stats.modelBreakdowns,
-    })), [planLabel, priceModel, stats]);
-  const recent7dSavings = useMemo(() => recent7dSavingsPresentation(estimateRecent7dAPICost({
+    breakdown: lifetimeBreakdownFromStats(stats),
+    firstUsageAt: stats.firstUsageAt,
+    planLabel,
+    priceModel,
+    modelBreakdowns: stats.modelBreakdowns,
+  })), [planLabel, priceModel, stats]);
+  const recent7dModelCost = useMemo(() => estimateRecent7dAPICost({
     points: recentUsage7d,
     resetAtUnix: sevenDayResetAtUnix,
     priceModel,
-  })), [priceModel, recentUsage7d, sevenDayResetAtUnix]);
-  const savings = savingsScope === "lifetime" ? lifetimeSavings : recent7dSavings;
+  }), [priceModel, recentUsage7d, sevenDayResetAtUnix]);
   const modelCostRows = modelCostScope === "today"
     ? todayModelBreakdowns
-    : stats.modelBreakdowns ?? [];
-  const expectedModelTokens = modelCostScope === "today" ? todayTokens : stats.totalTokens;
-  const modelCostDataAvailable = modelCostRowsAvailable(modelCostRows, preciseDataFresh);
-  const modelDetailAvailable = expectedModelTokens <= 0 || modelCostRows.length > 0;
+    : modelCostScope === "lifetime"
+    ? stats.modelBreakdowns ?? []
+    : recent7dModelCost?.modelBreakdowns ?? [];
+  const expectedModelTokens = modelCostScope === "today"
+    ? todayTokens
+    : modelCostScope === "lifetime"
+    ? stats.totalTokens
+    : recent7dModelCost?.modelBreakdowns.reduce((total, row) => total + row.breakdown.totalTokens, 0) ?? 0;
+  const modelCostDataAvailable = modelCostScope === "sevenDay"
+    ? recent7dModelCost !== null
+    : modelCostRowsAvailable(modelCostRows, preciseDataFresh);
+  const modelDetailAvailable = modelCostScope === "sevenDay"
+    ? recent7dModelCost !== null
+    : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
     modelCostDataAvailable && modelDetailAvailable
       ? floatingTodayModelUsageItems(modelCostRows, priceModel)
@@ -96,17 +98,8 @@ function StatsStripView({
       const next = (event as CustomEvent<string>).detail;
       if (isOfficialAPIPriceModel(next)) setPriceModel(next);
     };
-    const onSavingsScope = (event: Event) => {
-      const next = (event as CustomEvent<string>).detail;
-      if (isSavingsScope(next)) setSavingsScope(next);
-    };
-    setSavingsScope(readStoredSavingsScope());
     window.addEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
-    window.addEventListener(SAVINGS_SCOPE_EVENT, onSavingsScope);
-    return () => {
-      window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
-      window.removeEventListener(SAVINGS_SCOPE_EVENT, onSavingsScope);
-    };
+    return () => window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
   }, []);
 
   return (
@@ -119,33 +112,9 @@ function StatsStripView({
               <span>{label}</span>
             </div>
           ))}
-          <div className="stats-cell stats-cell--savings" title={savings.helpText}>
-            <div className="stats-model-cost-scope stats-savings-scope" role="group" aria-label="金额统计范围">
-              <button
-                aria-pressed={savingsScope === "sevenDay"}
-                className={savingsScope === "sevenDay" ? "is-active" : undefined}
-                onClick={() => {
-                  setSavingsScope("sevenDay");
-                  writeStoredSavingsScope("sevenDay");
-                }}
-                type="button"
-              >
-                本7d
-              </button>
-              <button
-                aria-pressed={savingsScope === "lifetime"}
-                className={savingsScope === "lifetime" ? "is-active" : undefined}
-                onClick={() => {
-                  setSavingsScope("lifetime");
-                  writeStoredSavingsScope("lifetime");
-                }}
-                type="button"
-              >
-                累计
-              </button>
-            </div>
-            <strong>{savings.valueText}</strong>
-            <span>{savings.labelText}</span>
+          <div className="stats-cell stats-cell--savings" title={lifetimeSavings.helpText}>
+            <strong>{lifetimeSavings.valueText}</strong>
+            <span>{lifetimeSavings.labelText}</span>
           </div>
           {statsConfig.slice(1).map(([key, label, format]) => (
             <div className="stats-cell" key={key}>
@@ -155,9 +124,17 @@ function StatsStripView({
           ))}
         </div>
 
-        <div className="stats-model-cost-row" aria-label={`${modelCostScope === "today" ? "今日" : "累计"}各模型 API 等值费用`}>
+        <div className="stats-model-cost-row" aria-label={`${modelCostScope === "sevenDay" ? "本7d" : modelCostScope === "today" ? "今日" : "累计"}各模型 API 等值费用`}>
           <div className="stats-model-cost-header">
             <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
+              <button
+                aria-pressed={modelCostScope === "sevenDay"}
+                className={modelCostScope === "sevenDay" ? "is-active" : undefined}
+                onClick={() => setModelCostScope("sevenDay")}
+                type="button"
+              >
+                本7d
+              </button>
               <button
                 aria-pressed={modelCostScope === "today"}
                 className={modelCostScope === "today" ? "is-active" : undefined}
@@ -182,7 +159,9 @@ function StatsStripView({
               </strong>
             ) : null}
           </div>
-          {!modelCostDataAvailable ? (
+          {modelCostScope === "sevenDay" && recent7dModelCost === null ? (
+            <span className="stats-model-cost-empty">本7d模型明细待读取</span>
+          ) : !modelCostDataAvailable ? (
             <span className="stats-model-cost-empty">模型费用待读取</span>
           ) : !modelDetailAvailable ? (
             <span className="stats-model-cost-empty">
@@ -190,7 +169,7 @@ function StatsStripView({
             </span>
           ) : modelCostItems.length === 0 ? (
             <span className="stats-model-cost-empty">
-              {modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
+              {modelCostScope === "sevenDay" ? "本7d暂无模型用量" : modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
             </span>
           ) : (
             <div className="stats-model-cost-groups">

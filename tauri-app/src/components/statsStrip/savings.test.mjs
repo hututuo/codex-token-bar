@@ -6,8 +6,6 @@ import {
   inclusiveCalendarMonths,
   monthlyPlanPriceUSD,
   lifetimeBreakdownFromStats,
-  readStoredSavingsScope,
-  recent7dSavingsPresentation,
   savingsPresentation,
 } from "./savings.ts";
 
@@ -157,27 +155,21 @@ test("7d API estimate uses the reset boundary and excludes adjacent points", () 
   assert.equal(estimate.periodStartUnix, periodStartUnix);
   assert.equal(estimate.pointCount, 2);
   assert.equal(estimate.apiEquivalentUSD, 11.5);
-  assert.equal(recent7dSavingsPresentation(estimate).labelText, "本7d API 等值（估）");
+  assert.equal(estimate.modelBreakdowns.length, 2);
 });
 
-test("7d scope defaults to the safe current-cycle option and never uses lifetime on missing data", () => {
-  assert.equal(readStoredSavingsScope({ getItem: () => null }), "sevenDay");
-  assert.equal(readStoredSavingsScope({ getItem: () => "invalid" }), "sevenDay");
-  assert.equal(readStoredSavingsScope({ getItem: () => "lifetime" }), "lifetime");
-
-  const missingReset = recent7dSavingsPresentation(estimateRecent7dAPICost({
+test("7d model scope stays pending when reset or model coverage is missing", () => {
+  const missingReset = estimateRecent7dAPICost({
     points: [recentPoint(1_800_000_000)],
     resetAtUnix: null,
     priceModel: "gpt56Sol",
-  }));
-  const noData = recent7dSavingsPresentation(estimateRecent7dAPICost({
+  });
+  const noData = estimateRecent7dAPICost({
     points: [],
     resetAtUnix: 1_800_000_000,
     priceModel: "gpt56Sol",
-  }));
+  });
 
-  assert.equal(missingReset.valueText, "待读取");
-  assert.equal(noData.valueText, "待读取");
-  assert.match(missingReset.helpText, /不使用累计数据/);
-  assert.match(noData.labelText, /本7d/);
+  assert.equal(missingReset, null);
+  assert.equal(noData, null);
 });
