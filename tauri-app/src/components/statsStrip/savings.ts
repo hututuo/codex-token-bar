@@ -1,4 +1,4 @@
-import type { DashboardStats } from "../../types/usage";
+import type { DashboardStats, RecentUsagePoint } from "../../types/usage";
 import {
   modelAwareAPICostUSD,
   priceModelTitle,
@@ -10,6 +10,38 @@ export {
   QUOTA_PRICE_MODEL_EVENT,
   QUOTA_PRICE_MODEL_STORAGE_KEY,
 } from "../../settings/quotaPriceModel.ts";
+
+export type SavingsScope = "sevenDay" | "lifetime";
+
+export const SAVINGS_SCOPE_STORAGE_KEY = "statsStripSavingsScope";
+export const SAVINGS_SCOPE_EVENT = "codex-token-bar:stats-savings-scope";
+
+const SEVEN_DAY_SECONDS = 7 * 24 * 60 * 60;
+
+export function isSavingsScope(value: unknown): value is SavingsScope {
+  return value === "sevenDay" || value === "lifetime";
+}
+
+export function readStoredSavingsScope(storage?: Pick<Storage, "getItem"> | null): SavingsScope {
+  const target = storage ?? (typeof window === "undefined" ? null : window.localStorage);
+  if (!target) return "sevenDay";
+  try {
+    const stored = target.getItem(SAVINGS_SCOPE_STORAGE_KEY);
+    return isSavingsScope(stored) ? stored : "sevenDay";
+  } catch {
+    return "sevenDay";
+  }
+}
+
+export function writeStoredSavingsScope(scope: SavingsScope): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SAVINGS_SCOPE_STORAGE_KEY, scope);
+    window.dispatchEvent(new CustomEvent(SAVINGS_SCOPE_EVENT, { detail: scope }));
+  } catch {
+    // Private/blocked storage should not prevent the dashboard from switching.
+  }
+}
 
 export interface LifetimeTokenBreakdown {
   inputTokens: number;
@@ -38,6 +70,18 @@ export interface LifetimeSavingsPresentation {
   valueText: string;
   labelText: string;
   helpText: string;
+}
+
+export interface Recent7dSavingsEstimate {
+  apiEquivalentUSD: number;
+  priceModel: OfficialAPIPriceModel;
+  detectedModels: OfficialAPIPriceModel[];
+  fallbackModelCalls: number;
+  excludedModels: string[];
+  excludedCalls: number;
+  periodStartUnix: number;
+  resetAtUnix: number;
+  pointCount: number;
 }
 
 export function lifetimeBreakdownFromStats(stats: DashboardStats): LifetimeTokenBreakdown {
@@ -96,6 +140,168 @@ export function estimateLifetimeSavings({
     excludedCalls: automaticPrice.excludedCalls,
     firstUsageAt: first,
   };
+}
+
+/**
+ * Estimate API-equivalent spend for the currently observed 7-day quota cycle.
+ *
+ * The reset boundary is authoritative. We intentionally return null when the
+ * reset is unavailable, no usage falls in the cycle, or a non-empty point has
+ * no complete per-model breakdown. In those cases the UI must not turn
+ * lifetime totals into a misleading 7-day value.
+ */
+export function estimateRecent7dAPICost({
+  points,
+  resetAtUnix,
+  priceModel,
+}: {
+  points?: RecentUsagePoint[] | null;
+  resetAtUnix?: number | null;
+  priceModel: OfficialAPIPriceModel;
+}): Recent7dSavingsEstimate | null {
+  if (typeof resetAtUnix !== "number" || !Number.isFinite(resetAtUnix)) return null;
+
+  const periodStartUnix = resetAtUnix - SEVEN_DAY_SECONDS;
+  const cyclePoints = (points ?? []).filter((point) => (
+    Number.isFinite(point.startUnix)
+      && point.startUnix >= periodStartUnix
+      && point.startUnix < resetAtUnix
+  ));
+  const usagePoints = cyclePoints.filter(hasUsage);
+  if (usagePoints.length === 0) return null;
+
+  const aggregate = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    calls: 0,
+  };
+  const rows: Array<{
+    model: string | null;
+    breakdown: {
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+      calls: number;
+    };
+  }> = [];
+
+  for (const point of usagePoints) {
+    const pointBreakdown = safePointBreakdown(point);
+    if (!Array.isArray(point.modelBreakdowns)) return null;
+
+    const pointRows = point.modelBreakdowns.map((row) => ({
+      model: row.model,
+      breakdown: safeBreakdown(row.breakdown),
+    }));
+    const covered = pointRows.reduce((total, row) => addBreakdowns(total, row.breakdown), emptyBreakdown());
+    if (!sameBreakdown(covered, pointBreakdown)) return null;
+
+    aggregate.inputTokens += pointBreakdown.inputTokens;
+    aggregate.cachedInputTokens += pointBreakdown.cachedInputTokens;
+    aggregate.outputTokens += pointBreakdown.outputTokens;
+    aggregate.calls += pointBreakdown.calls;
+    rows.push(...pointRows);
+  }
+
+  const automaticPrice = modelAwareAPICostUSD(rows, aggregate, priceModel);
+  return {
+    apiEquivalentUSD: automaticPrice.costUSD,
+    priceModel,
+    detectedModels: automaticPrice.detectedModels,
+    fallbackModelCalls: automaticPrice.fallbackCalls,
+    excludedModels: automaticPrice.excludedModels,
+    excludedCalls: automaticPrice.excludedCalls,
+    periodStartUnix,
+    resetAtUnix,
+    pointCount: usagePoints.length,
+  };
+}
+
+export function recent7dSavingsPresentation(
+  estimate: Recent7dSavingsEstimate | null,
+): LifetimeSavingsPresentation {
+  if (!estimate) {
+    return {
+      valueText: "待读取",
+      labelText: "本7d API 等值（估）",
+      helpText: "当前 7d 周期需要有效 resetAt 和逐模型用量；暂不可安全估算，不使用累计数据。",
+    };
+  }
+
+  const modelTitle = estimate.detectedModels.length > 0
+    ? estimate.detectedModels.map(priceModelTitle).join(" + ")
+    : priceModelTitle(estimate.priceModel);
+  const priceBasis = estimate.detectedModels.length > 0
+    ? `按当前 7d 周期内历史真实模型 ${modelTitle} API 单价自动估算${estimate.fallbackModelCalls > 0 ? `，另有 ${estimate.fallbackModelCalls} 次未知记录按当前默认单价回退` : ""}`
+    : `当前 7d 周期缺少可识别模型，按默认 ${modelTitle} API 单价估算`;
+  const excludedNote = estimate.excludedModels.length > 0
+    ? `；${estimate.excludedModels.join("、")} ${estimate.excludedCalls} 次调用属于独立额度，不参与 API 等值`
+    : "";
+  return {
+    valueText: compactMoney(estimate.apiEquivalentUSD),
+    labelText: "本7d API 等值（估）",
+    helpText: `${priceBasis}（${estimate.pointCount} 个用量点），API 等值为 ${fullMoney(estimate.apiEquivalentUSD)}；本口径不扣整月套餐成本${excludedNote}。`,
+  };
+}
+
+type CostBreakdown = {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  calls: number;
+};
+
+function hasUsage(point: RecentUsagePoint): boolean {
+  const breakdown = safePointBreakdown(point);
+  return breakdown.inputTokens > 0
+    || breakdown.cachedInputTokens > 0
+    || breakdown.outputTokens > 0
+    || breakdown.calls > 0
+    || finiteNonnegative(point.tokens) > 0;
+}
+
+function safePointBreakdown(point: RecentUsagePoint): CostBreakdown {
+  return safeBreakdown({
+    inputTokens: point.inputTokens,
+    cachedInputTokens: point.cachedInputTokens,
+    outputTokens: point.outputTokens,
+    calls: point.calls,
+  });
+}
+
+function safeBreakdown(breakdown: Partial<CostBreakdown> | null | undefined): CostBreakdown {
+  const inputTokens = finiteNonnegative(breakdown?.inputTokens);
+  return {
+    inputTokens,
+    cachedInputTokens: Math.min(finiteNonnegative(breakdown?.cachedInputTokens), inputTokens),
+    outputTokens: finiteNonnegative(breakdown?.outputTokens),
+    calls: finiteNonnegative(breakdown?.calls),
+  };
+}
+
+function emptyBreakdown(): CostBreakdown {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
+}
+
+function addBreakdowns(total: CostBreakdown, next: CostBreakdown): CostBreakdown {
+  return {
+    inputTokens: total.inputTokens + next.inputTokens,
+    cachedInputTokens: total.cachedInputTokens + next.cachedInputTokens,
+    outputTokens: total.outputTokens + next.outputTokens,
+    calls: total.calls + next.calls,
+  };
+}
+
+function sameBreakdown(left: CostBreakdown, right: CostBreakdown): boolean {
+  return left.inputTokens === right.inputTokens
+    && left.cachedInputTokens === right.cachedInputTokens
+    && left.outputTokens === right.outputTokens
+    && left.calls === right.calls;
+}
+
+function finiteNonnegative(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
 export function inclusiveCalendarMonths(first: Date, now: Date): number {

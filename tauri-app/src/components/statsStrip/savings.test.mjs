@@ -2,11 +2,37 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   estimateLifetimeSavings,
+  estimateRecent7dAPICost,
   inclusiveCalendarMonths,
   monthlyPlanPriceUSD,
   lifetimeBreakdownFromStats,
+  readStoredSavingsScope,
+  recent7dSavingsPresentation,
   savingsPresentation,
 } from "./savings.ts";
+
+function recentPoint(startUnix, overrides = {}) {
+  const breakdown = {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 500_000,
+    outputTokens: 100_000,
+    calls: 2,
+    ...overrides,
+  };
+  return {
+    label: "point",
+    startUnix,
+    tokens: breakdown.inputTokens + breakdown.outputTokens,
+    calls: breakdown.calls,
+    inputTokens: breakdown.inputTokens,
+    cachedInputTokens: breakdown.cachedInputTokens,
+    outputTokens: breakdown.outputTokens,
+    modelBreakdowns: [{ model: "gpt-5.6-sol", breakdown: { ...breakdown, totalTokens: breakdown.inputTokens + breakdown.outputTokens } }],
+    cacheHitRate: null,
+    fiveHourRemainingPercent: null,
+    sevenDayRemainingPercent: null,
+  };
+}
 
 test("lifetime savings subtracts monthly Pro cost from cache-aware GPT-5.6 Sol API value", () => {
   const breakdown = {
@@ -111,4 +137,47 @@ test("lifetime savings excludes Spark while preserving its model calls", () => {
   assert.match(helpText, /独立额度/);
   assert.doesNotMatch(helpText, /缺少逐模型历史/);
   assert.doesNotMatch(helpText, /未知模型回退/);
+});
+
+test("7d API estimate uses the reset boundary and excludes adjacent points", () => {
+  const resetAtUnix = 1_800_000_000;
+  const periodStartUnix = resetAtUnix - 7 * 24 * 60 * 60;
+  const estimate = estimateRecent7dAPICost({
+    resetAtUnix,
+    priceModel: "gpt56Luna",
+    points: [
+      recentPoint(periodStartUnix - 1),
+      recentPoint(periodStartUnix),
+      recentPoint(resetAtUnix - 1),
+      recentPoint(resetAtUnix),
+    ],
+  });
+
+  assert.ok(estimate);
+  assert.equal(estimate.periodStartUnix, periodStartUnix);
+  assert.equal(estimate.pointCount, 2);
+  assert.equal(estimate.apiEquivalentUSD, 11.5);
+  assert.equal(recent7dSavingsPresentation(estimate).labelText, "本7d API 等值（估）");
+});
+
+test("7d scope defaults to the safe current-cycle option and never uses lifetime on missing data", () => {
+  assert.equal(readStoredSavingsScope({ getItem: () => null }), "sevenDay");
+  assert.equal(readStoredSavingsScope({ getItem: () => "invalid" }), "sevenDay");
+  assert.equal(readStoredSavingsScope({ getItem: () => "lifetime" }), "lifetime");
+
+  const missingReset = recent7dSavingsPresentation(estimateRecent7dAPICost({
+    points: [recentPoint(1_800_000_000)],
+    resetAtUnix: null,
+    priceModel: "gpt56Sol",
+  }));
+  const noData = recent7dSavingsPresentation(estimateRecent7dAPICost({
+    points: [],
+    resetAtUnix: 1_800_000_000,
+    priceModel: "gpt56Sol",
+  }));
+
+  assert.equal(missingReset.valueText, "待读取");
+  assert.equal(noData.valueText, "待读取");
+  assert.match(missingReset.helpText, /不使用累计数据/);
+  assert.match(noData.labelText, /本7d/);
 });

@@ -114,6 +114,8 @@ export function DashboardSummarySection({
         stats={dashboard.stats}
         todayModelBreakdowns={todayActivity?.modelBreakdowns ?? []}
         todayTokens={todayActivity?.tokens ?? 0}
+        recentUsage7d={dashboard.recentUsage7d}
+        sevenDayResetAtUnix={dashboard.quota.sevenDay.resetsAtUnix}
         warnings={dashboard.warnings}
       />
       <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />

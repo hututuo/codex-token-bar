@@ -32,16 +32,40 @@ test("StatsStrip renders six historical metrics with an explainable savings esti
           calls: 2,
         },
       }],
+      recentUsage7d: [{
+        label: "7d",
+        startUnix: Math.floor(new Date("2026-07-07T00:00:00Z").getTime() / 1_000),
+        tokens: 1_100_000,
+        calls: 2,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 500_000,
+        outputTokens: 100_000,
+        modelBreakdowns: [{
+          model: "gpt-5.6-sol",
+          breakdown: {
+            inputTokens: 1_000_000,
+            cachedInputTokens: 500_000,
+            outputTokens: 100_000,
+            totalTokens: 1_100_000,
+            calls: 2,
+          },
+        }],
+        cacheHitRate: null,
+        fiveHourRemainingPercent: null,
+        sevenDayRemainingPercent: null,
+      }],
+      sevenDayResetAtUnix: Math.floor(new Date("2026-07-08T00:00:00Z").getTime() / 1_000),
       planLabel: "Pro",
       warnings: [],
     }));
 
     assert.equal((html.match(/class="stats-cell/g) ?? []).length, 6);
     assert.match(html, /累计 Token 数/);
-    assert.match(html, /累计薅到（估）/);
-    assert.match(html, /API 等值/);
-    assert.match(html, /PRO/);
-    assert.match(html, /历史套餐或模型变化未计入/);
+    assert.match(html, /本7d API 等值（估）/);
+    assert.match(html, /金额统计范围/);
+    assert.match(html, /本7d/);
+    assert.match(html, /累计/);
+    assert.doesNotMatch(html, /历史套餐或模型变化未计入/);
     assert.match(html, /各模型 API 等值费用/);
     assert.match(html, /Sol/);
     assert.match(html, /Terra/);

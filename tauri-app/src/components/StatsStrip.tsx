@@ -1,14 +1,21 @@
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
-import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown } from "../types/dashboard";
+import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown, RecentUsagePoint } from "../types/dashboard";
 import { usagePrecisionWarnings } from "../state/dashboardWarnings";
 import { formatTokens } from "../utils/format";
 import type { OfficialAPIPriceModel } from "./recentUsageChart/model";
 import {
   estimateLifetimeSavings,
+  estimateRecent7dAPICost,
+  isSavingsScope,
   isOfficialAPIPriceModel,
   QUOTA_PRICE_MODEL_EVENT,
+  readStoredSavingsScope,
   lifetimeBreakdownFromStats,
+  recent7dSavingsPresentation,
+  SAVINGS_SCOPE_EVENT,
   savingsPresentation,
+  type SavingsScope,
+  writeStoredSavingsScope,
 } from "./statsStrip/savings";
 import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 import {
@@ -24,6 +31,8 @@ interface StatsStripProps {
   stats: DashboardStats;
   todayModelBreakdowns?: ModelTokenBreakdown[];
   todayTokens?: number;
+  recentUsage7d?: RecentUsagePoint[];
+  sevenDayResetAtUnix?: number | null;
   preciseDataFresh?: boolean;
   planLabel: string;
   warnings?: LocalDataWarning[];
@@ -43,20 +52,29 @@ function StatsStripView({
   stats,
   todayModelBreakdowns = [],
   todayTokens = 0,
+  recentUsage7d = [],
+  sevenDayResetAtUnix = null,
   preciseDataFresh = true,
   planLabel,
   warnings = [],
 }: StatsStripProps) {
   const usageWarnings = usagePrecisionWarnings(warnings);
   const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt56Sol");
+  const [savingsScope, setSavingsScope] = useState<SavingsScope>("sevenDay");
   const [modelCostScope, setModelCostScope] = useState<ModelCostScope>("today");
-  const savings = useMemo(() => savingsPresentation(estimateLifetimeSavings({
-    breakdown: lifetimeBreakdownFromStats(stats),
-    firstUsageAt: stats.firstUsageAt,
-    planLabel,
+  const lifetimeSavings = useMemo(() => savingsPresentation(estimateLifetimeSavings({
+      breakdown: lifetimeBreakdownFromStats(stats),
+      firstUsageAt: stats.firstUsageAt,
+      planLabel,
+      priceModel,
+      modelBreakdowns: stats.modelBreakdowns,
+    })), [planLabel, priceModel, stats]);
+  const recent7dSavings = useMemo(() => recent7dSavingsPresentation(estimateRecent7dAPICost({
+    points: recentUsage7d,
+    resetAtUnix: sevenDayResetAtUnix,
     priceModel,
-    modelBreakdowns: stats.modelBreakdowns,
-  })), [planLabel, priceModel, stats]);
+  })), [priceModel, recentUsage7d, sevenDayResetAtUnix]);
+  const savings = savingsScope === "lifetime" ? lifetimeSavings : recent7dSavings;
   const modelCostRows = modelCostScope === "today"
     ? todayModelBreakdowns
     : stats.modelBreakdowns ?? [];
@@ -78,8 +96,17 @@ function StatsStripView({
       const next = (event as CustomEvent<string>).detail;
       if (isOfficialAPIPriceModel(next)) setPriceModel(next);
     };
+    const onSavingsScope = (event: Event) => {
+      const next = (event as CustomEvent<string>).detail;
+      if (isSavingsScope(next)) setSavingsScope(next);
+    };
+    setSavingsScope(readStoredSavingsScope());
     window.addEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
-    return () => window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
+    window.addEventListener(SAVINGS_SCOPE_EVENT, onSavingsScope);
+    return () => {
+      window.removeEventListener(QUOTA_PRICE_MODEL_EVENT, onPriceModel);
+      window.removeEventListener(SAVINGS_SCOPE_EVENT, onSavingsScope);
+    };
   }, []);
 
   return (
@@ -93,6 +120,30 @@ function StatsStripView({
             </div>
           ))}
           <div className="stats-cell stats-cell--savings" title={savings.helpText}>
+            <div className="stats-model-cost-scope stats-savings-scope" role="group" aria-label="金额统计范围">
+              <button
+                aria-pressed={savingsScope === "sevenDay"}
+                className={savingsScope === "sevenDay" ? "is-active" : undefined}
+                onClick={() => {
+                  setSavingsScope("sevenDay");
+                  writeStoredSavingsScope("sevenDay");
+                }}
+                type="button"
+              >
+                本7d
+              </button>
+              <button
+                aria-pressed={savingsScope === "lifetime"}
+                className={savingsScope === "lifetime" ? "is-active" : undefined}
+                onClick={() => {
+                  setSavingsScope("lifetime");
+                  writeStoredSavingsScope("lifetime");
+                }}
+                type="button"
+              >
+                累计
+              </button>
+            </div>
             <strong>{savings.valueText}</strong>
             <span>{savings.labelText}</span>
           </div>
