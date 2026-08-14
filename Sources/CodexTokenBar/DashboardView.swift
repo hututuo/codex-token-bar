@@ -1021,6 +1021,7 @@ struct DashboardView: View {
 
             StatStrip(
                 snapshot: store.snapshot,
+                quotaSnapshot: quotaStore.snapshot,
                 todayModelBreakdowns: store.todayModelBreakdowns,
                 planLabel: quotaStore.snapshot.planType ?? "",
                 isPreparingUsageCache: store.isPreparingUsageCache,

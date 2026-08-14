@@ -166,3 +166,217 @@ struct SubscriptionSavingsPresentation: Equatable {
         return "\(sign)$\(String(format: "%.2f", abs(value)))"
     }
 }
+
+/// The amount shown in the overview card can be scoped to the currently
+/// observed account quota cycle or to the existing lifetime savings value.
+/// Keep this as a persisted raw value rather than an implicit enum default so
+/// a malformed/old preference fails closed to the requested 7d default.
+enum DashboardSavingsScope: String, CaseIterable, Identifiable, Sendable {
+    case sevenDay
+    case lifetime
+
+    static let storageKey = "dashboardSavingsScopeV1"
+    static let defaultScope: DashboardSavingsScope = .sevenDay
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sevenDay: return "本7d"
+        case .lifetime: return "累计"
+        }
+    }
+
+    static func storedValue(for rawValue: String?) -> DashboardSavingsScope {
+        DashboardSavingsScope(rawValue: rawValue ?? "") ?? defaultScope
+    }
+}
+
+enum SevenDayAPIValueQuality: Equatable, Sendable {
+    /// The current 7d period was covered by a complete, model-aware scan.
+    case measured
+    /// The exact event stream was unavailable/incomplete; a period-filtered
+    /// hourly or recent-bin aggregate was used instead.
+    case estimated(source: String)
+    /// No trustworthy quota boundary or period usage cache is available.
+    case waiting(reason: String)
+}
+
+struct SevenDayAPIValueEstimate: Equatable, Sendable {
+    let valueUSD: Double?
+    let quality: SevenDayAPIValueQuality
+    let cycleStart: Date?
+    let cycleEnd: Date?
+    let detectedModels: [OfficialAPIPriceModel]
+    let fallbackModelCalls: Int
+    let excludedModels: [String]
+    let excludedCalls: Int
+
+    var isAvailable: Bool { valueUSD != nil }
+
+    static func waiting(reason: String) -> SevenDayAPIValueEstimate {
+        SevenDayAPIValueEstimate(
+            valueUSD: nil,
+            quality: .waiting(reason: reason),
+            cycleStart: nil,
+            cycleEnd: nil,
+            detectedModels: [],
+            fallbackModelCalls: 0,
+            excludedModels: [],
+            excludedCalls: 0
+        )
+    }
+}
+
+struct SevenDayAPIValuePresentation: Equatable {
+    let valueText: String
+    let labelText: String
+    let helpText: String
+
+    init(estimate: SevenDayAPIValueEstimate) {
+        let label = "本7d API 等值（估）"
+        switch estimate.quality {
+        case .waiting(let reason):
+            valueText = "待读取"
+            labelText = "本7d API 等值（待读取）"
+            helpText = reason
+        case .measured:
+            valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
+            labelText = label
+            helpText = Self.helpText(for: estimate, quality: "已完成逐事件读取，按历史真实模型的当前 API 单价估算")
+        case .estimated(let source):
+            valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
+            labelText = label
+            helpText = Self.helpText(
+                for: estimate,
+                quality: "事件流不完整，按同周期 " + source + " 回退估算；结果仍可能随精确读取变化"
+            )
+        }
+    }
+
+    private static func helpText(
+        for estimate: SevenDayAPIValueEstimate,
+        quality: String
+    ) -> String {
+        var text = "本 7d 周期"
+        if let cycleStart = estimate.cycleStart,
+           let cycleEnd = estimate.cycleEnd {
+            text += "（\(cycleStart.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))-\(cycleEnd.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)))）"
+        }
+        text += "：\(quality)"
+        if let valueUSD = estimate.valueUSD {
+            text += "，API 等值 \(SubscriptionSavingsPresentation.fullMoney(valueUSD))"
+        }
+        if !estimate.detectedModels.isEmpty {
+            text += "；模型 \(estimate.detectedModels.map(\.quotaEstimateShortTitle).joined(separator: "/"))"
+        }
+        if estimate.fallbackModelCalls > 0 {
+            text += "；另有 \(estimate.fallbackModelCalls) 次未知记录按回退模型估算"
+        }
+        if !estimate.excludedModels.isEmpty {
+            text += "；\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用属于独立额度，不参与 API 等值"
+        }
+        return text
+    }
+}
+
+extension SubscriptionSavingsEstimator {
+    /// Estimates the API-equivalent value inside the active 7d quota cycle.
+    /// The quota reset boundary is authoritative; a lifetime aggregate is
+    /// never substituted when that boundary or period cache is unavailable.
+    static func sevenDayAPIValue(
+        cacheUsage: TokenCacheUsage,
+        quotaSnapshot: AccountQuotaSnapshot?,
+        fallbackModel: OfficialAPIPriceModel,
+        now: Date = Date()
+    ) -> SevenDayAPIValueEstimate {
+        guard let resetAt = quotaSnapshot?.sevenDay?.resetsAt,
+              resetAt.timeIntervalSince1970.isFinite,
+              resetAt > now else {
+            return .waiting(reason: "7d 额度重置时间未读取或已过期，暂不把累计历史冒充当前周期。")
+        }
+
+        let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let cycleEnd = resetAt
+        let eventIsTrustworthy = cacheUsage.attributionEventsComplete
+            && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
+            && !cacheUsage.attributionSourceMutationDetected
+        let periodEvents = cacheUsage.attributionEvents.filter {
+            $0.start >= cycleStart && $0.start < cycleEnd
+        }
+
+        if eventIsTrustworthy {
+            let periodBreakdown = periodEvents.map(\.breakdown).combined
+            let price = ModelAwareAPIPriceEstimator.estimate(
+                events: periodEvents,
+                fallbackBreakdown: periodBreakdown,
+                fallbackModel: fallbackModel,
+                rates: { $0.currentPriceRates }
+            )
+            return SevenDayAPIValueEstimate(
+                valueUSD: price.costUSD,
+                quality: .measured,
+                cycleStart: cycleStart,
+                cycleEnd: cycleEnd,
+                detectedModels: price.detectedModels,
+                fallbackModelCalls: price.fallbackCalls,
+                excludedModels: price.excludedModels,
+                excludedCalls: price.excludedCalls
+            )
+        }
+
+        let hourly = periodBuckets(cacheUsage.hourly, start: cycleStart, end: cycleEnd)
+        let fallbackBuckets: ([TokenCacheBucket], String)
+        if !hourly.isEmpty {
+            fallbackBuckets = (hourly, "hourly 用量缓存")
+        } else {
+            let recent = periodBuckets(cacheUsage.recentBins, start: cycleStart, end: cycleEnd)
+            fallbackBuckets = (recent, "recentBins 用量缓存")
+        }
+        guard !fallbackBuckets.0.isEmpty else {
+            return SevenDayAPIValueEstimate(
+                valueUSD: nil,
+                quality: .waiting(reason: "7d 额度边界已读取，但同周期用量缓存仍在读取，暂不显示累计金额。"),
+                cycleStart: cycleStart,
+                cycleEnd: cycleEnd,
+                detectedModels: [],
+                fallbackModelCalls: 0,
+                excludedModels: [],
+                excludedCalls: 0
+            )
+        }
+
+        let periodBreakdown = fallbackBuckets.0.map(\.breakdown).combined
+        let price = ModelAwareAPIPriceEstimator.estimate(
+            // Keep any known independent-quota rows out of the aggregate even
+            // when the event stream is incomplete. The remaining uncovered
+            // bucket usage still uses the selected fallback model.
+            modelBreakdowns: periodEvents.map {
+                ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown)
+            },
+            fallbackBreakdown: periodBreakdown,
+            fallbackModel: fallbackModel,
+            rates: { $0.currentPriceRates }
+        )
+        return SevenDayAPIValueEstimate(
+            valueUSD: price.costUSD,
+            quality: .estimated(source: fallbackBuckets.1),
+            cycleStart: cycleStart,
+            cycleEnd: cycleEnd,
+            detectedModels: price.detectedModels,
+            fallbackModelCalls: price.fallbackCalls,
+            excludedModels: price.excludedModels,
+            excludedCalls: price.excludedCalls
+        )
+    }
+
+    private static func periodBuckets(
+        _ buckets: [TokenCacheBucket],
+        start: Date,
+        end: Date
+    ) -> [TokenCacheBucket] {
+        buckets.filter { bucket in
+            bucket.start >= start && bucket.start < end
+        }
+    }
+}

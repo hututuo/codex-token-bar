@@ -627,6 +627,7 @@ struct StatStripStatusLinePresentation: Equatable {
 
 struct StatStrip: View {
     let snapshot: DashboardSnapshot
+    var quotaSnapshot: AccountQuotaSnapshot? = nil
     var todayModelBreakdowns: [ModelTokenBreakdown] = []
     var showsModelCostRow = true
     var planLabel = ""
@@ -634,6 +635,7 @@ struct StatStrip: View {
     var cacheStatus = ""
 
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
+    @AppStorage(DashboardSavingsScope.storageKey) private var savingsScopeRaw = DashboardSavingsScope.defaultScope.rawValue
     @State private var modelCostScope: DashboardModelCostScope = .today
 
     private var stats: DashboardStats {
@@ -656,7 +658,11 @@ struct StatStrip: View {
         )
     }
 
-    private var savingsPresentation: SubscriptionSavingsPresentation {
+    private var savingsScope: DashboardSavingsScope {
+        DashboardSavingsScope.storedValue(for: savingsScopeRaw)
+    }
+
+    private var lifetimeSavingsPresentation: SubscriptionSavingsPresentation {
         let priceModel = OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw)
         let estimate = snapshot.hasPreciseTokenUsage
             ? SubscriptionSavingsEstimator.estimate(
@@ -670,15 +676,52 @@ struct StatStrip: View {
         return SubscriptionSavingsPresentation(estimate: estimate)
     }
 
+    private var sevenDaySavingsPresentation: SevenDayAPIValuePresentation {
+        let estimate: SevenDayAPIValueEstimate
+        if snapshot.hasPreciseTokenUsage {
+            estimate = SubscriptionSavingsEstimator.sevenDayAPIValue(
+                cacheUsage: snapshot.cacheUsage,
+                quotaSnapshot: quotaSnapshot,
+                fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
+                now: snapshot.generatedAt
+            )
+        } else {
+            estimate = .waiting(reason: "精确 token 仍在读取，暂不显示本 7d 金额。")
+        }
+        return SevenDayAPIValuePresentation(estimate: estimate)
+    }
+
+    private var activeSavingsValueText: String {
+        switch savingsScope {
+        case .sevenDay: return sevenDaySavingsPresentation.valueText
+        case .lifetime: return lifetimeSavingsPresentation.valueText
+        }
+    }
+
+    private var activeSavingsLabelText: String {
+        switch savingsScope {
+        case .sevenDay: return sevenDaySavingsPresentation.labelText
+        case .lifetime: return lifetimeSavingsPresentation.labelText
+        }
+    }
+
+    private var activeSavingsHelpText: String {
+        switch savingsScope {
+        case .sevenDay: return sevenDaySavingsPresentation.helpText
+        case .lifetime: return lifetimeSavingsPresentation.helpText
+        }
+    }
+
     var body: some View {
         VStack(spacing: 2) {
             HStack(spacing: 0) {
                 StatCell(value: tokenValue(stats.totalTokens.abbreviatedTokens), label: "累计 Token 数")
                 Divider().frame(height: 40)
-                StatCell(
-                    value: savingsPresentation.valueText,
-                    label: savingsPresentation.labelText,
-                    help: savingsPresentation.helpText
+                DashboardSavingsStatCell(
+                    value: activeSavingsValueText,
+                    label: activeSavingsLabelText,
+                    help: activeSavingsHelpText,
+                    scopeRaw: $savingsScopeRaw
                 )
                 Divider().frame(height: 40)
                 StatCell(value: tokenValue(stats.peakDayTokens.abbreviatedTokens), label: "峰值 Token 数")
@@ -991,6 +1034,54 @@ private struct DashboardSecondaryModelCostChip: View {
         Text(item.valueText(for: .share))
             .foregroundStyle(.tertiary)
             .monospacedDigit()
+    }
+}
+
+/// Compact, keyboard- and VoiceOver-friendly switch for the amount card.
+/// Keeping both options visible avoids hiding the persisted scope behind a
+/// context menu while leaving the other overview cells unchanged.
+struct DashboardSavingsStatCell: View {
+    let value: String
+    let label: String
+    let help: String
+    @Binding var scopeRaw: String
+
+    private var scope: DashboardSavingsScope {
+        DashboardSavingsScope.storedValue(for: scopeRaw)
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.primary)
+                .minimumScaleFactor(0.72)
+                .lineLimit(1)
+
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .minimumScaleFactor(0.68)
+                .lineLimit(1)
+
+            Picker("金额口径", selection: $scopeRaw) {
+                ForEach(DashboardSavingsScope.allCases) { option in
+                    Text(option.title).tag(option.rawValue)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.mini)
+            .frame(width: 78, height: 17)
+            .accessibilityLabel("金额口径")
+            .accessibilityValue(scope.title)
+        }
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: 64)
+        .help(help)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
+        .accessibilityValue("\(value)，当前口径：\(scope.title)")
+        .accessibilityHint("可切换本 7d 周期或累计金额")
     }
 }
 
