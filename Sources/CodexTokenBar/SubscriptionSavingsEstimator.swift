@@ -221,7 +221,7 @@ struct SevenDayAPIValuePresentation: Equatable {
             helpText = Self.helpText(for: estimate, quality: "已完成逐事件读取，按历史真实模型的当前 API 单价估算")
         case .estimated(let source):
             valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
-            labelText = "本7d API 等值（精确计算中）"
+            labelText = "本7d API 等值（估算，精确计算中）"
             helpText = Self.helpText(
                 for: estimate,
                 quality: "正在精准计算中，先按同周期 " + source + " 快速估算；结果仍可能随精确读取变化"

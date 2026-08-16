@@ -1309,6 +1309,14 @@ fn run_precise_refresh_inner(
             }
         }
     };
+    let dashboard_revision = match index.dashboard_revision() {
+        Ok(revision) => revision,
+        Err(error) => {
+            flight.set_trace_status("dashboard_revision_error");
+            trace_precise_failure("dashboard_revision", &error);
+            return PreciseRefreshResult::failure(error);
+        }
+    };
     flight.record_completed_sync(revision);
     let watcher_after: Result<(), String> = {
         let _stage =
@@ -1330,7 +1338,7 @@ fn run_precise_refresh_inner(
     let summary = {
         let _stage =
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::SignatureSummary);
-        let signature = dashboard_index_signature(canonical_home, revision);
+        let signature = dashboard_index_signature(canonical_home, dashboard_revision);
         summary_after_precise_sync(&index, canonical_home, &signature, &warnings, flight)
     };
     let claim_full = {
@@ -1360,7 +1368,7 @@ fn run_precise_refresh_inner(
         flight,
         &mut index,
         canonical_home,
-        revision,
+        dashboard_revision,
         precise_coverage_at,
         &mut warnings,
     ) {
@@ -2337,7 +2345,8 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
         .ok()
         .flatten()?;
     let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home).ok()?;
-    let canonical_signature = dashboard_index_signature(&canonical_home, index_identity.revision);
+    let canonical_signature =
+        dashboard_index_signature(&canonical_home, index_identity.dashboard_revision);
     if let Some(snapshot) = cached_dashboard_startup_snapshot(
         &canonical_signature,
         &canonical_home,
@@ -2354,7 +2363,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     // envelope remains a trustworthy stale last-good. It must never be marked
     // current or used for attribution coverage.
     if let Some(cached_revision) = cached_v19_revision_for_startup()
-        .filter(|cached_revision| *cached_revision <= index_identity.revision)
+        .filter(|cached_revision| *cached_revision <= index_identity.dashboard_revision)
     {
         let mut stale_signature = canonical_signature.clone();
         stale_signature.index_revision = cached_revision;
@@ -2377,7 +2386,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             codex_home: codex_home.to_path_buf(),
             local_date: canonical_signature.local_date.clone(),
             utc_offset_seconds: canonical_signature.utc_offset_seconds,
-            index_revision: index_identity.revision,
+            index_revision: index_identity.dashboard_revision,
         };
         if let Some(snapshot) = cached_dashboard_startup_snapshot(
             &raw_signature,
@@ -2542,6 +2551,8 @@ struct DashboardScanSignature {
     codex_home: PathBuf,
     local_date: String,
     utc_offset_seconds: i32,
+    /// Numeric dashboard lineage, not the generic index revision. The latter
+    /// also advances when state_5.sqlite thread metadata is refreshed.
     #[serde(default)]
     index_revision: u64,
 }

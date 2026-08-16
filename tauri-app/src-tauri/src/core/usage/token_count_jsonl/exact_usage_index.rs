@@ -75,6 +75,13 @@ const ATTRIBUTION_UNSAFE_ID_KEY: &str = "attribution_unsafe_id";
 const ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY: &str = "attribution_current_scan_unsafe";
 const ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY: &str = "attribution_current_scan_incomplete";
 const BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY: &str = "building_attribution_provenance_rotate";
+// `revision` covers every durable index mutation, including refreshed thread
+// titles from state_5.sqlite. Dashboard numeric aggregates do not depend on
+// those titles, so keep a separate lineage that only advances when event or
+// attribution data changes. This prevents metadata churn from invalidating a
+// multi-hundred-thousand-event dashboard cache.
+const DASHBOARD_REVISION_KEY: &str = "dashboard_revision";
+const BUILDING_DASHBOARD_CHANGED_KEY: &str = "building_dashboard_changed";
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -105,6 +112,7 @@ pub(super) struct AttributionSafetyState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct StartupIndexIdentity {
     pub(super) revision: u64,
+    pub(super) dashboard_revision: u64,
     pub(super) published_generation: u64,
     pub(super) attribution_safety: AttributionSafetyState,
 }
@@ -631,6 +639,7 @@ impl ExactUsageIndex {
                         "DELETE FROM metadata WHERE key IN (
                             'building_generation',
                             'building_changed',
+                            'building_dashboard_changed',
                             'building_attribution_provenance_rotate'
                         )",
                         [],
@@ -668,6 +677,21 @@ impl ExactUsageIndex {
             .is_none_or(|value| value.trim().is_empty())
         {
             rotate_attribution_provenance_epoch(&connection)?;
+        }
+
+        // Older v8 indexes do not have a dashboard-specific lineage marker.
+        // Seed it from the existing generic revision once, so upgrading keeps
+        // the old aggregate cache addressable without a history rebuild. A
+        // malformed/missing value is treated as absent by metadata_i64 and is
+        // safely re-seeded from the trusted generic revision.
+        if metadata_i64(&connection, DASHBOARD_REVISION_KEY)?.is_none() {
+            let revision = metadata_i64(&connection, "revision")?
+                .unwrap_or_else(fresh_revision_seed);
+            set_metadata(
+                &connection,
+                DASHBOARD_REVISION_KEY,
+                &revision.to_string(),
+            )?;
         }
 
         connection.mark_receipt_eligible();
@@ -1129,6 +1153,15 @@ impl ExactUsageIndex {
         Ok(u64::try_from(metadata_i64(&self.connection, "revision")?.unwrap_or(0)).unwrap_or(0))
     }
 
+    pub(super) fn dashboard_revision(&self) -> Result<u64, String> {
+        let revision = self.revision()?;
+        Ok(u64::try_from(
+            metadata_i64(&self.connection, DASHBOARD_REVISION_KEY)?
+                .unwrap_or_else(|| i64::try_from(revision).unwrap_or(i64::MAX)),
+        )
+        .unwrap_or(0))
+    }
+
     pub(super) fn published_generation(&self) -> Result<u64, String> {
         let raw = metadata_text(&self.connection, "published_generation")?
             .ok_or_else(|| "精确 token 索引已发布代次缺失".to_string())?;
@@ -1183,6 +1216,11 @@ impl ExactUsageIndex {
             .unwrap_or(0)
             .saturating_add(1);
         set_metadata(&transaction, "revision", &revision.to_string())?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_REVISION_KEY,
+            &revision.to_string(),
+        )?;
         transaction
             .commit()
             .map_err(|error| format!("无法提交精确 token 归因安全确认：{error}"))?;
@@ -2354,11 +2392,15 @@ pub(super) fn peek_startup_identity(
     }
 
     let revision = required_startup_metadata_u64(&connection, "revision")?;
+    let dashboard_revision = metadata_i64(&connection, DASHBOARD_REVISION_KEY)?
+        .map(nonnegative_u64)
+        .unwrap_or(revision);
     let published_generation =
         required_startup_metadata_u64(&connection, "published_generation")?;
     let attribution_safety = startup_attribution_safety_state(&connection, published_generation)?;
     Ok(Some(StartupIndexIdentity {
         revision,
+        dashboard_revision,
         published_generation,
         attribution_safety,
     }))
@@ -3620,7 +3662,7 @@ fn import_staged_full_rebuild(
             validated.parser_state,
             0,
         )?;
-        set_metadata(&transaction, "building_changed", "1")?;
+        mark_dashboard_changed(&transaction)?;
         transaction
             .commit()
             .map_err(|error| format!("无法提交精确 token 单文件暂存导入：{error}"))
@@ -3799,6 +3841,18 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
     let published = metadata_i64(&transaction, "published_generation")?.unwrap_or(0);
     if let Some(building) = metadata_i64(&transaction, "building_generation")? {
         if building > published {
+            // A scan started by an older binary may not have initialized the
+            // dashboard-only change marker. Preserve its generic dirty bit so
+            // a resumed event scan cannot accidentally publish a stale
+            // numeric dashboard lineage.
+            if metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.is_none() {
+                let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0);
+                set_metadata(
+                    &transaction,
+                    BUILDING_DASHBOARD_CHANGED_KEY,
+                    if changed != 0 { "1" } else { "0" },
+                )?;
+            }
             transaction
                 .commit()
                 .map_err(|error| format!("无法确认精确 token 续扫状态：{error}"))?;
@@ -3809,6 +3863,7 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
                 "DELETE FROM metadata WHERE key IN (
                     'building_generation',
                     'building_changed',
+                    'building_dashboard_changed',
                     'building_attribution_provenance_rotate'
                 )",
                 [],
@@ -3828,6 +3883,7 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
         .ok_or_else(|| "精确 token 文件代次已超出 SQLite 整数范围".to_string())?;
     set_metadata(&transaction, "building_generation", &generation.to_string())?;
     set_metadata(&transaction, "building_changed", "0")?;
+    set_metadata(&transaction, BUILDING_DASHBOARD_CHANGED_KEY, "0")?;
     set_metadata(
         &transaction,
         BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
@@ -3848,6 +3904,11 @@ fn ensure_active_build_generation(
     } else {
         Err("精确 token 同步代次已由另一个扫描发布或替换".into())
     }
+}
+
+fn mark_dashboard_changed(transaction: &Transaction<'_>) -> Result<(), String> {
+    set_metadata(transaction, "building_changed", "1")?;
+    set_metadata(transaction, BUILDING_DASHBOARD_CHANGED_KEY, "1")
 }
 
 fn finalize_generation(
@@ -3973,15 +4034,22 @@ fn finalize_generation(
                 params![generation],
             )
             .map_err(|error| format!("无法登记本轮已删除的会话文件：{error}"))?;
-        set_metadata(&transaction, "building_changed", "1")?;
+        mark_dashboard_changed(&transaction)?;
     }
 
     if sync_thread_metadata(&transaction, codex_home, warnings)? {
+        // Thread titles and timestamps are refreshed in the same SQLite
+        // publication transaction, but they do not alter numeric token
+        // aggregates or five-minute attribution buckets. Keep the generic
+        // revision moving for metadata consumers while leaving the dashboard
+        // numeric cache lineage intact.
         set_metadata(&transaction, "building_changed", "1")?;
     }
     let rotate_attribution_provenance =
         metadata_i64(&transaction, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY)?.unwrap_or(0) != 0;
-    let source_index_changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
+    let source_index_changed = metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?
+        .unwrap_or(0)
+        != 0;
     let safety_before = attribution_safety_state(&transaction)?;
     let lineage_ambiguity_detected = visible_duplicate_session_lineage(&transaction, generation)?;
     let ledger_integrity_mismatch = attribution_ledger_integrity_mismatch(&transaction)?;
@@ -4001,7 +4069,7 @@ fn finalize_generation(
         rotate_for_new_unsafe_incident,
         ledger_integrity_mismatch,
     )? {
-        set_metadata(&transaction, "building_changed", "1")?;
+        mark_dashboard_changed(&transaction)?;
     }
     let provenance_epoch = metadata_text(&transaction, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
         .filter(|value| !value.trim().is_empty())
@@ -4022,12 +4090,12 @@ fn finalize_generation(
             ATTRIBUTION_UNSAFE_ID_KEY,
             &Uuid::new_v4().to_string(),
         )?;
-        set_metadata(&transaction, "building_changed", "1")?;
+        mark_dashboard_changed(&transaction)?;
     }
     let previous_current_scan_unsafe =
         metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?.unwrap_or(0) != 0;
     if previous_current_scan_unsafe != current_scan_unsafe_cause_detected {
-        set_metadata(&transaction, "building_changed", "1")?;
+        mark_dashboard_changed(&transaction)?;
     }
     set_metadata(
         &transaction,
@@ -4042,7 +4110,7 @@ fn finalize_generation(
     let previous_current_scan_incomplete =
         metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?.unwrap_or(0) != 0;
     if previous_current_scan_incomplete != current_scan_incomplete {
-        set_metadata(&transaction, "building_changed", "1")?;
+        mark_dashboard_changed(&transaction)?;
     }
     set_metadata(
         &transaction,
@@ -4050,23 +4118,41 @@ fn finalize_generation(
         if current_scan_incomplete { "1" } else { "0" },
     )?;
     let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
+    let dashboard_changed = metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?
+        .unwrap_or(0)
+        != 0;
     let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
     let revision = if changed {
-        set_metadata(
-            &transaction,
-            "published_generation",
-            &generation.to_string(),
-        )?;
+        if dashboard_changed {
+            set_metadata(
+                &transaction,
+                "published_generation",
+                &generation.to_string(),
+            )?;
+        }
         current_revision.saturating_add(1)
     } else {
         current_revision
     };
     set_metadata(&transaction, "revision", &revision.to_string())?;
+    let current_dashboard_revision = metadata_i64(&transaction, DASHBOARD_REVISION_KEY)?
+        .unwrap_or(current_revision);
+    let dashboard_revision = if dashboard_changed {
+        current_dashboard_revision.saturating_add(1)
+    } else {
+        current_dashboard_revision
+    };
+    set_metadata(
+        &transaction,
+        DASHBOARD_REVISION_KEY,
+        &dashboard_revision.to_string(),
+    )?;
     transaction
         .execute(
             "DELETE FROM metadata WHERE key IN (
                 'building_generation',
                 'building_changed',
+                'building_dashboard_changed',
                 'building_attribution_provenance_rotate'
             )",
             [],
@@ -4569,7 +4655,7 @@ fn rebuild_session_file_direct(
             relative_display_path(codex_home, file)
         ));
     }
-    set_metadata(&transaction, "building_changed", "1")?;
+    mark_dashboard_changed(&transaction)?;
     transaction
         .commit()
         .map_err(|error| format!("无法提交单文件精确 token 索引：{error}"))?;
@@ -4805,7 +4891,7 @@ fn append_session_file(
         parsed.state,
         next_audit_chunk,
     )?;
-    set_metadata(&transaction, "building_changed", "1")?;
+    mark_dashboard_changed(&transaction)?;
     transaction
         .commit()
         .map_err(|error| format!("无法提交单文件追加 token 索引：{error}"))?;

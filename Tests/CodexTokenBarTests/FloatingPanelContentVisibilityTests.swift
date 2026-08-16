@@ -1627,6 +1627,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(editor.contains("pageDragPreview(group)"))
         XCTAssertTrue(editor.contains("private func renderedPreview() -> NSImage"))
         XCTAssertTrue(editor.contains("endedAt screenPoint: NSPoint"))
+        XCTAssertTrue(editor.contains("let dragCoordinateView = window?.contentView ?? self"))
+        XCTAssertTrue(editor.contains("dragCoordinateView.beginDraggingSession"))
         XCTAssertTrue(editor.contains("finishDrag(sessionID: sessionID)"))
         XCTAssertTrue(editor.contains("clearDropPreviewAfterExit"))
         XCTAssertTrue(editor.contains("session.animatesToStartingPositionsOnCancelOrFail = false"))

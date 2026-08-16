@@ -3,12 +3,16 @@ import Darwin
 import Foundation
 import SQLite3
 
-struct CodexUsageHistoryIndexError: LocalizedError {
+struct CodexUsageHistoryIndexError: LocalizedError, SQLiteTransientReadFailureReporting {
     let operation: String
     let underlying: Error
 
     var errorDescription: String? {
         "精确历史索引\(operation)失败：\(underlying.localizedDescription)"
+    }
+
+    var isTransientReadFailure: Bool {
+        SQLiteReadRecovery.isTransientReadFailure(underlying)
     }
 }
 

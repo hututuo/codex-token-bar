@@ -5359,7 +5359,7 @@ fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchan
 }
 
 #[test]
-fn dashboard_snapshot_refreshes_after_thread_metadata_changes() {
+fn dashboard_snapshot_reuses_numeric_cache_after_thread_metadata_changes() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -5376,6 +5376,11 @@ fn dashboard_snapshot_refreshes_after_thread_metadata_changes() {
 
     let first = dashboard_snapshot(&root).unwrap();
     let build_count_after_first_load = dashboard_aggregate_build_count_for_testing(&root);
+    let before_metadata_change = ExactUsageIndex::open(&root).unwrap();
+    let before_revision = before_metadata_change.revision().unwrap();
+    let before_dashboard_revision = before_metadata_change.dashboard_revision().unwrap();
+    let before_published_generation = before_metadata_change.published_generation().unwrap();
+    drop(before_metadata_change);
     {
         let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
         connection
@@ -5386,14 +5391,95 @@ fn dashboard_snapshot_refreshes_after_thread_metadata_changes() {
             .unwrap();
     }
     let second = dashboard_snapshot(&root).unwrap();
+    let after_metadata_change = ExactUsageIndex::open(&root).unwrap();
 
     assert_eq!(first.stats.total_tokens, 120);
     assert_eq!(second.stats.total_tokens, 120);
     assert!(build_count_after_first_load >= 1);
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
-        build_count_after_first_load + 1
+        build_count_after_first_load,
+        "thread metadata churn must not rebuild the numeric dashboard aggregate"
     );
+    assert!(after_metadata_change.revision().unwrap() > before_revision);
+    assert_eq!(
+        after_metadata_change.dashboard_revision().unwrap(),
+        before_dashboard_revision,
+        "thread metadata must not advance the numeric dashboard lineage"
+    );
+    assert_eq!(
+        after_metadata_change.published_generation().unwrap(),
+        before_published_generation,
+        "thread metadata must not advance exact attribution generation"
+    );
+    drop(after_metadata_change);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_revision_advances_for_event_append() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session = session_dir.join("rollout-019e-dashboard-revision-append.jsonl");
+    write_lines(
+        &session,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let before = ExactUsageIndex::open(&root).unwrap();
+    let before_dashboard_revision = before.dashboard_revision().unwrap();
+    drop(before);
+
+    {
+        let mut handle = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        writeln!(
+            handle,
+            r#"{{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 170);
+    let after = ExactUsageIndex::open(&root).unwrap();
+    assert!(after.dashboard_revision().unwrap() > before_dashboard_revision);
+    drop(after);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_revision_backfills_without_rebuilding_a_legacy_index() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019e-dashboard-revision-legacy.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+
+    dashboard_snapshot(&root).unwrap();
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let before = ExactUsageIndex::open(&root).unwrap();
+    let revision = before.revision().unwrap();
+    drop(before);
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "DELETE FROM metadata WHERE key = 'dashboard_revision'",
+            [],
+        )
+        .unwrap();
+
+    let upgraded = ExactUsageIndex::open(&root).unwrap();
+    assert_eq!(upgraded.revision().unwrap(), revision);
+    assert_eq!(upgraded.dashboard_revision().unwrap(), revision);
+    drop(upgraded);
 
     fs::remove_dir_all(root).unwrap();
 }

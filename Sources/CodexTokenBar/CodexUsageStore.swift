@@ -540,6 +540,8 @@ final class CodexUsageStore: ObservableObject {
             guard let self else { return }
             let source = dataSource
             var shouldScheduleTransientDatabaseRecovery = false
+            var transientRecoveryIncludePreciseScan = true
+            var transientRecoveryForceFullTimeSeries = true
             var sawNumericPrecisePhase = false
             do {
                 trace?.mark("task.started", metadata: [
@@ -790,15 +792,29 @@ final class CodexUsageStore: ObservableObject {
                        let currentSource = self.dataSource {
                         self.markPreciseTimeSeriesContinuityLoss(for: currentSource)
                     }
-                    self.status = retainedTrustedSnapshot
-                        ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
-                        : "读取失败：\(error.localizedDescription)"
-                    shouldScheduleTransientDatabaseRecovery =
-                        SQLiteReadRecovery.isTransientReadFailure(error)
+                    let isTransientReadFailure = SQLiteReadRecovery.isTransientReadFailure(error)
+                    shouldScheduleTransientDatabaseRecovery = isTransientReadFailure
                         && (transientRecoveryAttempt ?? 0)
                             < Self.maxTransientDatabaseRecoveryAttempts
+                    transientRecoveryIncludePreciseScan = includePreciseScan
+                    transientRecoveryForceFullTimeSeries = forceFullTimeSeries
+                    if shouldScheduleTransientDatabaseRecovery {
+                        // state_5.sqlite is externally owned and may be
+                        // checkpointing its WAL during login/startup. Keep the
+                        // last trusted value, but do not expose that expected
+                        // short race as a user-facing read failure.
+                        self.status = retainedTrustedSnapshot
+                            ? "正在等待本地索引就绪（保留上次可信数据）..."
+                            : "正在等待本地索引就绪..."
+                    } else {
+                        self.status = retainedTrustedSnapshot
+                            ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
+                            : "读取失败：\(error.localizedDescription)"
+                    }
                     trace?.end("failed", metadata: [
-                        "error": error.localizedDescription
+                        "error": error.localizedDescription,
+                        "transient": isTransientReadFailure ? "1" : "0",
+                        "recoveryScheduled": shouldScheduleTransientDatabaseRecovery ? "1" : "0"
                     ])
                 }
             }
@@ -827,14 +843,20 @@ final class CodexUsageStore: ObservableObject {
                     )
                 } else if shouldScheduleTransientDatabaseRecovery {
                     self.scheduleTransientDatabaseRecovery(
-                        attempt: (transientRecoveryAttempt ?? 0) + 1
+                        attempt: (transientRecoveryAttempt ?? 0) + 1,
+                        includePreciseScan: transientRecoveryIncludePreciseScan,
+                        forceFullTimeSeries: transientRecoveryForceFullTimeSeries
                     )
                 }
             }
         }
     }
 
-    private func scheduleTransientDatabaseRecovery(attempt: Int) {
+    private func scheduleTransientDatabaseRecovery(
+        attempt: Int,
+        includePreciseScan: Bool = true,
+        forceFullTimeSeries: Bool = true
+    ) {
         transientDatabaseRecoveryTask?.cancel()
         guard backgroundActivityEnabled else {
             transientDatabaseRecoveryTask = nil
@@ -850,8 +872,8 @@ final class CodexUsageStore: ObservableObject {
             guard let self, !Task.isCancelled, self.backgroundActivityEnabled else { return }
             self.transientDatabaseRecoveryTask = nil
             self.refresh(
-                includePreciseScan: true,
-                forceFullTimeSeries: true,
+                includePreciseScan: includePreciseScan,
+                forceFullTimeSeries: forceFullTimeSeries,
                 transientRecoveryAttempt: attempt
             )
         }

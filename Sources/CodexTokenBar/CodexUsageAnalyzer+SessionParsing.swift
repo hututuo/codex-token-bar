@@ -627,7 +627,12 @@ extension CodexUsageAnalyzer {
     }
 
     private func sqliteRows(db: String, sql: String) throws -> [[String]] {
-        try SQLiteReadRecovery.run {
+        // Codex owns this WAL database. During login/startup its checkpoint
+        // can replace a sidecar for several seconds; the short default retry
+        // window turns that expected race into a false discovery error.
+        try SQLiteReadRecovery.run(
+            retryDelays: [0.10, 0.35, 0.80, 1.50, 3.00]
+        ) {
             // Recreate the read-only connection for every retry. Codex owns this
             // WAL database and may be checkpointing it while Token Bar discovers
             // active rollout paths; reusing the failed handle can preserve a
@@ -637,7 +642,7 @@ extension CodexUsageAnalyzer {
                 url: URL(fileURLWithPath: db),
                 readOnly: true,
                 createsFileIfMissing: false,
-                busyTimeoutMilliseconds: 1_000,
+                busyTimeoutMilliseconds: 3_000,
                 enableWAL: false,
                 consistency: .externallyOwnedWAL
             )
