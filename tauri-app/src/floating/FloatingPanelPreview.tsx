@@ -592,7 +592,11 @@ function FloatingTodayModelUsageRow({
 // zero-usage day); the pending label is the genuine cold-start state where an
 // empty row is allowed.
 function todayModelUsageReady(snapshot: FloatingPanelSnapshot): boolean {
-  return !snapshot.todayTokensLabel.includes("待读取");
+  // Legacy/partial snapshots may omit the label while the radar row is still
+  // renderable. Treat that as not ready instead of dereferencing an absent
+  // compatibility field; real model rows remain visible when present.
+  const label = snapshot.todayTokensLabel;
+  return typeof label === "string" && !label.includes("待读取");
 }
 
 export function floatingRunningThreadLabels(summary: RunningThreadSummary): string[] {
