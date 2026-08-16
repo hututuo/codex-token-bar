@@ -94,6 +94,8 @@ function StatsStripView({
       : []
   ), [modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
   const modelCostTotal = modelCostItems.reduce((total, item) => total + (item.costUSD ?? 0), 0);
+  const sevenDayPrecisePending = modelCostScope === "sevenDay"
+    && (!preciseDataFresh || recent7dModelCost?.quality === "estimated");
   const independentReferenceSummary = modelCostItems
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
@@ -162,7 +164,7 @@ function StatsStripView({
               </button>
             </div>
             <strong className="stats-model-cost-title">各模型 API 等值费用</strong>
-            {modelCostScope === "sevenDay" && recent7dModelCost?.quality === "estimated" ? (
+            {sevenDayPrecisePending ? (
               <span className="stats-model-cost-status" role="status">
                 正在精准计算中…
               </span>
