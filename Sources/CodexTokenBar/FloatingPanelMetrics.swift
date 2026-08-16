@@ -13,10 +13,16 @@ enum FloatingTokenPanelMetrics {
     static let usageStatusRowHeight: CGFloat = 20
     static let metricRowHeight: CGFloat = 13
     static let runningThreadsRowHeight: CGFloat = 14
-    static let todayModelRowHeight: CGFloat = 17
+    // The model cost/share strip is intentionally a compact 11pt content box;
+    // the text is centered inside it by the paged row container.
+    static let todayModelRowHeight: CGFloat = 11
     static let quotaRowHeight: CGFloat = 15.5
     static let radarRowHeight: CGFloat = 24
-    static let crowdRadarRowHeight: CGFloat = 20
+    // Keep both radar rows on the same 24pt track. The crowd typography is
+    // scaled from its former 20pt track so the two-line result fills the row
+    // instead of acquiring extra vertical whitespace.
+    static let crowdRadarRowHeight: CGFloat = radarRowHeight
+    static let crowdRadarTypographyScale: CGFloat = radarRowHeight / 20
     static let metricOutset: CGFloat = 14.5
     static let metricTodayNudge: CGFloat = -4.5
     static let metricRequestsNudge: CGFloat = 8

@@ -46,6 +46,67 @@ enum DashboardFastSnapshotFreshness: Equatable, Sendable {
     case unavailable
 }
 
+enum PreciseIndexProgressPhase: String, Equatable, Sendable {
+    case idle
+    case waiting
+    case preparing
+    case migrating
+    case scanning
+    case backfillingModel
+    case publishing
+    case complete
+    case failed
+}
+
+struct PreciseIndexProgress: Equatable, Sendable {
+    let phase: PreciseIndexProgressPhase
+    let message: String
+    let completed: Int
+    let total: Int?
+    let fraction: Double?
+
+    static let idle = PreciseIndexProgress(
+        phase: .idle,
+        message: "等待精确统计",
+        completed: 0,
+        total: nil,
+        fraction: nil
+    )
+
+    init(
+        phase: PreciseIndexProgressPhase,
+        message: String,
+        completed: Int,
+        total: Int?,
+        fraction: Double? = nil
+    ) {
+        self.phase = phase
+        self.message = message
+        self.completed = max(0, completed)
+        self.total = total.map { max(0, $0) }
+        let resolvedFraction = fraction ?? total.flatMap { total in
+            total > 0 ? Double(max(0, completed)) / Double(total) : nil
+        }
+        self.fraction = resolvedFraction.map { min(max($0, 0), 1) }
+    }
+
+    var isActive: Bool {
+        switch phase {
+        case .idle, .complete:
+            return false
+        case .waiting, .preparing, .migrating, .scanning, .backfillingModel, .publishing, .failed:
+            return true
+        }
+    }
+}
+
+protocol DashboardSnapshotProgressLoading: Sendable {
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource,
+        onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error>
+}
+
 struct DashboardFastSnapshotResult: Sendable {
     let snapshot: DashboardSnapshot
     let freshness: DashboardFastSnapshotFreshness
@@ -124,7 +185,7 @@ extension DashboardSnapshotLoading {
     }
 }
 
-struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
+struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, DashboardSnapshotProgressLoading, Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).loadFastSnapshot()
@@ -164,6 +225,51 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, Sendable {
                     }
                     continuation.finish()
                 } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource,
+        onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .utility) {
+                do {
+                    onProgress(PreciseIndexProgress(
+                        phase: .preparing,
+                        message: "正在计算索引规模，可能需要数分钟",
+                        completed: 0,
+                        total: nil
+                    ))
+                    let final = try CodexUsageAnalyzer(dataSource: dataSource).load(
+                        onNumericPhase: { numeric in
+                            continuation.yield(numeric)
+                        },
+                        onProgress: onProgress
+                    )
+                    if final.cacheUsage.attributionEventsComplete {
+                        continuation.yield(final)
+                    }
+                    onProgress(PreciseIndexProgress(
+                        phase: .complete,
+                        message: "精确统计已更新",
+                        completed: 1,
+                        total: 1
+                    ))
+                    continuation.finish()
+                } catch {
+                    onProgress(PreciseIndexProgress(
+                        phase: .failed,
+                        message: "精确统计失败，保留上次可信数据",
+                        completed: 0,
+                        total: nil
+                    ))
                     continuation.finish(throwing: error)
                 }
             }

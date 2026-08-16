@@ -318,11 +318,17 @@ struct TokenDisplayCrowdRadarRow: View {
                     resultView(leaders.dropFirst().first, position: 2)
                     Rectangle()
                         .fill(textPalette.dividerColor)
-                        .frame(width: 1, height: 14.scaled(by: displayScale))
+                        .frame(
+                            width: 1,
+                            height: (14 * FloatingTokenPanelMetrics.crowdRadarTypographyScale).scaled(by: displayScale)
+                        )
                     resultView(leaders.dropFirst(2).first, position: 3)
                 }
             }
-            .font(.system(size: 7.4.scaled(by: displayScale), weight: .medium))
+            .font(.system(
+                size: (7.4 * FloatingTokenPanelMetrics.crowdRadarTypographyScale).scaled(by: displayScale),
+                weight: .medium
+            ))
             .foregroundStyle(textPalette.primaryColor)
             .lineLimit(1)
             .minimumScaleFactor(0.76)
@@ -335,7 +341,10 @@ struct TokenDisplayCrowdRadarRow: View {
                 Text("排名待读取")
                 Spacer()
             }
-            .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
+            .font(.system(
+                size: (7.8 * FloatingTokenPanelMetrics.crowdRadarTypographyScale).scaled(by: displayScale),
+                weight: .semibold
+            ))
             .foregroundStyle(textPalette.secondaryColor)
         }
     }

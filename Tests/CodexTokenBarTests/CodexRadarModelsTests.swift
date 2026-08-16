@@ -12,6 +12,14 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol xhigh"), "Sol xhigh")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol ultra"), "Sol ultra")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek V4 Flash max"), "DS F max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek V4 Flash high"), "DS F high")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek V4 Pro max"), "DS P max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek R1"), "DS R1")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH F max"), "DSH F max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH-V4-Pro high"), "DSH P high")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH R1 medium"), "DSH R1 medium")
     }
 
     func testCurrentSolMaxScoreOutranksOlderTerraAndKeepsItsEffortInCompactLabel() {

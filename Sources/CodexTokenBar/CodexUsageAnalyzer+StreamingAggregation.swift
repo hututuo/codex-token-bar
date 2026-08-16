@@ -352,6 +352,7 @@ extension CodexUsageAnalyzer {
                 turns: turns,
                 attributionEvents: attributionEvents,
                 attributionEventsComplete: true,
+                attributionModelBucketsComplete: true,
                 attributionProvenanceEpoch: attributionProvenanceEpoch,
                 attributionGeneration: attributionGeneration,
                 attributionUnsafeSinceGeneration: attributionUnsafeSinceGeneration,

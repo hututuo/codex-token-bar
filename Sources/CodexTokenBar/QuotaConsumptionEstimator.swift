@@ -30,6 +30,29 @@ struct APIPriceRates: Equatable, Sendable {
     }
 }
 
+/// Spark is metered through a separate Codex quota. OpenAI has not published
+/// a final Spark-specific rate card, so this is an explicitly labelled API
+/// reference rate only; it must never be folded into quota-drop attribution or
+/// the primary API-equivalent total.
+enum IndependentQuotaReferencePricing {
+    static let sparkRevision = "gpt-5.3-codex-spark-reference-api-20260815"
+    static let sparkRates = APIPriceRates(
+        inputUSDPerMillion: 1.75,
+        cachedInputUSDPerMillion: 0.175,
+        outputUSDPerMillion: 14.00
+    )
+
+    static func costUSD(
+        for rawModel: String?,
+        breakdown: TokenCacheBreakdown
+    ) -> Double? {
+        guard OfficialAPIPriceModel.independentQuotaModelName(from: rawModel) != nil else {
+            return nil
+        }
+        return sparkRates.costUSD(for: breakdown)
+    }
+}
+
 struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     let costUSD: Double
     let detectedModels: [OfficialAPIPriceModel]
@@ -53,7 +76,81 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     }
 }
 
+/// A versioned model-routing rule. Usage events keep their raw model alias;
+/// this rule only describes which billable model that alias represents from a
+/// given UTC instant onward.
+struct ModelPricingRule: Equatable, Sendable {
+    let alias: String
+    let effectiveFrom: Date
+    let targetModel: OfficialAPIPriceModel
+    let revision: String
+}
+
+enum CodexAutoReviewPricingPolicy {
+    static let rules: [ModelPricingRule] = [
+        ModelPricingRule(
+            alias: "codex-auto-review",
+            effectiveFrom: .distantPast,
+            targetModel: .gpt54Legacy,
+            revision: "codex-auto-review-pre-luna"
+        ),
+        ModelPricingRule(
+            alias: "codex-auto-review",
+            effectiveFrom: utcDate(year: 2026, month: 7, day: 30),
+            targetModel: .gpt56Luna,
+            revision: "codex-auto-review-luna-20260730"
+        ),
+    ]
+
+    static var currentRule: ModelPricingRule {
+        rules.max { lhs, rhs in lhs.effectiveFrom < rhs.effectiveFrom }!
+    }
+
+    static func rule(for rawAlias: String?, at date: Date? = nil) -> ModelPricingRule? {
+        guard let rawAlias else { return nil }
+        let normalizedAlias = canonicalAlias(rawAlias)
+        let candidates = rules.filter { canonicalAlias($0.alias) == normalizedAlias }
+        guard !candidates.isEmpty else { return nil }
+
+        let effectiveDate = date ?? .distantFuture
+        return candidates
+            .filter { $0.effectiveFrom <= effectiveDate }
+            .max { lhs, rhs in lhs.effectiveFrom < rhs.effectiveFrom }
+    }
+
+    static func effectiveModel(for rawAlias: String?, at date: Date? = nil) -> OfficialAPIPriceModel? {
+        rule(for: rawAlias, at: date)?.targetModel
+    }
+
+    static func isAutoReviewAlias(_ rawValue: String?) -> Bool {
+        guard let rawValue else { return false }
+        let normalized = canonicalAlias(rawValue)
+        return rules.contains { canonicalAlias($0.alias) == normalized }
+    }
+
+    static func canonicalAlias(_ rawValue: String) -> String {
+        rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func utcDate(year: Int, month: Int, day: Int) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar.date(
+            from: DateComponents(year: year, month: month, day: day)
+        )!
+    }
+}
+
 enum ModelAwareAPIPriceEstimator {
+    private struct PricingRow {
+        let model: String?
+        let breakdown: TokenCacheBreakdown
+        let detectedModel: OfficialAPIPriceModel?
+    }
+
     static func estimate(
         events: [TokenCacheAttributionEvent]?,
         fallbackBreakdown: TokenCacheBreakdown,
@@ -68,8 +165,15 @@ enum ModelAwareAPIPriceEstimator {
             )
         }
         return estimate(
-            modelBreakdowns: events.map {
-                ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown)
+            rows: events.map { event in
+                PricingRow(
+                    model: event.model,
+                    breakdown: event.breakdown,
+                    detectedModel: OfficialAPIPriceModel.detected(
+                        from: event.model,
+                        at: event.start
+                    )
+                )
             },
             fallbackBreakdown: fallbackBreakdown,
             fallbackModel: fallbackModel,
@@ -83,14 +187,34 @@ enum ModelAwareAPIPriceEstimator {
         fallbackModel: OfficialAPIPriceModel,
         rates: (OfficialAPIPriceModel) -> APIPriceRates
     ) -> ModelAwareAPIPriceEstimate {
-        guard !modelBreakdowns.isEmpty else {
+        estimate(
+            rows: modelBreakdowns.map { row in
+                PricingRow(
+                    model: row.model,
+                    breakdown: row.breakdown,
+                    detectedModel: OfficialAPIPriceModel.detected(from: row.model)
+                )
+            },
+            fallbackBreakdown: fallbackBreakdown,
+            fallbackModel: fallbackModel,
+            rates: rates
+        )
+    }
+
+    private static func estimate(
+        rows: [PricingRow],
+        fallbackBreakdown: TokenCacheBreakdown,
+        fallbackModel: OfficialAPIPriceModel,
+        rates: (OfficialAPIPriceModel) -> APIPriceRates
+    ) -> ModelAwareAPIPriceEstimate {
+        guard !rows.isEmpty else {
             return fallback(
                 breakdown: fallbackBreakdown,
                 model: fallbackModel,
                 rates: rates
             )
         }
-        let independentRows = modelBreakdowns.compactMap { row -> (String, TokenCacheBreakdown)? in
+        let independentRows = rows.compactMap { row -> (String, TokenCacheBreakdown)? in
             guard let name = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) else {
                 return nil
             }
@@ -103,7 +227,7 @@ enum ModelAwareAPIPriceEstimator {
         let excludedCalls = independentRows.reduce(0) { total, row in
             total + max(row.1.calls, 0)
         }
-        let coveredBreakdown = modelBreakdowns.map(\.breakdown).combined
+        let coveredBreakdown = rows.map(\.breakdown).combined
         guard coveredBreakdown.inputTokens == fallbackBreakdown.inputTokens,
               coveredBreakdown.cachedInputTokens == fallbackBreakdown.cachedInputTokens,
               coveredBreakdown.outputTokens == fallbackBreakdown.outputTokens,
@@ -118,11 +242,11 @@ enum ModelAwareAPIPriceEstimator {
         }
         var grouped: [OfficialAPIPriceModel: [TokenCacheBreakdown]] = [:]
         var fallbackBreakdowns: [TokenCacheBreakdown] = []
-        for row in modelBreakdowns {
+        for row in rows {
             if OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil {
                 // Collected above so incomplete model rows can also fail closed
                 // without charging this independent quota to the fallback.
-            } else if let detected = OfficialAPIPriceModel.detected(from: row.model) {
+            } else if let detected = row.detectedModel {
                 grouped[detected, default: []].append(row.breakdown)
             } else {
                 fallbackBreakdowns.append(row.breakdown)
@@ -252,11 +376,24 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     }
 
     static func detected(from rawValue: String?) -> OfficialAPIPriceModel? {
+        detected(from: rawValue, at: nil)
+    }
+
+    static func detected(
+        from rawValue: String?,
+        at eventDate: Date?
+    ) -> OfficialAPIPriceModel? {
         guard let rawValue else { return nil }
         let key = rawValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
+        if let autoReviewModel = CodexAutoReviewPricingPolicy.effectiveModel(
+            for: rawValue,
+            at: eventDate
+        ) {
+            return autoReviewModel
+        }
         switch key {
         case "gpt-5.6", "gpt5.6", "gpt56", "gpt-5.6-sol", "gpt5.6-sol", "gpt56-sol", "gpt56sol", "gpt-5.5", "gpt55":
             return .gpt56Sol
@@ -266,11 +403,6 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
             return .gpt56Luna
         case "gpt-5.3-codex", "gpt5.3-codex", "gpt53-codex", "gpt53codex":
             return .gpt53Codex
-        case "codex-auto-review", "codexautoreview":
-            // The current Codex catalog (verified 2026-08-09) gives this
-            // hidden approval-review alias GPT-5.4's complete capability
-            // profile. Keep it explicit so real GPT-5.3 usage stays separate.
-            return .gpt54Legacy
         case "gpt-5.2-codex", "gpt5.2-codex", "gpt52-codex", "gpt52codex":
             return .gpt52Codex
         case "gpt-5.4", "gpt54":

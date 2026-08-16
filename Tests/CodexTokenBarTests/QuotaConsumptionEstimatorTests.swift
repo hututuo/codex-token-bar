@@ -379,8 +379,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.6"), .gpt56Sol)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4"), .gpt54Legacy)
         XCTAssertEqual(OfficialAPIPriceModel.detected(from: "gpt-5.4-mini"), .gpt54MiniLegacy)
-        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex-auto-review"), .gpt54Legacy)
-        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex_auto_review"), .gpt54Legacy)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex-auto-review"), .gpt56Luna)
+        XCTAssertEqual(OfficialAPIPriceModel.detected(from: "codex_auto_review"), .gpt56Luna)
         let breakdown = TokenCacheBreakdown(
             inputTokens: 1_000_000,
             cachedInputTokens: 0,
@@ -400,6 +400,68 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(2.5 / OfficialAPIPriceModel.gpt56Terra.currentPriceRates.inputUSDPerMillion, 1.25, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.gpt54MiniLegacy.currentPriceRates.costUSD(for: breakdown), 1.2, accuracy: 0.0001)
         XCTAssertEqual(OfficialAPIPriceModel.selectableCases, [.gpt56Sol, .gpt56Terra, .gpt56Luna])
+    }
+
+    func testAutoReviewPricingRulesUseUTC20260730CutoverAndRemainAppendOnly() throws {
+        let rules = CodexAutoReviewPricingPolicy.rules
+        let cutover = try XCTUnwrap(rules.last?.effectiveFrom)
+        let before = cutover.addingTimeInterval(-1)
+        let after = cutover.addingTimeInterval(1)
+
+        XCTAssertEqual(
+            OfficialAPIPriceModel.detected(from: "codex-auto-review", at: before),
+            .gpt54Legacy
+        )
+        XCTAssertEqual(
+            OfficialAPIPriceModel.detected(from: "codex_auto_review", at: cutover),
+            .gpt56Luna
+        )
+        XCTAssertEqual(
+            OfficialAPIPriceModel.detected(from: "codex-auto-review", at: after),
+            .gpt56Luna
+        )
+        XCTAssertEqual(rules.map(\.revision), [
+            "codex-auto-review-pre-luna",
+            "codex-auto-review-luna-20260730",
+        ])
+        XCTAssertTrue(rules[0].effectiveFrom < rules[1].effectiveFrom)
+    }
+
+    func testAutoReviewEventPricingSplitsSevenDayWindowAtUTC20260730() throws {
+        let cutover = try XCTUnwrap(CodexAutoReviewPricingPolicy.rules.last?.effectiveFrom)
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1
+        )
+        let events = [
+            TokenCacheAttributionEvent(
+                id: "auto-review-before-luna",
+                start: cutover.addingTimeInterval(-1),
+                model: "codex-auto-review",
+                breakdown: breakdown
+            ),
+            TokenCacheAttributionEvent(
+                id: "auto-review-after-luna",
+                start: cutover,
+                model: "codex_auto_review",
+                breakdown: breakdown
+            ),
+        ]
+
+        let estimate = ModelAwareAPIPriceEstimator.estimate(
+            events: events,
+            fallbackBreakdown: [breakdown, breakdown].combined,
+            fallbackModel: .gpt56Sol,
+            rates: { $0.currentPriceRates }
+        )
+
+        XCTAssertEqual(estimate.costUSD, 2.7, accuracy: 0.0001)
+        XCTAssertEqual(estimate.detectedModels, [.gpt56Luna, .gpt54Legacy])
+        XCTAssertEqual(estimate.fallbackCalls, 0)
     }
 
     func testIncompleteOrDuplicateModelRowsFallBackToTheCompleteBreakdown() {
@@ -481,8 +543,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 13.2, accuracy: 0.0001)
-        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex, .gpt54Legacy])
+        XCTAssertEqual(estimate.costUSD, 10.9, accuracy: 0.0001)
+        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
         XCTAssertEqual(estimate.fallbackCalls, 0)
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 1)

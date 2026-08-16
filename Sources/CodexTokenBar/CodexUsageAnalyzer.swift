@@ -35,18 +35,26 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     func load() throws -> DashboardSnapshot {
-        try load(onNumericPhase: nil)
+        try load(onNumericPhase: nil, onProgress: nil)
     }
 
     func load(
         onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)?
+    ) throws -> DashboardSnapshot {
+        try load(onNumericPhase: onNumericPhase, onProgress: nil)
+    }
+
+    func load(
+        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)?,
+        onProgress: (@Sendable (PreciseIndexProgress) -> Void)?
     ) throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.load", metadata: [
             "source": dataSource.displayPath
         ])
         do {
             let preciseSnapshot = try loadFromTokenCountJSONL(
-                onNumericPhase: onNumericPhase
+                onNumericPhase: onNumericPhase,
+                onProgress: onProgress
             )
             trace?.end("precise", metadata: [
                 "tokens": String(preciseSnapshot.stats.totalTokens),
@@ -209,7 +217,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     private func loadFromTokenCountJSONL(
-        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil
+        onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil,
+        onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil
     ) throws -> DashboardSnapshot {
         // Discovery, synchronization, numeric aggregation, and the durable
         // numeric commit are one per-index phase. Excerpt hydration deliberately
@@ -218,7 +227,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let prepared = try CodexUsageHistoryIndex.withExclusiveAccess(
             codexHome: dataSource.codexHome
         ) {
-            try loadFromTokenCountJSONLExclusively()
+            try loadFromTokenCountJSONLExclusively(onProgress: onProgress)
         }
         switch prepared {
         case let .complete(snapshot):
@@ -317,13 +326,21 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         case numeric(PreparedNumericPhase)
     }
 
-    private func loadFromTokenCountJSONLExclusively() throws -> PreparedPreciseLoad {
+    private func loadFromTokenCountJSONLExclusively(
+        onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil
+    ) throws -> PreparedPreciseLoad {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
         trace?.mark("jsonlFiles.begin")
         let sessionFiles = try usageJSONLFiles()
         trace?.mark("jsonlFiles.end", metadata: ["count": String(sessionFiles.count)])
+        onProgress?(PreciseIndexProgress(
+            phase: .preparing,
+            message: "已发现 \(sessionFiles.count) 个会话文件，准备建立精确索引",
+            completed: 0,
+            total: sessionFiles.count
+        ))
         guard !sessionFiles.isEmpty else {
             trace?.end("missing-token-jsonl-files")
             throw NSError(domain: "CodexTokenBar", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath) has no token JSONL files"])
@@ -332,7 +349,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let historyIndex: CodexUsageHistoryIndex
         let initialAttributionState: CodexUsageHistoryIndex.AttributionState
         do {
-            historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+            historyIndex = try CodexUsageHistoryIndex(
+                codexHome: dataSource.codexHome,
+                onProgress: onProgress
+            )
             initialAttributionState = try historyIndex.attributionState()
         } catch {
             throw CodexUsageHistoryIndexError(operation: "读取归因代次", underlying: error)
@@ -366,6 +386,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 turns: cached.cacheUsage.turns,
                 attributionEvents: cached.cacheUsage.attributionEvents,
                 attributionEventsComplete: true,
+                attributionModelBucketsComplete: true,
                 attributionProvenanceEpoch: cached.cacheUsage.attributionProvenanceEpoch,
                 attributionGeneration: initialAttributionState.generation,
                 attributionUnsafeSinceGeneration:
@@ -412,6 +433,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )
+            } onProgress: { completed, total, phase in
+                onProgress?(PreciseIndexProgress(
+                    phase: phase,
+                    message: phase == .scanning
+                        ? "正在扫描精确历史 \(completed)/\(total)"
+                        : "正在发布精确索引",
+                    completed: completed,
+                    total: total
+                ))
             }
             trace?.mark("historyIndex.synchronized", metadata: [
                 "changedFiles": String(synchronization.changedFiles),
@@ -539,8 +569,14 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             recentBins: aggregatedCacheUsage.recentBins,
             sessions: [],
             turns: [],
-            attributionEvents: [],
+            // `aggregatedCacheUsage` has already read exact 5-minute
+            // source/model buckets from the index. Keep that compact exact
+            // projection available even when turn excerpts are superseded.
+            attributionEvents: aggregatedCacheUsage.attributionEvents,
             attributionEventsComplete: false,
+            attributionModelBucketsComplete:
+                aggregatedCacheUsage.attributionModelBucketsComplete
+                && !aggregatedCacheUsage.attributionCurrentScanUnsafeCauseDetected,
             attributionProvenanceEpoch:
                 aggregatedCacheUsage.attributionProvenanceEpoch,
             attributionGeneration: aggregatedCacheUsage.attributionGeneration,

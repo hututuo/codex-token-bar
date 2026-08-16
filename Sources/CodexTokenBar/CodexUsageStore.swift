@@ -60,6 +60,7 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var isDetailHydrating = false
     @Published private(set) var isInitialLoading = true
     @Published private(set) var isPreparingUsageCache = false
+    @Published private(set) var preciseIndexProgress: PreciseIndexProgress = .idle
     /// Exact numeric time-series coverage; intentionally independent of
     /// attribution-event and excerpt/detail readiness.
     @Published private(set) var preciseTimeSeriesFresh = false
@@ -508,6 +509,14 @@ final class CodexUsageStore: ObservableObject {
             && snapshotSourceID == sourceID
         isRefreshing = true
         isDetailHydrating = false
+        preciseIndexProgress = PreciseIndexProgress(
+            phase: .preparing,
+            message: needsCacheInitialization
+                ? "正在计算索引规模，可能需要数分钟"
+                : "正在准备精确统计",
+            completed: 0,
+            total: nil
+        )
         // A pending marker belongs only to the last successful compact
         // summary. Any new refresh must establish its own freshness boundary.
         isCompactSummaryPending = false
@@ -635,9 +644,28 @@ final class CodexUsageStore: ObservableObject {
                     if !compactSummaryApplied {
                         trace?.mark("preciseSnapshot.begin")
                         var sawFinalPrecisePhase = false
-                        for try await loaded in self.snapshotLoader.loadSnapshotPhases(
-                            dataSource: source
-                        ) {
+                        let precisePhases: AsyncThrowingStream<DashboardSnapshot, Error>
+                        if let progressLoader = self.snapshotLoader as? any DashboardSnapshotProgressLoading {
+                            precisePhases = progressLoader.loadSnapshotPhases(dataSource: source) { [weak self] progress in
+                                Task { @MainActor [weak self] in
+                                    guard let self,
+                                          self.isCurrentRefresh(
+                                              generation: generation,
+                                              bindingGeneration: bindingGeneration,
+                                              sourceID: sourceID
+                                          ) else { return }
+                                    self.preciseIndexProgress = progress
+                                    if progress.isActive {
+                                        self.status = progress.message
+                                    }
+                                }
+                            }
+                        } else {
+                            precisePhases = self.snapshotLoader.loadSnapshotPhases(
+                                dataSource: source
+                            )
+                        }
+                        for try await loaded in precisePhases {
                             guard self.isCurrentRefresh(
                                 generation: generation,
                                 bindingGeneration: bindingGeneration,
@@ -657,6 +685,12 @@ final class CodexUsageStore: ObservableObject {
                                     self.didRunPreciseScan = true
                                     UsageCacheLifecycle.markCurrentCachePrepared()
                                     self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
+                                    self.preciseIndexProgress = PreciseIndexProgress(
+                                        phase: .complete,
+                                        message: "精确统计已更新",
+                                        completed: 1,
+                                        total: 1
+                                    )
                                     trace?.mark("preciseSnapshot.finalPhase", metadata: [
                                         "tokens": String(loaded.stats.totalTokens),
                                         "calls": String(loaded.stats.totalCalls),
@@ -679,6 +713,7 @@ final class CodexUsageStore: ObservableObject {
                                     self.didFinishInitialLoad = true
                                     self.isInitialLoading = false
                                     self.isPreparingUsageCache = false
+                                    self.preciseIndexProgress = .idle
                                     self.activeRefreshCompactOnly = false
                                     trace?.mark("preciseSnapshot.numericPhase", metadata: [
                                         "tokens": String(loaded.stats.totalTokens),
@@ -734,6 +769,12 @@ final class CodexUsageStore: ObservableObject {
                 } else {
                     self.isDetailHydrating = false
                     self.isCompactSummaryPending = false
+                    self.preciseIndexProgress = PreciseIndexProgress(
+                        phase: .failed,
+                        message: "精确统计失败，保留上次可信数据",
+                        completed: 0,
+                        total: nil
+                    )
                     let retainedTrustedSnapshot = self.snapshotSourceID == sourceID
                         && self.hasDisplayableSnapshot(self.snapshot)
                     if !retainedTrustedSnapshot {

@@ -26,7 +26,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(slices.reduce(0) { $0 + $1.tokens }, 100)
     }
 
-    func testAutoReviewUsesCurrentGPT54ProfileWithoutMergingRealGPT53() {
+    func testAutoReviewRemainsSeparateFromRealGPT54AndGPT53() {
         let rows = [
             row("codex-auto-review", tokens: 600, calls: 2),
             row("gpt-5.4", tokens: 100, calls: 1),
@@ -35,8 +35,65 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         let slices = ModelUsagePresentation.slices(from: rows)
 
-        XCTAssertEqual(slices.map(\.label), ["5.4", "5.3"])
-        XCTAssertEqual(slices.map(\.tokens), [700, 300])
+        XCTAssertEqual(slices.map(\.label), ["Auto Review（Luna）", "5.3", "5.4"])
+        XCTAssertEqual(slices.map(\.tokens), [600, 300, 100])
+    }
+
+    func testAutoReviewChartLabelsUseTheEventCutoverDate() throws {
+        let cutover = try XCTUnwrap(CodexAutoReviewPricingPolicy.rules.last?.effectiveFrom)
+        let breakdown = TokenCacheBreakdown(
+            inputTokens: 1_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1_000,
+            calls: 1
+        )
+        let rows = ModelUsagePresentation.rows(from: [
+            TokenCacheAttributionEvent(
+                id: "auto-review-legacy",
+                start: cutover.addingTimeInterval(-1),
+                model: "codex-auto-review",
+                breakdown: breakdown
+            ),
+            TokenCacheAttributionEvent(
+                id: "auto-review-luna",
+                start: cutover,
+                model: "codex_auto_review",
+                breakdown: breakdown
+            ),
+        ])
+
+        XCTAssertEqual(
+            ModelUsagePresentation.slices(from: rows).map(\.label),
+            ["Auto Review（5.4）", "Auto Review（Luna）"]
+        )
+    }
+
+    func testFloatingAutoReviewUsesLunaSlotWithoutTakingAnExtraModelSlot() throws {
+        let luna = rowWithBreakdown(
+            "gpt-5.6-luna",
+            inputTokens: 500_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 500_000
+        )
+        let autoReview = rowWithBreakdown(
+            "codex-auto-review@luna",
+            inputTokens: 300_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 300_000
+        )
+
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: [luna, autoReview],
+            fallbackModel: .gpt56Sol
+        )
+
+        XCTAssertEqual(items.map(\.label), ["Luna"])
+        XCTAssertEqual(items.first?.tokens, 800_000)
+        XCTAssertEqual(items.first?.costUSD ?? -1, 0.16, accuracy: 0.0001)
     }
 
     func testFloatingTodayModelUsagePricesDetectedModelsWithCacheAndExcludesSpark() throws {
@@ -74,7 +131,21 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(sol.costUSD ?? -1, 4.4, accuracy: 0.0001)
         XCTAssertFalse(sol.usesIndependentQuota)
-        XCTAssertEqual(spark.valueText(for: .cost), "独立")
+        XCTAssertEqual(spark.valueText(for: .cost), "$0.44（不计入总计）")
+        XCTAssertEqual(spark.referenceCostUSD ?? -1, 0.4375, accuracy: 0.0001)
+        // A non-zero lifetime share must never be rounded down to a misleading
+        // 0% label on the cumulative model-cost row.
+        let smallShareSpark = FloatingTodayModelUsageItem(
+            id: "gpt-5.3-codex-spark",
+            label: "Spark",
+            tokens: 1,
+            share: 0.0010916,
+            costUSD: nil,
+            usesIndependentQuota: true,
+            referenceCostUSD: nil,
+            color: .orange
+        )
+        XCTAssertEqual(smallShareSpark.valueText(for: .share), "0.1%")
         XCTAssertNil(spark.costUSD)
         XCTAssertTrue(spark.usesIndependentQuota)
         XCTAssertEqual(items.reduce(0) { $0 + $1.share }, 1, accuracy: 0.0001)
@@ -155,7 +226,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(items.count, 5)
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.overflowDetailText(items: items),
-            "更多模型\ngpt-5.5 · 1 tokens · 占比 <0.1% · $0.00"
+            "更多模型\n5.4 · 0 tokens · 占比 0% · $0.00"
         )
         XCTAssertNil(
             FloatingTodayModelUsagePresentation.overflowDetailText(

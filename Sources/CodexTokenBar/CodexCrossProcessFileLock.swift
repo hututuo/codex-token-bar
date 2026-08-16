@@ -7,6 +7,29 @@ final class CodexCrossProcessFileLock {
 
     private var descriptor: Int32
 
+    static func acquireWaiting(
+        url: URL,
+        label: String,
+        timeout: TimeInterval = 30,
+        onContention: (() -> Void)? = nil
+    ) throws -> CodexCrossProcessFileLock {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        var announced = false
+        while true {
+            do {
+                return try CodexCrossProcessFileLock(url: url, label: label)
+            } catch {
+                guard isContention(error) else { throw error }
+                if !announced {
+                    onContention?()
+                    announced = true
+                }
+                guard Date() < deadline else { throw error }
+                Thread.sleep(forTimeInterval: 0.08)
+            }
+        }
+    }
+
     init(
         url: URL,
         label: String,

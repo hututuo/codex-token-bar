@@ -158,6 +158,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             ["gpt-5.6-sol", "gpt-5.6-terra"]
         )
         XCTAssertTrue(snapshot.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(snapshot.cacheUsage.attributionModelBucketsComplete)
         XCTAssertEqual(
             snapshot.cacheUsage.attributionEvents.reduce(0) {
                 $0 + $1.breakdown.calls
@@ -231,9 +232,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(numeric.cacheUsage.modelBreakdowns, final.cacheUsage.modelBreakdowns)
         XCTAssertEqual(numeric.cacheUsage.dailyModelBreakdowns, final.cacheUsage.dailyModelBreakdowns)
         XCTAssertFalse(numeric.cacheUsage.attributionEventsComplete)
+        XCTAssertTrue(numeric.cacheUsage.attributionModelBucketsComplete)
         XCTAssertTrue(numeric.cacheUsage.sessions.isEmpty)
         XCTAssertTrue(numeric.cacheUsage.turns.isEmpty)
-        XCTAssertTrue(numeric.cacheUsage.attributionEvents.isEmpty)
+        XCTAssertEqual(numeric.cacheUsage.attributionEvents, final.cacheUsage.attributionEvents)
         XCTAssertEqual(
             numeric.preciseTimeSeriesGeneratedAt,
             final.preciseTimeSeriesGeneratedAt

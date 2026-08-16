@@ -76,11 +76,27 @@ enum DashboardHeaderContextLayout {
 struct DashboardHeaderFreshnessPresentation: Equatable {
     let text: String
     let needsAttention: Bool
+    let showsProgress: Bool
+    let progressFraction: Double?
 
-    init(status: String, isRefreshing: Bool, generatedAt: Date) {
+    init(
+        status: String,
+        isRefreshing: Bool,
+        generatedAt: Date,
+        progress: PreciseIndexProgress = .idle
+    ) {
+        if progress.isActive {
+            text = progress.message
+            needsAttention = progress.phase == .failed
+            showsProgress = true
+            progressFraction = progress.fraction
+            return
+        }
         if isRefreshing {
             text = "正在同步"
             needsAttention = false
+            showsProgress = false
+            progressFraction = nil
             return
         }
 
@@ -88,11 +104,15 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
         if trimmed.contains("失败") || trimmed.contains("陈旧") {
             text = trimmed
             needsAttention = true
+            showsProgress = false
+            progressFraction = nil
             return
         }
 
         text = "更新于 \(DateFormatter.statusString(from: generatedAt))"
         needsAttention = false
+        showsProgress = false
+        progressFraction = nil
     }
 }
 
@@ -147,6 +167,7 @@ struct HeaderView: View {
     let dataSourceLabel: String
     let dataSourceOrigin: String
     let isRefreshing: Bool
+    let preciseIndexProgress: PreciseIndexProgress
     let unreadThreadCount: Int
     let runningThreadSummary: RunningThreadSummary
     let presentationMode: DashboardHeaderPresentationMode
@@ -211,7 +232,8 @@ struct HeaderView: View {
         DashboardHeaderFreshnessPresentation(
             status: status,
             isRefreshing: isRefreshing,
-            generatedAt: snapshot.generatedAt
+            generatedAt: snapshot.generatedAt,
+            progress: preciseIndexProgress
         )
     }
 
@@ -227,6 +249,23 @@ struct HeaderView: View {
             return .orange
         case .loading, .unavailable:
             return .secondary
+        }
+    }
+
+    private var preciseProgressColor: Color {
+        switch preciseIndexProgress.phase {
+        case .waiting, .migrating:
+            return .orange
+        case .backfillingModel:
+            return .purple
+        case .publishing:
+            return .teal
+        case .preparing, .scanning:
+            return AppTheme.accentBlue
+        case .failed:
+            return AppTheme.accentRed
+        case .idle, .complete:
+            return headerPrecisionColor
         }
     }
 
@@ -344,12 +383,26 @@ struct HeaderView: View {
 
                         DashboardHeaderRailDivider()
                         HStack(spacing: 7) {
+                            Circle()
+                                .fill(preciseProgressColor)
+                                .frame(width: 6, height: 6)
                             Text(headerPrecisionLabel)
                                 .foregroundStyle(headerPrecisionColor)
                             Text(freshnessPresentation.text)
                                 .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                            if freshnessPresentation.showsProgress {
+                                if let fraction = freshnessPresentation.progressFraction {
+                                    ProgressView(value: fraction)
+                                        .tint(preciseProgressColor)
+                                        .frame(width: 52)
+                                } else {
+                                    ProgressView()
+                                        .tint(preciseProgressColor)
+                                        .frame(width: 52)
+                                }
+                            }
                         }
                         .font(.system(size: 11, weight: .medium))
                         .padding(.horizontal, 10)
@@ -785,9 +838,8 @@ struct DashboardSevenDayModelData: Equatable {
               let resetAt = quotaSnapshot?.sevenDay?.resetsAt,
               resetAt.timeIntervalSince1970.isFinite,
               resetAt > now,
-              cacheUsage.attributionEventsComplete,
-              !cacheUsage.attributionCurrentScanUnsafeCauseDetected,
-              !cacheUsage.attributionSourceMutationDetected else {
+              cacheUsage.attributionModelBucketsComplete,
+              !cacheUsage.attributionCurrentScanUnsafeCauseDetected else {
             rows = []
             tokens = 0
             self.dataAvailable = false
@@ -843,6 +895,14 @@ struct DashboardModelCostRow: View {
         items.compactMap(\.costUSD).reduce(0, +)
     }
 
+    private var referenceCostSummary: String? {
+        let entries = items.compactMap { item -> String? in
+            guard let referenceCostUSD = item.referenceCostUSD else { return nil }
+            return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
+        }
+        return entries.isEmpty ? nil : entries.joined(separator: " · ")
+    }
+
     private var primaryItems: [FloatingTodayModelUsageItem] {
         FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: items)
     }
@@ -882,14 +942,7 @@ struct DashboardModelCostRow: View {
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 9) {
-                Picker("模型费用范围", selection: $scope) {
-                    ForEach(DashboardModelCostScope.allCases) { option in
-                        Text(option.rawValue).tag(option)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 86)
+                DashboardModelCostScopePicker(scope: $scope)
 
                 Text("各模型 API 等值费用")
                     .font(.system(size: 11.5, weight: .semibold))
@@ -899,11 +952,20 @@ struct DashboardModelCostRow: View {
                 Spacer(minLength: 4)
 
                 if selectedDataAvailable, hasModelDetail, !items.isEmpty {
-                    Text("合计 \(totalCost.quotaEstimatorMoneyText)")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(AppTheme.accentBlue)
-                        .monospacedDigit()
-                        .fixedSize()
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("合计 \(totalCost.quotaEstimatorMoneyText)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(AppTheme.accentBlue)
+                            .monospacedDigit()
+                            .fixedSize()
+                        if let referenceCostSummary {
+                            Text(referenceCostSummary)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .fixedSize()
+                        }
+                    }
                 }
             }
 
@@ -981,6 +1043,47 @@ struct DashboardModelCostRow: View {
         .padding(.horizontal, 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(scope.rawValue)各模型 API 等值费用")
+    }
+}
+
+private struct DashboardModelCostScopePicker: View {
+    @Binding var scope: DashboardModelCostScope
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(DashboardModelCostScope.allCases) { option in
+                Button {
+                    scope = option
+                } label: {
+                    Text(option.rawValue)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(scope == option ? AppTheme.accentBlue : .secondary)
+                        .frame(maxWidth: .infinity, minHeight: 22)
+                        .background(
+                            scope == option
+                                ? AppTheme.selectedControlBackground
+                                : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(scope == option ? .isSelected : [])
+            }
+        }
+        .padding(2)
+        .frame(width: 104, height: 26)
+        .background(
+            AppTheme.solidControlBackground,
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(AppTheme.border, lineWidth: 1)
+        )
+        .clipped()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("模型费用范围")
+        .accessibilityValue(scope.rawValue)
     }
 }
 

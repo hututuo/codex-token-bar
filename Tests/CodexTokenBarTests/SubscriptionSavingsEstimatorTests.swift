@@ -195,12 +195,14 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         )
         object.removeValue(forKey: "modelBreakdowns")
         object.removeValue(forKey: "dailyModelBreakdowns")
+        object.removeValue(forKey: "attributionModelBucketsComplete")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(TokenCacheUsage.self, from: legacyData)
 
         XCTAssertTrue(decoded.modelBreakdowns.isEmpty)
         XCTAssertTrue(decoded.dailyModelBreakdowns.isEmpty)
+        XCTAssertFalse(decoded.attributionModelBucketsComplete)
         XCTAssertEqual(decoded.total, .empty)
     }
 }

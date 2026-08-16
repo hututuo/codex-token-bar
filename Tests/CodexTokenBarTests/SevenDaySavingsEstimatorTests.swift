@@ -20,7 +20,10 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         events: [TokenCacheAttributionEvent] = [],
         hourly: [TokenCacheBucket] = [],
         recentBins: [TokenCacheBucket] = [],
-        complete: Bool = false
+        complete: Bool = false,
+        modelBucketsComplete: Bool? = nil,
+        currentScanUnsafe: Bool = false,
+        sourceMutation: Bool = false
     ) -> TokenCacheUsage {
         TokenCacheUsage(
             total: events.map(\.breakdown).combined,
@@ -30,7 +33,10 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
             sessions: [],
             turns: [],
             attributionEvents: events,
-            attributionEventsComplete: complete
+            attributionEventsComplete: complete,
+            attributionModelBucketsComplete: modelBucketsComplete ?? complete,
+            attributionCurrentScanUnsafeCauseDetected: currentScanUnsafe,
+            attributionSourceMutationDetected: sourceMutation
         )
     }
 
@@ -80,8 +86,11 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         guard case .measured = estimate.quality else {
             return XCTFail("expected complete event stream to be measured")
         }
+        guard let valueUSD = estimate.valueUSD else {
+            return XCTFail("expected measured estimate to include a value")
+        }
         XCTAssertEqual(
-            estimate.valueUSD,
+            valueUSD,
             OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown(input: 1_000_000)),
             accuracy: 0.000001
         )
@@ -109,8 +118,11 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
             return XCTFail("expected an explicitly estimated hourly fallback")
         }
         XCTAssertTrue(source.contains("hourly"))
+        guard let valueUSD = estimate.valueUSD else {
+            return XCTFail("expected hourly fallback estimate to include a value")
+        }
         XCTAssertEqual(
-            estimate.valueUSD,
+            valueUSD,
             OfficialAPIPriceModel.gpt56Terra.currentPriceRates.costUSD(for: breakdown(input: 1_000_000)),
             accuracy: 0.000001
         )
@@ -180,6 +192,32 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         XCTAssertTrue(incomplete.rows.isEmpty)
         XCTAssertFalse(missingReset.dataAvailable)
         XCTAssertTrue(missingReset.rows.isEmpty)
+    }
+
+    func testDashboardModelRowsIgnoreStickySharedAccountSafetyForLocalExactUsage() {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60)
+        let event = TokenCacheAttributionEvent(
+            id: "sticky-unsafe-local-model",
+            start: now,
+            model: "gpt-5.6-sol",
+            breakdown: breakdown(input: 1_000_000)
+        )
+
+        let data = DashboardSevenDayModelData(
+            cacheUsage: usage(
+                events: [event],
+                complete: false,
+                modelBucketsComplete: true,
+                sourceMutation: true
+            ),
+            quotaSnapshot: quota(resetAt: resetAt),
+            now: now,
+            dataAvailable: true
+        )
+
+        XCTAssertTrue(data.dataAvailable)
+        XCTAssertEqual(data.tokens, 1_000_000)
+        XCTAssertEqual(data.rows.map(\.model), ["gpt-5.6-sol"])
     }
 
     func testMissingQuotaShowsWaitingInsteadOfLifetimeValue() {

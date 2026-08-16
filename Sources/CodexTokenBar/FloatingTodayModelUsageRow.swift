@@ -20,14 +20,21 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
     let share: Double
     let costUSD: Double?
     let usesIndependentQuota: Bool
+    let referenceCostUSD: Double?
     let color: Color
 
     func valueText(for page: FloatingTodayModelUsagePage) -> String {
         switch page {
         case .share:
-            return "\(Int((share * 100).rounded()))%"
+            let percent = max(0, share) * 100
+            if percent > 0, percent < 0.1 { return "<0.1%" }
+            if percent > 0, percent < 10 { return String(format: "%.1f%%", percent) }
+            return "\(Int(percent.rounded()))%"
         case .cost:
-            if usesIndependentQuota { return "独立" }
+            if usesIndependentQuota {
+                let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
+                return "\(referenceCost)（不计入总计）"
+            }
             return (costUSD ?? 0).quotaEstimatorMoneyText
         }
     }
@@ -57,7 +64,19 @@ enum FloatingTodayModelUsagePresentation {
         fallbackModel: OfficialAPIPriceModel,
         showPlaceholders: Bool = false
     ) -> [FloatingTodayModelUsageItem] {
-        let combined = ModelUsagePresentation.combinedRows(rows)
+        // The floating strip intentionally spends one slot on Luna. Auto-review
+        // is a backend alias, so it follows the current Luna route here instead
+        // of taking a separate slot from the compact surface.
+        let floatingRows = rows.map { row in
+            guard ModelUsagePresentation.isAutoReviewModelKey(row.model) else {
+                return row
+            }
+            return ModelTokenBreakdown(
+                model: "gpt-5.6-luna",
+                breakdown: row.breakdown
+            )
+        }
+        let combined = ModelUsagePresentation.combinedRows(floatingRows)
         let total = combined.reduce(0) { $0 + $1.breakdown.totalTokens }
         guard total > 0 || showPlaceholders else { return [] }
 
@@ -80,6 +99,10 @@ enum FloatingTodayModelUsagePresentation {
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
             let priceModel = OfficialAPIPriceModel.detected(from: row.model) ?? fallbackModel
             let costUSD = independent ? nil : priceModel.currentPriceRates.costUSD(for: row.breakdown)
+            let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
+                for: row.model,
+                breakdown: row.breakdown
+            )
             return (
                 item: FloatingTodayModelUsageItem(
                     id: key,
@@ -88,6 +111,7 @@ enum FloatingTodayModelUsagePresentation {
                     share: total > 0 ? Double(row.breakdown.totalTokens) / Double(total) : 0,
                     costUSD: costUSD,
                     usesIndependentQuota: independent,
+                    referenceCostUSD: referenceCostUSD,
                     color: ModelUsagePresentation.color(for: row.model)
                 ),
                 defaultIndex: defaultOrder[key] ?? defaultModelKeys.count,
@@ -100,8 +124,9 @@ enum FloatingTodayModelUsagePresentation {
             if lhsUsed != rhsUsed { return lhsUsed }
 
             // Paid models are ordered by the same daily dollar estimate on
-            // both pages. Independent-quota Spark has no dollar value, so it
-            // follows priced usage but remains ahead of zero placeholders.
+            // both pages. Independent-quota Spark has no billable dollar
+            // value in the primary total; its reference price is shown below
+            // the total and does not affect this order.
             let lhsCost = lhs.item.costUSD ?? 0
             let rhsCost = rhs.item.costUSD ?? 0
             if lhsCost != rhsCost { return lhsCost > rhsCost }
@@ -159,6 +184,7 @@ enum FloatingTodayModelUsagePresentation {
             share: 0,
             costUSD: 0,
             usesIndependentQuota: false,
+            referenceCostUSD: nil,
             color: ModelUsagePresentation.color(for: key)
         )
     }
@@ -172,7 +198,7 @@ enum FloatingTodayModelUsagePresentation {
 
         let details = hiddenItems.map { item in
             let cost = item.usesIndependentQuota
-                ? "独立额度"
+                ? "\(item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—")（不计入总计）"
                 : (item.costUSD ?? 0).quotaEstimatorMoneyText
             return "\(item.label) · \(item.tokens.abbreviatedTokens) tokens · 占比 \(detailedShareText(item.share)) · \(cost)"
         }
@@ -218,7 +244,11 @@ struct FloatingTodayModelUsageRow: View {
                     .foregroundStyle(textPalette.secondaryColor)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
-                HStack(spacing: page == .share ? 0 : 6.scaled(by: displayScale)) {
+                // Cost items need a little more separation on Swift because
+                // the row is rendered through the interface-scale environment;
+                // 10pt keeps the perceived spacing aligned with Tauri's 8px
+                // CSS gap at the compact surface scale.
+                HStack(spacing: page == .share ? 0 : 10.scaled(by: displayScale)) {
                     ForEach(Array(items.prefix(visibleLimit))) { item in
                         HStack(spacing: 2.scaled(by: displayScale)) {
                             Circle()

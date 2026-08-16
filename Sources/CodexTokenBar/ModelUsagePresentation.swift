@@ -10,6 +10,8 @@ struct ModelUsageSlice: Identifiable, Equatable {
 }
 
 enum ModelUsagePresentation {
+    private static let autoReviewDisplayPrefix = "codex-auto-review@"
+
     static func slices(from rows: [ModelTokenBreakdown]) -> [ModelUsageSlice] {
         let combined = combinedRows(rows)
         let total = combined.reduce(0) { $0 + $1.breakdown.totalTokens }
@@ -33,7 +35,12 @@ enum ModelUsagePresentation {
     }
 
     static func rows(from events: [TokenCacheAttributionEvent]) -> [ModelTokenBreakdown] {
-        combinedRows(events.map { ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown) })
+        combinedRows(events.map {
+            ModelTokenBreakdown(
+                model: displayModelKey(for: $0.model, at: $0.start),
+                breakdown: $0.breakdown
+            )
+        })
     }
 
     static func compactText(from rows: [ModelTokenBreakdown], limit: Int = 3) -> String? {
@@ -56,6 +63,12 @@ enum ModelUsagePresentation {
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
         guard !normalized.isEmpty else { return "unknown" }
+        if normalized.hasPrefix(autoReviewDisplayPrefix) {
+            return normalized
+        }
+        if CodexAutoReviewPricingPolicy.isAutoReviewAlias(normalized) {
+            return "codex-auto-review"
+        }
         if OfficialAPIPriceModel.independentQuotaModelName(from: normalized) != nil {
             return "gpt-5.3-codex-spark"
         }
@@ -83,21 +96,46 @@ enum ModelUsagePresentation {
 
     static func label(for model: String?) -> String {
         switch key(for: model) {
-        case "gpt-5.6-sol": "Sol"
-        case "gpt-5.6-terra": "Terra"
-        case "gpt-5.6-luna": "Luna"
-        case "gpt-5.4-mini": "5.4 mini"
-        case "gpt-5.4": "5.4"
-        case "gpt-5.3-codex": "5.3"
-        case "gpt-5.3-codex-spark": "Spark"
-        case "gpt-5.2-codex": "5.2"
-        case "unknown": "未知模型"
-        default: model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未知模型"
+        case "gpt-5.6-sol": return "Sol"
+        case "gpt-5.6-terra": return "Terra"
+        case "gpt-5.6-luna": return "Luna"
+        case "codex-auto-review": return "Auto Review（Luna）"
+        case "gpt-5.4-mini": return "5.4 mini"
+        case "gpt-5.4": return "5.4"
+        case "gpt-5.3-codex": return "5.3"
+        case "gpt-5.3-codex-spark": return "Spark"
+        case "gpt-5.2-codex": return "5.2"
+        case "unknown": return "未知模型"
+        default:
+            let modelKey = key(for: model)
+            if modelKey.hasPrefix(autoReviewDisplayPrefix) {
+                let suffix = String(modelKey.dropFirst(autoReviewDisplayPrefix.count))
+                return "Auto Review（\(displayTargetTitle(for: suffix))）"
+            }
+            return model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未知模型"
         }
     }
 
     static func color(for model: String?) -> Color {
-        color(forKey: key(for: model))
+        let modelKey = key(for: model)
+        if modelKey == "codex-auto-review" {
+            return color(forKey: "gpt-5.6-luna")
+        }
+        if modelKey.hasPrefix(autoReviewDisplayPrefix) {
+            let suffix = String(modelKey.dropFirst(autoReviewDisplayPrefix.count))
+            return color(forKey: displayTargetKey(for: suffix))
+        }
+        return color(forKey: modelKey)
+    }
+
+    static func isAutoReviewModelKey(_ model: String?) -> Bool {
+        guard let model else { return false }
+        let normalized = model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        return normalized.hasPrefix(autoReviewDisplayPrefix)
+            || CodexAutoReviewPricingPolicy.isAutoReviewAlias(normalized)
     }
 
     static func combinedRows(_ rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
@@ -139,6 +177,57 @@ enum ModelUsagePresentation {
                 ($0 ^ UInt64($1)) &* 1099511628211
             } % UInt64(palette.count)
             return palette[Int(index)]
+        }
+    }
+
+    private static func displayModelKey(for model: String?, at date: Date) -> String? {
+        guard CodexAutoReviewPricingPolicy.isAutoReviewAlias(model) else {
+            return model
+        }
+        let target = OfficialAPIPriceModel.detected(from: model, at: date)
+        switch target {
+        case .gpt56Luna:
+            return "\(autoReviewDisplayPrefix)luna"
+        case .gpt54Legacy:
+            return "\(autoReviewDisplayPrefix)5.4"
+        case let target?:
+            return "\(autoReviewDisplayPrefix)\(target.rawValue)"
+        case nil:
+            return "codex-auto-review"
+        }
+    }
+
+    private static func displayTargetTitle(for suffix: String) -> String {
+        switch displayTargetKey(for: suffix) {
+        case "gpt-5.6-luna": return "Luna"
+        case "gpt-5.4": return "5.4"
+        case "gpt-5.6-sol": return "Sol"
+        case "gpt-5.6-terra": return "Terra"
+        case "gpt-5.3-codex": return "5.3"
+        case "gpt-5.2-codex": return "5.2"
+        case "gpt-5.4-mini": return "5.4 mini"
+        default: return suffix
+        }
+    }
+
+    private static func displayTargetKey(for suffix: String) -> String {
+        switch suffix {
+        case "luna", OfficialAPIPriceModel.gpt56Luna.rawValue:
+            return "gpt-5.6-luna"
+        case "5.4", OfficialAPIPriceModel.gpt54Legacy.rawValue:
+            return "gpt-5.4"
+        case OfficialAPIPriceModel.gpt56Sol.rawValue:
+            return "gpt-5.6-sol"
+        case OfficialAPIPriceModel.gpt56Terra.rawValue:
+            return "gpt-5.6-terra"
+        case OfficialAPIPriceModel.gpt53Codex.rawValue:
+            return "gpt-5.3-codex"
+        case OfficialAPIPriceModel.gpt52Codex.rawValue:
+            return "gpt-5.2-codex"
+        case OfficialAPIPriceModel.gpt54MiniLegacy.rawValue:
+            return "gpt-5.4-mini"
+        default:
+            return suffix
         }
     }
 }

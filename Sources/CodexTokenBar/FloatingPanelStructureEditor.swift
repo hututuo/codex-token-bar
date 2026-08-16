@@ -121,7 +121,7 @@ struct FloatingPanelStructureEditor: View {
             HStack(spacing: 6) {
                 Image(systemName: "dollarsign.circle")
                     .foregroundStyle(AppTheme.accentBlue)
-                Text("费用按真实模型与缓存价格计算；未知模型使用回退模型，Spark 为独立额度。")
+                Text("费用按真实模型与缓存价格计算；未知模型使用回退模型；Spark 使用暂定 API 参考价，但独立额度不计入总计。")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
             }

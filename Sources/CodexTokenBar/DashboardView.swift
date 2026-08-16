@@ -981,6 +981,7 @@ struct DashboardView: View {
                 dataSourceLabel: store.dataSourceLabel,
                 dataSourceOrigin: store.dataSourceOrigin,
                 isRefreshing: store.isRefreshing,
+                preciseIndexProgress: store.preciseIndexProgress,
                 unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
                 runningThreadSummary: taskCompletionMonitor.runningThreadSummary,
                 presentationMode: .dashboard,

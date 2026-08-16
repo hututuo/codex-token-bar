@@ -36,10 +36,42 @@ enum CodexRadarPresentationText {
     static func compactModelName(_ rawValue: String) -> String {
         let familyNames = ["Sol", "Luna", "Terra"]
         let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
+        let effortNames = ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"]
+        let isDeepSeek = tokens.contains(where: { $0.caseInsensitiveCompare("DeepSeek") == .orderedSame })
+        let isHarness = tokens.first?.caseInsensitiveCompare("DSH") == .orderedSame
+        if isDeepSeek || isHarness {
+            let effort = effortNames.first(where: { effort in
+                tokens.contains(where: { $0.caseInsensitiveCompare(effort) == .orderedSame })
+            })
+            let variant: String?
+            if tokens.contains(where: {
+                $0.caseInsensitiveCompare("Flash") == .orderedSame
+                    || $0.caseInsensitiveCompare("F") == .orderedSame
+            }) {
+                variant = "F"
+            } else if tokens.contains(where: {
+                $0.caseInsensitiveCompare("Pro") == .orderedSame
+                    || $0.caseInsensitiveCompare("P") == .orderedSame
+            }) {
+                variant = "P"
+            } else {
+                variant = nil
+            }
+            if let variant {
+                return ([isHarness ? "DSH" : "DS", variant, effort].compactMap { $0 }).joined(separator: " ")
+            }
+            if isHarness {
+                return rawValue
+                    .replacingOccurrences(of: #"^DSH[\s_-]*"#, with: "DSH ", options: [.regularExpression, .caseInsensitive])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return rawValue
+                .replacingOccurrences(of: #"^DeepSeek[\s_-]*"#, with: "DS ", options: [.regularExpression, .caseInsensitive])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         if let family = familyNames.first(where: { family in
             tokens.contains(where: { $0.caseInsensitiveCompare(family) == .orderedSame })
         }) {
-            let effortNames = ["max", "xhigh", "high", "medium", "low", "minimal"]
             let effort = effortNames.first(where: { effort in
                 tokens.contains(where: { $0.caseInsensitiveCompare(effort) == .orderedSame })
             })

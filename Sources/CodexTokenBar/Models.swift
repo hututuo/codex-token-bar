@@ -273,6 +273,11 @@ struct TokenCacheUsage: Codable {
     /// Attribution must force a fresh exact scan before trusting event-level
     /// provenance from such a snapshot.
     let attributionEventsComplete: Bool
+    /// True when `attributionEvents` is an exact 5-minute model/source-bucket
+    /// projection from the exact index. This is intentionally independent of
+    /// session/turn excerpt hydration: the 7d model-cost row can be exact while
+    /// the heavier conversation detail phase is still running or superseded.
+    let attributionModelBucketsComplete: Bool
     /// Persistent identity of the exact-history index generation that produced
     /// these event locators. A changed epoch means prior locators cannot be
     /// reconciled safely and attribution must fail closed.
@@ -306,6 +311,7 @@ struct TokenCacheUsage: Codable {
         turns: [TurnCacheUsage],
         attributionEvents: [TokenCacheAttributionEvent] = [],
         attributionEventsComplete: Bool = false,
+        attributionModelBucketsComplete: Bool = false,
         attributionProvenanceEpoch: String? = nil,
         attributionGeneration: Int64? = nil,
         attributionUnsafeSinceGeneration: Int64? = nil,
@@ -322,6 +328,7 @@ struct TokenCacheUsage: Codable {
         self.turns = turns
         self.attributionEvents = attributionEvents
         self.attributionEventsComplete = attributionEventsComplete
+        self.attributionModelBucketsComplete = attributionModelBucketsComplete
         self.attributionProvenanceEpoch = attributionProvenanceEpoch
         self.attributionGeneration = attributionGeneration
         self.attributionUnsafeSinceGeneration = attributionUnsafeSinceGeneration
@@ -341,6 +348,7 @@ struct TokenCacheUsage: Codable {
         case turns
         case attributionEvents
         case attributionEventsComplete
+        case attributionModelBucketsComplete
         case attributionProvenanceEpoch
         case attributionGeneration
         case attributionUnsafeSinceGeneration
@@ -371,6 +379,10 @@ struct TokenCacheUsage: Codable {
         attributionEventsComplete = try container.decodeIfPresent(
             Bool.self,
             forKey: .attributionEventsComplete
+        ) ?? false
+        attributionModelBucketsComplete = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .attributionModelBucketsComplete
         ) ?? false
         attributionProvenanceEpoch = try container.decodeIfPresent(
             String.self,
@@ -406,6 +418,10 @@ struct TokenCacheUsage: Codable {
         try container.encode(turns, forKey: .turns)
         try container.encode(attributionEvents, forKey: .attributionEvents)
         try container.encode(attributionEventsComplete, forKey: .attributionEventsComplete)
+        try container.encode(
+            attributionModelBucketsComplete,
+            forKey: .attributionModelBucketsComplete
+        )
         try container.encodeIfPresent(attributionProvenanceEpoch, forKey: .attributionProvenanceEpoch)
         try container.encodeIfPresent(attributionGeneration, forKey: .attributionGeneration)
         try container.encodeIfPresent(
@@ -432,6 +448,7 @@ struct TokenCacheUsage: Codable {
         turns: [],
         attributionEvents: [],
         attributionEventsComplete: false,
+        attributionModelBucketsComplete: false,
         attributionProvenanceEpoch: nil,
         attributionGeneration: nil,
         attributionUnsafeSinceGeneration: nil,

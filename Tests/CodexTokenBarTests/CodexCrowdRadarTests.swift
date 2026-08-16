@@ -37,6 +37,25 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.bestModel?.iq ?? 0, 119.25, accuracy: 0.001)
     }
 
+    func testCrowdRadarLabelsCompactDeepSeekVariants() {
+        XCTAssertEqual(
+            CodexCrowdRadarModel(model: "DeepSeek V4 Flash", effort: "max", graded: 1, passed: 1, passRate: 1, cells: 1).label,
+            "DS F max"
+        )
+        XCTAssertEqual(
+            CodexCrowdRadarModel(model: "DeepSeek V4 Pro", effort: "high", graded: 1, passed: 1, passRate: 1, cells: 1).label,
+            "DS P high"
+        )
+        XCTAssertEqual(
+            CodexCrowdRadarModel(model: "DSH V4 Flash", effort: "max", graded: 1, passed: 1, passRate: 1, cells: 1).label,
+            "DSH F max"
+        )
+        XCTAssertEqual(
+            CodexCrowdRadarModel(model: "DSH-V4-Pro", effort: "high", graded: 1, passed: 1, passRate: 1, cells: 1).label,
+            "DSH P high"
+        )
+    }
+
     func testParserDecodesCurrentDirectResponseShape() throws {
         let table = Data(#"""
         {

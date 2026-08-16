@@ -418,6 +418,8 @@ extension CodexUsageAnalyzer {
             turns: hydratedTurns,
             attributionEvents: cacheUsage.attributionEvents,
             attributionEventsComplete: cacheUsage.attributionEventsComplete,
+            attributionModelBucketsComplete:
+                cacheUsage.attributionModelBucketsComplete,
             attributionProvenanceEpoch: cacheUsage.attributionProvenanceEpoch,
             attributionGeneration: cacheUsage.attributionGeneration,
             attributionUnsafeSinceGeneration:

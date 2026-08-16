@@ -289,6 +289,7 @@ extension CodexUsageAnalyzer {
                     turns: [],
                     attributionEvents: [],
                     attributionEventsComplete: false,
+                    attributionModelBucketsComplete: false,
                     attributionProvenanceEpoch: signature.attributionProvenanceEpoch,
                     attributionGeneration: signature.attributionGeneration,
                     attributionUnsafeSinceGeneration:

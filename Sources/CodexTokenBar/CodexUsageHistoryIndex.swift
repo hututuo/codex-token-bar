@@ -333,9 +333,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private let fileManager: FileManager
     private let operationGate: CodexUsageHistoryIndexOperationGate
 
-    convenience init(codexHome: URL, fileManager: FileManager = .default) throws {
+    convenience init(
+        codexHome: URL,
+        fileManager: FileManager = .default,
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws {
         let databaseURL = Self.databaseURL(for: codexHome)
-        try self.init(databaseURL: databaseURL, fileManager: fileManager)
+        try self.init(databaseURL: databaseURL, fileManager: fileManager, onProgress: onProgress)
     }
 
     convenience init(
@@ -345,7 +349,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try self.init(databaseURL: databaseURL, fileManager: fileManager)
     }
 
-    private init(databaseURL: URL, fileManager: FileManager) throws {
+    private init(
+        databaseURL: URL,
+        fileManager: FileManager,
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws {
         self.fileManager = fileManager
         operationGate = Self.operationGate(for: databaseURL)
         driver = SQLiteDatabaseDriver(
@@ -362,7 +370,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // Fail closed and preserve the database on any error; explicit
             // recovery can inspect the original bytes instead of silently
             // deleting the user's only published index.
-            try prepareSchema()
+            try prepareSchema(onProgress: onProgress)
         }
     }
 
@@ -412,10 +420,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     func synchronize(
         files: [URL],
         sessionID: (URL) -> String,
-        parser: @escaping SessionParser
+        parser: @escaping SessionParser,
+        onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         try withExclusiveAccess {
-            try synchronizeExclusively(files: files, sessionID: sessionID, parser: parser)
+            try synchronizeExclusively(
+                files: files,
+                sessionID: sessionID,
+                parser: parser,
+                onProgress: onProgress
+            )
         }
     }
 
@@ -802,7 +816,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func synchronizeExclusively(
         files: [URL],
         sessionID: (URL) -> String,
-        parser: @escaping SessionParser
+        parser: @escaping SessionParser,
+        onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
         let canonicalFiles = files.map { $0.resolvingSymlinksInPath() }
@@ -824,6 +839,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             $0.count > 1
         }
         var sourceMutationDetected = false
+
+        onProgress?(
+            0,
+            canonicalFiles.count,
+            .scanning
+        )
 
         try driver.withConnection { connection in
             try configure(connection)
@@ -874,9 +895,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         )
                     }
                 }
+                // A full-rebuild job is already a real discovered candidate;
+                // count it here so a first index does not sit at 0% while the
+                // staged parser is working through the files.
+                let completed = unchangedFiles + incrementallyParsedFiles + fullRebuildJobs.count
+                onProgress?(completed, canonicalFiles.count, .scanning)
             }
         }
 
+        onProgress?(canonicalFiles.count, canonicalFiles.count, .publishing)
         let stagedRebuilds = try stageFullRebuilds(
             fullRebuildJobs,
             parser: parser
@@ -1008,6 +1035,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
         }
         removeStagingDirectory()
+        onProgress?(1, 1, .publishing)
 
         return SynchronizationResult(
             changedFiles: changedFiles,
@@ -1291,7 +1319,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
-    private func prepareSchema() throws {
+    private func prepareSchema(
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws {
         try driver.withConnection { connection in
             try configure(connection)
             try connection.execute(
@@ -1305,6 +1335,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let numericVersion = currentVersion.flatMap(Int.init)
             let isLegacyDiscardableSchema = numericVersion.map { $0 < 2 } ?? false
             let isKnownInPlaceSchema = currentVersion.map(Self.inPlaceSchemaVersions.contains) ?? true
+            let shouldReportMigration = numericVersion.map { $0 >= 2 && $0 < Int(Self.schemaVersion)! } ?? false
             if let currentVersion,
                !isKnownInPlaceSchema,
                !isLegacyDiscardableSchema {
@@ -1319,9 +1350,41 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
             if !destructiveRebuildRequired,
                currentVersion != nil {
+                if shouldReportMigration {
+                    onProgress?(PreciseIndexProgress(
+                        phase: .migrating,
+                        message: "正在升级 Swift 精确索引",
+                        completed: 0,
+                        total: 3
+                    ))
+                }
                 try migrateV2SourcesForAppend(connection)
+                if shouldReportMigration {
+                    onProgress?(PreciseIndexProgress(
+                        phase: .migrating,
+                        message: "正在升级索引字段",
+                        completed: 1,
+                        total: 3
+                    ))
+                }
                 try migrateKnownEventColumns(connection)
+                if shouldReportMigration {
+                    onProgress?(PreciseIndexProgress(
+                        phase: .migrating,
+                        message: "正在修复 replay 边界",
+                        completed: 2,
+                        total: 3
+                    ))
+                }
                 try repairExplicitSubagentReplayBoundary(connection)
+                if shouldReportMigration {
+                    onProgress?(PreciseIndexProgress(
+                        phase: .migrating,
+                        message: "Swift 精确索引结构已升级",
+                        completed: 3,
+                        total: 3
+                    ))
+                }
             }
 
             // Capture all attribution evidence before any destructive schema
@@ -3857,9 +3920,10 @@ private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
 
         if recursionDepth == 0 {
             do {
-                crossProcessLock = try CodexCrossProcessFileLock(
+                crossProcessLock = try CodexCrossProcessFileLock.acquireWaiting(
                     url: crossProcessLockURL,
-                    label: "精确历史索引"
+                    label: "精确历史索引",
+                    onContention: nil
                 )
             } catch {
                 recursiveLock.unlock()

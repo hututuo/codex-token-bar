@@ -69,7 +69,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
                 panelHeight: FloatingTokenPanelMetrics.baseSize.height,
                 scale: 1
             ) ?? -1,
-            59.75,
+            57.75,
             accuracy: 0.001
         )
     }
@@ -148,11 +148,12 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(FloatingTokenPanelMetrics.usageStatusRowHeight, 20, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.metricRowHeight, 13, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.runningThreadsRowHeight, 14, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.todayModelRowHeight, 17, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.todayModelRowHeight, 11, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.quotaRowHeight, 15.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.radarRowHeight, 24, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 20, accuracy: 0.001)
-        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 125.5, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarRowHeight, 24, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.crowdRadarTypographyScale, 1.2, accuracy: 0.001)
+        XCTAssertEqual(FloatingTokenPanelMetrics.contentHeight(visibility: .default), 123.5, accuracy: 0.001)
         XCTAssertEqual(FloatingTokenPanelMetrics.size(scale: 1, visibility: .default).height, 138, accuracy: 0.001)
     }
 

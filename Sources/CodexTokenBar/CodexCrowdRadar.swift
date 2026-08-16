@@ -61,7 +61,8 @@ struct CodexCrowdRadarModel: Equatable, Sendable, Identifiable {
     var id: String { "\(model)|\(effort)" }
     var label: String {
         let family = ["Sol", "Terra", "Luna"].first { model.localizedCaseInsensitiveContains($0) } ?? model
-        return "\(family) \(effort)".trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawLabel = "\(family) \(effort)".trimmingCharacters(in: .whitespacesAndNewlines)
+        return CodexRadarPresentationText.compactModelName(rawLabel)
     }
     var iq: Double { passRate * 150 }
 }

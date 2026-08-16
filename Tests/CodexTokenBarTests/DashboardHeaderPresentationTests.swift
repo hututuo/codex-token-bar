@@ -150,6 +150,8 @@ final class DashboardHeaderPresentationTests: XCTestCase {
 
         XCTAssertTrue(rowSource.contains("LazyVGrid("))
         XCTAssertTrue(rowSource.contains(".layoutPriority(1)"))
+        XCTAssertTrue(rowSource.contains("DashboardModelCostScopePicker(scope: $scope)"))
+        XCTAssertFalse(rowSource.contains("pickerStyle(.segmented)"))
         XCTAssertTrue(chipSource.contains("ViewThatFits(in: .horizontal)"))
         XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: true, vertical: false)"))
         XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: false, vertical: true)"))
