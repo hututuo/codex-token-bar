@@ -787,7 +787,9 @@ struct StatStrip: View {
                     sevenDayTokens: sevenDayModelData.tokens,
                     fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
                     dataAvailable: snapshot.hasPreciseTokenUsage,
-                    sevenDayDataAvailable: sevenDayModelData.dataAvailable
+                    sevenDayDataAvailable: sevenDayModelData.dataAvailable,
+                    sevenDayDataEstimated: sevenDayModelData.isEstimated,
+                    sevenDayEstimateSource: sevenDayModelData.estimateSource
                 )
             }
         }
@@ -827,6 +829,8 @@ struct DashboardSevenDayModelData: Equatable {
     let rows: [ModelTokenBreakdown]
     let tokens: Int
     let dataAvailable: Bool
+    let isEstimated: Bool
+    let estimateSource: String?
 
     init(
         cacheUsage: TokenCacheUsage,
@@ -837,22 +841,52 @@ struct DashboardSevenDayModelData: Equatable {
         guard dataAvailable,
               let resetAt = quotaSnapshot?.sevenDay?.resetsAt,
               resetAt.timeIntervalSince1970.isFinite,
-              resetAt > now,
-              cacheUsage.attributionModelBucketsComplete,
-              !cacheUsage.attributionCurrentScanUnsafeCauseDetected else {
+              resetAt > now else {
             rows = []
             tokens = 0
             self.dataAvailable = false
+            isEstimated = false
+            estimateSource = nil
             return
         }
 
         let start = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
-        let events = cacheUsage.attributionEvents.filter {
+        let eventsAreUsable = cacheUsage.attributionModelBucketsComplete
+            && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
+        if eventsAreUsable {
+            let events = cacheUsage.attributionEvents.filter {
+                $0.start >= start && $0.start < resetAt
+            }
+            rows = ModelUsagePresentation.rows(from: events)
+            tokens = events.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
+            self.dataAvailable = true
+            isEstimated = false
+            estimateSource = nil
+            return
+        }
+
+        // The existing recent canvas is already aggregated into five-minute
+        // buckets. Use it as a fast numeric estimate while the heavier exact
+        // model attribution is still being prepared. Keep the model nil so a
+        // fallback price is visible as an estimate rather than false model
+        // attribution.
+        let recent = cacheUsage.recentBins.filter {
             $0.start >= start && $0.start < resetAt
         }
-        rows = ModelUsagePresentation.rows(from: events)
-        tokens = events.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
+        let quickBreakdown = recent.map(\.breakdown).combined
+        guard !recent.isEmpty, quickBreakdown.totalTokens > 0 else {
+            rows = []
+            tokens = 0
+            self.dataAvailable = false
+            isEstimated = false
+            estimateSource = nil
+            return
+        }
+        rows = [ModelTokenBreakdown(model: nil, breakdown: quickBreakdown)]
+        tokens = quickBreakdown.totalTokens
         self.dataAvailable = true
+        isEstimated = true
+        estimateSource = "5分钟桶用量缓存"
     }
 }
 
@@ -867,6 +901,8 @@ struct DashboardModelCostRow: View {
     let fallbackModel: OfficialAPIPriceModel
     let dataAvailable: Bool
     let sevenDayDataAvailable: Bool
+    let sevenDayDataEstimated: Bool
+    let sevenDayEstimateSource: String?
 
     private var sourceRows: [ModelTokenBreakdown] {
         switch scope {
@@ -948,6 +984,14 @@ struct DashboardModelCostRow: View {
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .fixedSize()
+
+                if scope == .sevenDay, sevenDayDataEstimated {
+                    Text("正在精准计算中…")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentBlue)
+                        .fixedSize()
+                        .help(sevenDayEstimateSource.map { "先按\($0)快速估算，精确模型归因完成后自动替换。" } ?? "先显示快速估算，精确模型归因完成后自动替换。")
+                }
 
                 Spacer(minLength: 4)
 

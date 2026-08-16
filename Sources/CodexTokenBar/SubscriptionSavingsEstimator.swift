@@ -221,10 +221,10 @@ struct SevenDayAPIValuePresentation: Equatable {
             helpText = Self.helpText(for: estimate, quality: "已完成逐事件读取，按历史真实模型的当前 API 单价估算")
         case .estimated(let source):
             valueText = estimate.valueUSD.map(SubscriptionSavingsPresentation.compactMoney) ?? "待读取"
-            labelText = label
+            labelText = "本7d API 等值（精确计算中）"
             helpText = Self.helpText(
                 for: estimate,
-                quality: "事件流不完整，按同周期 " + source + " 回退估算；结果仍可能随精确读取变化"
+                quality: "正在精准计算中，先按同周期 " + source + " 快速估算；结果仍可能随精确读取变化"
             )
         }
     }
@@ -300,13 +300,16 @@ extension SubscriptionSavingsEstimator {
             )
         }
 
-        let hourly = periodBuckets(cacheUsage.hourly, start: cycleStart, end: cycleEnd)
         let fallbackBuckets: ([TokenCacheBucket], String)
-        if !hourly.isEmpty {
-            fallbackBuckets = (hourly, "hourly 用量缓存")
+        let recent = periodBuckets(cacheUsage.recentBins, start: cycleStart, end: cycleEnd)
+        if !recent.isEmpty {
+            fallbackBuckets = (recent, "5分钟桶用量缓存")
         } else {
-            let recent = periodBuckets(cacheUsage.recentBins, start: cycleStart, end: cycleEnd)
-            fallbackBuckets = (recent, "recentBins 用量缓存")
+            // Keep a compatibility fallback for very old snapshots that were
+            // written before the five-minute canvas existed. New snapshots
+            // always prefer the five-minute path above.
+            let hourly = periodBuckets(cacheUsage.hourly, start: cycleStart, end: cycleEnd)
+            fallbackBuckets = (hourly, "旧版 hourly 用量缓存")
         }
         guard !fallbackBuckets.0.isEmpty else {
             return SevenDayAPIValueEstimate(

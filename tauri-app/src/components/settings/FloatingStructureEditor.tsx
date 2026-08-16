@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -22,6 +23,7 @@ import {
   FLOATING_CONTENT_LABELS,
   FLOATING_PAGE_CAPABLE_GROUPS,
   editorGroupsForFloatingRow,
+  floatingContentHeight,
   isFloatingGroupVisible,
   layoutFloatingContentRows,
   mergeFloatingPage,
@@ -33,6 +35,7 @@ import {
   type FloatingContentLayoutRow,
   type FloatingContentRowPlacement,
 } from "../../floating/floatingContent";
+import { floatingPanelSettingsForVisibility } from "../../floating/floatingPresentation";
 import { FloatingPanelSurface } from "../../floating/FloatingPanelPreview";
 
 interface FloatingStructureEditorProps {
@@ -990,13 +993,20 @@ export function FloatingStructurePreview({
   crowdRadarSnapshot,
   priceModel,
 }: FloatingStructurePreviewProps) {
+  const presentationSettings = floatingPanelSettingsForVisibility(settings, visibility);
+  const previewContentHeight = Math.ceil(
+    floatingContentHeight(presentationSettings.contentVisibility) * presentationSettings.scale + 24,
+  );
   return (
     <section aria-label="悬浮窗实时预览" className="floating-structure-preview">
       <div className="floating-structure-preview__label">
         <strong>实时预览</strong>
         <span>点击预览中的行可定位左侧结构</span>
       </div>
-      <div className="floating-structure-preview__stage">
+      <div
+        className="floating-structure-preview__stage"
+        style={{ "--floating-preview-content-height": `${previewContentHeight}px` } as CSSProperties}
+      >
         <FloatingPanelSurface
           crowdRadarSnapshot={crowdRadarSnapshot}
           previewMode
@@ -1005,9 +1015,9 @@ export function FloatingStructurePreview({
           radarSnapshot={radarSnapshot}
           runningThreads={runningThreads}
           selectedPreviewRowId={selectedRowId}
-          settings={{ ...settings, contentVisibility: visibility }}
+          settings={presentationSettings}
           snapshot={snapshot}
-          unreadEffect="off"
+          unreadEffect={presentationSettings.unreadEffect}
         />
       </div>
     </section>

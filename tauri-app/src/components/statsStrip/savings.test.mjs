@@ -198,3 +198,22 @@ test("7d model scope stays pending when reset or model coverage is missing", () 
   assert.equal(missingReset, null);
   assert.equal(noData, null);
 });
+
+test("7d API estimate keeps a five-minute numeric fallback while model attribution loads", () => {
+  const resetAtUnix = 1_800_000_000;
+  const point = recentPoint(resetAtUnix - 5 * 60);
+  delete point.modelBreakdowns;
+
+  const estimate = estimateRecent7dAPICost({
+    points: [point],
+    resetAtUnix,
+    priceModel: "gpt56Terra",
+  });
+
+  assert.ok(estimate);
+  assert.equal(estimate.quality, "estimated");
+  assert.equal(estimate.estimateSource, "5分钟桶用量缓存");
+  assert.equal(estimate.modelBreakdowns.length, 1);
+  assert.equal(estimate.modelBreakdowns[0].model, null);
+  assert.equal(estimate.apiEquivalentUSD, 2.3);
+});

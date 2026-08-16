@@ -162,6 +162,11 @@ function StatsStripView({
               </button>
             </div>
             <strong className="stats-model-cost-title">各模型 API 等值费用</strong>
+            {modelCostScope === "sevenDay" && recent7dModelCost?.quality === "estimated" ? (
+              <span className="stats-model-cost-status" role="status">
+                正在精准计算中…
+              </span>
+            ) : null}
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
               <span className="stats-model-cost-total-wrap">
                 <strong className="stats-model-cost-total">

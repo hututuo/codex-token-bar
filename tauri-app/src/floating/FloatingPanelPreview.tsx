@@ -28,6 +28,10 @@ import { floatingRateBarStatusText, floatingStandaloneStatusText } from "./float
 import { floatingTextPaletteForGroup } from "./floatingTextPalette";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 import { floatingGradientBackground } from "./floatingSettings";
+import {
+  floatingPanelAppearance,
+  floatingPanelSettingsForVisibility,
+} from "./floatingPresentation";
 import { crowdRadarModelLabel, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 import type { OfficialAPIPriceModel } from "../settings/quotaPriceModel";
 import {
@@ -220,20 +224,26 @@ export function FloatingPanelSurface({
   onPageNavigation,
   overlay,
 }: FloatingPanelSurfaceProps) {
+  const presentationSettings = useMemo(
+    () => floatingPanelSettingsForVisibility(settings),
+    [settings],
+  );
   const shouldShowUnreadEffect = snapshot.unreadSummary.active && unreadEffect !== "off";
-  const rows = layoutFloatingContentRows(settings.contentVisibility);
-  const attachedUsageStatus = embedsUsageStatusInRateRow(settings.contentVisibility);
-  const attachedRunningThreads = embedsRunningThreadsInMetricsRow(settings.contentVisibility);
-  const rootPalette = floatingTextPaletteForGroup(settings, rows[0]?.primaryGroup ?? "rateAndBar", 0, Math.max(rows.length, 1));
-  const effectRgb = useMemo(
-    () => effectRgbFromGradient(settings.gradientStart, settings.gradientEnd),
-    [settings.gradientStart, settings.gradientEnd],
+  const rows = layoutFloatingContentRows(presentationSettings.contentVisibility);
+  const attachedUsageStatus = embedsUsageStatusInRateRow(presentationSettings.contentVisibility);
+  const attachedRunningThreads = embedsRunningThreadsInMetricsRow(presentationSettings.contentVisibility);
+  const rootPalette = floatingTextPaletteForGroup(
+    presentationSettings,
+    rows[0]?.primaryGroup ?? "rateAndBar",
+    0,
+    Math.max(rows.length, 1),
+  );
+  const { effectRgb, style: appearanceStyle } = useMemo(
+    () => floatingPanelAppearance(presentationSettings),
+    [presentationSettings],
   );
   const rootStyle = {
-    "--floating-card-opacity": settings.opacity.toFixed(2),
-    "--floating-gradient-background": floatingGradientBackground(settings),
-    "--floating-effect-color": effectHexColor(effectRgb),
-    "--floating-effect-rgb": `${effectRgb.red}, ${effectRgb.green}, ${effectRgb.blue}`,
+    ...appearanceStyle,
     "--floating-primary": rootPalette.primary,
     "--floating-secondary": rootPalette.secondary,
     "--floating-muted": rootPalette.muted,
@@ -274,7 +284,7 @@ export function FloatingPanelSurface({
             row={row}
             crowdRadarSnapshot={crowdRadarSnapshot}
             runningThreads={runningThreads}
-            settings={settings}
+            settings={presentationSettings}
             snapshot={snapshot}
             total={rows.length}
             previewMode={previewMode}
@@ -1104,42 +1114,6 @@ function readFloatingEffectRGB(computed: CSSStyleDeclaration): RippleRGB {
 function readFloatingScale(computed: CSSStyleDeclaration): number {
   const raw = Number(computed.getPropertyValue("--floating-scale").trim());
   return Number.isFinite(raw) && raw > 0 ? raw : 1;
-}
-
-function effectRgbFromGradient(start: string, end: string): RippleRGB {
-  const mixed = mixRippleRGB(parseRippleHexColor(start), parseRippleHexColor(end), 0.58);
-  return normalizeRippleRGB({
-    red: Math.max(0, Math.round(mixed.red * 0.72)),
-    green: Math.max(0, Math.round(mixed.green * 0.82)),
-    blue: Math.min(255, Math.round(mixed.blue * 1.08 + 18)),
-  });
-}
-
-function effectHexColor(color: RippleRGB): string {
-  return `#${[color.red, color.green, color.blue]
-    .map((channel) => clampColorChannel(channel).toString(16).padStart(2, "0"))
-    .join("")}`;
-}
-
-function parseRippleHexColor(value: string): RippleRGB {
-  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value.trim());
-  if (!match) {
-    return { red: 31, green: 110, blue: 210 };
-  }
-  return {
-    red: Number.parseInt(match[1], 16),
-    green: Number.parseInt(match[2], 16),
-    blue: Number.parseInt(match[3], 16),
-  };
-}
-
-function mixRippleRGB(start: RippleRGB, end: RippleRGB, endWeight: number): RippleRGB {
-  const startWeight = 1 - endWeight;
-  return {
-    red: start.red * startWeight + end.red * endWeight,
-    green: start.green * startWeight + end.green * endWeight,
-    blue: start.blue * startWeight + end.blue * endWeight,
-  };
 }
 
 function normalizeRippleRGB(color: RippleRGB): RippleRGB {

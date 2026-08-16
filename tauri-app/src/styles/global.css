@@ -2287,6 +2287,14 @@ button.quota-side-card:hover {
   white-space: nowrap;
 }
 
+.stats-model-cost-status {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
 .stats-model-cost-empty {
   overflow: hidden;
   color: var(--muted);
@@ -4067,7 +4075,7 @@ button.quota-side-card:hover {
 }
 
 .floating-settings-preview-column .floating-structure-preview__stage {
-  min-height: 330px;
+  min-height: max(330px, var(--floating-preview-content-height, 330px));
   align-content: start;
   padding-top: 18px;
 }
@@ -6583,16 +6591,17 @@ button.quota-side-card:hover {
 
 .floating-structure-preview__stage {
   display: grid;
-  min-height: 190px;
+  min-height: max(190px, var(--floating-preview-content-height, 190px));
   place-items: center;
-  overflow: hidden;
+  overflow: auto;
   border-radius: 9px;
   background: var(--settings-surface-inset, var(--panel-inset));
   padding: 12px 5px;
+  scrollbar-width: none;
 }
 
-.floating-structure-preview .floating-panel-surface {
-  --floating-scale: 0.78;
+.floating-structure-preview__stage::-webkit-scrollbar {
+  display: none;
 }
 
 .floating-panel-surface--preview {

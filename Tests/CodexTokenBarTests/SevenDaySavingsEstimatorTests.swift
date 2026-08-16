@@ -96,7 +96,7 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         )
     }
 
-    func testIncompleteEventsUseOnlyCurrentPeriodHourlyFallbackAndMarkEstimate() {
+    func testIncompleteEventsUseCurrentPeriodFiveMinuteFallbackAndMarkEstimate() {
         let resetAt = now.addingTimeInterval(24 * 60 * 60)
         let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
         let inside = TokenCacheBucket(
@@ -108,16 +108,20 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
             breakdown: breakdown(input: 8_000_000)
         )
         let estimate = SubscriptionSavingsEstimator.sevenDayAPIValue(
-            cacheUsage: usage(hourly: [outside, inside], complete: false),
+            cacheUsage: usage(
+                hourly: [inside],
+                recentBins: [outside, inside],
+                complete: false
+            ),
             quotaSnapshot: quota(resetAt: resetAt),
             fallbackModel: .gpt56Terra,
             now: now
         )
 
         guard case .estimated(let source) = estimate.quality else {
-            return XCTFail("expected an explicitly estimated hourly fallback")
+            return XCTFail("expected an explicitly estimated five-minute fallback")
         }
-        XCTAssertTrue(source.contains("hourly"))
+        XCTAssertTrue(source.contains("5分钟"))
         guard let valueUSD = estimate.valueUSD else {
             return XCTFail("expected hourly fallback estimate to include a value")
         }
@@ -128,7 +132,31 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         )
         let presentation = SevenDayAPIValuePresentation(estimate: estimate)
         XCTAssertTrue(presentation.labelText.contains("估"))
-        XCTAssertTrue(presentation.helpText.contains("回退估算"))
+        XCTAssertTrue(presentation.labelText.contains("精确计算中"))
+        XCTAssertTrue(presentation.helpText.contains("快速估算"))
+    }
+
+    func testDashboardModelRowsUseFiveMinuteFallbackWhileExactModelsLoad() {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60)
+        let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let recent = TokenCacheBucket(
+            start: cycleStart.addingTimeInterval(5 * 60),
+            breakdown: breakdown(input: 2_000_000, output: 100_000)
+        )
+
+        let data = DashboardSevenDayModelData(
+            cacheUsage: usage(recentBins: [recent], complete: false),
+            quotaSnapshot: quota(resetAt: resetAt),
+            now: now,
+            dataAvailable: true
+        )
+
+        XCTAssertTrue(data.dataAvailable)
+        XCTAssertTrue(data.isEstimated)
+        XCTAssertEqual(data.estimateSource, "5分钟桶用量缓存")
+        XCTAssertEqual(data.tokens, 2_100_000)
+        XCTAssertEqual(data.rows.count, 1)
+        XCTAssertNil(data.rows.first?.model)
     }
 
     func testDashboardModelRowsUseCompleteEventsAndKeepSparkAsIndependentRow() {

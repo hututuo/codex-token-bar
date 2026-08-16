@@ -1205,7 +1205,13 @@ final class FloatingStructureDragSourceView: NSView, NSDraggingSource {
         activeSessionID = sessionID
         onBegin?(sessionID)
 
-        let location = convert(event.locationInWindow, from: nil)
+        // The drag source is overlaid on a small handle/chip, while the
+        // preview represents a full row. Starting the session on that tiny
+        // view clips the drag image and makes it appear not to follow the
+        // pointer. Use the window content view as the larger coordinate and
+        // session host while keeping this object as the drag source.
+        let dragCoordinateView = window?.contentView ?? self
+        let location = dragCoordinateView.convert(event.locationInWindow, from: nil)
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
         draggingItem.setDraggingFrame(
             NSRect(
@@ -1217,7 +1223,11 @@ final class FloatingStructureDragSourceView: NSView, NSDraggingSource {
             contents: image
         )
 
-        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        let session = dragCoordinateView.beginDraggingSession(
+            with: [draggingItem],
+            event: event,
+            source: self
+        )
         session.draggingFormation = .none
         session.animatesToStartingPositionsOnCancelOrFail = false
     }

@@ -7,7 +7,9 @@ import { dirname, join } from "node:path";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const previewSource = readFileSync(join(currentDir, "FloatingPanelPreview.tsx"), "utf8");
 const floatingWindowSource = readFileSync(join(currentDir, "FloatingWindowApp.tsx"), "utf8");
+const structureEditorSource = readFileSync(join(currentDir, "../components/settings/FloatingStructureEditor.tsx"), "utf8");
 const floatingSettingsSource = readFileSync(join(currentDir, "floatingSettings.ts"), "utf8");
+const floatingPresentationSource = readFileSync(join(currentDir, "floatingPresentation.ts"), "utf8");
 const stylesSource = readFileSync(join(currentDir, "../styles/global.css"), "utf8");
 const settingsPanelSource = readFileSync(
   join(currentDir, "../components/liveRate/LiveRateSettingsPanel.tsx"),
@@ -131,11 +133,24 @@ test("ripple atlas rebuilds on color changes without waiting for resize", () => 
 });
 
 test("settings preview owns the same visual variables as the real floating window", () => {
-  assert.match(previewSource, /"--floating-card-opacity": settings\.opacity\.toFixed\(2\)/);
-  assert.match(previewSource, /"--floating-gradient-background": floatingGradientBackground\(settings\)/);
-  assert.match(previewSource, /"--floating-effect-color": effectHexColor\(effectRgb\)/);
-  assert.match(previewSource, /"--floating-effect-rgb": `\$\{effectRgb\.red\}, \$\{effectRgb\.green\}, \$\{effectRgb\.blue\}`/);
+  assert.match(previewSource, /floatingPanelAppearance/);
+  assert.match(floatingWindowSource, /floatingPanelAppearance/);
+  assert.match(floatingPresentationSource, /"--floating-scale": settings\.scale\.toFixed\(2\)/);
+  assert.match(floatingPresentationSource, /"--floating-card-opacity": settings\.opacity\.toFixed\(2\)/);
+  assert.match(floatingPresentationSource, /"--floating-gradient-background": floatingGradientBackground\(settings\)/);
+  assert.match(floatingPresentationSource, /"--floating-effect-color": floatingEffectHexColor\(effectRgb\)/);
+  assert.match(floatingPresentationSource, /"--floating-effect-rgb": `\$\{effectRgb\.red\}, \$\{effectRgb\.green\}, \$\{effectRgb\.blue\}`/);
   assert.match(stylesSource, /\.floating-panel-surface::before\s*{[^}]*background: var\(--floating-gradient-background\);[^}]*opacity: var\(--floating-card-opacity\);/s);
+});
+
+test("settings preview uses persisted scale and content height instead of a compact-only override", () => {
+  assert.match(previewSource, /floatingPanelSettingsForVisibility/);
+  assert.match(structureEditorSource, /floatingContentHeight\(presentationSettings\.contentVisibility\)/);
+  assert.match(structureEditorSource, /"--floating-preview-content-height": `\$\{previewContentHeight\}px`/);
+  assert.match(structureEditorSource, /unreadEffect=\{presentationSettings\.unreadEffect\}/);
+  assert.doesNotMatch(stylesSource, /\.floating-structure-preview \.floating-panel-surface\s*{[^}]*--floating-scale:\s*0\.78/s);
+  assert.match(stylesSource, /\.floating-structure-preview__stage\s*{[\s\S]*?overflow: auto;/);
+  assert.match(stylesSource, /\.floating-structure-preview__stage\s*{[\s\S]*?min-height: max\(190px, var\(--floating-preview-content-height, 190px\)\);/);
 });
 
 test("ripple atlas ignores stale async render results", () => {
@@ -286,6 +301,6 @@ test("floating gradient palette exposes color direction and type controls", () =
   assert.match(settingsPanelSource, /aria-label="渐变方向"/);
   assert.match(settingsPanelSource, /aria-label="渐变类型"/);
   assert.match(settingsPanelSource, /<option value="conic">环向<\/option>/);
-  assert.match(floatingWindowSource, /floatingGradientBackground\(presentedSettings\)/);
+  assert.match(floatingWindowSource, /floatingPanelAppearance\(presentedSettings\)/);
   assert.match(floatingSettingsSource, /conic-gradient\(from \$\{settings\.gradientDirection\} at 50% 50%/);
 });

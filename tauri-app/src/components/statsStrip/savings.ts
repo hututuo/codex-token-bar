@@ -44,6 +44,10 @@ export interface LifetimeSavingsPresentation {
 
 export interface Recent7dSavingsEstimate {
   apiEquivalentUSD: number;
+  /** Whether every non-empty five-minute point had model coverage. */
+  quality: "measured" | "estimated";
+  /** Human-readable source used while the precise model scan is pending. */
+  estimateSource?: string;
   priceModel: OfficialAPIPriceModel;
   modelBreakdowns: ModelTokenBreakdown[];
   detectedModels: OfficialAPIPriceModel[];
@@ -116,10 +120,11 @@ export function estimateLifetimeSavings({
 /**
  * Estimate API-equivalent spend for the currently observed 7-day quota cycle.
  *
- * The reset boundary is authoritative. We intentionally return null when the
- * reset is unavailable, no usage falls in the cycle, or a non-empty point has
- * no complete per-model breakdown. In those cases the UI must not turn
- * lifetime totals into a misleading 7-day value.
+ * The reset boundary is authoritative. The native recentUsage24h compatibility
+ * field is a 30-day five-minute canvas. While precise model attribution is
+ * still loading, keep the numeric five-minute point and price it as an
+ * explicitly unknown model instead of turning the entire 7d row into a blank.
+ * The UI marks that result as estimated until the precise model buckets arrive.
  */
 export function estimateRecent7dAPICost({
   points,
@@ -157,29 +162,45 @@ export function estimateRecent7dAPICost({
       calls: number;
     };
   }> = [];
+  let quality: Recent7dSavingsEstimate["quality"] = "measured";
+  let estimateSource: string | undefined;
 
   for (const point of usagePoints) {
     const pointBreakdown = safePointBreakdown(point);
-    if (!Array.isArray(point.modelBreakdowns)) return null;
-
-    const pointRows = point.modelBreakdowns.map((row) => ({
+    const pointRows = Array.isArray(point.modelBreakdowns)
+      ? point.modelBreakdowns.map((row) => ({
       model: row.model,
       eventStartUnix: row.eventStartUnix ?? point.startUnix,
       breakdown: safeBreakdown(row.breakdown),
-    }));
+      }))
+      : [];
     const covered = pointRows.reduce((total, row) => addBreakdowns(total, row.breakdown), emptyBreakdown());
-    if (!sameBreakdown(covered, pointBreakdown)) return null;
 
     aggregate.inputTokens += pointBreakdown.inputTokens;
     aggregate.cachedInputTokens += pointBreakdown.cachedInputTokens;
     aggregate.outputTokens += pointBreakdown.outputTokens;
     aggregate.calls += pointBreakdown.calls;
-    rows.push(...pointRows);
+    if (sameBreakdown(covered, pointBreakdown)) {
+      rows.push(...pointRows);
+    } else {
+      // Keep the quick estimate numerically complete, but do not pretend that
+      // a point without model rows has a known model. The pricing layer will
+      // use the selected fallback model for this synthetic row.
+      quality = "estimated";
+      estimateSource = "5分钟桶用量缓存";
+      rows.push({
+        model: null,
+        eventStartUnix: point.startUnix,
+        breakdown: pointBreakdown,
+      });
+    }
   }
 
   const automaticPrice = modelAwareAPICostUSD(rows, aggregate, priceModel);
   return {
     apiEquivalentUSD: automaticPrice.costUSD,
+    quality,
+    ...(estimateSource ? { estimateSource } : {}),
     priceModel,
     modelBreakdowns: rows.map((row) => ({
       model: row.model,
