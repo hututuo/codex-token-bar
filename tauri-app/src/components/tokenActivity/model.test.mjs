@@ -91,12 +91,12 @@ test("model cost heatmap prices cache-aware model rows and excludes Spark", () =
   assert.equal(prepared[0].intensity, 1);
   assert.equal(
     hoverSummary(day, "modelCost", "gpt56Sol"),
-    "2026-06-20 · 模型费用 $5.75 · Sol $5.75 · Spark 独立",
+    "2026-06-20 · 模型费用 $5.75 · Sol $5.75 · Spark $1.93（不计入总计）",
   );
   assert.match(modelCostCellBackground(day, 1, "gpt56Sol"), /linear-gradient/);
 
   const range = summarizeRange([day], day.date, day.date, "modelCost", "gpt56Sol");
-  assert.equal(range.value, "模型费用 $5.75 · Sol $5.75 · Spark 独立");
+  assert.equal(range.value, "模型费用 $5.75 · Sol $5.75 · Spark $1.93（不计入总计）");
 });
 
 test("model cost heatmap marks active days without model projection unavailable", () => {

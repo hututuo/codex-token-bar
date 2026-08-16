@@ -6,6 +6,7 @@ import {
   firstPagedFloatingRowCenterY,
   floatingContentGap,
   floatingContentHeight,
+  floatingContentRowHeight,
   layoutFloatingContentGroups,
   layoutFloatingContentRows,
   mergeFloatingPage,
@@ -114,7 +115,7 @@ test("floatingContentHeight uses Swift-style vertical protection pixels", () => 
     showRateAndBar: false,
     showUsageStatus: false,
   }), 88);
-  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 142);
+  assert.equal(floatingContentHeight(DEFAULT_FLOATING_CONTENT_VISIBILITY), 140);
 });
 
 test("adjacent running thread counts attach to the right of metrics", () => {
@@ -173,12 +174,31 @@ test("page navigation arrow visibility defaults off and preserves explicit choic
 });
 
 test("paging guide pointer targets the first real paged row", () => {
-  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 61.5);
+  assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 58.5);
   assert.equal(firstPagedFloatingRowCenterY(sanitizeFloatingContentVisibility({
     showTodayModelShare: false,
     showTodayModelCost: false,
     pagePairs: [],
   })), null);
+});
+
+test("paged radar rows reserve the taller page when switching to crowd radar", () => {
+  const visibility = sanitizeFloatingContentVisibility({
+    ...DEFAULT_FLOATING_CONTENT_VISIBILITY,
+    showRateAndBar: false,
+    showUsageStatus: false,
+    showMetrics: false,
+    showRunningThreads: false,
+    showTodayModelShare: false,
+    showTodayModelCost: false,
+    showQuota: false,
+    order: ["radar", "crowdRadar"],
+    pagePairs: [["radar", "crowdRadar"]],
+  });
+  const row = layoutFloatingContentRows(visibility)[0];
+  assert.deepEqual(row.groups, ["radar", "crowdRadar"]);
+  assert.equal(floatingContentRowHeight(row), 24);
+  assert.equal(floatingContentHeight(visibility), 88);
 });
 
 test("paged rows combine model share and cost without losing their configured default page", () => {

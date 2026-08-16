@@ -1,5 +1,8 @@
+import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
+
 export interface ModelUsageRowLike {
   model: string | null;
+  eventStartUnix?: number;
   breakdown: {
     inputTokens: number;
     cachedInputTokens?: number;
@@ -39,7 +42,7 @@ export function modelUsageSlices(rows: ModelUsageRowLike[] | null | undefined): 
       ? finiteNonnegative(row.breakdown.totalTokens)
       : finiteNonnegative(row?.breakdown?.inputTokens) + finiteNonnegative(row?.breakdown?.outputTokens);
     if (tokens <= 0) continue;
-    const key = modelUsageKey(row.model);
+    const key = modelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? { model: row.model, tokens: 0, calls: 0 };
     current.tokens += tokens;
     current.calls += finiteNonnegative(row?.breakdown?.calls);
@@ -50,7 +53,7 @@ export function modelUsageSlices(rows: ModelUsageRowLike[] | null | undefined): 
   return [...grouped.entries()]
     .map(([key, row]) => ({
       key,
-      label: modelUsageLabel(row.model),
+      label: modelUsageLabel(key),
       tokens: row.tokens,
       calls: row.calls,
       share: row.tokens / total,
@@ -74,12 +77,16 @@ export function dominantModelColor(rows: ModelUsageRowLike[] | null | undefined)
   return modelUsageSlices(rows)[0]?.color ?? null;
 }
 
-export function modelUsageKey(model: string | null | undefined): string {
+export function modelUsageKey(model: string | null | undefined, eventStartUnix?: number): string {
   const normalized = (model ?? "").trim().toLowerCase().replaceAll("_", "-");
   if (!normalized) return "unknown";
   const compact = normalized.replace(/[^a-z0-9]/g, "");
   if (compact === "gpt53codexspark") return "gpt-5.3-codex-spark";
-  if (compact === "codexautoreview") return "gpt-5.4";
+  if (compact === "codexautoreview") {
+    return detectedOfficialAPIPriceModel(model, eventStartUnix) === "gpt54Legacy"
+      ? "gpt-5.4"
+      : "gpt-5.6-luna";
+  }
   if (compact === "gpt53codex") return "gpt-5.3-codex";
   if (compact === "gpt52codex") return "gpt-5.2-codex";
   if (normalized.includes("gpt-5.6")) {

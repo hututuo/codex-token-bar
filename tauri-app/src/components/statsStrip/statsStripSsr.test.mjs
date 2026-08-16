@@ -33,7 +33,7 @@ test("StatsStrip renders six historical metrics with an explainable savings esti
           calls: 2,
         },
       }],
-      recentUsage7d: [{
+      recentUsageFiveMinute: [{
         label: "7d",
         startUnix: Math.floor(new Date("2026-07-07T00:00:00Z").getTime() / 1_000),
         tokens: 1_100_000,
@@ -165,7 +165,7 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
       try {
         await React.act(async () => root.render(React.createElement(StatsStrip, {
           stats: {
-            totalTokens: 1_000_000,
+            totalTokens: 2_000_000,
             peakDayTokens: 1_000_000,
             peakThreadTokens: 1_000_000,
             currentStreakDays: 1,
@@ -178,6 +178,9 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
             modelBreakdowns: [{
               model: "gpt-5.6-terra",
               breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
+            }, {
+              model: "gpt-5.3-codex-spark",
+              breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
             }],
             firstUsageAt: "2026-07-01T00:00:00Z",
           },
@@ -186,7 +189,7 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
             model: "gpt-5.6-sol",
             breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000, calls: 1 },
           }],
-          recentUsage7d: [recentPoint],
+          recentUsageFiveMinute: [recentPoint],
           sevenDayResetAtUnix: resetAtUnix,
           planLabel: "Pro",
           warnings: [],
@@ -201,6 +204,8 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
         await React.act(async () => scope[2].dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
         assert.equal(scope[2].getAttribute("aria-pressed"), "true");
         assert.match(container.textContent ?? "", /\$2\.00/);
+        assert.match(container.textContent ?? "", /Spark 参考 \$1\.75/);
+        assert.match(container.textContent ?? "", /Spark\$1\.75（不计入总计）/);
       } finally {
         await React.act(async () => root.unmount());
       }

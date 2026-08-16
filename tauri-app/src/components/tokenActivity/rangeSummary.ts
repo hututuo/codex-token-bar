@@ -86,7 +86,13 @@ export function summarizeRange(
 }
 
 function combineModelRows(days: ActivityDay[]): ModelTokenBreakdown[] {
-  return days.flatMap((day) => day.modelBreakdowns ?? []);
+  return days.flatMap((day) => (day.modelBreakdowns ?? []).map((row) => ({
+    ...row,
+    // Daily aggregates have no event-level timestamp. Use the UTC day start
+    // as the stable compatibility boundary; five-minute chart points retain
+    // their exact bucket timestamps for precise attribution.
+    eventStartUnix: row.eventStartUnix ?? dayStartUnix(day.date),
+  })));
 }
 
 export function isInRange(date: string, rangeStart: string | null, rangeEnd: string | null): boolean {
@@ -129,4 +135,9 @@ function formatOptionalPercent(value: number | null): string {
 
 function sumTokens(days: ActivityDay[]): number {
   return days.reduce((total, day) => total + day.tokens, 0);
+}
+
+function dayStartUnix(date: string): number {
+  const parsed = Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(parsed) ? parsed / 1000 : Number.NaN;
 }

@@ -20,6 +20,7 @@ import type {
 import {
   embedsRunningThreadsInMetricsRow,
   embedsUsageStatusInRateRow,
+  floatingContentRowHeight,
   layoutFloatingContentRows,
   type FloatingContentLayoutRow,
 } from "./floatingContent";
@@ -322,6 +323,9 @@ function FloatingPagedContentRow({
   const safeIndex = selectedIndex % row.groups.length;
   const group = row.groups[safeIndex];
   const paged = row.groups.length > 1;
+  const pageRowStyle = paged
+    ? ({ "--floating-page-row-height": `${floatingContentRowHeight(row)}px` } as CSSProperties)
+    : undefined;
   const showsArrowGlyphs = props.settings.contentVisibility.showPageNavigationArrows !== false;
   const cycle = (delta: -1 | 1) => {
     setSelectedIndex((current) => (
@@ -334,6 +338,7 @@ function FloatingPagedContentRow({
       className={`floating-page-layout-row${paged ? " is-paged" : ""}${selectedPreviewRowId === row.id ? " is-preview-selected" : ""}`}
       data-floating-group={row.primaryGroup}
       data-floating-row-id={row.id}
+      style={pageRowStyle}
       onClick={previewMode ? (event) => {
         event.stopPropagation();
         onPreviewRowSelect?.(row.id);
@@ -544,7 +549,7 @@ function FloatingTodayModelUsageRow({
   return (
     <div
       aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
-      className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : ""}`}
+      className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : " floating-model-usage--cost"}`}
       style={style}
     >
       {items.length === 0 ? (

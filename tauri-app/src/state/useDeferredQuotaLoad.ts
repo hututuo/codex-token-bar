@@ -4,6 +4,13 @@ import type { AccountQuotaBundle, CodexHomeSourceToken } from "../types/dashboar
 import type { ResetCreditBundle } from "../types/quota";
 import { persistentRefreshDelayMs } from "../utils/persistentRefreshBackoff";
 
+// The 7d model-cost row needs the authoritative reset boundary. Starting the
+// first quota read after a fixed 5s delay made an otherwise ready precise
+// dashboard show "本7d模型明细待读取" on every cold start. Keep the read
+// asynchronous (it does not block the first dashboard paint), but start it as
+// soon as the dashboard source is ready. Retry/backoff remains unchanged.
+const FIRST_QUOTA_LOAD_DELAY_MS = 0;
+
 interface DeferredQuotaLoadOptions {
   active: boolean;
   dashboardReady: boolean;
@@ -109,7 +116,7 @@ export function useDeferredQuotaLoad({
 
     const firstTimer = window.setTimeout(() => {
       void loadQuota(shouldForceRefresh);
-    }, shouldForceRefresh || !isFirstQuotaLoad ? 0 : 5_000);
+    }, shouldForceRefresh || !isFirstQuotaLoad ? 0 : FIRST_QUOTA_LOAD_DELAY_MS);
 
     return () => {
       cancelled = true;

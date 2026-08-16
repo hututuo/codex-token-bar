@@ -939,7 +939,7 @@ export function FloatingStructureEditor({
       </div>
 
       <footer className="floating-structure-footer">
-        <span>费用口径：真实模型与缓存价格；未知模型使用回退模型，Spark 为独立额度。</span>
+        <span>费用口径：真实模型与缓存价格；未知模型使用回退模型；Spark 使用暂定 API 参考价，但独立额度不计入总计。</span>
       </footer>
 
       {undoState ? (

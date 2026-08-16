@@ -10,12 +10,13 @@ import {
 } from "./savings.ts";
 
 function recentPoint(startUnix, overrides = {}) {
+  const { model = "gpt-5.6-sol", ...breakdownOverrides } = overrides;
   const breakdown = {
     inputTokens: 1_000_000,
     cachedInputTokens: 500_000,
     outputTokens: 100_000,
     calls: 2,
-    ...overrides,
+    ...breakdownOverrides,
   };
   return {
     label: "point",
@@ -25,7 +26,11 @@ function recentPoint(startUnix, overrides = {}) {
     inputTokens: breakdown.inputTokens,
     cachedInputTokens: breakdown.cachedInputTokens,
     outputTokens: breakdown.outputTokens,
-    modelBreakdowns: [{ model: "gpt-5.6-sol", breakdown: { ...breakdown, totalTokens: breakdown.inputTokens + breakdown.outputTokens } }],
+    modelBreakdowns: [{
+      model,
+      eventStartUnix: startUnix,
+      breakdown: { ...breakdown, totalTokens: breakdown.inputTokens + breakdown.outputTokens },
+    }],
     cacheHitRate: null,
     fiveHourRemainingPercent: null,
     sevenDayRemainingPercent: null,
@@ -156,6 +161,26 @@ test("7d API estimate uses the reset boundary and excludes adjacent points", () 
   assert.equal(estimate.pointCount, 2);
   assert.equal(estimate.apiEquivalentUSD, 11.5);
   assert.equal(estimate.modelBreakdowns.length, 2);
+});
+
+test("7d API estimate applies the auto-review timestamp rule per five-minute point", () => {
+  const resetAtUnix = Date.parse("2026-08-01T00:00:00Z") / 1000;
+  const estimate = estimateRecent7dAPICost({
+    resetAtUnix,
+    priceModel: "gpt56Sol",
+    points: [
+      recentPoint(Date.parse("2026-07-29T23:55:00Z") / 1000, { model: "codex-auto-review" }),
+      recentPoint(Date.parse("2026-07-30T00:05:00Z") / 1000, { model: "codex-auto-review" }),
+    ],
+  });
+
+  assert.ok(estimate);
+  assert.equal(estimate.apiEquivalentUSD, 3.105);
+  assert.deepEqual(estimate.detectedModels, ["gpt56Luna", "gpt54Legacy"]);
+  assert.deepEqual(estimate.modelBreakdowns.map((row) => row.eventStartUnix), [
+    Date.parse("2026-07-29T23:55:00Z") / 1000,
+    Date.parse("2026-07-30T00:05:00Z") / 1000,
+  ]);
 });
 
 test("7d model scope stays pending when reset or model coverage is missing", () => {

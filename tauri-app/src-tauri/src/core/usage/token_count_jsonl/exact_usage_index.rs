@@ -14,7 +14,7 @@ use crate::core::app_paths;
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
-use crate::core::{atomic_file, sqlite, startup_trace};
+use crate::core::{atomic_file, cross_process_lock::CrossProcessFileLock, sqlite, startup_trace};
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
     RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
@@ -309,6 +309,7 @@ struct IntegrityGate {
 struct IntegrityGateGuard {
     gate: Arc<IntegrityGate>,
     path: PathBuf,
+    notify_release: bool,
 }
 
 static INDEX_INTEGRITY_GATES: OnceLock<Mutex<HashMap<PathBuf, Weak<IntegrityGate>>>> =
@@ -503,12 +504,37 @@ impl ExactUsageIndex {
                 )
             })?;
         }
+        let operation_lock_path = sqlite_sidecar_path(&path, ".operation.lock");
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "preparing",
+            "正在打开精确索引",
+            0,
+            None,
+        );
+        let _operation_lock = CrossProcessFileLock::acquire_wait_with_hook(
+            &operation_lock_path,
+            "精确 token 索引",
+            StdDuration::from_secs(30),
+            || {
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "waiting",
+                    "等待其他精确统计实例完成",
+                    0,
+                    None,
+                )
+            },
+        )?;
         let existed_before = existing_regular_index(&path)?;
         let (mut connection, recovered_corrupt_index) =
             open_index_connection_with_recovery(&path, existed_before)?;
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
         let mut has_schema_version = raw_schema_version.is_some();
         let mut schema_version = raw_schema_version.and_then(|value| value.parse::<i64>().ok());
+        let should_report_migration = schema_version.is_some_and(|version| {
+            (GITHUB_BASE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).contains(&version)
+        });
         if existed_before && !recovered_corrupt_index {
             if has_schema_version && schema_version.is_none() {
                 return Err("精确 token 索引 schema 版本未知或损坏，已拒绝覆盖".into());
@@ -534,15 +560,60 @@ impl ExactUsageIndex {
                 schema_version = None;
                 has_schema_version = false;
             } else if schema_version.is_some() {
+                if should_report_migration {
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "migrating",
+                        "正在升级索引结构",
+                        0,
+                        Some(4),
+                    );
+                }
                 migrate_github_base_index_schema(&connection)?;
+                if should_report_migration {
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "migrating",
+                        "正在升级索引字段",
+                        1,
+                        Some(4),
+                    );
+                }
                 repair_explicit_subagent_replay_boundary(&connection)?;
+                if should_report_migration {
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "migrating",
+                        "正在修复 replay 边界",
+                        2,
+                        Some(4),
+                    );
+                }
             }
         }
         initialize_index_schema(&connection)?;
         // Existing databases can contain child rows written while an older
         // connection had foreign_keys=OFF. quick_check validates page/index
         // structure, but it does not report those logical orphans.
+        if should_report_migration {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "正在修复索引完整性",
+                2,
+                Some(4),
+            );
+        }
         repair_orphaned_index_rows(&mut connection)?;
+        if should_report_migration {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "正在初始化会话目录索引",
+                3,
+                Some(4),
+            );
+        }
         initialize_session_catalog_schema(&connection)?;
         if schema_version != Some(INDEX_SCHEMA_VERSION) {
             set_metadata(
@@ -600,6 +671,13 @@ impl ExactUsageIndex {
         }
 
         connection.mark_receipt_eligible();
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "preparing",
+            "索引结构已就绪，准备扫描精确历史",
+            0,
+            None,
+        );
         Ok(Self { connection })
     }
 
@@ -908,6 +986,36 @@ impl ExactUsageIndex {
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
+        self.sync_with_scan_total(codex_home, warnings, None)
+    }
+
+    /// Runs the unchanged durable index scan while optionally exposing a
+    /// best-effort, UI-only denominator for progress. The estimate is never
+    /// consulted by generation, tombstone, fingerprint, or publish logic.
+    pub(super) fn sync_with_scan_total(
+        &mut self,
+        codex_home: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+        scan_total: Option<u64>,
+    ) -> Result<u64, String> {
+        let index_path = database_path(codex_home)?;
+        let operation_lock_path = sqlite_sidecar_path(&index_path, ".operation.lock");
+        let _operation_lock = CrossProcessFileLock::acquire_wait_with_hook(
+            &operation_lock_path,
+            "精确 token 索引",
+            StdDuration::from_secs(30),
+            || {
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "waiting",
+                    "等待其他精确统计实例完成",
+                    0,
+                    scan_total,
+                )
+            },
+        )?;
+        let integrity_gate = index_integrity_gate(&index_path);
+        let _sync_gate_guard = integrity_gate.enter_silent(&index_path);
         self.connection.mark_receipt_dirty();
         let mut scan_completeness = ExactScanCompleteness::default();
         let scan_start_home_identity = match attribution_watch_root_physical_identity(codex_home) {
@@ -924,6 +1032,14 @@ impl ExactUsageIndex {
         prepare_scan_temp_tables(&self.connection)?;
         let generation = begin_or_resume_generation(&mut self.connection)?;
         let mut full_rebuild_jobs = Vec::new();
+        let mut scanned_files = 0_u64;
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "scanning",
+            "正在扫描精确历史；首次建立索引可能需要数分钟",
+            0,
+            scan_total,
+        );
         visit_session_files(
             &mut self.connection,
             codex_home,
@@ -940,10 +1056,24 @@ impl ExactUsageIndex {
                 )? {
                     full_rebuild_jobs.push(job);
                 }
+                scanned_files = scanned_files.saturating_add(1);
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "scanning",
+                    "正在扫描精确历史；首次建立索引可能需要数分钟",
+                    scanned_files,
+                    scan_total,
+                );
                 Ok(())
             },
         )?;
-        let index_path = database_path(codex_home)?;
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "publishing",
+            "正在写入精确索引并发布本轮结果",
+            0,
+            Some(1),
+        );
         let staged = stage_full_rebuilds(
             &full_rebuild_jobs,
             &index_path,
@@ -985,6 +1115,13 @@ impl ExactUsageIndex {
         )?;
         remove_staging_directory(&index_path)?;
         self.connection.mark_receipt_eligible();
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "publishing",
+            "正在提交精确统计结果",
+            1,
+            Some(1),
+        );
         Ok(revision)
     }
 
@@ -5305,6 +5442,151 @@ fn suppress_missing_tombstones_under(connection: &Connection, root: &Path) -> Re
         .map_err(|error| format!("无法抑制不可读会话条目的删除墓碑：{error}"))
 }
 
+/// Performs a read-only candidate count for the progress UI.
+///
+/// This deliberately does not open the exact index, touch any temporary scan
+/// tables, or participate in generation/fingerprint/tombstone decisions. The
+/// durable scanner remains the sole source of truth; this count may become
+/// stale while files are being created, removed, or rewritten.
+pub(super) fn estimate_precise_scan_total(
+    codex_home: &Path,
+    timeout: StdDuration,
+) -> Result<u64, String> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    let canonical_home = canonical_codex_home(codex_home)?;
+    let mut candidates = HashSet::new();
+
+    for root_name in ["sessions", "archived_sessions"] {
+        let root = codex_home.join(root_name);
+        if root.is_dir() {
+            estimate_session_directory(
+                &root,
+                &canonical_home,
+                &deadline,
+                &mut candidates,
+            )?;
+        }
+    }
+    estimate_active_rollouts(
+        codex_home,
+        &canonical_home,
+        &deadline,
+        &mut candidates,
+    )?;
+
+    Ok(candidates.len() as u64)
+}
+
+fn estimate_session_directory(
+    root: &Path,
+    canonical_home: &Path,
+    deadline: &Instant,
+    candidates: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        ensure_estimate_deadline(deadline)?;
+        let entries = fs::read_dir(&directory).map_err(|error| {
+            format!("无法预扫描精确 token 会话目录 {}：{error}", directory.display())
+        })?;
+        for entry in entries {
+            ensure_estimate_deadline(deadline)?;
+            let entry = entry.map_err(|error| {
+                format!("无法预扫描精确 token 会话目录项 {}：{error}", directory.display())
+            })?;
+            let path = entry.path();
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if metadata.file_type().is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "jsonl") {
+                continue;
+            }
+            let Ok(canonical) = fs::canonicalize(&path) else {
+                continue;
+            };
+            if !canonical.starts_with(canonical_home) {
+                continue;
+            }
+            if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {
+                candidates.insert(canonical);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn estimate_active_rollouts(
+    codex_home: &Path,
+    canonical_home: &Path,
+    deadline: &Instant,
+    candidates: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    ensure_estimate_deadline(deadline)?;
+    let database = codex_home.join("state_5.sqlite");
+    if !database.is_file() {
+        return Ok(());
+    }
+    let state_connection = sqlite::open_read_only(&database, StdDuration::from_millis(100))
+        .map_err(|error| format!("无法预扫描 active rollout：{error}"))?;
+    if !column_exists_checked(&state_connection, "threads", "rollout_path")? {
+        return Ok(());
+    }
+    let archived_filter = if column_exists_checked(&state_connection, "threads", "archived")? {
+        "COALESCE(archived, 0) = 0"
+    } else {
+        "1 = 1"
+    };
+    let sql = format!(
+        "SELECT rollout_path FROM threads WHERE {archived_filter} AND rollout_path IS NOT NULL AND rollout_path <> ''"
+    );
+    let mut statement = state_connection
+        .prepare(&sql)
+        .map_err(|error| format!("无法准备 active rollout 预扫描：{error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("无法读取 active rollout 预扫描结果：{error}"))?;
+    for row in rows {
+        ensure_estimate_deadline(deadline)?;
+        let raw = row.map_err(|error| format!("无法读取 active rollout 路径：{error}"))?;
+        let path = {
+            let path = PathBuf::from(raw);
+            if path.is_absolute() {
+                path
+            } else {
+                codex_home.join(path)
+            }
+        };
+        if path.extension().is_none_or(|extension| extension != "jsonl") {
+            continue;
+        }
+        let Ok(canonical) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !canonical.starts_with(canonical_home) {
+            continue;
+        }
+        if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {
+            candidates.insert(canonical);
+        }
+    }
+    Ok(())
+}
+
+fn ensure_estimate_deadline(deadline: &Instant) -> Result<(), String> {
+    if Instant::now() >= *deadline {
+        Err("精确 token 预扫描超过时间上限".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn enqueue_directory(
     connection: &Connection,
     canonical_home: &Path,
@@ -5583,7 +5865,8 @@ fn open_index_connection_with_recovery(
     let _ = existed_before_hint;
     if !existed_before {
         let connection = open_index_connection(path, true)?;
-        return managed_index_connection(path, connection).map(|connection| (connection, false));
+        return managed_index_connection(path, connection)
+            .map(|connection| (connection, false));
     }
 
     let state_has_active_connection = {
@@ -5709,6 +5992,21 @@ fn index_integrity_gate(path: &Path) -> Arc<IntegrityGate> {
 
 impl IntegrityGate {
     fn enter(self: &Arc<Self>, path: &Path) -> IntegrityGateGuard {
+        self.enter_with_release_hook(path, true)
+    }
+
+    // A sync guard is released before the managed connection closes. It must
+    // not look like the close-time guard to diagnostics or tests; only the
+    // close-time guard publishes that probe.
+    fn enter_silent(self: &Arc<Self>, path: &Path) -> IntegrityGateGuard {
+        self.enter_with_release_hook(path, false)
+    }
+
+    fn enter_with_release_hook(
+        self: &Arc<Self>,
+        path: &Path,
+        notify_release: bool,
+    ) -> IntegrityGateGuard {
         let mut in_flight = self
             .in_flight
             .lock()
@@ -5725,6 +6023,7 @@ impl IntegrityGate {
         IntegrityGateGuard {
             gate: Arc::clone(self),
             path: path.to_path_buf(),
+            notify_release,
         }
     }
 }
@@ -5735,7 +6034,9 @@ impl Drop for IntegrityGateGuard {
         // waiter. This keeps the test-only observation deterministic: the
         // close path must have already published its state decrement before
         // any new open can acquire this path gate.
-        run_integrity_gate_release_hook_for_testing(&self.path);
+        if self.notify_release {
+            run_integrity_gate_release_hook_for_testing(&self.path);
+        }
         let mut in_flight = self
             .gate
             .in_flight

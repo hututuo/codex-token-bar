@@ -662,6 +662,26 @@ function normalizeRadarActionKey(action: string | null | undefined): string {
 }
 
 export function compactRadarModelName(label: string): string {
+  const normalized = label.trim();
+  const tokens = normalized.match(/[A-Za-z0-9]+/g) ?? [];
+  const isDeepSeek = tokens.some((token) => token.toLowerCase() === "deepseek");
+  const isHarness = tokens[0]?.toLowerCase() === "dsh";
+  if (isDeepSeek || isHarness) {
+    const effort = ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"]
+      .find((candidate) => tokens.some((token) => token.toLowerCase() === candidate));
+    const variant = tokens.some((token) => ["flash", "f"].includes(token.toLowerCase()))
+      ? "F"
+      : tokens.some((token) => ["pro", "p"].includes(token.toLowerCase()))
+        ? "P"
+        : null;
+    if (variant) {
+      return [isHarness ? "DSH" : "DS", variant, effort].filter(Boolean).join(" ");
+    }
+    if (isHarness) {
+      return normalized.replace(/^DSH[\s_-]*/i, "DSH ").trim();
+    }
+    return normalized.replace(/^DeepSeek[\s_-]*/i, "DS ").trim();
+  }
   const family = label.match(/\b(sol|luna|terra)\b/i)?.[1];
   if (family) {
     const familyName = family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();

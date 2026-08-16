@@ -65,7 +65,7 @@ export function cellColor(mode: ActivityMode, intensity: number): string {
 
 export function modelCellColor(day: ActivityDay, intensity: number): string {
   if (intensity <= 0) return "var(--heatmap-empty)";
-  const color = dominantModelColor(day.modelBreakdowns) ?? "#7a879e";
+  const color = dominantModelColor(dayModelRows(day)) ?? "#7a879e";
   const weight = Math.round(24 + intensity * 72);
   return `color-mix(in srgb, ${color} ${weight}%, var(--heatmap-empty))`;
 }
@@ -77,7 +77,7 @@ export function modelCostCellBackground(
   modelCostDataAvailable = true,
 ): string {
   if (!modelCostDataAvailable) return "var(--heatmap-empty)";
-  const items = floatingTodayModelUsageItems(day.modelBreakdowns, fallbackModel);
+  const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel);
   const paid = items.filter((item) => (item.costUSD ?? 0) > 0);
   if (paid.length === 0) {
     const independent = items.find((item) => item.usesIndependentQuota);
@@ -114,7 +114,7 @@ export function cellLabel(
     )}`;
   }
   if (mode === "model") {
-    return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(day.modelBreakdowns) ?? "暂无模型明细"}`;
+    return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(dayModelRows(day)) ?? "暂无模型明细"}`;
   }
   if (mode === "modelCost") {
     return `${day.date} · ${modelCostSummaryText(day, fallbackModel, modelCostDataAvailable)}`;
@@ -131,7 +131,7 @@ export function modelCostUSD(
   if (day.tokens > 0 && (!day.modelBreakdowns || day.modelBreakdowns.length === 0)) {
     return null;
   }
-  return floatingTodayModelUsageItems(day.modelBreakdowns, fallbackModel)
+  return floatingTodayModelUsageItems(dayModelRows(day), fallbackModel)
     .reduce((total, item) => total + (item.costUSD ?? 0), 0);
 }
 
@@ -142,7 +142,7 @@ export function modelCostSummaryText(
 ): string {
   const cost = modelCostUSD(day, fallbackModel, modelCostDataAvailable);
   if (cost === null) return "模型明细待读取";
-  const items = floatingTodayModelUsageItems(day.modelBreakdowns, fallbackModel);
+  const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel);
   if (items.length === 0) return "模型费用 $0.00 · 暂无模型用量";
   return [
     `模型费用 ${floatingModelUsageMoneyText(cost)}`,
@@ -169,4 +169,13 @@ function formatOptionalPercent(value: number | null): string {
 
 function sumTokens(days: ActivityDay[]): number {
   return days.reduce((total, day) => total + day.tokens, 0);
+}
+
+function dayModelRows(day: ActivityDay): NonNullable<ActivityDay["modelBreakdowns"]> {
+  const parsed = Date.parse(`${day.date}T00:00:00Z`);
+  const eventStartUnix = Number.isFinite(parsed) ? parsed / 1000 : undefined;
+  return (day.modelBreakdowns ?? []).map((row) => ({
+    ...row,
+    eventStartUnix: row.eventStartUnix ?? eventStartUnix,
+  }));
 }

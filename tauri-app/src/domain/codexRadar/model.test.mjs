@@ -87,6 +87,13 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra max");
   assert.equal(compactRadarModelName("GPT-5.6 Terra ultra"), "Terra ultra");
   assert.equal(compactRadarModelName("GPT-5.6 Sol xhigh"), "Sol xhigh");
+  assert.equal(compactRadarModelName("DeepSeek V4 Flash max"), "DS F max");
+  assert.equal(compactRadarModelName("DeepSeek V4 Flash high"), "DS F high");
+  assert.equal(compactRadarModelName("DeepSeek V4 Pro max"), "DS P max");
+  assert.equal(compactRadarModelName("DeepSeek R1"), "DS R1");
+  assert.equal(compactRadarModelName("DSH F max"), "DSH F max");
+  assert.equal(compactRadarModelName("DSH-V4-Pro high"), "DSH P high");
+  assert.equal(compactRadarModelName("DSH R1 medium"), "DSH R1 medium");
 });
 
 test("current Sol max score outranks older Terra and keeps its effort in the compact label", () => {

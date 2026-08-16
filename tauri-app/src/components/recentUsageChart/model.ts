@@ -556,7 +556,7 @@ export function quotaConsumptionSelection(
   const selectedPoints = data.points.slice(lower, upper + 1);
   const breakdown = combineTokenBreakdown(selectedPoints);
   const selectedEstimate = modelAwareAPICostUSD(
-    selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
+    modelRowsForPoints(selectedPoints),
     breakdown,
     priceModel,
   );
@@ -571,11 +571,11 @@ export function quotaConsumptionSelection(
   const fiveHourComparisonBreakdown = combineTokenBreakdown(fiveHourComparisonPoints);
   const sevenDayComparisonBreakdown = combineTokenBreakdown(sevenDayComparisonPoints);
   const fiveHourComparisonEstimate = modelAwareAPICostUSD(
-    fiveHourComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []),
+    modelRowsForPoints(fiveHourComparisonPoints),
     fiveHourComparisonBreakdown,
     priceModel,
   );
-  const sevenDayModelBreakdowns = sevenDayComparisonPoints.flatMap((point) => point.modelBreakdowns ?? []);
+  const sevenDayModelBreakdowns = modelRowsForPoints(sevenDayComparisonPoints);
   const sevenDayComparisonEstimate = modelAwareAPICostUSD(
     sevenDayModelBreakdowns,
     sevenDayComparisonBreakdown,
@@ -619,7 +619,7 @@ export function quotaConsumptionSelection(
     outputTokens: breakdown.outputTokens,
     calls: breakdown.calls,
     cacheHitRate: breakdown.cacheHitRate,
-    modelBreakdowns: selectedPoints.flatMap((point) => point.modelBreakdowns ?? []),
+    modelBreakdowns: modelRowsForPoints(selectedPoints),
     sevenDayModelBreakdowns,
     excludedModels: selectedEstimate.excludedModels,
     excludedCalls: selectedEstimate.excludedCalls,
@@ -738,6 +738,13 @@ function weightedCacheHitRate(points: RecentUsagePoint[]): number {
     cachedInputTokens += point.cachedInputTokens;
   }
   return inputTokens === 0 ? 0 : cachedInputTokens / inputTokens;
+}
+
+function modelRowsForPoints(points: RecentUsagePoint[]): ModelTokenCostRow[] {
+  return points.flatMap((point) => (point.modelBreakdowns ?? []).map((row) => ({
+    ...row,
+    eventStartUnix: row.eventStartUnix ?? point.startUnix,
+  })));
 }
 
 function combineTokenBreakdown(points: RecentUsagePoint[]) {

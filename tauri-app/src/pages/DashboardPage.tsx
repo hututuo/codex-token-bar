@@ -17,6 +17,7 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PlatformCapabilities,
+  PreciseDashboardProgress,
   SessionEnhancementSettings,
   StatusMetricId,
   StatusMetricLabelStyle,
@@ -117,6 +118,7 @@ interface DashboardPageProps {
   runningThreads: RunningThreadSummary;
   radarRefreshGeneration: number;
   refreshing: boolean;
+  preciseProgress: PreciseDashboardProgress | null;
   appUpdateState: AppUpdateViewState;
   liveRateEnabled: boolean;
   selectedLiveThreadId: string;
@@ -190,6 +192,7 @@ export function DashboardPage({
   runningThreads,
   radarRefreshGeneration,
   refreshing,
+  preciseProgress,
   appUpdateState,
   liveRateEnabled,
   selectedLiveThreadId,
@@ -254,6 +257,7 @@ export function DashboardPage({
           onRefresh={onRefresh}
           onToggleAutostart={onToggleAutostart}
           refreshing={refreshing}
+          preciseProgress={preciseProgress}
           appUpdateState={appUpdateState}
           threadDeleteBridgeStatus={threadDeleteBridgeStatus}
           runningThreads={runningThreads}

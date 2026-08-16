@@ -385,7 +385,7 @@ export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibili
   return null;
 }
 
-function floatingContentRowHeight(row: FloatingContentLayoutRow): number {
+export function floatingContentRowHeight(row: FloatingContentLayoutRow): number {
   return Math.max(...row.groups.map((group) => {
     switch (group) {
       case "rateAndBar": return 30;
@@ -393,9 +393,9 @@ function floatingContentRowHeight(row: FloatingContentLayoutRow): number {
       case "metrics": return 13;
       case "runningThreads": return 14;
       case "todayModelShare":
-      case "todayModelCost": return 17;
+      case "todayModelCost": return 11;
       case "radar": return 24;
-      case "crowdRadar": return 20;
+      case "crowdRadar": return 24;
       case "quota": return 15.5;
     }
   }));

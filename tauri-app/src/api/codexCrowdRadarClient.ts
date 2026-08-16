@@ -1,3 +1,5 @@
+import { compactRadarModelName } from "../domain/codexRadar/model.ts";
+
 export interface CodexCrowdRadarModel {
   model: string;
   effort: string;
@@ -243,7 +245,7 @@ export function rankedCodexCrowdRadarModels(
 
 export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {
   const family = row.model.match(/(?:^|-)\s*(sol|terra|luna)(?:$|-)/i)?.[1] ?? row.model;
-  return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${row.effort}`.trim();
+  return compactRadarModelName(`${family} ${row.effort}`.trim());
 }
 
 function parseModels(leaderboard: Record<string, unknown> | null): CodexCrowdRadarModel[] {

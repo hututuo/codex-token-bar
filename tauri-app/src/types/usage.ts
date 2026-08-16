@@ -93,6 +93,8 @@ export interface TokenCacheBreakdown {
 
 export interface ModelTokenBreakdown {
   model: string | null;
+  /** Optional event/bucket start in Unix seconds for time-versioned pricing. */
+  eventStartUnix?: number;
   breakdown: TokenCacheBreakdown;
 }
 
@@ -161,6 +163,27 @@ export type PreciseDashboardSourceProbeState = "unchanged" | "changed" | "unknow
 export interface PreciseDashboardSourceProbe {
   state: PreciseDashboardSourceProbeState;
   publishedGeneration: string;
+}
+
+export type PreciseDashboardProgressPhase =
+  | "idle"
+  | "waiting"
+  | "preparing"
+  | "migrating"
+  | "scanning"
+  | "backfillingModel"
+  | "publishing"
+  | "complete"
+  | "failed";
+
+export interface PreciseDashboardProgress {
+  phase: PreciseDashboardProgressPhase | string;
+  message: string;
+  completed: number;
+  total: number | null;
+  fraction: number | null;
+  startedAt: string;
+  updatedAt: string;
 }
 
 export interface UsageSummarySnapshot {

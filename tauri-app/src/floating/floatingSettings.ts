@@ -13,7 +13,7 @@ export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 // follows Swift's compact scale. Native and CSS dimensions must stay aligned.
 export const FLOATING_BASE_WIDTH = 308;
 export const FLOATING_MIN_HEIGHT = 88;
-export const FLOATING_DEFAULT_HEIGHT = 142;
+export const FLOATING_DEFAULT_HEIGHT = 140;
 export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 3;
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {

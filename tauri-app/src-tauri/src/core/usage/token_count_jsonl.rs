@@ -1,6 +1,7 @@
 use super::cache_lifecycle;
 use crate::core::app_paths;
 use crate::core::startup_trace;
+use crate::models::PreciseDashboardProgress;
 use crate::models::{
     AccountInfo, DashboardSnapshot, LocalDataWarning, ModelTokenBreakdown, QuotaLimit,
     QuotaSnapshot, ResetCreditSummary,
@@ -43,6 +44,8 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static PRECISE_REFRESH_COORDINATORS: OnceLock<
     Mutex<HashMap<PreciseRefreshHomeKey, Arc<PreciseRefreshCoordinator>>>,
 > = OnceLock::new();
+static PRECISE_INDEX_PROGRESS: OnceLock<Mutex<HashMap<PathBuf, PreciseDashboardProgress>>> =
+    OnceLock::new();
 static PRECISE_REFRESH_FLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
 static ATTRIBUTION_MUTATION_WATCHERS: OnceLock<
@@ -82,6 +85,115 @@ const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 6
 const PRECISE_SUMMARY_REFRESH_TTL: StdDuration = StdDuration::from_secs(3 * 60);
 const PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(30);
 const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_secs(5 * 60);
+const PRECISE_SCAN_ESTIMATE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+
+fn precise_progress_now() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
+}
+
+fn precise_progress_key(codex_home: &Path) -> PathBuf {
+    fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf())
+}
+
+fn precise_progress_fraction(completed: u64, total: Option<u64>) -> Option<f64> {
+    let total = total.filter(|value| *value > 0)?;
+    Some((completed as f64 / total as f64).clamp(0.0, 1.0))
+}
+
+fn idle_precise_dashboard_progress() -> PreciseDashboardProgress {
+    let now = precise_progress_now();
+    PreciseDashboardProgress {
+        phase: "idle".into(),
+        message: "等待精确统计".into(),
+        completed: 0,
+        total: None,
+        fraction: None,
+        started_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+pub(crate) fn precise_dashboard_progress(codex_home: &Path) -> PreciseDashboardProgress {
+    let key = precise_progress_key(codex_home);
+    PRECISE_INDEX_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(idle_precise_dashboard_progress)
+}
+
+pub(crate) fn begin_precise_dashboard_progress(codex_home: &Path) {
+    let now = precise_progress_now();
+    let progress = PreciseDashboardProgress {
+        phase: "preparing".into(),
+        message: "正在计算索引规模，可能需要数分钟".into(),
+        completed: 0,
+        total: None,
+        fraction: None,
+        started_at: now.clone(),
+        updated_at: now,
+    };
+    PRECISE_INDEX_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(precise_progress_key(codex_home), progress);
+}
+
+pub(crate) fn update_precise_dashboard_progress(
+    codex_home: &Path,
+    phase: &str,
+    message: impl Into<String>,
+    completed: u64,
+    total: Option<u64>,
+) {
+    let key = precise_progress_key(codex_home);
+    let mut states = PRECISE_INDEX_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let started_at = states
+        .get(&key)
+        .map(|state| state.started_at.clone())
+        .unwrap_or_else(precise_progress_now);
+    let clamped_completed = total.map_or(completed, |value| completed.min(value));
+    states.insert(
+        key,
+        PreciseDashboardProgress {
+            phase: phase.into(),
+            message: message.into(),
+            completed: clamped_completed,
+            total,
+            fraction: precise_progress_fraction(clamped_completed, total),
+            started_at,
+            updated_at: precise_progress_now(),
+        },
+    );
+}
+
+pub(crate) fn finish_precise_dashboard_progress(
+    codex_home: &Path,
+    succeeded: bool,
+    message: impl Into<String>,
+) {
+    let current = precise_dashboard_progress(codex_home);
+    let completed = if succeeded {
+        current.total.unwrap_or(current.completed)
+    } else {
+        current.completed
+    };
+    update_precise_dashboard_progress(
+        codex_home,
+        if succeeded { "complete" } else { "failed" },
+        message,
+        completed,
+        current.total,
+    );
+}
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct PreciseRefreshHomeKey {
@@ -1064,6 +1176,26 @@ fn run_precise_refresh(
     canonical_home: &Path,
     flight: &PreciseRefreshFlight,
 ) -> PreciseRefreshResult {
+    begin_precise_dashboard_progress(canonical_home);
+    let result = run_precise_refresh_inner(coordinator, canonical_home, flight);
+    let message = match (&result.summary, &result.full) {
+        (_, Some(Ok(_))) => "精确统计已更新",
+        (Ok(_), None) => "精确统计数值已更新",
+        _ => "精确统计失败，保留上次可信数据",
+    };
+    finish_precise_dashboard_progress(
+        canonical_home,
+        result.summary.is_ok() || result.full.as_ref().is_some_and(Result::is_ok),
+        message,
+    );
+    result
+}
+
+fn run_precise_refresh_inner(
+    coordinator: &PreciseRefreshCoordinator,
+    canonical_home: &Path,
+    flight: &PreciseRefreshFlight,
+) -> PreciseRefreshResult {
     let mut warnings = Vec::new();
     let open_result = {
         let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Open);
@@ -1119,9 +1251,54 @@ fn run_precise_refresh(
             flight.set_trace_status("sync_hook_error");
             return PreciseRefreshResult::failure(error);
         }
+        update_precise_dashboard_progress(
+            canonical_home,
+            "preparing",
+            "正在预扫描精确历史规模（只读，不修改索引）",
+            0,
+            None,
+        );
+        let scan_total = match exact_usage_index::estimate_precise_scan_total(
+            canonical_home,
+            PRECISE_SCAN_ESTIMATE_TIMEOUT,
+        ) {
+            Ok(total) if total > 0 => {
+                update_precise_dashboard_progress(
+                    canonical_home,
+                    "preparing",
+                    format!("预扫描完成，约 {total} 个候选文件，开始精确扫描"),
+                    0,
+                    Some(total),
+                );
+                Some(total)
+            }
+            Ok(_) => {
+                update_precise_dashboard_progress(
+                    canonical_home,
+                    "preparing",
+                    "预扫描未发现候选文件，继续使用动态扫描进度",
+                    0,
+                    None,
+                );
+                None
+            }
+            Err(_) => {
+                // The estimate is a UI-only sidecar. Any timeout, transient
+                // SQLite lock, or filesystem race must never block the real
+                // scanner or turn a safe index refresh into a failure.
+                update_precise_dashboard_progress(
+                    canonical_home,
+                    "preparing",
+                    "预扫描未完成，继续使用动态扫描进度",
+                    0,
+                    None,
+                );
+                None
+            }
+        };
         let sync_result = {
             let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Sync);
-            index.sync(canonical_home, &mut warnings)
+            index.sync_with_scan_total(canonical_home, &mut warnings, scan_total)
         };
         match sync_result {
             Ok(revision) => revision,
@@ -1188,7 +1365,8 @@ fn run_precise_refresh(
         &mut warnings,
     ) {
         Ok((snapshot, full_summary)) => {
-            if flight.trace_status().starts_with("summary_") || flight.trace_status() == "running" {
+            let trace_status = flight.trace_status();
+            if trace_status.starts_with("summary_") || trace_status == "running" {
                 flight.set_trace_status("full_ok");
             }
             PreciseRefreshResult {

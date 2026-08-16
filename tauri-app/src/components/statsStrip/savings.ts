@@ -149,6 +149,7 @@ export function estimateRecent7dAPICost({
   };
   const rows: Array<{
     model: string | null;
+    eventStartUnix?: number;
     breakdown: {
       inputTokens: number;
       cachedInputTokens: number;
@@ -163,6 +164,7 @@ export function estimateRecent7dAPICost({
 
     const pointRows = point.modelBreakdowns.map((row) => ({
       model: row.model,
+      eventStartUnix: row.eventStartUnix ?? point.startUnix,
       breakdown: safeBreakdown(row.breakdown),
     }));
     const covered = pointRows.reduce((total, row) => addBreakdowns(total, row.breakdown), emptyBreakdown());
@@ -181,6 +183,7 @@ export function estimateRecent7dAPICost({
     priceModel,
     modelBreakdowns: rows.map((row) => ({
       model: row.model,
+      eventStartUnix: row.eventStartUnix,
       breakdown: {
         ...row.breakdown,
         totalTokens: row.breakdown.inputTokens + row.breakdown.outputTokens,

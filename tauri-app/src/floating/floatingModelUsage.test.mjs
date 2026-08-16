@@ -25,18 +25,20 @@ test("today model usage combines aliases and computes cache-aware per-model pric
   assert.equal(floatingModelUsageValue(items[0], "share"), "55%");
 });
 
-test("Spark stays visible in share but is labelled as independent quota in cost", () => {
+test("Spark stays visible in share and shows its reference price in cost", () => {
   const items = floatingTodayModelUsageItems([
     row("gpt-5.3-codex-spark", 800, 0, 200, 1_000, 1),
     row("codex-auto-review", 800, 0, 200, 1_000, 1),
   ], "gpt56Sol");
-  assert.deepEqual(items.map((item) => item.label), ["5.4", "Spark"]);
+  assert.deepEqual(items.map((item) => item.label), ["Luna", "Spark"]);
   const spark = items.find((item) => item.label === "Spark");
   assert.ok(spark);
-  assert.equal(floatingModelUsageValue(spark, "cost"), "独立");
+  assert.equal(floatingModelUsageValue(spark, "cost"), "$0.00（不计入总计）");
+  assert.equal(spark.referenceCostUSD, 0.0042);
+  assert.equal(floatingModelUsageValue({ ...spark, share: 0.0010916 }, "share"), "0.1%");
   assert.match(floatingModelUsageAccessibilityText("cost", [
     row("gpt-5.3-codex-spark", 800, 0, 200, 1_000, 1),
-  ], "gpt56Sol"), /Spark 独立/);
+  ], "gpt56Sol"), /Spark \$0\.00（不计入总计）/);
 });
 
 test("today model usage keeps four core placeholders and shares one cost order", () => {
@@ -79,7 +81,7 @@ test("model usage overflow explains every hidden model", () => {
   assert.equal(items.length, 5);
   assert.equal(
     floatingModelUsageOverflowText(items),
-    "更多模型\ngpt-5.5 · 1 tokens · 占比 <0.1% · $0.00",
+    "更多模型\n5.4 · 0 tokens · 占比 0% · $0.00",
   );
   assert.equal(floatingModelUsageOverflowText(items.slice(0, 4)), null);
 });
@@ -101,6 +103,6 @@ test("dashboard groups keep Sol Terra Luna expanded and wrap used secondary mode
   );
 });
 
-function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls) {
-  return { model, breakdown: { inputTokens, cachedInputTokens, outputTokens, totalTokens, calls } };
+function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls, eventStartUnix) {
+  return { model, eventStartUnix, breakdown: { inputTokens, cachedInputTokens, outputTokens, totalTokens, calls } };
 }

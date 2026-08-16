@@ -25,7 +25,12 @@ interface StatsStripProps {
   stats: DashboardStats;
   todayModelBreakdowns?: ModelTokenBreakdown[];
   todayTokens?: number;
-  recentUsage7d?: RecentUsagePoint[];
+  /**
+   * The native `recentUsage24h` compatibility field is the full 30-day,
+   * five-minute canvas. Use it for the precise current 7d model-cost scope;
+   * `recentUsage7d` is intentionally an hourly presentation series.
+   */
+  recentUsageFiveMinute?: RecentUsagePoint[];
   sevenDayResetAtUnix?: number | null;
   preciseDataFresh?: boolean;
   planLabel: string;
@@ -46,7 +51,7 @@ function StatsStripView({
   stats,
   todayModelBreakdowns = [],
   todayTokens = 0,
-  recentUsage7d = [],
+  recentUsageFiveMinute = [],
   sevenDayResetAtUnix = null,
   preciseDataFresh = true,
   planLabel,
@@ -63,10 +68,10 @@ function StatsStripView({
     modelBreakdowns: stats.modelBreakdowns,
   })), [planLabel, priceModel, stats]);
   const recent7dModelCost = useMemo(() => estimateRecent7dAPICost({
-    points: recentUsage7d,
+    points: recentUsageFiveMinute,
     resetAtUnix: sevenDayResetAtUnix,
     priceModel,
-  }), [priceModel, recentUsage7d, sevenDayResetAtUnix]);
+  }), [priceModel, recentUsageFiveMinute, sevenDayResetAtUnix]);
   const modelCostRows = modelCostScope === "today"
     ? todayModelBreakdowns
     : modelCostScope === "lifetime"
@@ -89,6 +94,10 @@ function StatsStripView({
       : []
   ), [modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
   const modelCostTotal = modelCostItems.reduce((total, item) => total + (item.costUSD ?? 0), 0);
+  const independentReferenceSummary = modelCostItems
+    .filter((item) => item.referenceCostUSD !== null)
+    .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
+    .join(" · ");
   const primaryModelCostItems = dashboardPrimaryModelUsageItems(modelCostItems);
   const secondaryModelCostItems = dashboardSecondaryModelUsageItems(modelCostItems);
 
@@ -154,9 +163,16 @@ function StatsStripView({
             </div>
             <strong className="stats-model-cost-title">各模型 API 等值费用</strong>
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
-              <strong className="stats-model-cost-total">
-                合计 {floatingModelUsageMoneyText(modelCostTotal)}
-              </strong>
+              <span className="stats-model-cost-total-wrap">
+                <strong className="stats-model-cost-total">
+                  合计 {floatingModelUsageMoneyText(modelCostTotal)}
+                </strong>
+                {independentReferenceSummary ? (
+                  <small className="stats-model-cost-reference">
+                    {independentReferenceSummary}
+                  </small>
+                ) : null}
+              </span>
             ) : null}
           </div>
           {modelCostScope === "sevenDay" && recent7dModelCost === null ? (

@@ -14,7 +14,7 @@ import {
 test("floating dimensions keep compact Swift-style proportions", () => {
   assert.equal(FLOATING_BASE_WIDTH, 308);
   assert.equal(FLOATING_MIN_HEIGHT, 88);
-  assert.equal(FLOATING_DEFAULT_HEIGHT, 142);
+  assert.equal(FLOATING_DEFAULT_HEIGHT, 140);
 });
 
 test("sanitizeFloatingSettings keeps valid gradient palette values", () => {

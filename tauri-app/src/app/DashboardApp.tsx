@@ -40,6 +40,7 @@ export function DashboardApp() {
     state,
     readyState,
     refreshing,
+    preciseProgress,
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
@@ -103,6 +104,7 @@ export function DashboardApp() {
         onSaveSessionEnhancements={shellSettings.saveSessionEnhancements}
         usageCacheInitializing={usageCacheInitializing}
         radarRefreshGeneration={radarRefreshGeneration}
+        preciseProgress={preciseProgress}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
         onFloatingScaleChange={shellSettings.updateFloatingScale}
         onTokenRateFullScaleChange={shellSettings.updateTokenRateFullScale}

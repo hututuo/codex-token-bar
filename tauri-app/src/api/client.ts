@@ -12,6 +12,7 @@ export {
   readDashboardSnapshot,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   readUsageSummarySnapshot,

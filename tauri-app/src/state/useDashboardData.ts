@@ -23,6 +23,7 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PreciseDashboardDedupeDomain,
+  PreciseDashboardProgress,
   PreciseDashboardRefreshReason,
   PreciseDashboardRequestRevision,
   UsageCacheStatus,
@@ -156,6 +157,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [forceNextQuotaLoad, setForceNextQuotaLoad] = useState(false);
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
+  const [preciseProgress, setPreciseProgress] = useState<PreciseDashboardProgress | null>(null);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [sourceToken, setSourceToken] = useState<DashboardSourceToken | null>(null);
@@ -953,10 +955,40 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     sourceToken,
   });
 
+  useEffect(() => {
+    const readProgress = source.readPreciseDashboardProgress;
+    if (!readProgress || sourceToken === null) {
+      setPreciseProgress(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      const next = await readProgress(sourceToken);
+      if (!cancelled && next !== null) {
+        setPreciseProgress(next);
+      }
+    };
+    void poll();
+    const active = state.loading || refreshTaskCount > 0;
+    if (!active) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [refreshTaskCount, source, sourceToken, state.loading]);
+
   return {
     state,
     readyState,
     refreshing: state.loading || refreshTaskCount > 0,
+    preciseProgress,
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,

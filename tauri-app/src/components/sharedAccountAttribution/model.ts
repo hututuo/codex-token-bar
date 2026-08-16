@@ -424,7 +424,10 @@ function costForBreakdown(
   const modelBreakdowns = buckets.every((bucket) => (
     bucket.modelTrackingComplete === true && Array.isArray(bucket.modelBreakdowns)
   ))
-    ? buckets.flatMap((bucket) => bucket.modelBreakdowns ?? [])
+    ? buckets.flatMap((bucket) => (bucket.modelBreakdowns ?? []).map((row) => ({
+      ...row,
+      eventStartUnix: row.eventStartUnix ?? bucket.startUnix,
+    })))
     : [];
   return modelAwareAPICostUSD(
     modelBreakdowns,

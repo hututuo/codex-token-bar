@@ -23,8 +23,8 @@ pub use auto_resume::{
 };
 pub use dashboard::{
     ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, ModelTokenBreakdown,
-    RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
-    TokenCacheUsage, TurnCacheUsage,
+    PreciseDashboardProgress, RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage,
+    TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 pub use live::{FloatingPanelSnapshot, LiveRateSnapshot, LiveThreadOption, UnreadSummary};
 pub use platform::{

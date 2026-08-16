@@ -9,6 +9,7 @@ import {
   acknowledgeUnreadSummary,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   scanProviderRepair,
@@ -23,6 +24,7 @@ import type {
   LiveRateSnapshot,
   LiveThreadOption,
   PreciseDashboardRefreshReason,
+  PreciseDashboardProgress,
   PreciseDashboardSourceProbe,
   PlatformCapabilities,
   ProviderRepairSnapshot,
@@ -46,6 +48,9 @@ export interface DashboardDataSource {
     sourceToken: CodexHomeSourceToken,
     requestReason?: PreciseDashboardRefreshReason,
   ) => Promise<DashboardSnapshot | null>;
+  readPreciseDashboardProgress?: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<PreciseDashboardProgress | null>;
   readPreciseDashboardSourceProbe: (
     sourceToken: CodexHomeSourceToken,
   ) => Promise<PreciseDashboardSourceProbe | null>;
@@ -74,6 +79,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPlatformCapabilities,
   readDashboardSnapshot,
   readPreciseDashboardSnapshot,
+  readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
   readUsageCacheStatus,
   readAccountQuota,

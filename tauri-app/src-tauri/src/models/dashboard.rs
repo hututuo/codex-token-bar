@@ -4,6 +4,18 @@ use super::{AccountInfo, LocalDataWarning, QuotaDiagnostic, QuotaSnapshot};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PreciseDashboardProgress {
+    pub phase: String,
+    pub message: String,
+    pub completed: u64,
+    pub total: Option<u64>,
+    pub fraction: Option<f64>,
+    pub started_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
     pub generated_at: String,
     /// Time through which the last successful full exact-usage sync proved the

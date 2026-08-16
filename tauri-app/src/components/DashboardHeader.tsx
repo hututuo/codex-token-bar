@@ -2,6 +2,7 @@ import type {
   AccountInfo,
   AutostartStatus,
   CodexHomeStatus,
+  PreciseDashboardProgress,
   RunningThreadSummary,
 } from "../types/dashboard";
 import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
@@ -32,6 +33,7 @@ interface DashboardHeaderProps {
   onRefresh: () => Promise<void>;
   onToggleAutostart: () => void;
   refreshing: boolean;
+  preciseProgress?: PreciseDashboardProgress | null;
   appUpdateState: {
     kind: "idle" | "checking" | "available" | "installing" | "error";
     message: string;
@@ -69,6 +71,7 @@ export function DashboardHeader({
   onRefresh,
   onToggleAutostart,
   refreshing,
+  preciseProgress = null,
   appUpdateState,
   threadDeleteBridgeStatus,
   autoResumeEnabled,
@@ -112,6 +115,9 @@ export function DashboardHeader({
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(generatedAt));
+  const activeProgress = preciseProgress && !["idle", "complete"].includes(preciseProgress.phase)
+    ? preciseProgress
+    : null;
   const updatedLabel = refreshing ? "同步中" : timeLabel;
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
   const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
@@ -199,9 +205,25 @@ export function DashboardHeader({
             <small>运行线程</small>
             <strong>{runningThreadHeaderText(runningThreads)}</strong>
           </span>
-          <span className="dash-head__freshness">
+          <span className={`dash-head__freshness${activeProgress ? ` is-${activeProgress.phase}` : ""}`}>
             <small>本地统计</small>
-            <strong>更新于 {updatedLabel}</strong>
+            <strong>
+              <i aria-hidden="true" className="precise-progress-dot" />
+              {activeProgress ? activeProgress.message : `更新于 ${updatedLabel}`}
+              {activeProgress?.total != null ? ` ${activeProgress.completed}/${activeProgress.total}` : ""}
+            </strong>
+            {activeProgress ? (
+              <span
+                aria-label={activeProgress.total == null ? activeProgress.message : `${activeProgress.completed}/${activeProgress.total}`}
+                aria-valuemax={activeProgress.total ?? undefined}
+                aria-valuemin={activeProgress.total == null ? undefined : 0}
+                aria-valuenow={activeProgress.total == null ? undefined : activeProgress.completed}
+                className={`precise-progress-bar${activeProgress.total == null ? " is-indeterminate" : ""}`}
+                role="progressbar"
+              >
+                <span style={{ width: `${Math.round((activeProgress.fraction ?? 0) * 100)}%` }} />
+              </span>
+            ) : null}
           </span>
         </div>
 

@@ -178,11 +178,14 @@ test("floating content removes horizontal rules without adding whitespace", () =
   const radar = /\.floating-radar\s*{([^}]*)}/.exec(stylesSource)?.[1] ?? "";
   const crowdRadar = [...stylesSource.matchAll(/^\.floating-crowd-radar\s*{([^}]*)}/gm)].at(-1)?.[1] ?? "";
   assert.doesNotMatch(modelUsage, /border-top/);
-  assert.match(modelUsage, /min-height: calc\(17px \* var\(--floating-scale\)\);/);
+  assert.match(modelUsage, /min-height: calc\(11px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-page-layout-row\.is-paged\s*\{[\s\S]*?min-height: calc\(var\(--floating-page-row-height\) \* var\(--floating-scale\)\);/);
+  assert.match(previewSource, /"--floating-page-row-height"/);
+  assert.match(stylesSource, /\.floating-crowd-radar-result\s*\{[\s\S]*?grid-template-rows: auto auto;[\s\S]*?row-gap: 0;/);
   assert.doesNotMatch(radar, /border-top|padding-top/);
   assert.doesNotMatch(crowdRadar, /border-top|padding-top/);
   assert.match(radar, /min-height: calc\(24px \* var\(--floating-scale\)\);/);
-  assert.match(crowdRadar, /min-height: calc\(20px \* var\(--floating-scale\)\);/);
+  assert.match(crowdRadar, /min-height: calc\(24px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-panel-surface\s*{[\s\S]*?padding: calc\(6px \* var\(--floating-scale\)\) calc\(10px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(2px \* var\(--floating-scale\)\);/);
 });
@@ -246,7 +249,7 @@ test("floating radar shows multiple sorted model IQ scores", () => {
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?font-size: calc\(11\.8px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar strong em\s*{[\s\S]*?font-size: calc\(8\.4px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?font-size: calc\(8\.1px \* var\(--floating-scale\)\);/);
-  assert.match(stylesSource, /\.floating-crowd-radar-result em\s*{[\s\S]*?font-size: calc\(7\.4px \* var\(--floating-scale\)\);/);
+  assert.match(stylesSource, /\.floating-crowd-radar-result em\s*{[\s\S]*?font-size: calc\(8\.9px \* var\(--floating-scale\)\);/);
 });
 
 test("clickable disclosure arrows are right aligned and vertically centered", () => {

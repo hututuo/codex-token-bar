@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CODEX_AUTO_REVIEW_PRICING_RULES,
   detectedOfficialAPIPriceModel,
+  effectiveModelForAlias,
   independentQuotaModelName,
   modelAwareAPICostUSD,
   normalizeOfficialAPIPriceModel,
   officialAPICostUSD,
+  independentQuotaReferenceCostUSD,
   officialAPIPrices,
   readStoredQuotaPriceModel,
 } from "./quotaPriceModel.ts";
@@ -59,18 +62,38 @@ test("Radar 2026-07-30 price basis matches the currently published GPT-5.6 stand
   assert.equal(officialAPICostUSD(1_000_000, 0, 0, "gpt52Codex"), 1.75);
 });
 
+test("auto review switches from GPT-5.4 to Luna at the UTC boundary", () => {
+  const before = Date.parse("2026-07-29T23:59:59Z") / 1000;
+  const boundary = Date.parse("2026-07-30T00:00:00Z") / 1000;
+
+  assert.equal(effectiveModelForAlias("codex-auto-review", before), "gpt54Legacy");
+  assert.equal(effectiveModelForAlias("codex_auto_review", boundary), "gpt56Luna");
+  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review", before), "gpt54Legacy");
+  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review", boundary), "gpt56Luna");
+  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review"), "gpt56Luna");
+  assert.deepEqual(CODEX_AUTO_REVIEW_PRICING_RULES.map((rule) => rule.revision), [
+    "codex-auto-review-pre-luna",
+    "codex-auto-review-luna-20260730",
+  ]);
+});
+
 test("official aliases and legacy models keep their own price cards", () => {
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.6"), "gpt56Sol");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.3-codex"), "gpt53Codex");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.2-codex"), "gpt52Codex");
-  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review"), "gpt54Legacy");
-  assert.equal(detectedOfficialAPIPriceModel("codex_auto_review"), "gpt54Legacy");
+  assert.equal(detectedOfficialAPIPriceModel("codex-auto-review"), "gpt56Luna");
+  assert.equal(detectedOfficialAPIPriceModel("codex_auto_review"), "gpt56Luna");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.3-codex-spark"), null);
   assert.equal(independentQuotaModelName("gpt-5.3-codex-spark"), "gpt-5.3-codex-spark");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.4"), "gpt54Legacy");
   assert.equal(detectedOfficialAPIPriceModel("gpt-5.4-mini"), "gpt54MiniLegacy");
   assert.equal(officialAPICostUSD(1_000_000, 0, 100_000, "gpt54Legacy"), 4);
   assert.equal(officialAPICostUSD(1_000_000, 0, 100_000, "gpt54MiniLegacy"), 1.2);
+});
+
+test("Spark reference price is available without entering official quota totals", () => {
+  assert.equal(independentQuotaReferenceCostUSD("gpt-5.3-codex-spark", 800, 0, 200), 0.0042);
+  assert.equal(independentQuotaReferenceCostUSD("gpt-5.6-sol", 800, 0, 200), null);
 });
 
 test("incomplete or duplicate model rows fall back as one complete breakdown", () => {
@@ -110,11 +133,34 @@ test("mixed model coverage prices Codex aliases, excludes Spark, and falls back 
     "gpt56Terra",
   );
 
-  assert.equal(estimate.costUSD, 13.2);
-  assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra", "gpt56Luna", "gpt53Codex", "gpt52Codex", "gpt54Legacy"]);
+  assert.equal(estimate.costUSD, 10.9);
+  assert.deepEqual(estimate.detectedModels, ["gpt56Sol", "gpt56Terra", "gpt56Luna", "gpt53Codex", "gpt52Codex"]);
   assert.equal(estimate.fallbackCalls, 0);
   assert.deepEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"]);
   assert.equal(estimate.excludedCalls, 1);
+});
+
+test("mixed historical and current auto-review rows use their event timestamps", () => {
+  const rows = [
+    {
+      model: "codex-auto-review",
+      eventStartUnix: Date.parse("2026-07-29T23:59:59Z") / 1000,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 },
+    },
+    {
+      model: "codex-auto-review",
+      eventStartUnix: Date.parse("2026-07-30T00:00:00Z") / 1000,
+      breakdown: { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 },
+    },
+  ];
+  const estimate = modelAwareAPICostUSD(
+    rows,
+    { inputTokens: 2_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 2 },
+    "gpt56Sol",
+  );
+
+  assert.equal(estimate.costUSD, 2.7);
+  assert.deepEqual(estimate.detectedModels, ["gpt56Luna", "gpt54Legacy"]);
 });
 
 test("Spark-only rows keep calls but produce an explicit zero API amount", () => {

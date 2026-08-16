@@ -32,6 +32,14 @@ test("crowd radar picks the highest pass rate and formats model family", () => {
   assert.equal((best.passRate * 150).toFixed(1), "119.3");
 });
 
+test("crowd radar compacts DeepSeek variants for floating and detail labels", () => {
+  assert.equal(crowdRadarModelLabel({ model: "DeepSeek V4 Flash", effort: "max" }), "DS F max");
+  assert.equal(crowdRadarModelLabel({ model: "DeepSeek V4 Pro", effort: "high" }), "DS P high");
+  assert.equal(crowdRadarModelLabel({ model: "DeepSeek R1", effort: "medium" }), "DS R1 medium");
+  assert.equal(crowdRadarModelLabel({ model: "DSH V4 Flash", effort: "max" }), "DSH F max");
+  assert.equal(crowdRadarModelLabel({ model: "DSH-V4-Pro", effort: "high" }), "DSH P high");
+});
+
 test("crowd radar reads through the bounded native command instead of browser CORS", () => {
   const source = readFileSync(new URL("./codexCrowdRadarClient.ts", import.meta.url), "utf8");
   assert.match(source, /callCommandStrict<unknown>\(/);

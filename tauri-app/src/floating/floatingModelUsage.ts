@@ -6,6 +6,7 @@ import {
 } from "../components/modelUsagePresentation.ts";
 import {
   detectedOfficialAPIPriceModel,
+  independentQuotaReferenceCostUSD,
   independentQuotaModelName,
   officialAPICostUSD,
   type OfficialAPIPriceModel,
@@ -21,6 +22,7 @@ export interface FloatingModelUsageItem {
   share: number;
   costUSD: number | null;
   usesIndependentQuota: boolean;
+  referenceCostUSD: number | null;
   color: string;
 }
 
@@ -33,6 +35,7 @@ export const DASHBOARD_PRIMARY_MODEL_KEYS = [
 
 interface CombinedModelUsage {
   model: string | null;
+  eventStartUnix?: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -61,9 +64,10 @@ export function floatingTodayModelUsageItems(
 ): FloatingModelUsageItem[] {
   const grouped = new Map<string, CombinedModelUsage>();
   for (const row of rows ?? []) {
-    const key = modelUsageKey(row.model);
+    const key = modelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? {
       model: row.model,
+      eventStartUnix: row.eventStartUnix,
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 0,
@@ -97,7 +101,7 @@ export function floatingTodayModelUsageItems(
   }
   return [...grouped.entries()].map(([key, row]) => {
     const usesIndependentQuota = independentQuotaModelName(row.model) !== null;
-    const priceModel = detectedOfficialAPIPriceModel(row.model) ?? fallbackModel;
+    const priceModel = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix) ?? fallbackModel;
     const costUSD = usesIndependentQuota
       ? null
       : officialAPICostUSD(
@@ -106,13 +110,20 @@ export function floatingTodayModelUsageItems(
         row.outputTokens,
         priceModel,
       );
+    const referenceCostUSD = independentQuotaReferenceCostUSD(
+      row.model,
+      row.inputTokens,
+      row.cachedInputTokens,
+      row.outputTokens,
+    );
     return {
       key,
-      label: modelUsageLabel(row.model),
+      label: modelUsageLabel(key),
       tokens: row.totalTokens,
       share: total > 0 ? row.totalTokens / total : 0,
       costUSD,
       usesIndependentQuota,
+      referenceCostUSD,
       color: modelUsageColor(key),
     };
   }).sort((left, right) => {
@@ -121,8 +132,8 @@ export function floatingTodayModelUsageItems(
     if (leftUsed !== rightUsed) return leftUsed ? -1 : 1;
 
     // Both pages consume this one order. Paid models sort by today's dollar
-    // estimate; independent-quota Spark has no dollar value but stays ahead
-    // of zero placeholders when it was actually used.
+    // estimate; independent-quota Spark has no billable dollar value in the
+    // primary total, so its separate reference price does not affect order.
     const leftCost = left.costUSD ?? 0;
     const rightCost = right.costUSD ?? 0;
     if (leftCost !== rightCost) return rightCost - leftCost;
@@ -140,8 +151,18 @@ export function floatingModelUsageValue(
   item: FloatingModelUsageItem,
   page: FloatingModelUsagePage,
 ): string {
-  if (page === "share") return `${Math.round(item.share * 100)}%`;
-  if (item.usesIndependentQuota) return "独立";
+  if (page === "share") {
+    const percent = Math.max(0, item.share) * 100;
+    if (percent > 0 && percent < 0.1) return "<0.1%";
+    if (percent > 0 && percent < 10) return `${percent.toFixed(1)}%`;
+    return `${Math.round(percent)}%`;
+  }
+  if (item.usesIndependentQuota) {
+    const referenceCost = item.referenceCostUSD === null
+      ? "—"
+      : floatingModelUsageMoneyText(item.referenceCostUSD);
+    return `${referenceCost}（不计入总计）`;
+  }
   return floatingModelUsageMoneyText(item.costUSD ?? 0);
 }
 
@@ -180,7 +201,9 @@ export function floatingModelUsageOverflowText(
   const hiddenItems = items.slice(Math.max(visibleLimit, 0));
   if (hiddenItems.length === 0) return null;
   const details = hiddenItems.map((item) => {
-    const cost = item.usesIndependentQuota ? "独立额度" : floatingModelUsageMoneyText(item.costUSD ?? 0);
+    const cost = item.usesIndependentQuota
+      ? `${item.referenceCostUSD === null ? "—" : floatingModelUsageMoneyText(item.referenceCostUSD)}（不计入总计）`
+      : floatingModelUsageMoneyText(item.costUSD ?? 0);
     return `${item.label} · ${formatTokens(item.tokens)} tokens · 占比 ${detailedShareText(item.share)} · ${cost}`;
   });
   return ["更多模型", ...details].join("\n");
@@ -211,6 +234,7 @@ function dashboardModelUsagePlaceholder(key: string): FloatingModelUsageItem {
     share: 0,
     costUSD: 0,
     usesIndependentQuota: false,
+    referenceCostUSD: null,
     color: modelUsageColor(key),
   };
 }

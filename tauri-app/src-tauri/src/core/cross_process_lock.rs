@@ -3,6 +3,8 @@ use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -41,6 +43,46 @@ impl CrossProcessFileLock {
             Ok(()) => Ok(Some(Self { file })),
             Err(error) if is_lock_contention(&error) => Ok(None),
             Err(error) => Err(format!("获取{label}锁失败：{error}")),
+        }
+    }
+
+    /// Wait for a bounded amount of time instead of turning normal owner
+    /// contention into an immediate read failure. Callers should publish a
+    /// waiting state before entering this loop and keep the returned guard
+    /// alive for the whole mutating operation.
+    pub(crate) fn acquire_wait(
+        path: &Path,
+        label: &str,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        Self::acquire_wait_with_hook(path, label, timeout, || {})
+    }
+
+    pub(crate) fn acquire_wait_with_hook<F>(
+        path: &Path,
+        label: &str,
+        timeout: Duration,
+        on_contention: F,
+    ) -> Result<Self, String>
+    where
+        F: FnOnce(),
+    {
+        let deadline = Instant::now() + timeout;
+        let mut on_contention = Some(on_contention);
+        loop {
+            if let Some(lock) = Self::try_acquire(path, label)? {
+                return Ok(lock);
+            }
+            if let Some(on_contention) = on_contention.take() {
+                on_contention();
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "等待{label}超时（{} 秒），另一个 Token Bar 进程仍在执行",
+                    timeout.as_secs()
+                ));
+            }
+            thread::sleep(Duration::from_millis(80));
         }
     }
 

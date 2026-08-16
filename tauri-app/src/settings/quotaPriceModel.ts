@@ -9,14 +9,59 @@ export type OfficialAPIPriceModel =
 
 export type QuotaPriceBasis = "current" | "radar20260730";
 
+/**
+ * A versioned model-routing rule. Raw usage rows keep their original model
+ * alias; this table only decides which billable model that alias represents
+ * at a given UTC instant. Add future routing changes as new dated rules
+ * instead of rewriting old events or migrating the exact index.
+ */
+export interface ModelPricingRule {
+  alias: string;
+  /** Unix seconds, always interpreted as UTC. */
+  effectiveFrom: number;
+  targetModel: OfficialAPIPriceModel;
+  revision: string;
+}
+
+const CODEX_AUTO_REVIEW_LUNA_EFFECTIVE_FROM = Date.UTC(2026, 6, 30) / 1000;
+
+export const CODEX_AUTO_REVIEW_PRICING_RULES: ReadonlyArray<ModelPricingRule> = [
+  {
+    alias: "codex-auto-review",
+    effectiveFrom: Number.NEGATIVE_INFINITY,
+    targetModel: "gpt54Legacy",
+    revision: "codex-auto-review-pre-luna",
+  },
+  {
+    alias: "codex-auto-review",
+    effectiveFrom: CODEX_AUTO_REVIEW_LUNA_EFFECTIVE_FROM,
+    targetModel: "gpt56Luna",
+    revision: "codex-auto-review-luna-20260730",
+  },
+];
+
 export interface APIPriceRates {
   inputUSDPerMillion: number;
   cachedInputUSDPerMillion: number;
   outputUSDPerMillion: number;
 }
 
+/**
+ * Spark has a separate Codex quota and no final official Spark-specific rate
+ * card. Keep this explicitly provisional reference price separate from the
+ * official API price table and from quota-drop attribution totals.
+ */
+export const SPARK_REFERENCE_PRICE_REVISION = "gpt-5.3-codex-spark-reference-api-20260815";
+export const SPARK_REFERENCE_API_PRICES: APIPriceRates = Object.freeze({
+  inputUSDPerMillion: 1.75,
+  cachedInputUSDPerMillion: 0.175,
+  outputUSDPerMillion: 14,
+});
+
 export interface ModelTokenCostRow {
   model: string | null;
+  /** Event/bucket start in Unix seconds. Absent for legacy aggregate rows. */
+  eventStartUnix?: number;
   breakdown: {
     inputTokens: number;
     cachedInputTokens: number;
@@ -146,8 +191,30 @@ export function officialAPICostUSD(
   ) / 1_000_000;
 }
 
-export function detectedOfficialAPIPriceModel(value: string | null | undefined): OfficialAPIPriceModel | null {
+export function independentQuotaReferenceCostUSD(
+  model: string | null | undefined,
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+): number | null {
+  if (independentQuotaModelName(model) === null) return null;
+  const input = finiteNonnegative(inputTokens);
+  const cachedInput = Math.min(finiteNonnegative(cachedInputTokens), input);
+  const uncachedInput = Math.max(0, input - cachedInput);
+  return (
+    uncachedInput * SPARK_REFERENCE_API_PRICES.inputUSDPerMillion
+    + cachedInput * SPARK_REFERENCE_API_PRICES.cachedInputUSDPerMillion
+    + finiteNonnegative(outputTokens) * SPARK_REFERENCE_API_PRICES.outputUSDPerMillion
+  ) / 1_000_000;
+}
+
+export function detectedOfficialAPIPriceModel(
+  value: string | null | undefined,
+  eventDate?: Date | number | string | null,
+): OfficialAPIPriceModel | null {
   const key = value?.trim().toLowerCase().replaceAll("_", "-");
+  const autoReviewModel = effectiveModelForAlias(value, eventDate);
+  if (autoReviewModel) return autoReviewModel;
   switch (key) {
     case "gpt-5.6":
     case "gpt5.6":
@@ -174,11 +241,6 @@ export function detectedOfficialAPIPriceModel(value: string | null | undefined):
     case "gpt53-codex":
     case "gpt53codex":
       return "gpt53Codex";
-    case "codex-auto-review":
-    case "codexautoreview":
-      // The current Codex catalog (verified 2026-08-09) gives this hidden
-      // approval-review alias GPT-5.4's complete capability profile.
-      return "gpt54Legacy";
     case "gpt-5.2-codex":
     case "gpt5.2-codex":
     case "gpt52-codex":
@@ -261,7 +323,7 @@ export function modelAwareAPICostUSD(
     if (excluded) {
       continue;
     }
-    const detected = detectedOfficialAPIPriceModel(row.model);
+    const detected = detectedOfficialAPIPriceModel(row.model, row.eventStartUnix);
     const target = detected
       ? grouped.get(detected) ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 }
       : unknown;
@@ -316,6 +378,48 @@ function canonicalModelKey(value: string | null | undefined): string {
     .toLowerCase()
     .replaceAll("_", "-")
     .replace(/[^a-z0-9]+/g, "");
+}
+
+/** Resolve the dated rule for an alias, using the current rule for legacy rows. */
+export function effectiveModelForAlias(
+  value: string | null | undefined,
+  eventDate?: Date | number | string | null,
+): OfficialAPIPriceModel | null {
+  const alias = canonicalModelKey(value);
+  if (!alias) return null;
+  const candidates = CODEX_AUTO_REVIEW_PRICING_RULES.filter(
+    (rule) => canonicalModelKey(rule.alias) === alias,
+  );
+  if (candidates.length === 0) return null;
+
+  const eventUnix = eventTimestampUnix(eventDate);
+  const effectiveAt = eventUnix ?? Number.POSITIVE_INFINITY;
+  return candidates
+    .filter((rule) => rule.effectiveFrom <= effectiveAt)
+    .sort((left, right) => right.effectiveFrom - left.effectiveFrom)[0]?.targetModel ?? null;
+}
+
+export function isCodexAutoReviewAlias(value: string | null | undefined): boolean {
+  const alias = canonicalModelKey(value);
+  return alias.length > 0 && CODEX_AUTO_REVIEW_PRICING_RULES.some(
+    (rule) => canonicalModelKey(rule.alias) === alias,
+  );
+}
+
+function eventTimestampUnix(value: Date | number | string | null | undefined): number | null {
+  if (value instanceof Date) {
+    const milliseconds = value.getTime();
+    return Number.isFinite(milliseconds) ? milliseconds / 1000 : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // Accept both Unix seconds and the millisecond form used by Date.now().
+    return Math.abs(value) >= 1e12 ? value / 1000 : value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const milliseconds = Date.parse(value);
+    return Number.isFinite(milliseconds) ? milliseconds / 1000 : null;
+  }
+  return null;
 }
 
 function finiteNonnegative(value: number): number {

@@ -465,7 +465,7 @@ function HoverBubble({
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
         </em>
       ) : null}
-      <ModelUsageInline rows={point.modelBreakdowns} />
+      <ModelUsageInline rows={point.modelBreakdowns} eventStartUnix={point.startUnix} />
       {quotaParts.length > 0 ? <span className="chart-hover-row">额度 {quotaParts.join(" · ")}</span> : null}
       <em className="chart-hover-row chart-hover-row--action">点击起点/终点可估算额度</em>
     </div>
@@ -523,10 +523,17 @@ function PreviewCloseButton({ ariaLabel, onClose }: { ariaLabel: string; onClose
 
 function ModelUsageInline({
   rows,
+  eventStartUnix,
 }: {
   rows: RecentUsagePoint["modelBreakdowns"] | QuotaConsumptionSelection["modelBreakdowns"];
+  eventStartUnix?: number;
 }) {
-  const slices = modelUsageSlices(rows);
+  const timedRows = rows?.map((row) => (
+    row.eventStartUnix === undefined && eventStartUnix !== undefined
+      ? { ...row, eventStartUnix }
+      : row
+  ));
+  const slices = modelUsageSlices(timedRows);
   if (slices.length === 0) return null;
   return (
     <div className="model-usage-inline chart-hover-row" aria-label={`模型占比 ${slices.map((slice) => `${slice.label} ${Math.round(slice.share * 100)}%`).join("，")}`}>

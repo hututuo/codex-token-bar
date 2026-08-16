@@ -3,6 +3,7 @@ import type {
   CodexHomeSourceEnvelope,
   CodexHomeSourceToken,
   DashboardSnapshot,
+  PreciseDashboardProgress,
   PreciseDashboardRefreshReason,
   PreciseDashboardSourceProbe,
   PlatformCapabilities,
@@ -60,6 +61,18 @@ export function readPreciseDashboardSnapshot(
     args.requestReason = requestReason;
   }
   return callCommandOptional("read_precise_dashboard_snapshot", args, null);
+}
+
+export function readPreciseDashboardProgress(
+  sourceToken: CodexHomeSourceToken,
+): Promise<PreciseDashboardProgress | null> {
+  // Process-local status only: this command never opens the SQLite index and
+  // therefore cannot create a second migration/scanner owner.
+  return callCommandOptional(
+    "read_precise_dashboard_progress",
+    { sourceToken },
+    null,
+  );
 }
 
 export function readPreciseDashboardSourceProbe(

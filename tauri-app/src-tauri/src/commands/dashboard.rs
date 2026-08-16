@@ -5,7 +5,10 @@ use crate::core::startup_trace;
 use crate::core::unread::{UnreadObservation, UnreadObservationBuilder};
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
 use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
-use crate::models::{AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities};
+use crate::models::{
+    AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
+    PreciseDashboardProgress,
+};
 use crate::platform;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1512,6 +1515,19 @@ pub async fn read_precise_dashboard_snapshot(
         result_status(&result)
     ));
     result
+}
+
+#[tauri::command]
+pub async fn read_precise_dashboard_progress(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+) -> Result<PreciseDashboardProgress, String> {
+    require_window_label(&window, "read_precise_dashboard_progress")?;
+    run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        Ok(token_count_jsonl::precise_dashboard_progress(&codex_home))
+    })
+    .await
 }
 
 async fn run_source_bound_dashboard_read_with_worker_start<T, Read, OnWorkerStart>(

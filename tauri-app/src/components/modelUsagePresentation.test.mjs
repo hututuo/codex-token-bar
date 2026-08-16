@@ -32,7 +32,7 @@ test("unknown and custom models remain visible with stable colors", () => {
   assert.deepEqual(new Set(first.map((slice) => slice.label)), new Set(["未知模型", "custom-model"]));
 });
 
-test("auto review uses the current GPT-5.4 profile without merging real GPT-5.3", () => {
+test("auto review uses the current Luna profile without merging real GPT-5.3", () => {
   const slices = modelUsageSlices([
     row("codex-auto-review", 600, 2),
     row("gpt-5.4", 100, 1),
@@ -40,14 +40,28 @@ test("auto review uses the current GPT-5.4 profile without merging real GPT-5.3"
   ]);
 
   assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "5.4", tokens: 700 },
+    { label: "Luna", tokens: 600 },
     { label: "5.3", tokens: 300 },
+    { label: "5.4", tokens: 100 },
   ]);
 });
 
-function row(model, totalTokens, calls) {
+test("historical and current auto-review points remain separate by timestamp", () => {
+  const slices = modelUsageSlices([
+    row("codex-auto-review", 400, 1, Date.parse("2026-07-29T23:59:59Z") / 1000),
+    row("codex-auto-review", 600, 1, Date.parse("2026-07-30T00:00:00Z") / 1000),
+  ]);
+
+  assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
+    { label: "Luna", tokens: 600 },
+    { label: "5.4", tokens: 400 },
+  ]);
+});
+
+function row(model, totalTokens, calls, eventStartUnix) {
   return {
     model,
+    eventStartUnix,
     breakdown: { inputTokens: totalTokens, cachedInputTokens: 0, outputTokens: 0, totalTokens, calls },
   };
 }

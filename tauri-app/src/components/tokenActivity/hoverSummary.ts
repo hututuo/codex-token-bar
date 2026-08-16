@@ -20,7 +20,13 @@ export function hoverSummary(
     )}`;
   }
   if (mode === "model") {
-    return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(day.modelBreakdowns) ?? "暂无模型明细"}`;
+    const parsed = Date.parse(`${day.date}T00:00:00Z`);
+    const eventStartUnix = Number.isFinite(parsed) ? parsed / 1000 : undefined;
+    const rows = (day.modelBreakdowns ?? []).map((row) => ({
+      ...row,
+      eventStartUnix: row.eventStartUnix ?? eventStartUnix,
+    }));
+    return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(rows) ?? "暂无模型明细"}`;
   }
   if (mode === "modelCost") {
     return `${day.date} · ${modelCostSummaryText(day, fallbackModel, modelCostDataAvailable)}`;
