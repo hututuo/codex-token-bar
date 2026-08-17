@@ -42,7 +42,9 @@ export function dashboardSnapshotHasTrustedStartupData(snapshot: DashboardSnapsh
   const hasCoverage = typeof coveredAt === "string"
     && coveredAt.trim().length > 0
     && Number.isFinite(Date.parse(coveredAt));
-  return hasCoverage && (snapshot.preciseRecentUsageFresh === true || hasCoverage);
+  // A last-good stale snapshot is still trusted for display when it carries a
+  // valid precise coverage boundary; freshness is reported separately.
+  return hasCoverage;
 }
 
 export function readyDashboardState(state: DashboardAppState): DashboardReadyState | null {

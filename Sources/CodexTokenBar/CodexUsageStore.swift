@@ -909,8 +909,8 @@ final class CodexUsageStore: ObservableObject {
                             ? "正在等待索引升级完成"
                             : "正在等待本地索引就绪"
                         self.status = retainedTrustedSnapshot
-                            ? "(waitingStatus)（保留上次可信数据）..."
-                            : "(waitingStatus)..."
+                            ? "\(waitingStatus)（保留上次可信数据）..."
+                            : "\(waitingStatus)..."
                     } else {
                         self.status = retainedTrustedSnapshot
                             ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
