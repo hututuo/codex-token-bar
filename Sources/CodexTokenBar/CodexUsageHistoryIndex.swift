@@ -1591,6 +1591,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON attribution_source_buckets(provenance_epoch, bucket_start);
                 """
             )
+            // `CREATE TABLE IF NOT EXISTS` does not upgrade an attribution
+            // ledger created by the v3/v4 index.  Repair its shape before the
+            // replay probe can defer the expensive backfill; otherwise a
+            // retryable replay candidate would leave the old three-column
+            // primary key in place and every model-aware read would fail.
+            try ensureAttributionLedgerSchema(connection: connection)
             try connection.execute(
                 """
                 INSERT OR IGNORE INTO schema_meta(key, value)
@@ -1619,8 +1625,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) THEN '1' ELSE '0' END;
                 """
             )
-            if destructiveRebuildRequired
-                || storedProvenanceRevision != Self.attributionProvenanceRevision {
+            let attributionMigrationRequired = destructiveRebuildRequired
+                || storedProvenanceRevision != Self.attributionProvenanceRevision
+            // Do not rebuild the potentially large attribution ledger while a
+            // replay-boundary probe is unresolved.  The replay marker would
+            // remain pending and the next launch would repeat this O(events)
+            // transaction from scratch.
+            let attributionMigrationReady = !migrationNeedsReplayBoundary || replayBoundaryReady
+            if attributionMigrationRequired && attributionMigrationReady {
                 if migrationNeedsLedger {
                     reportMigration("正在回填归因账本")
                 }
@@ -1662,12 +1674,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 if migrationNeedsLedger {
                     migrationCompleted += 1
-                    reportMigration(
-                        replayBoundaryReady
-                            ? "归因账本已提交"
-                            : "归因账本已暂存，等待 replay 边界完成"
-                    )
+                    reportMigration("归因账本已提交")
                 }
+            } else if attributionMigrationRequired {
+                reportMigration("等待 replay 边界完成后回填归因账本")
             }
             try migrateV2SourcesForAppend(connection)
             try migrateKnownEventColumns(connection)
@@ -1721,17 +1731,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // re-enters this path on the next open without a fake current
             // schema, provenance, or replay marker.
             guard replayBoundaryReady else { return }
+            let requiresFinalMigrationCommit = currentVersion == nil
+                || migrationNeedsSchemaFields
+                || migrationNeedsReplayBoundary
+                || migrationNeedsLedger
+                || migrationNeedsSessionCatalog
+            guard requiresFinalMigrationCommit else { return }
             try connection.transaction { transaction in
-                if currentVersion != nil || migrationNeedsReplayBoundary {
-                    try transaction.execute(
-                        """
-                        INSERT INTO schema_meta(key, value)
-                        VALUES ('fork_replay_boundary_revision', ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                        """,
-                        bindings: [.text(Self.forkReplayBoundaryRevision)]
-                    )
-                }
+                try transaction.execute(
+                    """
+                    INSERT INTO schema_meta(key, value)
+                    VALUES ('fork_replay_boundary_revision', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """,
+                    bindings: [.text(Self.forkReplayBoundaryRevision)]
+                )
                 if migrationNeedsLedger {
                     try transaction.execute(
                         """
@@ -1777,6 +1791,79 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 PRIMARY KEY(provenance_epoch, source_lineage, bucket_start, model)
             ) WITHOUT ROWID;
 
+            CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
+                ON attribution_source_buckets(provenance_epoch, bucket_start);
+            """
+        )
+    }
+
+    private func ensureAttributionLedgerSchema(
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        let tableSQL = try connection.readRows(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'attribution_source_buckets'
+            LIMIT 1;
+            """
+        ) { row in row.text(0) }.first ?? nil
+        guard let tableSQL else {
+            try createAttributionLedgerSchema(connection: connection)
+            return
+        }
+
+        let requiredColumns = [
+            "provenance_epoch",
+            "source_lineage",
+            "bucket_start",
+            "model",
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+            "calls",
+        ]
+        let columns = Set(try connection.readRows(
+            "PRAGMA table_info(attribution_source_buckets);"
+        ) { row in row.text(1) }.compactMap { $0 })
+        let normalizedSQL = tableSQL
+            .lowercased()
+            .filter { !$0.isWhitespace }
+        let expectedPrimaryKey =
+            "primarykey(provenance_epoch,source_lineage,bucket_start,model)"
+        guard requiredColumns.allSatisfy(columns.contains),
+              normalizedSQL.contains(expectedPrimaryKey) else {
+            let legacyName = "attribution_source_buckets_legacy_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+            try connection.execute(
+                "ALTER TABLE attribution_source_buckets RENAME TO \(legacyName);"
+            )
+            try createAttributionLedgerSchema(connection: connection)
+
+            let expressions = requiredColumns.map { column -> String in
+                guard columns.contains(column) else {
+                    switch column {
+                    case "model": return "'' AS model"
+                    default: return "0 AS \(column)"
+                    }
+                }
+                return column
+            }
+            try connection.execute(
+                """
+                INSERT OR REPLACE INTO attribution_source_buckets(
+                    \(requiredColumns.joined(separator: ", "))
+                )
+                SELECT \(expressions.joined(separator: ", "))
+                FROM \(legacyName);
+                """
+            )
+            try connection.execute("DROP TABLE \(legacyName);")
+            return
+        }
+        try connection.execute(
+            """
             CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
                 ON attribution_source_buckets(provenance_epoch, bucket_start);
             """

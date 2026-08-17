@@ -22,6 +22,7 @@ const PRECISE_DASHBOARD_UI_WAIT_MS = 30_000;
 interface PreciseDashboardLoadOptions {
   active: boolean;
   dashboardReady: boolean;
+  startupUnavailable?: boolean;
   loading: boolean;
   generation: number;
   forcePreciseRefresh?: boolean;
@@ -54,6 +55,7 @@ interface PreciseDashboardLoadOptions {
 export function usePreciseDashboardLoad({
   active,
   dashboardReady,
+  startupUnavailable = false,
   loading,
   generation,
   forcePreciseRefresh = true,
@@ -76,7 +78,12 @@ export function usePreciseDashboardLoad({
   const initialStartDeadlineMs = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!active || !dashboardReady || loading || preciseGeneration.current === generation) {
+    if (
+      !active
+      || (!dashboardReady && !startupUnavailable)
+      || (loading && !startupUnavailable)
+      || preciseGeneration.current === generation
+    ) {
       return;
     }
 
@@ -242,6 +249,7 @@ export function usePreciseDashboardLoad({
     forcePreciseRefresh,
     generation,
     loading,
+    startupUnavailable,
     onLoadEnd,
     onLoadStart,
     onPreciseDashboard,

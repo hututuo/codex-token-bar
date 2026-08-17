@@ -771,11 +771,20 @@ final class CodexUsageStore: ObservableObject {
                 } else {
                     self.isDetailHydrating = false
                     self.isCompactSummaryPending = false
+                    let priorProgress = self.preciseIndexProgress
+                    let errorSuggestsMigration = (error as? CodexUsageHistoryIndexError)
+                        .map { $0.operation.contains("升级") || $0.operation.contains("迁移") }
+                        ?? false
+                    let migrationWasActive = errorSuggestsMigration
+                        || priorProgress.phase == .migrating
+                        || priorProgress.message.contains("索引升级")
                     self.preciseIndexProgress = PreciseIndexProgress(
                         phase: .failed,
-                        message: "精确统计失败，保留上次可信数据",
-                        completed: 0,
-                        total: nil
+                        message: migrationWasActive
+                            ? "索引升级失败，原始数据不会丢失，保留上次可信数据"
+                            : "精确统计失败，保留上次可信数据",
+                        completed: migrationWasActive ? priorProgress.completed : 0,
+                        total: migrationWasActive ? priorProgress.total : nil
                     )
                     let retainedTrustedSnapshot = self.snapshotSourceID == sourceID
                         && self.hasDisplayableSnapshot(self.snapshot)

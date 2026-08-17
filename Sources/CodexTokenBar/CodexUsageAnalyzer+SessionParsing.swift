@@ -191,6 +191,9 @@ extension CodexUsageAnalyzer {
             chunkHashingFrom: request.hashingStartOffset,
             validationBoundary: request.validationBoundary
         ) { lineOffset, lineString in
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             try autoreleasepool {
                 if forkReplayStartedAt == nil,
                    let metadata = parseSessionMetaForkMetadata(lineString) {
@@ -470,21 +473,29 @@ extension CodexUsageAnalyzer {
     }
 
     func usageJSONLFiles() throws -> [URL] {
-        let canonicalHome = try canonicalSelectedHome()
-        var files: [URL] = []
-        let historyRoots = [
-            dataSource.sessionsRoot,
-            canonicalHome.appendingPathComponent("archived_sessions", isDirectory: true)
-        ]
-        for root in historyRoots where fileManager.fileExists(atPath: root.path) {
-            let sessionFiles = try jsonlFiles(
-                under: root,
-                canonicalHome: canonicalHome
-            )
-            files.append(contentsOf: sessionFiles)
+        let trace = RefreshPerformanceProbe.begin("usageAnalyzer.discoverSessionFiles")
+        do {
+            let canonicalHome = try canonicalSelectedHome()
+            var files: [URL] = []
+            let historyRoots = [
+                dataSource.sessionsRoot,
+                canonicalHome.appendingPathComponent("archived_sessions", isDirectory: true)
+            ]
+            for root in historyRoots where fileManager.fileExists(atPath: root.path) {
+                let sessionFiles = try jsonlFiles(
+                    under: root,
+                    canonicalHome: canonicalHome
+                )
+                files.append(contentsOf: sessionFiles)
+            }
+            files.append(contentsOf: try activeStateRolloutFiles(canonicalHome: canonicalHome))
+            let discovered = deduplicateJSONLFiles(files)
+            trace?.end("ok", metadata: ["files": String(discovered.count)])
+            return discovered
+        } catch {
+            trace?.end("failed", metadata: ["errorType": String(describing: type(of: error))])
+            throw error
         }
-        files.append(contentsOf: try activeStateRolloutFiles(canonicalHome: canonicalHome))
-        return deduplicateJSONLFiles(files)
     }
 
     private func jsonlFiles(under root: URL, canonicalHome: URL) throws -> [URL] {
@@ -558,7 +569,10 @@ extension CodexUsageAnalyzer {
         now: Date = Date(),
         timeZone: TimeZone = .current
     ) -> SessionTreeSignature {
-        SessionTreeSignature(
+        let trace = RefreshPerformanceProbe.begin("usageAnalyzer.buildSessionTreeSignature", metadata: [
+            "files": String(files.count)
+        ])
+        let signature = SessionTreeSignature(
             localDate: localDateString(for: now, timeZone: timeZone),
             utcOffsetSeconds: timeZone.secondsFromGMT(for: now),
             files: files
@@ -568,6 +582,8 @@ extension CodexUsageAnalyzer {
             attributionProvenanceEpoch: attributionProvenanceEpoch,
             attributionGeneration: attributionGeneration
         )
+        trace?.end("ok", metadata: ["files": String(signature.files.count)])
+        return signature
     }
 
     private func activeStateRolloutFiles(canonicalHome: URL) throws -> [URL] {

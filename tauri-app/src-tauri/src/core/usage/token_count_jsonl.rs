@@ -44,7 +44,7 @@ static USAGE_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedUsageSummary>>> = OnceLo
 static PRECISE_REFRESH_COORDINATORS: OnceLock<
     Mutex<HashMap<PreciseRefreshHomeKey, Arc<PreciseRefreshCoordinator>>>,
 > = OnceLock::new();
-static PRECISE_INDEX_PROGRESS: OnceLock<Mutex<HashMap<PathBuf, PreciseDashboardProgress>>> =
+static PRECISE_INDEX_PROGRESS: OnceLock<Mutex<HashMap<PreciseProgressKey, PreciseDashboardProgress>>> =
     OnceLock::new();
 static PRECISE_REFRESH_FLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
@@ -87,14 +87,46 @@ const PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL: StdDuration = StdDuration::from_se
 const PRECISE_REFRESH_COMPLETED_OWNER_WINDOW: StdDuration = StdDuration::from_secs(5 * 60);
 const PRECISE_SCAN_ESTIMATE_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
+thread_local! {
+    // A refresh owner keeps the physical Home identity it started with.  If a
+    // directory is replaced at the same path while that owner is unwinding,
+    // its late progress updates must not overwrite the replacement owner's
+    // slot.
+    static ACTIVE_PRECISE_PROGRESS_KEY: std::cell::RefCell<Option<PreciseProgressKey>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn precise_progress_now() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
-fn precise_progress_key(codex_home: &Path) -> PathBuf {
-    fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf())
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PreciseProgressKey {
+    canonical_home: PathBuf,
+    physical_home_identity: Option<String>,
+}
+
+fn precise_progress_key(codex_home: &Path) -> PreciseProgressKey {
+    let canonical_home = fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
+    let physical_home_identity =
+        attribution_watch_root_physical_identity(&canonical_home).ok();
+    PreciseProgressKey {
+        canonical_home,
+        physical_home_identity,
+    }
+}
+
+fn active_or_current_progress_key(codex_home: &Path) -> PreciseProgressKey {
+    let canonical_home = fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
+    ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|key| key.canonical_home == canonical_home)
+            .cloned()
+            .unwrap_or_else(|| precise_progress_key(&canonical_home))
+    })
 }
 
 fn precise_progress_fraction(completed: u64, total: Option<u64>) -> Option<f64> {
@@ -116,7 +148,7 @@ fn idle_precise_dashboard_progress() -> PreciseDashboardProgress {
 }
 
 pub(crate) fn precise_dashboard_progress(codex_home: &Path) -> PreciseDashboardProgress {
-    let key = precise_progress_key(codex_home);
+    let key = active_or_current_progress_key(codex_home);
     PRECISE_INDEX_PROGRESS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -128,6 +160,10 @@ pub(crate) fn precise_dashboard_progress(codex_home: &Path) -> PreciseDashboardP
 
 pub(crate) fn begin_precise_dashboard_progress(codex_home: &Path) {
     let now = precise_progress_now();
+    let key = precise_progress_key(codex_home);
+    ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
+        *slot.borrow_mut() = Some(key.clone());
+    });
     let progress = PreciseDashboardProgress {
         phase: "preparing".into(),
         message: "正在计算索引规模，可能需要数分钟".into(),
@@ -141,17 +177,16 @@ pub(crate) fn begin_precise_dashboard_progress(codex_home: &Path) {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(precise_progress_key(codex_home), progress);
+        .insert(key, progress);
 }
 
-pub(crate) fn update_precise_dashboard_progress(
-    codex_home: &Path,
+fn update_precise_dashboard_progress_for_key(
+    key: PreciseProgressKey,
     phase: &str,
     message: impl Into<String>,
     completed: u64,
     total: Option<u64>,
 ) {
-    let key = precise_progress_key(codex_home);
     let mut states = PRECISE_INDEX_PROGRESS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -175,24 +210,50 @@ pub(crate) fn update_precise_dashboard_progress(
     );
 }
 
+pub(crate) fn update_precise_dashboard_progress(
+    codex_home: &Path,
+    phase: &str,
+    message: impl Into<String>,
+    completed: u64,
+    total: Option<u64>,
+) {
+    update_precise_dashboard_progress_for_key(
+        active_or_current_progress_key(codex_home),
+        phase,
+        message,
+        completed,
+        total,
+    );
+}
+
 pub(crate) fn finish_precise_dashboard_progress(
     codex_home: &Path,
     succeeded: bool,
     message: impl Into<String>,
 ) {
-    let current = precise_dashboard_progress(codex_home);
+    let key = active_or_current_progress_key(codex_home);
+    let current = PRECISE_INDEX_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(idle_precise_dashboard_progress);
     let completed = if succeeded {
         current.total.unwrap_or(current.completed)
     } else {
         current.completed
     };
-    update_precise_dashboard_progress(
-        codex_home,
+    update_precise_dashboard_progress_for_key(
+        key,
         if succeeded { "complete" } else { "failed" },
         message,
         completed,
         current.total,
     );
+    ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1192,14 +1253,17 @@ fn run_precise_refresh(
 ) -> PreciseRefreshResult {
     begin_precise_dashboard_progress(canonical_home);
     let result = run_precise_refresh_inner(coordinator, canonical_home, flight);
+    let migration_pending = precise_dashboard_progress(canonical_home).phase == "migrating";
     let message = match (&result.summary, &result.full) {
+        _ if migration_pending => "精确统计已更新，索引升级待下次启动继续",
         (_, Some(Ok(_))) => "精确统计已更新",
         (Ok(_), None) => "精确统计数值已更新",
         _ => "精确统计失败，保留上次可信数据",
     };
     finish_precise_dashboard_progress(
         canonical_home,
-        result.summary.is_ok() || result.full.as_ref().is_some_and(Result::is_ok),
+        !migration_pending
+            && (result.summary.is_ok() || result.full.as_ref().is_some_and(Result::is_ok)),
         message,
     );
     result
@@ -1239,17 +1303,24 @@ fn run_precise_refresh_inner(
         flight.set_trace_status("watcher_before_error");
         return PreciseRefreshResult::failure(error);
     }
-    let reused_completed_summary = match reusable_completed_summary_revision(
-        coordinator,
-        canonical_home,
-        &mut index,
-        flight,
-    ) {
-        Ok(revision) => revision,
-        Err(error) => {
-            flight.set_trace_status("summary_reuse_probe_error");
-            trace_precise_failure("summary_reuse_probe", &error);
-            return PreciseRefreshResult::failure(error);
+    let reused_completed_summary = if index.migration_pending() {
+        // A summary-only reuse would bypass the scan that commits a pending
+        // attribution/schema migration. Keep the migration visible and force
+        // the normal durable path once before allowing cache reuse again.
+        None
+    } else {
+        match reusable_completed_summary_revision(
+            coordinator,
+            canonical_home,
+            &mut index,
+            flight,
+        ) {
+            Ok(revision) => revision,
+            Err(error) => {
+                flight.set_trace_status("summary_reuse_probe_error");
+                trace_precise_failure("summary_reuse_probe", &error);
+                return PreciseRefreshResult::failure(error);
+            }
         }
     };
     let precise_coverage_at = OffsetDateTime::now_utc();

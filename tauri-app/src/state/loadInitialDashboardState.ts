@@ -16,6 +16,8 @@ interface InitialDashboardLoadOptions {
   isSourceCurrent: (token: DashboardSourceToken) => boolean;
   setState: Dispatch<SetStateAction<DashboardAppState>>;
   onFastSnapshotLoaded: () => void;
+  onDashboardAvailable?: () => void;
+  onDashboardUnavailable?: () => void;
 }
 
 export async function loadInitialDashboardState({
@@ -25,6 +27,8 @@ export async function loadInitialDashboardState({
   isSourceCurrent,
   setState,
   onFastSnapshotLoaded,
+  onDashboardAvailable,
+  onDashboardUnavailable,
 }: InitialDashboardLoadOptions): Promise<void> {
   void source.readPlatformCapabilities().then((platform) => {
     if (!isCancelled() && isSourceCurrent(sourceToken)) {
@@ -57,6 +61,7 @@ export async function loadInitialDashboardState({
               loading: false,
             }
           : current);
+        onDashboardAvailable?.();
         onFastSnapshotLoaded();
         void recordStartupEvent("dashboard snapshot ready");
       }
@@ -66,10 +71,12 @@ export async function loadInitialDashboardState({
     // once the native owner becomes available, while diagnostics expose the
     // unavailable command to the user.
     if (!isCancelled() && isSourceCurrent(sourceToken)) {
+      onDashboardUnavailable?.();
       void recordStartupEvent("dashboard snapshot unavailable");
     }
   } catch {
     if (!isCancelled() && isSourceCurrent(sourceToken)) {
+      onDashboardUnavailable?.();
       void recordStartupEvent("dashboard snapshot unavailable");
     }
   }

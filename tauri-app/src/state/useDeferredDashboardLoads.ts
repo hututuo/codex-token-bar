@@ -17,6 +17,7 @@ import { usePreciseDashboardLoad } from "./usePreciseDashboardLoad";
 interface DeferredDashboardLoadsOptions {
   active: boolean;
   dashboardReady: boolean;
+  startupUnavailable?: boolean;
   loading: boolean;
   generation: number;
   forcePreciseRefresh?: boolean;
@@ -60,6 +61,7 @@ interface DeferredDashboardLoadsOptions {
 export function useDeferredDashboardLoads({
   active,
   dashboardReady,
+  startupUnavailable = false,
   loading,
   generation,
   forcePreciseRefresh,
@@ -87,6 +89,7 @@ export function useDeferredDashboardLoads({
   usePreciseDashboardLoad({
     active,
     dashboardReady,
+    startupUnavailable,
     generation,
     forcePreciseRefresh,
     preciseRefreshReason,

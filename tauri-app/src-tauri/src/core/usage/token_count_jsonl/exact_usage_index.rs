@@ -94,6 +94,11 @@ const MIGRATION_STAGE_TOTAL: u64 = 6;
 
 pub(super) struct ExactUsageIndex {
     connection: ManagedIndexConnection,
+    /// True while one or more durable migration markers still need the
+    /// normal scan/final publication to complete.  The open phase may repair
+    /// DDL and orphan rows, but the attribution ledger is only authoritative
+    /// after `finalize_generation` has committed it.
+    migration_pending: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -280,11 +285,21 @@ pub(super) struct PreciseScanCandidate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct DirectorySignature {
+    path: PathBuf,
+    exists: bool,
+    is_directory: bool,
+    size: u64,
+    modified_ns: u128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PreciseScanDiscovery {
     pub(super) canonical_home: PathBuf,
     pub(super) physical_home_identity: String,
     pub(super) source_revision: u64,
     pub(super) discovered_at: SystemTime,
+    directory_signatures: Vec<DirectorySignature>,
     pub(super) candidates: Vec<PreciseScanCandidate>,
     pub(super) candidate_total: u64,
 }
@@ -301,6 +316,11 @@ impl PreciseScanDiscovery {
             || attribution_watch_root_physical_identity(&canonical_home).ok().as_deref()
                 != Some(self.physical_home_identity.as_str())
         {
+            return false;
+        }
+        if !self.directory_signatures.iter().all(|expected| {
+            directory_signature(&expected.path) == *expected
+        }) {
             return false;
         }
         self.candidates.iter().all(|candidate| {
@@ -779,7 +799,7 @@ impl ExactUsageIndex {
             super::update_precise_dashboard_progress(
                 codex_home,
                 "migrating",
-                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（归因账本）",
+                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（等待扫描回填归因账本）",
                 5,
                 Some(MIGRATION_STAGE_TOTAL),
             );
@@ -799,7 +819,9 @@ impl ExactUsageIndex {
                 &revision.to_string(),
             )?;
         }
-        if should_report_migration && replay_migration_complete {
+        let migration_markers_complete = !should_report_migration
+            || migration_markers_complete(&connection, replay_migration_complete)?;
+        if should_report_migration && migration_markers_complete {
             super::update_precise_dashboard_progress(
                 codex_home,
                 "migrating",
@@ -809,30 +831,32 @@ impl ExactUsageIndex {
             );
         }
 
-        let migration_markers_complete = !should_report_migration
-            || (replay_migration_complete
-                && metadata_text(&connection, "fork_replay_boundary_revision")?.as_deref()
-                    == Some(FORK_REPLAY_BOUNDARY_REVISION)
-                && metadata_text(&connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
-                    == Some(ORPHAN_REPAIR_REVISION)
-                && metadata_i64(&connection, "session_catalog_schema_version")?
-                    == Some(SESSION_CATALOG_SCHEMA_VERSION)
-                && metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?.is_some()
-                && metadata_text(&connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.is_some()
-                && metadata_text(&connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?.is_some());
         if migration_markers_complete {
             connection.mark_receipt_eligible();
         } else {
             connection.mark_receipt_dirty();
         }
-        super::update_precise_dashboard_progress(
-            codex_home,
-            "preparing",
-            "索引结构已就绪，准备扫描精确历史",
-            0,
-            None,
-        );
-        Ok(Self { connection })
+        if migration_markers_complete {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "preparing",
+                "索引结构已就绪，准备扫描精确历史",
+                0,
+                None,
+            );
+        } else {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "索引升级等待正式扫描回填归因账本",
+                5,
+                Some(MIGRATION_STAGE_TOTAL),
+            );
+        }
+        Ok(Self {
+            connection,
+            migration_pending: !migration_markers_complete,
+        })
     }
 
     pub(super) fn refresh_session_catalog<F>(
@@ -1208,6 +1232,7 @@ impl ExactUsageIndex {
         let generation = begin_or_resume_generation(&mut self.connection)?;
         let mut full_rebuild_jobs = Vec::new();
         let mut scanned_files = 0_u64;
+        let mut scanned_paths = HashSet::new();
         super::update_precise_dashboard_progress(
             codex_home,
             "scanning",
@@ -1229,6 +1254,7 @@ impl ExactUsageIndex {
                     &mut scan_completeness,
                     &mut full_rebuild_jobs,
                     &mut scanned_files,
+                    &mut scanned_paths,
                     scan_total,
                     Some(candidate.signature),
                 )?;
@@ -1252,6 +1278,7 @@ impl ExactUsageIndex {
                         scan_completeness,
                         &mut full_rebuild_jobs,
                         &mut scanned_files,
+                        &mut scanned_paths,
                         scan_total,
                         None,
                     )
@@ -1279,6 +1306,7 @@ impl ExactUsageIndex {
                     scan_completeness,
                     &mut full_rebuild_jobs,
                     &mut scanned_files,
+                    &mut scanned_paths,
                     scan_total,
                     None,
                 )
@@ -1337,8 +1365,33 @@ impl ExactUsageIndex {
             warnings,
             scan_completeness,
         )?;
+        if self.migration_pending {
+            let migration_complete = migration_markers_complete(&self.connection, true)?;
+            if migration_complete {
+                self.migration_pending = false;
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "migrating",
+                    "索引升级完成，归因账本已提交",
+                    MIGRATION_STAGE_TOTAL,
+                    Some(MIGRATION_STAGE_TOTAL),
+                );
+            } else {
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "migrating",
+                    "索引升级尚未完成，保留已发布数据并将在下次启动继续",
+                    5,
+                    Some(MIGRATION_STAGE_TOTAL),
+                );
+            }
+        }
         remove_staging_directory(&index_path)?;
-        self.connection.mark_receipt_eligible();
+        if !self.migration_pending {
+            self.connection.mark_receipt_eligible();
+        } else {
+            self.connection.mark_receipt_dirty();
+        }
         super::update_precise_dashboard_progress(
             codex_home,
             "publishing",
@@ -1346,11 +1399,24 @@ impl ExactUsageIndex {
             1,
             Some(1),
         );
+        if self.migration_pending {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "索引升级尚未完成，保留已发布数据并将在下次启动继续",
+                5,
+                Some(MIGRATION_STAGE_TOTAL),
+            );
+        }
         Ok(revision)
     }
 
     pub(super) fn revision(&self) -> Result<u64, String> {
         Ok(u64::try_from(metadata_i64(&self.connection, "revision")?.unwrap_or(0)).unwrap_or(0))
+    }
+
+    pub(super) fn migration_pending(&self) -> bool {
+        self.migration_pending
     }
 
     pub(super) fn dashboard_revision(&self) -> Result<u64, String> {
@@ -4634,9 +4700,14 @@ fn process_scan_file_with_progress(
     scan_completeness: &mut ExactScanCompleteness,
     full_rebuild_jobs: &mut Vec<FullRebuildJob>,
     scanned_files: &mut u64,
+    scanned_paths: &mut HashSet<PathBuf>,
     scan_total: Option<u64>,
     expected_signature: Option<FileSignature>,
 ) -> Result<(), String> {
+    let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    if !scanned_paths.insert(canonical) {
+        return Ok(());
+    }
     if let Some(job) = process_session_file(
         connection,
         generation,
@@ -5801,7 +5872,10 @@ fn suppress_missing_tombstones_under(connection: &Connection, root: &Path) -> Re
 /// This deliberately does not open the exact index, touch any temporary scan
 /// tables, or participate in generation/fingerprint/tombstone decisions. The
 /// durable scanner remains the sole source of truth; this plan may become
-/// stale while files are being created, removed, or rewritten.
+/// stale while files are being created, removed, or rewritten.  Directory
+/// metadata is retained as a cheap reconciliation fence so a newly-created
+/// JSONL can trigger the durable walker without rescanning directories during
+/// the normal unchanged path.
 pub(super) fn estimate_precise_scan_total(
     codex_home: &Path,
     timeout: StdDuration,
@@ -5821,15 +5895,23 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
     let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
     let discovered_at = SystemTime::now();
     let mut candidates = HashMap::new();
+    let mut directories = HashMap::new();
+    let state_database = codex_home.join("state_5.sqlite");
+    directories.insert(
+        state_database.clone(),
+        directory_signature(&state_database),
+    );
 
     for root_name in ["sessions", "archived_sessions"] {
         let root = codex_home.join(root_name);
+        directories.insert(root.clone(), directory_signature(&root));
         if root.is_dir() {
             estimate_session_directory(
                 &root,
                 &canonical_home,
                 &deadline,
                 &mut candidates,
+                &mut directories,
             )?;
         }
     }
@@ -5838,6 +5920,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
         &canonical_home,
         &deadline,
         &mut candidates,
+        &mut directories,
     )?;
 
     ensure_estimate_deadline(&deadline)?;
@@ -5853,11 +5936,14 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| left.canonical_path.cmp(&right.canonical_path));
     let candidate_total = candidates.len() as u64;
+    let mut directory_signatures = directories.into_values().collect::<Vec<_>>();
+    directory_signatures.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(PreciseScanDiscovery {
         canonical_home,
         physical_home_identity,
         source_revision,
         discovered_at,
+        directory_signatures,
         candidates,
         candidate_total,
     })
@@ -5868,10 +5954,12 @@ fn estimate_session_directory(
     canonical_home: &Path,
     deadline: &Instant,
     candidates: &mut HashMap<PathBuf, FileSignature>,
+    directories: &mut HashMap<PathBuf, DirectorySignature>,
 ) -> Result<(), String> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         ensure_estimate_deadline(deadline)?;
+        directories.insert(directory.clone(), directory_signature(&directory));
         let entries = fs::read_dir(&directory).map_err(|error| {
             format!("无法预扫描精确 token 会话目录 {}：{error}", directory.display())
         })?;
@@ -5913,6 +6001,7 @@ fn estimate_active_rollouts(
     canonical_home: &Path,
     deadline: &Instant,
     candidates: &mut HashMap<PathBuf, FileSignature>,
+    directories: &mut HashMap<PathBuf, DirectorySignature>,
 ) -> Result<(), String> {
     ensure_estimate_deadline(deadline)?;
     let database = codex_home.join("state_5.sqlite");
@@ -5959,6 +6048,9 @@ fn estimate_active_rollouts(
             continue;
         }
         if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {
+            if let Some(parent) = canonical.parent() {
+                directories.insert(parent.to_path_buf(), directory_signature(parent));
+            }
             if let Ok(signature) = file_signature(&canonical) {
                 candidates.entry(canonical).or_insert(signature);
             }
@@ -7876,6 +7968,22 @@ fn file_signature(path: &Path) -> Result<FileSignature, String> {
     file_signature_from_handle(&handle, path)
 }
 
+fn directory_signature(path: &Path) -> DirectorySignature {
+    let metadata = fs::symlink_metadata(path).ok();
+    let modified_ns = metadata
+        .as_ref()
+        .and_then(|value| value.modified().ok())
+        .and_then(|value| value.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |value| value.as_nanos());
+    DirectorySignature {
+        path: path.to_path_buf(),
+        exists: metadata.is_some(),
+        is_directory: metadata.as_ref().is_some_and(fs::Metadata::is_dir),
+        size: metadata.as_ref().map_or(0, fs::Metadata::len),
+        modified_ns,
+    }
+}
+
 fn file_signature_from_handle(handle: &fs::File, path: &Path) -> Result<FileSignature, String> {
     let metadata = handle
         .metadata()
@@ -8140,6 +8248,25 @@ fn metadata_text(connection: &Connection, key: &str) -> Result<Option<String>, S
 
 fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, String> {
     Ok(metadata_text(connection, key)?.and_then(|value| value.parse().ok()))
+}
+
+fn migration_markers_complete(
+    connection: &Connection,
+    replay_migration_complete: bool,
+) -> Result<bool, String> {
+    Ok(replay_migration_complete
+        && metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
+            == Some(FORK_REPLAY_BOUNDARY_REVISION)
+        && metadata_text(connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
+            == Some(ORPHAN_REPAIR_REVISION)
+        && metadata_i64(connection, "session_catalog_schema_version")?
+            == Some(SESSION_CATALOG_SCHEMA_VERSION)
+        && metadata_text(connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+            .is_some_and(|value| !value.trim().is_empty())
+        && metadata_text(connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?
+            .is_some_and(|value| !value.trim().is_empty())
+        && metadata_text(connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?
+            .is_some_and(|value| !value.trim().is_empty()))
 }
 
 fn attribution_safety_state(connection: &Connection) -> Result<AttributionSafetyState, String> {

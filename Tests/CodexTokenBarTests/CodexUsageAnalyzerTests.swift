@@ -4271,14 +4271,25 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
         let missingPath = codexHome.appendingPathComponent("sessions/missing.jsonl").path
         try database.execute(
-            """
-            UPDATE sources
-            SET path = ?, is_skipping_fork_replay = 1, is_explicit_subagent_fork = 0;
-            UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';
-            DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';
-            """,
+            "UPDATE sources SET path = ?, is_skipping_fork_replay = 1, is_explicit_subagent_fork = 0;",
             bindings: [.text(missingPath)]
         )
+        try database.execute(
+            "UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';"
+        )
+        try database.execute(
+            "UPDATE schema_meta SET value = 'legacy-ledger-v1' WHERE key = 'provenance_revision';"
+        )
+        try database.execute(
+            "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
+        )
+        let generationBefore = try scalarInt(
+            "SELECT value FROM schema_meta WHERE key = 'attribution_generation';",
+            in: database
+        )
+        let epochBefore = try database.readRows(
+            "SELECT value FROM schema_meta WHERE key = 'provenance_epoch';"
+        ) { $0.text(0) }.first
 
         var progress: [PreciseIndexProgress] = []
         _ = try CodexUsageHistoryIndex(
@@ -4310,6 +4321,20 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
             ) { $0.text(0) }.first
+        )
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT value FROM schema_meta WHERE key = 'attribution_generation';",
+                in: database
+            ),
+            generationBefore,
+            "unresolved replay must defer the expensive ledger backfill"
+        )
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'provenance_epoch';"
+            ) { $0.text(0) }.first,
+            epochBefore
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: sessionFile.path))
     }

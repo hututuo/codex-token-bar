@@ -150,6 +150,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const scheduleSourceReconcile = options.scheduleSourceReconcile ?? scheduleMainSourceReconcile;
   const [state, setState] = useState<DashboardAppState>(initialDashboardState);
   const [fastSnapshotLoaded, setFastSnapshotLoaded] = useState(false);
+  const [startupDashboardUnavailable, setStartupDashboardUnavailable] = useState(false);
+  const [startupRetrySequence, setStartupRetrySequence] = useState(0);
   const [loadGeneration, setLoadGeneration] = useState(0);
   const [quotaLoadGeneration, setQuotaLoadGeneration] = useState(0);
   const [radarRefreshGeneration, setRadarRefreshGeneration] = useState(0);
@@ -279,6 +281,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       ? acceptedSourceToken
       : current);
     setFastSnapshotLoaded(false);
+    setStartupDashboardUnavailable(false);
+    setStartupRetrySequence(0);
     setSelectedLiveThreadId("");
     setForceNextQuotaLoad(false);
     setRefreshTaskCount(0);
@@ -361,11 +365,15 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (!isSourceTokenCurrent(sourceToken)) {
       return;
     }
+    const wasStartupUnavailable = startupDashboardUnavailable;
+    setStartupDashboardUnavailable(false);
     markRenderCommit("frontend precise dashboard");
     startTransition(() => {
-      setState((current) => isSourceTokenCurrent(sourceToken)
-        ? mergePreciseDashboard(current, precise)
-        : current);
+      setState((current) => {
+        if (!isSourceTokenCurrent(sourceToken)) return current;
+        const merged = mergePreciseDashboard(current, precise);
+        return wasStartupUnavailable ? { ...merged, loading: false } : merged;
+      });
     });
     const catchUp = planPreciseUsageCatchUp({
       quotaUpdatedAt: latestComparisonUpdatedAtRef.current,
@@ -383,7 +391,13 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         catchUp.requestedForQuotaBoundaryKey ?? undefined,
       );
     }
-  }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
+  }, [
+    isSourceTokenCurrent,
+    markRenderCommit,
+    requestPreciseRefresh,
+    sourceToken,
+    startupDashboardUnavailable,
+  ]);
 
   const markPreciseSnapshotStale = useCallback(() => {
     if (!isSourceTokenCurrent(sourceToken)) {
@@ -404,7 +418,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       Number.isFinite(coveredAtMillis) ? coveredAtMillis / 1_000 : Date.now() / 1_000,
     );
     retryPreciseRefreshRef.current = true;
-  }, [isSourceTokenCurrent, sourceToken]);
+    if (startupDashboardUnavailable) {
+      setStartupRetrySequence((current) => current + 1);
+    }
+  }, [isSourceTokenCurrent, sourceToken, startupDashboardUnavailable]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
     if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) {
@@ -703,11 +720,38 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       onFastSnapshotLoaded: () => setFastSnapshotLoaded((current) => (
         isSourceTokenCurrent(sourceToken) ? true : current
       )),
+      onDashboardAvailable: () => {
+        if (!isSourceTokenCurrent(sourceToken)) return;
+        setStartupDashboardUnavailable(false);
+      },
+      onDashboardUnavailable: () => {
+        if (!isSourceTokenCurrent(sourceToken)) return;
+        setFastSnapshotLoaded(true);
+        setStartupDashboardUnavailable(true);
+        setStartupRetrySequence((current) => current + 1);
+      },
     });
     return () => {
       cancelled = true;
     };
   }, [isSourceTokenCurrent, source, sourceLoadGeneration, sourceToken]);
+
+  useEffect(() => {
+    if (!startupDashboardUnavailable || sourceToken === null) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      if (isSourceTokenCurrent(sourceToken)) {
+        setLoadGeneration((current) => current + 1);
+      }
+    }, 30_000);
+    return () => window.clearTimeout(timer);
+  }, [
+    isSourceTokenCurrent,
+    sourceToken,
+    startupDashboardUnavailable,
+    startupRetrySequence,
+  ]);
 
   const dashboardReady = state.dashboard !== null;
 
@@ -883,6 +927,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   useDeferredDashboardLoads({
     active: fastSnapshotLoaded,
     dashboardReady,
+    startupUnavailable: startupDashboardUnavailable,
     loading: state.loading,
     generation: loadGeneration,
     forcePreciseRefresh: pendingForcedPreciseRefreshRef.current
@@ -930,7 +975,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   });
 
   useLiveRateFeed({
-    active: fastSnapshotLoaded && liveRateEnabled,
+    active: fastSnapshotLoaded && dashboardReady && !state.loading && liveRateEnabled,
     selectedThreadId: selectedLiveThreadId,
     sourceToken,
     onSnapshot: mergeLiveRateSnapshot,
