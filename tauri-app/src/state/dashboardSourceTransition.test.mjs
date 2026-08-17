@@ -215,6 +215,8 @@ test("failed getCodexHome remains visible while dashboard data is still unavaila
 
     assert.equal(visible.codexHome.path, "无法读取 Codex Home");
     assert.equal(visible.codexHome.source, "读取失败");
+    assert.equal(typeof visible.dashboard.generatedAt, "string");
+    assert.equal(typeof visible.dashboard.account.displayName, "string");
   });
 });
 

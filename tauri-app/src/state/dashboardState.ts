@@ -87,7 +87,36 @@ export function visibleDashboardState(state: DashboardAppState): DashboardReadyS
 }
 
 export function pendingDashboardReadyState(): DashboardReadyState {
-  return readyDashboardState(initialDashboardState) as DashboardReadyState;
+  // `readyDashboardState` deliberately returns null until a precise coverage
+  // boundary exists.  The React shell still needs a complete, non-null render
+  // model while that first read is in flight; casting the ready result here
+  // used to turn the null into `{ codexHome }`, leaving `dashboard` undefined
+  // and crashing the first render at `dashboard.account`.
+  const { codexHome, platform, dashboard, liveRate, liveThreadOptions, repair, diagnostics } =
+    initialDashboardState;
+  if (
+    codexHome === null ||
+    platform === null ||
+    dashboard === null ||
+    liveRate === null ||
+    repair === null
+  ) {
+    throw new Error("initialDashboardState must provide a complete pending dashboard");
+  }
+
+  return {
+    codexHome,
+    platform,
+    dashboard,
+    liveRate,
+    liveThreadOptions,
+    repair,
+    diagnostics: mergeWarningDiagnostics(
+      diagnostics,
+      mergeWarnings(dashboard.warnings, liveRate.warnings),
+      dashboard.generatedAt,
+    ),
+  };
 }
 
 export {
