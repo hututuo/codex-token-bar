@@ -336,6 +336,8 @@ test("published or old cumulative points never become the realtime ranking", () 
 test("recovery scheduling is short, bounded, and has no fourth retry", async () => {
   const source = readFileSync(new URL("./codexCrowdRadarClient.ts", import.meta.url), "utf8");
   assert.match(source, /crowdRadarReadInFlight/);
+  assert.match(source, /crowdRadarReadFailure/);
+  assert.match(source, /CROWD_RADAR_FAILURE_COOLDOWN_MS = 10_000/);
   const module = await import("./codexCrowdRadarClient.ts");
   assert.equal(module.nextCodexCrowdRadarRecoveryDelayMs(0), 2_000);
   assert.equal(module.nextCodexCrowdRadarRecoveryDelayMs(1), 8_000);

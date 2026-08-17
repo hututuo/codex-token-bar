@@ -61,12 +61,20 @@ const CROWD_RADAR_COMMAND = "read_codex_crowd_radar_payload";
 const CROWD_RADAR_COMMAND_TIMEOUT_MS = 22_000;
 const WRAPPER_KEYS = ["data", "result", "snapshot", "payload", "response", "body"];
 const CROWD_RADAR_RECOVERY_DELAYS_MS = [2_000, 8_000] as const;
+const CROWD_RADAR_FAILURE_COOLDOWN_MS = 10_000;
 
 let crowdRadarReadInFlight: Promise<CodexCrowdRadarSnapshot> | null = null;
+let crowdRadarReadFailure: {
+  promise: Promise<CodexCrowdRadarSnapshot>;
+  expiresAt: number;
+} | null = null;
 
 export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> {
   if (crowdRadarReadInFlight) {
     return crowdRadarReadInFlight;
+  }
+  if (crowdRadarReadFailure && crowdRadarReadFailure.expiresAt > Date.now()) {
+    return crowdRadarReadFailure.promise;
   }
   // Keep the compatibility parser independently executable in Node tests while
   // loading the Tauri bridge only on the real network-read path.
@@ -81,8 +89,17 @@ export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> 
   })();
   crowdRadarReadInFlight = promise;
   void promise.then(
-    () => { if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null; },
-    () => { if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null; },
+    () => {
+      if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null;
+      crowdRadarReadFailure = null;
+    },
+    () => {
+      if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null;
+      crowdRadarReadFailure = {
+        promise,
+        expiresAt: Date.now() + CROWD_RADAR_FAILURE_COOLDOWN_MS,
+      };
+    },
   );
   return promise;
 }

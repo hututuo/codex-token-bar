@@ -134,6 +134,12 @@ impl PinnedHome {
 
         #[cfg(windows)]
         {
+            // The root handle is shared by read paths and by relative child
+            // opens. Request only traversal/read rights here; a mutating child
+            // handle still asks for its own write/delete rights below. This
+            // keeps a readable Home usable for diagnostics and scanning when
+            // the directory ACL does not grant FILE_DELETE_CHILD to the root
+            // handle itself.
             let root = open_windows_absolute_directory_without_following(&canonical_path)?;
             let root_identity = windows_file_identity(&root)?;
             return Ok(Self {
@@ -243,13 +249,15 @@ impl PinnedHome {
         }
         #[cfg(windows)]
         {
-            let current = open_windows_absolute_directory_without_following(&self.canonical_path)
-                .map_err(|error| {
-                format!(
-                    "固定 Codex Home 的规范路径已变化，已拒绝路径读取 {}：{error}",
-                    self.canonical_path.display()
-                )
-            })?;
+            let current =
+                open_windows_absolute_directory_without_following(&self.canonical_path).map_err(
+                    |error| {
+                        format!(
+                            "固定 Codex Home 的规范路径已变化，已拒绝路径读取 {}：{error}",
+                            self.canonical_path.display()
+                        )
+                    },
+                )?;
             let actual = windows_file_identity(&current)?;
             if actual != self.root_identity {
                 return Err(format!(
@@ -302,7 +310,7 @@ impl PinnedHome {
         }
         #[cfg(windows)]
         {
-            let parent = self.open_parent(relative, false)?;
+            let parent = self.open_parent_with_access(relative, false, false)?;
             return windows_open_regular_file_at(
                 &parent.file,
                 &parent.file_name,
@@ -984,6 +992,16 @@ impl PinnedHome {
 
     #[cfg(windows)]
     fn open_parent(&self, relative: &Path, create: bool) -> Result<PinnedParent, String> {
+        self.open_parent_with_access(relative, create, true)
+    }
+
+    #[cfg(windows)]
+    fn open_parent_with_access(
+        &self,
+        relative: &Path,
+        create: bool,
+        mutation: bool,
+    ) -> Result<PinnedParent, String> {
         self.ensure_canonical_path_identity()?;
         let components = normal_components(relative)?;
         let (file_name, parents) = components
@@ -995,7 +1013,7 @@ impl PinnedHome {
             .map_err(|error| format!("复制 Codex Home 目录句柄失败：{error}"))?;
         let mut relative_parent = PathBuf::new();
         for component in parents {
-            let next = match windows_open_directory_relative(&current, component) {
+            let next = match windows_open_directory_relative(&current, component, mutation) {
                 Ok(directory) => directory,
                 Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
                     match windows_create_directory_relative(&current, component) {
@@ -1011,10 +1029,10 @@ impl PinnedHome {
                         Err(create_error)
                             if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
                         {
-                            windows_open_directory_relative(&current, component).map_err(
+                            windows_open_directory_relative(&current, component, true).map_err(
                                 |open_error| {
                                     format!(
-                                        "打开并发新建 Provider 父目录 {} 失败，已拒绝重解析点：{open_error}",
+                                        "打开并发新建 Provider 父目录 {} 失败：{open_error}",
                                         relative.display()
                                     )
                                 },
@@ -1030,7 +1048,7 @@ impl PinnedHome {
                 }
                 Err(error) => {
                     return Err(format!(
-                        "打开 Provider 父目录 {} 失败，已拒绝重解析点：{error}",
+                        "打开 Provider 父目录 {} 失败：{error}",
                         relative.display()
                     ))
                 }
@@ -1055,7 +1073,7 @@ impl PinnedHome {
         if !parent.relative_parent.as_os_str().is_empty() {
             for component in normal_components(&parent.relative_parent)? {
                 current =
-                    windows_open_directory_relative(&current, &component).map_err(|error| {
+                    windows_open_directory_relative(&current, &component, true).map_err(|error| {
                         format!(
                             "Provider 父目录在操作期间被替换或重定向 {}：{error}",
                             relative.display()
@@ -1521,12 +1539,8 @@ fn open_windows_absolute_directory_without_following(path: &Path) -> Result<File
         ));
     }
     let mut current = windows_open_drive_root(drive)?;
-    for (index, component) in components.iter().enumerate() {
-        let desired_access = if index + 1 == components.len() {
-            windows_directory_mutation_access()
-        } else {
-            windows_directory_read_access()
-        };
+    for component in components.iter() {
+        let desired_access = windows_directory_read_access();
         current = windows_nt_open_relative(
             &current,
             component,
@@ -1537,15 +1551,21 @@ fn open_windows_absolute_directory_without_following(path: &Path) -> Result<File
                 | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
             windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
         )
-        .map_err(|error| {
-            format!(
-                "固定 Codex Home 目录组件 {} 失败，已拒绝重解析点：{error}",
-                path.display()
-            )
-        })?;
+        .map_err(|error| format_windows_directory_open_error(path, error))?;
         windows_require_directory_without_reparse(&current, path)?;
     }
     Ok(current)
+}
+
+#[cfg(windows)]
+fn format_windows_directory_open_error(path: &Path, error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return format!(
+            "固定 Codex Home 目录组件 {} 失败：Windows 拒绝访问。请确认当前用户对该目录至少有读取权限；执行修复/同步还需要修改权限。",
+            path.display()
+        );
+    }
+    format!("固定 Codex Home 目录组件 {} 失败：{error}", path.display())
 }
 
 #[cfg(windows)]
@@ -1702,11 +1722,19 @@ fn windows_nt_open_relative(
 }
 
 #[cfg(windows)]
-fn windows_open_directory_relative(parent: &File, name: &OsStr) -> std::io::Result<File> {
+fn windows_open_directory_relative(
+    parent: &File,
+    name: &OsStr,
+    mutation: bool,
+) -> std::io::Result<File> {
     let directory = windows_nt_open_relative(
         parent,
         name,
-        windows_directory_mutation_access(),
+        if mutation {
+            windows_directory_mutation_access()
+        } else {
+            windows_directory_read_access()
+        },
         windows_sys::Wdk::Storage::FileSystem::FILE_OPEN,
         windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
             | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
@@ -2151,4 +2179,20 @@ fn sha256_file(file: &mut File) -> Result<String, String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::format_windows_directory_open_error;
+    use std::path::Path;
+
+    #[test]
+    fn permission_denied_does_not_claim_a_reparse_point() {
+        let message = format_windows_directory_open_error(
+            Path::new(r"\\?\D:\CodexHome"),
+            std::io::Error::from_raw_os_error(5),
+        );
+        assert!(message.contains("Windows 拒绝访问"));
+        assert!(!message.contains("重解析点"));
+    }
 }

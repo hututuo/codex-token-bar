@@ -1,8 +1,13 @@
 use super::window_auth::require_window_label;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use flate2::read::GzDecoder;
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING,
+    USER_AGENT,
+};
 use serde_json::{json, Value};
 use std::fmt;
 use std::io::Read;
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::async_runtime;
@@ -22,6 +27,10 @@ const CODEX_CROWD_RADAR_PRIMARY_TIMEOUT: Duration = Duration::from_secs(12);
 const CODEX_CROWD_RADAR_LEGACY_TIMEOUT: Duration = Duration::from_secs(6);
 const CODEX_CROWD_RADAR_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const CODEX_CROWD_RADAR_MAX_ATTEMPTS: usize = 3;
+// Multiple Tauri windows mount their own JS runtime. Keep the network
+// coordinator in Rust so startup cannot fan out one request per window.
+const CODEX_CROWD_RADAR_SUCCESS_CACHE_TTL: Duration = Duration::from_secs(20);
+const CODEX_CROWD_RADAR_FAILURE_COOLDOWN: Duration = Duration::from_secs(10);
 const KEY_CIPHER: [u8; 57] = [
     94, 228, 121, 185, 168, 72, 126, 255, 5, 110, 24, 99, 74, 39, 157, 134, 100, 135, 125, 94,
     135, 210, 1, 144, 13, 46, 200, 43, 156, 101, 161, 236, 160, 80, 7, 176, 218, 251, 217,
@@ -31,6 +40,111 @@ const KEY_MASK: [u8; 23] = [
     83, 33, 141, 11, 68, 159, 226, 23, 106, 195, 61, 136, 241, 44, 5, 185, 112, 222, 73,
     17, 166, 92, 47,
 ];
+
+#[derive(Default)]
+struct CrowdRadarFetchState {
+    in_flight: bool,
+    success: Option<CrowdRadarCachedSuccess>,
+    failure: Option<CrowdRadarCachedFailure>,
+}
+
+struct CrowdRadarCachedSuccess {
+    payload: Value,
+    fetched_at: Instant,
+}
+
+struct CrowdRadarCachedFailure {
+    message: String,
+    failed_at: Instant,
+}
+
+struct CrowdRadarFetchCoordinator {
+    state: Mutex<CrowdRadarFetchState>,
+    wake: Condvar,
+}
+
+impl CrowdRadarFetchCoordinator {
+    fn get_or_fetch(&self) -> Result<Value, String> {
+        self.get_or_fetch_with(fetch_codex_crowd_radar_payload_uncached)
+    }
+
+    fn get_or_fetch_with<F>(&self, fetch: F) -> Result<Value, String>
+    where
+        F: FnOnce() -> Result<Value, String>,
+    {
+        self.get_or_fetch_inner(Some(fetch))
+    }
+
+    fn get_or_fetch_inner<F>(&self, mut fetch: Option<F>) -> Result<Value, String>
+    where
+        F: FnOnce() -> Result<Value, String>,
+    {
+        loop {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            if let Some(success) = state.success.as_ref() {
+                if success.fetched_at.elapsed() <= CODEX_CROWD_RADAR_SUCCESS_CACHE_TTL {
+                    return Ok(success.payload.clone());
+                }
+            }
+
+            if state.in_flight {
+                state = self
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                drop(state);
+                continue;
+            }
+
+            if let Some(failure) = state.failure.as_ref() {
+                if failure.failed_at.elapsed() <= CODEX_CROWD_RADAR_FAILURE_COOLDOWN {
+                    return Err(failure.message.clone());
+                }
+            }
+
+            state.in_flight = true;
+            drop(state);
+
+            let result = fetch
+                .take()
+                .expect("Crowd Radar fetch closure is consumed only by the owner")();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.in_flight = false;
+            match &result {
+                Ok(payload) => {
+                    state.success = Some(CrowdRadarCachedSuccess {
+                        payload: payload.clone(),
+                        fetched_at: Instant::now(),
+                    });
+                    state.failure = None;
+                }
+                Err(message) => {
+                    state.failure = Some(CrowdRadarCachedFailure {
+                        message: message.clone(),
+                        failed_at: Instant::now(),
+                    });
+                }
+            }
+            self.wake.notify_all();
+            return result;
+        }
+    }
+}
+
+fn crowd_radar_fetch_coordinator() -> &'static CrowdRadarFetchCoordinator {
+    static COORDINATOR: OnceLock<CrowdRadarFetchCoordinator> = OnceLock::new();
+    COORDINATOR.get_or_init(|| CrowdRadarFetchCoordinator {
+        state: Mutex::new(CrowdRadarFetchState::default()),
+        wake: Condvar::new(),
+    })
+}
 
 #[tauri::command]
 pub async fn read_codex_radar_full_snapshot(
@@ -47,7 +161,7 @@ pub async fn read_codex_crowd_radar_payload(
     window: tauri::WebviewWindow,
 ) -> Result<Value, String> {
     require_window_label(&window, "read_codex_crowd_radar_payload")?;
-    async_runtime::spawn_blocking(fetch_codex_crowd_radar_payload)
+    async_runtime::spawn_blocking(|| crowd_radar_fetch_coordinator().get_or_fetch())
         .await
         .map_err(|error| error.to_string())?
 }
@@ -74,7 +188,7 @@ fn fetch_codex_radar_full_snapshot() -> Result<Value, String> {
         .map_err(|error| format!("Codex Radar detail parse failed: {error}"))
 }
 
-fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
+fn fetch_codex_crowd_radar_payload_uncached() -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(CODEX_CROWD_RADAR_TIMEOUT)
         .no_gzip()
@@ -121,6 +235,11 @@ fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
         )
     });
     combine_crowd_radar_payload(table, leaderboard)
+}
+
+#[cfg(test)]
+fn fetch_codex_crowd_radar_payload() -> Result<Value, String> {
+    crowd_radar_fetch_coordinator().get_or_fetch()
 }
 
 fn fetch_public_json_from_sources(
@@ -325,16 +444,10 @@ fn fetch_public_json_once(
     }
     let provenance = response_cache_provenance(response.headers());
     // chunked 响应没有 content-length，上面的预检拦不住；必须边读边限长，
-    // 否则恶意/故障服务端可在超时窗口内灌进无上限的内存。多取 1 字节用于
-    // 区分"恰好达上限"与"超限"。
-    let mut body = Vec::new();
-    response
-        .take(CODEX_CROWD_RADAR_MAX_BYTES + 1)
-        .read_to_end(&mut body)
-        .map_err(|error| PublicJsonFailure {
-            message: format!("body failed: {error}"),
-            retryable: true,
-        })?;
+    // 否则恶意/故障服务端可在超时窗口内灌进无上限的内存。服务端的公开榜单
+    // 会返回 gzip，先在解压流上限长，再解析 JSON，避免启动期传输被无压缩大包
+    // 和压缩炸弹拖垮。
+    let body = read_public_json_body(response)?;
     if body.is_empty() {
         return Err(PublicJsonFailure {
             message: "returned empty data".into(),
@@ -352,6 +465,42 @@ fn fetch_public_json_once(
         retryable: false,
     })?;
     Ok(FetchedPublicJson { value, provenance })
+}
+
+fn read_public_json_body(response: reqwest::blocking::Response) -> Result<Vec<u8>, PublicJsonFailure> {
+    let encoding = response
+        .headers()
+        .get(CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_owned();
+    let limited_response = response.take(CODEX_CROWD_RADAR_MAX_BYTES + 1);
+    let mut body = Vec::new();
+    if encoding.eq_ignore_ascii_case("gzip") {
+        let decoder = GzDecoder::new(limited_response);
+        decoder
+            .take(CODEX_CROWD_RADAR_MAX_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| PublicJsonFailure {
+                message: format!("body failed: {error}"),
+                retryable: true,
+            })?;
+    } else if encoding.is_empty() || encoding.eq_ignore_ascii_case("identity") {
+        limited_response
+            .take(CODEX_CROWD_RADAR_MAX_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| PublicJsonFailure {
+                message: format!("body failed: {error}"),
+                retryable: true,
+            })?;
+    } else {
+        return Err(PublicJsonFailure {
+            message: format!("unsupported content encoding: {encoding}"),
+            retryable: false,
+        });
+    }
+    Ok(body)
 }
 
 fn response_cache_provenance(headers: &HeaderMap) -> Value {
@@ -444,6 +593,7 @@ fn full_detail_headers() -> Result<HeaderMap, String> {
 fn public_json_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
     headers.insert(USER_AGENT, HeaderValue::from_static("CodexTokenBar"));
     headers
 }
@@ -492,6 +642,31 @@ mod tests {
         (format!("http://{address}"), server)
     }
 
+    fn spawn_gzip_http_response(body: &str) -> (String, std::thread::JoinHandle<()>) {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let body = body.as_bytes().to_vec();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(&body).expect("gzip body");
+            let compressed = encoder.finish().expect("finish gzip");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                compressed.len()
+            );
+            stream.write_all(response.as_bytes()).expect("headers");
+            stream.write_all(&compressed).expect("body");
+        });
+        (format!("http://{address}"), server)
+    }
+
     fn spawn_http_sequence(
         responses: Vec<Option<(&str, &str)>>,
     ) -> (String, std::thread::JoinHandle<()>) {
@@ -530,6 +705,62 @@ mod tests {
     }
 
     #[test]
+    fn crowd_radar_fetch_coordinator_single_flights_and_cools_down_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let coordinator = Arc::new(CrowdRadarFetchCoordinator {
+            state: Mutex::new(CrowdRadarFetchState::default()),
+            wake: Condvar::new(),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let coordinator = Arc::clone(&coordinator);
+                let calls = Arc::clone(&calls);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    coordinator.get_or_fetch_with(|| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(40));
+                        Ok(json!({"ok": true}))
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            assert_eq!(
+                handle.join().expect("single-flight worker"),
+                Ok(json!({"ok": true}))
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let failure_coordinator = CrowdRadarFetchCoordinator {
+            state: Mutex::new(CrowdRadarFetchState::default()),
+            wake: Condvar::new(),
+        };
+        let failures = Arc::new(AtomicUsize::new(0));
+        let first_error = failure_coordinator
+            .get_or_fetch_with(|| {
+                failures.fetch_add(1, Ordering::SeqCst);
+                Err("temporary network failure".into())
+            })
+            .expect_err("failure should be returned");
+        let second_error = failure_coordinator
+            .get_or_fetch_with(|| {
+                failures.fetch_add(1, Ordering::SeqCst);
+                Err("should be cooled down".into())
+            })
+            .expect_err("failure cooldown should be returned");
+        assert_eq!(first_error, "temporary network failure");
+        assert_eq!(second_error, "temporary network failure");
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn full_detail_endpoint_uses_authenticated_api_path() {
         assert_eq!(
             CODEX_RADAR_FULL_ENDPOINT,
@@ -561,6 +792,39 @@ mod tests {
             headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
             Some("application/json")
         );
+        assert_eq!(
+            headers
+                .get(ACCEPT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
+    }
+
+    #[test]
+    fn crowd_radar_decodes_gzip_public_responses_before_size_and_json_checks() {
+        let (endpoint, server) = spawn_gzip_http_response(
+            r#"{"points":[{"model":"gpt-5.6-luna","graded":3,"passed":2}]}"#,
+        );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .no_gzip()
+            .build()
+            .expect("client");
+        let fetched = fetch_public_json(
+            &client,
+            &endpoint,
+            "leaderboard",
+            Duration::from_secs(2),
+        )
+        .expect("gzip response");
+        assert_eq!(
+            fetched
+                .value
+                .pointer("/points/0/model")
+                .and_then(Value::as_str),
+            Some("gpt-5.6-luna")
+        );
+        server.join().expect("server");
     }
 
     #[test]
@@ -915,7 +1179,11 @@ mod tests {
             let samples = model
                 .get("graded")
                 .or_else(|| model.get("valid_tasks"))
-                .and_then(Value::as_i64)
+                .and_then(|value| {
+                    value
+                        .as_i64()
+                        .or_else(|| value.as_f64().map(|number| number as i64))
+                })
                 .unwrap_or_default();
             has_score && samples > 0
         }));
