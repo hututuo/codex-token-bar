@@ -90,6 +90,7 @@ const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
 const PARALLEL_STAGING_MIN_BYTES: u64 = EXACT_INDEX_CHUNK_SIZE;
 const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MIGRATION_STAGE_TOTAL: u64 = 6;
 
 pub(super) struct ExactUsageIndex {
     connection: ManagedIndexConnection,
@@ -266,6 +267,47 @@ struct FileSignature {
     modified_ns: u128,
     identity: FileIdentity,
     changed_ns: i128,
+}
+
+/// Read-only metadata captured by the startup discovery pass.  The durable
+/// scanner remains the only writer/authority; this plan is only a same-owner
+/// hint that lets a normal scan consume the candidates without immediately
+/// walking the same directory tree again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreciseScanCandidate {
+    canonical_path: PathBuf,
+    signature: FileSignature,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreciseScanDiscovery {
+    pub(super) canonical_home: PathBuf,
+    pub(super) physical_home_identity: String,
+    pub(super) source_revision: u64,
+    pub(super) discovered_at: SystemTime,
+    pub(super) candidates: Vec<PreciseScanCandidate>,
+    pub(super) candidate_total: u64,
+}
+
+impl PreciseScanDiscovery {
+    pub(super) fn is_current(&self, codex_home: &Path, source_revision: u64) -> bool {
+        if self.source_revision != source_revision {
+            return false;
+        }
+        let Ok(canonical_home) = canonical_codex_home(codex_home) else {
+            return false;
+        };
+        if canonical_home != self.canonical_home
+            || attribution_watch_root_physical_identity(&canonical_home).ok().as_deref()
+                != Some(self.physical_home_identity.as_str())
+        {
+            return false;
+        }
+        self.candidates.iter().all(|candidate| {
+            file_signature(&candidate.canonical_path)
+                .is_ok_and(|signature| signature == candidate.signature)
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -540,10 +582,43 @@ impl ExactUsageIndex {
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
         let mut has_schema_version = raw_schema_version.is_some();
         let mut schema_version = raw_schema_version.and_then(|value| value.parse::<i64>().ok());
-        let should_report_migration = schema_version.is_some_and(|version| {
+        let mut should_report_migration = schema_version.is_some_and(|version| {
             (GITHUB_BASE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).contains(&version)
         });
+        if !should_report_migration && schema_version == Some(INDEX_SCHEMA_VERSION) {
+            // A prior build can have advanced schema_version before a replay,
+            // orphan, catalog, or attribution marker was durably written. Keep
+            // the migration channel visible and retry those markers on open.
+            should_report_migration = metadata_text(
+                &connection,
+                "fork_replay_boundary_revision",
+            )?
+            .as_deref()
+            != Some(FORK_REPLAY_BOUNDARY_REVISION)
+                || metadata_text(&connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
+                    != Some(ORPHAN_REPAIR_REVISION)
+                || metadata_i64(&connection, "session_catalog_schema_version")?
+                    != Some(SESSION_CATALOG_SCHEMA_VERSION)
+                || metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?.is_none()
+                || metadata_text(&connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.is_none()
+                || metadata_text(&connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?.is_none();
+        }
+        let mut replay_migration_complete = true;
         if existed_before && !recovered_corrupt_index {
+            if !has_schema_version {
+                let has_unmarked_tables = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'metadata')",
+                        [],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(|error| format!("无法检查无 schema 标记的精确 token 索引：{error}"))?;
+                if has_unmarked_tables {
+                    return Err(
+                        "精确 token 索引缺少 schema 版本标记，已拒绝把未知旧数据静默升级".into(),
+                    );
+                }
+            }
             if has_schema_version && schema_version.is_none() {
                 return Err("精确 token 索引 schema 版本未知或损坏，已拒绝覆盖".into());
             }
@@ -572,9 +647,9 @@ impl ExactUsageIndex {
                     super::update_precise_dashboard_progress(
                         codex_home,
                         "migrating",
-                        "正在升级索引结构",
+                        "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（字段）",
                         0,
-                        Some(4),
+                        Some(MIGRATION_STAGE_TOTAL),
                     );
                 }
                 migrate_github_base_index_schema(&connection)?;
@@ -582,19 +657,23 @@ impl ExactUsageIndex {
                     super::update_precise_dashboard_progress(
                         codex_home,
                         "migrating",
-                        "正在升级索引字段",
+                        "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（字段完成）",
                         1,
-                        Some(4),
+                        Some(MIGRATION_STAGE_TOTAL),
                     );
                 }
-                repair_explicit_subagent_replay_boundary(&connection)?;
+                replay_migration_complete = repair_explicit_subagent_replay_boundary(&connection)?;
                 if should_report_migration {
                     super::update_precise_dashboard_progress(
                         codex_home,
                         "migrating",
-                        "正在修复 replay 边界",
+                        if replay_migration_complete {
+                            "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（replay 完成）"
+                        } else {
+                            "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（replay 待重试）"
+                        },
                         2,
-                        Some(4),
+                        Some(MIGRATION_STAGE_TOTAL),
                     );
                 }
             }
@@ -607,9 +686,9 @@ impl ExactUsageIndex {
             super::update_precise_dashboard_progress(
                 codex_home,
                 "migrating",
-                "正在修复索引完整性",
-                2,
-                Some(4),
+                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（孤儿行）",
+                3,
+                Some(MIGRATION_STAGE_TOTAL),
             );
         }
         repair_orphaned_index_rows(&mut connection)?;
@@ -617,13 +696,15 @@ impl ExactUsageIndex {
             super::update_precise_dashboard_progress(
                 codex_home,
                 "migrating",
-                "正在初始化会话目录索引",
-                3,
-                Some(4),
+                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（会话目录）",
+                4,
+                Some(MIGRATION_STAGE_TOTAL),
             );
         }
         initialize_session_catalog_schema(&connection)?;
-        if schema_version != Some(INDEX_SCHEMA_VERSION) {
+        if (!should_report_migration || replay_migration_complete)
+            && schema_version != Some(INDEX_SCHEMA_VERSION)
+        {
             set_metadata(
                 &connection,
                 "schema_version",
@@ -652,7 +733,11 @@ impl ExactUsageIndex {
         }
 
         let identity = codex_home_identity(codex_home);
-        if metadata_text(&connection, "codex_home_identity")?.as_deref() != Some(&identity) {
+        let physical_identity = attribution_watch_root_physical_identity(codex_home)?;
+        let stored_physical_identity = metadata_text(&connection, "codex_home_physical_identity")?;
+        if metadata_text(&connection, "codex_home_identity")?.as_deref() != Some(&identity)
+            || stored_physical_identity.as_deref() != Some(&physical_identity)
+        {
             connection
                 .execute_batch(
                     r#"
@@ -669,14 +754,35 @@ impl ExactUsageIndex {
                 )
                 .map_err(|error| format!("无法切换精确 token 索引数据源：{error}"))?;
             set_metadata(&connection, "codex_home_identity", &identity)?;
+            set_metadata(
+                &connection,
+                "codex_home_physical_identity",
+                &physical_identity,
+            )?;
             set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
             set_metadata(&connection, "published_generation", "0")?;
             set_metadata(&connection, "session_catalog_published_generation", "0")?;
+        }
+        if metadata_text(&connection, "codex_home_physical_identity")?.is_none() {
+            set_metadata(
+                &connection,
+                "codex_home_physical_identity",
+                &physical_identity,
+            )?;
         }
         if metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
             .is_none_or(|value| value.trim().is_empty())
         {
             rotate_attribution_provenance_epoch(&connection)?;
+        }
+        if should_report_migration {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（归因账本）",
+                5,
+                Some(MIGRATION_STAGE_TOTAL),
+            );
         }
 
         // Older v8 indexes do not have a dashboard-specific lineage marker.
@@ -693,8 +799,32 @@ impl ExactUsageIndex {
                 &revision.to_string(),
             )?;
         }
+        if should_report_migration && replay_migration_complete {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "索引升级完成，正在准备精确扫描",
+                MIGRATION_STAGE_TOTAL,
+                Some(MIGRATION_STAGE_TOTAL),
+            );
+        }
 
-        connection.mark_receipt_eligible();
+        let migration_markers_complete = !should_report_migration
+            || (replay_migration_complete
+                && metadata_text(&connection, "fork_replay_boundary_revision")?.as_deref()
+                    == Some(FORK_REPLAY_BOUNDARY_REVISION)
+                && metadata_text(&connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
+                    == Some(ORPHAN_REPAIR_REVISION)
+                && metadata_i64(&connection, "session_catalog_schema_version")?
+                    == Some(SESSION_CATALOG_SCHEMA_VERSION)
+                && metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?.is_some()
+                && metadata_text(&connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.is_some()
+                && metadata_text(&connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?.is_some());
+        if migration_markers_complete {
+            connection.mark_receipt_eligible();
+        } else {
+            connection.mark_receipt_dirty();
+        }
         super::update_precise_dashboard_progress(
             codex_home,
             "preparing",
@@ -1010,7 +1140,7 @@ impl ExactUsageIndex {
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
-        self.sync_with_scan_total(codex_home, warnings, None)
+        self.sync_with_scan_plan(codex_home, warnings, None, None, || 0)
     }
 
     /// Runs the unchanged durable index scan while optionally exposing a
@@ -1022,6 +1152,27 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
         scan_total: Option<u64>,
     ) -> Result<u64, String> {
+        self.sync_with_scan_plan(codex_home, warnings, None, scan_total, || 0)
+    }
+
+    /// Runs the durable scan, consuming a same-call discovery plan when it is
+    /// still tied to the same Home/source revision.  Every candidate is still
+    /// opened and signed by `process_session_file`; a stale plan is discarded
+    /// and the existing directory/SQLite walker remains authoritative.
+    pub(super) fn sync_with_scan_plan<F>(
+        &mut self,
+        codex_home: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+        discovery: Option<PreciseScanDiscovery>,
+        scan_total_override: Option<u64>,
+        current_source_revision: F,
+    ) -> Result<u64, String>
+    where
+        F: Fn() -> u64,
+    {
+        let scan_total = scan_total_override.or_else(|| {
+            discovery.as_ref().map(|plan| plan.candidate_total)
+        });
         let index_path = database_path(codex_home)?;
         let operation_lock_path = sqlite_sidecar_path(&index_path, ".operation.lock");
         let _operation_lock = CrossProcessFileLock::acquire_wait_with_hook(
@@ -1064,33 +1215,82 @@ impl ExactUsageIndex {
             0,
             scan_total,
         );
-        visit_session_files(
-            &mut self.connection,
-            codex_home,
-            warnings,
-            &mut scan_completeness,
-            |connection, file, warnings, scan_completeness| {
-                if let Some(job) = process_session_file(
+        let reusable_discovery = discovery.filter(|plan| {
+            plan.is_current(codex_home, current_source_revision())
+        });
+        if let Some(plan) = reusable_discovery {
+            for candidate in plan.candidates {
+                process_scan_file_with_progress(
+                    &mut self.connection,
+                    generation,
+                    codex_home,
+                    &candidate.canonical_path,
+                    warnings,
+                    &mut scan_completeness,
+                    &mut full_rebuild_jobs,
+                    &mut scanned_files,
+                    scan_total,
+                    Some(candidate.signature),
+                )?;
+            }
+            // A watcher event may arrive after the metadata validation but
+            // before candidate processing finishes.  Re-enter the durable
+            // walker in that case so additions/deletions are not hidden by a
+            // stale denominator.
+            if current_source_revision() != plan.source_revision {
+                let mut visit = |connection: &mut Connection,
+                                 file: &Path,
+                                 warnings: &mut Vec<LocalDataWarning>,
+                                 scan_completeness: &mut ExactScanCompleteness|
+                 -> Result<(), String> {
+                    process_scan_file_with_progress(
+                        connection,
+                        generation,
+                        codex_home,
+                        file,
+                        warnings,
+                        scan_completeness,
+                        &mut full_rebuild_jobs,
+                        &mut scanned_files,
+                        scan_total,
+                        None,
+                    )
+                };
+                visit_session_files(
+                    &mut self.connection,
+                    codex_home,
+                    warnings,
+                    &mut scan_completeness,
+                    &mut visit,
+                )?;
+            }
+        } else {
+            let mut visit = |connection: &mut Connection,
+                             file: &Path,
+                             warnings: &mut Vec<LocalDataWarning>,
+                             scan_completeness: &mut ExactScanCompleteness|
+             -> Result<(), String> {
+                process_scan_file_with_progress(
                     connection,
                     generation,
                     codex_home,
                     file,
                     warnings,
                     scan_completeness,
-                )? {
-                    full_rebuild_jobs.push(job);
-                }
-                scanned_files = scanned_files.saturating_add(1);
-                super::update_precise_dashboard_progress(
-                    codex_home,
-                    "scanning",
-                    "正在扫描精确历史；首次建立索引可能需要数分钟",
-                    scanned_files,
+                    &mut full_rebuild_jobs,
+                    &mut scanned_files,
                     scan_total,
-                );
-                Ok(())
-            },
-        )?;
+                    None,
+                )
+            };
+            visit_session_files(
+                &mut self.connection,
+                codex_home,
+                warnings,
+                &mut scan_completeness,
+                &mut visit,
+            )?;
+        }
         super::update_precise_dashboard_progress(
             codex_home,
             "publishing",
@@ -2389,6 +2589,12 @@ pub(super) fn peek_startup_identity(
         required_startup_metadata_text(&connection, "codex_home_identity")?;
     if stored_home_identity != expected_home_identity {
         return Err("精确 token 启动缓存 Home identity 不匹配".into());
+    }
+    let expected_physical_identity = attribution_watch_root_physical_identity(&canonical_home)?;
+    let stored_physical_identity =
+        required_startup_metadata_text(&connection, "codex_home_physical_identity")?;
+    if stored_physical_identity != expected_physical_identity {
+        return Err("精确 token 启动缓存 Home physical identity 不匹配".into());
     }
 
     let revision = required_startup_metadata_u64(&connection, "revision")?;
@@ -4418,6 +4624,41 @@ fn attribution_ledger_integrity(
         .map_err(|error| format!("无法校验精确 token 归因来源账本完整性：{error}"))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn process_scan_file_with_progress(
+    connection: &mut Connection,
+    generation: i64,
+    codex_home: &Path,
+    file: &Path,
+    warnings: &mut Vec<LocalDataWarning>,
+    scan_completeness: &mut ExactScanCompleteness,
+    full_rebuild_jobs: &mut Vec<FullRebuildJob>,
+    scanned_files: &mut u64,
+    scan_total: Option<u64>,
+    expected_signature: Option<FileSignature>,
+) -> Result<(), String> {
+    if let Some(job) = process_session_file(
+        connection,
+        generation,
+        codex_home,
+        file,
+        warnings,
+        scan_completeness,
+        expected_signature,
+    )? {
+        full_rebuild_jobs.push(job);
+    }
+    *scanned_files = (*scanned_files).saturating_add(1);
+    super::update_precise_dashboard_progress(
+        codex_home,
+        "scanning",
+        "正在扫描精确历史；首次建立索引可能需要数分钟",
+        *scanned_files,
+        scan_total,
+    );
+    Ok(())
+}
+
 fn process_session_file(
     connection: &mut Connection,
     generation: i64,
@@ -4425,27 +4666,26 @@ fn process_session_file(
     file: &Path,
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: &mut ExactScanCompleteness,
+    expected_signature: Option<FileSignature>,
 ) -> Result<Option<FullRebuildJob>, String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path = canonical.to_string_lossy().into_owned();
-    let newly_seen = connection
-        .execute(
-            "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
-            params![&path],
-        )
-        .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?
-        > 0;
-    if !newly_seen {
-        return Ok(None);
-    }
-    prune_obsolete_file_versions(connection, &path)?;
 
     // 单个文件不可读（权限/锁定/iCloud 占位）属持久性错误：整轮报错会让 building
-    // 滞留、后台无限重试且 dashboard 永不刷新。降级为警告并跳过；该路径已写入
-    // exact_seen_files，finalize 不会给已发布版本打删除墓碑，旧统计保留待自愈。
+    // 滞留、后台无限重试且 dashboard 永不刷新。删除已经明确发生时不写入
+    // exact_seen_files，让本轮正式发布安全登记删除墓碑；其他不可读错误仍抑制
+    // 墓碑，保留旧统计待自愈。
     let mut handle = match fs::File::open(file) {
         Ok(handle) => handle,
         Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                connection
+                    .execute(
+                        "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
+                        params![&path],
+                    )
+                    .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?;
+            }
             scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
                 "读取会话文件失败，本轮跳过该文件：{}（{}）",
@@ -4458,6 +4698,12 @@ fn process_session_file(
     let signature = match file_signature_from_handle(&handle, file) {
         Ok(signature) => signature,
         Err(error) => {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
+                    params![&path],
+                )
+                .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?;
             scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
                 "读取会话文件身份失败，本轮跳过该文件：{}（{}）",
@@ -4467,6 +4713,27 @@ fn process_session_file(
             return Ok(None);
         }
     };
+    if expected_signature.is_some_and(|expected| expected != signature) {
+        // The discovery metadata raced with a rewrite.  Re-read the current
+        // signature and continue through the normal durable replacement path;
+        // the incomplete bit keeps attribution coverage conservative.
+        scan_completeness.mark_incomplete();
+        warnings.push(scan_warning(format!(
+            "预扫描后会话文件签名已变化，按正式扫描重新校验：{}",
+            file.display()
+        )));
+    }
+    let newly_seen = connection
+        .execute(
+            "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
+            params![&path],
+        )
+        .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?
+        > 0;
+    if !newly_seen {
+        return Ok(None);
+    }
+    prune_obsolete_file_versions(connection, &path)?;
     let previous_signature = connection
         .query_row(
             r#"
@@ -5528,21 +5795,32 @@ fn suppress_missing_tombstones_under(connection: &Connection, root: &Path) -> Re
         .map_err(|error| format!("无法抑制不可读会话条目的删除墓碑：{error}"))
 }
 
-/// Performs a read-only candidate count for the progress UI.
+/// Performs a read-only candidate discovery for the progress UI and the
+/// immediately following durable scan.
 ///
 /// This deliberately does not open the exact index, touch any temporary scan
 /// tables, or participate in generation/fingerprint/tombstone decisions. The
-/// durable scanner remains the sole source of truth; this count may become
+/// durable scanner remains the sole source of truth; this plan may become
 /// stale while files are being created, removed, or rewritten.
 pub(super) fn estimate_precise_scan_total(
     codex_home: &Path,
     timeout: StdDuration,
-) -> Result<u64, String> {
+) -> Result<PreciseScanDiscovery, String> {
+    estimate_precise_scan_total_with_source_revision(codex_home, timeout, 0)
+}
+
+pub(super) fn estimate_precise_scan_total_with_source_revision(
+    codex_home: &Path,
+    timeout: StdDuration,
+    source_revision: u64,
+) -> Result<PreciseScanDiscovery, String> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
     let canonical_home = canonical_codex_home(codex_home)?;
-    let mut candidates = HashSet::new();
+    let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
+    let discovered_at = SystemTime::now();
+    let mut candidates = HashMap::new();
 
     for root_name in ["sessions", "archived_sessions"] {
         let root = codex_home.join(root_name);
@@ -5562,14 +5840,34 @@ pub(super) fn estimate_precise_scan_total(
         &mut candidates,
     )?;
 
-    Ok(candidates.len() as u64)
+    ensure_estimate_deadline(&deadline)?;
+    if attribution_watch_root_physical_identity(&canonical_home)? != physical_home_identity {
+        return Err("Codex Home 在预扫描期间被替换，放弃本次 discovery plan".into());
+    }
+    let mut candidates = candidates
+        .into_iter()
+        .map(|(canonical_path, signature)| PreciseScanCandidate {
+            canonical_path,
+            signature,
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.canonical_path.cmp(&right.canonical_path));
+    let candidate_total = candidates.len() as u64;
+    Ok(PreciseScanDiscovery {
+        canonical_home,
+        physical_home_identity,
+        source_revision,
+        discovered_at,
+        candidates,
+        candidate_total,
+    })
 }
 
 fn estimate_session_directory(
     root: &Path,
     canonical_home: &Path,
     deadline: &Instant,
-    candidates: &mut HashSet<PathBuf>,
+    candidates: &mut HashMap<PathBuf, FileSignature>,
 ) -> Result<(), String> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -5601,7 +5899,9 @@ fn estimate_session_directory(
                 continue;
             }
             if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {
-                candidates.insert(canonical);
+                if let Ok(signature) = file_signature(&canonical) {
+                    candidates.entry(canonical).or_insert(signature);
+                }
             }
         }
     }
@@ -5612,7 +5912,7 @@ fn estimate_active_rollouts(
     codex_home: &Path,
     canonical_home: &Path,
     deadline: &Instant,
-    candidates: &mut HashSet<PathBuf>,
+    candidates: &mut HashMap<PathBuf, FileSignature>,
 ) -> Result<(), String> {
     ensure_estimate_deadline(deadline)?;
     let database = codex_home.join("state_5.sqlite");
@@ -5659,7 +5959,9 @@ fn estimate_active_rollouts(
             continue;
         }
         if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {
-            candidates.insert(canonical);
+            if let Ok(signature) = file_signature(&canonical) {
+                candidates.entry(canonical).or_insert(signature);
+            }
         }
     }
     Ok(())
@@ -6616,7 +6918,7 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
     Ok(())
 }
 
-fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<(), String> {
+fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<bool, String> {
     // Keep published rows readable while the normal per-file synchronization
     // path stages and atomically publishes a corrected replacement. This
     // migration only invalidates the physical checkpoint for files whose first
@@ -6631,12 +6933,12 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<(
         .map_err(|error| format!("无法检查精确 token 文件表：{error}"))?
         > 0;
     if !files_table_exists {
-        return Ok(());
+        return Ok(true);
     }
     if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
         == Some(FORK_REPLAY_BOUNDARY_REVISION)
     {
-        return Ok(());
+        return Ok(true);
     }
 
     let mut statement = connection
@@ -6702,7 +7004,8 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<(
     }
     transaction
         .commit()
-        .map_err(|error| format!("无法提交子 Agent replay 原位迁移：{error}"))
+        .map_err(|error| format!("无法提交子 Agent replay 原位迁移：{error}"))?;
+    Ok(!unresolved_candidate)
 }
 
 fn initialize_index_schema(connection: &Connection) -> Result<(), String> {

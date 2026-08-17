@@ -52,12 +52,63 @@ test("startup dashboard reads stay pending past the legacy 4000ms budget", async
       );
 
       resolveInvoke(nativeSnapshot);
-      assert.deepEqual(await pending, nativeSnapshot);
+      assert.deepEqual((await pending).snapshot, nativeSnapshot);
+      assert.equal((await pending).status, "stale");
     });
   } finally {
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
     else delete globalThis.window;
   }
+});
+
+test("a native startup rejection stays unavailable and never publishes ready", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      __TAURI_INTERNALS__: {
+        invoke: () => Promise.resolve(false),
+      },
+    },
+    writable: true,
+  });
+  await withSsrModules(async (load) => {
+    const { loadInitialDashboardState } = await load(
+      "/src/state/loadInitialDashboardState.ts",
+    );
+    const sourceToken = {
+      canonicalHomeKey: "/fixture/.codex",
+      physicalHomeKey: "unix:1:2",
+      transitionGeneration: 1,
+    };
+    let state = { loading: true, dashboard: null };
+    let readyCalls = 0;
+    await loadInitialDashboardState({
+      source: {
+        readPlatformCapabilities: () => Promise.resolve({}),
+        readDashboardSnapshot: () => Promise.resolve({
+          status: "unavailable",
+          snapshot: null,
+        }),
+      },
+      sourceToken,
+      isCancelled: () => false,
+      isSourceCurrent: () => true,
+      setState(update) {
+        state = typeof update === "function" ? update(state) : update;
+      },
+      onFastSnapshotLoaded: () => {
+        readyCalls += 1;
+      },
+    });
+
+    assert.equal(state.loading, true);
+    assert.equal(state.dashboard, null);
+    assert.equal(readyCalls, 0);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+  else delete globalThis.window;
 });
 
 test("a real startup dashboard rejection remains visible as a local failure", async () => {

@@ -16,6 +16,7 @@ import {
   resetCodexHome,
   setCodexHome,
 } from "../api/client";
+import type { DashboardStartupRead } from "../api/dashboardClient";
 import type {
   AccountQuotaBundle,
   CodexHomeSourceEnvelope,
@@ -43,7 +44,7 @@ export interface DashboardDataSource {
   setCodexHome: (path: string) => Promise<CodexHomeSourceEnvelope>;
   resetCodexHome: () => Promise<CodexHomeSourceEnvelope>;
   readPlatformCapabilities: () => Promise<PlatformCapabilities>;
-  readDashboardSnapshot: (sourceToken: CodexHomeSourceToken) => Promise<DashboardSnapshot>;
+  readDashboardSnapshot: (sourceToken: CodexHomeSourceToken) => Promise<DashboardStartupRead>;
   readPreciseDashboardSnapshot: (
     sourceToken: CodexHomeSourceToken,
     requestReason?: PreciseDashboardRefreshReason,

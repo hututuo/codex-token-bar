@@ -12,7 +12,6 @@ import type {
 } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
 import {
-  emptyDashboardSnapshot,
   fallbackPlatformCapabilities,
 } from "./fallback";
 import { callCommand, callCommandOptional, callCommandStrict } from "./command";
@@ -35,19 +34,27 @@ export function readPlatformCapabilities(): Promise<PlatformCapabilities> {
 
 export function readDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,
-): Promise<DashboardSnapshot> {
+): Promise<DashboardStartupRead> {
   // A cold local index can legitimately take longer than the generic 4 second
   // command budget. JavaScript cannot cancel the native IPC, so racing this
   // read against an arbitrary deadline publishes the empty fallback as a false
   // failure while the native command is still running. Keep the existing
   // loading state until the native operation itself succeeds or rejects.
-  return callCommand(
+  return callCommandOptional<DashboardSnapshot>(
     "read_dashboard_snapshot",
-    emptyDashboardSnapshot(),
     { sourceToken },
     null,
-  );
+  ).then((snapshot) => snapshot === null
+    ? { status: "unavailable", snapshot: null }
+    : {
+        status: snapshot.preciseRecentUsageFresh ? "success" : "stale",
+        snapshot,
+      });
 }
+
+export type DashboardStartupRead =
+  | { status: "success" | "stale"; snapshot: DashboardSnapshot }
+  | { status: "unavailable"; snapshot: null };
 
 export function readPreciseDashboardSnapshot(
   sourceToken: CodexHomeSourceToken,

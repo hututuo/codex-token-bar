@@ -1143,6 +1143,8 @@ fn spawn_precise_refresh_owner(
     }
 
     let key = coordinator.home_key.canonical_home.clone();
+    let progress_key = key.clone();
+    let spawn_progress_key = progress_key.clone();
     let thread_coordinator = Arc::clone(&coordinator);
     let thread_owner = Arc::clone(&owner_state);
     let spawned = std::thread::Builder::new()
@@ -1156,13 +1158,25 @@ fn spawn_precise_refresh_owner(
             }));
             match result {
                 Ok(result) => owner.finish(result),
-                Err(_) => owner.finish(PreciseRefreshResult::failure(
-                    "精确 token refresh owner 执行异常".into(),
-                )),
+                Err(_) => {
+                    finish_precise_dashboard_progress(
+                        &spawn_progress_key,
+                        false,
+                        "精确 token refresh owner 执行异常，保留上次可信数据",
+                    );
+                    owner.finish(PreciseRefreshResult::failure(
+                        "精确 token refresh owner 执行异常".into(),
+                    ));
+                }
             }
         });
     if spawned.is_err() {
         flight.set_trace_status("spawn_error");
+        finish_precise_dashboard_progress(
+            &progress_key,
+            false,
+            "精确 token refresh owner 启动失败，保留上次可信数据",
+        );
         finish_precise_refresh_flight(
             &coordinator,
             &flight,
@@ -1258,11 +1272,13 @@ fn run_precise_refresh_inner(
             0,
             None,
         );
-        let scan_total = match exact_usage_index::estimate_precise_scan_total(
+        let discovery = match exact_usage_index::estimate_precise_scan_total_with_source_revision(
             canonical_home,
             PRECISE_SCAN_ESTIMATE_TIMEOUT,
+            flight.source_revision_at_start,
         ) {
-            Ok(total) if total > 0 => {
+            Ok(plan) if plan.candidate_total > 0 => {
+                let total = plan.candidate_total;
                 update_precise_dashboard_progress(
                     canonical_home,
                     "preparing",
@@ -1270,9 +1286,9 @@ fn run_precise_refresh_inner(
                     0,
                     Some(total),
                 );
-                Some(total)
+                (Some(plan), Some(total))
             }
-            Ok(_) => {
+            Ok(plan) => {
                 update_precise_dashboard_progress(
                     canonical_home,
                     "preparing",
@@ -1280,7 +1296,7 @@ fn run_precise_refresh_inner(
                     0,
                     None,
                 );
-                None
+                (Some(plan), None)
             }
             Err(_) => {
                 // The estimate is a UI-only sidecar. Any timeout, transient
@@ -1293,12 +1309,18 @@ fn run_precise_refresh_inner(
                     0,
                     None,
                 );
-                None
+                (None, None)
             }
         };
         let sync_result = {
             let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Sync);
-            index.sync_with_scan_total(canonical_home, &mut warnings, scan_total)
+            index.sync_with_scan_plan(
+                canonical_home,
+                &mut warnings,
+                discovery.0,
+                discovery.1,
+                || coordinator.source_revision.load(Ordering::SeqCst),
+            )
         };
         match sync_result {
             Ok(revision) => revision,
