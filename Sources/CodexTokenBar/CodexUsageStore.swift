@@ -1467,6 +1467,11 @@ final class CodexUsageStore: ObservableObject {
             isDetailHydrating = false
             isPreparingUsageCache = false
             isCompactSummaryPending = false
+            // Cancellation is an intentional pause, not an in-flight
+            // migration.  Clear the ephemeral progress state so the header
+            // cannot remain stuck on preparing/scanning after background work
+            // has been disabled.
+            preciseIndexProgress = .idle
         }
     }
 

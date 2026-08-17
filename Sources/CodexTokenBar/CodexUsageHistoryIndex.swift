@@ -12,7 +12,13 @@ struct CodexUsageHistoryIndexError: LocalizedError, SQLiteTransientReadFailureRe
     }
 
     var isTransientReadFailure: Bool {
-        SQLiteReadRecovery.isTransientReadFailure(underlying)
+        // The per-index owner uses a cross-process file lock in addition to
+        // SQLite's own busy handling.  Contention is the same short-lived
+        // read boundary from the store's point of view: retain last-good and
+        // use the bounded recovery cadence instead of falling through to the
+        // state SQLite projection.
+        CodexCrossProcessFileLock.isContention(underlying)
+            || SQLiteReadRecovery.isTransientReadFailure(underlying)
     }
 }
 
@@ -325,6 +331,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let cacheDirectoryEnvironmentKey = "CODEX_TOKEN_BAR_USAGE_CACHE_DIR"
     private static let disabledCacheEnvironmentKey = "CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"
     private static let operationLocks = CodexUsageHistoryIndexOperationLockRegistry()
+    private static let operationLockTimeoutState = CodexUsageHistoryIndexLockTimeoutState()
     private static let stagingTestState = CodexUsageHistoryStagingTestState()
     private static let sessionCatalogPublishTestState =
         CodexSessionCatalogPublishTestState()
@@ -399,6 +406,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     static func liveOperationGateCountForTesting() -> Int {
         operationLocks.liveLockCount
+    }
+
+    static func setOperationLockTimeoutForTesting(_ timeout: TimeInterval?) {
+        operationLockTimeoutState.set(timeout)
+    }
+
+    fileprivate static var operationLockTimeout: TimeInterval {
+        operationLockTimeoutState.value ?? 30
     }
 
     static func failNextImportAfterStagingForTesting() {
@@ -1352,51 +1367,107 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             let destructiveRebuildRequired = isLegacyDiscardableSchema
 
+            // Read migration markers before any DDL.  These values describe
+            // the actual work this open will perform; they are also used to
+            // keep the progress denominator honest instead of reporting a
+            // fixed 3/3 while the ledger or catalog still needs work.
+            let storedProvenanceRevision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'provenance_revision' LIMIT 1;"
+            ) { row in row.text(0) }.first ?? nil
+            let storedReplayBoundaryRevision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'fork_replay_boundary_revision' LIMIT 1;"
+            ) { row in row.text(0) }.first ?? nil
+            let sessionCatalogMetaExists = try connection.readRows(
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'session_catalog_meta';
+                """
+            ) { row in (row.int(0) ?? 0) > 0 }.first ?? false
+            let sessionCatalogEntriesExist = try connection.readRows(
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'session_catalog_entries';
+                """
+            ) { row in (row.int(0) ?? 0) > 0 }.first ?? false
+            let sessionCatalogVersion = sessionCatalogMetaExists
+                ? (try connection.readRows(
+                    """
+                    SELECT value
+                    FROM session_catalog_meta
+                    WHERE key = 'schema_version'
+                    LIMIT 1;
+                    """
+                ) { row in row.text(0) }.first ?? nil)
+                : nil
+            let migrationNeedsSchemaFields = !destructiveRebuildRequired
+                && shouldReportMigration
+            let migrationNeedsReplayBoundary = currentVersion != nil
+                && storedReplayBoundaryRevision != Self.forkReplayBoundaryRevision
+            let migrationNeedsLedger = destructiveRebuildRequired
+                || storedProvenanceRevision != Self.attributionProvenanceRevision
+            let migrationNeedsSessionCatalog = currentVersion != nil
+                && (!sessionCatalogMetaExists
+                    || !sessionCatalogEntriesExist
+                    || sessionCatalogVersion != Self.sessionCatalogSchemaVersion)
+            let migrationTotal = [
+                migrationNeedsSchemaFields,
+                migrationNeedsReplayBoundary,
+                migrationNeedsLedger,
+                migrationNeedsSessionCatalog,
+            ].filter { $0 }.count
+            let migrationMessagePrefix =
+                "正在升级索引（首次可能短暂占用 CPU/磁盘；原始数据不会丢失）"
+            var migrationCompleted = 0
+
+            func reportMigration(_ detail: String, completed: Int? = nil) {
+                guard migrationTotal > 0 else { return }
+                onProgress?(PreciseIndexProgress(
+                    phase: .migrating,
+                    message: "\(migrationMessagePrefix)：\(detail)",
+                    completed: completed ?? migrationCompleted,
+                    total: migrationTotal
+                ))
+            }
+
             if !destructiveRebuildRequired,
                currentVersion != nil {
-                if shouldReportMigration {
-                    onProgress?(PreciseIndexProgress(
-                        phase: .migrating,
-                        message: "正在升级 Swift 精确索引",
-                        completed: 0,
-                        total: 3
-                    ))
+                if migrationNeedsSchemaFields {
+                    reportMigration("正在升级索引字段")
+                    try connection.transaction { transaction in
+                        try migrateV2SourcesForAppend(transaction)
+                        try migrateKnownEventColumns(transaction)
+                    }
+                    migrationCompleted += 1
+                    reportMigration("索引字段已提交")
                 }
-                try migrateV2SourcesForAppend(connection)
-                if shouldReportMigration {
-                    onProgress?(PreciseIndexProgress(
-                        phase: .migrating,
-                        message: "正在升级索引字段",
-                        completed: 1,
-                        total: 3
-                    ))
-                }
-                try migrateKnownEventColumns(connection)
-                if shouldReportMigration {
-                    onProgress?(PreciseIndexProgress(
-                        phase: .migrating,
-                        message: "正在修复 replay 边界",
-                        completed: 2,
-                        total: 3
-                    ))
-                }
-                try repairExplicitSubagentReplayBoundary(connection)
-                if shouldReportMigration {
-                    onProgress?(PreciseIndexProgress(
-                        phase: .migrating,
-                        message: "Swift 精确索引结构已升级",
-                        completed: 3,
-                        total: 3
-                    ))
+            }
+
+            // Capture the replay state after any schema-field additions.  The
+            // revision marker itself is deliberately deferred until the final
+            // schema/catalog commit below; an unresolved probe must remain
+            // retryable on the next open.
+            var replayBoundaryReady = true
+            var replayBoundaryStageCompleted = false
+            if migrationNeedsReplayBoundary && !destructiveRebuildRequired {
+                reportMigration("正在修复 replay 边界")
+                replayBoundaryReady = try repairExplicitSubagentReplayBoundary(
+                    connection,
+                    persistRevision: false
+                )
+                if replayBoundaryReady {
+                    migrationCompleted += 1
+                    replayBoundaryStageCompleted = true
+                    reportMigration("replay 边界已提交")
+                } else {
+                    reportMigration("replay 边界待下次打开重试")
                 }
             }
 
             // Capture all attribution evidence before any destructive schema
             // rebuild. A future/unknown schema version and a tombstoned ledger
             // can otherwise lose their only evidence before safety is decided.
-            let storedProvenanceRevision = try connection.readRows(
-                "SELECT value FROM schema_meta WHERE key = 'provenance_revision' LIMIT 1;"
-            ) { row in row.text(0) }.first ?? nil
             let priorAttributionLedgerExists = try connection.readRows(
                 """
                 SELECT COUNT(*)
@@ -1550,6 +1621,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
             if destructiveRebuildRequired
                 || storedProvenanceRevision != Self.attributionProvenanceRevision {
+                if migrationNeedsLedger {
+                    reportMigration("正在回填归因账本")
+                }
                 try connection.transaction { transaction in
                     try transaction.execute(
                         "DROP TABLE IF EXISTS attribution_source_buckets;"
@@ -1570,14 +1644,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         bindings: [.text(migratedEpoch)]
                     )
                     try backfillAttributionLedger(connection: transaction)
-                    try transaction.execute(
-                        """
-                        INSERT INTO schema_meta(key, value)
-                        VALUES ('provenance_revision', ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                        """,
-                        bindings: [.text(Self.attributionProvenanceRevision)]
-                    )
                     let generation = try bumpAttributionGeneration(connection: transaction)
                     let sourceCount = try transaction.readRows(
                         "SELECT COUNT(*) FROM sources;"
@@ -1593,6 +1659,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             connection: transaction
                         )
                     }
+                }
+                if migrationNeedsLedger {
+                    migrationCompleted += 1
+                    reportMigration(
+                        replayBoundaryReady
+                            ? "归因账本已提交"
+                            : "归因账本已暂存，等待 replay 边界完成"
+                    )
                 }
             }
             try migrateV2SourcesForAppend(connection)
@@ -1613,12 +1687,74 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     PRIMARY KEY(source_id, chunk_index)
                 ) WITHOUT ROWID;
 
-                INSERT INTO schema_meta(key, value)
-                VALUES ('schema_version', '\(Self.schemaVersion)')
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
                 """
             )
-            try prepareSessionCatalogSchema(connection)
+            // Run the replay probe again after the canonical tables exist.
+            // This also covers fresh/legacy opens where there was no source
+            // table to inspect before DDL.  The marker is still deferred.
+            replayBoundaryReady = try repairExplicitSubagentReplayBoundary(
+                connection,
+                persistRevision: false
+            )
+            if migrationNeedsReplayBoundary,
+               replayBoundaryReady,
+               !replayBoundaryStageCompleted {
+                migrationCompleted += 1
+                replayBoundaryStageCompleted = true
+                reportMigration("replay 边界已提交")
+            }
+
+            if migrationNeedsSessionCatalog {
+                reportMigration("正在升级索引会话目录")
+            }
+            try connection.transaction { transaction in
+                try prepareSessionCatalogSchema(transaction)
+            }
+            if migrationNeedsSessionCatalog {
+                migrationCompleted += 1
+                reportMigration("索引会话目录已提交")
+            }
+
+            // Publish schema/replay revisions only after all migration pieces,
+            // including an unresolved=false replay probe and session catalog,
+            // have committed successfully.  An interrupted migration therefore
+            // re-enters this path on the next open without a fake current
+            // schema, provenance, or replay marker.
+            guard replayBoundaryReady else { return }
+            try connection.transaction { transaction in
+                if currentVersion != nil || migrationNeedsReplayBoundary {
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('fork_replay_boundary_revision', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [.text(Self.forkReplayBoundaryRevision)]
+                    )
+                }
+                if migrationNeedsLedger {
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('provenance_revision', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [.text(Self.attributionProvenanceRevision)]
+                    )
+                }
+                try transaction.execute(
+                    """
+                    INSERT INTO schema_meta(key, value)
+                    VALUES ('schema_version', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """,
+                    bindings: [.text(Self.schemaVersion)]
+                )
+            }
+            if migrationTotal > 0,
+               migrationCompleted == migrationTotal {
+                reportMigration("索引升级已提交")
+            }
         }
     }
 
@@ -2087,22 +2223,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// that replacement is committed; migration never deletes token events or
     /// rescans the full JSONL corpus.
     private func repairExplicitSubagentReplayBoundary(
-        _ connection: SQLiteDatabaseConnection
-    ) throws {
+        _ connection: SQLiteDatabaseConnection,
+        persistRevision: Bool = true
+    ) throws -> Bool {
         let tableExists = try connection.readRows(
             """
             SELECT COUNT(*) FROM sqlite_master
             WHERE type = 'table' AND name = 'sources';
             """
         ) { ($0.int(0) ?? 0) > 0 }.first ?? false
-        guard tableExists else { return }
+        guard tableExists else { return false }
         let storedRevision = try connection.readRows(
             """
             SELECT value FROM schema_meta
             WHERE key = 'fork_replay_boundary_revision' LIMIT 1;
             """
         ) { $0.text(0) }.first ?? nil
-        guard storedRevision != Self.forkReplayBoundaryRevision else { return }
+        guard storedRevision != Self.forkReplayBoundaryRevision else { return true }
 
         let candidates = try connection.readRows(
             """
@@ -2151,17 +2288,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
 
         guard !unresolvedCandidate else {
-            return
+            return false
         }
 
-        try connection.execute(
-            """
-            INSERT INTO schema_meta(key, value)
-            VALUES ('fork_replay_boundary_revision', ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-            """,
-            bindings: [.text(Self.forkReplayBoundaryRevision)]
-        )
+        if persistRevision {
+            try connection.execute(
+                """
+                INSERT INTO schema_meta(key, value)
+                VALUES ('fork_replay_boundary_revision', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """,
+                bindings: [.text(Self.forkReplayBoundaryRevision)]
+            )
+        }
+        return true
     }
 
     private func probeExplicitSubagentSessionFile(
@@ -3827,6 +3967,23 @@ private final class CodexUsageHistoryIndexOperationLockRegistry: @unchecked Send
     }
 }
 
+private final class CodexUsageHistoryIndexLockTimeoutState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timeout: TimeInterval?
+
+    func set(_ value: TimeInterval?) {
+        lock.lock()
+        timeout = value.map { max(0, $0) }
+        lock.unlock()
+    }
+
+    var value: TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        return timeout
+    }
+}
+
 private final class WeakOperationGate {
     weak var value: CodexUsageHistoryIndexOperationGate?
 
@@ -3927,6 +4084,7 @@ private final class CodexUsageHistoryIndexOperationGate: @unchecked Sendable {
                 crossProcessLock = try CodexCrossProcessFileLock.acquireWaiting(
                     url: crossProcessLockURL,
                     label: "精确历史索引",
+                    timeout: CodexUsageHistoryIndex.operationLockTimeout,
                     onContention: nil
                 )
             } catch {

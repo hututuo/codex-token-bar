@@ -82,10 +82,12 @@ struct PreciseIndexProgress: Equatable, Sendable {
     ) {
         self.phase = phase
         self.message = message
-        self.completed = max(0, completed)
-        self.total = total.map { max(0, $0) }
-        let resolvedFraction = fraction ?? total.flatMap { total in
-            total > 0 ? Double(max(0, completed)) / Double(total) : nil
+        let normalizedTotal = total.map { max(0, $0) }
+        let normalizedCompleted = min(max(0, completed), normalizedTotal ?? max(0, completed))
+        self.completed = normalizedCompleted
+        self.total = normalizedTotal
+        let resolvedFraction = fraction ?? normalizedTotal.flatMap { total in
+            total > 0 ? Double(normalizedCompleted) / Double(total) : nil
         }
         self.fraction = resolvedFraction.map { min(max($0, 0), 1) }
     }
@@ -253,20 +255,41 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, DashboardSnapshot
                         },
                         onProgress: onProgress
                     )
-                    if final.cacheUsage.attributionEventsComplete {
+                    let hasCompletePreciseSnapshot =
+                        final.hasPreciseTokenUsage
+                        && final.cacheUsage.attributionEventsComplete
+                    if hasCompletePreciseSnapshot {
                         continuation.yield(final)
+                        onProgress(PreciseIndexProgress(
+                            phase: .complete,
+                            message: "精确统计已更新",
+                            completed: 1,
+                            total: 1
+                        ))
+                    } else {
+                        // `CodexUsageAnalyzer.load()` may intentionally return
+                        // a metadata-only state SQLite projection when the
+                        // selected Home has no token JSONL.  That projection is
+                        // useful for the header, but it is not an exact phase:
+                        // never advertise it as a successful precise refresh.
+                        continuation.yield(final)
+                        onProgress(PreciseIndexProgress(
+                            phase: .failed,
+                            message: "未发现可用 token JSONL，保留本地摘要（原始数据不会丢失）",
+                            completed: 0,
+                            total: nil
+                        ))
                     }
-                    onProgress(PreciseIndexProgress(
-                        phase: .complete,
-                        message: "精确统计已更新",
-                        completed: 1,
-                        total: 1
-                    ))
                     continuation.finish()
                 } catch {
+                    let isMigrationFailure = (error as? CodexUsageHistoryIndexError)
+                        .map { $0.operation.contains("升级") || $0.operation.contains("迁移") }
+                        ?? false
                     onProgress(PreciseIndexProgress(
                         phase: .failed,
-                        message: "精确统计失败，保留上次可信数据",
+                        message: isMigrationFailure
+                            ? "索引升级失败，原始数据不会丢失，保留上次可信数据"
+                            : "精确统计失败，保留上次可信数据",
                         completed: 0,
                         total: nil
                     ))

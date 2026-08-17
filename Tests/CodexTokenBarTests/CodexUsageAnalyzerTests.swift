@@ -3291,6 +3291,44 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), 1)
     }
 
+    func testPreciseLoadDoesNotFallbackWhenIndexOwnerIsContended() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerIndexContention")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+            CodexUsageHistoryIndex.setOperationLockTimeoutForTesting(nil)
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-index-contention",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 120
+        )
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let databaseURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let externalLock = try CodexCrossProcessFileLock(
+            url: databaseURL.appendingPathExtension("operation.lock"),
+            label: "测试精确历史索引"
+        )
+        defer { externalLock.release() }
+        CodexUsageHistoryIndex.setOperationLockTimeoutForTesting(0.01)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertThrowsError(try analyzer.load()) { error in
+            let indexError = error as? CodexUsageHistoryIndexError
+            XCTAssertNotNil(indexError, "owner contention must remain an index error")
+            XCTAssertTrue(indexError?.isTransientReadFailure == true)
+            XCTAssertTrue(error.localizedDescription.contains("所有权"))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sessionFile.path))
+    }
+
     func testAttributionRevisionMigrationKeepsTombstonedLedgerUnsafeUntilAcknowledged() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerTombstoneMigration")
@@ -4207,6 +4245,73 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+    }
+
+    func testSwiftIndexMigrationProgressIncludesLedgerAndDefersMarkersForUnresolvedReplay() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerMigrationProgress")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-migration-progress",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 120
+        )
+        _ = try analyzer.load()
+
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let missingPath = codexHome.appendingPathComponent("sessions/missing.jsonl").path
+        try database.execute(
+            """
+            UPDATE sources
+            SET path = ?, is_skipping_fork_replay = 1, is_explicit_subagent_fork = 0;
+            UPDATE schema_meta SET value = '4' WHERE key = 'schema_version';
+            DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';
+            """,
+            bindings: [.text(missingPath)]
+        )
+
+        var progress: [PreciseIndexProgress] = []
+        _ = try CodexUsageHistoryIndex(
+            codexHome: codexHome,
+            onProgress: { progress.append($0) }
+        )
+
+        XCTAssertFalse(progress.isEmpty)
+        let totals = Set(progress.compactMap(\.total))
+        XCTAssertEqual(totals.count, 1)
+        let total = try XCTUnwrap(totals.first)
+        XCTAssertGreaterThan(total, 1, "migration denominator must include replay/ledger work")
+        XCTAssertTrue(progress.allSatisfy { $0.phase == .migrating })
+        XCTAssertTrue(progress.allSatisfy { $0.completed <= total })
+        XCTAssertTrue(progress.contains { $0.message.contains("CPU/磁盘") })
+        XCTAssertTrue(progress.contains { $0.message.contains("原始数据不会丢失") })
+        XCTAssertLessThan(
+            progress.map(\.completed).max() ?? total,
+            total,
+            "an unresolved replay probe must not report a fake complete migration"
+        )
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "4"
+        )
+        XCTAssertNil(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
+            ) { $0.text(0) }.first
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sessionFile.path))
     }
 
     func testAttributionBackfillUsesCaseInsensitiveSourceIndexWithoutScanningEvents() throws {

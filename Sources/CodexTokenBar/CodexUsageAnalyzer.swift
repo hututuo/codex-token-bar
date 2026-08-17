@@ -1,5 +1,24 @@
 import Foundation
 
+enum CodexUsagePreciseDataUnavailableReason: Equatable {
+    case noTokenJSONLFiles
+    case noTokenEvents
+}
+
+struct CodexUsagePreciseDataUnavailableError: LocalizedError {
+    let reason: CodexUsagePreciseDataUnavailableReason
+    let path: String
+
+    var errorDescription: String? {
+        switch reason {
+        case .noTokenJSONLFiles:
+            return "未发现 token JSONL 文件：\(path)"
+        case .noTokenEvents:
+            return "token JSONL 中没有可用 token_count 事件：\(path)"
+        }
+    }
+}
+
 final class CodexUsageAnalyzer: @unchecked Sendable {
     let fileManager = FileManager.default
     let calendar = Calendar.current
@@ -61,6 +80,14 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 "calls": String(preciseSnapshot.stats.totalCalls)
             ])
             return preciseSnapshot
+        } catch let error as CodexUsagePreciseDataUnavailableError {
+            // A Home with no token JSONL (or only replay/no-op records) is the
+            // one intentional fallback boundary.  Do not broaden this catch:
+            // index ownership, migration, SQLite, and parser failures must
+            // remain visible to the store's last-good/transient recovery path.
+            trace?.mark("precise.unavailable.fallbackStateSQLite", metadata: [
+                "reason": String(describing: error.reason)
+            ])
         } catch let error as CodexUsageHistoryIndexError {
             trace?.end("precise-index-failed", metadata: ["error": error.localizedDescription])
             throw error
@@ -68,9 +95,18 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             trace?.end("discovery-failed", metadata: ["error": error.localizedDescription])
             throw error
         } catch {
-            trace?.mark("precise.failed.fallbackStateSQLite", metadata: [
-                "error": error.localizedDescription
+            // An unexpected precise-path failure is not evidence that the
+            // selected Home lacks token history.  Preserve the error as an
+            // index failure so CodexUsageStore retains last-good data and can
+            // schedule its bounded transient retry when appropriate.
+            let wrapped = CodexUsageHistoryIndexError(
+                operation: "读取精确索引",
+                underlying: error
+            )
+            trace?.end("precise-index-failed", metadata: [
+                "error": wrapped.localizedDescription
             ])
+            throw wrapped
         }
         let snapshot = try loadFromStateSQLite()
         trace?.end("stateSQLite", metadata: [
@@ -224,10 +260,28 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         // numeric commit are one per-index phase. Excerpt hydration deliberately
         // runs after this scope so an active append can start the next numeric
         // phase without waiting for old detail work.
-        let prepared = try CodexUsageHistoryIndex.withExclusiveAccess(
-            codexHome: dataSource.codexHome
-        ) {
-            try loadFromTokenCountJSONLExclusively(onProgress: onProgress)
+        let prepared: PreparedPreciseLoad
+        do {
+            prepared = try CodexUsageHistoryIndex.withExclusiveAccess(
+                codexHome: dataSource.codexHome
+            ) {
+                try loadFromTokenCountJSONLExclusively(onProgress: onProgress)
+            }
+        } catch let error as CodexUsagePreciseDataUnavailableError {
+            throw error
+        } catch let error as CodexUsageHistoryIndexError {
+            throw error
+        } catch let error as CodexUsageDiscoveryError {
+            throw error
+        } catch {
+            // The exclusive gate itself can fail before an index object exists
+            // (most notably cross-process owner contention).  Classify that
+            // boundary exactly like errors raised inside the index so callers
+            // never silently fall back to the metadata-only state database.
+            throw CodexUsageHistoryIndexError(
+                operation: "获取精确索引所有权",
+                underlying: error
+            )
         }
         switch prepared {
         case let .complete(snapshot):
@@ -343,7 +397,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         ))
         guard !sessionFiles.isEmpty else {
             trace?.end("missing-token-jsonl-files")
-            throw NSError(domain: "CodexTokenBar", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(dataSource.displayPath) has no token JSONL files"])
+            throw CodexUsagePreciseDataUnavailableError(
+                reason: .noTokenJSONLFiles,
+                path: dataSource.displayPath
+            )
         }
         let preciseCoverageAt = Date()
         let historyIndex: CodexUsageHistoryIndex
@@ -355,7 +412,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             )
             initialAttributionState = try historyIndex.attributionState()
         } catch {
-            throw CodexUsageHistoryIndexError(operation: "读取归因代次", underlying: error)
+            throw CodexUsageHistoryIndexError(operation: "打开或升级精确索引", underlying: error)
         }
         trace?.mark("signature.begin")
         let signature = sessionTreeSignature(
@@ -492,7 +549,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         ])
         guard aggregation.totalEventCount > 0 else {
             trace?.end("no-token-events")
-            throw NSError(domain: "CodexTokenBar", code: 6, userInfo: [NSLocalizedDescriptionKey: "No token_count events found in \(dataSource.displayPath)/sessions"])
+            throw CodexUsagePreciseDataUnavailableError(
+                reason: .noTokenEvents,
+                path: "\(dataSource.displayPath)/sessions"
+            )
         }
 
         trace?.mark("dailyUsage.begin")
