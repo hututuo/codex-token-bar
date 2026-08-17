@@ -49,6 +49,11 @@ private final class SharedAccountContinuityObserverToken: @unchecked Sendable {
 
 @MainActor
 final class CodexUsageStore: ObservableObject {
+    private enum RefreshRequestKind {
+        case explicit
+        case automatic
+    }
+
     @Published private(set) var snapshot: DashboardSnapshot = .empty
     private(set) var todayModelBreakdowns: [ModelTokenBreakdown] = []
     /// The last successful exact model snapshot's local day. A fast/compact
@@ -189,7 +194,8 @@ final class CodexUsageStore: ObservableObject {
         // errors remain on the regular timer/manual cadence.
         refresh(
             includePreciseScan: true,
-            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil
+            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
+            requestKind: .explicit
         )
     }
 
@@ -197,7 +203,11 @@ final class CodexUsageStore: ObservableObject {
     /// This path bypasses the compact-summary optimization so the time series
     /// can explicitly catch up to a newer quota observation.
     func refreshPreciseTimeSeriesForAttribution() {
-        refresh(includePreciseScan: true, forceFullTimeSeries: true)
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: true,
+            requestKind: .automatic
+        )
     }
 
     /// Refresh the process-local view from the crash-durable continuity ledger.
@@ -393,7 +403,8 @@ final class CodexUsageStore: ObservableObject {
     private func refresh(
         includePreciseScan: Bool,
         forceFullTimeSeries: Bool = false,
-        transientRecoveryAttempt: Int? = nil
+        transientRecoveryAttempt: Int? = nil,
+        requestKind: RefreshRequestKind = .explicit
     ) {
         if transientRecoveryAttempt == nil {
             transientDatabaseRecoveryTask?.cancel()
@@ -414,6 +425,25 @@ final class CodexUsageStore: ObservableObject {
         ])
         clearStaleTodayModelBreakdownsIfNeeded()
         let requestedBindingKey = Self.bindingKey(for: resolvedDataSource)
+
+        // A precise refresh has two durable phases: numeric aggregation and
+        // optional session-detail hydration. The numeric phase intentionally
+        // releases `isRefreshing` so a real explicit/manual refresh can start
+        // a newer numeric owner without waiting for old excerpts. Automatic
+        // cadence/attribution requests, however, are commonly duplicate
+        // startup requests. Do not cancel the active detail task for those;
+        // the completed precise phase already covers the same source and the
+        // next regular cadence will catch any later append.
+        if requestKind == .automatic,
+           !observerTakeover,
+           isDetailHydrating,
+           refreshTask != nil,
+           requestedSourceID == activeRefreshSourceID,
+           requestedBindingKey == dataSourceBindingKey {
+            trace?.end("deferred-during-detail")
+            return
+        }
+
         if isRefreshing,
            requestedSourceID == activeRefreshSourceID,
            requestedBindingKey == dataSourceBindingKey,
@@ -1415,7 +1445,11 @@ final class CodexUsageStore: ObservableObject {
             }
 
             guard !Task.isCancelled, self.backgroundActivityEnabled, !self.didRunPreciseScan else { return }
-            self.refresh()
+            self.refresh(
+                includePreciseScan: true,
+                forceFullTimeSeries: self.preciseTimeSeriesContinuityLossID != nil,
+                requestKind: .automatic
+            )
         }
     }
 
@@ -1522,9 +1556,25 @@ final class CodexUsageStore: ObservableObject {
         }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.refresh()
+                guard let self else { return }
+                self.refresh(
+                    includePreciseScan: true,
+                    forceFullTimeSeries: self.preciseTimeSeriesContinuityLossID != nil,
+                    requestKind: .automatic
+                )
             }
         }
+    }
+
+    // Test seam for the same automatic path used by the startup delay and
+    // cadence timer. Keeping it internal avoids making tests infer timer
+    // scheduling while preserving the production request classification.
+    func requestAutomaticRefreshForTesting() {
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
+            requestKind: .automatic
+        )
     }
 
     private func updateDataSourceLabels() {

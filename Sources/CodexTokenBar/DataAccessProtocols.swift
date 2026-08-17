@@ -114,6 +114,22 @@ struct DashboardFastSnapshotResult: Sendable {
     let freshness: DashboardFastSnapshotFreshness
 }
 
+enum PreciseSnapshotClassification: Equatable {
+    case complete
+    case numericOnly
+    case metadataOnly
+
+    init(snapshot: DashboardSnapshot) {
+        if snapshot.hasPreciseTokenUsage {
+            self = snapshot.cacheUsage.attributionEventsComplete
+                ? .complete
+                : .numericOnly
+        } else {
+            self = .metadataOnly
+        }
+    }
+}
+
 protocol DashboardSnapshotLoading: Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot
     /// Returns the same fast projection together with whether its exact
@@ -255,10 +271,8 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, DashboardSnapshot
                         },
                         onProgress: onProgress
                     )
-                    let hasCompletePreciseSnapshot =
-                        final.hasPreciseTokenUsage
-                        && final.cacheUsage.attributionEventsComplete
-                    if hasCompletePreciseSnapshot {
+                    switch PreciseSnapshotClassification(snapshot: final) {
+                    case .complete:
                         continuation.yield(final)
                         onProgress(PreciseIndexProgress(
                             phase: .complete,
@@ -266,7 +280,16 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, DashboardSnapshot
                             completed: 1,
                             total: 1
                         ))
-                    } else {
+                    case .numericOnly:
+                        // Numeric aggregation is already an exact, durable
+                        // result. Detail hydration may have been cancelled or
+                        // superseded by a newer request; that is not evidence
+                        // that the Home has no JSONL. The store has already
+                        // published the numeric phase and will keep the
+                        // precise totals while the next refresh completes the
+                        // optional detail projection.
+                        continuation.yield(final)
+                    case .metadataOnly:
                         // `CodexUsageAnalyzer.load()` may intentionally return
                         // a metadata-only state SQLite projection when the
                         // selected Home has no token JSONL.  That projection is

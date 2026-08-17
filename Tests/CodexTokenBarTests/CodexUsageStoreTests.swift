@@ -790,6 +790,30 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertFalse(UsageCacheLifecycle.isCurrentCachePrepared)
     }
 
+    func testIncompletePreciseSnapshotIsNotClassifiedAsMissingJSONL() {
+        let numericOnly = makeSnapshot(
+            totalTokens: 12_000,
+            dayTokens: 1_200,
+            usagePrecision: .precise,
+            attributionEventsComplete: false
+        )
+        let metadataOnly = makeSnapshot(
+            totalTokens: 0,
+            dayTokens: 0,
+            usagePrecision: .metadataOnly,
+            attributionEventsComplete: false
+        )
+
+        XCTAssertEqual(
+            PreciseSnapshotClassification(snapshot: numericOnly),
+            .numericOnly
+        )
+        XCTAssertEqual(
+            PreciseSnapshotClassification(snapshot: metadataOnly),
+            .metadataOnly
+        )
+    }
+
     func testPreciseResultNeverUsesAHistoryGuardStatus() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/unbounded-precise/.codex"),
@@ -1107,6 +1131,58 @@ final class CodexUsageStoreTests: XCTestCase {
         }
         XCTAssertEqual(store.snapshot.stats.totalTokens, secondNumeric.stats.totalTokens)
         XCTAssertEqual(store.snapshot.stats.totalCalls, secondNumeric.stats.totalCalls)
+    }
+
+    func testAutomaticRefreshDoesNotCancelActiveDetailHydration() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/automatic-detail-coalescing/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let numeric = makeSnapshot(
+            totalTokens: 61_000,
+            dayTokens: 6_100,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 12_000),
+            attributionEventsComplete: false
+        )
+        let final = makeSnapshot(
+            totalTokens: 61_000,
+            dayTokens: 6_100,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 12_000),
+            attributionEventsComplete: true
+        )
+        let loader = MultiRequestPhasedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await loader.waitUntilRequestCount(1)
+        await loader.yield(numeric, request: 0)
+        await waitUntilYielding("automatic coalescing detail phase") {
+            store.snapshot.stats.totalTokens == numeric.stats.totalTokens
+                && !store.isRefreshing
+                && store.isDetailHydrating
+        }
+
+        store.requestAutomaticRefreshForTesting()
+        await Task.yield()
+        let requestCountAfterAutomaticRefresh = await loader.requestCountValue()
+        XCTAssertEqual(requestCountAfterAutomaticRefresh, 1)
+        XCTAssertTrue(store.isDetailHydrating)
+        XCTAssertTrue(store.status.contains("正在补齐会话明细"), store.status)
+
+        await loader.yield(final, request: 0)
+        await loader.finish(request: 0)
+        await waitUntilYielding("automatic coalescing final phase") {
+            store.snapshot.cacheUsage.attributionEventsComplete
+                && !store.isUsageRefreshOrDetailHydrationActive
+        }
+        let requestCountAfterCompletion = await loader.requestCountValue()
+        XCTAssertEqual(requestCountAfterCompletion, 1)
     }
 
     func testStalePrecisePhaseCannotPublishAfterSourceBindingChanges() async {
@@ -2809,6 +2885,10 @@ private actor MultiRequestPhasedDashboardSnapshotLoader: DashboardSnapshotLoadin
         await withCheckedContinuation { continuation in
             requestCountWaiters[expected, default: []].append(continuation)
         }
+    }
+
+    func requestCountValue() -> Int {
+        requestCount
     }
 
     func yield(_ snapshot: DashboardSnapshot, request: Int) {
