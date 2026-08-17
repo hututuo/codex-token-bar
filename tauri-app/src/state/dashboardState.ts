@@ -31,6 +31,20 @@ export interface DashboardReadyState {
   diagnostics: CommandFailureDiagnostic[];
 }
 
+/**
+ * Compact state-sqlite startup data intentionally contains a zero-valued
+ * placeholder canvas. It is useful as a hint, but must not flip the app to a
+ * ready dashboard. A non-fresh snapshot with a real coverage timestamp is the
+ * trusted last-good stale case and remains displayable.
+ */
+export function dashboardSnapshotHasTrustedStartupData(snapshot: DashboardSnapshot): boolean {
+  const coveredAt = snapshot.preciseRecentUsageCoveredAt;
+  const hasCoverage = typeof coveredAt === "string"
+    && coveredAt.trim().length > 0
+    && Number.isFinite(Date.parse(coveredAt));
+  return hasCoverage && (snapshot.preciseRecentUsageFresh === true || hasCoverage);
+}
+
 export function readyDashboardState(state: DashboardAppState): DashboardReadyState | null {
   if (
     state.codexHome === null ||
@@ -38,6 +52,7 @@ export function readyDashboardState(state: DashboardAppState): DashboardReadySta
     state.dashboard === null ||
     state.liveRate === null ||
     state.repair === null
+    || !dashboardSnapshotHasTrustedStartupData(state.dashboard)
   ) {
     return null;
   }

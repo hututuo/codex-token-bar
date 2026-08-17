@@ -1,4 +1,7 @@
-use crate::core::cross_process_lock::CrossProcessFileLock;
+use crate::core::{
+    app_operation_lock::AppOperationGuard,
+    cross_process_lock::CrossProcessFileLock,
+};
 use crate::models::{ProviderRepairActionResult, ProviderRepairSnapshot};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -400,6 +403,7 @@ impl ProviderOperationRegistry {
 
 struct ProviderOperationLease {
     canonical_home: PathBuf,
+    _app_operation_lock: AppOperationGuard,
     operation_id: String,
     _cross_process_lock: CrossProcessFileLock,
 }
@@ -428,6 +432,10 @@ fn provider_for_mutation(value: &str) -> Result<String, String> {
 }
 
 pub fn scan_provider_repair(codex_home: &Path) -> ProviderRepairSnapshot {
+    let _app_operation_lock = match AppOperationGuard::acquire(codex_home) {
+        Ok(lock) => lock,
+        Err(error) => return error_snapshot(codex_home, error),
+    };
     match scan_provider_repair_result(codex_home) {
         Ok(report) => snapshot_from_report(report),
         Err(error) => error_snapshot(codex_home, error.to_string()),
@@ -1393,6 +1401,19 @@ fn acquire_provider_operation_lease(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         registry.acquire(canonical_home.clone(), operation_id)?;
     }
+    // Preserve the existing typed Busy/operation-ID behavior above. Once this
+    // provider operation owns its registry slot, wait for the shared Tauri
+    // Home lane before touching session files or SQLite.
+    let app_operation_lock = match AppOperationGuard::acquire(&canonical_home) {
+        Ok(lock) => lock,
+        Err(message) => {
+            provider_operation_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .cancel_acquire(operation_id);
+            return Err(ProviderOperationError::Failed { message });
+        }
+    };
 
     let cross_process_lock = match (|| {
         let pinned_home = PinnedHome::open(&canonical_home)?;
@@ -1414,6 +1435,7 @@ fn acquire_provider_operation_lease(
     };
     Ok(ProviderOperationLease {
         canonical_home,
+        _app_operation_lock: app_operation_lock,
         operation_id: operation_id.to_string(),
         _cross_process_lock: cross_process_lock,
     })

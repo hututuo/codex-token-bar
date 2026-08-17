@@ -4,7 +4,10 @@ import type { DashboardStartupRead } from "../api/dashboardClient";
 import type { DashboardSnapshot } from "../types/dashboard";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import type { DashboardSourceToken } from "./dashboardSourceTransition";
-import type { DashboardAppState } from "./dashboardState";
+import {
+  dashboardSnapshotHasTrustedStartupData,
+  type DashboardAppState,
+} from "./dashboardState";
 
 interface InitialDashboardLoadOptions {
   source: Pick<
@@ -61,9 +64,21 @@ export async function loadInitialDashboardState({
               loading: false,
             }
           : current);
-        onDashboardAvailable?.();
-        onFastSnapshotLoaded();
-        void recordStartupEvent("dashboard snapshot ready");
+        if (dashboardSnapshotHasTrustedStartupData(startup.snapshot)) {
+          onDashboardAvailable?.();
+          onFastSnapshotLoaded();
+          void recordStartupEvent(
+            startup.snapshot.preciseRecentUsageFresh
+              ? "dashboard snapshot ready"
+              : "dashboard snapshot stale",
+          );
+        } else {
+          // A compact/unavailable native result may still carry an object with
+          // a placeholder canvas. Keep it out of the ready gate and let the
+          // precise owner establish the first trusted coverage marker.
+          onDashboardUnavailable?.();
+          void recordStartupEvent("dashboard snapshot unavailable");
+        }
       }
       return;
     }

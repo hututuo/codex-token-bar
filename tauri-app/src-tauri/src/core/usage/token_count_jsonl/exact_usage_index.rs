@@ -14,7 +14,10 @@ use crate::core::app_paths;
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
-use crate::core::{atomic_file, cross_process_lock::CrossProcessFileLock, sqlite, startup_trace};
+use crate::core::{
+    app_operation_lock::AppOperationGuard, atomic_file,
+    cross_process_lock::CrossProcessFileLock, sqlite, startup_trace,
+};
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
     RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
@@ -94,6 +97,10 @@ const MIGRATION_STAGE_TOTAL: u64 = 6;
 
 pub(super) struct ExactUsageIndex {
     connection: ManagedIndexConnection,
+    // Keep the process-local Home lease alive for the complete index
+    // operation, including migration, scan, and session-catalog publication.
+    // The sidecar file lock below remains the cross-process boundary.
+    _operation_lock: AppOperationGuard,
     /// True while one or more durable migration markers still need the
     /// normal scan/final publication to complete.  The open phase may repair
     /// DDL and orphan rows, but the attribution ledger is only authoritative
@@ -564,6 +571,7 @@ static INDEX_INTEGRITY_STATES: OnceLock<Mutex<HashMap<PathBuf, IndexIntegritySta
 
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
+        let operation_lock = AppOperationGuard::acquire(codex_home)?;
         let path = database_path(codex_home)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
@@ -855,6 +863,7 @@ impl ExactUsageIndex {
         }
         Ok(Self {
             connection,
+            _operation_lock: operation_lock,
             migration_pending: !migration_markers_complete,
         })
     }
@@ -1227,6 +1236,11 @@ impl ExactUsageIndex {
                 None
             }
         };
+        // The fallback directory walker has no discovery plan to revalidate.
+        // Capture the source revision before either walker and mark this
+        // generation incomplete if a watcher event arrives before publish;
+        // the next dirty refresh then owns the changed files.
+        let scan_start_source_revision = current_source_revision();
         prune_published_tombstone_versions(&self.connection)?;
         prepare_scan_temp_tables(&self.connection)?;
         let generation = begin_or_resume_generation(&mut self.connection)?;
@@ -1357,6 +1371,13 @@ impl ExactUsageIndex {
                     "精确 token 扫描结束时无法复核 Codex Home 物理身份：{error}"
                 )));
             }
+        }
+        if current_source_revision() != scan_start_source_revision {
+            scan_completeness.mark_incomplete();
+            warnings.push(scan_warning(
+                "Codex Home 在精确 token 扫描期间发生新的源变更，本轮结果保留但标记为过期，下一轮将重新扫描。"
+                    .into(),
+            ));
         }
         let revision = finalize_generation(
             &mut self.connection,

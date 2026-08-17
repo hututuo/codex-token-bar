@@ -1260,12 +1260,28 @@ fn run_precise_refresh(
         (Ok(_), None) => "精确统计数值已更新",
         _ => "精确统计失败，保留上次可信数据",
     };
-    finish_precise_dashboard_progress(
-        canonical_home,
-        !migration_pending
-            && (result.summary.is_ok() || result.full.as_ref().is_some_and(Result::is_ok)),
-        message,
-    );
+    if migration_pending {
+        // A pending migration is an expected resumable state, not a failed
+        // precise read. Keep the phase visible so startup can distinguish
+        // "upgrade awaiting the next scan" from an actual owner error.
+        let progress = precise_dashboard_progress(canonical_home);
+        update_precise_dashboard_progress(
+            canonical_home,
+            "migrating",
+            message,
+            progress.completed,
+            progress.total,
+        );
+        ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    } else {
+        finish_precise_dashboard_progress(
+            canonical_home,
+            result.summary.is_ok() || result.full.as_ref().is_some_and(Result::is_ok),
+            message,
+        );
+    }
     result
 }
 

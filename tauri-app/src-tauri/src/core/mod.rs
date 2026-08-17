@@ -1,4 +1,5 @@
 pub mod app_paths;
+pub(crate) mod app_operation_lock;
 pub mod auto_resume;
 pub(crate) mod atomic_file;
 pub mod codex_instances;

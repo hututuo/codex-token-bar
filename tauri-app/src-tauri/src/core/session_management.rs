@@ -1,3 +1,4 @@
+use crate::core::app_operation_lock::AppOperationGuard;
 use crate::core::coordination_fs::CoordinationHome;
 use crate::core::cross_process_lock::CrossProcessFileLock;
 use crate::core::process_tail::ProcessPipeTail;
@@ -968,6 +969,7 @@ pub fn create_recovery_archives(
 }
 
 struct SessionMutationLease {
+    _app_operation_lock: AppOperationGuard,
     _cross_process: CrossProcessFileLock,
     coordination_home: CoordinationHome,
     _in_process: MutexGuard<'static, ()>,
@@ -984,6 +986,7 @@ fn acquire_session_mutation_lease(
     expected_source_key: &str,
 ) -> Result<SessionMutationLease, String> {
     ensure_codex_home_identity(codex_home, expected_source_key)?;
+    let app_operation_lock = AppOperationGuard::acquire(codex_home)?;
     let in_process = SESSION_MUTATION_LEASE
         .get_or_init(|| Mutex::new(()))
         .lock()
@@ -995,6 +998,7 @@ fn acquire_session_mutation_lease(
     coordination_home.validate()?;
     ensure_codex_home_identity(codex_home, expected_source_key)?;
     Ok(SessionMutationLease {
+        _app_operation_lock: app_operation_lock,
         _cross_process: cross_process,
         coordination_home,
         _in_process: in_process,
