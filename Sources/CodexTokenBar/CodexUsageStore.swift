@@ -52,6 +52,29 @@ final class CodexUsageStore: ObservableObject {
     private enum RefreshRequestKind {
         case explicit
         case automatic
+        case startup
+        case startupCompensation
+    }
+
+    private enum StartupPreciseRefreshRole {
+        case owner
+        case compensation
+    }
+
+    /// The initial precise pass is deliberately a small process-local
+    /// coordination window.  The dashboard's attribution computation can
+    /// observe the fast snapshot before the 2.5s initial task starts; it must
+    /// register an intent with that owner instead of opening another index
+    /// pass for the same source.  A request that arrives after the owner has
+    /// started gets at most one trailing compensation pass.
+    private struct StartupPreciseRefreshWindow {
+        let sourceID: String
+        let bindingKey: String
+        var ownerStarted = false
+        var pendingBeforeOwner = false
+        var pendingDuringOwner = false
+        var compensationPending = false
+        var compensationStarted = false
     }
 
     @Published private(set) var snapshot: DashboardSnapshot = .empty
@@ -118,6 +141,7 @@ final class CodexUsageStore: ObservableObject {
     private var continuityObserver: SharedAccountContinuityObserverToken?
     private let sessionMutationMonitor = CodexSessionMutationMonitor()
     private var sessionMutationMonitoringActive = false
+    private var startupPreciseRefreshWindow: StartupPreciseRefreshWindow?
     private static let maxTransientDatabaseRecoveryAttempts = 5
 
     nonisolated static let preciseContinuityStorageKey = "preciseTimeSeriesContinuityLossesV02"
@@ -327,6 +351,13 @@ final class CodexUsageStore: ObservableObject {
         onlyCompactSurfaceVisible = visible
         // 仪表盘展开时立即全量刷新一次，补齐轻量期间未更新的时间序列/排行。
         if !visible, didRunPreciseScan, backgroundActivityEnabled {
+            // Numeric publication is already a durable exact boundary.  Do
+            // not cancel its trailing detail hydration merely because the
+            // dashboard became visible; the completed detail phase is the
+            // smallest correct expansion refresh.
+            if isDetailHydrating, refreshTask != nil {
+                return
+            }
             refresh()
         }
     }
@@ -345,6 +376,7 @@ final class CodexUsageStore: ObservableObject {
             // to the next root so returning A -> B -> A cannot reuse A's old
             // ready attribution segment across the unobserved interval.
             preciseObservationSessionID = UUID()
+            startupPreciseRefreshWindow = nil
         }
         dataSource = nextDataSource
         dataSourceIdentity = nextIdentity
@@ -434,6 +466,29 @@ final class CodexUsageStore: ObservableObject {
         // startup requests. Do not cancel the active detail task for those;
         // the completed precise phase already covers the same source and the
         // next regular cadence will catch any later append.
+        if requestKind == .automatic,
+           !observerTakeover,
+           registerStartupPreciseIntentIfNeeded(
+               sourceID: requestedSourceID,
+               bindingKey: requestedBindingKey
+           ) {
+            trace?.end("startup-precise-intent-pending")
+            return
+        }
+
+        if requestKind == .startup,
+           startupPreciseRefreshWindow?.ownerStarted == true {
+            trace?.end("startup-precise-owner-already-running")
+            return
+        }
+
+        // A manual refresh is an explicit new owner.  It supersedes the
+        // short startup coordination window so the existing manual refresh
+        // and cancellation semantics remain unchanged.
+        if requestKind == .explicit {
+            startupPreciseRefreshWindow = nil
+        }
+
         if requestKind == .automatic,
            !observerTakeover,
            isDetailHydrating,
@@ -537,6 +592,12 @@ final class CodexUsageStore: ObservableObject {
             && onlyCompactSurfaceVisible
             && snapshot.hasPreciseTokenUsage
             && snapshotSourceID == sourceID
+        let startupRefreshRole = startupPreciseRefreshRole(
+            for: requestKind,
+            sourceID: sourceID,
+            bindingKey: requestedBindingKey,
+            isCompactOnly: activeRefreshCompactOnly
+        )
         isRefreshing = true
         isDetailHydrating = false
         preciseIndexProgress = PreciseIndexProgress(
@@ -573,6 +634,7 @@ final class CodexUsageStore: ObservableObject {
             var transientRecoveryIncludePreciseScan = true
             var transientRecoveryForceFullTimeSeries = true
             var sawNumericPrecisePhase = false
+            var completedWithoutError = false
             do {
                 trace?.mark("task.started", metadata: [
                     "source": source.displayPath,
@@ -777,6 +839,7 @@ final class CodexUsageStore: ObservableObject {
                         }
                     }
                 }
+                completedWithoutError = true
                 trace?.end("ok")
             } catch {
                 guard self.isCurrentRefresh(
@@ -842,9 +905,12 @@ final class CodexUsageStore: ObservableObject {
                         // checkpointing its WAL during login/startup. Keep the
                         // last trusted value, but do not expose that expected
                         // short race as a user-facing read failure.
+                        let waitingStatus = migrationWasActive
+                            ? "正在等待索引升级完成"
+                            : "正在等待本地索引就绪"
                         self.status = retainedTrustedSnapshot
-                            ? "正在等待本地索引就绪（保留上次可信数据）..."
-                            : "正在等待本地索引就绪..."
+                            ? "(waitingStatus)（保留上次可信数据）..."
+                            : "(waitingStatus)..."
                     } else {
                         self.status = retainedTrustedSnapshot
                             ? "读取失败（保留上次可信数据，当前显示已陈旧）：\(error.localizedDescription)"
@@ -862,6 +928,14 @@ final class CodexUsageStore: ObservableObject {
                 bindingGeneration: bindingGeneration,
                 sourceID: sourceID
             ) {
+                let shouldRunStartupCompensation = startupRefreshRole.map {
+                    self.finishStartupPreciseRefresh(
+                        role: $0,
+                        sourceID: sourceID,
+                        bindingKey: requestedBindingKey,
+                        completedWithoutError: completedWithoutError
+                    )
+                } ?? false
                 let shouldRunPendingFullRefresh = self.pendingFullRefresh
                     && !self.onlyCompactSurfaceVisible
                     && self.backgroundActivityEnabled
@@ -874,7 +948,13 @@ final class CodexUsageStore: ObservableObject {
                 self.isInitialLoading = false
                 self.isPreparingUsageCache = false
                 self.refreshTask = nil
-                if shouldRunPendingFullRefresh {
+                if shouldRunStartupCompensation {
+                    self.refresh(
+                        includePreciseScan: true,
+                        forceFullTimeSeries: true,
+                        requestKind: .startupCompensation
+                    )
+                } else if shouldRunPendingFullRefresh {
                     self.refresh(
                         includePreciseScan: true,
                         forceFullTimeSeries: true,
@@ -888,6 +968,97 @@ final class CodexUsageStore: ObservableObject {
                     )
                 }
             }
+        }
+    }
+
+    private func registerStartupPreciseIntentIfNeeded(
+        sourceID: String?,
+        bindingKey: String
+    ) -> Bool {
+        guard var window = startupPreciseRefreshWindow,
+              window.sourceID == sourceID,
+              window.bindingKey == bindingKey else {
+            return false
+        }
+
+        if !window.ownerStarted {
+            window.pendingBeforeOwner = true
+        } else if !window.compensationPending && !window.compensationStarted {
+            window.pendingDuringOwner = true
+        }
+        startupPreciseRefreshWindow = window
+        return true
+    }
+
+    private func startupPreciseRefreshRole(
+        for requestKind: RefreshRequestKind,
+        sourceID: String,
+        bindingKey: String,
+        isCompactOnly: Bool
+    ) -> StartupPreciseRefreshRole? {
+        guard !isCompactOnly,
+              var window = startupPreciseRefreshWindow,
+              window.sourceID == sourceID,
+              window.bindingKey == bindingKey else {
+            return nil
+        }
+
+        switch requestKind {
+        case .startup, .explicit:
+            guard !window.ownerStarted else { return nil }
+            window.ownerStarted = true
+            startupPreciseRefreshWindow = window
+            return .owner
+        case .startupCompensation:
+            guard window.ownerStarted,
+                  window.compensationPending,
+                  !window.compensationStarted else {
+                return nil
+            }
+            window.compensationPending = false
+            window.compensationStarted = true
+            window.pendingDuringOwner = false
+            startupPreciseRefreshWindow = window
+            return .compensation
+        case .automatic:
+            // An automatic request matching a waiting startup window is
+            // intercepted before this point.  If no window is waiting, it is
+            // an ordinary cadence/attribution refresh.
+            return nil
+        }
+    }
+
+    private func finishStartupPreciseRefresh(
+        role: StartupPreciseRefreshRole,
+        sourceID: String,
+        bindingKey: String,
+        completedWithoutError: Bool
+    ) -> Bool {
+        guard var window = startupPreciseRefreshWindow,
+              window.sourceID == sourceID,
+              window.bindingKey == bindingKey else {
+            return false
+        }
+
+        switch role {
+        case .owner:
+            let needsCompensation =
+                (!completedWithoutError && (window.pendingBeforeOwner || window.pendingDuringOwner))
+                    || (completedWithoutError && window.pendingDuringOwner)
+            guard needsCompensation, !window.compensationStarted else {
+                startupPreciseRefreshWindow = nil
+                return false
+            }
+            window.compensationPending = true
+            window.pendingBeforeOwner = false
+            window.pendingDuringOwner = false
+            startupPreciseRefreshWindow = window
+            return true
+        case .compensation:
+            // This is the single bounded trailing pass.  Additional startup
+            // requests are intentionally ignored until the normal cadence.
+            startupPreciseRefreshWindow = nil
+            return false
         }
     }
 
@@ -1435,6 +1606,12 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func scheduleInitialPreciseRefresh() {
+        startupPreciseRefreshWindow = dataSource.map {
+            StartupPreciseRefreshWindow(
+                sourceID: refreshSourceID(for: $0),
+                bindingKey: Self.bindingKey(for: $0)
+            )
+        }
         initialPreciseTask?.cancel()
         initialPreciseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -1444,13 +1621,39 @@ final class CodexUsageStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 300_000_000)
             }
 
-            guard !Task.isCancelled, self.backgroundActivityEnabled, !self.didRunPreciseScan else { return }
+            guard !Task.isCancelled,
+                  self.backgroundActivityEnabled,
+                  !self.didRunPreciseScan,
+                  let window = self.startupPreciseRefreshWindow,
+                  window.sourceID == self.dataSource.map({ self.refreshSourceID(for: $0) }),
+                  window.bindingKey == self.dataSourceBindingKey,
+                  !window.ownerStarted else { return }
             self.refresh(
                 includePreciseScan: true,
                 forceFullTimeSeries: self.preciseTimeSeriesContinuityLossID != nil,
-                requestKind: .automatic
+                requestKind: .startup
             )
         }
+    }
+
+    /// Test seam for the startup owner path.  Production scheduling remains
+    /// delayed by `scheduleInitialPreciseRefresh`; tests can exercise the
+    /// same coalescing state without sleeping for 2.5 seconds.
+    func prepareInitialPreciseRefreshWindowForTesting() {
+        guard startupPreciseRefreshWindow == nil, let dataSource else { return }
+        startupPreciseRefreshWindow = StartupPreciseRefreshWindow(
+            sourceID: refreshSourceID(for: dataSource),
+            bindingKey: dataSourceBindingKey
+        )
+    }
+
+    func requestInitialPreciseRefreshForTesting() {
+        prepareInitialPreciseRefreshWindowForTesting()
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
+            requestKind: .startup
+        )
     }
 
     func chooseDataSourceDirectory() {
@@ -1498,6 +1701,7 @@ final class CodexUsageStore: ObservableObject {
             timer = nil
             initialPreciseTask?.cancel()
             initialPreciseTask = nil
+            startupPreciseRefreshWindow = nil
             refreshTask?.cancel()
             refreshTask = nil
             transientDatabaseRecoveryTask?.cancel()

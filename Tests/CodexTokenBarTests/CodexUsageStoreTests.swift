@@ -1185,6 +1185,128 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(requestCountAfterCompletion, 1)
     }
 
+    func testStartupPreciseOwnerCoalescesAttributionIntentBeforeOwnerStarts() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/startup-attribution-coalescing/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let final = makeSnapshot(
+            totalTokens: 62_000,
+            dayTokens: 6_200,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 12_500),
+            attributionEventsComplete: true
+        )
+        let loader = MultiRequestPhasedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.prepareInitialPreciseRefreshWindowForTesting()
+        store.requestAutomaticRefreshForTesting()
+        await Task.yield()
+        XCTAssertEqual(await loader.requestCountValue(), 0)
+
+        store.requestInitialPreciseRefreshForTesting()
+        await loader.waitUntilRequestCount(1)
+        await loader.yield(final, request: 0)
+        await loader.finish(request: 0)
+        await waitUntilYielding("coalesced startup precise owner") {
+            store.snapshot.stats.totalTokens == final.stats.totalTokens
+                && !store.isUsageRefreshOrDetailHydrationActive
+        }
+
+        XCTAssertEqual(await loader.requestCountValue(), 1)
+    }
+
+    func testStartupPreciseOwnerFailureGetsOneBoundedCompensationPass() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/startup-attribution-failure/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let recovered = makeSnapshot(
+            totalTokens: 63_000,
+            dayTokens: 6_300,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 12_600),
+            attributionEventsComplete: true
+        )
+        let loader = MultiRequestPhasedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.prepareInitialPreciseRefreshWindowForTesting()
+        store.requestAutomaticRefreshForTesting()
+        store.requestInitialPreciseRefreshForTesting()
+        await loader.waitUntilRequestCount(1)
+        await loader.fail(request: 0)
+
+        await loader.waitUntilRequestCount(2)
+        await loader.yield(recovered, request: 1)
+        await loader.finish(request: 1)
+        await waitUntilYielding("bounded startup compensation") {
+            store.snapshot.stats.totalTokens == recovered.stats.totalTokens
+                && !store.isUsageRefreshOrDetailHydrationActive
+        }
+
+        XCTAssertEqual(await loader.requestCountValue(), 2)
+    }
+
+    func testDashboardExpansionWaitsForActiveDetailHydrationWithoutSecondNumericOwner() async {
+        let source = CodexDataSource(
+            codexHome: URL(
+                fileURLWithPath: "/tmp/codex-token-bar-tests/expand-during-detail/.codex"
+            ),
+            origin: .defaultHome
+        )
+        let numeric = makeSnapshot(
+            totalTokens: 64_000,
+            dayTokens: 6_400,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 12_700),
+            attributionEventsComplete: false
+        )
+        let final = makeSnapshot(
+            totalTokens: 64_000,
+            dayTokens: 6_400,
+            preciseTimeSeriesGeneratedAt: Date(timeIntervalSince1970: 12_700),
+            attributionEventsComplete: true
+        )
+        let loader = MultiRequestPhasedDashboardSnapshotLoader()
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await loader.waitUntilRequestCount(1)
+        await loader.yield(numeric, request: 0)
+        await waitUntilYielding("numeric phase before dashboard expansion") {
+            store.isDetailHydrating && !store.isRefreshing
+        }
+
+        store.setOnlyCompactSurfaceVisible(true)
+        store.setOnlyCompactSurfaceVisible(false)
+        await Task.yield()
+        XCTAssertEqual(await loader.requestCountValue(), 1)
+        XCTAssertTrue(store.isDetailHydrating)
+
+        await loader.yield(final, request: 0)
+        await loader.finish(request: 0)
+        await waitUntilYielding("detail hydration after dashboard expansion") {
+            store.snapshot.cacheUsage.attributionEventsComplete
+                && !store.isUsageRefreshOrDetailHydrationActive
+        }
+        XCTAssertEqual(await loader.requestCountValue(), 1)
+    }
+
     func testStalePrecisePhaseCannotPublishAfterSourceBindingChanges() async {
         let sourceA = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/phased-stale-a/.codex"),
@@ -2897,6 +3019,10 @@ private actor MultiRequestPhasedDashboardSnapshotLoader: DashboardSnapshotLoadin
 
     func finish(request: Int) {
         continuations.removeValue(forKey: request)?.finish()
+    }
+
+    func fail(request: Int) {
+        continuations.removeValue(forKey: request)?.finish(throwing: UsageStoreTestError())
     }
 
     private func register(
