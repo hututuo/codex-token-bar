@@ -23,10 +23,10 @@ import type {
   UsageSummarySnapshot,
 } from "../types/dashboard";
 import {
-  LIVE_USAGE_ACTIVITY_HOLD_MS,
-  liveRateHasUsageRefreshActivity,
-  usageRefreshIntervalMs,
-} from "../utils/usageRefreshCadence";
+  DEFAULT_USAGE_LIGHT_REFRESH_INTERVAL_SECONDS,
+  sanitizeUsageLightRefreshIntervalSeconds,
+} from "../settings/usageRefreshCadence";
+import { readAppSettings } from "../api/client";
 import {
   compactSnapshotForSurfaceActivity,
   floatingSnapshotForLiveRate,
@@ -59,6 +59,7 @@ interface CompactPanelSnapshotDependencies {
   readInitialUnread?: typeof readUnreadSummary;
   readUsageSummary: (
     sourceToken: CodexHomeSourceToken,
+    refreshIntervalSeconds?: number,
   ) => Promise<UsageSummarySnapshot | null>;
 }
 
@@ -66,10 +67,11 @@ const DEFAULT_SNAPSHOT_DEPENDENCIES: CompactPanelSnapshotDependencies = {
   platform: desktopPlatform,
   readInitialLiveRate: readInitialLiveRateSnapshot,
   readInitialUnread: readUnreadSummary,
-  readUsageSummary: (sourceToken) => readUsageSummarySnapshot(sourceToken),
+  readUsageSummary: (sourceToken, refreshIntervalSeconds) => readUsageSummarySnapshot(
+    sourceToken,
+    refreshIntervalSeconds,
+  ),
 };
-
-const COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS = 60_000;
 
 export function useCompactPanelSnapshot({
   active,
@@ -81,8 +83,9 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
 ): FloatingPanelSnapshot {
   const sourceKey = codexHomeSourceTokenKey(sourceToken);
   const [rawSnapshot, setRawSnapshot] = useState<FloatingPanelSnapshot>(emptyFloatingPanelSnapshot);
-  const [lastLiveActivityAtMs, setLastLiveActivityAtMs] = useState(0);
-  const lastLiveActivityAtMsRef = useRef(0);
+  const [usageSummaryRefreshIntervalSeconds, setUsageSummaryRefreshIntervalSeconds] = useState(
+    DEFAULT_USAGE_LIGHT_REFRESH_INTERVAL_SECONDS,
+  );
   const lastSmoothedLiveRateRef = useRef<LiveRateSnapshot | null>(null);
   const lastLiveRateDisplayBucketRef = useRef("");
   const usageSummaryRef = useRef<UsageSummarySnapshot | null>(null);
@@ -100,19 +103,28 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     leaseControllerRef.current = leaseController;
   }
 
-  const markLiveUsageActivity = useCallback((liveRate: LiveRateSnapshot) => {
-    if (!liveRateHasUsageRefreshActivity(liveRate)) {
-      return;
-    }
-
-    const nowMs = Date.now();
-    lastLiveActivityAtMsRef.current = nowMs;
-    setLastLiveActivityAtMs((current) => {
-      if (current > 0 && nowMs - current < LIVE_USAGE_ACTIVITY_HOLD_MS) {
-        return current;
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    void readAppSettings().then((settings) => {
+      if (!cancelled && settings !== null) {
+        setUsageSummaryRefreshIntervalSeconds(
+          sanitizeUsageLightRefreshIntervalSeconds(settings.usageLightRefreshIntervalSeconds),
+        );
       }
-      return nowMs;
+    }).catch(() => {});
+    void desktopPlatform.onAppSettingsChanged((settings) => {
+      setUsageSummaryRefreshIntervalSeconds(
+        sanitizeUsageLightRefreshIntervalSeconds(settings.usageLightRefreshIntervalSeconds),
+      );
+    }).then((listener) => {
+      if (cancelled) listener();
+      else unlisten = listener;
     });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -121,16 +133,12 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
       usageSummaryRef.current = null;
       lastSmoothedLiveRateRef.current = null;
       lastLiveRateDisplayBucketRef.current = "";
-      lastLiveActivityAtMsRef.current = 0;
-      setLastLiveActivityAtMs(0);
       setRawSnapshot(emptyFloatingPanelSnapshot);
     }
   }, [sourceKey]);
 
   useEffect(() => {
     if (!active || sourceToken === null || sourceKey === null) {
-      lastLiveActivityAtMsRef.current = 0;
-      setLastLiveActivityAtMs(0);
       return;
     }
 
@@ -140,7 +148,10 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     const refreshUsageSummary = async () => {
       let summary: UsageSummarySnapshot | null = null;
       try {
-        summary = await dependencies.readUsageSummary(requestSourceToken);
+        summary = await dependencies.readUsageSummary(
+          requestSourceToken,
+          usageSummaryRefreshIntervalSeconds,
+        );
       } catch {
         // The command client records the native failure for diagnostics.
       }
@@ -160,46 +171,17 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     };
 
     void refreshUsageSummary();
-    const intervalMs = usageRefreshIntervalMs({
-      baselineIntervalMs: COMPACT_USAGE_SUMMARY_REFRESH_INTERVAL_MS,
-      lastLiveActivityAtMs,
-    });
+    const intervalMs = usageSummaryRefreshIntervalSeconds * 1_000;
     const timer = setInterval(refreshUsageSummary, intervalMs);
 
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [active, dependencies, lastLiveActivityAtMs, sourceKey, sourceToken]);
-
-  useEffect(() => {
-    if (lastLiveActivityAtMs <= 0) {
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      const latestActivityAtMs = lastLiveActivityAtMsRef.current;
-      if (
-        latestActivityAtMs > 0
-        && Date.now() - latestActivityAtMs < LIVE_USAGE_ACTIVITY_HOLD_MS
-      ) {
-        setLastLiveActivityAtMs(latestActivityAtMs);
-        return;
-      }
-
-      lastLiveActivityAtMsRef.current = 0;
-      setLastLiveActivityAtMs(0);
-    }, LIVE_USAGE_ACTIVITY_HOLD_MS);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [lastLiveActivityAtMs]);
+  }, [active, dependencies, sourceKey, sourceToken, usageSummaryRefreshIntervalSeconds]);
 
   useEffect(() => {
     if (!active || sourceToken === null || sourceKey === null) {
-      lastLiveActivityAtMsRef.current = 0;
-      setLastLiveActivityAtMs(0);
       setRawSnapshot((current) => compactSnapshotForSurfaceActivity(
         current,
         active,
@@ -209,8 +191,6 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     }
     if (!liveRateEnabled) {
       lastSmoothedLiveRateRef.current = null;
-      lastLiveActivityAtMsRef.current = 0;
-      setLastLiveActivityAtMs(0);
       setRawSnapshot((current) => compactSnapshotForSurfaceActivity(
         current,
         active,
@@ -228,7 +208,6 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     const publishLiveRate = (liveRate: LiveRateSnapshot) => {
       const smoothed = smoothLiveRateSnapshot(liveRate, lastSmoothedLiveRateRef.current);
       lastSmoothedLiveRateRef.current = smoothed;
-      markLiveUsageActivity(smoothed);
       const bucket = changedLiveRateDisplayBucket(
         lastLiveRateDisplayBucketRef.current,
         smoothed,
@@ -319,7 +298,6 @@ dependencies: CompactPanelSnapshotDependencies = DEFAULT_SNAPSHOT_DEPENDENCIES,
     dependencies,
     liveRateEnabled,
     liveRateOwnerToken,
-    markLiveUsageActivity,
     sourceKey,
     sourceToken,
   ]);

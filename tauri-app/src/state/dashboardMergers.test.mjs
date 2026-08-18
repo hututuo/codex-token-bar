@@ -145,6 +145,154 @@ test("incomplete precise result keeps the last trusted coverage visible", async 
   });
 });
 
+test("lightweight summary updates summary fields without rewriting chart buckets", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      generatedAt: "2026-08-18T01:00:00Z",
+      activityDays: [activityDay({
+        date: "2026-08-18",
+        tokens: 100,
+        modelBreakdowns: [{
+          model: "gpt-5.6-sol",
+          breakdown: { inputTokens: 80, cachedInputTokens: 20, outputTokens: 20, totalTokens: 100, calls: 1 },
+        }],
+      })],
+    });
+    const originalDays = structuredClone(state.dashboard.activityDays);
+
+    const next = mergeUsageSummary(state, {
+      totalTokens: 500,
+      todayTokens: 250,
+      todayRequests: 3,
+      todayModelBreakdowns: [{
+        model: "gpt-5.6-luna",
+        breakdown: { inputTokens: 200, cachedInputTokens: 50, outputTokens: 50, totalTokens: 250, calls: 3 },
+      }],
+      dashboardRevision: 9,
+      aggregateBoundaryUnix: 1_776_643_200,
+      generatedAt: "2026-08-18T01:01:00Z",
+    });
+
+    assert.equal(next.dashboard.stats.totalTokens, 500);
+    assert.equal(next.dashboard.usageSummary.todayTokens, 250);
+    assert.equal(next.dashboard.usageSummaryUpdatedAt, "2026-08-18T01:01:00Z");
+    assert.equal(next.dashboard.usageSummaryFresh, true);
+    assert.deepEqual(next.dashboard.activityDays, originalDays);
+    assert.equal(next.dashboard.generatedAt, "2026-08-18T01:00:00Z");
+  });
+});
+
+test("lightweight model summary freshness is independent from chart freshness", async () => {
+  return withSsrModules(async (load) => {
+    const { markUsageSummaryStale, mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      preciseRecentUsageFresh: true,
+      usageSummaryFresh: true,
+      usageSummary: {
+        totalTokens: 500,
+        todayTokens: 250,
+        todayRequests: 3,
+        todayModelBreakdowns: [{
+          model: "gpt-5.6-sol",
+          breakdown: { inputTokens: 200, cachedInputTokens: 50, outputTokens: 50, totalTokens: 250, calls: 3 },
+        }],
+        generatedAt: "2026-08-18T01:01:00Z",
+      },
+    });
+
+    const stale = markUsageSummaryStale(state);
+    assert.equal(stale.dashboard.usageSummaryFresh, false);
+    assert.equal(stale.dashboard.preciseRecentUsageFresh, true);
+    assert.equal(stale.dashboard.usageSummary.todayTokens, 250);
+
+    const next = mergeUsageSummary(stale, {
+      totalTokens: 600,
+      todayTokens: 350,
+      todayRequests: 4,
+      todayModelBreakdowns: [{
+        model: "gpt-5.6-luna",
+        breakdown: { inputTokens: 300, cachedInputTokens: 50, outputTokens: 50, totalTokens: 350, calls: 4 },
+      }],
+      generatedAt: "2026-08-18T01:02:00Z",
+    });
+    assert.equal(next.dashboard.usageSummaryFresh, true);
+    assert.equal(next.dashboard.preciseRecentUsageFresh, true);
+    assert.equal(next.dashboard.usageSummary.todayModelBreakdowns[0].model, "gpt-5.6-luna");
+  });
+});
+
+test("older cached lightweight summary cannot roll back a newer full snapshot", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      generatedAt: "2026-08-18T01:02:00Z",
+      usageSummaryUpdatedAt: "2026-08-18T01:03:00Z",
+      usageSummary: {
+        totalTokens: 650,
+        todayTokens: 300,
+        todayRequests: 4,
+        generatedAt: "2026-08-18T01:03:00Z",
+      },
+      stats: {
+        totalTokens: 600,
+        peakDayTokens: 0,
+        peakThreadTokens: 0,
+        currentStreakDays: 0,
+        longestStreakDays: 0,
+        totalCalls: 0,
+        totalThreads: 0,
+      },
+    });
+
+    const next = mergeUsageSummary(state, {
+      totalTokens: 500,
+      todayTokens: 250,
+      todayRequests: 3,
+      generatedAt: "2026-08-18T01:01:00Z",
+    });
+
+    assert.equal(next, state);
+    assert.equal(next.dashboard.stats.totalTokens, 600);
+    assert.equal(next.dashboard.usageSummary.todayTokens, 300);
+  });
+});
+
+test("newer full snapshot supersedes the temporary lightweight summary", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      generatedAt: "2026-08-18T01:00:00Z",
+      usageSummaryUpdatedAt: "2026-08-18T01:01:00Z",
+      usageSummary: {
+        totalTokens: 500,
+        todayTokens: 250,
+        todayRequests: 3,
+        generatedAt: "2026-08-18T01:01:00Z",
+      },
+    });
+    const precise = dashboardFixture({
+      generatedAt: "2026-08-18T01:02:00Z",
+      preciseRecentUsageCoveredAt: "2026-08-18T01:00:00Z",
+      preciseRecentUsageFresh: true,
+      stats: {
+        totalTokens: 550,
+        peakDayTokens: 250,
+        peakThreadTokens: 200,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 4,
+        totalThreads: 1,
+      },
+    });
+
+    const next = mergePreciseDashboard(state, precise);
+    assert.equal(next.dashboard.usageSummary, null);
+    assert.equal(next.dashboard.usageSummaryUpdatedAt, "2026-08-18T01:02:00Z");
+    assert.equal(next.dashboard.stats.totalTokens, 550);
+  });
+});
+
 test("all-zero legacy startup placeholder remains unavailable", async () => {
   return withSsrModules(async (load) => {
     const { dashboardSnapshotHasTrustedStartupData } = await load("/src/state/dashboardState.ts");

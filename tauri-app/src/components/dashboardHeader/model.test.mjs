@@ -101,6 +101,31 @@ test("DashboardHeader renders the Chinese updated timestamp and refresh progress
   });
 });
 
+test("DashboardHeader keeps the light-summary timestamp while the chart owner publishes", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const html = renderComponent(DashboardHeader, headerProps({
+      refreshing: true,
+      usageSummaryFresh: true,
+      usageSummaryUpdatedAt: "2026-07-06T02:31:00.000Z",
+      aggregateCoveredAt: "2026-07-06T02:20:00.000Z",
+      preciseProgress: {
+        phase: "publishing",
+        message: "正在发布精确统计结果",
+        completed: 1,
+        total: 2,
+        fraction: 0.5,
+        startedAt: "2026-07-06T02:30:00.000Z",
+        updatedAt: "2026-07-06T02:30:10.000Z",
+      },
+    }));
+
+    assert.match(html, /摘要 10:31:00 · 图表至 10:20/);
+    assert.doesNotMatch(html, /正在发布精确统计结果/);
+    assert.doesNotMatch(html, /同步中/);
+  });
+});
+
 function headerProps(overrides = {}) {
   return {
     account: {

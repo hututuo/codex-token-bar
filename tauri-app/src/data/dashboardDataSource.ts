@@ -60,6 +60,7 @@ export interface DashboardDataSource {
   /** Lightweight native summary owner used by quota/attribution ticks. */
   readUsageSummarySnapshot?: (
     sourceToken: CodexHomeSourceToken,
+    refreshIntervalSeconds?: number,
   ) => Promise<UsageSummarySnapshot | null>;
   readUsageCacheStatus: () => Promise<UsageCacheStatus>;
   readAccountQuota: (

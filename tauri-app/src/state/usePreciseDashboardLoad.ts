@@ -124,6 +124,7 @@ export function usePreciseDashboardLoad({
       let effectiveForce = forcePreciseRefresh;
       let publishedGeneration: string | undefined;
       let failureReported = false;
+      let settlementBoundToNativeFlight = false;
       const reportFailure = () => {
         if (!cancelled && !failureReported) {
           failureReported = true;
@@ -194,6 +195,11 @@ export function usePreciseDashboardLoad({
           },
         );
         unsubscribePrecise = preciseFlight.unsubscribe;
+        settlementBoundToNativeFlight = true;
+        void preciseFlight.result.then(
+          () => onPreciseRequestSettled?.(),
+          () => onPreciseRequestSettled?.(),
+        );
         void preciseFlight.result.then(
           (result) => {
             if (result === null
@@ -217,7 +223,9 @@ export function usePreciseDashboardLoad({
         }
         reportFailure();
       } finally {
-        onPreciseRequestSettled?.();
+        if (!settlementBoundToNativeFlight) {
+          onPreciseRequestSettled?.();
+        }
         onLoadEnd?.();
       }
     }
@@ -258,6 +266,7 @@ export function usePreciseDashboardLoad({
     onPreciseDashboard,
     onPreciseDashboardFailure,
     onPreciseDashboardStale,
+    onPreciseRequestSettled,
     onUsageCacheInitialized,
     onUsageCacheStatus,
     onPreciseRequestStarted,

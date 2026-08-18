@@ -23,6 +23,9 @@ export interface DashboardRefreshDispatchers {
 
 export interface DashboardWakeRefreshContextInput {
   dashboardGeneratedAt: string | null;
+  preciseCoveredAt?: string | null;
+  preciseFresh?: boolean;
+  eligibleBoundarySeconds?: number;
   dashboardVisible: boolean;
   nowMs: number;
   visibleRefreshIntervalMs: number;
@@ -35,14 +38,19 @@ export interface ManualDashboardRefreshInput {
 
 export function makeDashboardWakeRefreshContext({
   dashboardGeneratedAt,
+  preciseCoveredAt,
+  preciseFresh,
+  eligibleBoundarySeconds,
   dashboardVisible,
   nowMs,
   visibleRefreshIntervalMs,
 }: DashboardWakeRefreshContextInput): DashboardRefreshContext {
+  const preciseCoveredSeconds = preciseCoveredAt ? Date.parse(preciseCoveredAt) / 1_000 : Number.NaN;
   const generatedAtMs = dashboardGeneratedAt ? Date.parse(dashboardGeneratedAt) : 0;
-  const usageStale =
-    generatedAtMs === 0
-    || nowMs - generatedAtMs >= visibleRefreshIntervalMs;
+  const usageStale = preciseFresh === false || (Number.isFinite(eligibleBoundarySeconds)
+    ? !Number.isFinite(preciseCoveredSeconds)
+      || preciseCoveredSeconds < (eligibleBoundarySeconds ?? 0)
+    : generatedAtMs === 0 || nowMs - generatedAtMs >= visibleRefreshIntervalMs);
 
   return {
     providerVisible: false,
@@ -70,7 +78,7 @@ export function makeDashboardRefreshPlan(
   }
 
   const actions: DashboardRefreshAction[] = [];
-  if (context.dashboardVisible === true || context.usageStale === true) {
+  if (context.usageStale === true) {
     actions.push("preciseUsage");
   }
   actions.push("forceQuota");

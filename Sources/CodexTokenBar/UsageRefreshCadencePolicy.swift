@@ -1,28 +1,10 @@
 import Foundation
 
-struct UsageRefreshCadenceDecision: Equatable {
-    let interval: TimeInterval
-    let recoveryDelay: TimeInterval?
-    let isActive: Bool
-}
-
 enum UsageRefreshCadencePolicy {
     /// The smallest aggregate bucket is five minutes and is aligned to UTC
     /// epoch time, rather than to an app launch or timer start time.
     static let fiveMinuteBoundary: TimeInterval = 5 * 60
     static let settleDelay: TimeInterval = 15
-
-    // Transitional names for source/tests that have not yet moved to the
-    // explicit settings object.  They now reflect the new default aggregate
-    // cadences; neither value is an activity-sensitive 30-second interval.
-    @available(*, deprecated, message: "Use UsageRefreshCadenceSettings instead.")
-    static let visibleDashboardInterval: TimeInterval = TimeInterval(
-        UsageRefreshCadenceSettings.defaultVisibleAggregateIntervalMinutes * 60
-    )
-    @available(*, deprecated, message: "Use UsageRefreshCadenceSettings instead.")
-    static let compactOnlyInterval: TimeInterval = TimeInterval(
-        UsageRefreshCadenceSettings.defaultBackgroundAggregateIntervalMinutes * 60
-    )
 
     /// Returns the UTC epoch-aligned five-minute boundary at or before `date`.
     static func utcEpochFiveMinuteBoundary(for date: Date) -> Date {
@@ -67,25 +49,4 @@ enum UsageRefreshCadencePolicy {
         return TimeInterval(minutes * 60)
     }
 
-    /// Compatibility wrapper for callers that still consume the old
-    /// decision shape.  Live activity no longer changes the cadence to 30 s;
-    /// the selected visible/background aggregate cadence is always used.
-    @available(*, deprecated, message: "Use aggregateInterval(mainDashboardVisible:settings:) and explicit owners.")
-    static func decision(
-        snapshot: LiveRateSnapshot,
-        onlyCompactSurfaceVisible: Bool,
-        now: Date = Date()
-    ) -> UsageRefreshCadenceDecision {
-        _ = snapshot
-        _ = now
-        let settings = UsageRefreshCadenceSettings.load()
-        return UsageRefreshCadenceDecision(
-            interval: aggregateInterval(
-                mainDashboardVisible: !onlyCompactSurfaceVisible,
-                settings: settings
-            ),
-            recoveryDelay: nil,
-            isActive: false
-        )
-    }
 }

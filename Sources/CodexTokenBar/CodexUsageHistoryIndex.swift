@@ -104,6 +104,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let sourceOffset: UInt64
     }
 
+    struct AggregatedUsageRow {
+        let start: Date
+        let model: String?
+        let breakdown: TokenCacheBreakdown
+    }
+
+    struct AggregatedSessionRow {
+        let sessionID: String
+        let lastUpdated: Date?
+        let breakdown: TokenCacheBreakdown
+    }
+
     struct TurnSourceReference {
         let stableID: String
         let file: URL
@@ -212,6 +224,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private struct IndexedSource {
         let id: Int64
+        let sessionID: String
         let signature: SourceSignature
         let checkpoint: SourceCheckpoint?
     }
@@ -219,6 +232,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private struct SourceIdentity {
         let id: Int64
         let path: String
+        let sessionID: String?
     }
 
     private struct SourceCheckpoint {
@@ -304,6 +318,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
     private static let attributionProvenanceRevision = "source-bucket-v4-fork-replay-boundary-v2"
+    private static let dashboardAggregateSchemaVersion = "3"
+    private static let dashboardAggregatePricingRevision = "raw-token-v1"
+    private static let knownDashboardAggregatePricingRevisions: Set<String> = [
+        "raw-token-v0",
+        dashboardAggregatePricingRevision,
+    ]
 
     struct PersistentSnapshotCompatibility: Equatable, Sendable {
         let indexSchemaVersion: String
@@ -858,6 +878,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             $0.count > 1
         }
         var sourceMutationDetected = false
+        var dirtyTurnCandidateSessions = Set<String>()
 
         onProgress?(
             0,
@@ -897,6 +918,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                            connection: connection,
                            parser: parser
                        ) {
+                        dirtyTurnCandidateSessions.insert(existing.sessionID)
+                        dirtyTurnCandidateSessions.insert(parsedSessionID)
                         sourceMutationDetected = true
                         changedFiles += 1
                         indexedEvents += appended.eventCount
@@ -905,6 +928,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         if existing != nil {
                             rewrittenFiles += 1
                         }
+                        if let existing {
+                            dirtyTurnCandidateSessions.insert(existing.sessionID)
+                        }
+                        dirtyTurnCandidateSessions.insert(parsedSessionID)
                         fullRebuildJobs.append(
                             FullRebuildJob(
                                 file: file,
@@ -1019,10 +1046,35 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 removedFiles = removedSourceIDs.count
                 sourceMutationDetected = sourceMutationDetected
                     || !removedSourceIDs.isEmpty
+                var removedDashboardBounds: ClosedRange<Int64>?
                 for sourceID in removedSourceIDs {
+                    if let removedSessionID = currentSources
+                        .first(where: { $0.id == sourceID })?
+                        .sessionID {
+                        dirtyTurnCandidateSessions.insert(removedSessionID)
+                    }
+                    removedDashboardBounds = mergedDashboardBucketBounds(
+                        removedDashboardBounds,
+                        try dashboardBucketBounds(
+                            sourceID: sourceID,
+                            connection: transaction
+                        )
+                    )
                     try transaction.execute(
                         "DELETE FROM sources WHERE source_id = ?;",
                         bindings: [.int64(sourceID)]
+                    )
+                }
+                if let removedDashboardBounds {
+                    try refreshDashboardFiveMinuteAggregates(
+                        affectedBuckets: removedDashboardBounds,
+                        connection: transaction
+                    )
+                }
+                if !dirtyTurnCandidateSessions.isEmpty {
+                    try refreshDashboardTurnCandidates(
+                        sessionIDs: dirtyTurnCandidateSessions,
+                        connection: transaction
                     )
                 }
                 let current = try currentAttributionState(connection: transaction)
@@ -1043,6 +1095,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 } else {
                     publishedGeneration = current.generation
                 }
+                try transaction.execute(
+                    """
+                    INSERT INTO schema_meta(key, value)
+                    VALUES ('dashboard_aggregate_exact_generation', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """,
+                    bindings: [.text(String(publishedGeneration))]
+                )
                 if unsafeEpisodeBegan {
                     try markAttributionUnsafe(
                         provenanceEpoch: current.provenanceEpoch,
@@ -1159,33 +1219,33 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try withExclusiveAccess {
             try driver.withConnection { connection in
                 let total = try connection.readRows(
-                    "SELECT COALESCE(SUM(tokens), 0) FROM events;"
+                    "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_totals;"
                 ) { row in row.int(0) ?? 0 }.first ?? 0
                 let start = todayStart.timeIntervalSince1970
                 let todayTokens = try connection.readRows(
-                    "SELECT COALESCE(SUM(tokens), 0) FROM events WHERE timestamp >= ?;",
-                    bindings: [.double(start)]
+                    "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_5m WHERE bucket_start >= ?;",
+                    bindings: [.int64(Int64(start))]
                 ) { row in row.int(0) ?? 0 }.first ?? 0
                 let todayCalls = try connection.readRows(
-                    "SELECT COUNT(*) FROM events WHERE timestamp >= ?;",
-                    bindings: [.double(start)]
+                    "SELECT COALESCE(SUM(calls), 0) FROM dashboard_5m WHERE bucket_start >= ?;",
+                    bindings: [.int64(Int64(start))]
                 ) { row in row.int(0) ?? 0 }.first ?? 0
                 let todayModelBreakdowns = try connection.readRows(
                     """
                     SELECT
                         model,
                         COALESCE(SUM(input_tokens), 0),
-                        COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                        COALESCE(SUM(cached_input_tokens), 0),
                         COALESCE(SUM(output_tokens), 0),
                         COALESCE(SUM(reasoning_output_tokens), 0),
-                        COALESCE(SUM(tokens), 0),
-                        COUNT(*)
-                    FROM events
-                    WHERE timestamp >= ?
+                        COALESCE(SUM(total_tokens), 0),
+                        COALESCE(SUM(calls), 0)
+                    FROM dashboard_5m
+                    WHERE bucket_start >= ?
                     GROUP BY model
-                    ORDER BY SUM(tokens) DESC;
+                    ORDER BY SUM(total_tokens) DESC;
                     """,
-                    bindings: [.double(start)]
+                    bindings: [.int64(Int64(start))]
                 ) { row in
                     ModelTokenBreakdown(
                         model: row.text(0).flatMap { $0.isEmpty ? nil : $0 },
@@ -1209,9 +1269,212 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    func markDashboardAggregatePublished(
+        exactGeneration: Int64,
+        settledThrough: Date
+    ) throws {
+        try withExclusiveAccess {
+            try driver.withConnection { connection in
+                try connection.transaction { transaction in
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES
+                            ('dashboard_aggregate_published_generation', ?),
+                            ('dashboard_aggregate_settled_through', ?),
+                            ('dashboard_aggregate_pricing_revision', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [
+                            .text(String(exactGeneration)),
+                            .text(String(Int64(settledThrough.timeIntervalSince1970))),
+                            .text(Self.dashboardAggregatePricingRevision),
+                        ]
+                    )
+                }
+            }
+        }
+    }
+
     func forEachStoredEvent(_ body: (StoredEvent) throws -> Void) throws {
         try withExclusiveAccess {
             try forEachStoredEventExclusively(body)
+        }
+    }
+
+    func forEachAggregatedUsageRow(
+        _ body: (AggregatedUsageRow) throws -> Void
+    ) throws {
+        try withExclusiveAccess {
+            try driver.forEachRow(
+                """
+                SELECT
+                    b.bucket_start,
+                    b.model,
+                    b.input_tokens,
+                    b.cached_input_tokens,
+                    b.output_tokens,
+                    b.reasoning_output_tokens,
+                    b.total_tokens,
+                    b.calls
+                FROM dashboard_5m b
+                ORDER BY b.bucket_start, b.model;
+                """
+            ) { row in
+                guard let bucketStart = row.int64(0),
+                      let inputTokens = row.int(2),
+                      let cachedInputTokens = row.int(3),
+                      let outputTokens = row.int(4),
+                      let reasoningOutputTokens = row.int(5),
+                      let totalTokens = row.int(6),
+                      let calls = row.int(7) else {
+                    return
+                }
+                try body(AggregatedUsageRow(
+                    start: Date(timeIntervalSince1970: TimeInterval(bucketStart)),
+                    model: row.text(1).flatMap { $0.isEmpty ? nil : $0 },
+                    breakdown: TokenCacheBreakdown(
+                        inputTokens: inputTokens,
+                        cachedInputTokens: cachedInputTokens,
+                        outputTokens: outputTokens,
+                        reasoningOutputTokens: reasoningOutputTokens,
+                        totalTokens: totalTokens,
+                        calls: calls
+                    )
+                ))
+            }
+        }
+    }
+
+    func forEachAggregatedSessionRow(
+        _ body: (AggregatedSessionRow) throws -> Void
+    ) throws {
+        try withExclusiveAccess {
+            try driver.forEachRow(
+                """
+                SELECT
+                    session_id,
+                    SUM(input_tokens),
+                    SUM(cached_input_tokens),
+                    SUM(output_tokens),
+                    SUM(reasoning_output_tokens),
+                    SUM(total_tokens),
+                    SUM(calls),
+                    MAX(last_timestamp)
+                FROM dashboard_source_totals
+                GROUP BY session_id
+                ORDER BY session_id;
+                """
+            ) { row in
+                guard let sessionID = row.text(0),
+                      let inputTokens = row.int(1),
+                      let cachedInputTokens = row.int(2),
+                      let outputTokens = row.int(3),
+                      let reasoningOutputTokens = row.int(4),
+                      let totalTokens = row.int(5),
+                      let calls = row.int(6) else { return }
+                try body(AggregatedSessionRow(
+                    sessionID: sessionID,
+                    lastUpdated: row.double(7).map {
+                        Date(timeIntervalSince1970: $0)
+                    },
+                    breakdown: TokenCacheBreakdown(
+                        inputTokens: inputTokens,
+                        cachedInputTokens: cachedInputTokens,
+                        outputTokens: outputTokens,
+                        reasoningOutputTokens: reasoningOutputTokens,
+                        totalTokens: totalTokens,
+                        calls: calls
+                    )
+                ))
+            }
+        }
+    }
+
+    func boundedTurnCandidates(limit: Int = 128) throws -> [TurnCacheUsage] {
+        try withExclusiveAccess {
+            try driver.withConnection { connection in
+                var candidates: [String: TurnCacheUsage] = [:]
+                let selections = [
+                    (
+                        predicate: "1 = 1",
+                        ordering: "timestamp DESC, source_id DESC, source_offset DESC"
+                    ),
+                    (
+                        predicate: "input_tokens >= 1000",
+                        ordering: "hit_rate ASC, uncached_tokens DESC, input_tokens DESC, timestamp DESC"
+                    ),
+                ]
+                for selection in selections {
+                    let rows = try connection.readRows(
+                        """
+                        SELECT
+                            source_id,
+                            source_offset,
+                            timestamp,
+                            session_id,
+                            total_tokens,
+                            input_tokens,
+                            cached_input_tokens,
+                            output_tokens,
+                            reasoning_output_tokens,
+                            turn_index
+                        FROM dashboard_turn_candidates
+                        WHERE \(selection.predicate)
+                        ORDER BY \(selection.ordering)
+                        LIMIT ?;
+                        """,
+                        bindings: [.int(limit)]
+                    ) { row -> TurnCacheUsage? in
+                        guard let sourceID = row.int64(0),
+                              let rawOffset = row.int64(1), rawOffset >= 0,
+                              let timestamp = row.double(2),
+                              let sessionID = row.text(3),
+                              let totalTokens = row.int(4),
+                              let inputTokens = row.int(5),
+                              let cachedInputTokens = row.int(6),
+                              let outputTokens = row.int(7),
+                              let reasoningOutputTokens = row.int(8),
+                              let turnIndex = row.int(9) else {
+                            return nil
+                        }
+                        return TurnCacheUsage(
+                            id: Self.stableID(
+                                sourceID: sourceID,
+                                sourceOffset: UInt64(rawOffset)
+                            ),
+                            sessionID: sessionID,
+                            sessionTitle: sessionID,
+                            timestamp: Date(timeIntervalSince1970: timestamp),
+                            turnIndexInSession: turnIndex,
+                            userPrompt: "",
+                            assistantResponse: "",
+                            breakdown: TokenCacheBreakdown(
+                                inputTokens: inputTokens,
+                                cachedInputTokens: cachedInputTokens,
+                                outputTokens: outputTokens,
+                                reasoningOutputTokens: reasoningOutputTokens,
+                                totalTokens: totalTokens,
+                                calls: 1
+                            )
+                        )
+                    }
+                    for candidate in rows.compactMap({ $0 }) {
+                        candidates[candidate.id] = candidate
+                    }
+                }
+                return Array(candidates.values)
+            }
+        }
+    }
+
+    func firstAggregatedEventAt() throws -> Date? {
+        try withExclusiveAccess {
+            try driver.readRows(
+                "SELECT MIN(first_timestamp) FROM dashboard_source_totals;"
+            ) { row in
+                row.double(0).map { Date(timeIntervalSince1970: $0) }
+            }.first ?? nil
         }
     }
 
@@ -1401,6 +1664,35 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     """
                 ) { row in row.text(0) }.first ?? nil)
                 : nil
+            let storedDashboardAggregateVersion = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version' LIMIT 1;"
+            ) { row in row.text(0) }.first ?? nil
+            let storedDashboardPricingRevision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_pricing_revision' LIMIT 1;"
+            ) { row in row.text(0) }.first ?? nil
+            if let storedDashboardAggregateVersion,
+               storedDashboardAggregateVersion != Self.dashboardAggregateSchemaVersion {
+                guard let numericAggregateVersion = Int(storedDashboardAggregateVersion),
+                      numericAggregateVersion < Int(Self.dashboardAggregateSchemaVersion)! else {
+                    throw SQLiteDatabaseError(
+                        operation: "Open dashboard aggregate index",
+                        code: SQLITE_MISMATCH,
+                        message: "Dashboard aggregate schema \(storedDashboardAggregateVersion) is newer or unknown; refusing to overwrite it",
+                        path: driver.url.path
+                    )
+                }
+            }
+            if let storedDashboardPricingRevision,
+               !Self.knownDashboardAggregatePricingRevisions.contains(
+                   storedDashboardPricingRevision
+               ) {
+                throw SQLiteDatabaseError(
+                    operation: "Open dashboard aggregate index",
+                    code: SQLITE_MISMATCH,
+                    message: "Dashboard aggregate pricing contract \(storedDashboardPricingRevision) is unknown; refusing to overwrite it",
+                    path: driver.url.path
+                )
+            }
             let migrationNeedsSchemaFields = !destructiveRebuildRequired
                 && shouldReportMigration
             let migrationNeedsReplayBoundary = currentVersion != nil
@@ -1411,11 +1703,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 && (!sessionCatalogMetaExists
                     || !sessionCatalogEntriesExist
                     || sessionCatalogVersion != Self.sessionCatalogSchemaVersion)
+            let migrationNeedsDashboardAggregate = storedDashboardAggregateVersion
+                != Self.dashboardAggregateSchemaVersion
+                || storedDashboardPricingRevision != Self.dashboardAggregatePricingRevision
             let migrationTotal = [
                 migrationNeedsSchemaFields,
                 migrationNeedsReplayBoundary,
                 migrationNeedsLedger,
                 migrationNeedsSessionCatalog,
+                migrationNeedsDashboardAggregate,
             ].filter { $0 }.count
             let migrationMessagePrefix =
                 "正在升级索引（首次可能短暂占用 CPU/磁盘；原始数据不会丢失）"
@@ -1515,6 +1811,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     DROP TABLE IF EXISTS source_chunks;
                     DROP TABLE IF EXISTS source_fingerprints;
                     DROP TABLE IF EXISTS attribution_source_buckets;
+                    DROP TABLE IF EXISTS dashboard_5m;
+                    DROP TABLE IF EXISTS dashboard_source_5m;
+                    DROP TABLE IF EXISTS dashboard_source_totals;
                     DROP TABLE IF EXISTS events;
                     DROP TABLE IF EXISTS sources;
                     DELETE FROM schema_meta;
@@ -1568,6 +1867,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON events(timestamp, source_id, source_offset);
                 CREATE INDEX IF NOT EXISTS events_source_timestamp
                     ON events(source_id, timestamp, source_offset);
+                CREATE INDEX IF NOT EXISTS events_input_rank
+                    ON events(input_tokens, cached_input_tokens, timestamp, source_id, source_offset);
                 CREATE INDEX IF NOT EXISTS sources_session
                     ON sources(session_id, source_id);
                 CREATE INDEX IF NOT EXISTS sources_session_nocase
@@ -1589,6 +1890,78 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
                 CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
                     ON attribution_source_buckets(provenance_epoch, bucket_start);
+
+                CREATE TABLE IF NOT EXISTS dashboard_source_totals (
+                    source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    calls INTEGER NOT NULL,
+                    first_timestamp REAL,
+                    last_timestamp REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS dashboard_source_5m (
+                    source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                    bucket_start INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    input_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    calls INTEGER NOT NULL,
+                    PRIMARY KEY(source_id, bucket_start, model)
+                ) WITHOUT ROWID;
+
+                CREATE INDEX IF NOT EXISTS dashboard_source_5m_time
+                    ON dashboard_source_5m(bucket_start, source_id);
+
+                CREATE TABLE IF NOT EXISTS dashboard_5m (
+                    bucket_start INTEGER NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    input_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    calls INTEGER NOT NULL,
+                    PRIMARY KEY(bucket_start, model)
+                ) WITHOUT ROWID;
+
+                CREATE TABLE IF NOT EXISTS dashboard_turn_candidates (
+                    source_id INTEGER NOT NULL REFERENCES sources(source_id) ON DELETE CASCADE,
+                    source_offset INTEGER NOT NULL,
+                    session_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    total_tokens INTEGER NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    cached_input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    reasoning_output_tokens INTEGER NOT NULL,
+                    hit_rate REAL NOT NULL,
+                    uncached_tokens INTEGER NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    session_calls INTEGER NOT NULL,
+                    PRIMARY KEY(source_id, source_offset)
+                ) WITHOUT ROWID;
+
+                CREATE INDEX IF NOT EXISTS dashboard_turn_candidates_latest
+                    ON dashboard_turn_candidates(timestamp DESC, source_id DESC, source_offset DESC);
+
+                CREATE INDEX IF NOT EXISTS dashboard_turn_candidates_cache
+                    ON dashboard_turn_candidates(
+                        hit_rate,
+                        uncached_tokens DESC,
+                        input_tokens DESC,
+                        timestamp DESC
+                    );
+
+                CREATE INDEX IF NOT EXISTS dashboard_turn_candidates_session
+                    ON dashboard_turn_candidates(session_id);
                 """
             )
             // `CREATE TABLE IF NOT EXISTS` does not upgrade an attribution
@@ -1712,6 +2085,28 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 migrationCompleted += 1
                 replayBoundaryStageCompleted = true
                 reportMigration("replay 边界已提交")
+            }
+
+            if migrationNeedsDashboardAggregate {
+                reportMigration("正在升级统计聚合（只读取现有索引，不扫描原始会话）")
+                try connection.transaction { transaction in
+                    try rebuildDashboardAggregates(connection: transaction)
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES
+                            ('dashboard_aggregate_schema_version', ?),
+                            ('dashboard_aggregate_pricing_revision', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [
+                            .text(Self.dashboardAggregateSchemaVersion),
+                            .text(Self.dashboardAggregatePricingRevision),
+                        ]
+                    )
+                }
+                migrationCompleted += 1
+                reportMigration("统计聚合已提交")
             }
 
             if migrationNeedsSessionCatalog {
@@ -1867,6 +2262,344 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             CREATE INDEX IF NOT EXISTS attribution_source_buckets_time
                 ON attribution_source_buckets(provenance_epoch, bucket_start);
             """
+        )
+    }
+
+    private func rebuildDashboardAggregates(
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            DELETE FROM dashboard_source_5m;
+            DELETE FROM dashboard_source_totals;
+            DELETE FROM dashboard_5m;
+            DELETE FROM dashboard_turn_candidates;
+
+            INSERT INTO dashboard_source_5m(
+                source_id, bucket_start, model,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, calls
+            )
+            SELECT
+                source_id,
+                CAST(timestamp / 300 AS INTEGER) * 300,
+                COALESCE(model, ''),
+                SUM(input_tokens),
+                SUM(MIN(cached_input_tokens, input_tokens)),
+                SUM(output_tokens),
+                SUM(reasoning_output_tokens),
+                SUM(tokens),
+                COUNT(*)
+            FROM events
+            GROUP BY source_id, CAST(timestamp / 300 AS INTEGER), COALESCE(model, '');
+
+            INSERT INTO dashboard_source_totals(
+                source_id, session_id,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, calls,
+                first_timestamp, last_timestamp
+            )
+            SELECT
+                b.source_id,
+                MAX(s.session_id),
+                SUM(b.input_tokens),
+                SUM(b.cached_input_tokens),
+                SUM(b.output_tokens),
+                SUM(b.reasoning_output_tokens),
+                SUM(b.total_tokens),
+                SUM(b.calls),
+                MIN(e.first_timestamp),
+                MAX(e.last_timestamp)
+            FROM dashboard_source_5m b
+            JOIN sources s ON s.source_id = b.source_id
+            JOIN (
+                SELECT source_id, MIN(timestamp) AS first_timestamp, MAX(timestamp) AS last_timestamp
+                FROM events
+                GROUP BY source_id
+            ) e ON e.source_id = b.source_id
+            GROUP BY b.source_id;
+
+            INSERT INTO dashboard_5m(
+                bucket_start, model,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, calls
+            )
+            SELECT
+                bucket_start, model,
+                SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls)
+            FROM dashboard_source_5m
+            GROUP BY bucket_start, model;
+
+            WITH ranked AS (
+                SELECT
+                    e.source_id,
+                    e.source_offset,
+                    s.session_id,
+                    e.timestamp,
+                    e.tokens AS total_tokens,
+                    e.input_tokens,
+                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
+                    e.output_tokens,
+                    e.reasoning_output_tokens,
+                    CASE WHEN e.input_tokens > 0
+                        THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
+                        ELSE 0
+                    END AS hit_rate,
+                    e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached_tokens,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.session_id
+                        ORDER BY e.timestamp, e.source_id, e.source_offset
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY s.session_id) AS session_calls
+                FROM events e
+                JOIN sources s ON s.source_id = e.source_id
+            )
+            INSERT INTO dashboard_turn_candidates(
+                source_id, source_offset, session_id, timestamp,
+                total_tokens, input_tokens, cached_input_tokens,
+                output_tokens, reasoning_output_tokens,
+                hit_rate, uncached_tokens, turn_index, session_calls
+            )
+            SELECT
+                source_id, source_offset, session_id, timestamp,
+                total_tokens, input_tokens, cached_input_tokens,
+                output_tokens, reasoning_output_tokens,
+                hit_rate, uncached_tokens, turn_index, session_calls
+            FROM ranked;
+            """
+        )
+    }
+
+    private func refreshDashboardTurnCandidates(
+        sessionIDs: Set<String>,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        guard !sessionIDs.isEmpty else { return }
+        try connection.execute(
+            """
+            CREATE TEMP TABLE IF NOT EXISTS dashboard_dirty_sessions (
+                session_id TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            DELETE FROM dashboard_dirty_sessions;
+            """
+        )
+        let insertSession = try connection.prepare(
+            "INSERT OR IGNORE INTO dashboard_dirty_sessions(session_id) VALUES (?);"
+        )
+        for sessionID in sessionIDs.sorted() {
+            _ = try insertSession.execute([.text(sessionID)])
+        }
+        try connection.execute(
+            """
+            DELETE FROM dashboard_turn_candidates
+            WHERE session_id IN (SELECT session_id FROM dashboard_dirty_sessions);
+
+            WITH ranked AS (
+                SELECT
+                    e.source_id,
+                    e.source_offset,
+                    s.session_id,
+                    e.timestamp,
+                    e.tokens AS total_tokens,
+                    e.input_tokens,
+                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
+                    e.output_tokens,
+                    e.reasoning_output_tokens,
+                    CASE WHEN e.input_tokens > 0
+                        THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
+                        ELSE 0
+                    END AS hit_rate,
+                    e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached_tokens,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.session_id
+                        ORDER BY e.timestamp, e.source_id, e.source_offset
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY s.session_id) AS session_calls
+                FROM events e
+                JOIN sources s ON s.source_id = e.source_id
+                WHERE s.session_id IN (
+                    SELECT session_id FROM dashboard_dirty_sessions
+                )
+            )
+            INSERT INTO dashboard_turn_candidates(
+                source_id, source_offset, session_id, timestamp,
+                total_tokens, input_tokens, cached_input_tokens,
+                output_tokens, reasoning_output_tokens,
+                hit_rate, uncached_tokens, turn_index, session_calls
+            )
+            SELECT
+                source_id, source_offset, session_id, timestamp,
+                total_tokens, input_tokens, cached_input_tokens,
+                output_tokens, reasoning_output_tokens,
+                hit_rate, uncached_tokens, turn_index, session_calls
+            FROM ranked;
+
+            DELETE FROM dashboard_dirty_sessions;
+            """
+        )
+    }
+
+    private func refreshDashboardSourceAggregates(
+        sourceID: Int64,
+        sessionID: String,
+        affectedBuckets: ClosedRange<Int64>?,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        let previousBounds = try dashboardBucketBounds(
+            sourceID: sourceID,
+            connection: connection
+        )
+        var predicate = ""
+        var bindings: [SQLiteBinding] = [.int64(sourceID)]
+        if let affectedBuckets {
+            predicate = "AND CAST(timestamp / 300 AS INTEGER) * 300 BETWEEN ? AND ?"
+            bindings.append(.int64(affectedBuckets.lowerBound))
+            bindings.append(.int64(affectedBuckets.upperBound))
+            try connection.execute(
+                """
+                DELETE FROM dashboard_source_5m
+                WHERE source_id = ? AND bucket_start BETWEEN ? AND ?;
+                """,
+                bindings: [
+                    .int64(sourceID),
+                    .int64(affectedBuckets.lowerBound),
+                    .int64(affectedBuckets.upperBound),
+                ]
+            )
+        } else {
+            try connection.execute(
+                "DELETE FROM dashboard_source_5m WHERE source_id = ?;",
+                bindings: [.int64(sourceID)]
+            )
+        }
+        try connection.execute(
+            """
+            INSERT INTO dashboard_source_5m(
+                source_id, bucket_start, model,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, calls
+            )
+            SELECT
+                source_id,
+                CAST(timestamp / 300 AS INTEGER) * 300,
+                COALESCE(model, ''),
+                SUM(input_tokens),
+                SUM(MIN(cached_input_tokens, input_tokens)),
+                SUM(output_tokens),
+                SUM(reasoning_output_tokens),
+                SUM(tokens),
+                COUNT(*)
+            FROM events
+            WHERE source_id = ? \(predicate)
+            GROUP BY source_id, CAST(timestamp / 300 AS INTEGER), COALESCE(model, '');
+            """,
+            bindings: bindings
+        )
+        let currentBounds = try dashboardBucketBounds(
+            sourceID: sourceID,
+            connection: connection
+        )
+        let dirtyBounds = affectedBuckets ?? mergedDashboardBucketBounds(
+            previousBounds,
+            currentBounds
+        )
+        if let dirtyBounds {
+            try refreshDashboardFiveMinuteAggregates(
+                affectedBuckets: dirtyBounds,
+                connection: connection
+            )
+        }
+        try connection.execute(
+            "DELETE FROM dashboard_source_totals WHERE source_id = ?;",
+            bindings: [.int64(sourceID)]
+        )
+        try connection.execute(
+            """
+            INSERT INTO dashboard_source_totals(
+                source_id, session_id,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, calls,
+                first_timestamp, last_timestamp
+            )
+            SELECT
+                ?, ?,
+                SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls),
+                (SELECT MIN(timestamp) FROM events WHERE source_id = ?),
+                (SELECT MAX(timestamp) FROM events WHERE source_id = ?)
+            FROM dashboard_source_5m
+            WHERE source_id = ?
+            HAVING SUM(calls) > 0;
+            """,
+            bindings: [
+                .int64(sourceID),
+                .text(sessionID),
+                .int64(sourceID),
+                .int64(sourceID),
+                .int64(sourceID),
+            ]
+        )
+    }
+
+    private func dashboardBucketBounds(
+        sourceID: Int64,
+        connection: SQLiteDatabaseConnection
+    ) throws -> ClosedRange<Int64>? {
+        let row = try connection.readRows(
+            "SELECT MIN(bucket_start), MAX(bucket_start) FROM dashboard_source_5m WHERE source_id = ?;",
+            bindings: [.int64(sourceID)]
+        ) { ($0.int64(0), $0.int64(1)) }.first
+        guard let lower = row?.0, let upper = row?.1 else { return nil }
+        return lower...upper
+    }
+
+    private func mergedDashboardBucketBounds(
+        _ left: ClosedRange<Int64>?,
+        _ right: ClosedRange<Int64>?
+    ) -> ClosedRange<Int64>? {
+        switch (left, right) {
+        case let (left?, right?):
+            return min(left.lowerBound, right.lowerBound)...max(left.upperBound, right.upperBound)
+        case let (left?, nil):
+            return left
+        case let (nil, right?):
+            return right
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private func refreshDashboardFiveMinuteAggregates(
+        affectedBuckets: ClosedRange<Int64>,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            "DELETE FROM dashboard_5m WHERE bucket_start BETWEEN ? AND ?;",
+            bindings: [
+                .int64(affectedBuckets.lowerBound),
+                .int64(affectedBuckets.upperBound),
+            ]
+        )
+        try connection.execute(
+            """
+            INSERT INTO dashboard_5m(
+                bucket_start, model,
+                input_tokens, cached_input_tokens, output_tokens,
+                reasoning_output_tokens, total_tokens, calls
+            )
+            SELECT
+                bucket_start, model,
+                SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls)
+            FROM dashboard_source_5m
+            WHERE bucket_start BETWEEN ? AND ?
+            GROUP BY bucket_start, model;
+            """,
+            bindings: [
+                .int64(affectedBuckets.lowerBound),
+                .int64(affectedBuckets.upperBound),
+            ]
         )
     }
 
@@ -2478,7 +3211,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 current_user_prompt_offset,
                 assistant_start_offset,
                 current_model,
-                audit_chunk_index
+                audit_chunk_index,
+                session_id
             FROM sources
             WHERE path = ?
             LIMIT 1;
@@ -2518,7 +3252,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 current_user_prompt_offset,
                 assistant_start_offset,
                 current_model,
-                audit_chunk_index
+                audit_chunk_index,
+                session_id
             FROM sources
             ORDER BY source_id;
             """
@@ -2536,6 +3271,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         startingAt offset: Int32
     ) throws -> IndexedSource {
         guard let sourceID = row.int64(offset),
+              let sessionID = row.text(offset + 19),
               let rawSize = row.int64(offset + 1),
               rawSize >= 0,
               let modifiedAt = row.double(offset + 2),
@@ -2581,6 +3317,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         return IndexedSource(
             id: sourceID,
+            sessionID: sessionID,
             signature: SourceSignature(
                 size: UInt64(rawSize),
                 modifiedAt: modifiedAt,
@@ -2607,13 +3344,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         connection: SQLiteDatabaseConnection
     ) throws -> [SourceIdentity] {
         try connection.readRows(
-            "SELECT source_id, path FROM sources ORDER BY source_id;"
+            "SELECT source_id, path, session_id FROM sources ORDER BY source_id;"
         ) { row -> SourceIdentity? in
             guard let sourceID = row.int64(0),
                   let path = row.text(1) else {
                 return nil
             }
-            return SourceIdentity(id: sourceID, path: path)
+            return SourceIdentity(id: sourceID, path: path, sessionID: row.text(2))
         }.compactMap { $0 }
     }
 
@@ -2801,6 +3538,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         affectedBuckets:
                             firstAffectedAttributionBucket...lastAffectedAttributionBucket,
                         replacing: false,
+                        connection: transaction
+                    )
+                    try refreshDashboardSourceAggregates(
+                        sourceID: existing.id,
+                        sessionID: sessionID,
+                        affectedBuckets:
+                            firstAffectedAttributionBucket...lastAffectedAttributionBucket,
                         connection: transaction
                     )
                 }
@@ -3494,7 +4238,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                   !observedPaths.contains(path) else {
                 return nil
             }
-            return SourceIdentity(id: sourceID, path: path)
+            return SourceIdentity(id: sourceID, path: path, sessionID: nil)
         }.compactMap { $0 }
         let candidateIDs = candidates.map(\.id)
         if candidateIDs.count == 1, let sourceID = candidateIDs.first {
@@ -3824,6 +4568,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 affectedBuckets: nil,
                 replacing: !preserveExistingAttributionLedger,
                 preservingExistingMaximum: preserveExistingAttributionLedger,
+                connection: transaction
+            )
+            try refreshDashboardSourceAggregates(
+                sourceID: source.id,
+                sessionID: staged.job.sessionID,
+                affectedBuckets: nil,
                 connection: transaction
             )
         }

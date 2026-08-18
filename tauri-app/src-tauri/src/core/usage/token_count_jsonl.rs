@@ -928,17 +928,15 @@ impl PreciseRefreshCoordinator {
             .last_attempt_at = Some(Instant::now());
     }
 
-    fn summary_refresh_due(&self) -> bool {
+    fn summary_refresh_due(&self, success_ttl: StdDuration) -> bool {
         let now = Instant::now();
         let mut schedule = self
             .schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let success_expired = schedule
-            .last_success_at
-            .is_none_or(|completed| {
-                now.saturating_duration_since(completed) >= PRECISE_SUMMARY_REFRESH_TTL
-            });
+            .last_attempt_at
+            .is_none_or(|started| now.saturating_duration_since(started) >= success_ttl);
         let retry_due = schedule.last_error.is_none()
             || schedule.last_attempt_at.is_none_or(|attempt| {
                 now.saturating_duration_since(attempt)
@@ -949,7 +947,7 @@ impl PreciseRefreshCoordinator {
         // published, keep the existing cadence window even when the source
         // revision advances while it is running. Failed owners retain their
         // bounded retry interval. Manual refreshes bypass this gate through
-        // `enforce_reuse_window = false`.
+        // an absent summary refresh interval.
         if schedule.last_error.is_none() {
             if !success_expired {
                 return false;
@@ -1102,20 +1100,25 @@ fn request_precise_refresh(
     codex_home: &Path,
     intent: PreciseRefreshIntent,
 ) -> Result<Arc<PreciseRefreshFlight>, String> {
-    request_precise_refresh_inner(codex_home, intent, false)?
+    request_precise_refresh_inner(codex_home, intent, None)?
         .ok_or_else(|| "精确 token refresh explicit request 未创建 flight".to_string())
 }
 
 fn schedule_precise_refresh(
     codex_home: &Path,
+    refresh_interval: StdDuration,
 ) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
-    request_precise_refresh_inner(codex_home, PreciseRefreshIntent::Summary, true)
+    request_precise_refresh_inner(
+        codex_home,
+        PreciseRefreshIntent::Summary,
+        Some(refresh_interval),
+    )
 }
 
 fn request_precise_refresh_inner(
     codex_home: &Path,
     intent: PreciseRefreshIntent,
-    enforce_reuse_window: bool,
+    summary_refresh_interval: Option<StdDuration>,
 ) -> Result<Option<Arc<PreciseRefreshFlight>>, String> {
     let coordinator = precise_refresh_coordinator(codex_home)?;
     loop {
@@ -1160,10 +1163,11 @@ fn request_precise_refresh_inner(
             continue;
         }
         drop(current);
-        if enforce_reuse_window && !coordinator.summary_refresh_due() {
-            return Ok(None);
-        }
-        if !enforce_reuse_window {
+        if let Some(interval) = summary_refresh_interval {
+            if !coordinator.summary_refresh_due(interval) {
+                return Ok(None);
+            }
+        } else {
             coordinator.record_attempt();
         }
         let mut current = coordinator
@@ -1264,13 +1268,14 @@ fn run_precise_refresh(
 ) -> PreciseRefreshResult {
     begin_precise_dashboard_progress(canonical_home);
     let result = run_precise_refresh_inner(coordinator, canonical_home, flight);
-    let migration_pending = precise_dashboard_progress(canonical_home).phase == "migrating";
-    let message = match (&result.summary, &result.full) {
-        _ if migration_pending => "精确统计已更新，索引升级待下次启动继续",
-        (_, Some(Ok(_))) => "精确统计已更新",
-        (Ok(_), None) => "精确统计数值已更新",
-        _ => "精确统计失败，保留上次可信数据",
-    };
+    // The derived dashboard aggregate backfill also reports a `migrating`
+    // phase while it groups already-indexed SQLite events. That is not an
+    // unfinished exact-index migration and must not be presented as
+    // "continue on next launch". Keep this decision tied to the durable
+    // migration markers returned by the owner instead of inferring it from
+    // the shared UI progress phase.
+    let migration_pending = result.migration_pending;
+    let message = result.terminal_message();
     if migration_pending {
         // A pending migration is an expected resumable state, not a failed
         // precise read. Keep the phase visible so startup can distinguish
@@ -1428,6 +1433,16 @@ fn run_precise_refresh_inner(
             }
         }
     };
+    if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
+        flight.set_trace_status("aggregate_upgrade_error");
+        trace_precise_failure("aggregate_upgrade", &error);
+        return PreciseRefreshResult::failure(error);
+    }
+    // Capture the durable exact-index migration state after the scan and any
+    // disposable aggregate backfill. `ensure_dashboard_aggregates` may leave
+    // the shared progress phase as `migrating`, but that is only a derived
+    // SQLite rebuild when the exact index itself is already complete.
+    let migration_pending = index.migration_pending();
     let dashboard_revision = match index.dashboard_revision() {
         Ok(revision) => revision,
         Err(error) => {
@@ -1480,6 +1495,7 @@ fn run_precise_refresh_inner(
         return PreciseRefreshResult {
             summary,
             full: None,
+            migration_pending,
         };
     }
 
@@ -1503,6 +1519,7 @@ fn run_precise_refresh_inner(
                     Ok(full_summary)
                 },
                 full: Some(Ok(snapshot)),
+                migration_pending,
             }
         }
         Err(error) => {
@@ -1512,6 +1529,7 @@ fn run_precise_refresh_inner(
             PreciseRefreshResult {
                 summary,
                 full: Some(Err(error)),
+                migration_pending,
             }
         }
     }
@@ -1615,6 +1633,10 @@ enum PreciseRefreshIntent {
 struct PreciseRefreshResult {
     summary: Result<TokenUsageSummary, String>,
     full: Option<Result<DashboardSnapshot, String>>,
+    /// Durable exact-index migration state. This is intentionally separate
+    /// from the UI progress phase because aggregate backfill uses the same
+    /// phase name while it rebuilds disposable numeric tables.
+    migration_pending: bool,
 }
 
 impl PreciseRefreshResult {
@@ -1622,6 +1644,16 @@ impl PreciseRefreshResult {
         Self {
             summary: Err(error.clone()),
             full: Some(Err(error)),
+            migration_pending: false,
+        }
+    }
+
+    fn terminal_message(&self) -> &'static str {
+        match (&self.summary, &self.full) {
+            _ if self.migration_pending => "精确统计已更新，索引升级待下次启动继续",
+            (_, Some(Ok(_))) => "精确统计已更新",
+            (Ok(_), None) => "精确统计数值已更新",
+            _ => "精确统计失败，保留上次可信数据",
         }
     }
 }
@@ -1815,6 +1847,7 @@ mod precise_refresh_trace_tests {
         PreciseRefreshResult {
             summary: Ok(TokenUsageSummary::default()),
             full: None,
+            migration_pending: false,
         }
     }
 
@@ -1873,6 +1906,13 @@ mod precise_refresh_trace_tests {
     }
 
     #[test]
+    fn aggregate_backfill_is_not_reported_as_pending_exact_migration() {
+        let result = empty_result();
+        assert!(!result.migration_pending);
+        assert_eq!(result.terminal_message(), "精确统计数值已更新");
+    }
+
+    #[test]
     fn owner_trace_renders_explainable_terminal_statuses() {
         let cases = [
             ("summary_cache_hit", empty_result()),
@@ -1882,6 +1922,7 @@ mod precise_refresh_trace_tests {
                 PreciseRefreshResult {
                     summary: Err("error contains /private/source.jsonl".into()),
                     full: Some(Err("same error".into())),
+                    migration_pending: false,
                 },
             ),
             ("full_empty", empty_result()),
@@ -1940,6 +1981,7 @@ mod precise_refresh_trace_tests {
         let line = full_trace.render(&PreciseRefreshResult {
             summary: Ok(TokenUsageSummary::default()),
             full: Some(Err("diagnostic-only".into())),
+            migration_pending: false,
         });
         assert!(line.contains("after_summary_only=1"));
         assert!(line.contains("summary_gap_ms="));
@@ -1975,6 +2017,7 @@ mod precise_refresh_trace_tests {
             &PreciseRefreshResult {
                 summary: Ok(TokenUsageSummary::default()),
                 full: Some(Err("full owner".into())),
+                migration_pending: false,
             },
             Instant::now(),
         );
@@ -2002,9 +2045,21 @@ mod precise_refresh_trace_tests {
         });
 
         assert!(
-            !coordinator.summary_refresh_due(),
+            !coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL),
             "a watcher append after a successful owner must not launch a second owner immediately"
         );
+
+        {
+            let mut schedule = coordinator.schedule.lock().unwrap();
+            schedule.last_attempt_at = Some(
+                Instant::now() - PRECISE_SUMMARY_REFRESH_TTL - StdDuration::from_secs(1),
+            );
+            // Simulate an owner that completed only moments ago after using
+            // most of its cadence interval. The next wall-clock tick is due
+            // from request start and must not be skipped.
+            schedule.last_success_at = Some(Instant::now());
+        }
+        assert!(coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL));
 
         coordinator
             .schedule
@@ -2016,13 +2071,13 @@ mod precise_refresh_trace_tests {
             .lock()
             .unwrap()
             .last_attempt_at = Some(Instant::now());
-        assert!(!coordinator.summary_refresh_due());
+        assert!(!coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL));
         coordinator
             .schedule
             .lock()
             .unwrap()
             .last_attempt_at = Some(Instant::now() - PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL);
-        assert!(coordinator.summary_refresh_due());
+        assert!(coordinator.summary_refresh_due(PRECISE_SUMMARY_REFRESH_TTL));
 
         let flight = PreciseRefreshFlight::new(
             PreciseRefreshIntent::Summary,
@@ -2161,6 +2216,24 @@ pub struct TokenUsageSummary {
     pub today_requests: u32,
     #[serde(default)]
     pub today_model_breakdowns: Vec<ModelTokenBreakdown>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsageSummarySnapshot {
+    #[serde(flatten)]
+    pub summary: TokenUsageSummary,
+    pub dashboard_revision: u64,
+    pub aggregate_boundary_unix: i64,
+    pub generated_at: String,
+}
+
+impl std::ops::Deref for TokenUsageSummarySnapshot {
+    type Target = TokenUsageSummary;
+
+    fn deref(&self) -> &Self::Target {
+        &self.summary
+    }
 }
 
 /// Cheap source-change probe used by the dashboard cadence. The probe only
@@ -2310,6 +2383,20 @@ fn build_full_dashboard_after_precise_sync(
             }
         }
     };
+    let aggregate_generation = match index.published_generation() {
+        Ok(generation) => generation,
+        Err(error) => {
+            flight.set_trace_status("aggregate_generation_error");
+            return Err(error);
+        }
+    };
+    if let Err(error) = index.mark_dashboard_aggregate_published(
+        aggregate_generation,
+        data.settled_through,
+    ) {
+        flight.set_trace_status("aggregate_publish_error");
+        return Err(error);
+    }
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
@@ -2430,14 +2517,29 @@ pub fn acknowledge_attribution_safety(
 
 pub fn usage_summary_snapshot(
     codex_home: &Path,
-) -> Result<Option<TokenUsageSummary>, String> {
-    cached_dashboard_usage_summary_cache_only(codex_home)
+) -> Result<Option<TokenUsageSummarySnapshot>, String> {
+    cached_dashboard_usage_summary_snapshot_cache_only(codex_home)
 }
 
 pub fn schedule_usage_summary_refresh(
     codex_home: &Path,
 ) -> Result<(), String> {
-    let scheduled = schedule_precise_refresh(codex_home)?;
+    schedule_usage_summary_refresh_with_interval(codex_home, None)
+}
+
+pub fn schedule_usage_summary_refresh_with_interval(
+    codex_home: &Path,
+    refresh_interval_seconds: Option<u64>,
+) -> Result<(), String> {
+    let configured_seconds = match refresh_interval_seconds {
+        Some(value @ (60 | 150 | 300 | 600)) => value,
+        _ => PRECISE_SUMMARY_REFRESH_TTL.as_secs(),
+    };
+    // Measure cadence from request start, not owner completion. A slow owner
+    // must not make the next wall-clock tick miss and stretch the configured
+    // interval to two periods.
+    let reuse_window = StdDuration::from_secs(configured_seconds);
+    let scheduled = schedule_precise_refresh(codex_home, reuse_window)?;
     if let Some(flight) = scheduled.as_ref().filter(|flight| flight.is_done()) {
         return flight.wait().summary.map(|_| ());
     }
@@ -2490,6 +2592,23 @@ fn cached_dashboard_usage_summary_cache_only(
         return Ok(None);
     }
     cached_dashboard_usage_summary_at(&canonical_home, now_utc, local_offset)
+}
+
+fn cached_dashboard_usage_summary_snapshot_cache_only(
+    codex_home: &Path,
+) -> Result<Option<TokenUsageSummarySnapshot>, String> {
+    let local_offset = crate::core::localtime::local_offset();
+    let now_utc = OffsetDateTime::now_utc();
+    if let Some(summary) =
+        cached_dashboard_usage_summary_snapshot_at(codex_home, now_utc, local_offset)?
+    {
+        return Ok(Some(summary));
+    }
+    let canonical_home = precise_refresh_home(codex_home)?;
+    if canonical_home == codex_home {
+        return Ok(None);
+    }
+    cached_dashboard_usage_summary_snapshot_at(&canonical_home, now_utc, local_offset)
 }
 
 pub(crate) fn cached_dashboard_usage_summary(codex_home: &Path) -> Option<TokenUsageSummary> {
@@ -2564,6 +2683,7 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
             local_date: canonical_signature.local_date.clone(),
             utc_offset_seconds: canonical_signature.utc_offset_seconds,
             index_revision: index_identity.dashboard_revision,
+            aggregate_boundary_unix: canonical_signature.aggregate_boundary_unix,
         };
         if let Some(snapshot) = cached_dashboard_startup_snapshot(
             &raw_signature,
@@ -2721,6 +2841,7 @@ struct DashboardUsageScope {
 struct CachedUsageSummary {
     signature: DashboardScanSignature,
     summary: TokenUsageSummary,
+    generated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2732,6 +2853,11 @@ struct DashboardScanSignature {
     /// also advances when state_5.sqlite thread metadata is refreshed.
     #[serde(default)]
     index_revision: u64,
+    /// Latest closed UTC five-minute boundary (including the 15-second
+    /// settlement delay). This prevents a cached chart from keeping an old
+    /// time axis forever when no token event changed the exact generation.
+    #[serde(default)]
+    aggregate_boundary_unix: i64,
 }
 
 fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
@@ -2742,6 +2868,7 @@ fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> Dashboar
         local_date: local_date_string(now_utc.to_offset(local_offset)),
         utc_offset_seconds: local_offset.whole_seconds(),
         index_revision,
+        aggregate_boundary_unix: ExactUsageIndex::latest_eligible_aggregate_boundary(now_utc),
     }
 }
 
@@ -2797,6 +2924,60 @@ fn cached_dashboard_usage_summary_at(
                 && binding.physical_home_identity == physical_home_identity
         })
         .map(|cached| cached.summary))
+}
+
+fn cached_dashboard_usage_summary_snapshot_at(
+    codex_home: &Path,
+    now_utc: OffsetDateTime,
+    local_offset: UtcOffset,
+) -> Result<Option<TokenUsageSummarySnapshot>, String> {
+    hydrate_dashboard_aggregate_cache_once()?;
+    let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
+    let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
+    if let Some(cached) = summary_cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|cached| cached.signature.usage_scope() == expected_scope)
+    {
+        return Ok(Some(TokenUsageSummarySnapshot {
+            summary: cached.summary,
+            dashboard_revision: cached.signature.index_revision,
+            aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
+            generated_at: cached.generated_at,
+        }));
+    }
+    let cache = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
+    Ok(cache
+        .lock()
+        .ok()
+        .and_then(|guard| guard.aggregate.clone())
+        .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .filter(|cached| {
+            let Some(binding) = cached.persistent_binding.as_ref() else {
+                return true;
+            };
+            let Ok(canonical_home) = precise_refresh_home(codex_home) else {
+                return false;
+            };
+            let Ok(physical_home_identity) =
+                attribution_watch_root_physical_identity(&canonical_home)
+            else {
+                return false;
+            };
+            binding.canonical_home == canonical_home
+                && binding.physical_home_identity == physical_home_identity
+        })
+        .and_then(|cached| {
+            let generated_at = cached.snapshot.as_ref()?.generated_at.clone();
+            Some(TokenUsageSummarySnapshot {
+                summary: cached.summary,
+                dashboard_revision: cached.signature.index_revision,
+                aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
+                generated_at,
+            })
+        }))
 }
 
 impl DashboardScanSignature {
@@ -2959,6 +3140,7 @@ fn dashboard_scan_signature_at(
         local_date: local_date_string(now_utc.to_offset(local_offset)),
         utc_offset_seconds: local_offset.whole_seconds(),
         index_revision,
+        aggregate_boundary_unix: ExactUsageIndex::latest_eligible_aggregate_boundary(now_utc),
     }
 }
 
@@ -3269,7 +3451,13 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
 fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUsageSummary) {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
-        *guard = Some(CachedUsageSummary { signature, summary });
+        *guard = Some(CachedUsageSummary {
+            signature,
+            summary,
+            generated_at: OffsetDateTime::now_utc()
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
+        });
     }
 }
 

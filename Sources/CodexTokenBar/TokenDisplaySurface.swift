@@ -204,7 +204,9 @@ struct TokenDisplaySnapshot {
     ) -> TokenDisplaySnapshot {
         let calendar = Calendar.current
         let today = Date()
-        let todayUsage = store.snapshot.dailyUsage.first { calendar.isDate($0.date, inSameDayAs: today) }
+        let todayUsage = store.todayUsageSummary ?? store.snapshot.dailyUsage.first {
+            calendar.isDate($0.date, inSameDayAs: today)
+        }
 
         return TokenDisplaySnapshot(
             title: "全会话实时",
@@ -568,7 +570,7 @@ struct TokenDisplayCard: View {
         in pages: [PagedContentDescriptor],
         for row: FloatingPanelPresentationRow
     ) -> PagedContentDescriptor {
-        guard let first = pages.first else {
+        guard !pages.isEmpty else {
             return PagedContentDescriptor(group: row.group, modelPageIndex: 0)
         }
         let index = selectedPageIndexByRowID[row.id, default: 0]

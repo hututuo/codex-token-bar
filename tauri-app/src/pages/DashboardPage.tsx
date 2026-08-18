@@ -252,6 +252,9 @@ export function DashboardPage({
           codexHome={codexHome}
           customAccountDisplayName={customAccountDisplayName}
           generatedAt={dashboard.generatedAt}
+          aggregateCoveredAt={dashboard.preciseRecentUsageCoveredAt ?? null}
+          usageSummaryUpdatedAt={dashboard.usageSummaryUpdatedAt ?? dashboard.generatedAt}
+          usageSummaryFresh={dashboard.usageSummaryFresh === true}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
           onCustomAccountDisplayNameChange={onCustomAccountDisplayNameChange}

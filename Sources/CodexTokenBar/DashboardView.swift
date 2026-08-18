@@ -1023,6 +1023,7 @@ struct DashboardView: View {
             StatStrip(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
+                todayUsageSummary: store.todayUsageSummary,
                 todayModelBreakdowns: store.todayModelBreakdowns,
                 todayModelBreakdownsFresh: store.todayModelBreakdownsFresh,
                 planLabel: quotaStore.snapshot.planType ?? "",

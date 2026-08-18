@@ -21,6 +21,10 @@ interface DashboardHeaderProps {
   codexHome: CodexHomeStatus;
   customAccountDisplayName: string;
   generatedAt: string;
+  usageSummaryUpdatedAt?: string | null;
+  /** Light-summary publication is independent from five-minute chart progress. */
+  usageSummaryFresh?: boolean;
+  aggregateCoveredAt?: string | null;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
   onCustomAccountDisplayNameChange: (displayName: string) => Promise<void>;
@@ -59,6 +63,9 @@ export function DashboardHeader({
   codexHome,
   customAccountDisplayName,
   generatedAt,
+  usageSummaryUpdatedAt = null,
+  usageSummaryFresh,
+  aggregateCoveredAt = null,
   onCodexHomeChange,
   onCodexHomeReset,
   onCustomAccountDisplayNameChange,
@@ -110,15 +117,31 @@ export function DashboardHeader({
     };
   }, [moreMenuOpen]);
 
-  const timeLabel = new Intl.DateTimeFormat("zh-CN", {
+  const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-  }).format(new Date(generatedAt));
-  const activeProgress = preciseProgress && !["idle", "complete"].includes(preciseProgress.phase)
+  });
+  const timeLabel = timeFormatter.format(new Date(usageSummaryUpdatedAt ?? generatedAt));
+  const aggregateTimeLabel = aggregateCoveredAt === null
+    ? null
+    : new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(aggregateCoveredAt));
+  // Once the lightweight summary is current, do not let a slower chart/index
+  // owner make the primary status look unpublished. The chart timestamp below
+  // remains visible independently, while migration/scanning progress is still
+  // shown when the light summary has not published yet.
+  const activeProgress = preciseProgress && usageSummaryFresh !== true
+    && !["idle", "complete"].includes(preciseProgress.phase)
     ? preciseProgress
     : null;
-  const updatedLabel = refreshing ? "同步中" : timeLabel;
+  // `refreshing` includes the slower chart/index owner. Only the explicit
+  // light-summary state may replace the published summary timestamp.
+  const lightSummarySyncing = usageSummaryFresh === false
+    || (usageSummaryFresh === undefined && refreshing);
+  const updatedLabel = lightSummarySyncing ? "同步中" : timeLabel;
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
   const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
   const updateButtonLabel = appUpdateState.kind === "checking"
@@ -209,7 +232,13 @@ export function DashboardHeader({
             <small>本地统计</small>
             <strong>
               <i aria-hidden="true" className="precise-progress-dot" />
-              {activeProgress ? activeProgress.message : `更新于 ${updatedLabel}`}
+              {activeProgress
+                ? activeProgress.message
+                : lightSummarySyncing
+                  ? `摘要更新于 ${updatedLabel}`
+                  : aggregateTimeLabel === null
+                    ? `更新于 ${updatedLabel}`
+                    : `摘要 ${updatedLabel} · 图表至 ${aggregateTimeLabel}`}
               {activeProgress?.total != null ? ` ${activeProgress.completed}/${activeProgress.total}` : ""}
             </strong>
             {activeProgress ? (

@@ -78,6 +78,9 @@ final class CodexUsageStore: ObservableObject {
     }
 
     @Published private(set) var snapshot: DashboardSnapshot = .empty
+    /// Latest lightweight/full "today" totals. Kept outside `dailyUsage` so a
+    /// compact sync cannot partially rewrite the heatmap before aggregation.
+    @Published private(set) var todayUsageSummary: DayUsage?
     private(set) var todayModelBreakdowns: [ModelTokenBreakdown] = []
     /// True when today's model rows came from a successful compact or exact
     /// model-aware read. Rows can remain populated while the next refresh is
@@ -120,6 +123,7 @@ final class CodexUsageStore: ObservableObject {
     private let snapshotLoader: DashboardSnapshotLoading
     private var dataSource: CodexDataSource?
     private var timer: Timer?
+    private var aggregateTimer: Timer?
     private var initialPreciseTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var transientDatabaseRecoveryTask: Task<Void, Never>?
@@ -129,7 +133,12 @@ final class CodexUsageStore: ObservableObject {
     private(set) var sourceBindingGeneration = 0
     private var activeRefreshSourceID: String?
     private var snapshotSourceID: String?
-    private var refreshInterval: TimeInterval = 300
+    private var refreshInterval: TimeInterval = TimeInterval(
+        UsageRefreshCadenceSettings.defaultLightRefreshIntervalSeconds
+    )
+    private var aggregateIntervalMinutes =
+        UsageRefreshCadenceSettings.defaultBackgroundAggregateIntervalMinutes
+    private var mainDashboardVisible = false
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
     private var backgroundActivityEnabled = true
@@ -212,6 +221,7 @@ final class CodexUsageStore: ObservableObject {
             refreshInitialSnapshot()
             scheduleInitialPreciseRefresh()
             scheduleTimer()
+            scheduleAggregateTimer()
         }
     }
 
@@ -375,8 +385,14 @@ final class CodexUsageStore: ObservableObject {
     func setOnlyCompactSurfaceVisible(_ visible: Bool) {
         guard onlyCompactSurfaceVisible != visible else { return }
         onlyCompactSurfaceVisible = visible
-        // 仪表盘展开时立即全量刷新一次，补齐轻量期间未更新的时间序列/排行。
-        if !visible, didRunPreciseScan, backgroundActivityEnabled {
+        // The explicit cadence configuration owns dashboard-open catch-up.
+        // Keep this compatibility path only for a real visible dashboard and
+        // only when its published aggregate boundary is behind.
+        if !visible,
+           mainDashboardVisible,
+           didRunPreciseScan,
+           backgroundActivityEnabled,
+           aggregateIsBehind(now: Date()) {
             // Numeric publication is already a durable exact boundary.  Do
             // not cancel its trailing detail hydration merely because the
             // dashboard became visible; the completed detail phase is the
@@ -437,10 +453,12 @@ final class CodexUsageStore: ObservableObject {
         isCompactSummaryPending = false
         todayModelBreakdownsFresh = false
         todayModelBreakdownsDay = nil
+        todayUsageSummary = nil
         guard identityChanged else { return true }
 
         sourceIdentityGeneration += 1
         snapshot = .empty
+        todayUsageSummary = nil
         todayModelBreakdowns = []
         snapshotSourceID = nil
         didRunPreciseScan = false
@@ -463,7 +481,8 @@ final class CodexUsageStore: ObservableObject {
         includePreciseScan: Bool,
         forceFullTimeSeries: Bool = false,
         transientRecoveryAttempt: Int? = nil,
-        requestKind: RefreshRequestKind = .explicit
+        requestKind: RefreshRequestKind = .explicit,
+        compactSummaryOnly: Bool? = nil
     ) {
         if transientRecoveryAttempt == nil {
             transientDatabaseRecoveryTask?.cancel()
@@ -536,9 +555,10 @@ final class CodexUsageStore: ObservableObject {
                !preciseSessionMutationMonitoringHealthy {
                 configureSessionMutationMonitor()
             }
+            let incomingCompactOnly = compactSummaryOnly ?? onlyCompactSurfaceVisible
             if effectiveIncludePreciseScan,
                activeRefreshCompactOnly,
-               (effectiveForceFullTimeSeries || !onlyCompactSurfaceVisible) {
+               (effectiveForceFullTimeSeries || !incomingCompactOnly) {
                 pendingFullRefresh = true
             }
             trace?.end("skipped-refresh-in-flight")
@@ -577,6 +597,7 @@ final class CodexUsageStore: ObservableObject {
             isDetailHydrating = false
             isCompactSummaryPending = false
             snapshot = .empty
+            todayUsageSummary = nil
             todayModelBreakdowns = []
             todayModelBreakdownsFresh = false
             todayModelBreakdownsDay = nil
@@ -606,6 +627,7 @@ final class CodexUsageStore: ObservableObject {
         let sourceID = refreshSourceID(for: dataSource)
         if let snapshotSourceID, snapshotSourceID != sourceID {
             snapshot = .empty
+            todayUsageSummary = nil
             todayModelBreakdowns = []
             todayModelBreakdownsFresh = false
             todayModelBreakdownsDay = nil
@@ -615,12 +637,13 @@ final class CodexUsageStore: ObservableObject {
         }
         let isFirstLoad = !didFinishInitialLoad
         let needsCacheInitialization = effectiveIncludePreciseScan && !UsageCacheLifecycle.isCurrentCachePrepared
+        let prefersCompactSummary = compactSummaryOnly ?? onlyCompactSurfaceVisible
         activeRefreshCompactOnly = effectiveIncludePreciseScan
             && !effectiveForceFullTimeSeries
             && !isFirstLoad
-            && onlyCompactSurfaceVisible
-            && snapshot.hasPreciseTokenUsage
-            && snapshotSourceID == sourceID
+            && prefersCompactSummary
+            && (compactSummaryOnly == true
+                || (snapshot.hasPreciseTokenUsage && snapshotSourceID == sourceID))
         let startupRefreshRole = startupPreciseRefreshRole(
             for: requestKind,
             sourceID: sourceID,
@@ -629,14 +652,18 @@ final class CodexUsageStore: ObservableObject {
         )
         isRefreshing = true
         isDetailHydrating = false
-        preciseIndexProgress = PreciseIndexProgress(
-            phase: .preparing,
-            message: needsCacheInitialization
-                ? "正在计算索引规模，可能需要数分钟"
-                : "正在准备精确统计",
-            completed: 0,
-            total: nil
-        )
+        if activeRefreshCompactOnly {
+            preciseIndexProgress = .idle
+        } else {
+            preciseIndexProgress = PreciseIndexProgress(
+                phase: .preparing,
+                message: needsCacheInitialization
+                    ? "正在计算索引规模，可能需要数分钟"
+                    : "正在准备精确统计",
+                completed: 0,
+                total: nil
+            )
+        }
         // A pending marker belongs only to the last successful compact
         // summary. Any new refresh must establish its own freshness boundary.
         isCompactSummaryPending = false
@@ -644,16 +671,18 @@ final class CodexUsageStore: ObservableObject {
         let generation = refreshGeneration
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
-        isPreparingUsageCache = needsCacheInitialization
+        isPreparingUsageCache = needsCacheInitialization && !activeRefreshCompactOnly
         if isFirstLoad {
             isInitialLoading = true
             status = needsCacheInitialization
                 ? "正在建立本地统计缓存..."
                 : "正在读取本地索引..."
         } else {
-            status = needsCacheInitialization
-                ? "正在建立本地统计缓存..."
-                : "正在增量更新 token..."
+            status = activeRefreshCompactOnly
+                ? "正在轻量同步本地摘要..."
+                : (needsCacheInitialization
+                    ? "正在建立本地统计缓存..."
+                    : "正在增量更新 token...")
         }
 
         refreshTask = Task { @MainActor [weak self] in
@@ -728,11 +757,7 @@ final class CodexUsageStore: ObservableObject {
 
                 if effectiveIncludePreciseScan {
                     var compactSummaryApplied = false
-                    if !isFirstLoad,
-                       !effectiveForceFullTimeSeries,
-                       self.onlyCompactSurfaceVisible,
-                       self.snapshot.hasPreciseTokenUsage,
-                       self.snapshotSourceID == sourceID {
+                    if self.activeRefreshCompactOnly {
                         trace?.mark("compactSummary.begin")
                         // 轻量路径失败只回退全量，不让它变成整轮刷新失败。
                         let summary = try? await self.snapshotLoader.loadCompactSummary(
@@ -752,7 +777,16 @@ final class CodexUsageStore: ObservableObject {
                                 todayModelBreakdowns: summary.todayModelBreakdowns,
                                 sourceID: sourceID
                             )
-                            self.preciseTimeSeriesFresh = false
+                            self.todayUsageSummary = DayUsage(
+                                date: Calendar.current.startOfDay(for: summary.generatedAt),
+                                tokens: summary.todayTokens,
+                                calls: summary.todayCalls
+                            )
+                            // The lightweight summary advances only numeric
+                            // headline data. The previously published chart
+                            // remains a trusted settled snapshot; its own
+                            // coverage timestamp makes the older boundary
+                            // explicit instead of falsely marking it failed.
                             self.isCompactSummaryPending = true
                             self.didRunPreciseScan = true
                             self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: summary.generatedAt))"
@@ -762,6 +796,16 @@ final class CodexUsageStore: ObservableObject {
                             compactSummaryApplied = true
                         } else {
                             trace?.mark("compactSummary.unavailable")
+                            if compactSummaryOnly == true {
+                                // A lightweight owner is never allowed to
+                                // silently become a historical aggregation.
+                                // The aligned aggregate owner (or a manual
+                                // refresh) will retry the heavy path.
+                                self.status = self.hasDisplayableSnapshot(self.snapshot)
+                                    ? "\(source.originLabel) · 轻量同步暂不可用，保留上次可信数据"
+                                    : "\(source.originLabel) · 轻量摘要待读取，等待精确统计"
+                                compactSummaryApplied = true
+                            }
                         }
                     }
                     if !compactSummaryApplied {
@@ -887,9 +931,9 @@ final class CodexUsageStore: ObservableObject {
                     // Numeric aggregation already committed atomically. A
                     // detail-only error is not an exact-total failure, does
                     // not open continuity recovery, and does not stale totals.
-                        self.isDetailHydrating = false
-                        self.isCompactSummaryPending = false
-                        self.todayModelBreakdownsFresh = false
+                    self.isDetailHydrating = false
+                    self.isCompactSummaryPending = false
+                    self.todayModelBreakdownsFresh = false
                     self.status = "\(source.originLabel) · token_count · 数值已更新，会话明细暂不可用"
                     shouldScheduleTransientDatabaseRecovery = false
                     trace?.end("detail-failed", metadata: [
@@ -972,7 +1016,6 @@ final class CodexUsageStore: ObservableObject {
                     )
                 } ?? false
                 let shouldRunPendingFullRefresh = self.pendingFullRefresh
-                    && !self.onlyCompactSurfaceVisible
                     && self.backgroundActivityEnabled
                 self.pendingFullRefresh = false
                 self.activeRefreshCompactOnly = false
@@ -1163,6 +1206,9 @@ final class CodexUsageStore: ObservableObject {
                     : true)
         }
         self.snapshot = snapshot
+        todayUsageSummary = snapshot.dailyUsage.first {
+            Calendar.current.isDate($0.date, inSameDayAs: snapshot.generatedAt)
+        }
         snapshotSourceID = sourceID
     }
 
@@ -1202,6 +1248,7 @@ final class CodexUsageStore: ObservableObject {
         }
         todayModelBreakdowns = []
         self.todayModelBreakdownsDay = nil
+        todayUsageSummary = nil
     }
 
     private func prepareAfterObserverTakeover(for source: CodexDataSource) {
@@ -1555,23 +1602,9 @@ final class CodexUsageStore: ObservableObject {
         _ summary: CodexUsageAnalyzer.CompactUsageSummary,
         to previous: DashboardSnapshot
     ) -> DashboardSnapshot {
-        let calendar = Calendar.current
-        var dailyUsage = previous.dailyUsage
-        let todayEntry = DayUsage(
-            date: calendar.startOfDay(for: summary.generatedAt),
-            tokens: summary.todayTokens,
-            calls: summary.todayCalls
-        )
-        if let index = dailyUsage.firstIndex(where: {
-            calendar.isDate($0.date, inSameDayAs: summary.generatedAt)
-        }) {
-            dailyUsage[index] = todayEntry
-        } else {
-            dailyUsage.append(todayEntry)
-        }
         let stats = DashboardStats(
             totalTokens: summary.totalTokens,
-            peakDayTokens: max(previous.stats.peakDayTokens, summary.todayTokens),
+            peakDayTokens: previous.stats.peakDayTokens,
             peakThreadTokens: previous.stats.peakThreadTokens,
             currentStreakDays: previous.stats.currentStreakDays,
             longestStreakDays: previous.stats.longestStreakDays,
@@ -1587,7 +1620,7 @@ final class CodexUsageStore: ObservableObject {
         )
         return DashboardSnapshot(
             stats: stats,
-            dailyUsage: dailyUsage,
+            dailyUsage: previous.dailyUsage,
             recentBins: previous.recentBins,
             hourlyUsage: previous.hourlyUsage,
             pluginUsage: previous.pluginUsage,
@@ -1717,6 +1750,34 @@ final class CodexUsageStore: ObservableObject {
         scheduleTimer()
     }
 
+    /// Installs the independent lightweight and derived-aggregate cadences.
+    /// The light timer may advance the exact JSONL checkpoint and summary,
+    /// but only the wall-clock aligned aggregate timer rebuilds charts and
+    /// rankings.
+    func setUsageRefreshCadence(
+        _ settings: UsageRefreshCadenceSettings,
+        mainDashboardVisible: Bool
+    ) {
+        let nextLightInterval = TimeInterval(settings.usageLightRefreshIntervalSeconds)
+        let nextAggregateMinutes = mainDashboardVisible
+            ? settings.usageVisibleAggregateIntervalMinutes
+            : settings.usageBackgroundAggregateIntervalMinutes
+        let lightChanged = abs(refreshInterval - nextLightInterval) > 0.5
+        let aggregateChanged = aggregateIntervalMinutes != nextAggregateMinutes
+        let becameVisible = !self.mainDashboardVisible && mainDashboardVisible
+
+        refreshInterval = nextLightInterval
+        aggregateIntervalMinutes = nextAggregateMinutes
+        self.mainDashboardVisible = mainDashboardVisible
+
+        if lightChanged {
+            scheduleTimer()
+        }
+        if aggregateChanged || becameVisible || aggregateTimer == nil {
+            scheduleAggregateTimer(requestImmediateIfBehind: becameVisible)
+        }
+    }
+
     func setBackgroundActivityEnabled(_ enabled: Bool) {
         guard backgroundActivityEnabled != enabled else { return }
         backgroundActivityEnabled = enabled
@@ -1728,6 +1789,7 @@ final class CodexUsageStore: ObservableObject {
             sessionMutationMonitoringActive = true
             configureSessionMutationMonitor()
             scheduleTimer()
+            scheduleAggregateTimer(requestImmediateIfBehind: mainDashboardVisible)
             refresh()
         } else {
             sessionMutationMonitoringActive = false
@@ -1738,6 +1800,8 @@ final class CodexUsageStore: ObservableObject {
             pendingAttributionSafetyAckKey = nil
             timer?.invalidate()
             timer = nil
+            aggregateTimer?.invalidate()
+            aggregateTimer = nil
             initialPreciseTask?.cancel()
             initialPreciseTask = nil
             startupPreciseRefreshWindow = nil
@@ -1803,10 +1867,54 @@ final class CodexUsageStore: ObservableObject {
                 self.refresh(
                     includePreciseScan: true,
                     forceFullTimeSeries: self.preciseTimeSeriesContinuityLossID != nil,
-                    requestKind: .automatic
+                    requestKind: .automatic,
+                    compactSummaryOnly: self.preciseTimeSeriesContinuityLossID == nil
                 )
             }
         }
+    }
+
+    private func scheduleAggregateTimer(
+        requestImmediateIfBehind: Bool = false,
+        now: Date = Date()
+    ) {
+        aggregateTimer?.invalidate()
+        guard backgroundActivityEnabled else {
+            aggregateTimer = nil
+            return
+        }
+
+        if requestImmediateIfBehind, aggregateIsBehind(now: now) {
+            requestAggregateRefresh()
+        }
+
+        let fireDate = UsageRefreshCadencePolicy.nextAggregateFireDate(
+            after: now,
+            intervalMinutes: aggregateIntervalMinutes
+        )
+        let timer = Timer(fire: fireDate, interval: 0, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.backgroundActivityEnabled else { return }
+                self.requestAggregateRefresh()
+                self.scheduleAggregateTimer(now: Date())
+            }
+        }
+        aggregateTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func aggregateIsBehind(now: Date) -> Bool {
+        guard let published = snapshot.preciseTimeSeriesGeneratedAt else { return true }
+        return published < UsageRefreshCadencePolicy.latestEligibleBoundary(now: now)
+    }
+
+    private func requestAggregateRefresh() {
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
+            requestKind: .automatic,
+            compactSummaryOnly: false
+        )
     }
 
     // Test seam for the same automatic path used by the startup delay and
@@ -1818,6 +1926,19 @@ final class CodexUsageStore: ObservableObject {
             forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
             requestKind: .automatic
         )
+    }
+
+    func requestLightRefreshForTesting() {
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
+            requestKind: .automatic,
+            compactSummaryOnly: preciseTimeSeriesContinuityLossID == nil
+        )
+    }
+
+    func requestAggregateRefreshForTesting() {
+        requestAggregateRefresh()
     }
 
     private func updateDataSourceLabels() {

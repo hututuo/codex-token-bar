@@ -410,7 +410,7 @@ function floatingPagedContentDescriptors(
   snapshot: FloatingPanelSnapshot,
   priceModel: OfficialAPIPriceModel,
 ): Array<{ group: FloatingContentGroup; modelPageIndex: number }> {
-  return row.groups.flatMap((group) => {
+  return row.groups.flatMap((group): Array<{ group: FloatingContentGroup; modelPageIndex: number }> => {
     if (group !== "todayModelCost") {
       return [{ group, modelPageIndex: 0 }];
     }

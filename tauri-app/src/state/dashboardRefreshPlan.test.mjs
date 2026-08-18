@@ -100,7 +100,7 @@ test("system wake always refreshes quota but does not scan providers", () => {
   ]);
 });
 
-test("system wake refreshes usage and radar only when visible or stale", () => {
+test("system wake refreshes usage only when stale and radar when visible", () => {
   assert.deepEqual(makeDashboardRefreshPlan("systemWake", {
     providerVisible: false,
     dashboardVisible: true,
@@ -108,7 +108,6 @@ test("system wake refreshes usage and radar only when visible or stale", () => {
     radarVisible: true,
     radarStale: false,
   }), [
-    "preciseUsage",
     "forceQuota",
     "radar",
   ]);
@@ -170,7 +169,7 @@ test("Tauri wake context derives dashboard visibility and stale usage without pr
   });
 });
 
-test("system wake dispatches forced quota plus visible or stale refresh effects from Tauri context", () => {
+test("system wake dispatches quota and visible radar without duplicating a current aggregate", () => {
   const nowMs = Date.parse("2026-07-06T02:30:00.000Z");
   const intervalMs = 3 * 60 * 1000;
 
@@ -182,7 +181,7 @@ test("system wake dispatches forced quota plus visible or stale refresh effects 
       visibleRefreshIntervalMs: intervalMs,
     }),
   )), {
-    preciseUsage: 1,
+    preciseUsage: 0,
     forceQuota: 1,
     radar: 1,
     providerScan: 0,

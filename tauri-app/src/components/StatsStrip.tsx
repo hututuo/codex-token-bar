@@ -25,6 +25,8 @@ interface StatsStripProps {
   stats: DashboardStats;
   todayModelBreakdowns?: ModelTokenBreakdown[];
   todayTokens?: number;
+  /** Freshness of the lightweight today-model summary, independent of charts. */
+  usageSummaryFresh?: boolean;
   /**
    * The native `recentUsage24h` compatibility field is the full 30-day,
    * five-minute canvas. Use it for the precise current 7d model-cost scope;
@@ -52,6 +54,7 @@ function StatsStripView({
   stats,
   todayModelBreakdowns = [],
   todayTokens = 0,
+  usageSummaryFresh = false,
   recentUsageFiveMinute = [],
   sevenDayResetAtUnix = null,
   preciseDataFresh = true,
@@ -77,11 +80,13 @@ function StatsStripView({
     recent7dModelCost?.quality === "measured"
       ? (preciseDataFresh ? "current" : "stale")
       : "pending";
-  const todayModelDisplayState: ModelAttributionDisplayState = todayTokens <= 0
-    ? "current"
-    : todayModelBreakdowns.length > 0
-    ? (preciseDataFresh ? "current" : "stale")
-    : "pending";
+  const todayModelDisplayState: ModelAttributionDisplayState = !usageSummaryFresh
+    ? (todayModelBreakdowns.length > 0 ? "stale" : "pending")
+    : todayTokens <= 0
+      ? "current"
+      : todayModelBreakdowns.length > 0
+        ? "current"
+        : "pending";
   const modelCostRows = modelCostScope === "today"
     ? todayModelBreakdowns
     : modelCostScope === "lifetime"

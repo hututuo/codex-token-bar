@@ -36,7 +36,9 @@ import {
   mergeLiveRate,
   mergeLiveThreadOptions,
   markPreciseRecentUsageStale,
+  markUsageSummaryStale,
   mergePreciseDashboard,
+  mergeUsageSummary,
   mergeQuota,
   mergeResetCredits,
   pendingLiveRateSnapshot,
@@ -73,9 +75,15 @@ import { useRunningThreadSummary } from "./useRunningThreadSummary";
 import { hasStaleAccountQuotaData } from "./dashboardWarnings";
 import { nextQuotaResetRefreshDelayMs } from "../utils/quotaRefresh";
 import { useWakeRefresh } from "../utils/useWakeRefresh";
+import {
+  DEFAULT_USAGE_REFRESH_SETTINGS,
+  sanitizeUsageRefreshSettings,
+} from "../settings/usageRefreshCadence";
+import {
+  latestEligibleBoundary,
+  nextAggregateFireAtMs,
+} from "../utils/usageRefreshCadence";
 
-const DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
-const DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 export const MAIN_SOURCE_RECONCILE_INTERVAL_MS = 30_000;
 
 interface PreciseDashboardRequestIntent {
@@ -164,6 +172,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [preciseRequestInFlight, setPreciseRequestInFlight] = useState(false);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const [usageRefreshSettings, setUsageRefreshSettings] = useState(DEFAULT_USAGE_REFRESH_SETTINGS);
   const [sourceToken, setSourceToken] = useState<DashboardSourceToken | null>(null);
   const [sourceLoadGeneration, setSourceLoadGeneration] = useState(0);
   const [selectedLiveThreadId, setSelectedLiveThreadId] = useState("");
@@ -789,6 +798,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     void readAppSettings().then((settings) => {
       if (!cancelled && settings !== null) {
         setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+        setUsageRefreshSettings(sanitizeUsageRefreshSettings(settings));
       }
     }).catch(() => {
       // 保持默认刷新间隔；失败已由命令诊断链路记录并在横幅中展示。
@@ -796,6 +806,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
     void desktopPlatform.onAppSettingsChanged((settings) => {
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+      setUsageRefreshSettings(sanitizeUsageRefreshSettings(settings));
     }).then((listener) => {
       if (cancelled) {
         listener();
@@ -858,22 +869,122 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     };
   }, []);
 
+  const refreshUsageSummary = useCallback(async () => {
+    if (sourceToken === null
+      || !isSourceTokenCurrent(sourceToken)
+      || !source.readUsageSummarySnapshot) return;
+    setState((current) => isSourceTokenCurrent(sourceToken)
+      ? markUsageSummaryStale(current)
+      : current);
+    try {
+      const summary = await source.readUsageSummarySnapshot(
+        sourceToken,
+        usageRefreshSettings.usageLightRefreshIntervalSeconds,
+      );
+      if (summary !== null && isSourceTokenCurrent(sourceToken)) {
+        setState((current) => isSourceTokenCurrent(sourceToken)
+          ? mergeUsageSummary(current, summary)
+          : current);
+      }
+    } catch {
+      // Command diagnostics retain the failure. Keep the last trusted summary
+      // and let the next configured lightweight cadence retry it.
+    }
+  }, [
+    isSourceTokenCurrent,
+    source,
+    sourceToken,
+    usageRefreshSettings.usageLightRefreshIntervalSeconds,
+  ]);
+
   useEffect(() => {
-    if (!fastSnapshotLoaded || !dashboardReady || state.loading) {
-      return;
+    // The light owner is deliberately independent from the slower precise
+    // chart owner. It must continue while a five-minute aggregate scan is in
+    // flight so today's summary/model rows can publish without waiting for
+    // the chart/index progress to settle.
+    if (!fastSnapshotLoaded || !dashboardReady || sourceToken === null) {
+      return undefined;
+    }
+    void refreshUsageSummary();
+    const interval = window.setInterval(
+      () => { void refreshUsageSummary(); },
+      usageRefreshSettings.usageLightRefreshIntervalSeconds * 1_000,
+    );
+    return () => window.clearInterval(interval);
+  }, [
+    dashboardReady,
+    fastSnapshotLoaded,
+    refreshUsageSummary,
+    sourceToken,
+    usageRefreshSettings.usageLightRefreshIntervalSeconds,
+  ]);
+
+  useEffect(() => {
+    if (!fastSnapshotLoaded || !dashboardReady || state.loading || sourceToken === null) {
+      return undefined;
     }
 
-    const baselineIntervalMs = dashboardVisible
-      ? DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS
-      : DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS;
-    const interval = window.setInterval(() => {
-      setLoadGeneration((current) => current + 1);
-    }, baselineIntervalMs);
+    const intervalMinutes = dashboardVisible
+      ? usageRefreshSettings.usageVisibleAggregateIntervalMinutes
+      : usageRefreshSettings.usageBackgroundAggregateIntervalMinutes;
+    const nowMs = Date.now();
+    const eligibleBoundary = latestEligibleBoundary(nowMs / 1_000);
+    const coveredAt = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
+    const coveredSeconds = coveredAt === null ? Number.NaN : Date.parse(coveredAt) / 1_000;
 
-    return () => {
-      window.clearInterval(interval);
+    // A cached startup snapshot with no coverage is already handled by the
+    // initial precise owner. A visible dashboard with older trusted coverage
+    // catches up immediately; hidden surfaces wait for their background slot.
+    if (dashboardVisible
+      && coveredAt !== null
+      && (state.dashboard?.preciseRecentUsageFresh === false
+        || !Number.isFinite(coveredSeconds)
+        || coveredSeconds < eligibleBoundary)) {
+      const boundaryKey = String(eligibleBoundary);
+      requestPreciseRefresh(
+        true,
+        "cadence",
+        boundaryKey,
+        "aggregate-boundary",
+        boundaryKey,
+      );
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+    const scheduleNext = () => {
+      const scheduledFromMs = Date.now();
+      const fireAtMs = nextAggregateFireAtMs(scheduledFromMs, intervalMinutes);
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        const boundaryKey = String(latestEligibleBoundary(Date.now() / 1_000));
+        requestPreciseRefresh(
+          true,
+          "cadence",
+          boundaryKey,
+          "aggregate-boundary",
+          boundaryKey,
+        );
+        scheduleNext();
+      }, Math.max(0, fireAtMs - scheduledFromMs));
     };
-  }, [dashboardReady, dashboardVisible, fastSnapshotLoaded, state.loading]);
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    dashboardReady,
+    dashboardVisible,
+    fastSnapshotLoaded,
+    requestPreciseRefresh,
+    sourceToken,
+    state.dashboard?.preciseRecentUsageCoveredAt,
+    state.dashboard?.preciseRecentUsageFresh,
+    state.loading,
+    usageRefreshSettings.usageBackgroundAggregateIntervalMinutes,
+    usageRefreshSettings.usageVisibleAggregateIntervalMinutes,
+  ]);
 
   const quotaAutoRefreshPlan = useMemo(
     () => makeQuotaAutoRefreshPlan({
@@ -924,18 +1035,28 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   ]);
 
   const refreshAfterWake = useCallback(() => {
+    const eligibleBoundary = latestEligibleBoundary(Date.now() / 1_000);
     const context = makeDashboardWakeRefreshContext({
       dashboardGeneratedAt: state.dashboard?.generatedAt ?? null,
+      preciseCoveredAt: state.dashboard?.preciseRecentUsageCoveredAt ?? null,
+      preciseFresh: state.dashboard?.preciseRecentUsageFresh,
+      eligibleBoundarySeconds: eligibleBoundary,
       dashboardVisible,
       nowMs: Date.now(),
-      visibleRefreshIntervalMs: DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS,
+      visibleRefreshIntervalMs:
+        usageRefreshSettings.usageVisibleAggregateIntervalMinutes * 60 * 1_000,
     });
     const plan = makeDashboardRefreshPlan("systemWake", context);
     applyDashboardRefreshPlan(plan, {
       refreshPreciseUsage: () => {
-        wakeRefreshSequenceRef.current += 1;
-        const wakeKey = `wake-${wakeRefreshSequenceRef.current}`;
-        requestPreciseRefresh(true, "wake", wakeKey, "wake", wakeKey);
+        const boundaryKey = String(eligibleBoundary);
+        requestPreciseRefresh(
+          true,
+          "cadence",
+          boundaryKey,
+          "aggregate-boundary",
+          boundaryKey,
+        );
       },
       refreshQuota: () => {
         setForceNextQuotaLoad(true);
@@ -944,7 +1065,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       refreshRadar: () => setRadarRefreshGeneration((current) => current + 1),
       scanProviders: () => {},
     });
-  }, [dashboardVisible, requestPreciseRefresh, state.dashboard?.generatedAt]);
+  }, [
+    dashboardVisible,
+    requestPreciseRefresh,
+    state.dashboard?.generatedAt,
+    state.dashboard?.preciseRecentUsageCoveredAt,
+    state.dashboard?.preciseRecentUsageFresh,
+    usageRefreshSettings.usageVisibleAggregateIntervalMinutes,
+  ]);
 
   useWakeRefresh({
     active: fastSnapshotLoaded && dashboardReady && !state.loading,

@@ -18,7 +18,10 @@ export type PreciseDashboardRefreshReason =
   | "retry"
   | "unknown";
 
-export type PreciseDashboardDedupeDomain = "attribution-boundary" | "wake";
+export type PreciseDashboardDedupeDomain =
+  | "aggregate-boundary"
+  | "attribution-boundary"
+  | "wake";
 
 export type PreciseDashboardRequestRevision = string | number;
 
@@ -123,6 +126,16 @@ export interface TokenCacheUsage {
 
 export interface DashboardSnapshot {
   generatedAt: string;
+  /** Frontend publication time of the latest lightweight numeric summary. */
+  usageSummaryUpdatedAt?: string | null;
+  /** Latest lightweight totals; deliberately separate from chart buckets. */
+  usageSummary?: UsageSummarySnapshot | null;
+  /**
+   * Whether the latest lightweight summary owner has published successfully.
+   * This is intentionally independent from `preciseRecentUsageFresh`, which
+   * only describes the five-minute chart/aggregate coverage.
+   */
+  usageSummaryFresh?: boolean;
   /** Last native full exact-usage sync that covers the five-minute series. */
   preciseRecentUsageCoveredAt?: string | null;
   /** False for compact startup data, metadata-only data, and failed refreshes. */
@@ -191,4 +204,7 @@ export interface UsageSummarySnapshot {
   todayTokens: number;
   todayRequests: number;
   todayModelBreakdowns?: ModelTokenBreakdown[];
+  dashboardRevision?: number;
+  aggregateBoundaryUnix?: number;
+  generatedAt?: string;
 }

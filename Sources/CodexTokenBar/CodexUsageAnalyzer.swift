@@ -473,7 +473,13 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         }
         trace?.mark("snapshot-cache-miss")
 
-        let aggregationNow = preciseCoverageAt
+        let settledThrough = UsageRefreshCadencePolicy.latestEligibleBoundary(
+            now: preciseCoverageAt
+        )
+        // Builder bins are keyed by their start. Anchor just inside the last
+        // closed bucket so the still-open bucket is left for the next aggregate
+        // cycle while summary totals can still reflect the latest exact index.
+        let aggregationNow = settledThrough.addingTimeInterval(-0.001)
         var aggregation = UsageAggregationBuilder(calendar: calendar, now: aggregationNow)
         trace?.mark("threadMetadata.begin")
         let metadata = loadThreadMetadata()
@@ -482,6 +488,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         trace?.mark("parseSessions.begin")
         let synchronization: CodexUsageHistoryIndex.SynchronizationResult
         let durableAttributionEvents: [TokenCacheAttributionEvent]
+        let firstAggregatedEventAt: Date?
         do {
             synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
@@ -528,22 +535,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 durableAttributionEvents = []
             }
 
-            var currentSessionID: String?
-            var turnIndexInSession = 0
-            try historyIndex.forEachStoredEvent { stored in
-                if currentSessionID == stored.event.sessionID {
-                    turnIndexInSession += 1
-                } else {
-                    currentSessionID = stored.event.sessionID
-                    turnIndexInSession = 1
-                }
-                aggregation.consume(
-                    stored.event,
-                    stableID: stored.stableID,
-                    attributionSourceID: String(stored.sourceID),
-                    turnIndexInSession: turnIndexInSession
-                )
+            try historyIndex.forEachAggregatedUsageRow { row in
+                aggregation.consumeAggregate(row)
             }
+            try historyIndex.forEachAggregatedSessionRow { row in
+                aggregation.consumeSessionAggregate(row)
+            }
+            for turn in try historyIndex.boundedTurnCandidates() {
+                aggregation.considerTurnCandidate(turn)
+            }
+            firstAggregatedEventAt = try historyIndex.firstAggregatedEventAt()
         } catch {
             throw CodexUsageHistoryIndexError(operation: "同步或查询", underlying: error)
         }
@@ -614,7 +615,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             totalInputTokens: aggregatedCacheUsage.total.inputTokens,
             totalCachedInputTokens: aggregatedCacheUsage.total.cachedInputTokens,
             totalOutputTokens: aggregatedCacheUsage.total.outputTokens,
-            firstUsageAt: aggregation.firstEventAt
+            firstUsageAt: firstAggregatedEventAt ?? aggregation.firstEventAt
         )
         trace?.mark("stats.end", metadata: [
             "tokens": String(totalTokens),
@@ -662,12 +663,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // Numeric time-series coverage is complete at this boundary.
             // Event-level attribution/detail readiness remains represented by
             // `attributionEventsComplete` and is intentionally independent.
-            preciseTimeSeriesGeneratedAt: preciseCoverageAt,
+            preciseTimeSeriesGeneratedAt: settledThrough,
             generatedAt: Date()
         )
         let synchronizedSignature = signature.withAttributionState(
             provenanceEpoch: synchronization.provenanceEpoch,
             generation: synchronization.attributionGeneration
+        )
+        try historyIndex.markDashboardAggregatePublished(
+            exactGeneration: synchronization.attributionGeneration,
+            settledThrough: settledThrough
         )
         trace?.mark("numericPhase.persist.begin")
         Self.sessionEventCache.storeNumericSnapshot(
@@ -689,7 +694,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             cacheUsage: aggregatedCacheUsage,
             historyIndex: historyIndex,
             signature: synchronizedSignature,
-            preciseCoverageAt: preciseCoverageAt
+            preciseCoverageAt: settledThrough
         ))
     }
 }

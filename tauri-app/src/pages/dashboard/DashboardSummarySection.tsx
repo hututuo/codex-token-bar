@@ -77,7 +77,11 @@ export function DashboardSummarySection({
   sourceHomeIdentity,
   usageCacheInitializing,
 }: DashboardSummarySectionProps) {
-  const todayActivity = dashboard.activityDays.at(-1);
+  // Today's model card is a light-summary surface. Do not fall back to the
+  // activity-day/5-minute aggregate when that owner has not published yet;
+  // doing so would make a chart aggregate look like a current model reading.
+  const latestTodayTokens = dashboard.usageSummary?.todayTokens ?? 0;
+  const latestTodayModels = dashboard.usageSummary?.todayModelBreakdowns ?? [];
   return (
     <>
       <QuotaStrip
@@ -112,8 +116,9 @@ export function DashboardSummarySection({
         planLabel={dashboard.account.planLabel}
         preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
         stats={dashboard.stats}
-        todayModelBreakdowns={todayActivity?.modelBreakdowns ?? []}
-        todayTokens={todayActivity?.tokens ?? 0}
+        todayModelBreakdowns={latestTodayModels}
+        todayTokens={latestTodayTokens}
+        usageSummaryFresh={dashboard.usageSummaryFresh === true}
         recentUsageFiveMinute={dashboard.recentUsage24h}
         sevenDayResetAtUnix={dashboard.quota.sevenDay.resetsAtUnix}
         warnings={dashboard.warnings}

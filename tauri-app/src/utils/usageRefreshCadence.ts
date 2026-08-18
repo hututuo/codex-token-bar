@@ -175,27 +175,3 @@ export function aggregateInterval({
   ) ? minutes : fallback;
   return normalized * 60;
 }
-
-/**
- * Compatibility shim for callers that have not yet moved to the scheduler.
- * It deliberately no longer contains the former active 30-second cadence;
- * the root integration supplies the selected light/visible/background plans.
- */
-export function usageRefreshIntervalMs({
-  baselineIntervalMs,
-}: {
-  baselineIntervalMs: number;
-  lastLiveActivityAtMs?: number;
-  nowMs?: number;
-}): number {
-  return baselineIntervalMs;
-}
-
-/** @deprecated Kept only so the root integration can migrate independently. */
-export const ACTIVE_USAGE_REFRESH_INTERVAL_MS = USAGE_AGGREGATE_SETTLE_MS;
-/** @deprecated Kept only so the root integration can migrate independently. */
-export const LIVE_USAGE_ACTIVITY_HOLD_MS = USAGE_AGGREGATE_SETTLE_MS;
-/** @deprecated Live activity no longer changes cadence in this pure helper. */
-export function liveRateHasUsageRefreshActivity(_liveRate?: unknown): boolean {
-  return false;
-}

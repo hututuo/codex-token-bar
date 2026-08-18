@@ -322,8 +322,8 @@ final class ModelUsagePresentationTests: XCTestCase {
             rowWithBreakdown("gpt-5.6-sol", inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000),
             rowWithBreakdown("gpt-5.6-luna", inputTokens: 500_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 500_000),
             rowWithBreakdown("gpt-5.6-terra", inputTokens: 400_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 400_000),
-            rowWithBreakdown("codex-auto-review", inputTokens: 300_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 300_000),
-            rowWithBreakdown("gpt-5.5", inputTokens: 1, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1),
+            rowWithBreakdown("gpt-5.4", inputTokens: 300_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 300_000),
+            rowWithBreakdown("gpt-5.3-codex", inputTokens: 1, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1),
         ]
         let items = FloatingTodayModelUsagePresentation.items(
             from: rows,
@@ -334,7 +334,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(items.count, 5)
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.overflowDetailText(items: items),
-            "更多模型\n5.4 · 0 tokens · 占比 0% · $0.00"
+            "更多模型\n5.3 · 1 tokens · 占比 <0.1% · $0.00"
         )
         XCTAssertNil(
             FloatingTodayModelUsagePresentation.overflowDetailText(

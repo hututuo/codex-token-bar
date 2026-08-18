@@ -83,6 +83,7 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
         status: String,
         isRefreshing: Bool,
         generatedAt: Date,
+        aggregateCoveredAt: Date? = nil,
         progress: PreciseIndexProgress = .idle
     ) {
         if progress.isActive {
@@ -109,7 +110,11 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
             return
         }
 
-        text = "更新于 \(DateFormatter.statusString(from: generatedAt))"
+        if let aggregateCoveredAt {
+            text = "摘要 \(DateFormatter.statusString(from: generatedAt)) · 图表至 \(DateFormatter.hourMinute.string(from: aggregateCoveredAt))"
+        } else {
+            text = "更新于 \(DateFormatter.statusString(from: generatedAt))"
+        }
         needsAttention = false
         showsProgress = false
         progressFraction = nil
@@ -233,6 +238,7 @@ struct HeaderView: View {
             status: status,
             isRefreshing: isRefreshing,
             generatedAt: snapshot.generatedAt,
+            aggregateCoveredAt: snapshot.preciseTimeSeriesGeneratedAt,
             progress: preciseIndexProgress
         )
     }
@@ -681,6 +687,7 @@ struct StatStripStatusLinePresentation: Equatable {
 struct StatStrip: View, @preconcurrency Equatable {
     let snapshot: DashboardSnapshot
     var quotaSnapshot: AccountQuotaSnapshot? = nil
+    var todayUsageSummary: DayUsage? = nil
     var todayModelBreakdowns: [ModelTokenBreakdown] = []
     var todayModelBreakdownsFresh = false
     var showsModelCostRow = true
@@ -737,7 +744,7 @@ struct StatStrip: View, @preconcurrency Equatable {
     }
 
     private var todayTokens: Int {
-        snapshot.dailyUsage.last {
+        todayUsageSummary?.tokens ?? snapshot.dailyUsage.last {
             Calendar.current.isDateInToday($0.date)
         }?.tokens ?? 0
     }
@@ -780,6 +787,7 @@ struct StatStrip: View, @preconcurrency Equatable {
             && left.stats.totalCalls == right.stats.totalCalls
             && left.stats.firstUsageAt == right.stats.firstUsageAt
             && left.dailyUsage.last == right.dailyUsage.last
+            && lhs.todayUsageSummary == rhs.todayUsageSummary
             && left.cacheUsage.total == right.cacheUsage.total
             && left.cacheUsage.attributionProvenanceEpoch == right.cacheUsage.attributionProvenanceEpoch
             && left.cacheUsage.attributionGeneration == right.cacheUsage.attributionGeneration

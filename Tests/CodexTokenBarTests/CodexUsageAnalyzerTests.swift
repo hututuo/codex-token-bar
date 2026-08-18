@@ -4196,7 +4196,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
-        let now = Date()
+        // Keep both fixtures behind the currently publishable five-minute
+        // boundary. Open-bucket events belong to the lightweight summary and
+        // are intentionally deferred from exact attribution until closure.
+        let now = Date().addingTimeInterval(-10 * 60)
         try [
             try tokenCountLine(
                 timestamp: now.addingTimeInterval(-60),
@@ -4327,6 +4330,140 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try analyzer.load().stats.totalTokens, 150)
         XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
         XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+    }
+
+    func testDashboardAggregateV1UpgradesFromSQLiteWithoutReopeningJSONL() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageDashboardAggregateV1")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-aggregatev1"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        try tokenCountLine(
+            timestamp: Date().addingTimeInterval(-60),
+            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute("DELETE FROM dashboard_5m;")
+        try database.execute(
+            """
+            INSERT INTO schema_meta(key, value)
+            VALUES ('dashboard_aggregate_schema_version', '1')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
+        let upgraded = try analyzer.load()
+
+        XCTAssertEqual(upgraded.stats.totalTokens, 120)
+        XCTAssertEqual(
+            upgraded.cacheUsage.modelBreakdowns.reduce(0) { $0 + $1.breakdown.totalTokens },
+            120
+        )
+        XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+        XCTAssertEqual(CodexUsageAnalyzer.incrementalSessionParseCountForTesting, 0)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version';"
+            ) { $0.text(0) }.first,
+            "3"
+        )
+        XCTAssertEqual(try scalarInt("SELECT SUM(total_tokens) FROM dashboard_5m;", in: database), 120)
+    }
+
+    func testFutureDashboardAggregateVersionFailsClosedWithoutChangingRows() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageDashboardAggregateFuture")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-aggregate-future",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        _ = try analyzer.load()
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let rowsBefore = try scalarInt("SELECT COUNT(*) FROM dashboard_5m;", in: database)
+        try database.execute(
+            "UPDATE schema_meta SET value = '99' WHERE key = 'dashboard_aggregate_schema_version';"
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        XCTAssertThrowsError(try analyzer.load()) { error in
+            XCTAssertTrue(
+                error.localizedDescription.localizedCaseInsensitiveContains("aggregate")
+                    || error.localizedDescription.contains("聚合"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM dashboard_5m;", in: database), rowsBefore)
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version';"
+            ) { $0.text(0) }.first,
+            "99"
+        )
+    }
+
+    func testUnknownDashboardPricingRevisionFailsClosedBeforeRebuild() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageDashboardPricingFuture")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-pricing-future",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        _ = try analyzer.load()
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let rowsBefore = try scalarInt("SELECT COUNT(*) FROM dashboard_5m;", in: database)
+        try database.execute(
+            "UPDATE schema_meta SET value = 'future-price-v2' WHERE key = 'dashboard_aggregate_pricing_revision';"
+        )
+
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        XCTAssertThrowsError(try analyzer.load()) { error in
+            XCTAssertTrue(
+                error.localizedDescription.localizedCaseInsensitiveContains("pricing")
+                    || error.localizedDescription.contains("计价"),
+                error.localizedDescription
+            )
+        }
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM dashboard_5m;", in: database), rowsBefore)
     }
 
     func testSwiftIndexMigrationProgressIncludesLedgerAndDefersMarkersForUnresolvedReplay() throws {

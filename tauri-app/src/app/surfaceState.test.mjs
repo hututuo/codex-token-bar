@@ -169,34 +169,33 @@ test("dashboard data no longer subscribes command diagnostics into product state
   assert.equal(initialLoad.includes("getCommandDiagnosticsSnapshot"), false);
 });
 
-test("dashboard precise data refreshes every three minutes when visible and five minutes in background", async () => {
+test("dashboard uses configurable light and wall-clock aggregate cadences", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
 
-  assert.equal(dashboardData.includes("DASHBOARD_VISIBLE_AUTO_REFRESH_INTERVAL_MS = 3 * 60 * 1000"), true);
-  assert.equal(dashboardData.includes("DASHBOARD_BACKGROUND_AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000"), true);
+  assert.equal(dashboardData.includes("usageLightRefreshIntervalSeconds"), true);
+  assert.equal(dashboardData.includes("usageVisibleAggregateIntervalMinutes"), true);
+  assert.equal(dashboardData.includes("usageBackgroundAggregateIntervalMinutes"), true);
+  assert.equal(dashboardData.includes("nextAggregateFireAtMs"), true);
   assert.equal(dashboardData.includes("document.visibilityState"), true);
   assert.equal(dashboardData.includes("window.setInterval"), true);
-  assert.equal(dashboardData.includes("setLoadGeneration((current) => current + 1)"), true);
+  assert.equal(dashboardData.includes("window.setTimeout"), true);
 });
 
-test("live activity accelerates compact summaries without rebuilding the full dashboard", async () => {
+test("live activity does not create a hidden thirty-second usage cadence", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const compactSnapshot = await readFile(new URL("../surfaces/useCompactPanelSnapshot.ts", import.meta.url), "utf8");
   const cadence = await readFile(new URL("../utils/usageRefreshCadence.ts", import.meta.url), "utf8");
 
-  assert.equal(cadence.includes("ACTIVE_USAGE_REFRESH_INTERVAL_MS = 30_000"), true);
-  assert.equal(cadence.includes("LIVE_USAGE_ACTIVITY_HOLD_MS = 31_000"), true);
-  assert.equal(cadence.includes("liveRateHasUsageRefreshActivity"), true);
-  assert.equal(cadence.includes("usageRefreshIntervalMs"), true);
+  assert.equal(cadence.includes("ACTIVE_USAGE_REFRESH_INTERVAL_MS = 30_000"), false);
+  assert.equal(cadence.includes("LIVE_USAGE_ACTIVITY_HOLD_MS = 31_000"), false);
+  assert.equal(cadence.includes("liveRateHasUsageRefreshActivity"), false);
   assert.equal(dashboardData.includes("markLiveUsageActivity(liveRate)"), false);
   assert.equal(dashboardData.includes("usageRefreshIntervalMs({"), false);
-  assert.match(
-    dashboardData,
-    /window\.setInterval\(\(\) => \{\s*setLoadGeneration\(\(current\) => current \+ 1\);\s*\}, baselineIntervalMs\)/,
-  );
+  assert.equal(dashboardData.includes("usageLightRefreshIntervalSeconds * 1_000"), true);
+  assert.equal(compactSnapshot.includes("usageSummaryRefreshIntervalSeconds * 1_000"), true);
   assert.equal(compactSnapshot.includes("smoothLiveRateSnapshot(liveRate"), true);
-  assert.equal(compactSnapshot.includes("markLiveUsageActivity(smoothed)"), true);
-  assert.equal(compactSnapshot.includes("usageRefreshIntervalMs({"), true);
+  assert.equal(compactSnapshot.includes("markLiveUsageActivity(smoothed)"), false);
+  assert.equal(compactSnapshot.includes("usageRefreshIntervalMs({"), false);
 });
 
 test("dashboard quota refreshes independently through the shared cadence model", async () => {
@@ -380,7 +379,7 @@ test("live rate switch stops the shared stream and preserves other refreshes", a
   const styles = await readFile(new URL("../styles/global.css", import.meta.url), "utf8");
 
   assert.equal(displaySettings.includes("liveRateEnabled: true"), true);
-  assert.equal(dashboardData.includes("active: fastSnapshotLoaded && liveRateEnabled"), true);
+  assert.equal(dashboardData.includes("active: fastSnapshotLoaded && dashboardReady && !state.loading && liveRateEnabled"), true);
   assert.equal(dashboardData.includes("disabledLiveRateSnapshot(selectedLiveThreadId)"), true);
   assert.equal(apiClient.includes("readUsageSummarySnapshot"), true);
   assert.equal(dashboardClient.includes("read_usage_summary_snapshot"), true);

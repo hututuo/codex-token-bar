@@ -74,6 +74,7 @@ const dirtySources = new Set<string>();
 const MAX_PRECISE_SOURCE_CACHE_ENTRIES = 2;
 
 const SETTLED_FORCE_COALESCIBLE_REASONS: ReadonlySet<PreciseDashboardRefreshReason> = new Set([
+  "cadence",
   "quota",
   "catch-up",
   "attribution",
@@ -122,14 +123,16 @@ export function preciseDashboardForceRequestCanReuseSettled(
   const effectiveKey = dedupeDomain === undefined
     ? (dedupeKey ?? (revision === undefined ? undefined : String(revision)))
     : dedupeKey;
-  const attributionKeyIsCanonical = dedupeDomain !== "attribution-boundary"
+  const boundaryKeyIsCanonical = dedupeDomain !== "attribution-boundary"
+      && dedupeDomain !== "aggregate-boundary"
     || (effectiveKey !== undefined && canonicalBoundarySeconds(effectiveKey) !== undefined);
   return SETTLED_FORCE_COALESCIBLE_REASONS.has(reason)
     && effectiveKey !== undefined
     && effectiveKey.trim().length > 0
-    && attributionKeyIsCanonical
+    && boundaryKeyIsCanonical
     && ((dedupeDomain === "attribution-boundary"
       && (reason === "quota" || reason === "catch-up" || reason === "attribution"))
+      || (dedupeDomain === "aggregate-boundary" && reason === "cadence")
       || (dedupeDomain === "wake" && reason === "wake"));
 }
 
@@ -433,7 +436,8 @@ function coverageRequestForIdentity(
     request.revision,
     request.dedupeDomain,
     request.dedupeKey,
-  ) || request.dedupeDomain !== "attribution-boundary"
+  ) || (request.dedupeDomain !== "attribution-boundary"
+    && request.dedupeDomain !== "aggregate-boundary")
     || request.dedupeKey === undefined) {
     return undefined;
   }

@@ -172,7 +172,9 @@ export {
   mergeLiveThreadOptions,
   clearPreciseAttributionSafety,
   markPreciseRecentUsageStale,
+  markUsageSummaryStale,
   mergePreciseDashboard,
+  mergeUsageSummary,
   mergeQuota,
   mergeResetCredits,
 } from "./dashboardMergers";

@@ -111,13 +111,18 @@ export function acknowledgeAttributionSafety(
 
 export function readUsageSummarySnapshot(
   sourceToken: CodexHomeSourceToken,
+  refreshIntervalSeconds?: number,
 ): Promise<UsageSummarySnapshot | null> {
   // Native `Ok(None)` is an expected initializing/cache-miss state. A rejected
   // command remains a real I/O/schema/source failure and must stay visible in
   // diagnostics, so do not collapse both cases through callCommandOptional.
+  const args: Record<string, unknown> = { sourceToken };
+  if (refreshIntervalSeconds !== undefined) {
+    args.refreshIntervalSeconds = refreshIntervalSeconds;
+  }
   return callCommandStrict<UsageSummarySnapshot | null>(
     "read_usage_summary_snapshot",
-    { sourceToken },
+    args,
     8_000,
   );
 }

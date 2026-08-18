@@ -7,6 +7,7 @@ import type {
   QuotaHistoryDailyPoint,
   QuotaHistoryPoint,
   RecentUsagePoint,
+  UsageSummarySnapshot,
 } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
 import type { DashboardAppState } from "./dashboardState";
@@ -55,6 +56,16 @@ export function mergePreciseDashboard(
       },
     };
   }
+  const previousSummaryTime = previous?.usageSummary?.generatedAt
+    ? Date.parse(previous.usageSummary.generatedAt)
+    : Number.NaN;
+  const preciseTime = Date.parse(precise.generatedAt);
+  const keepNewerLightSummary = previous?.usageSummary !== null
+    && previous?.usageSummary !== undefined
+    && Number.isFinite(previousSummaryTime)
+    && Number.isFinite(preciseTime)
+    && previousSummaryTime > preciseTime;
+  const retainedLightSummary = keepNewerLightSummary ? previous?.usageSummary ?? null : null;
   return {
     ...state,
     dashboard:
@@ -62,6 +73,19 @@ export function mergePreciseDashboard(
         ? precise
         : {
             ...precise,
+            usageSummary: retainedLightSummary,
+            usageSummaryUpdatedAt: retainedLightSummary?.generatedAt
+              ?? precise.usageSummaryUpdatedAt
+              ?? precise.generatedAt,
+            usageSummaryFresh: retainedLightSummary !== null
+              ? previous?.usageSummaryFresh !== false
+              : false,
+            stats: retainedLightSummary === null
+              ? precise.stats
+              : {
+                  ...precise.stats,
+                  totalTokens: Math.max(0, retainedLightSummary.totalTokens),
+                },
             // An incomplete scan intentionally publishes no new coverage
             // watermark. Keep the previous trusted watermark so the UI can
             // continue showing last-good data with a stale indicator instead
@@ -105,6 +129,64 @@ export function mergePreciseDashboard(
             warnings: mergeWarnings(removeUsagePrecisionWarnings(previous.warnings), precise.warnings),
             diagnostics: mergeQuotaDiagnostics(previous.diagnostics ?? [], precise.diagnostics ?? []),
           },
+  };
+}
+
+/**
+ * Apply the lightweight exact-index summary without touching charts,
+ * rankings, quota history, or the last settled aggregate watermark.
+ */
+export function mergeUsageSummary(
+  state: DashboardAppState,
+  summary: UsageSummarySnapshot,
+  generatedAt = summary.generatedAt ?? new Date().toISOString(),
+): DashboardAppState {
+  const dashboard = state.dashboard;
+  if (dashboard === null) return state;
+  const incomingTime = Date.parse(generatedAt);
+  const previousSummaryTime = Date.parse(
+    dashboard.usageSummaryUpdatedAt ?? dashboard.usageSummary?.generatedAt ?? "",
+  );
+  // This lane has its own clock. A cache summary may legitimately predate a
+  // newer five-minute dashboard snapshot; comparing against dashboard.generatedAt
+  // would discard the only trusted model rows and leave today's card pending.
+  if (Number.isFinite(incomingTime)
+    && Number.isFinite(previousSummaryTime)
+    && incomingTime < previousSummaryTime) return state;
+
+  return {
+    ...state,
+    dashboard: {
+      ...dashboard,
+      usageSummaryUpdatedAt: generatedAt,
+      usageSummary: {
+        ...summary,
+        generatedAt,
+      },
+      usageSummaryFresh: true,
+      stats: {
+        ...dashboard.stats,
+        totalTokens: Math.max(0, summary.totalTokens),
+      },
+    },
+  };
+}
+
+/**
+ * Mark only the lightweight summary as in flight. Chart buckets and their
+ * precise coverage remain untouched; the model card can keep showing the last
+ * trusted rows with its own stale state while the compact owner retries.
+ */
+export function markUsageSummaryStale(state: DashboardAppState): DashboardAppState {
+  if (state.dashboard === null || state.dashboard.usageSummaryFresh === false) {
+    return state;
+  }
+  return {
+    ...state,
+    dashboard: {
+      ...state.dashboard,
+      usageSummaryFresh: false,
+    },
   };
 }
 

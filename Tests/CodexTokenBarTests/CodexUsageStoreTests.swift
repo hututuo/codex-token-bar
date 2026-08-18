@@ -393,92 +393,25 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(store.snapshot.cacheUsage.attributionGeneration, 12)
     }
 
-    func testVisibleDashboardRefreshesFasterThanCompactOnlySurfaces() throws {
-        var snapshot = LiveRateSnapshot()
-        snapshot.rollingTokensPerSecond = 0
-        snapshot.updatedAt = Date(timeIntervalSince1970: 2_000)
+    func testVisibleAndBackgroundAggregationUseExplicitSettingsWithoutLiveAcceleration() {
+        let settings = UsageRefreshCadenceSettings()
 
-        let visibleDashboard = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: false,
-            now: snapshot.updatedAt
+        XCTAssertEqual(
+            UsageRefreshCadencePolicy.aggregateInterval(
+                mainDashboardVisible: true,
+                settings: settings
+            ),
+            5 * 60,
+            accuracy: 0.001
         )
-        let compactOnly = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: true,
-            now: snapshot.updatedAt
+        XCTAssertEqual(
+            UsageRefreshCadencePolicy.aggregateInterval(
+                mainDashboardVisible: false,
+                settings: settings
+            ),
+            30 * 60,
+            accuracy: 0.001
         )
-
-        XCTAssertEqual(visibleDashboard.interval, 180, accuracy: 0.001)
-        XCTAssertEqual(compactOnly.interval, 300, accuracy: 0.001)
-    }
-
-    func testLiveActivityTemporarilyAcceleratesUsageRefresh() throws {
-        let now = Date(timeIntervalSince1970: 2_000)
-        var snapshot = LiveRateSnapshot()
-        snapshot.rollingTokensPerSecond = 12
-        snapshot.updatedAt = now.addingTimeInterval(-5)
-
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: false,
-            now: now
-        )
-
-        XCTAssertTrue(decision.isActive)
-        XCTAssertEqual(decision.interval, 30, accuracy: 0.001)
-        XCTAssertEqual(decision.recoveryDelay ?? 0, 25.25, accuracy: 0.001)
-    }
-
-    func testLiveActivityCadenceRestoresVisibleDashboardBaselineAfterWindowExpires() {
-        let now = Date(timeIntervalSince1970: 2_000)
-        var snapshot = LiveRateSnapshot()
-        snapshot.rollingTokensPerSecond = 12
-        snapshot.updatedAt = now.addingTimeInterval(-31)
-
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: false,
-            now: now
-        )
-
-        XCTAssertFalse(decision.isActive)
-        XCTAssertEqual(decision.interval, 180, accuracy: 0.001)
-        XCTAssertNil(decision.recoveryDelay)
-    }
-
-    func testLiveActivityCadenceRestoresCompactOnlyBaselineAfterWindowExpires() {
-        let now = Date(timeIntervalSince1970: 2_000)
-        var snapshot = LiveRateSnapshot()
-        snapshot.rollingTokensPerSecond = 12
-        snapshot.updatedAt = now.addingTimeInterval(-31)
-
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: true,
-            now: now
-        )
-
-        XCTAssertFalse(decision.isActive)
-        XCTAssertEqual(decision.interval, 300, accuracy: 0.001)
-        XCTAssertNil(decision.recoveryDelay)
-    }
-
-    func testZeroLiveRateDoesNotKeepUsageRefreshAccelerated() {
-        let now = Date(timeIntervalSince1970: 2_000)
-        var snapshot = LiveRateSnapshot()
-        snapshot.rollingTokensPerSecond = 0
-        snapshot.updatedAt = now
-
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: false,
-            now: now
-        )
-
-        XCTAssertFalse(decision.isActive)
-        XCTAssertEqual(decision.interval, 180, accuracy: 0.001)
-        XCTAssertNil(decision.recoveryDelay)
     }
 
     func testUsageRefreshStatusDescribesIncrementalTokenUpdate() throws {
@@ -2187,6 +2120,7 @@ final class CodexUsageStoreTests: XCTestCase {
         }
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
         XCTAssertTrue(store.preciseTimeSeriesFresh)
+        let chartDaysBeforeCompact = store.snapshot.dailyUsage
 
         // 仅紧凑 surface 可见：周期刷新走轻量 summary，不再全量重建。
         store.setOnlyCompactSurfaceVisible(true)
@@ -2198,23 +2132,28 @@ final class CodexUsageStoreTests: XCTestCase {
         var preciseCount = await loader.preciseLoadCount
         XCTAssertEqual(summaryCount, 1)
         XCTAssertEqual(preciseCount, 1)
-        let calendar = Calendar.current
-        let today = store.snapshot.dailyUsage.first {
-            calendar.isDate($0.date, inSameDayAs: Date())
-        }
-        XCTAssertEqual(today?.tokens, 300)
-        XCTAssertEqual(today?.calls, 7)
+        XCTAssertEqual(store.snapshot.dailyUsage, chartDaysBeforeCompact)
+        XCTAssertEqual(
+            store.todayUsageSummary?.tokens,
+            300,
+            "lightweight summary must not partially overwrite the heatmap day"
+        )
+        XCTAssertEqual(store.todayUsageSummary?.calls, 7)
         XCTAssertEqual(store.todayModelBreakdowns.first?.model, "gpt-5.6-luna")
         XCTAssertEqual(store.todayModelBreakdowns.first?.breakdown.cachedInputTokens, 200)
         // 重字段（时间序列）保留上次全量构建结果：旧日条目仍在、bins 未动。
-        XCTAssertEqual(store.snapshot.dailyUsage.count, 2)
+        XCTAssertEqual(store.snapshot.dailyUsage.count, 1)
         XCTAssertEqual(store.snapshot.recentBins.first?.tokens, 100)
         XCTAssertEqual(store.snapshot.preciseTimeSeriesGeneratedAt, firstPreciseCoverageAt)
-        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertTrue(store.isCompactSummaryPending)
 
         // 仪表盘展开：立即触发一次全量刷新补齐重字段。
         store.setOnlyCompactSurfaceVisible(false)
+        store.setUsageRefreshCadence(
+            UsageRefreshCadenceSettings(),
+            mainDashboardVisible: true
+        )
         await waitUntil("full refresh after expanding dashboard") {
             store.snapshot.stats.totalTokens == 2_000 && !store.isRefreshing
         }

@@ -179,6 +179,30 @@ Swift 的来源桶 key 同时包含 `sourceID + bucket_start + model`，因此 S
 - 模型总览/曲线分组：[dashboard_stats / usage_series_bundle](</Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard/tauri-app/src-tauri/src/core/usage/token_count_jsonl/exact_usage_index.rs:1680>)
 - 来源 ID 匿名化：[opaque_attribution_source_id](</Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard/tauri-app/src-tauri/src/core/usage/token_count_jsonl/exact_usage_index.rs:7795>)
 
+## 6.1 派生 dashboard 聚合契约（2026-08-18）
+
+派生聚合是可重建数值缓存，不是新的主事件真相。它有独立 schema 版本，不能通过提升主索引 schema 强迫旧用户重读 JSONL。
+
+| 逻辑实体 | Swift | Tauri | 对应规则 |
+|---|---|---|---|
+| 单来源累计 | `dashboard_source_totals(source_id, session_id, ...)` | `dashboard_file_totals(file_generation, file_path, session_id, ...)` | 都保存一个当前可见源文件的数值累计；身份键沿用各自主索引模型 |
+| 单来源五分钟桶 | `dashboard_source_5m(source_id, bucket_start, model, ...)` | `dashboard_file_5m(file_generation, file_path, bucket_start, model_key, model, ...)` | 都是 UTC epoch 对齐的五分钟桶；Tauri 用 `model_key` 给 NULL 模型提供稳定主键 |
+| 全局五分钟桶 | `dashboard_5m(bucket_start, model, ...)` | `dashboard_5m(file_generation, bucket_start, model_key, model, ...)` | Swift 只保留当前全局投影；Tauri 按发布 generation 保持原子切换 |
+| 派生 schema | `dashboard_aggregate_schema_version` | `dashboard_aggregate_schema_version` | 当前均为 3；独立于主 schema 递增 |
+| 主索引水位 | `dashboard_aggregate_exact_generation` | `dashboard_aggregate_exact_generation` | 表示派生行已经覆盖到的本端主索引代次，数值不能跨端比较 |
+| 完整画布水位 | `dashboard_aggregate_published_generation` + `dashboard_aggregate_settled_through` | 同名 metadata | 只有完整聚合事务完成后推进；轻量摘要不能推进 |
+| 计价版本 | `dashboard_aggregate_pricing_revision` | 同名 metadata | 表内只保存原始 Token；价格规则变化在读取时重新计价，不回写美元金额 |
+
+派生表的硬性不变量：
+
+- 首次从旧索引升级时只能查询现有 SQLite `events` 回填，不允许为了建派生表重读 JSONL。
+- append 只更新 checkpoint 之后的 source/file 与受影响桶；rewrite、截断、删除必须先移除旧贡献，再写新贡献。
+- Tauri 全局桶必须汇总 `published_files` 中每个 path 的最新可见版本，不能只汇总本轮 building generation，否则未变化文件会从总量中消失。
+- 轻量摘要可以比完整画布新，但只能更新累计、今日、今日调用和今日模型；不能改写 24h/7d/30d、热力图或排行。
+- 遇到高于当前支持的派生 schema 时，必须在正式扫描事务前 fail-closed，保留未知版本的 metadata 和所有行。
+- `dashboard_turn_candidates` 只保存数值候选和源偏移，不保存 prompt/assistant 正文；append、rewrite、delete 只按受影响 session 重建，正文仍在详情 hydration 阶段按源文件签名读取。
+- 派生层损坏或无法证明脏范围时，可以从本端现有 `events` 回填；只有主精确索引本身损坏时才进入 JSONL 恢复。
+
 ## 7. 会话目录字段契约
 
 | 逻辑字段 | Swift `session_catalog_entries` | Tauri `session_catalog_files` | 对应规则 |

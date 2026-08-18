@@ -85,6 +85,23 @@ const BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY: &str = "building_attribution_p
 // multi-hundred-thousand-event dashboard cache.
 const DASHBOARD_REVISION_KEY: &str = "dashboard_revision";
 const BUILDING_DASHBOARD_CHANGED_KEY: &str = "building_dashboard_changed";
+// Dashboard aggregates are disposable, derived data. Keep their version and
+// publication watermarks independent from the exact-event schema/parser so an
+// upgrade can rebuild them from SQLite without reopening JSONL bodies.
+const DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY: &str = "dashboard_aggregate_schema_version";
+const DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY: &str = "dashboard_aggregate_exact_generation";
+const DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY: &str =
+    "dashboard_aggregate_published_generation";
+const DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY: &str = "dashboard_aggregate_settled_through";
+const DASHBOARD_AGGREGATE_PRICING_REVISION_KEY: &str = "dashboard_aggregate_pricing_revision";
+const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 3;
+const DASHBOARD_AGGREGATE_PRICING_REVISION: &str = "raw-token-v1";
+
+fn is_known_dashboard_pricing_revision(value: &str) -> bool {
+    matches!(value, "raw-token-v0" | DASHBOARD_AGGREGATE_PRICING_REVISION)
+}
+const FIVE_MINUTE_INTERVAL_SECONDS: i64 = 5 * 60;
+const AGGREGATE_BOUNDARY_GRACE_SECONDS: i64 = 15;
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
 const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
@@ -277,6 +294,7 @@ pub(super) struct ExactDashboardData {
     pub(super) recent_usage_30d: Vec<RecentUsagePoint>,
     pub(super) cache_hit_ranking: Vec<CacheHitRankingItem>,
     pub(super) cache_usage: TokenCacheUsage,
+    pub(super) settled_through: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1204,6 +1222,10 @@ impl ExactUsageIndex {
         discovery: Option<PreciseScanDiscovery>,
         scan_total_override: Option<u64>,
     ) -> Result<u64, String> {
+        // The derived aggregate layer is disposable, but a newer build may
+        // have written a schema this binary does not understand. Reject it
+        // before the scan transaction can touch any aggregate rows.
+        self.validate_dashboard_aggregate_compatibility()?;
         let scan_total = scan_total_override.or_else(|| {
             discovery.as_ref().map(|plan| plan.candidate_total)
         });
@@ -1419,6 +1441,7 @@ impl ExactUsageIndex {
                 Some(MIGRATION_STAGE_TOTAL),
             );
         }
+        self.ensure_dashboard_aggregates(codex_home)?;
         Ok(revision)
     }
 
@@ -1614,10 +1637,31 @@ impl ExactUsageIndex {
             .query_row(
                 r#"
                 SELECT
-                    COALESCE(SUM(tokens), 0),
-                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM published_events
+                    COALESCE((
+                        SELECT SUM(t.total_tokens)
+                        FROM dashboard_file_totals t
+                        JOIN published_files f
+                          ON f.generation = t.file_generation
+                         AND f.path = t.file_path
+                    ), 0),
+                    COALESCE((
+                        SELECT SUM(b.total_tokens)
+                        FROM dashboard_5m b
+                        WHERE b.file_generation = COALESCE(
+                            (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'),
+                            0
+                        )
+                          AND b.bucket_start >= ?1 AND b.bucket_start < ?2
+                    ), 0),
+                    COALESCE((
+                        SELECT SUM(b.calls)
+                        FROM dashboard_5m b
+                        WHERE b.file_generation = COALESCE(
+                            (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'),
+                            0
+                        )
+                          AND b.bucket_start >= ?1 AND b.bucket_start < ?2
+                    ), 0)
                 "#,
                 params![start, end],
                 |row| {
@@ -1649,14 +1693,18 @@ impl ExactUsageIndex {
             SELECT
                 model,
                 COALESCE(SUM(input_tokens), 0),
-                COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                COALESCE(SUM(cached_input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
-                COALESCE(SUM(tokens), 0),
-                COUNT(*)
-            FROM published_events
-            WHERE timestamp >= ?1 AND timestamp < ?2
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(calls), 0)
+            FROM dashboard_5m b
+            WHERE b.file_generation = COALESCE(
+                (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'),
+                0
+            )
+              AND b.bucket_start >= ?1 AND b.bucket_start < ?2
             GROUP BY model
-            ORDER BY SUM(tokens) DESC
+            ORDER BY SUM(total_tokens) DESC
             "#,
             )
             .map_err(|error| format!("无法准备今日逐模型 token 汇总：{error}"))?;
@@ -1678,6 +1726,145 @@ impl ExactUsageIndex {
             .collect()
     }
 
+    /// Ensures the disposable numeric aggregate layer is complete for the
+    /// currently published exact generation. The first upgrade groups the
+    /// existing SQLite events once in one transaction; it never opens JSONL.
+    /// Normal append/rewrite transactions maintain the same tables per file.
+    pub(super) fn ensure_dashboard_aggregates(
+        &mut self,
+        codex_home: &Path,
+    ) -> Result<(), String> {
+        self.validate_dashboard_aggregate_compatibility()?;
+        let stored_version = metadata_i64(
+            &self.connection,
+            DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
+        )?;
+        let published_generation = metadata_i64(&self.connection, "published_generation")?
+            .unwrap_or(0);
+        let aggregate_generation = metadata_i64(
+            &self.connection,
+            DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
+        )?;
+        let pricing_revision = metadata_text(
+            &self.connection,
+            DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
+        )?;
+        if stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
+            && aggregate_generation == Some(published_generation)
+            && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
+        {
+            return Ok(());
+        }
+
+        let event_count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(nonnegative_u64)
+            .map_err(|error| format!("无法统计待回填的仪表盘事件：{error}"))?;
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "正在升级统计聚合；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失",
+            0,
+            Some(event_count.max(1)),
+        );
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("无法开始仪表盘聚合升级事务：{error}"))?;
+        rebuild_published_dashboard_aggregates(&transaction)?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
+            &DASHBOARD_AGGREGATE_SCHEMA_VERSION.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
+            &published_generation.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
+            DASHBOARD_AGGREGATE_PRICING_REVISION,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交仪表盘聚合升级：{error}"))?;
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "migrating",
+            "统计聚合升级完成，准备发布最新摘要",
+            event_count.max(1),
+            Some(event_count.max(1)),
+        );
+        Ok(())
+    }
+
+    fn validate_dashboard_aggregate_compatibility(&self) -> Result<(), String> {
+        let stored_version = metadata_i64(
+            &self.connection,
+            DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
+        )?;
+        if stored_version.is_some_and(|version| version > DASHBOARD_AGGREGATE_SCHEMA_VERSION) {
+            return Err(format!(
+                "仪表盘聚合索引版本 {:?} 高于当前支持版本 {}，已拒绝覆盖",
+                stored_version, DASHBOARD_AGGREGATE_SCHEMA_VERSION
+            ));
+        }
+        if let Some(pricing_revision) = metadata_text(
+            &self.connection,
+            DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
+        )? {
+            if !is_known_dashboard_pricing_revision(&pricing_revision) {
+                return Err(format!(
+                    "仪表盘聚合计价契约 {pricing_revision} 未被当前版本识别，已拒绝覆盖"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn latest_eligible_aggregate_boundary(now_utc: OffsetDateTime) -> i64 {
+        let delayed = now_utc
+            .unix_timestamp()
+            .saturating_sub(AGGREGATE_BOUNDARY_GRACE_SECONDS);
+        delayed - delayed.rem_euclid(FIVE_MINUTE_INTERVAL_SECONDS)
+    }
+
+    pub(super) fn mark_dashboard_aggregate_published(
+        &mut self,
+        exact_generation: u64,
+        settled_through: i64,
+    ) -> Result<(), String> {
+        let exact_generation = i64::try_from(exact_generation)
+            .map_err(|_| "精确索引代次超出 SQLite 支持范围".to_string())?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| format!("无法开始发布仪表盘聚合水位：{error}"))?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY,
+            &exact_generation.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY,
+            &settled_through.to_string(),
+        )?;
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
+            DASHBOARD_AGGREGATE_PRICING_REVISION,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("无法提交仪表盘聚合水位：{error}"))
+    }
+
     pub(super) fn dashboard_data(
         &self,
         codex_home: &Path,
@@ -1686,6 +1873,7 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
         let dashboard_started = Instant::now();
+        let settled_through = Self::latest_eligible_aggregate_boundary(now_utc);
         // The small temp published-files selector avoids copying every event,
         // but the view still reads main.events. Keep the complete dashboard in
         // one deferred WAL snapshot so a concurrent publisher cannot make the
@@ -1700,7 +1888,7 @@ impl ExactUsageIndex {
         let prepare_snapshot_ms = prepare_started.elapsed().as_millis();
 
         let activity_started = Instant::now();
-        let activity_days = self.activity_days(now_utc, local_offset)?;
+        let activity_days = self.activity_days(now_utc, local_offset, settled_through)?;
         let activity_days_ms = activity_started.elapsed().as_millis();
 
         let stats_started = Instant::now();
@@ -1709,7 +1897,7 @@ impl ExactUsageIndex {
 
         let usage_series_started = Instant::now();
         let (recent_usage_24h, recent_usage_7d, recent_usage_30d) =
-            self.usage_series_bundle(now_utc, local_offset)?;
+            self.usage_series_bundle(now_utc, local_offset, settled_through)?;
         let usage_series_ms = usage_series_started.elapsed().as_millis();
 
         let cache_ranking_started = Instant::now();
@@ -1739,6 +1927,7 @@ impl ExactUsageIndex {
             recent_usage_30d,
             cache_hit_ranking,
             cache_usage,
+            settled_through,
         };
         snapshot_transaction
             .commit()
@@ -1770,6 +1959,8 @@ impl ExactUsageIndex {
             .execute_batch(
                 r#"
                 DROP TABLE IF EXISTS temp.dashboard_session_rows;
+                DROP VIEW IF EXISTS temp.published_dashboard_5m;
+                DROP VIEW IF EXISTS temp.published_dashboard_file_totals;
                 DROP VIEW IF EXISTS temp.published_events;
                 DROP TABLE IF EXISTS temp.published_files;
                 -- Materialize only the small file-generation selector. The old
@@ -1791,6 +1982,25 @@ impl ExactUsageIndex {
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path;
 
+                CREATE TEMP VIEW published_dashboard_file_totals AS
+                SELECT t.*
+                FROM main.dashboard_file_totals t
+                JOIN published_files f
+                  ON f.generation = t.file_generation
+                 AND f.path = t.file_path;
+
+                CREATE TEMP VIEW published_dashboard_5m AS
+                SELECT b.*
+                FROM main.dashboard_5m b
+                WHERE b.file_generation = COALESCE(
+                    (
+                        SELECT CAST(value AS INTEGER)
+                        FROM main.metadata
+                        WHERE key = 'published_generation'
+                    ),
+                    0
+                );
+
                 -- Events are physically ordered by file generation/path. Fold
                 -- them to one small row per file first, then join the published
                 -- selector and group the roughly file-count-sized result by
@@ -1798,32 +2008,19 @@ impl ExactUsageIndex {
                 -- SQLite revisit events once per file and spill every event into
                 -- a session GROUP BY temp B-tree on large indexes.
                 CREATE TEMP TABLE dashboard_session_rows AS
-                WITH file_rows AS MATERIALIZED (
-                    SELECT
-                        e.file_generation,
-                        e.file_path,
-                        COUNT(*) AS calls,
-                        SUM(e.tokens) AS total_tokens,
-                        SUM(e.input_tokens) AS input_tokens,
-                        SUM(MIN(e.cached_input_tokens, e.input_tokens)) AS cached_tokens,
-                        SUM(e.output_tokens) AS output_tokens,
-                        MAX(e.timestamp) AS updated_at
-                    FROM main.events e
-                    GROUP BY e.file_generation, e.file_path
-                ),
-                session_rows AS (
+                WITH session_rows AS (
                     SELECT
                         f.session_id,
-                        SUM(fr.calls) AS calls,
-                        SUM(fr.total_tokens) AS total_tokens,
-                        SUM(fr.input_tokens) AS input_tokens,
-                        SUM(fr.cached_tokens) AS cached_tokens,
-                        SUM(fr.output_tokens) AS output_tokens,
-                        MAX(fr.updated_at) AS updated_at
-                    FROM file_rows fr
+                        SUM(t.calls) AS calls,
+                        SUM(t.total_tokens) AS total_tokens,
+                        SUM(t.input_tokens) AS input_tokens,
+                        SUM(t.cached_input_tokens) AS cached_tokens,
+                        SUM(t.output_tokens) AS output_tokens,
+                        MAX(t.last_timestamp) AS updated_at
+                    FROM published_dashboard_file_totals t
                     JOIN published_files f
-                      ON f.generation = fr.file_generation
-                     AND f.path = fr.file_path
+                      ON f.generation = t.file_generation
+                     AND f.path = t.file_path
                     GROUP BY f.session_id
                 )
                 SELECT
@@ -1849,11 +2046,13 @@ impl ExactUsageIndex {
         &self,
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
+        settled_through: i64,
     ) -> Result<Vec<ActivityDay>, String> {
         let today = now_utc.to_offset(local_offset).date();
         let start_day = today - Duration::days(364);
         let (start_unix, _) = local_day_bounds(start_day, local_offset)?;
-        let (_, end_unix) = local_day_bounds(today, local_offset)?;
+        let (_, local_end_unix) = local_day_bounds(today, local_offset)?;
+        let end_unix = local_end_unix.min(settled_through);
         let offset_seconds = local_offset.whole_seconds();
         let mut grouped = HashMap::new();
         let mut statement = self
@@ -1861,13 +2060,13 @@ impl ExactUsageIndex {
             .prepare(
                 r#"
                 SELECT
-                    strftime('%Y-%m-%d', timestamp, 'unixepoch', printf('%+d seconds', ?1)),
-                    COALESCE(SUM(tokens), 0),
-                    COUNT(*),
+                    strftime('%Y-%m-%d', bucket_start, 'unixepoch', printf('%+d seconds', ?1)),
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(calls), 0),
                     COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0)
-                FROM published_events
-                WHERE timestamp >= ?2 AND timestamp < ?3
+                    COALESCE(SUM(cached_input_tokens), 0)
+                FROM published_dashboard_5m
+                WHERE bucket_start >= ?2 AND bucket_start < ?3
                 GROUP BY 1
                 "#,
             )
@@ -1895,15 +2094,15 @@ impl ExactUsageIndex {
             .prepare(
                 r#"
                 SELECT
-                    strftime('%Y-%m-%d', timestamp, 'unixepoch', printf('%+d seconds', ?1)),
+                    strftime('%Y-%m-%d', bucket_start, 'unixepoch', printf('%+d seconds', ?1)),
                     model,
                     COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(cached_input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(tokens), 0),
-                    COUNT(*)
-                FROM published_events
-                WHERE timestamp >= ?2 AND timestamp < ?3
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(calls), 0)
+                FROM published_dashboard_5m
+                WHERE bucket_start >= ?2 AND bucket_start < ?3
                 GROUP BY 1, model
                 ORDER BY 1
                 "#,
@@ -1963,16 +2162,24 @@ impl ExactUsageIndex {
             .query_row(
                 r#"
                 SELECT
-                    COALESCE(SUM(tokens), 0),
-                    COUNT(*),
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(calls), 0),
                     COUNT(DISTINCT session_id),
                     COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(cached_input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
-                    MIN(timestamp),
-                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM published_events
+                    MIN(first_timestamp),
+                    COALESCE((
+                        SELECT SUM(total_tokens)
+                        FROM published_dashboard_5m
+                        WHERE bucket_start >= ?1 AND bucket_start < ?2
+                    ), 0),
+                    COALESCE((
+                        SELECT SUM(calls)
+                        FROM published_dashboard_5m
+                        WHERE bucket_start >= ?1 AND bucket_start < ?2
+                    ), 0)
+                FROM published_dashboard_file_totals
                 "#,
                 params![today_start, today_end],
                 |row| {
@@ -1996,8 +2203,8 @@ impl ExactUsageIndex {
                 r#"
                 SELECT COALESCE(MAX(total), 0)
                 FROM (
-                    SELECT SUM(tokens) AS total
-                    FROM published_events
+                    SELECT SUM(total_tokens) AS total
+                    FROM published_dashboard_file_totals
                     GROUP BY session_id
                 )
                 "#,
@@ -2013,11 +2220,11 @@ impl ExactUsageIndex {
                 SELECT
                     model,
                     COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(cached_input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(tokens), 0),
-                    COUNT(*)
-                FROM published_events
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(calls), 0)
+                FROM published_dashboard_5m
                 GROUP BY model
                 "#,
             )
@@ -2071,6 +2278,7 @@ impl ExactUsageIndex {
         &self,
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
+        settled_through: i64,
     ) -> Result<
         (
             Vec<RecentUsagePoint>,
@@ -2079,8 +2287,11 @@ impl ExactUsageIndex {
         ),
         String,
     > {
+        let latest_closed_start = settled_through.saturating_sub(FIVE_MINUTE_INTERVAL_SECONDS);
+        let aggregate_anchor = OffsetDateTime::from_unix_timestamp(latest_closed_start)
+            .unwrap_or(OffsetDateTime::UNIX_EPOCH);
         let five_minute_starts = aligned_bin_starts(
-            now_utc.unix_timestamp(),
+            latest_closed_start,
             LONG_RECENT_INTERVAL_SECONDS,
             LONG_RECENT_POINT_COUNT,
         );
@@ -2091,7 +2302,8 @@ impl ExactUsageIndex {
             .last()
             .copied()
             .unwrap_or(now_utc.unix_timestamp())
-            .saturating_add(LONG_RECENT_INTERVAL_SECONDS);
+            .saturating_add(LONG_RECENT_INTERVAL_SECONDS)
+            .min(settled_through);
 
         // Grouping by model is sufficient for both the model breakdown and
         // the overall totals: every event belongs to exactly one model group,
@@ -2104,15 +2316,15 @@ impl ExactUsageIndex {
             .prepare(
                 r#"
                 SELECT
-                    timestamp - (timestamp % ?1),
+                    bucket_start,
                     model,
                     COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(MIN(cached_input_tokens, input_tokens)), 0),
+                    COALESCE(SUM(cached_input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(tokens), 0),
-                    COUNT(*)
-                FROM published_events
-                WHERE timestamp >= ?2 AND timestamp < ?3
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(calls), 0)
+                FROM published_dashboard_5m
+                WHERE bucket_start >= ?2 AND bucket_start < ?3
                 GROUP BY 1, model
                 ORDER BY 1
                 "#,
@@ -2208,7 +2420,7 @@ impl ExactUsageIndex {
 
         Ok((
             usage_series_from_five_minute(
-                now_utc,
+                aggregate_anchor,
                 local_offset,
                 LONG_RECENT_INTERVAL_SECONDS,
                 LONG_RECENT_POINT_COUNT,
@@ -2218,7 +2430,7 @@ impl ExactUsageIndex {
                 &source_grouped,
             ),
             usage_series_from_five_minute(
-                now_utc,
+                aggregate_anchor,
                 local_offset,
                 HOURLY_INTERVAL_SECONDS,
                 SEVEN_DAY_POINT_COUNT,
@@ -2228,7 +2440,7 @@ impl ExactUsageIndex {
                 &HashMap::new(),
             ),
             usage_series_from_five_minute(
-                now_utc,
+                aggregate_anchor,
                 local_offset,
                 SIX_HOUR_INTERVAL_SECONDS,
                 THIRTY_DAY_POINT_COUNT,
@@ -2460,20 +2672,7 @@ impl ExactUsageIndex {
         latest_first: bool,
     ) -> Result<Vec<IndexedTurnCandidate>, String> {
         let turn_predicate = if later_turn_only {
-            r#"AND EXISTS (
-                SELECT 1
-                FROM published_events earlier
-                WHERE earlier.session_id = e.session_id
-                  AND (
-                    earlier.timestamp < e.timestamp
-                    OR (earlier.timestamp = e.timestamp AND earlier.file_path < e.file_path)
-                    OR (
-                        earlier.timestamp = e.timestamp
-                        AND earlier.file_path = e.file_path
-                        AND earlier.ordinal < e.ordinal
-                    )
-                  )
-            )"#
+            "AND c.turn_index > 1"
         } else {
             ""
         };
@@ -2486,48 +2685,40 @@ impl ExactUsageIndex {
             r#"
             WITH selected_turns AS (
                 SELECT
-                    e.*,
-                    CASE WHEN e.input_tokens > 0
-                        THEN MIN(e.cached_input_tokens, e.input_tokens) * 1.0 / e.input_tokens
+                    c.*,
+                    CASE WHEN c.input_tokens > 0
+                        THEN c.cached_input_tokens * 1.0 / c.input_tokens
                         ELSE 0
                     END AS hit_rate,
-                    e.input_tokens - MIN(e.cached_input_tokens, e.input_tokens) AS uncached
-                FROM published_events e
-                WHERE e.input_tokens >= ?1 {turn_predicate}
+                    c.input_tokens - c.cached_input_tokens AS uncached
+                FROM dashboard_turn_candidates c
+                WHERE c.aggregate_generation = COALESCE(
+                    (
+                        SELECT CAST(value AS INTEGER)
+                        FROM metadata
+                        WHERE key = 'published_generation'
+                    ),
+                    0
+                )
+                  AND c.input_tokens >= ?1 {turn_predicate}
                 {ordering}
                 LIMIT ?2
             )
             SELECT
-                turn_rows.id,
+                turn_rows.event_id,
                 turn_rows.file_path,
                 turn_rows.ordinal,
                 turn_rows.timestamp,
                 turn_rows.session_id,
-                turn_rows.tokens,
+                turn_rows.total_tokens,
                 turn_rows.input_tokens,
-                MIN(turn_rows.cached_input_tokens, turn_rows.input_tokens),
+                turn_rows.cached_input_tokens,
                 turn_rows.output_tokens,
                 turn_rows.user_prompt_start,
                 turn_rows.user_prompt_end,
                 turn_rows.assistant_response_start,
                 turn_rows.assistant_response_end,
-                1 + (
-                    SELECT COUNT(*)
-                    FROM published_events earlier
-                    WHERE earlier.session_id = turn_rows.session_id
-                      AND (
-                        earlier.timestamp < turn_rows.timestamp
-                        OR (
-                            earlier.timestamp = turn_rows.timestamp
-                            AND earlier.file_path < turn_rows.file_path
-                        )
-                        OR (
-                            earlier.timestamp = turn_rows.timestamp
-                            AND earlier.file_path = turn_rows.file_path
-                            AND earlier.ordinal < turn_rows.ordinal
-                        )
-                      )
-                ) AS turn_index_in_session,
+                turn_rows.turn_index AS turn_index_in_session,
                 COALESCE(
                     NULLIF(TRIM(m.title), ''),
                     '会话 ' || SUBSTR(turn_rows.session_id, 1, 8)
@@ -2539,7 +2730,9 @@ impl ExactUsageIndex {
                 f.changed_ns
             FROM selected_turns AS turn_rows
             LEFT JOIN session_metadata m ON m.session_id = turn_rows.session_id
-            JOIN published_files f ON f.path = turn_rows.file_path
+            JOIN files f
+              ON f.generation = turn_rows.source_file_generation
+             AND f.path = turn_rows.file_path
             {ordering}
             "#
         );
@@ -3920,6 +4113,11 @@ fn import_staged_full_rebuild(
                 validated.event_count, imported_events
             ));
         }
+        refresh_dashboard_file_aggregates(
+            &transaction,
+            generation,
+            &validated.job.path,
+        )?;
         transaction
             .execute(
                 r#"
@@ -4173,6 +4371,58 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
         "0",
     )?;
     transaction
+        .execute(
+            "DELETE FROM dashboard_5m WHERE file_generation = ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理新一轮全局五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation = ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理新一轮轮次候选聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_5m(
+                file_generation, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                ?1, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m
+            WHERE file_generation = ?2
+            "#,
+            params![generation, published],
+        )
+        .map_err(|error| format!("无法复制已发布全局五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_turn_candidates(
+                aggregate_generation, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            )
+            SELECT
+                ?1, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            FROM dashboard_turn_candidates
+            WHERE aggregate_generation = ?2
+            "#,
+            params![generation, published],
+        )
+        .map_err(|error| format!("无法复制已发布轮次候选聚合：{error}"))?;
+    transaction
         .commit()
         .map_err(|error| format!("无法持久化精确 token 同步状态：{error}"))?;
     Ok(generation)
@@ -4192,6 +4442,686 @@ fn ensure_active_build_generation(
 fn mark_dashboard_changed(transaction: &Transaction<'_>) -> Result<(), String> {
     set_metadata(transaction, "building_changed", "1")?;
     set_metadata(transaction, BUILDING_DASHBOARD_CHANGED_KEY, "1")
+}
+
+fn rebuild_published_dashboard_aggregates(
+    transaction: &Transaction<'_>,
+) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            r#"
+            DELETE FROM dashboard_file_5m;
+            DELETE FROM dashboard_file_totals;
+            DELETE FROM dashboard_5m;
+            DELETE FROM dashboard_turn_candidates;
+
+            INSERT INTO dashboard_file_totals(
+                file_generation,
+                file_path,
+                session_id,
+                total_tokens,
+                calls,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                first_timestamp,
+                last_timestamp
+            )
+            SELECT
+                e.file_generation,
+                e.file_path,
+                MAX(e.session_id),
+                COALESCE(SUM(e.tokens), 0),
+                COUNT(*),
+                COALESCE(SUM(e.input_tokens), 0),
+                COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
+                COALESCE(SUM(e.output_tokens), 0),
+                MIN(e.timestamp),
+                MAX(e.timestamp)
+            FROM events e
+            JOIN published_files f
+              ON f.generation = e.file_generation
+             AND f.path = e.file_path
+            GROUP BY e.file_generation, e.file_path;
+
+            INSERT INTO dashboard_file_5m(
+                file_generation,
+                file_path,
+                bucket_start,
+                model_key,
+                model,
+                total_tokens,
+                calls,
+                input_tokens,
+                cached_input_tokens,
+                output_tokens
+            )
+            SELECT
+                e.file_generation,
+                e.file_path,
+                e.timestamp - (e.timestamp % 300),
+                COALESCE(e.model, ''),
+                e.model,
+                COALESCE(SUM(e.tokens), 0),
+                COUNT(*),
+                COALESCE(SUM(e.input_tokens), 0),
+                COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
+                COALESCE(SUM(e.output_tokens), 0)
+            FROM events e
+            JOIN published_files f
+              ON f.generation = e.file_generation
+             AND f.path = e.file_path
+            GROUP BY
+                e.file_generation,
+                e.file_path,
+                e.timestamp - (e.timestamp % 300),
+                COALESCE(e.model, '');
+
+            INSERT INTO dashboard_5m(
+                file_generation, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                COALESCE(
+                    (
+                        SELECT CAST(value AS INTEGER)
+                        FROM metadata
+                        WHERE key = 'published_generation'
+                    ),
+                    0
+                ),
+                b.bucket_start,
+                b.model_key,
+                MAX(b.model),
+                SUM(b.total_tokens),
+                SUM(b.calls),
+                SUM(b.input_tokens),
+                SUM(b.cached_input_tokens),
+                SUM(b.output_tokens)
+            FROM dashboard_file_5m b
+            JOIN published_files f
+              ON f.generation = b.file_generation
+             AND f.path = b.file_path
+            GROUP BY b.bucket_start, b.model_key;
+            "#,
+        )
+        .map_err(|error| format!("无法从精确事件回填仪表盘聚合：{error}"))?;
+    let published_generation = metadata_i64(transaction, "published_generation")?.unwrap_or(0);
+    transaction
+        .execute(
+            r#"
+            WITH ranked AS (
+                SELECT
+                    e.id AS event_id,
+                    e.file_generation AS source_file_generation,
+                    e.file_path,
+                    e.ordinal,
+                    e.timestamp,
+                    e.session_id,
+                    e.tokens AS total_tokens,
+                    e.input_tokens,
+                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
+                    e.output_tokens,
+                    e.user_prompt_start,
+                    e.user_prompt_end,
+                    e.assistant_response_start,
+                    e.assistant_response_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.session_id
+                        ORDER BY e.timestamp, e.file_path, e.ordinal
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY e.session_id) AS session_calls
+                FROM events e
+                JOIN published_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+            )
+            INSERT INTO dashboard_turn_candidates(
+                aggregate_generation, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            )
+            SELECT
+                ?1, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            FROM ranked
+            WHERE input_tokens >= ?2
+            "#,
+            params![published_generation, CACHE_USAGE_MIN_INPUT_TOKENS],
+        )
+        .map_err(|error| format!("无法从精确事件回填轮次候选聚合：{error}"))?;
+    Ok(())
+}
+
+fn refresh_dashboard_file_aggregates(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    path: &str,
+) -> Result<(), String> {
+    let current_build_bounds = dashboard_file_bucket_bounds(transaction, generation, path)?;
+    let previous_published_bounds = transaction
+        .query_row(
+            r#"
+            SELECT MIN(bucket_start), MAX(bucket_start)
+            FROM dashboard_file_5m
+            WHERE file_path = ?1
+              AND file_generation = (
+                  SELECT MAX(generation)
+                  FROM files
+                  WHERE path = ?1
+                    AND generation < ?2
+                    AND deleted = 0
+              )
+            "#,
+            params![path, generation],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .map(|(start, end)| start.zip(end))
+        .map_err(|error| format!("无法读取单文件旧版五分钟聚合范围：{error}"))?;
+    let previous_bounds = merge_dashboard_bucket_bounds(
+        current_build_bounds,
+        previous_published_bounds,
+    );
+    transaction
+        .execute(
+            "DELETE FROM dashboard_file_5m WHERE file_generation = ?1 AND file_path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理单文件五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM dashboard_file_totals WHERE file_generation = ?1 AND file_path = ?2",
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法清理单文件总量聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_totals(
+                file_generation, file_path, session_id, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens,
+                first_timestamp, last_timestamp
+            )
+            SELECT
+                file_generation, file_path, MAX(session_id), SUM(tokens), COUNT(*),
+                SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
+                SUM(output_tokens), MIN(timestamp), MAX(timestamp)
+            FROM events
+            WHERE file_generation = ?1 AND file_path = ?2
+            GROUP BY file_generation, file_path
+            "#,
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法重建单文件总量聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_5m(
+                file_generation, file_path, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                file_generation,
+                file_path,
+                timestamp - (timestamp % 300),
+                COALESCE(model, ''),
+                model,
+                SUM(tokens),
+                COUNT(*),
+                SUM(input_tokens),
+                SUM(MIN(cached_input_tokens, input_tokens)),
+                SUM(output_tokens)
+            FROM events
+            WHERE file_generation = ?1 AND file_path = ?2
+            GROUP BY file_generation, file_path, timestamp - (timestamp % 300), COALESCE(model, '')
+            "#,
+            params![generation, path],
+        )
+        .map_err(|error| format!("无法重建单文件五分钟聚合：{error}"))?;
+    let current_bounds = dashboard_file_bucket_bounds(transaction, generation, path)?;
+    if let Some((start, end)) = merge_dashboard_bucket_bounds(previous_bounds, current_bounds) {
+        refresh_dashboard_5m_range(transaction, generation, start, end)?;
+    }
+    Ok(())
+}
+
+fn refresh_dashboard_turn_candidates_for_touched_sessions(
+    transaction: &Transaction<'_>,
+    generation: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"
+            WITH touched_paths AS (
+                SELECT DISTINCT path
+                FROM files
+                WHERE generation = ?1
+            ),
+            dirty_sessions AS (
+                SELECT DISTINCT session_id
+                FROM files
+                WHERE session_id <> ''
+                  AND path IN (SELECT path FROM touched_paths)
+            )
+            DELETE FROM dashboard_turn_candidates
+            WHERE aggregate_generation = ?1
+              AND session_id IN (SELECT session_id FROM dirty_sessions)
+            "#,
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理受影响会话的轮次候选聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            WITH touched_paths AS (
+                SELECT DISTINCT path
+                FROM files
+                WHERE generation = ?1
+            ),
+            dirty_sessions AS (
+                SELECT DISTINCT session_id
+                FROM files
+                WHERE session_id <> ''
+                  AND path IN (SELECT path FROM touched_paths)
+            ),
+            latest_files AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= ?1
+                GROUP BY path
+            ),
+            visible_files AS (
+                SELECT latest_files.path, latest_files.generation
+                FROM latest_files
+                JOIN files f
+                  ON f.path = latest_files.path
+                 AND f.generation = latest_files.generation
+                WHERE f.deleted = 0
+            ),
+            ranked AS (
+                SELECT
+                    e.id AS event_id,
+                    e.file_generation AS source_file_generation,
+                    e.file_path,
+                    e.ordinal,
+                    e.timestamp,
+                    e.session_id,
+                    e.tokens AS total_tokens,
+                    e.input_tokens,
+                    MIN(e.cached_input_tokens, e.input_tokens) AS cached_input_tokens,
+                    e.output_tokens,
+                    e.user_prompt_start,
+                    e.user_prompt_end,
+                    e.assistant_response_start,
+                    e.assistant_response_end,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY e.session_id
+                        ORDER BY e.timestamp, e.file_path, e.ordinal
+                    ) AS turn_index,
+                    COUNT(*) OVER (PARTITION BY e.session_id) AS session_calls
+                FROM events e
+                JOIN visible_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE e.session_id IN (SELECT session_id FROM dirty_sessions)
+            )
+            INSERT INTO dashboard_turn_candidates(
+                aggregate_generation, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            )
+            SELECT
+                ?1, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            FROM ranked
+            WHERE input_tokens >= ?2
+            "#,
+            params![generation, CACHE_USAGE_MIN_INPUT_TOKENS],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("无法更新受影响会话的轮次候选聚合：{error}"))
+}
+
+fn dashboard_file_bucket_bounds(
+    connection: &Connection,
+    generation: i64,
+    path: &str,
+) -> Result<Option<(i64, i64)>, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT MIN(bucket_start), MAX(bucket_start)
+            FROM dashboard_file_5m
+            WHERE file_generation = ?1 AND file_path = ?2
+            "#,
+            params![generation, path],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .map(|(start, end)| start.zip(end))
+        .map_err(|error| format!("无法读取单文件五分钟聚合范围：{error}"))
+}
+
+fn merge_dashboard_bucket_bounds(
+    left: Option<(i64, i64)>,
+    right: Option<(i64, i64)>,
+) -> Option<(i64, i64)> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some((left.0.min(right.0), left.1.max(right.1))),
+        (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
+        (None, None) => None,
+    }
+}
+
+fn refresh_dashboard_5m_range(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    start: i64,
+    end: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "DELETE FROM dashboard_5m WHERE file_generation = ?1 AND bucket_start BETWEEN ?2 AND ?3",
+            params![generation, start, end],
+        )
+        .map_err(|error| format!("无法清理全局五分钟聚合范围：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_5m(
+                file_generation, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                ?1,
+                b.bucket_start,
+                b.model_key,
+                MAX(b.model),
+                SUM(b.total_tokens),
+                SUM(b.calls),
+                SUM(b.input_tokens),
+                SUM(b.cached_input_tokens),
+                SUM(b.output_tokens)
+            FROM dashboard_file_5m b
+            JOIN (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= ?1
+                GROUP BY path
+            ) latest
+              ON latest.generation = b.file_generation
+             AND latest.path = b.file_path
+            JOIN files f
+              ON f.generation = latest.generation
+             AND f.path = latest.path
+             AND f.deleted = 0
+            WHERE b.bucket_start BETWEEN ?2 AND ?3
+            GROUP BY b.bucket_start, b.model_key
+            "#,
+            params![generation, start, end],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("无法更新全局五分钟聚合范围：{error}"))
+}
+
+fn rebuild_dashboard_5m_generation(
+    transaction: &Transaction<'_>,
+    generation: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "DELETE FROM dashboard_5m WHERE file_generation = ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理本轮全局五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_5m(
+                file_generation, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                ?1,
+                b.bucket_start,
+                b.model_key,
+                MAX(b.model),
+                SUM(b.total_tokens),
+                SUM(b.calls),
+                SUM(b.input_tokens),
+                SUM(b.cached_input_tokens),
+                SUM(b.output_tokens)
+            FROM dashboard_file_5m b
+            JOIN (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= ?1
+                GROUP BY path
+            ) latest
+              ON latest.generation = b.file_generation
+             AND latest.path = b.file_path
+            JOIN files f
+              ON f.generation = latest.generation
+             AND f.path = latest.path
+             AND f.deleted = 0
+            GROUP BY b.bucket_start, b.model_key
+            "#,
+            params![generation],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("无法重建本轮全局五分钟聚合：{error}"))
+}
+
+fn update_dashboard_append_aggregates(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    path: &str,
+    previous_ordinal: u64,
+) -> Result<(), String> {
+    let existing = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM dashboard_file_totals WHERE file_generation = ?1 AND file_path = ?2)",
+            params![generation, path],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查单文件增量聚合水位：{error}"))?;
+    if !existing {
+        return refresh_dashboard_file_aggregates(transaction, generation, path);
+    }
+    let previous_ordinal = checked_i64(previous_ordinal, "单文件聚合事件序号")?;
+    let affected_bounds = transaction
+        .query_row(
+            r#"
+            SELECT
+                MIN(timestamp - (timestamp % 300)),
+                MAX(timestamp - (timestamp % 300))
+            FROM events
+            WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
+            "#,
+            params![generation, path, previous_ordinal],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .map(|(start, end)| start.zip(end))
+        .map_err(|error| format!("无法读取单文件追加聚合范围：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_totals(
+                file_generation, file_path, session_id, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens,
+                first_timestamp, last_timestamp
+            )
+            SELECT
+                file_generation, file_path, MAX(session_id), SUM(tokens), COUNT(*),
+                SUM(input_tokens), SUM(MIN(cached_input_tokens, input_tokens)),
+                SUM(output_tokens), MIN(timestamp), MAX(timestamp)
+            FROM events
+            WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
+            GROUP BY file_generation, file_path
+            ON CONFLICT(file_generation, file_path) DO UPDATE SET
+                total_tokens = dashboard_file_totals.total_tokens + excluded.total_tokens,
+                calls = dashboard_file_totals.calls + excluded.calls,
+                input_tokens = dashboard_file_totals.input_tokens + excluded.input_tokens,
+                cached_input_tokens = dashboard_file_totals.cached_input_tokens + excluded.cached_input_tokens,
+                output_tokens = dashboard_file_totals.output_tokens + excluded.output_tokens,
+                first_timestamp = MIN(dashboard_file_totals.first_timestamp, excluded.first_timestamp),
+                last_timestamp = MAX(dashboard_file_totals.last_timestamp, excluded.last_timestamp)
+            "#,
+            params![generation, path, previous_ordinal],
+        )
+        .map_err(|error| format!("无法更新单文件增量总量聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_5m(
+                file_generation, file_path, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                file_generation,
+                file_path,
+                timestamp - (timestamp % 300),
+                COALESCE(model, ''),
+                model,
+                SUM(tokens),
+                COUNT(*),
+                SUM(input_tokens),
+                SUM(MIN(cached_input_tokens, input_tokens)),
+                SUM(output_tokens)
+            FROM events
+            WHERE file_generation = ?1 AND file_path = ?2 AND ordinal > ?3
+            GROUP BY file_generation, file_path, timestamp - (timestamp % 300), COALESCE(model, '')
+            ON CONFLICT(file_generation, file_path, bucket_start, model_key) DO UPDATE SET
+                total_tokens = dashboard_file_5m.total_tokens + excluded.total_tokens,
+                calls = dashboard_file_5m.calls + excluded.calls,
+                input_tokens = dashboard_file_5m.input_tokens + excluded.input_tokens,
+                cached_input_tokens = dashboard_file_5m.cached_input_tokens + excluded.cached_input_tokens,
+                output_tokens = dashboard_file_5m.output_tokens + excluded.output_tokens,
+                model = excluded.model
+            "#,
+            params![generation, path, previous_ordinal],
+        )
+        .map_err(|error| format!("无法更新单文件增量五分钟聚合：{error}"))?;
+    if let Some((start, end)) = affected_bounds {
+        refresh_dashboard_5m_range(transaction, generation, start, end)?;
+    }
+    Ok(())
+}
+
+fn copy_dashboard_file_aggregates(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    checkpoint_generation: i64,
+    path: &str,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_totals(
+                file_generation, file_path, session_id, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens,
+                first_timestamp, last_timestamp
+            )
+            SELECT ?1, file_path, session_id, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens,
+                first_timestamp, last_timestamp
+            FROM dashboard_file_totals
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint_generation, path],
+        )
+        .map_err(|error| format!("无法复制单文件总量聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_5m(
+                file_generation, file_path, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT ?1, file_path, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_file_5m
+            WHERE file_generation = ?2 AND file_path = ?3
+            "#,
+            params![generation, checkpoint_generation, path],
+        )
+        .map_err(|error| format!("无法复制单文件五分钟聚合：{error}"))?;
+    Ok(())
+}
+
+fn backfill_missing_dashboard_aggregates_for_generation(
+    transaction: &Transaction<'_>,
+    generation: i64,
+) -> Result<(), String> {
+    // This is a bounded repair over files changed in the current building
+    // generation only. It is not a historical fallback and never touches
+    // unchanged generations or JSONL bodies.
+    let inserted_totals = transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_totals(
+                file_generation, file_path, session_id, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens,
+                first_timestamp, last_timestamp
+            )
+            SELECT
+                e.file_generation, e.file_path, MAX(e.session_id), SUM(e.tokens), COUNT(*),
+                SUM(e.input_tokens), SUM(MIN(e.cached_input_tokens, e.input_tokens)),
+                SUM(e.output_tokens), MIN(e.timestamp), MAX(e.timestamp)
+            FROM events e
+            LEFT JOIN dashboard_file_totals t
+              ON t.file_generation = e.file_generation
+             AND t.file_path = e.file_path
+            WHERE e.file_generation = ?1 AND t.file_path IS NULL
+            GROUP BY e.file_generation, e.file_path
+            "#,
+            params![generation],
+        )
+        .map_err(|error| format!("无法补齐本轮单文件总量聚合：{error}"))?;
+    let inserted_buckets = transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_5m(
+                file_generation, file_path, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                e.file_generation,
+                e.file_path,
+                e.timestamp - (e.timestamp % 300),
+                COALESCE(e.model, ''),
+                e.model,
+                SUM(e.tokens),
+                COUNT(*),
+                SUM(e.input_tokens),
+                SUM(MIN(e.cached_input_tokens, e.input_tokens)),
+                SUM(e.output_tokens)
+            FROM events e
+            WHERE e.file_generation = ?1
+            GROUP BY e.file_generation, e.file_path,
+                e.timestamp - (e.timestamp % 300), COALESCE(e.model, '')
+            ON CONFLICT(file_generation, file_path, bucket_start, model_key) DO NOTHING
+            "#,
+            params![generation],
+        )
+        .map_err(|error| format!("无法补齐本轮单文件五分钟聚合：{error}"))?;
+    if inserted_totals > 0 || inserted_buckets > 0 {
+        rebuild_dashboard_5m_generation(transaction, generation)?;
+    }
+    Ok(())
 }
 
 fn finalize_generation(
@@ -4238,6 +5168,37 @@ fn finalize_generation(
         )
         .map_err(|error| format!("无法检查本轮已删除的会话文件：{error}"))?;
     if missing_count > 0 {
+        let missing_dashboard_bounds = transaction
+            .query_row(
+                r#"
+                WITH latest AS (
+                    SELECT path, MAX(generation) AS generation
+                    FROM files
+                    WHERE generation <= ?1
+                    GROUP BY path
+                ),
+                missing AS (
+                    SELECT latest.path, latest.generation
+                    FROM latest
+                    JOIN files f
+                      ON f.path = latest.path
+                     AND f.generation = latest.generation
+                    WHERE f.deleted = 0
+                      AND NOT EXISTS (
+                          SELECT 1 FROM exact_seen_files seen WHERE seen.path = latest.path
+                      )
+                )
+                SELECT MIN(b.bucket_start), MAX(b.bucket_start)
+                FROM dashboard_file_5m b
+                JOIN missing m
+                  ON m.path = b.file_path
+                 AND m.generation = b.file_generation
+                "#,
+                params![generation],
+                |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map(|(start, end)| start.zip(end))
+            .map_err(|error| format!("无法读取已删除会话的聚合范围：{error}"))?;
         transaction
             .execute(
                 r#"
@@ -4317,6 +5278,9 @@ fn finalize_generation(
                 params![generation],
             )
             .map_err(|error| format!("无法登记本轮已删除的会话文件：{error}"))?;
+        if let Some((start, end)) = missing_dashboard_bounds {
+            refresh_dashboard_5m_range(&transaction, generation, start, end)?;
+        }
         mark_dashboard_changed(&transaction)?;
     }
 
@@ -4328,11 +5292,18 @@ fn finalize_generation(
         // numeric cache lineage intact.
         set_metadata(&transaction, "building_changed", "1")?;
     }
+    backfill_missing_dashboard_aggregates_for_generation(&transaction, generation)?;
     let rotate_attribution_provenance =
         metadata_i64(&transaction, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY)?.unwrap_or(0) != 0;
     let source_index_changed = metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?
         .unwrap_or(0)
         != 0;
+    if source_index_changed
+        && metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
+            == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
+    {
+        refresh_dashboard_turn_candidates_for_touched_sessions(&transaction, generation)?;
+    }
     let safety_before = attribution_safety_state(&transaction)?;
     let lineage_ambiguity_detected = visible_duplicate_session_lineage(&transaction, generation)?;
     let ledger_integrity_mismatch = attribution_ledger_integrity_mismatch(&transaction)?;
@@ -4430,6 +5401,32 @@ fn finalize_generation(
         DASHBOARD_REVISION_KEY,
         &dashboard_revision.to_string(),
     )?;
+    if metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
+        == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
+    {
+        // Every changed file updated its derived rows in the same transaction
+        // that wrote/replaced its events. Unchanged files keep their prior
+        // versioned aggregate rows, selected through published_files.
+        let aggregate_generation = metadata_i64(&transaction, "published_generation")?
+            .unwrap_or(0);
+        set_metadata(
+            &transaction,
+            DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
+            &aggregate_generation.to_string(),
+        )?;
+        transaction
+            .execute(
+                "DELETE FROM dashboard_5m WHERE file_generation <> ?1",
+                params![aggregate_generation],
+            )
+            .map_err(|error| format!("无法清理旧版全局五分钟聚合：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation <> ?1",
+                params![aggregate_generation],
+            )
+            .map_err(|error| format!("无法清理旧版轮次候选聚合：{error}"))?;
+    }
     transaction
         .execute(
             "DELETE FROM metadata WHERE key IN (
@@ -5191,6 +6188,7 @@ fn append_session_file(
         )
         .map(nonnegative_u64)
         .map_err(|error| format!("无法读取会话文件追加事件序号：{error}"))?;
+    let aggregate_ordinal = ordinal;
 
     let session_id = session_id_from_file(file);
     let mut sink = SqliteEventSink {
@@ -5250,6 +6248,12 @@ fn append_session_file(
         path,
         hashing_start_chunk,
         &parsed.chunk_hashes,
+    )?;
+    update_dashboard_append_aggregates(
+        &transaction,
+        generation,
+        path,
+        aggregate_ordinal,
     )?;
     let old_chunk_count = checkpoint
         .size
@@ -5387,6 +6391,12 @@ fn copy_append_checkpoint_rows(
             params![generation, checkpoint_generation, path],
         )
         .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
+    copy_dashboard_file_aggregates(
+        transaction,
+        generation,
+        checkpoint_generation,
+        path,
+    )?;
     transaction
         .execute(
             r#"
@@ -7220,6 +8230,93 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 ON events(file_generation, file_path, timestamp, tokens);
             CREATE INDEX IF NOT EXISTS events_session_idx
                 ON events(session_id, timestamp, file_generation, file_path, ordinal);
+            CREATE INDEX IF NOT EXISTS events_input_tokens_idx
+                ON events(input_tokens, timestamp, file_generation, file_path, ordinal);
+
+            -- Disposable dashboard aggregates. Rows remain versioned by the
+            -- owning file generation, so publication is still controlled by
+            -- the existing published_files selector and is crash atomic.
+            CREATE TABLE IF NOT EXISTS dashboard_file_totals (
+                file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                first_timestamp INTEGER,
+                last_timestamp INTEGER,
+                PRIMARY KEY(file_generation, file_path),
+                FOREIGN KEY(file_generation, file_path)
+                    REFERENCES files(generation, path)
+                    ON DELETE CASCADE
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS dashboard_file_5m (
+                file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                model TEXT,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(file_generation, file_path, bucket_start, model_key),
+                FOREIGN KEY(file_generation, file_path)
+                    REFERENCES files(generation, path)
+                    ON DELETE CASCADE
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS dashboard_file_5m_time_idx
+                ON dashboard_file_5m(bucket_start, file_generation, file_path);
+
+            CREATE TABLE IF NOT EXISTS dashboard_5m (
+                file_generation INTEGER NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                model_key TEXT NOT NULL,
+                model TEXT,
+                total_tokens INTEGER NOT NULL,
+                calls INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                PRIMARY KEY(file_generation, bucket_start, model_key)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS dashboard_turn_candidates (
+                aggregate_generation INTEGER NOT NULL,
+                event_id INTEGER NOT NULL,
+                source_file_generation INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                timestamp INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                cached_input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                user_prompt_start INTEGER,
+                user_prompt_end INTEGER,
+                assistant_response_start INTEGER,
+                assistant_response_end INTEGER,
+                turn_index INTEGER NOT NULL,
+                session_calls INTEGER NOT NULL,
+                PRIMARY KEY(aggregate_generation, file_path, ordinal)
+            ) WITHOUT ROWID;
+
+            CREATE INDEX IF NOT EXISTS dashboard_turn_candidates_order_idx
+                ON dashboard_turn_candidates(
+                    aggregate_generation,
+                    timestamp,
+                    input_tokens,
+                    cached_input_tokens
+                );
+
+            CREATE INDEX IF NOT EXISTS dashboard_turn_candidates_session_idx
+                ON dashboard_turn_candidates(aggregate_generation, session_id);
 
             CREATE TABLE IF NOT EXISTS attribution_source_buckets (
                 provenance_epoch TEXT NOT NULL,

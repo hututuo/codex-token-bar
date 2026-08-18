@@ -219,7 +219,6 @@ final class DashboardRuntime: ObservableObject {
     private let sideEffectStopAction: (() -> Void)?
     private let backgroundOwnerActivityAction: ((Bool) -> Void)?
     private var cancellables: Set<AnyCancellable> = []
-    private var cadenceRecoveryTask: Task<Void, Never>?
     private var isCorrectingFloatingPanelScale = false
     private var expensiveOwnersActive: Bool?
     private var autoResumeQuotaBackgroundEnabled = false
@@ -467,6 +466,7 @@ final class DashboardRuntime: ObservableObject {
             object: settings
         ).sink { [weak self] _ in
             self?.refreshFloatingPanelScaleFromSettings()
+            self?.updateUsageRefreshCadence()
         }.store(in: &cancellables)
         for name in [
             NSWindow.didChangeScreenNotification,
@@ -516,8 +516,6 @@ final class DashboardRuntime: ObservableObject {
 
     private func stopSideEffects() {
         cancellables.removeAll()
-        cadenceRecoveryTask?.cancel()
-        cadenceRecoveryTask = nil
         applyBackgroundOwnerActivity(false)
         sideEffectStopAction?()
     }
@@ -609,24 +607,18 @@ final class DashboardRuntime: ObservableObject {
 
     private func updateUsageRefreshCadence() {
         guard let configuration else { return }
+        let dashboardVisible = hasVisibleDashboardWindow()
         let onlyCompactSurfaceVisible = DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
-            dashboardVisible: hasVisibleDashboardWindow(),
+            dashboardVisible: dashboardVisible,
             floatingPanelEnabled: configuration.floatingPanelEnabled,
             statusBarPanelEnabled: configuration.statusBarPanelEnabled,
             statusSummaryPresented: statusBarSummaryPresented
         )
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: liveMonitor.totalSnapshot,
-            onlyCompactSurfaceVisible: onlyCompactSurfaceVisible
-        )
         usageStore.setOnlyCompactSurfaceVisible(onlyCompactSurfaceVisible)
-        usageStore.setRefreshInterval(decision.interval)
-        UsageRefreshCadenceRecoveryScheduler.schedule(
-            replacing: &cadenceRecoveryTask,
-            after: decision.recoveryDelay
-        ) { [weak self] in
-            self?.updateUsageRefreshCadence()
-        }
+        usageStore.setUsageRefreshCadence(
+            UsageRefreshCadenceSettings.load(defaults: settings),
+            mainDashboardVisible: dashboardVisible
+        )
     }
 
     private func refreshFloatingPanelScaleFromSettings() {
@@ -683,7 +675,9 @@ final class DashboardRuntime: ObservableObject {
             dashboardWindowVisible: hasVisibleDashboardWindow(),
             floatingPanelEnabled: configuration.floatingPanelEnabled,
             statusBarPanelEnabled: configuration.statusBarPanelEnabled,
-            usageStale: Date().timeIntervalSince(usageStore.snapshot.generatedAt) >= 5 * 60,
+            usageStale: usageStore.snapshot.preciseTimeSeriesGeneratedAt.map {
+                Date().timeIntervalSince($0) >= 5 * 60
+            } ?? true,
             radarDetailsVisible: configuration.radarDetailsVisible,
             floatingPanelShowRadar: configuration.floatingPanelVisibility.showRadar,
             radarStale: radarStore.snapshot == nil

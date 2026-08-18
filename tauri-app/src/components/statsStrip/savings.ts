@@ -180,12 +180,15 @@ export function estimateRecent7dAPICost({
     aggregate.cachedInputTokens += pointBreakdown.cachedInputTokens;
     aggregate.outputTokens += pointBreakdown.outputTokens;
     aggregate.calls += pointBreakdown.calls;
-    if (sameBreakdown(covered, pointBreakdown)) {
+    const hasModelIdentity = pointRows.length > 0
+      && pointRows.every((row) => typeof row.model === "string" && row.model.trim().length > 0);
+    if (hasModelIdentity && sameBreakdown(covered, pointBreakdown)) {
       rows.push(...pointRows);
     } else {
-      // Keep the quick estimate numerically complete, but do not pretend that
-      // a point without model rows has a known model. The pricing layer will
-      // use the selected fallback model for this synthetic row.
+      // Keep the quick estimate numerically complete for charts and totals,
+      // but mark it estimated whenever a point lacks a trustworthy model
+      // identity. The model-cost UI suppresses these synthetic rows until the
+      // exact attribution projection is ready.
       quality = "estimated";
       estimateSource = "5分钟桶用量缓存";
       rows.push({

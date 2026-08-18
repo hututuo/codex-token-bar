@@ -147,6 +147,53 @@ test("StatsStrip does not render an anonymous 7d fallback model", async () => {
   });
 });
 
+test("StatsStrip keeps a null model row pending even when its totals match", async () => {
+  await withSsrModules(async (load) => {
+    const { StatsStrip } = await load("/src/components/StatsStrip.tsx");
+    const resetAtUnix = Math.floor(new Date("2026-07-08T00:00:00Z").getTime() / 1_000);
+    const html = renderToStaticMarkup(React.createElement(StatsStrip, {
+      stats: {
+        totalTokens: 1_000_000,
+        peakDayTokens: 1_000_000,
+        peakThreadTokens: 1_000_000,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 1,
+        totalThreads: 1,
+      },
+      recentUsageFiveMinute: [{
+        label: "7d",
+        startUnix: resetAtUnix - 60,
+        tokens: 1_000_000,
+        calls: 1,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        modelBreakdowns: [{
+          model: null,
+          breakdown: {
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1,
+          },
+        }],
+        cacheHitRate: null,
+        fiveHourRemainingPercent: null,
+        sevenDayRemainingPercent: null,
+      }],
+      sevenDayResetAtUnix: resetAtUnix,
+      preciseDataFresh: true,
+      planLabel: "Pro",
+      warnings: [],
+    }));
+
+    assert.match(html, /本7d模型明细待读取/);
+    assert.doesNotMatch(html, /未知模型/);
+  });
+});
+
 test("StatsStrip keeps trusted 7d model rows visible while marking them stale", async () => {
   await withSsrModules(async (load) => {
     const { StatsStrip } = await load("/src/components/StatsStrip.tsx");
@@ -279,6 +326,8 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
           }],
           recentUsageFiveMinute: [recentPoint],
           sevenDayResetAtUnix: resetAtUnix,
+          preciseDataFresh: false,
+          usageSummaryFresh: true,
           planLabel: "Pro",
           warnings: [],
         })));
@@ -294,6 +343,11 @@ test("StatsStrip model costs default to 7d and can switch back to cumulative", a
         assert.match(container.textContent ?? "", /\$2\.00/);
         assert.match(container.textContent ?? "", /Spark 参考 \$1\.75/);
         assert.match(container.textContent ?? "", /Spark\$1\.75（不计入总计）/);
+
+        await React.act(async () => scope[1].dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
+        assert.equal(scope[1].getAttribute("aria-pressed"), "true");
+        assert.match(container.textContent ?? "", /Sol/);
+        assert.doesNotMatch(container.textContent ?? "", /正在精准计算中/);
       } finally {
         await React.act(async () => root.unmount());
       }

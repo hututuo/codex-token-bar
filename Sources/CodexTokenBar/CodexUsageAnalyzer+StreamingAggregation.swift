@@ -208,6 +208,77 @@ extension CodexUsageAnalyzer {
             eventCount += 1
         }
 
+        /// Consumes the exact index's versioned five-minute numeric rows. This
+        /// is the normal dashboard path: it preserves every token dimension,
+        /// model and day/hour/bin without replaying every event. Session totals
+        /// and event-level turn candidates are loaded from their smaller
+        /// dedicated projections.
+        mutating func consumeAggregate(_ row: CodexUsageHistoryIndex.AggregatedUsageRow) {
+            let start = row.start
+            let breakdown = row.breakdown
+            total.add(breakdown)
+            cacheByModel[row.model ?? "", default: TokenCacheAccumulator()].add(breakdown)
+            firstUsageAt = min(firstUsageAt ?? start, start)
+
+            if let dailyStart, start >= dailyStart, start <= now {
+                let day = calendar.startOfDay(for: start)
+                let current = dailyUsageByDate[day] ?? (0, 0)
+                dailyUsageByDate[day] = (
+                    current.tokens + breakdown.totalTokens,
+                    current.calls + breakdown.calls
+                )
+                cacheByDayAndModel[
+                    DailyModelKey(date: day, model: row.model),
+                    default: TokenCacheAccumulator()
+                ].add(breakdown)
+            }
+
+            if let recentStart,
+               start >= recentStart,
+               start <= now {
+                let offset = floor(start.timeIntervalSince(recentStart) / Self.recentBinInterval)
+                let binStart = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
+                let current = recentUsageByStart[binStart] ?? (0, 0)
+                recentUsageByStart[binStart] = (
+                    current.tokens + breakdown.totalTokens,
+                    current.calls + breakdown.calls
+                )
+                cacheRecentByStart[binStart, default: TokenCacheAccumulator()].add(breakdown)
+            }
+
+            if let hourlyStart,
+               start >= hourlyStart,
+               start <= now,
+               let hour = calendar.dateInterval(of: .hour, for: start)?.start {
+                let current = hourlyUsageByStart[hour] ?? (0, 0)
+                hourlyUsageByStart[hour] = (
+                    current.tokens + breakdown.totalTokens,
+                    current.calls + breakdown.calls
+                )
+                cacheHourlyByStart[hour, default: TokenCacheAccumulator()].add(breakdown)
+            }
+
+            if start <= now {
+                let cacheDay = calendar.startOfDay(for: start)
+                cacheDailyByDate[cacheDay, default: TokenCacheAccumulator()].add(breakdown)
+            }
+            eventCount += breakdown.calls
+        }
+
+        mutating func consumeSessionAggregate(
+            _ row: CodexUsageHistoryIndex.AggregatedSessionRow
+        ) {
+            sessionIDsWithEvents.insert(row.sessionID)
+            cacheBySession[row.sessionID, default: TokenCacheAccumulator()].add(row.breakdown)
+            if let lastUpdated = row.lastUpdated {
+                sessionLastUpdated[row.sessionID] = lastUpdated
+            }
+        }
+
+        mutating func considerTurnCandidate(_ turn: TurnCacheUsage) {
+            turnCandidates.consider(turn)
+        }
+
         func dailyUsage() -> [DayUsage] {
             guard let dailyStart else { return [] }
             return (0..<Self.dayCount).compactMap { offset in

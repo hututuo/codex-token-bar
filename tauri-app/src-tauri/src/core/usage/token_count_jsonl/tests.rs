@@ -891,6 +891,18 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
         .unwrap();
     assert_ne!(rebuilt_epoch, initial_epoch);
     assert_eq!(attribution_source_tokens(&rebuilt), 105);
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_5m", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        105,
+        "rewriting a file must remove its old bucket contribution"
+    );
+    drop(connection);
 
     fs::remove_file(&deleted_file).unwrap();
     let after_delete = dashboard_snapshot(&root).unwrap();
@@ -5627,6 +5639,247 @@ fn dashboard_revision_backfills_without_rebuilding_a_legacy_index() {
     assert_eq!(upgraded.revision().unwrap(), revision);
     assert_eq!(upgraded.dashboard_revision().unwrap(), revision);
     drop(upgraded);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_reads() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let changed = session_dir.join("rollout-019e-dashboard-v1-changed.jsonl");
+    let unchanged = session_dir.join("rollout-019e-dashboard-v1-unchanged.jsonl");
+    write_lines(
+        &changed,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    write_lines(
+        &unchanged,
+        &[r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+    );
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    {
+        let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
+        writeln!(
+            append,
+            r#"{{"timestamp":"2026-06-18T01:04:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 200);
+
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let published_generation = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let distinct_visible_generations = connection
+        .query_row(
+            "SELECT COUNT(DISTINCT generation) FROM published_files",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert!(
+        distinct_visible_generations > 1,
+        "fixture must retain an unchanged file from an older exact generation"
+    );
+    connection.execute("DELETE FROM dashboard_5m", []).unwrap();
+    connection
+        .execute(
+            "INSERT INTO metadata(key, value) VALUES ('dashboard_aggregate_schema_version', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let upgraded = dashboard_snapshot(&root).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(upgraded.stats.total_tokens, 200);
+    assert_eq!(
+        upgraded
+            .stats
+            .model_breakdowns
+            .iter()
+            .map(|row| row.breakdown.total_tokens)
+            .sum::<u64>(),
+        200,
+        "global five-minute upgrade must include unchanged older file generations"
+    );
+    let connection = Connection::open(database).unwrap();
+    let aggregate_generation = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'dashboard_aggregate_exact_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(aggregate_generation, published_generation);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(DISTINCT file_generation) FROM dashboard_5m",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let changed = session_dir.join("rollout-019e-global-bucket-changed.jsonl");
+    let unchanged = session_dir.join("rollout-019e-global-bucket-unchanged.jsonl");
+    write_lines(
+        &changed,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    write_lines(
+        &unchanged,
+        &[r#"{"timestamp":"2026-06-18T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+
+    {
+        let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
+        writeln!(
+            append,
+            r#"{{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    let updated = dashboard_snapshot(&root).unwrap();
+    assert_eq!(updated.stats.total_tokens, 200);
+    assert_eq!(
+        updated
+            .stats
+            .model_breakdowns
+            .iter()
+            .map(|row| row.breakdown.total_tokens)
+            .sum::<u64>(),
+        200
+    );
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                r#"
+                SELECT COALESCE(SUM(total_tokens), 0)
+                FROM dashboard_5m
+                WHERE file_generation = (
+                    SELECT CAST(value AS INTEGER)
+                    FROM metadata
+                    WHERE key = 'published_generation'
+                )
+                "#,
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        200
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn future_dashboard_aggregate_version_fails_closed_without_rewriting_rows() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019e-dashboard-aggregate-future.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let rows_before = connection
+        .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '99' WHERE key = 'dashboard_aggregate_schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    reset_dashboard_aggregate_build_count_for_testing();
+
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("高于当前支持版本"), "{error}");
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        rows_before
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'dashboard_aggregate_schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "99"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unknown_dashboard_pricing_revision_fails_closed_without_rewriting_rows() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019e-dashboard-pricing-future.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let rows_before = connection
+        .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = 'future-price-v2' WHERE key = 'dashboard_aggregate_pricing_revision'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let error = dashboard_snapshot(&root).unwrap_err();
+    assert!(error.contains("计价契约"), "{error}");
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        rows_before
+    );
 
     fs::remove_dir_all(root).unwrap();
 }

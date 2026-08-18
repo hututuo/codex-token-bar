@@ -145,19 +145,4 @@ final class UsageRefreshCadencePolicyTests: XCTestCase {
         )
     }
 
-    func testLegacyDecisionDoesNotUseLiveActivityAcceleration() {
-        var snapshot = LiveRateSnapshot()
-        snapshot.rollingTokensPerSecond = 100
-        snapshot.updatedAt = Date()
-
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: false,
-            now: snapshot.updatedAt
-        )
-
-        XCTAssertFalse(decision.isActive)
-        XCTAssertNil(decision.recoveryDelay)
-        XCTAssertEqual(decision.interval, 5 * 60, accuracy: 0.001)
-    }
 }

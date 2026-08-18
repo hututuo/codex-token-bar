@@ -79,14 +79,13 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
             statusSummaryPresented: true
         ))
 
-        var snapshot = LiveRateSnapshot()
-        snapshot.updatedAt = Date(timeIntervalSince1970: 2_000)
-        let decision = UsageRefreshCadencePolicy.decision(
-            snapshot: snapshot,
-            onlyCompactSurfaceVisible: iconOnlySummary,
-            now: snapshot.updatedAt
+        XCTAssertEqual(
+            UsageRefreshCadencePolicy.aggregateInterval(
+                mainDashboardVisible: !iconOnlySummary,
+                settings: UsageRefreshCadenceSettings()
+            ),
+            5 * 60
         )
-        XCTAssertEqual(decision.interval, UsageRefreshCadencePolicy.visibleDashboardInterval)
     }
 
     @MainActor

@@ -580,7 +580,11 @@ extension CodexUsageAnalyzer {
                 .sorted { $0.path < $1.path },
             stateDatabase: sessionCacheKey(for: dataSource.stateDatabase),
             attributionProvenanceEpoch: attributionProvenanceEpoch,
-            attributionGeneration: attributionGeneration
+            attributionGeneration: attributionGeneration,
+            aggregateBoundary: Int64(
+                UsageRefreshCadencePolicy.latestEligibleBoundary(now: now)
+                    .timeIntervalSince1970
+            )
         )
         trace?.end("ok", metadata: ["files": String(signature.files.count)])
         return signature

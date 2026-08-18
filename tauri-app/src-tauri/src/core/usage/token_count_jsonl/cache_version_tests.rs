@@ -9,6 +9,7 @@ fn dashboard_aggregate_version_thirteen_is_rejected_by_the_current_cache_schema(
             local_date: "2026-07-10".into(),
             utc_offset_seconds: 8 * 60 * 60,
             index_revision: 0,
+            aggregate_boundary_unix: 0,
         },
         snapshot: None,
         summary: TokenUsageSummary::default(),

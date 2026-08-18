@@ -4,7 +4,7 @@ use crate::core::dashboard::DashboardDataSource;
 use crate::core::startup_trace;
 use crate::core::unread::{UnreadObservation, UnreadObservationBuilder};
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
-use crate::core::usage::token_count_jsonl::{self, TokenUsageSummary};
+use crate::core::usage::token_count_jsonl::{self, TokenUsageSummarySnapshot};
 use crate::models::{
     AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
     PreciseDashboardProgress,
@@ -1473,7 +1473,7 @@ pub async fn read_dashboard_snapshot(
     require_window_label(&window, "read_dashboard_snapshot")?;
     startup_trace::mark("command read_dashboard_snapshot start");
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
         crate::core::dashboard::LocalCodexDataSource::new(codex_home).read_dashboard_snapshot()
     })
     .await;
@@ -1672,12 +1672,16 @@ pub async fn read_usage_summary_snapshot(
     window: tauri::WebviewWindow,
     app: AppHandle,
     source_token: CodexHomeSourceToken,
-) -> Result<Option<TokenUsageSummary>, String> {
+    refresh_interval_seconds: Option<u64>,
+) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     require_window_label(&window, "read_usage_summary_snapshot")?;
     let started = Instant::now();
-    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
         let cached = token_count_jsonl::usage_summary_snapshot(&codex_home)?;
-        token_count_jsonl::schedule_usage_summary_refresh(&codex_home)?;
+        token_count_jsonl::schedule_usage_summary_refresh_with_interval(
+            &codex_home,
+            refresh_interval_seconds,
+        )?;
         Ok(cached)
     })
     .await;

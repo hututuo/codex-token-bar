@@ -82,6 +82,9 @@ extension CodexUsageAnalyzer {
         let stateDatabase: SessionCacheKey?
         let attributionProvenanceEpoch: String
         let attributionGeneration: Int64
+        /// Latest UTC five-minute boundary that has passed the settle delay.
+        /// Optional keeps pre-aggregate cache payloads decodable as stale data.
+        let aggregateBoundary: Int64?
 
         func withAttributionState(
             provenanceEpoch: String,
@@ -93,7 +96,8 @@ extension CodexUsageAnalyzer {
                 files: files,
                 stateDatabase: stateDatabase,
                 attributionProvenanceEpoch: provenanceEpoch,
-                attributionGeneration: generation
+                attributionGeneration: generation,
+                aggregateBoundary: aggregateBoundary
             )
         }
     }
@@ -1367,6 +1371,15 @@ extension CodexUsageAnalyzer {
             reasoningOutputTokens += event.reasoningOutputTokens
             totalTokens += event.tokens
             calls += 1
+        }
+
+        mutating func add(_ value: TokenCacheBreakdown) {
+            inputTokens += value.inputTokens
+            cachedInputTokens += min(value.cachedInputTokens, value.inputTokens)
+            outputTokens += value.outputTokens
+            reasoningOutputTokens += value.reasoningOutputTokens
+            totalTokens += value.totalTokens
+            calls += value.calls
         }
 
         var breakdown: TokenCacheBreakdown {

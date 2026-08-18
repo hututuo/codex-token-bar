@@ -1,6 +1,6 @@
 # 索引结构与新旧版本兼容性待修复方案
 
-状态：`audit-complete / remediation-pending`
+状态：`audit-complete / remediation-in-progress`
 
 日期：2026-08-15
 
@@ -13,6 +13,21 @@
 - 当前 HEAD 比公开基线多 206 个提交；源码和发布脚本仍使用 `0.8.3/803`。
 
 本文件只记录审查结果和待修复方案，不代表修复、合并或发布已经完成。
+
+## 2026-08-18 增量聚合兼容更新
+
+本轮已落实与轻量同步/增量桶直接相关的兼容边界，原审计中的其他发布门禁仍按各自状态单独处理：
+
+- Swift 主索引 schema 仍为 5，Tauri 主索引 schema 仍为 8；新增 dashboard 派生表使用独立 `dashboard_aggregate_schema_version = 3`，不会把公开 v0.8.3 用户误导进 JSONL 冷重建。
+- GitHub v0.8.3 Swift schema 3、Tauri schema 6/7 的旧主索引先按既有原地迁移，再仅从 SQLite `events` 回填派生数值，定向测试确认 JSONL 正文读取为零。
+- 派生聚合 v1/v2→v3 保留主事件和 checkpoint；完成事务后才推进聚合发布 marker。
+- 高于当前支持的派生 schema 会在正式同步事务前 fail-closed，不清表、不降级 metadata、不覆盖未来版本行。
+- Tauri 的全局五分钟桶已按当前 `published_files` 的所有最新可见文件版本汇总，避免单文件 append 或跨 generation 升级时丢失未变化文件贡献。
+- 双端轮次候选也进入派生层：只按受影响 session 更新候选数值和源偏移，避免完整刷新对全部历史事件执行多轮相关排序；详情正文仍按源签名单独读取。
+- 派生计价契约现在也做严格校验：缺失/旧的已知层可回填，未知或未来 `pricing_revision` 在扫描前拒绝覆盖，避免同 schema 下静默套错规则。
+- Swift/Tauri 的轻量摘要与完整图表分别保存发布时间；旧摘要不能覆盖较新的完整快照，轻量数据也不能局部改写热力图或排行。
+
+这些改动不代表已经解决本文件列出的版本号发布身份、旧二进制反向回滚、所有历史 model backfill 等独立问题，也没有执行正式发布。
 
 ## 总体结论
 

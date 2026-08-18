@@ -767,10 +767,10 @@ button {
 .dash-head__strip {
   display: grid;
   min-width: 0;
-  /* Let the selected Codex Home absorb the flexible space.  The path is the
-     only value that can grow substantially; keep the thread summary compact
-     so the freshness/progress indicator keeps a readable width. */
-  grid-template-columns: minmax(130px, 0.7fr) minmax(260px, 2.2fr) minmax(120px, 0.4fr) minmax(145px, 0.75fr);
+  /* Reclaim roughly one quarter of the previous status width and give it to
+     the path/thread pair in a 1:2 split.  The status track stays flexible,
+     while long paths are ellipsized instead of stretching the whole band. */
+  grid-template-columns: minmax(130px, 180px) minmax(190px, 320px) minmax(110px, 230px) minmax(220px, 1fr);
   align-items: stretch;
   background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
 }
