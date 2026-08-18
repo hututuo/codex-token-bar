@@ -323,6 +323,11 @@ struct TokenDisplayCard: View {
     @Environment(\.tokenDisplayEmbeddedUsageStatusTextPalette) private var embeddedUsageStatusTextPalette
     @Environment(\.tokenDisplayStandaloneUsageStatusTextPalette) private var standaloneUsageStatusTextPalette
 
+    private struct PagedContentDescriptor: Equatable {
+        let group: FloatingPanelContentGroup
+        let modelPageIndex: Int
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let radarPresentation = resolvedRadarPresentation
@@ -437,7 +442,8 @@ struct TokenDisplayCard: View {
         radarRowHeight: CGFloat,
         crowdRadarRowHeight: CGFloat
     ) -> some View {
-        let selectedGroup = selectedGroup(in: row)
+        let pages = pagedContentDescriptors(for: row)
+        let selectedPage = selectedPage(in: pages, for: row)
         let rowHeight = row.groups.map { group -> CGFloat in
             switch group {
             case .rateAndBar: rateRowHeight
@@ -453,22 +459,24 @@ struct TokenDisplayCard: View {
 
         ZStack {
             content(
-                for: selectedGroup,
+                for: selectedPage.group,
                 presentation: presentation,
-                radarPresentation: radarPresentation
+                radarPresentation: radarPresentation,
+                modelPageIndex: selectedPage.modelPageIndex
             )
-            .environment(\.tokenDisplayTextPalette, palette(for: selectedGroup))
+            .environment(\.tokenDisplayTextPalette, palette(for: selectedPage.group))
             // Keep text and bars at the established inset while the row itself
             // spans the full panel. Page controls can then receive mouse events
             // all the way to the real window edge instead of merely rendering
             // outside a padded parent's hit-test bounds.
             .padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)
 
-            if row.isPaged {
+            if pages.count > 1 {
                 HStack {
                     pageButton(
                         systemImage: "chevron.left",
                         row: row,
+                        pageCount: pages.count,
                         delta: -1,
                         showsGlyph: visibility.showPageNavigationArrows
                     )
@@ -476,6 +484,7 @@ struct TokenDisplayCard: View {
                     pageButton(
                         systemImage: "chevron.right",
                         row: row,
+                        pageCount: pages.count,
                         delta: 1,
                         showsGlyph: visibility.showPageNavigationArrows
                     )
@@ -483,14 +492,15 @@ struct TokenDisplayCard: View {
             }
         }
         .frame(height: rowHeight, alignment: .center)
-        .animation(.easeOut(duration: 0.16), value: selectedGroup)
+        .animation(.easeOut(duration: 0.16), value: selectedPage)
     }
 
     @ViewBuilder
     private func content(
         for group: FloatingPanelContentGroup,
         presentation: FloatingPanelPresentationModel,
-        radarPresentation: CodexRadarPresentationState
+        radarPresentation: CodexRadarPresentationState,
+        modelPageIndex: Int = 0
     ) -> some View {
         switch group {
         case .rateAndBar:
@@ -519,7 +529,8 @@ struct TokenDisplayCard: View {
                 page: .cost,
                 rows: snapshot.todayModelBreakdowns,
                 fallbackModel: fallbackPriceModel,
-                showPlaceholders: snapshot.hasPreciseTokenUsage
+                showPlaceholders: snapshot.hasPreciseTokenUsage,
+                pageIndex: modelPageIndex
             )
         case .quota:
             TokenQuotaMiniStrip(snapshot: snapshot.quota)
@@ -530,26 +541,58 @@ struct TokenDisplayCard: View {
         }
     }
 
-    private func selectedGroup(in row: FloatingPanelPresentationRow) -> FloatingPanelContentGroup {
+    private func pagedContentDescriptors(
+        for row: FloatingPanelPresentationRow
+    ) -> [PagedContentDescriptor] {
+        row.groups.flatMap { group -> [PagedContentDescriptor] in
+            guard group == .todayModelCost else {
+                return [PagedContentDescriptor(group: group, modelPageIndex: 0)]
+            }
+
+            let items = FloatingTodayModelUsagePresentation.items(
+                from: snapshot.todayModelBreakdowns,
+                fallbackModel: fallbackPriceModel,
+                showPlaceholders: snapshot.hasPreciseTokenUsage
+            )
+            let pageCount = FloatingTodayModelUsagePresentation.pageCount(
+                for: .cost,
+                items: items
+            )
+            return (0..<pageCount).map {
+                PagedContentDescriptor(group: group, modelPageIndex: $0)
+            }
+        }
+    }
+
+    private func selectedPage(
+        in pages: [PagedContentDescriptor],
+        for row: FloatingPanelPresentationRow
+    ) -> PagedContentDescriptor {
+        guard let first = pages.first else {
+            return PagedContentDescriptor(group: row.group, modelPageIndex: 0)
+        }
         let index = selectedPageIndexByRowID[row.id, default: 0]
-        return row.groups[index % row.groups.count]
+        return pages[index % pages.count]
     }
 
     private func pageButton(
         systemImage: String,
         row: FloatingPanelPresentationRow,
+        pageCount: Int,
         delta: Int,
         showsGlyph: Bool
     ) -> some View {
         let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing
-        let restingColor = palette(for: selectedGroup(in: row)).secondaryColor.opacity(0.62)
+        let pages = pagedContentDescriptors(for: row)
+        let selectedPage = selectedPage(in: pages, for: row)
+        let restingColor = palette(for: selectedPage.group).secondaryColor.opacity(0.62)
         let cueColor = pageNavigationCueEmphasized
             ? Color(red: 0.078, green: 0.361, blue: 0.694)
             : restingColor
 
         return Button {
             let current = selectedPageIndexByRowID[row.id, default: 0]
-            selectedPageIndexByRowID[row.id] = (current + delta + row.groups.count) % row.groups.count
+            selectedPageIndexByRowID[row.id] = (current + delta + pageCount) % pageCount
             onPageNavigation?()
         } label: {
             // Make the full edge gutter the label's concrete layout instead of

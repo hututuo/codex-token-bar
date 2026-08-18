@@ -38,6 +38,8 @@ import {
   FLOATING_MODEL_USAGE_VISIBLE_LIMIT,
   floatingModelUsageAccessibilityText,
   floatingModelUsageOverflowText,
+  floatingModelUsagePageCount,
+  floatingModelUsagePageItems,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
   type FloatingModelUsagePage,
@@ -311,6 +313,7 @@ interface FloatingContentRowProps {
   settings: FloatingWindowSettings;
   snapshot: FloatingPanelSnapshot;
   total: number;
+  modelPageIndex?: number;
 }
 
 interface FloatingPagedContentRowProps extends Omit<FloatingContentRowProps, "group"> {
@@ -330,17 +333,18 @@ function FloatingPagedContentRow({
   ...props
 }: FloatingPagedContentRowProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const safeIndex = selectedIndex % row.groups.length;
-  const group = row.groups[safeIndex];
-  const paged = row.groups.length > 1;
+  const pages = floatingPagedContentDescriptors(row, props.snapshot, props.priceModel);
+  const safeIndex = pages.length > 0 ? selectedIndex % pages.length : 0;
+  const selectedPage = pages[safeIndex] ?? { group: row.primaryGroup, modelPageIndex: 0 };
+  const paged = pages.length > 1;
   const pageRowStyle = paged
     ? ({ "--floating-page-row-height": `${floatingContentRowHeight(row)}px` } as CSSProperties)
     : undefined;
   const showsArrowGlyphs = props.settings.contentVisibility.showPageNavigationArrows !== false;
   const cycle = (delta: -1 | 1) => {
     setSelectedIndex((current) => (
-      current + delta + row.groups.length
-    ) % row.groups.length);
+      current + delta + pages.length
+    ) % pages.length);
     onPageNavigation?.();
   };
   return (
@@ -355,11 +359,19 @@ function FloatingPagedContentRow({
       } : undefined}
     >
       {paged ? (
-        <div className="floating-page-content" key={group}>
-          <FloatingContentRow {...props} group={group} />
+        <div className="floating-page-content" key={`${selectedPage.group}:${selectedPage.modelPageIndex}`}>
+          <FloatingContentRow
+            {...props}
+            group={selectedPage.group}
+            modelPageIndex={selectedPage.modelPageIndex}
+          />
         </div>
       ) : (
-        <FloatingContentRow {...props} group={group} />
+        <FloatingContentRow
+          {...props}
+          group={selectedPage.group}
+          modelPageIndex={selectedPage.modelPageIndex}
+        />
       )}
       {paged ? (
         <>
@@ -393,6 +405,28 @@ function FloatingPagedContentRow({
   );
 }
 
+function floatingPagedContentDescriptors(
+  row: FloatingContentLayoutRow,
+  snapshot: FloatingPanelSnapshot,
+  priceModel: OfficialAPIPriceModel,
+): Array<{ group: FloatingContentGroup; modelPageIndex: number }> {
+  return row.groups.flatMap((group) => {
+    if (group !== "todayModelCost") {
+      return [{ group, modelPageIndex: 0 }];
+    }
+    const items = floatingTodayModelUsageItems(
+      snapshot.todayModelBreakdowns,
+      priceModel,
+      { showPlaceholders: todayModelUsageReady(snapshot) },
+    );
+    const pageCount = floatingModelUsagePageCount("cost", items);
+    return Array.from({ length: pageCount }, (_, modelPageIndex) => ({
+      group,
+      modelPageIndex,
+    }));
+  });
+}
+
 function FloatingContentRow({
   attachedRunningThreads,
   attachedUsageStatus,
@@ -405,6 +439,7 @@ function FloatingContentRow({
   settings,
   snapshot,
   total,
+  modelPageIndex = 0,
 }: FloatingContentRowProps) {
   const palette = floatingTextPaletteForGroup(settings, group, index, total);
   const style = {
@@ -493,6 +528,7 @@ function FloatingContentRow({
       return (
         <FloatingTodayModelUsageRow
           page="cost"
+          pageIndex={modelPageIndex}
           priceModel={priceModel}
           rows={snapshot.todayModelBreakdowns}
           showPlaceholders={todayModelUsageReady(snapshot)}
@@ -543,26 +579,29 @@ function FloatingContentRow({
 
 function FloatingTodayModelUsageRow({
   page,
+  pageIndex = 0,
   priceModel,
   rows,
   showPlaceholders,
   style,
 }: {
   page: FloatingModelUsagePage;
+  pageIndex?: number;
   priceModel: OfficialAPIPriceModel;
   rows: FloatingPanelSnapshot["todayModelBreakdowns"];
   showPlaceholders: boolean;
   style: CSSProperties;
 }) {
-  const items = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders });
-  const overflowText = floatingModelUsageOverflowText(items);
+  const allItems = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders });
+  const items = floatingModelUsagePageItems(page, allItems, pageIndex);
+  const overflowText = page === "share" ? floatingModelUsageOverflowText(allItems) : null;
   return (
     <div
       aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
       className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : " floating-model-usage--cost"}`}
       style={style}
     >
-      {items.length === 0 ? (
+      {allItems.length === 0 ? (
         <span className="floating-model-usage-empty">今日模型待读取</span>
       ) : (
         <span className="floating-model-usage-items">
@@ -579,7 +618,7 @@ function FloatingTodayModelUsageRow({
               className="floating-model-usage-more"
               title={overflowText}
             >
-              +{items.length - FLOATING_MODEL_USAGE_VISIBLE_LIMIT}
+              +{allItems.length - FLOATING_MODEL_USAGE_VISIBLE_LIMIT}
             </small>
           ) : null}
         </span>

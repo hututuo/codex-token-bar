@@ -27,6 +27,7 @@ export interface FloatingModelUsageItem {
 }
 
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
+export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 3;
 export const DASHBOARD_PRIMARY_MODEL_KEYS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -43,14 +44,14 @@ interface CombinedModelUsage {
   calls: number;
 }
 
-// Keep this list in lockstep with the Swift compact surface. Spark is not a
-// default paid model because its quota is independent; it is added only when
-// the source actually reports Spark usage.
+// Keep this list in lockstep with the Swift compact surface. These are the
+// placeholder priority keys; only enough zero rows are added to reach three
+// total visible models. Spark is not a default paid model because its quota is
+// independent; it is added only when the source actually reports Spark usage.
 export const FLOATING_DEFAULT_MODEL_KEYS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
-  "gpt-5.4",
 ] as const;
 
 const FLOATING_DEFAULT_MODEL_ORDER: ReadonlyMap<string, number> = new Map(
@@ -87,6 +88,7 @@ export function floatingTodayModelUsageItems(
   if (total <= 0 && !options.showPlaceholders) return [];
   if (options.showPlaceholders) {
     for (const key of FLOATING_DEFAULT_MODEL_KEYS) {
+      if (grouped.size >= FLOATING_MODEL_USAGE_MINIMUM_COUNT) break;
       if (!grouped.has(key)) {
         grouped.set(key, {
           model: key,
@@ -145,6 +147,39 @@ export function floatingTodayModelUsageItems(
     if (leftDefaultIndex !== rightDefaultIndex) return leftDefaultIndex - rightDefaultIndex;
     return left.key.localeCompare(right.key);
   });
+}
+
+export function floatingModelUsagePageSizes(itemCount: number): number[] {
+  const count = Math.max(0, Math.floor(itemCount));
+  if (count === 0) return [];
+  if (count <= FLOATING_MODEL_USAGE_VISIBLE_LIMIT) return [count];
+
+  const pageCount = Math.ceil(count / FLOATING_MODEL_USAGE_VISIBLE_LIMIT);
+  const baseSize = Math.floor(count / pageCount);
+  const remainder = count % pageCount;
+  return Array.from({ length: pageCount }, (_, index) => baseSize + (index < remainder ? 1 : 0));
+}
+
+export function floatingModelUsagePageCount(
+  page: FloatingModelUsagePage,
+  items: FloatingModelUsageItem[],
+): number {
+  if (page !== "cost" || items.length === 0) return 1;
+  return Math.max(1, floatingModelUsagePageSizes(items.length).length);
+}
+
+export function floatingModelUsagePageItems(
+  page: FloatingModelUsagePage,
+  items: FloatingModelUsageItem[],
+  pageIndex: number,
+): FloatingModelUsageItem[] {
+  if (page !== "cost") return items.slice(0, FLOATING_MODEL_USAGE_VISIBLE_LIMIT);
+
+  const sizes = floatingModelUsagePageSizes(items.length);
+  if (sizes.length === 0) return [];
+  const safePageIndex = Math.min(Math.max(Math.floor(pageIndex), 0), sizes.length - 1);
+  const start = sizes.slice(0, safePageIndex).reduce((sum, size) => sum + size, 0);
+  return items.slice(start, start + sizes[safePageIndex]);
 }
 
 export function floatingModelUsageValue(
