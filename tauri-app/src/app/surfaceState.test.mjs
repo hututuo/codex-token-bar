@@ -37,6 +37,29 @@ test("quota refresh cadence is shared through app settings and surface events", 
   assert.equal(statusPanel.includes("onAppSettingsChanged"), true);
 });
 
+test("local usage cadence settings are saved atomically and broadcast as one snapshot", async () => {
+  const dashboardApp = await readFile(new URL("./DashboardApp.tsx", import.meta.url), "utf8");
+  const shellSettings = await readFile(new URL("./useDashboardShellSettings.ts", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  const settingsDialog = await readFile(new URL("../components/settings/AppSettingsDialog.tsx", import.meta.url), "utf8");
+  const settingsClient = await readFile(new URL("../api/settingsClient.ts", import.meta.url), "utf8");
+  const rustAllowlist = await readFile(new URL("../../src-tauri/src/commands/window_auth.rs", import.meta.url), "utf8");
+
+  for (const field of [
+    "usageLightRefreshIntervalSeconds",
+    "usageVisibleAggregateIntervalMinutes",
+    "usageBackgroundAggregateIntervalMinutes",
+  ]) {
+    assert.equal(dashboardApp.includes(`${field}={shellSettings.${field}}`), true);
+    assert.equal(dashboardPage.includes(field), true);
+    assert.equal(settingsDialog.includes(field), true);
+  }
+  assert.equal(shellSettings.includes("saveUsageRefreshSettings"), true);
+  assert.equal(shellSettings.includes("publishAppSettings(settings)"), true);
+  assert.equal(settingsClient.includes("save_usage_refresh_settings"), true);
+  assert.equal(rustAllowlist.includes('"save_usage_refresh_settings"'), true);
+});
+
 test("dashboard owns quota polling while compact surfaces consume shared quota events", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");

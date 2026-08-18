@@ -15,6 +15,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_display_surfaces",
     "save_custom_account_display_name",
     "save_quota_refresh_interval_ms",
+    "save_usage_refresh_settings",
     "save_auto_resume_settings",
     "save_session_enhancement_settings",
     "save_setup_guide_completed",
@@ -365,5 +366,12 @@ mod tests {
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");
         }
+    }
+
+    #[test]
+    fn usage_refresh_settings_save_is_main_window_only() {
+        assert!(allows_window_label("save_usage_refresh_settings", "main"));
+        assert!(!allows_window_label("save_usage_refresh_settings", "floating"));
+        assert!(!allows_window_label("save_usage_refresh_settings", "status"));
     }
 }

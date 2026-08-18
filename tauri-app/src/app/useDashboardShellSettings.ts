@@ -11,6 +11,7 @@ import {
   saveQuotaRefreshIntervalMs,
   saveSessionEnhancementSettings,
   saveSetupGuideCompleted,
+  saveUsageRefreshSettings,
 } from "../api/client";
 import {
   DEFAULT_FLOATING_SETTINGS,
@@ -32,6 +33,7 @@ import type {
   StatusMetricId,
   StatusMetricLabelStyle,
   StatusSummarySectionId,
+  UsageRefreshSettings,
 } from "../types/dashboard";
 import {
   DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
@@ -52,6 +54,10 @@ import {
 } from "../settings/trailingSettingsPersistence";
 import { useAutostartSettings } from "./useAutostartSettings";
 import { useDisplaySurfaceSettings } from "./useDisplaySurfaceSettings";
+import {
+  DEFAULT_USAGE_REFRESH_SETTINGS,
+  sanitizeUsageRefreshSettings,
+} from "../settings/usageRefreshCadence";
 
 interface DashboardShellSettingsOptions {
   dashboardHydrated: boolean;
@@ -74,6 +80,9 @@ export interface DashboardShellSettingsState {
   floatingVisible: boolean;
   customAccountDisplayName: string;
   quotaRefreshIntervalMs: number;
+  usageLightRefreshIntervalSeconds: number;
+  usageVisibleAggregateIntervalMinutes: number;
+  usageBackgroundAggregateIntervalMinutes: number;
   settingsError: string | null;
   showSetupGuide: boolean;
   completeSetupGuide: () => Promise<void>;
@@ -98,6 +107,7 @@ export interface DashboardShellSettingsState {
   updateFloatingContentVisibility: (contentVisibility: FloatingContentVisibility) => void;
   updateCustomAccountDisplayName: (displayName: string) => Promise<void>;
   updateQuotaRefreshIntervalMs: (intervalMs: number) => Promise<void>;
+  updateUsageRefreshSettings: (settings: UsageRefreshSettings) => Promise<void>;
 }
 
 export function useDashboardShellSettings({
@@ -116,6 +126,7 @@ export function useDashboardShellSettings({
   const [autoResumeError, setAutoResumeError] = useState<string | null>(null);
   const [customAccountDisplayName, setCustomAccountDisplayName] = useState("");
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
+  const [usageRefreshSettings, setUsageRefreshSettings] = useState(DEFAULT_USAGE_REFRESH_SETTINGS);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [showSetupGuide, setShowSetupGuide] = useState(false);
   const floatingSettingsLoaded = useRef(false);
@@ -180,6 +191,7 @@ export function useDashboardShellSettings({
       floatingSettingsLoaded.current = true;
       setCustomAccountDisplayName(settings.customAccountDisplayName.trim());
       setQuotaRefreshIntervalMs(sanitizeQuotaRefreshIntervalMs(settings.quotaRefreshIntervalMs));
+      setUsageRefreshSettings(sanitizeUsageRefreshSettings(settings));
       const persistedFloatingSettings = sanitizeFloatingSettings(settings.floatingWindow);
       floatingPersistenceRef.current?.setPersisted(persistedFloatingSettings);
       if (floatingSettingsEdits.current === 0) {
@@ -271,6 +283,7 @@ export function useDashboardShellSettings({
       if (!disposed) {
         setAutoResumeSettings(sanitizeAutoResumeSettings(settings.autoResume));
         setSessionEnhancements(sanitizeSessionEnhancements(settings.sessionEnhancements));
+        setUsageRefreshSettings(sanitizeUsageRefreshSettings(settings));
       }
     }).then((listener) => {
       if (disposed) listener();
@@ -375,6 +388,17 @@ export function useDashboardShellSettings({
     void desktopPlatform.publishAppSettings(settings);
   }
 
+  async function updateUsageRefreshSettings(nextSettings: UsageRefreshSettings) {
+    const normalized = sanitizeUsageRefreshSettings(nextSettings);
+    setUsageRefreshSettings(normalized);
+    const settings = await saveUsageRefreshSettings(normalized);
+    const persisted = sanitizeUsageRefreshSettings(settings);
+    setUsageRefreshSettings(persisted);
+    // Keep the existing app-settings-changed fan-out as the authority for
+    // already-mounted surfaces; this command emits exactly one snapshot.
+    void desktopPlatform.publishAppSettings(settings);
+  }
+
   async function completeSetupGuide() {
     const settings = await saveSetupGuideCompleted(true);
     if (!settings.setupGuideCompleted) {
@@ -459,6 +483,9 @@ export function useDashboardShellSettings({
     floatingVisible,
     customAccountDisplayName,
     quotaRefreshIntervalMs,
+    usageLightRefreshIntervalSeconds: usageRefreshSettings.usageLightRefreshIntervalSeconds,
+    usageVisibleAggregateIntervalMinutes: usageRefreshSettings.usageVisibleAggregateIntervalMinutes,
+    usageBackgroundAggregateIntervalMinutes: usageRefreshSettings.usageBackgroundAggregateIntervalMinutes,
     settingsError,
     showSetupGuide,
     completeSetupGuide,
@@ -483,6 +510,7 @@ export function useDashboardShellSettings({
     updateFloatingContentVisibility,
     updateCustomAccountDisplayName,
     updateQuotaRefreshIntervalMs,
+    updateUsageRefreshSettings,
   };
 }
 

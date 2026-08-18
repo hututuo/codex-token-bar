@@ -3,11 +3,19 @@ import { DEFAULT_FLOATING_CONTENT_VISIBILITY } from "../../floating/floatingCont
 import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS } from "../../settings/quotaRefreshCadence";
 import { DEFAULT_AUTO_RESUME_SETTINGS } from "../../settings/autoResume";
 import { DEFAULT_SESSION_ENHANCEMENTS } from "../../settings/sessionEnhancements";
+import {
+  DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES,
+  DEFAULT_USAGE_LIGHT_REFRESH_INTERVAL_SECONDS,
+  DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES,
+} from "../../settings/usageRefreshCadence";
 
 export const fallbackAppSettings: AppSettingsSnapshot = {
   codexHome: null,
   customAccountDisplayName: "",
   quotaRefreshIntervalMs: DEFAULT_QUOTA_REFRESH_INTERVAL_MS,
+  usageLightRefreshIntervalSeconds: DEFAULT_USAGE_LIGHT_REFRESH_INTERVAL_SECONDS,
+  usageVisibleAggregateIntervalMinutes: DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES,
+  usageBackgroundAggregateIntervalMinutes: DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES,
   floatingWindow: {
     opacity: 0.92,
     scale: 1,

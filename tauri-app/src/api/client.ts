@@ -44,6 +44,7 @@ export {
   saveFloatingPosition,
   saveFloatingSettings,
   saveQuotaRefreshIntervalMs,
+  saveUsageRefreshSettings,
   saveSessionEnhancementSettings,
   saveSetupGuideCompleted,
   setAutostartEnabled,

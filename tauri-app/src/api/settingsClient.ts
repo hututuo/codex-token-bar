@@ -8,6 +8,7 @@ import type {
   FloatingWindowPosition,
   FloatingWindowSettings,
   SessionEnhancementSettings,
+  UsageRefreshSettings,
 } from "../types/dashboard";
 import { fallbackAutostartStatus } from "./fallback";
 import { callCommand, callCommandStrict } from "./command";
@@ -50,6 +51,12 @@ export function saveCustomAccountDisplayName(customAccountDisplayName: string): 
 
 export function saveQuotaRefreshIntervalMs(intervalMs: number): Promise<AppSettingsSnapshot> {
   return callCommandStrict<AppSettingsSnapshot>("save_quota_refresh_interval_ms", { intervalMs });
+}
+
+export function saveUsageRefreshSettings(
+  settings: UsageRefreshSettings,
+): Promise<AppSettingsSnapshot> {
+  return callCommandStrict<AppSettingsSnapshot>("save_usage_refresh_settings", { settings });
 }
 
 export function saveSetupGuideCompleted(completed: boolean): Promise<AppSettingsSnapshot> {

@@ -16,6 +16,10 @@ import {
   DEFAULT_STATUS_SUMMARY_ORDER,
 } from "../../settings/displaySettings";
 import { QUOTA_REFRESH_CADENCE_OPTIONS } from "../../settings/quotaRefreshCadence";
+import {
+  USAGE_AGGREGATE_INTERVAL_OPTIONS,
+  USAGE_LIGHT_REFRESH_INTERVAL_OPTIONS,
+} from "../../settings/usageRefreshCadence";
 import { QUOTA_PRICE_MODEL_OPTIONS, type OfficialAPIPriceModel } from "../../settings/quotaPriceModel";
 import {
   SHARED_ACCOUNT_RADAR_TIER_OPTIONS,
@@ -59,6 +63,7 @@ import type {
   StatusMetricId,
   StatusMetricLabelStyle,
   StatusSummarySectionId,
+  UsageRefreshSettings,
 } from "../../types/dashboard";
 import { sanitizeSessionEnhancements } from "../../settings/sessionEnhancements";
 import { CodexHomeEditor } from "../dashboardHeader/CodexHomeEditor";
@@ -133,6 +138,9 @@ interface AppSettingsDialogProps {
   open: boolean;
   platform: PlatformCapabilities;
   quotaRefreshIntervalMs: number;
+  usageLightRefreshIntervalSeconds: number;
+  usageVisibleAggregateIntervalMinutes: number;
+  usageBackgroundAggregateIntervalMinutes: number;
   sessionEnhancements: SessionEnhancementSettings;
   threadDeleteBridgeStatus: ThreadDeleteBridgeStatus;
   onCheckForUpdate: () => Promise<void>;
@@ -148,6 +156,7 @@ interface AppSettingsDialogProps {
   onOpenProviderRepair: () => void;
   onOpenSessionManagement: () => void;
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
+  onUsageRefreshSettingsChange: (settings: UsageRefreshSettings) => Promise<void>;
   onCancelAutoResume: () => Promise<void>;
   onRefreshAutoResume: () => Promise<void>;
   onReconnectThreadDelete: () => Promise<void>;
@@ -185,6 +194,9 @@ export function AppSettingsDialog({
   open,
   platform,
   quotaRefreshIntervalMs,
+  usageLightRefreshIntervalSeconds,
+  usageVisibleAggregateIntervalMinutes,
+  usageBackgroundAggregateIntervalMinutes,
   sessionEnhancements,
   threadDeleteBridgeStatus,
   onCheckForUpdate,
@@ -200,6 +212,7 @@ export function AppSettingsDialog({
   onOpenProviderRepair,
   onOpenSessionManagement,
   onQuotaRefreshIntervalChange,
+  onUsageRefreshSettingsChange,
   onCancelAutoResume,
   onRefreshAutoResume,
   onReconnectThreadDelete,
@@ -424,9 +437,13 @@ export function AppSettingsDialog({
                   floatingSettings={floatingSettings}
                   liveRateEnabled={liveRateEnabled}
                   onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+                  onUsageRefreshSettingsChange={onUsageRefreshSettingsChange}
                   onTokenRateFullScaleChange={onTokenRateFullScaleChange}
                   onToggleLiveRate={onToggleLiveRate}
                   quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+                  usageLightRefreshIntervalSeconds={usageLightRefreshIntervalSeconds}
+                  usageVisibleAggregateIntervalMinutes={usageVisibleAggregateIntervalMinutes}
+                  usageBackgroundAggregateIntervalMinutes={usageBackgroundAggregateIntervalMinutes}
                 />
               ) : null}
               {selectedCategory === "automation" ? (
@@ -966,16 +983,24 @@ function MonitoringSettings({
   floatingSettings,
   liveRateEnabled,
   onQuotaRefreshIntervalChange,
+  onUsageRefreshSettingsChange,
   onTokenRateFullScaleChange,
   onToggleLiveRate,
   quotaRefreshIntervalMs,
+  usageLightRefreshIntervalSeconds,
+  usageVisibleAggregateIntervalMinutes,
+  usageBackgroundAggregateIntervalMinutes,
 }: Pick<AppSettingsDialogProps,
   | "floatingSettings"
   | "liveRateEnabled"
   | "onQuotaRefreshIntervalChange"
+  | "onUsageRefreshSettingsChange"
   | "onTokenRateFullScaleChange"
   | "onToggleLiveRate"
   | "quotaRefreshIntervalMs"
+  | "usageLightRefreshIntervalSeconds"
+  | "usageVisibleAggregateIntervalMinutes"
+  | "usageBackgroundAggregateIntervalMinutes"
 >) {
   const fullScale = Math.round(floatingSettings.tokenRateFullScale);
   const { settings: attributionSettings, updateSettings: updateAttributionSettings } =
@@ -1017,6 +1042,69 @@ function MonitoringSettings({
           </select>
         </SettingRow>
         <div className="app-settings-note">跨平台版会自动使用精确的本地会话统计，无需单独开启。</div>
+      </SettingsGroup>
+      <SettingsGroup
+        title="本地统计刷新"
+        description="分别控制轻量摘要、主界面图表和后台图表的本地统计刷新。"
+      >
+        <SettingRow
+          title="轻量摘要"
+          description="状态栏与悬浮窗只读取轻量摘要，不触发主界面完整图表聚合。"
+        >
+          <select
+            aria-label="轻量摘要刷新频率"
+            className="app-settings-select"
+            onChange={(event) => void onUsageRefreshSettingsChange({
+              usageLightRefreshIntervalSeconds: Number(event.currentTarget.value),
+              usageVisibleAggregateIntervalMinutes,
+              usageBackgroundAggregateIntervalMinutes,
+            })}
+            value={usageLightRefreshIntervalSeconds}
+          >
+            {USAGE_LIGHT_REFRESH_INTERVAL_OPTIONS.map((option) => (
+              <option key={option.valueSeconds} value={option.valueSeconds}>{option.label}</option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow
+          title="主界面图表"
+          description="主窗口可见时，按墙钟边界刷新 5 分钟统计图表。"
+        >
+          <select
+            aria-label="主界面图表刷新频率"
+            className="app-settings-select"
+            onChange={(event) => void onUsageRefreshSettingsChange({
+              usageLightRefreshIntervalSeconds,
+              usageVisibleAggregateIntervalMinutes: Number(event.currentTarget.value),
+              usageBackgroundAggregateIntervalMinutes,
+            })}
+            value={usageVisibleAggregateIntervalMinutes}
+          >
+            {USAGE_AGGREGATE_INTERVAL_OPTIONS.map((option) => (
+              <option key={option.valueMinutes} value={option.valueMinutes}>{option.label}</option>
+            ))}
+          </select>
+        </SettingRow>
+        <SettingRow
+          title="后台图表"
+          description="主窗口在后台时，按更宽松的墙钟边界刷新图表。"
+        >
+          <select
+            aria-label="后台图表刷新频率"
+            className="app-settings-select"
+            onChange={(event) => void onUsageRefreshSettingsChange({
+              usageLightRefreshIntervalSeconds,
+              usageVisibleAggregateIntervalMinutes,
+              usageBackgroundAggregateIntervalMinutes: Number(event.currentTarget.value),
+            })}
+            value={usageBackgroundAggregateIntervalMinutes}
+          >
+            {USAGE_AGGREGATE_INTERVAL_OPTIONS.map((option) => (
+              <option key={option.valueMinutes} value={option.valueMinutes}>{option.label}</option>
+            ))}
+          </select>
+        </SettingRow>
+        <div className="app-settings-note">这些设置只改变本地统计调度，不改变额度刷新频率。</div>
       </SettingsGroup>
       <SettingsGroup title="共享账号归因" description="对比本机等值消耗与账号 7 天额度变化。">
         <SettingRow

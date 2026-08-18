@@ -54,6 +54,9 @@ export interface AppSettingsSnapshot {
   codexHome: string | null;
   customAccountDisplayName: string;
   quotaRefreshIntervalMs: number;
+  usageLightRefreshIntervalSeconds: number;
+  usageVisibleAggregateIntervalMinutes: number;
+  usageBackgroundAggregateIntervalMinutes: number;
   floatingWindow: FloatingWindowSettings;
   floatingPosition: FloatingWindowPosition | null;
   displaySurfaces: DisplaySurfaceSettings;
@@ -61,6 +64,14 @@ export interface AppSettingsSnapshot {
   sessionEnhancements: SessionEnhancementSettings;
   autoResume: AutoResumeSettings;
 }
+
+export interface UsageRefreshSettings {
+  usageLightRefreshIntervalSeconds: number;
+  usageVisibleAggregateIntervalMinutes: number;
+  usageBackgroundAggregateIntervalMinutes: number;
+}
+
+export type UsageRefreshCadenceSettings = UsageRefreshSettings;
 
 export interface SessionEnhancementSettings {
   sessionDelete: boolean;

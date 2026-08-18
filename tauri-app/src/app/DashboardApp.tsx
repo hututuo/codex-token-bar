@@ -93,6 +93,9 @@ export function DashboardApp() {
         floatingSettings={shellSettings.floatingSettings}
         customAccountDisplayName={shellSettings.customAccountDisplayName}
         quotaRefreshIntervalMs={shellSettings.quotaRefreshIntervalMs}
+        usageLightRefreshIntervalSeconds={shellSettings.usageLightRefreshIntervalSeconds}
+        usageVisibleAggregateIntervalMinutes={shellSettings.usageVisibleAggregateIntervalMinutes}
+        usageBackgroundAggregateIntervalMinutes={shellSettings.usageBackgroundAggregateIntervalMinutes}
         liveRate={readyState.liveRate}
         liveThreadOptions={readyState.liveThreadOptions}
         platform={readyState.platform}
@@ -121,6 +124,7 @@ export function DashboardApp() {
         onProviderRepairSnapshotChange={updateProviderRepair}
         onQuotaRefresh={reloadQuota}
         onQuotaRefreshIntervalChange={shellSettings.updateQuotaRefreshIntervalMs}
+        onUsageRefreshSettingsChange={shellSettings.updateUsageRefreshSettings}
         onAttributionPreciseRefreshNeeded={refreshAttributionPreciseUsage}
         onAttributionSafetyAcknowledge={acknowledgeAttributionSafety}
         onAttributionSafetyRefreshNeeded={refreshAttributionSafety}

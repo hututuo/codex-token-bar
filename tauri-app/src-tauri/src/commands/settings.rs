@@ -3,6 +3,7 @@ use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutostartStatus,
     DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
+    UsageRefreshSettingsSnapshot,
 };
 use super::run_blocking_command;
 use super::window_auth::require_window_label;
@@ -122,6 +123,7 @@ mod tests {
             "read_autostart_status",
             "set_autostart_enabled",
             "complete_floating_paging_guide",
+            "save_usage_refresh_settings",
         ] {
             assert_async_command_uses_blocking_pool(settings_source, command);
         }
@@ -206,6 +208,15 @@ pub async fn save_quota_refresh_interval_ms(
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_quota_refresh_interval_ms")?;
     run_blocking_command(move || platform::save_quota_refresh_interval_ms(interval_ms)).await
+}
+
+#[tauri::command]
+pub async fn save_usage_refresh_settings(
+    window: tauri::WebviewWindow,
+    settings: UsageRefreshSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    require_window_label(&window, "save_usage_refresh_settings")?;
+    run_blocking_command(move || platform::save_usage_refresh_settings(settings)).await
 }
 
 #[tauri::command]

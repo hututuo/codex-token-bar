@@ -118,6 +118,7 @@ pub fn run() {
             commands::settings::save_display_surfaces,
             commands::settings::save_custom_account_display_name,
             commands::settings::save_quota_refresh_interval_ms,
+            commands::settings::save_usage_refresh_settings,
             commands::settings::save_auto_resume_settings,
             commands::settings::save_session_enhancement_settings,
             commands::settings::save_setup_guide_completed,

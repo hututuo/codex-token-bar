@@ -2,7 +2,8 @@ use crate::core::{app_paths, app_paths::home_dir};
 use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
-    FloatingWindowSettingsSnapshot, AUTO_RESUME_TASK_COLLECTION_VERSION,
+    FloatingWindowSettingsSnapshot, UsageRefreshSettingsSnapshot,
+    AUTO_RESUME_TASK_COLLECTION_VERSION,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -152,6 +153,23 @@ pub fn save_display_surfaces(
 pub fn save_quota_refresh_interval_ms(interval_ms: u64) -> Result<AppSettingsSnapshot, String> {
     mutate_app_settings(|settings| {
         settings.quota_refresh_interval_ms = sanitize_quota_refresh_interval_ms(interval_ms);
+    })
+}
+
+pub fn save_usage_refresh_settings(
+    usage: UsageRefreshSettingsSnapshot,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| {
+        settings.usage_light_refresh_interval_seconds =
+            sanitize_usage_light_refresh_interval_seconds(
+                usage.usage_light_refresh_interval_seconds,
+            );
+        settings.usage_visible_aggregate_interval_minutes =
+            sanitize_usage_aggregate_interval_minutes(usage.usage_visible_aggregate_interval_minutes);
+        settings.usage_background_aggregate_interval_minutes =
+            sanitize_usage_background_aggregate_interval_minutes(
+                usage.usage_background_aggregate_interval_minutes,
+            );
     })
 }
 
@@ -2341,6 +2359,14 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
     settings.custom_account_display_name = settings.custom_account_display_name.trim().into();
     settings.quota_refresh_interval_ms =
         sanitize_quota_refresh_interval_ms(settings.quota_refresh_interval_ms);
+    settings.usage_light_refresh_interval_seconds =
+        sanitize_usage_light_refresh_interval_seconds(settings.usage_light_refresh_interval_seconds);
+    settings.usage_visible_aggregate_interval_minutes = sanitize_usage_aggregate_interval_minutes(
+        settings.usage_visible_aggregate_interval_minutes,
+    );
+    settings.usage_background_aggregate_interval_minutes = sanitize_usage_background_aggregate_interval_minutes(
+        settings.usage_background_aggregate_interval_minutes,
+    );
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
     settings.display_surfaces = sanitize_display_surfaces(settings.display_surfaces);
@@ -2603,6 +2629,27 @@ fn sanitize_quota_refresh_interval_ms(value: u64) -> u64 {
     match value {
         30_000 | 60_000 => value,
         _ => 60_000,
+    }
+}
+
+fn sanitize_usage_light_refresh_interval_seconds(value: u64) -> u64 {
+    match value {
+        60 | 150 | 300 | 600 => value,
+        _ => 150,
+    }
+}
+
+fn sanitize_usage_aggregate_interval_minutes(value: u32) -> u32 {
+    match value {
+        5 | 10 | 15 | 30 => value,
+        _ => 5,
+    }
+}
+
+fn sanitize_usage_background_aggregate_interval_minutes(value: u32) -> u32 {
+    match value {
+        5 | 10 | 15 | 30 => value,
+        _ => 30,
     }
 }
 
@@ -3311,6 +3358,94 @@ mod tests {
                 60_000
             );
         }
+    }
+
+    #[test]
+    fn local_usage_refresh_settings_use_independent_defaults_and_supported_values() {
+        let defaults: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.usage_light_refresh_interval_seconds, 150);
+        assert_eq!(defaults.usage_visible_aggregate_interval_minutes, 5);
+        assert_eq!(defaults.usage_background_aggregate_interval_minutes, 30);
+
+        let invalid: AppSettingsSnapshot = serde_json::from_str(
+            r#"{
+                "usageLightRefreshIntervalSeconds": 301,
+                "usageVisibleAggregateIntervalMinutes": 0,
+                "usageBackgroundAggregateIntervalMinutes": "not-a-number"
+            }"#,
+        )
+        .unwrap();
+        let sanitized = sanitize_app_settings(invalid);
+        assert_eq!(sanitized.usage_light_refresh_interval_seconds, 150);
+        assert_eq!(sanitized.usage_visible_aggregate_interval_minutes, 5);
+        assert_eq!(sanitized.usage_background_aggregate_interval_minutes, 30);
+        assert_eq!(
+            sanitize_app_settings(AppSettingsSnapshot {
+                usage_background_aggregate_interval_minutes: 0,
+                ..AppSettingsSnapshot::default()
+            })
+            .usage_background_aggregate_interval_minutes,
+            30
+        );
+
+        for value in [60, 150, 300, 600] {
+            assert_eq!(
+                sanitize_app_settings(AppSettingsSnapshot {
+                    usage_light_refresh_interval_seconds: value,
+                    ..AppSettingsSnapshot::default()
+                })
+                .usage_light_refresh_interval_seconds,
+                value
+            );
+        }
+        for value in [5, 10, 15, 30] {
+            let sanitized = sanitize_app_settings(AppSettingsSnapshot {
+                usage_visible_aggregate_interval_minutes: value,
+                usage_background_aggregate_interval_minutes: value,
+                ..AppSettingsSnapshot::default()
+            });
+            assert_eq!(sanitized.usage_visible_aggregate_interval_minutes, value);
+            assert_eq!(sanitized.usage_background_aggregate_interval_minutes, value);
+        }
+    }
+
+    #[test]
+    fn atomic_usage_refresh_save_preserves_quota_refresh_interval() {
+        let root = TestSettingsRoot::new("usage-refresh-atomic");
+        let path = root.settings_path();
+        write_fixture(
+            &path,
+            &AppSettingsSnapshot {
+                quota_refresh_interval_ms: 30_000,
+                ..AppSettingsSnapshot::default()
+            },
+        );
+
+        let saved = mutate_app_settings_at(&path, |settings| {
+            settings.usage_light_refresh_interval_seconds = 600;
+            settings.usage_visible_aggregate_interval_minutes = 15;
+            settings.usage_background_aggregate_interval_minutes = 10;
+        })
+        .unwrap();
+
+        assert_eq!(saved.quota_refresh_interval_ms, 30_000);
+        assert_eq!(saved.usage_light_refresh_interval_seconds, 600);
+        assert_eq!(saved.usage_visible_aggregate_interval_minutes, 15);
+        assert_eq!(saved.usage_background_aggregate_interval_minutes, 10);
+        let reread = read_app_settings_at(&path).unwrap();
+        assert_eq!(reread.quota_refresh_interval_ms, saved.quota_refresh_interval_ms);
+        assert_eq!(
+            reread.usage_light_refresh_interval_seconds,
+            saved.usage_light_refresh_interval_seconds
+        );
+        assert_eq!(
+            reread.usage_visible_aggregate_interval_minutes,
+            saved.usage_visible_aggregate_interval_minutes
+        );
+        assert_eq!(
+            reread.usage_background_aggregate_interval_minutes,
+            saved.usage_background_aggregate_interval_minutes
+        );
     }
 
     #[test]

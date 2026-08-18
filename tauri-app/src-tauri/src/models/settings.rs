@@ -9,6 +9,21 @@ pub struct AppSettingsSnapshot {
     pub custom_account_display_name: String,
     #[serde(default = "default_quota_refresh_interval_ms")]
     pub quota_refresh_interval_ms: u64,
+    #[serde(
+        default = "default_usage_light_refresh_interval_seconds",
+        deserialize_with = "deserialize_usage_light_refresh_interval_seconds"
+    )]
+    pub usage_light_refresh_interval_seconds: u64,
+    #[serde(
+        default = "default_usage_visible_aggregate_interval_minutes",
+        deserialize_with = "deserialize_usage_visible_aggregate_interval_minutes"
+    )]
+    pub usage_visible_aggregate_interval_minutes: u32,
+    #[serde(
+        default = "default_usage_background_aggregate_interval_minutes",
+        deserialize_with = "deserialize_usage_background_aggregate_interval_minutes"
+    )]
+    pub usage_background_aggregate_interval_minutes: u32,
     #[serde(default)]
     pub floating_window: FloatingWindowSettingsSnapshot,
     #[serde(default)]
@@ -29,6 +44,11 @@ impl Default for AppSettingsSnapshot {
             codex_home: None,
             custom_account_display_name: String::new(),
             quota_refresh_interval_ms: default_quota_refresh_interval_ms(),
+            usage_light_refresh_interval_seconds: default_usage_light_refresh_interval_seconds(),
+            usage_visible_aggregate_interval_minutes:
+                default_usage_visible_aggregate_interval_minutes(),
+            usage_background_aggregate_interval_minutes:
+                default_usage_background_aggregate_interval_minutes(),
             floating_window: FloatingWindowSettingsSnapshot::default(),
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
@@ -37,6 +57,91 @@ impl Default for AppSettingsSnapshot {
             auto_resume: AutoResumeSettingsSnapshot::default(),
         }
     }
+}
+
+/// The three local usage cadence controls are intentionally kept together for
+/// the one-command save path. They are independent from the account quota
+/// polling cadence above.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRefreshSettingsSnapshot {
+    #[serde(
+        default = "default_usage_light_refresh_interval_seconds",
+        deserialize_with = "deserialize_usage_light_refresh_interval_seconds"
+    )]
+    pub usage_light_refresh_interval_seconds: u64,
+    #[serde(
+        default = "default_usage_visible_aggregate_interval_minutes",
+        deserialize_with = "deserialize_usage_visible_aggregate_interval_minutes"
+    )]
+    pub usage_visible_aggregate_interval_minutes: u32,
+    #[serde(
+        default = "default_usage_background_aggregate_interval_minutes",
+        deserialize_with = "deserialize_usage_background_aggregate_interval_minutes"
+    )]
+    pub usage_background_aggregate_interval_minutes: u32,
+}
+
+impl Default for UsageRefreshSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            usage_light_refresh_interval_seconds: default_usage_light_refresh_interval_seconds(),
+            usage_visible_aggregate_interval_minutes:
+                default_usage_visible_aggregate_interval_minutes(),
+            usage_background_aggregate_interval_minutes:
+                default_usage_background_aggregate_interval_minutes(),
+        }
+    }
+}
+
+fn default_usage_light_refresh_interval_seconds() -> u64 {
+    150
+}
+
+fn default_usage_visible_aggregate_interval_minutes() -> u32 {
+    5
+}
+
+fn default_usage_background_aggregate_interval_minutes() -> u32 {
+    30
+}
+
+fn deserialize_usage_light_refresh_interval_seconds<'de, D>(
+    deserializer: D,
+) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer).unwrap_or(None);
+    Ok(value
+        .and_then(|value| value.as_u64())
+        .unwrap_or_else(default_usage_light_refresh_interval_seconds))
+}
+
+fn deserialize_usage_visible_aggregate_interval_minutes<'de, D>(
+    deserializer: D,
+) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer).unwrap_or(None);
+    Ok(value
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_else(default_usage_visible_aggregate_interval_minutes))
+}
+
+fn deserialize_usage_background_aggregate_interval_minutes<'de, D>(
+    deserializer: D,
+) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer).unwrap_or(None);
+    Ok(value
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or_else(default_usage_background_aggregate_interval_minutes))
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

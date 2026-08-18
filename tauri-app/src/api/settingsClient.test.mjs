@@ -54,3 +54,49 @@ test("readAppSettings distinguishes browser absence from a native read failure",
     else delete globalThis.window;
   }
 });
+
+test("saveUsageRefreshSettings sends all three cadences through one native command", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const calls = [];
+  const settings = {
+    usageLightRefreshIntervalSeconds: 150,
+    usageVisibleAggregateIntervalMinutes: 5,
+    usageBackgroundAggregateIntervalMinutes: 30,
+  };
+
+  try {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        clearTimeout: globalThis.clearTimeout.bind(globalThis),
+        setTimeout: globalThis.setTimeout.bind(globalThis),
+        __TAURI_INTERNALS__: {
+          invoke(command, args) {
+            calls.push({ command, args });
+            return Promise.resolve({
+              quotaRefreshIntervalMs: 60_000,
+              ...settings,
+            });
+          },
+        },
+      },
+      writable: true,
+    });
+
+    await withSsrModules(async (load) => {
+      const { saveUsageRefreshSettings } = await load("/src/api/settingsClient.ts");
+      assert.deepEqual(await saveUsageRefreshSettings(settings), {
+        quotaRefreshIntervalMs: 60_000,
+        ...settings,
+      });
+    });
+
+    assert.deepEqual(calls, [{
+      command: "save_usage_refresh_settings",
+      args: { settings },
+    }]);
+  } finally {
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else delete globalThis.window;
+  }
+});

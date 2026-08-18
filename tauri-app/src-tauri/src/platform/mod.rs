@@ -46,7 +46,7 @@ pub use settings::{
     complete_floating_paging_guide, read_app_settings, save_display_surfaces,
     save_floating_position, save_floating_settings,
     save_auto_resume_settings, save_custom_account_display_name, save_quota_refresh_interval_ms,
-    save_session_enhancement_settings, save_setup_guide_completed,
+    save_session_enhancement_settings, save_setup_guide_completed, save_usage_refresh_settings,
 };
 pub(crate) use surfaces::StatusTrayColumn;
 pub use surfaces::{

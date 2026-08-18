@@ -22,6 +22,7 @@ import type {
   StatusMetricId,
   StatusMetricLabelStyle,
   StatusSummarySectionId,
+  UsageRefreshSettings,
   ProviderRepairSnapshot,
   RunningThreadSummary,
 } from "../types/dashboard";
@@ -66,6 +67,9 @@ interface DashboardPageProps {
   floatingSettings: FloatingWindowSettings;
   customAccountDisplayName: string;
   quotaRefreshIntervalMs: number;
+  usageLightRefreshIntervalSeconds: number;
+  usageVisibleAggregateIntervalMinutes: number;
+  usageBackgroundAggregateIntervalMinutes: number;
   liveRate: LiveRateSnapshot;
   liveThreadOptions: LiveThreadOption[];
   platform: PlatformCapabilities;
@@ -89,6 +93,7 @@ interface DashboardPageProps {
   onProviderRepairSnapshotChange: (snapshot: ProviderRepairSnapshot) => void;
   onQuotaRefresh: () => void;
   onQuotaRefreshIntervalChange: (intervalMs: number) => Promise<void>;
+  onUsageRefreshSettingsChange: (settings: UsageRefreshSettings) => Promise<void>;
   onAttributionPreciseRefreshNeeded: (comparisonUpdatedAt: string) => void;
   onAttributionSafetyAcknowledge: (
     provenanceEpoch: string,
@@ -144,6 +149,9 @@ export function DashboardPage({
   floatingSettings,
   customAccountDisplayName,
   quotaRefreshIntervalMs,
+  usageLightRefreshIntervalSeconds,
+  usageVisibleAggregateIntervalMinutes,
+  usageBackgroundAggregateIntervalMinutes,
   liveRate,
   liveThreadOptions,
   platform,
@@ -167,6 +175,7 @@ export function DashboardPage({
   onProviderRepairSnapshotChange,
   onQuotaRefresh,
   onQuotaRefreshIntervalChange,
+  onUsageRefreshSettingsChange,
   onAttributionPreciseRefreshNeeded,
   onAttributionSafetyAcknowledge,
   onAttributionSafetyRefreshNeeded,
@@ -356,6 +365,7 @@ export function DashboardPage({
         onOpenProviderRepair={onProviderRepairOpen}
         onOpenSessionManagement={openSessionManagement}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+        onUsageRefreshSettingsChange={onUsageRefreshSettingsChange}
         onCancelAutoResume={onCancelAutoResume}
         onRefreshAutoResume={onRefreshAutoResume}
         onReconnectThreadDelete={onReconnectThreadDelete}
@@ -373,6 +383,9 @@ export function DashboardPage({
         open={settingsOpen}
         platform={platform}
         quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+        usageLightRefreshIntervalSeconds={usageLightRefreshIntervalSeconds}
+        usageVisibleAggregateIntervalMinutes={usageVisibleAggregateIntervalMinutes}
+        usageBackgroundAggregateIntervalMinutes={usageBackgroundAggregateIntervalMinutes}
         sessionEnhancements={sessionEnhancements}
         threadDeleteBridgeStatus={threadDeleteBridgeStatus}
       />

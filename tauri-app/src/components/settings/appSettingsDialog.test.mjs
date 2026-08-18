@@ -262,6 +262,10 @@ test("monitoring settings own the token-rate full scale control", async () => {
     const panel = activePanel(container);
     assert.match(panel.textContent, /实时速率/);
     assert.match(panel.textContent, /额度刷新/);
+    assert.match(panel.textContent, /本地统计刷新/);
+    assert.ok(panel.querySelector('select[aria-label="轻量摘要刷新频率"]'));
+    assert.ok(panel.querySelector('select[aria-label="主界面图表刷新频率"]'));
+    assert.ok(panel.querySelector('select[aria-label="后台图表刷新频率"]'));
 
     const fullScale = panel.querySelector('input[type="range"][aria-label*="速率"]');
     assert.ok(fullScale, "monitoring page should expose the token-rate full-scale range");
@@ -748,6 +752,9 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     open: true,
     platform: platformCapabilities(),
     quotaRefreshIntervalMs: 60_000,
+    usageLightRefreshIntervalSeconds: 150,
+    usageVisibleAggregateIntervalMinutes: 5,
+    usageBackgroundAggregateIntervalMinutes: 30,
     sessionEnhancements: defaultSessionEnhancements(),
     threadDeleteBridgeStatus: {
       connected: true,
@@ -773,6 +780,7 @@ function settingsProps(floatingSettings, calls = null, overrides = {}) {
     onOpenProviderRepair: () => { callLog.providerRepair += 1; },
     onOpenSessionManagement: () => { callLog.sessionManagement += 1; },
     onQuotaRefreshIntervalChange: async () => {},
+    onUsageRefreshSettingsChange: async () => {},
     onRefreshAutoResume: async () => { callLog.autoResumeRefreshes += 1; },
     onReconnectThreadDelete: async () => { callLog.threadDeleteReconnect += 1; },
     onRunAutoResume: async (taskId) => {
