@@ -42,6 +42,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 
 enum FloatingTodayModelUsagePresentation {
     static let visibleItemLimit = 4
+    static let minimumVisibleModelCount = 3
     static let dashboardPrimaryModelKeys = [
         "gpt-5.6-sol",
         "gpt-5.6-terra",
@@ -49,14 +50,15 @@ enum FloatingTodayModelUsagePresentation {
     ]
 
     /// Keep the compact model strip useful even when the current day only
-    /// contains one model. Spark is intentionally not part of this default
-    /// paid-model set: it has its own quota and remains an explicit row only
-    /// when the source actually reports Spark usage.
+    /// contains one model. Sol/Terra/Luna are the stable placeholder priority
+    /// list, but only enough zero rows are added to reach three total visible
+    /// models. Other models are added only when the source actually reports
+    /// them. Spark is intentionally not part of this default paid-model set
+    /// because it has its own quota.
     static let defaultModelKeys = [
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
-        "gpt-5.4",
     ]
 
     static func items(
@@ -84,7 +86,8 @@ enum FloatingTodayModelUsagePresentation {
             (ModelUsagePresentation.key(for: row.model), row)
         })
         if showPlaceholders {
-            for key in defaultModelKeys where rowsByKey[key] == nil {
+            for key in defaultModelKeys
+                where rowsByKey.count < minimumVisibleModelCount && rowsByKey[key] == nil {
                 rowsByKey[key] = ModelTokenBreakdown(
                     model: key,
                     breakdown: .empty
@@ -139,6 +142,50 @@ enum FloatingTodayModelUsagePresentation {
             return lhs.key < rhs.key
         }
         .map(\.item)
+    }
+
+    /// The cost page can continue onto additional pages instead of hiding
+    /// models behind a `+N` marker.  The share page keeps its compact summary
+    /// behavior because it is intentionally a single glanceable page.
+    static func pageCount(
+        for page: FloatingTodayModelUsagePage,
+        items: [FloatingTodayModelUsageItem]
+    ) -> Int {
+        guard page == .cost, !items.isEmpty else { return 1 }
+        return max(1, pageSizes(for: items.count).count)
+    }
+
+    /// Splits model amounts into balanced pages with at most four items per
+    /// page. This keeps 5/6/7/8 models as 3+2, 3+3, 4+3 and 4+4 instead of
+    /// producing an almost-empty last page such as 4+1.
+    static func pageSizes(for itemCount: Int) -> [Int] {
+        let count = max(itemCount, 0)
+        guard count > visibleItemLimit else {
+            return count == 0 ? [] : [count]
+        }
+
+        let pageCount = Int(ceil(Double(count) / Double(visibleItemLimit)))
+        let baseSize = count / pageCount
+        let remainder = count % pageCount
+        return (0..<pageCount).map { index in
+            baseSize + (index < remainder ? 1 : 0)
+        }
+    }
+
+    static func pageItems(
+        for page: FloatingTodayModelUsagePage,
+        items: [FloatingTodayModelUsageItem],
+        pageIndex: Int
+    ) -> [FloatingTodayModelUsageItem] {
+        guard page == .cost else {
+            return Array(items.prefix(visibleItemLimit))
+        }
+
+        let sizes = pageSizes(for: items.count)
+        guard !sizes.isEmpty else { return [] }
+        let safePageIndex = min(max(pageIndex, 0), sizes.count - 1)
+        let start = sizes.prefix(safePageIndex).reduce(0, +)
+        return Array(items.dropFirst(start).prefix(sizes[safePageIndex]))
     }
 
     static func accessibilityText(
@@ -222,58 +269,56 @@ struct FloatingTodayModelUsageRow: View {
     let rows: [ModelTokenBreakdown]
     let fallbackModel: OfficialAPIPriceModel
     let showPlaceholders: Bool
+    var pageIndex = 0
 
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
-        let items = FloatingTodayModelUsagePresentation.items(
+        let allItems = FloatingTodayModelUsagePresentation.items(
             from: rows,
             fallbackModel: fallbackModel,
             showPlaceholders: showPlaceholders
         )
-        let visibleLimit = FloatingTodayModelUsagePresentation.visibleItemLimit
-        let overflowDetail = FloatingTodayModelUsagePresentation.overflowDetailText(
-            items: items,
-            visibleLimit: visibleLimit
+        let items = FloatingTodayModelUsagePresentation.pageItems(
+            for: page,
+            items: allItems,
+            pageIndex: pageIndex
         )
+        let visibleLimit = FloatingTodayModelUsagePresentation.visibleItemLimit
+        let overflowDetail = page == .share
+            ? FloatingTodayModelUsagePresentation.overflowDetailText(
+                items: allItems,
+                visibleLimit: visibleLimit
+            )
+            : nil
         HStack(spacing: 5.scaled(by: displayScale)) {
-            if items.isEmpty {
+            if allItems.isEmpty {
                 Text("今日模型待读取")
                     .font(.system(size: 9.2.scaled(by: displayScale), weight: .medium))
                     .foregroundStyle(textPalette.secondaryColor)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
-                // Cost items need a little more separation on Swift because
-                // the row is rendered through the interface-scale environment;
-                // 10pt keeps the perceived spacing aligned with Tauri's 8px
-                // CSS gap at the compact surface scale.
-                HStack(spacing: page == .share ? 0 : 10.scaled(by: displayScale)) {
-                    ForEach(Array(items.prefix(visibleLimit))) { item in
-                        HStack(spacing: 2.scaled(by: displayScale)) {
-                            Circle()
-                                .fill(item.color)
-                                .frame(
-                                    width: 4.scaled(by: displayScale),
-                                    height: 4.scaled(by: displayScale)
-                                )
-                            Text(item.label)
-                                .foregroundStyle(textPalette.secondaryColor)
-                            Text(item.valueText(for: page))
-                                .foregroundStyle(textPalette.primaryColor)
-                                .monospacedDigit()
-                        }
-                        .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                        .frame(maxWidth: page == .share ? .infinity : nil, alignment: .center)
+                let visibleItems = Array(items.prefix(visibleLimit))
+                let hasOverflow = page == .share && allItems.count > visibleLimit
+
+                // Use flexible columns instead of a fixed cost-page gap. The
+                // old 10pt gap was added three times for four models, so the
+                // last amount could be pushed outside the compact panel. Each
+                // column now receives the available width; the gap naturally
+                // grows when there are fewer models and collapses when there
+                // are four (or an overflow marker) to keep every value visible.
+                HStack(spacing: 0) {
+                    ForEach(visibleItems) { item in
+                        modelItemView(item, page: page)
                     }
-                    if let overflowDetail {
-                        Text("+\(items.count - visibleLimit)")
+                    if hasOverflow {
+                        Text("+\(allItems.count - visibleLimit)")
                             .font(.system(size: 7.8.scaled(by: displayScale), weight: .semibold))
                             .foregroundStyle(textPalette.mutedColor)
-                            .help(overflowDetail)
-                            .accessibilityLabel(overflowDetail)
+                            .help(overflowDetail ?? "更多模型")
+                            .accessibilityLabel(overflowDetail ?? "更多模型")
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -289,6 +334,30 @@ struct FloatingTodayModelUsageRow: View {
                 showPlaceholders: showPlaceholders
             )
         )
+    }
+
+    @ViewBuilder
+    private func modelItemView(
+        _ item: FloatingTodayModelUsageItem,
+        page: FloatingTodayModelUsagePage
+    ) -> some View {
+        HStack(spacing: 2.scaled(by: displayScale)) {
+            Circle()
+                .fill(item.color)
+                .frame(
+                    width: 4.scaled(by: displayScale),
+                    height: 4.scaled(by: displayScale)
+                )
+            Text(item.label)
+                .foregroundStyle(textPalette.secondaryColor)
+            Text(item.valueText(for: page))
+                .foregroundStyle(textPalette.primaryColor)
+                .monospacedDigit()
+        }
+        .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 

@@ -171,7 +171,32 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(item.label, "future-model")
     }
 
-    func testFloatingTodayModelUsageShowsFourStableCoreModelsAndUsesCostOrder() throws {
+    func testFloatingTodayModelUsageShowsDefaultModelTrioAndUsesCostOrder() throws {
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.items(
+                from: [],
+                fallbackModel: .gpt56Sol,
+                showPlaceholders: true
+            ).map(\.label),
+            ["Sol", "Terra", "Luna"]
+        )
+
+        let oneUsedModel = FloatingTodayModelUsagePresentation.items(
+            from: [
+                rowWithBreakdown(
+                    "gpt-5.4",
+                    inputTokens: 1_000,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    totalTokens: 1_000
+                ),
+            ],
+            fallbackModel: .gpt56Sol,
+            showPlaceholders: true
+        )
+        XCTAssertEqual(oneUsedModel.count, 3)
+        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Sol", "Terra"])
+
         let rows = [
             rowWithBreakdown(
                 "gpt-5.6-luna",
@@ -195,9 +220,9 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
 
-        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Terra", "5.4"])
-        XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0, 0])
-        XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%", "0%"])
+        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Terra"])
+        XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0])
+        XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%"])
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.items(
                 from: rows,
@@ -206,6 +231,54 @@ final class ModelUsagePresentationTests: XCTestCase {
             ).map(\.id),
             items.map(\.id),
             "share and cost pages must consume one stable model order"
+        )
+    }
+
+    func testFloatingTodayModelCostPaginatesBeyondTheCompactFourItemPage() {
+        let rows = [
+            rowWithBreakdown("gpt-5.6-sol", inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000),
+            rowWithBreakdown("gpt-5.6-terra", inputTokens: 900, cachedInputTokens: 0, outputTokens: 0, totalTokens: 900),
+            rowWithBreakdown("gpt-5.6-luna", inputTokens: 800, cachedInputTokens: 0, outputTokens: 0, totalTokens: 800),
+            rowWithBreakdown("gpt-5.4", inputTokens: 700, cachedInputTokens: 0, outputTokens: 0, totalTokens: 700),
+            rowWithBreakdown("gpt-5.3-codex", inputTokens: 600, cachedInputTokens: 0, outputTokens: 0, totalTokens: 600),
+        ]
+        let items = FloatingTodayModelUsagePresentation.items(
+            from: rows,
+            fallbackModel: .gpt56Sol
+        )
+
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.pageCount(for: .cost, items: items),
+            2
+        )
+        XCTAssertEqual(FloatingTodayModelUsagePresentation.pageSizes(for: 4), [4])
+        XCTAssertEqual(FloatingTodayModelUsagePresentation.pageSizes(for: 5), [3, 2])
+        XCTAssertEqual(FloatingTodayModelUsagePresentation.pageSizes(for: 6), [3, 3])
+        XCTAssertEqual(FloatingTodayModelUsagePresentation.pageSizes(for: 7), [4, 3])
+        XCTAssertEqual(FloatingTodayModelUsagePresentation.pageSizes(for: 8), [4, 4])
+        let firstPage = FloatingTodayModelUsagePresentation.pageItems(
+            for: .cost,
+            items: items,
+            pageIndex: 0
+        )
+        let secondPage = FloatingTodayModelUsagePresentation.pageItems(
+            for: .cost,
+            items: items,
+            pageIndex: 1
+        )
+        XCTAssertEqual(firstPage.count, 3)
+        XCTAssertEqual(secondPage.count, 2)
+        XCTAssertEqual(
+            Set(firstPage.map(\.id) + secondPage.map(\.id)),
+            Set(items.map(\.id))
+        )
+        XCTAssertEqual(
+            FloatingTodayModelUsagePresentation.pageItems(
+                for: .cost,
+                items: items,
+                pageIndex: 99
+            ).map(\.id),
+            secondPage.map(\.id)
         )
     }
 
