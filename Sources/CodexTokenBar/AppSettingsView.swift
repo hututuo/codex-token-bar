@@ -154,6 +154,12 @@ struct AppSettingsView: View {
     let onThreadDeleteConnectionAction: () -> Void
     let onClose: () -> Void
 
+    @AppStorage(UsageRefreshCadenceSettings.lightRefreshIntervalStorageKey)
+    private var usageLightRefreshIntervalRaw = String(UsageRefreshCadenceSettings.defaultLightRefreshIntervalSeconds)
+    @AppStorage(UsageRefreshCadenceSettings.visibleAggregateIntervalStorageKey)
+    private var usageVisibleAggregateIntervalRaw = String(UsageRefreshCadenceSettings.defaultVisibleAggregateIntervalMinutes)
+    @AppStorage(UsageRefreshCadenceSettings.backgroundAggregateIntervalStorageKey)
+    private var usageBackgroundAggregateIntervalRaw = String(UsageRefreshCadenceSettings.defaultBackgroundAggregateIntervalMinutes)
     @AppStorage(AccountQuotaRefreshCadence.storageKey) private var quotaRefreshCadenceRaw = AccountQuotaRefreshCadence.defaultRawValue
     @AppStorage(SharedAccountUsageAttributionSettings.enabledKey) private var sharedAccountAttributionEnabled = SharedAccountUsageAttributionSettings.defaultEnabled
     @AppStorage(SharedAccountUsageAttributionSettings.tierKey) private var sharedAccountRadarTierRaw = SharedAccountUsageAttributionSettings.defaultTier.rawValue
@@ -177,6 +183,15 @@ struct AppSettingsView: View {
         .onExitCommand(perform: onClose)
         .onAppear {
             selectedCategory = selectedCategory.canonical
+            usageLightRefreshIntervalRaw = UsageRefreshCadenceSettings.normalizedLightRawValue(
+                usageLightRefreshIntervalRaw
+            )
+            usageVisibleAggregateIntervalRaw = UsageRefreshCadenceSettings.normalizedAggregateRawValue(
+                usageVisibleAggregateIntervalRaw
+            )
+            usageBackgroundAggregateIntervalRaw = UsageRefreshCadenceSettings.normalizedBackgroundAggregateRawValue(
+                usageBackgroundAggregateIntervalRaw
+            )
             sharedAccountRadarTierRaw = SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw).rawValue
             sharedAccountPriceModelRaw = OfficialAPIPriceModel.storedValue(for: sharedAccountPriceModelRaw).rawValue
             if selectedCategory == .autoResume {
@@ -530,6 +545,39 @@ struct AppSettingsView: View {
                     range: TokenRateScaleSettings.range,
                     display: TokenRateScaleSettings.displayValue(tokenRateFullScale),
                     step: 10
+                )
+            }
+
+            settingsSection(
+                title: "本地统计刷新",
+                subtitle: "轻量摘要与主界面图表分开调度；图表只在安全的墙钟边界更新"
+            ) {
+                settingsCompactPicker(
+                    "轻量摘要",
+                    detail: "悬浮窗、状态栏和主界面摘要",
+                    systemImage: "text.bubble",
+                    selection: usageLightRefreshIntervalBinding,
+                    options: UsageRefreshCadenceSettings.lightRefreshIntervalOptions.map {
+                        (String($0), UsageRefreshCadenceSettings.lightRefreshIntervalLabel($0))
+                    }
+                )
+                settingsCompactPicker(
+                    "主界面图表",
+                    detail: "主界面打开时的折线、热力图和模型统计",
+                    systemImage: "chart.xyaxis.line",
+                    selection: usageVisibleAggregateIntervalBinding,
+                    options: UsageRefreshCadenceSettings.aggregateIntervalOptions.map {
+                        (String($0), UsageRefreshCadenceSettings.aggregateIntervalLabel($0))
+                    }
+                )
+                settingsCompactPicker(
+                    "后台图表",
+                    detail: "主界面关闭时的图表聚合，降低后台开销",
+                    systemImage: "chart.bar.xaxis",
+                    selection: usageBackgroundAggregateIntervalBinding,
+                    options: UsageRefreshCadenceSettings.aggregateIntervalOptions.map {
+                        (String($0), UsageRefreshCadenceSettings.aggregateIntervalLabel($0))
+                    }
                 )
             }
 
@@ -971,6 +1019,39 @@ struct AppSettingsView: View {
         )
     }
 
+    private var usageLightRefreshIntervalBinding: Binding<String> {
+        Binding(
+            get: {
+                UsageRefreshCadenceSettings.normalizedLightRawValue(usageLightRefreshIntervalRaw)
+            },
+            set: {
+                usageLightRefreshIntervalRaw = UsageRefreshCadenceSettings.normalizedLightRawValue($0)
+            }
+        )
+    }
+
+    private var usageVisibleAggregateIntervalBinding: Binding<String> {
+        Binding(
+            get: {
+                UsageRefreshCadenceSettings.normalizedAggregateRawValue(usageVisibleAggregateIntervalRaw)
+            },
+            set: {
+                usageVisibleAggregateIntervalRaw = UsageRefreshCadenceSettings.normalizedAggregateRawValue($0)
+            }
+        )
+    }
+
+    private var usageBackgroundAggregateIntervalBinding: Binding<String> {
+        Binding(
+            get: {
+                UsageRefreshCadenceSettings.normalizedBackgroundAggregateRawValue(usageBackgroundAggregateIntervalRaw)
+            },
+            set: {
+                usageBackgroundAggregateIntervalRaw = UsageRefreshCadenceSettings.normalizedBackgroundAggregateRawValue($0)
+            }
+        )
+    }
+
     private var sharedAccountRadarTierBinding: Binding<String> {
         Binding(
             get: { SharedAccountRadarTier.storedValue(for: sharedAccountRadarTierRaw).rawValue },
@@ -1208,6 +1289,45 @@ struct AppSettingsView: View {
         }
         .padding(.horizontal, 12)
         .frame(minHeight: 40)
+        .settingsRowDivider()
+    }
+
+    private func settingsCompactPicker(
+        _ title: String,
+        detail: String,
+        systemImage: String,
+        selection: Binding<String>,
+        options: [(String, String)]
+    ) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 11.5, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 8)
+            Picker("", selection: selection) {
+                ForEach(options, id: \.0) { value, label in
+                    Text(label).tag(value)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(title)
+            .accessibilityValue(selection.wrappedValue)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .frame(minHeight: 45)
         .settingsRowDivider()
     }
 
