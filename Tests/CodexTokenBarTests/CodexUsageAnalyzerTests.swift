@@ -2398,7 +2398,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(deduplicatedTotal, 150)
     }
 
-    func testExactHistoryIndexFallsBackToFullRebuildWhenOpenLineCrossesChunkBoundary() throws {
+    func testExactHistoryIndexAppendsWhenOpenLineCrossesChunkBoundary() throws {
         let codexHome = try makeCodexHome()
         let sessionID = "019eaaaa-bbbb-cccc-dddd-crossbound"
         let sessionFile = codexHome
@@ -2416,10 +2416,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
         )
         let chunkSize = 4 * 1_024 * 1_024
-        // 未完成的第二条 token 行行首落在首块内、行尾越过 4 MiB 块边界：
-        // 检查点的续扫位置（行首）< 尾块起点，续扫不变量无法满足。
+        // 未完成的第二条 token 行行首落在第二块内、行尾越过 4 MiB 块边界。
+        // 续扫应从检查点所在块重新 hash，并从行首继续解析。
         var source = Data((firstLine + "\n").utf8)
-        let openLineStart = chunkSize - 100
+        let openLineStart = chunkSize * 2 - 100
         let padPrefix = Data(#"{"padding":""#.utf8)
         let padSuffix = Data("\"}\n".utf8)
         let padBody = openLineStart - source.count - padPrefix.count - padSuffix.count
@@ -2448,7 +2448,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
         XCTAssertEqual(cold.changedFiles, 1)
 
-        // 补完该行：修复前第二轮同步在这里抛错且每轮复现，精确统计永久停摆。
+        // 补完该行：即使文件在 chunk 边界处追加，仍应局部续扫。
         let handle = try FileHandle(forWritingTo: sessionFile)
         try handle.seekToEnd()
         try handle.write(contentsOf: secondData.suffix(secondData.count - split))
@@ -2469,17 +2469,99 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 emit: emit
             )
         }
-        XCTAssertEqual(
-            refreshed.incrementallyParsedFiles,
-            0,
-            "跨块未完成行必须回退全量重建，不能走追加路径"
-        )
+        XCTAssertEqual(refreshed.incrementallyParsedFiles, 1)
+        XCTAssertEqual(refreshed.rewrittenFiles, 0)
+        XCTAssertFalse(refreshed.attributionUnsafe)
         XCTAssertEqual(refreshed.changedFiles, 1)
         XCTAssertEqual(
             appendRequests.map(\.hashingStartOffset),
-            [0],
-            "全量重建必须从文件头重新 hash"
+            [UInt64(chunkSize)],
+            "只需从检查点所在 chunk 起点重新 hash"
         )
+        XCTAssertGreaterThan(
+            try XCTUnwrap(appendRequests.first).parsingStartOffset,
+            0,
+            "解析仍应从未完成行的检查点开始，而不是从文件头重新解析"
+        )
+        var total = 0
+        try index.forEachStoredEvent { total += $0.event.tokens }
+        XCTAssertEqual(total, 150)
+    }
+
+    func testExactHistoryIndexAppendAtChunkBoundaryUsesPreviousTailForValidation() throws {
+        let codexHome = try makeCodexHome()
+        let sessionID = "019eaaaa-bbbb-cccc-dddd-boundary"
+        let sessionFile = codexHome
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
+        let now = Date()
+        let firstLine = Data(
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            ).appending("\n").utf8
+        )
+        let secondLine = Data(
+            try tokenCountLine(
+                timestamp: now.addingTimeInterval(-10),
+                total: Usage(input: 120, cachedInput: 25, output: 25, reasoning: 0, total: 150),
+                last: Usage(input: 20, cachedInput: 5, output: 5, reasoning: 0, total: 30)
+            ).appending("\n").utf8
+        )
+        let chunkSize = 4 * 1_024 * 1_024
+        let padPrefix = Data(#"{"padding":""#.utf8)
+        let padSuffix = Data("\"}\n".utf8)
+        let padBody = chunkSize * 2 - firstLine.count - padPrefix.count - padSuffix.count
+        var source = Data()
+        source.append(padPrefix)
+        source.append(Data(repeating: UInt8(ascii: "x"), count: padBody))
+        source.append(padSuffix)
+        source.append(firstLine)
+        XCTAssertEqual(source.count, chunkSize * 2)
+        try source.write(to: sessionFile)
+
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let cold = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        XCTAssertEqual(cold.changedFiles, 1)
+
+        let handle = try FileHandle(forWritingTo: sessionFile)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: secondLine)
+        try handle.close()
+
+        var appendRequests: [CodexUsageAnalyzer.IndexedSessionParseRequest] = []
+        let refreshed = try index.synchronize(
+            files: [sessionFile],
+            sessionID: analyzer.sessionID(from:)
+        ) { file, parsedSessionID, request, insertFingerprint, emit in
+            appendRequests.append(request)
+            return try analyzer.parseSessionIntoHistoryIndex(
+                file: file,
+                sessionID: parsedSessionID,
+                request: request,
+                insertFingerprint: insertFingerprint,
+                emit: emit
+            )
+        }
+        XCTAssertEqual(refreshed.incrementallyParsedFiles, 1)
+        XCTAssertEqual(refreshed.rewrittenFiles, 0)
+        XCTAssertFalse(refreshed.attributionUnsafe)
+        let request = try XCTUnwrap(appendRequests.first)
+        XCTAssertEqual(request.hashingStartOffset, UInt64(chunkSize))
+        XCTAssertEqual(request.parsingStartOffset, UInt64(source.count))
         var total = 0
         try index.forEachStoredEvent { total += $0.event.tokens }
         XCTAssertEqual(total, 150)

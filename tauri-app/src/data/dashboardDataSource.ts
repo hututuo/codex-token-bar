@@ -11,6 +11,7 @@ import {
   readPreciseDashboardSnapshot,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
+  readUsageSummarySnapshot,
   readUsageCacheStatus,
   scanProviderRepair,
   resetCodexHome,
@@ -29,6 +30,7 @@ import type {
   PreciseDashboardSourceProbe,
   PlatformCapabilities,
   ProviderRepairSnapshot,
+  UsageSummarySnapshot,
   UsageCacheStatus,
 } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
@@ -55,6 +57,10 @@ export interface DashboardDataSource {
   readPreciseDashboardSourceProbe: (
     sourceToken: CodexHomeSourceToken,
   ) => Promise<PreciseDashboardSourceProbe | null>;
+  /** Lightweight native summary owner used by quota/attribution ticks. */
+  readUsageSummarySnapshot?: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<UsageSummarySnapshot | null>;
   readUsageCacheStatus: () => Promise<UsageCacheStatus>;
   readAccountQuota: (
     sourceToken: CodexHomeSourceToken,
@@ -82,6 +88,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPreciseDashboardSnapshot,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
+  readUsageSummarySnapshot,
   readUsageCacheStatus,
   readAccountQuota,
   readAccountResetCredits,

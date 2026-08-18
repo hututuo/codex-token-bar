@@ -2661,12 +2661,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         } else {
             storedTail = nil
         }
-        let hashingStartOffset = (tailChunkIndex ?? 0) * Self.chunkSize
-        // 活动文件的未完成行可以合法地跨过块边界：此时续扫起点（resumeOffset，
-        // 未完成行的行首）落在尾块起点之前，续扫不变量无法满足。必须回退全量
-        // 重建（返回 nil）而不是让流式层抛错——抛错会使整轮同步失败，检查点
-        // 固化后每轮复现，该 Home 的精确统计将永久停摆无自愈。
-        guard checkpoint.resumeOffset >= hashingStartOffset else { return nil }
+        // The parser state is valid at resumeOffset (the start of the last
+        // complete line or the unfinished tail). Hash from the containing
+        // chunk boundary, then skip to resumeOffset for parsing. An open JSON
+        // line may cross the old tail chunk; that is still an append and must
+        // not force a full-file rebuild.
+        let resumeChunkIndex = checkpoint.resumeOffset / Self.chunkSize
+        // At an exact chunk boundary, the previous chunk is the last
+        // committed chunk and is still needed for validationChunkHash. Treat
+        // the boundary as belonging to that previous chunk for hashing while
+        // keeping parsing at the persisted resume offset.
+        let hashingStartChunkIndex = checkpoint.resumeOffset > 0
+            && checkpoint.resumeOffset % Self.chunkSize == 0
+            ? resumeChunkIndex - 1
+            : resumeChunkIndex
+        let hashingStartOffset = hashingStartChunkIndex * Self.chunkSize
 
         do {
             return try connection.transaction { transaction in
@@ -2762,7 +2771,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
                 try replaceSourceChunks(
                     sourceID: existing.id,
-                    startingAt: tailChunkIndex ?? 0,
+                    startingAt: hashingStartChunkIndex,
                     chunks: result.chunkHashes,
                     connection: transaction
                 )

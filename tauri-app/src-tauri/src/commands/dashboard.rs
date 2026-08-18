@@ -1174,9 +1174,9 @@ fn resolve_codex_home_source(
     let codex_home_path = canonical_home_path(&source_path);
     let canonical_home_key = platform_path_key(&codex_home_path);
     let physical_home_key = physical_home_key(&codex_home_path)?;
-    if transition.canonical_home_key.as_deref() != Some(&canonical_home_key)
-        || transition.physical_home_key.as_deref() != Some(&physical_home_key)
-    {
+    let changed = transition.canonical_home_key.as_deref() != Some(&canonical_home_key)
+        || transition.physical_home_key.as_deref() != Some(&physical_home_key);
+    if changed {
         transition.transition_generation = transition.transition_generation.saturating_add(1);
         transition.canonical_home_key = Some(canonical_home_key.clone());
         transition.physical_home_key = Some(physical_home_key.clone());
@@ -1185,6 +1185,12 @@ fn resolve_codex_home_source(
     transition.source_path = Some(source_path);
     transition.source_kind = Some(codex_home.source.clone());
     transition.source_exists = codex_home.exists;
+    startup_trace::mark_performance(format!(
+        "codex_home_source generation={} changed={} exists={}",
+        transition.transition_generation,
+        u8::from(changed),
+        u8::from(codex_home.exists),
+    ));
 
     Ok(CodexHomeSourceEnvelope {
         codex_home,
@@ -1212,6 +1218,10 @@ fn refresh_codex_home_source_identity(
         transition.physical_home_key = Some(physical_home_key.clone());
         transition.pending_publication_generation = Some(transition.transition_generation);
         transition.in_flight_publication = None;
+        startup_trace::mark_performance(format!(
+            "codex_home_source_identity_changed generation={}",
+            transition.transition_generation,
+        ));
     }
     transition.codex_home_path = Some(codex_home_path);
     if !changed {
@@ -1467,10 +1477,20 @@ pub async fn read_dashboard_snapshot(
         crate::core::dashboard::LocalCodexDataSource::new(codex_home).read_dashboard_snapshot()
     })
     .await;
+    let snapshot_details = result.as_ref().ok().map(|snapshot| {
+        format!(
+            "fresh={} coverage={} tokens={} calls={}",
+            u8::from(snapshot.precise_recent_usage_fresh),
+            u8::from(snapshot.precise_recent_usage_covered_at.is_some()),
+            snapshot.stats.total_tokens,
+            snapshot.stats.total_calls,
+        )
+    });
     startup_trace::mark_performance(format!(
-        "read_dashboard_snapshot {}ms {}",
+        "read_dashboard_snapshot {}ms {} {}",
         started.elapsed().as_millis(),
-        result_status(&result)
+        result_status(&result),
+        snapshot_details.unwrap_or_else(|| "snapshot=none".into()),
     ));
     startup_trace::mark("command read_dashboard_snapshot end");
     result
@@ -1486,6 +1506,7 @@ pub async fn read_precise_dashboard_snapshot(
     require_window_label(&window, "read_precise_dashboard_snapshot")?;
     let request_id = PRECISE_DASHBOARD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let request_reason = precise_dashboard_request_reason(request_reason.as_deref());
+    let source_generation = source_token.transition_generation;
     let queue_wait_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
     let queue_wait_for_worker = std::sync::Arc::clone(&queue_wait_ms);
     let started = Instant::now();
@@ -1503,9 +1524,10 @@ pub async fn read_precise_dashboard_snapshot(
     .await;
     let queue_wait = queue_wait_ms.load(Ordering::Relaxed);
     startup_trace::mark_performance(format!(
-        "precise_request id={} reason={} queue_wait_ms={} total_ms={} status={}",
+        "precise_request id={} reason={} source_generation={} queue_wait_ms={} total_ms={} status={}",
         request_id,
         request_reason,
+        source_generation,
         if queue_wait == u64::MAX {
             "na".to_string()
         } else {
@@ -1679,10 +1701,17 @@ pub async fn read_precise_dashboard_source_probe(
         token_count_jsonl::precise_dashboard_source_probe(&codex_home)
     })
     .await;
+    let probe_status = match &result {
+        Ok(probe) => format!(
+            "ok state={} published_generation={}",
+            probe.state, probe.published_generation
+        ),
+        Err(_) => result_status(&result).to_string(),
+    };
     startup_trace::mark_performance(format!(
         "read_precise_dashboard_source_probe {}ms {}",
         started.elapsed().as_millis(),
-        result_status(&result)
+        probe_status
     ));
     result
 }

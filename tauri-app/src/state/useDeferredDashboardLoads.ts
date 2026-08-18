@@ -33,6 +33,7 @@ interface DeferredDashboardLoadsOptions {
     | "readPreciseDashboardSnapshot"
     | "readPreciseDashboardSourceProbe"
     | "readUsageCacheStatus"
+    | "readUsageSummarySnapshot"
     | "readAccountQuota"
     | "readAccountResetCredits"
     | "readLiveThreadOptions"
@@ -50,6 +51,7 @@ interface DeferredDashboardLoadsOptions {
     dedupeDomain?: PreciseDashboardDedupeDomain,
     dedupeKey?: string,
   ) => void;
+  onPreciseRequestSettled?: () => void;
   onQuota: (quota: AccountQuotaBundle) => void;
   onResetCredits: (reset: ResetCreditBundle) => void;
   onLiveThreadOptions: (options: LiveThreadOption[]) => void;
@@ -79,6 +81,7 @@ export function useDeferredDashboardLoads({
   onUsageCacheInitialized,
   onUsageCacheStatus,
   onPreciseRequestStarted,
+  onPreciseRequestSettled,
   onQuota,
   onResetCredits,
   onLiveThreadOptions,
@@ -103,6 +106,7 @@ export function useDeferredDashboardLoads({
     onUsageCacheInitialized,
     onUsageCacheStatus,
     onPreciseRequestStarted,
+    onPreciseRequestSettled,
     onLoadEnd: onRefreshTaskEnd,
     onLoadStart: onRefreshTaskStart,
     source,

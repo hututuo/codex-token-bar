@@ -1,4 +1,5 @@
 import { compactRadarModelName } from "../domain/codexRadar/model.ts";
+import { isTauriRuntimeAvailable } from "../platform/runtime.ts";
 
 export interface CodexCrowdRadarModel {
   model: string;
@@ -78,6 +79,8 @@ export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> 
   }
   // Keep the compatibility parser independently executable in Node tests while
   // loading the Tauri bridge only on the real network-read path.
+  const startedAt = performance.now();
+  traceCrowdRadarPerformance("crowd_radar start");
   const promise = (async () => {
     const { callCommandStrict } = await import("./command");
     const raw = await callCommandStrict<unknown>(
@@ -89,11 +92,17 @@ export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> 
   })();
   crowdRadarReadInFlight = promise;
   void promise.then(
-    () => {
+    (snapshot) => {
+      traceCrowdRadarPerformance(
+        `crowd_radar success elapsed_ms=${Math.round(performance.now() - startedAt)} models=${snapshot.models.length} recent_models=${snapshot.recentModels.length} endpoint_errors=${snapshot.endpointErrors?.length ?? 0}`,
+      );
       if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null;
       crowdRadarReadFailure = null;
     },
-    () => {
+    (error) => {
+      traceCrowdRadarPerformance(
+        `crowd_radar failure elapsed_ms=${Math.round(performance.now() - startedAt)} kind=${error instanceof Error ? error.name : "unknown"}`,
+      );
       if (crowdRadarReadInFlight === promise) crowdRadarReadInFlight = null;
       crowdRadarReadFailure = {
         promise,
@@ -102,6 +111,14 @@ export function readCodexCrowdRadarSnapshot(): Promise<CodexCrowdRadarSnapshot> 
     },
   );
   return promise;
+}
+
+function traceCrowdRadarPerformance(label: string): void {
+  if (isTauriRuntimeAvailable()) {
+    void import("./startupClient.ts").then(({ recordPerformanceEvent }) => {
+      void recordPerformanceEvent(label);
+    });
+  }
 }
 
 export function nextCodexCrowdRadarRecoveryDelayMs(attempt: number): number | null {

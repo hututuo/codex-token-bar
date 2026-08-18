@@ -25,6 +25,7 @@ const FIXED_COLORS: Record<string, string> = {
   "gpt-5.6-sol": "#2e6bfa",
   "gpt-5.6-terra": "#9252e6",
   "gpt-5.6-luna": "#00a3ad",
+  "gpt-5.6-generic": "#7a879e",
   "gpt-5.4": "#f28f14",
   "gpt-5.4-mini": "#2eb35c",
   "gpt-5.3-codex": "#db4575",
@@ -89,6 +90,9 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
   }
   if (compact === "gpt53codex") return "gpt-5.3-codex";
   if (compact === "gpt52codex") return "gpt-5.2-codex";
+  // A bare GPT-5.6 slug does not identify the Sol/Terra/Luna lane. Keep it
+  // visible as a generic model instead of silently attributing it to Sol.
+  if (normalized === "gpt-5.6" || normalized === "gpt-5.6-generic") return "gpt-5.6-generic";
   if (normalized.includes("gpt-5.6")) {
     if (normalized.includes("luna")) return "gpt-5.6-luna";
     if (normalized.includes("terra")) return "gpt-5.6-terra";
@@ -104,7 +108,8 @@ export function modelUsageLabel(model: string | null | undefined): string {
     case "gpt-5.6-sol": return "Sol";
     case "gpt-5.6-terra": return "Terra";
     case "gpt-5.6-luna": return "Luna";
-    case "gpt-5.4-mini": return "5.4 mini";
+    case "gpt-5.6-generic": return "5.6（未分型）";
+    case "gpt-5.4-mini": return "5.4 m";
     case "gpt-5.4": return "5.4";
     case "gpt-5.3-codex": return "5.3";
     case "gpt-5.3-codex-spark": return "Spark";

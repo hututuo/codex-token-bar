@@ -31,6 +31,7 @@ import type {
 import type { ResetCreditBundle } from "../types/quota";
 import {
   disabledLiveRateSnapshot,
+  clearPreciseAttributionSafety,
   initialDashboardState,
   mergeLiveRate,
   mergeLiveThreadOptions,
@@ -160,6 +161,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const [preciseProgress, setPreciseProgress] = useState<PreciseDashboardProgress | null>(null);
+  const [preciseRequestInFlight, setPreciseRequestInFlight] = useState(false);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const [sourceToken, setSourceToken] = useState<DashboardSourceToken | null>(null);
@@ -177,6 +179,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const pendingPreciseRequestRef = useRef<PreciseDashboardRequestIntent | null>(null);
   const retryPreciseRefreshRef = useRef(false);
   const wakeRefreshSequenceRef = useRef(0);
+  const preciseRequestSequenceRef = useRef(0);
   // Keep the force bit stable for the whole active generation. Clearing only
   // the pending bit at timer start must not make a later unrelated render
   // change the effect dependency and cancel the in-flight owner.
@@ -192,6 +195,11 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dedupeDomain?: PreciseDashboardDedupeDomain,
     dedupeKey?: string,
   ) => {
+    const requestId = preciseRequestSequenceRef.current + 1;
+    preciseRequestSequenceRef.current = requestId;
+    void recordPerformanceEvent(
+      `frontend precise request id=${requestId} reason=${reason ?? (force ? "unknown" : "cadence")} force=${force ? 1 : 0} source_generation=${sourceTransitionRef.current.sourceToken?.transitionGeneration ?? "na"}`,
+    );
     const request: PreciseDashboardRequestIntent = {
       force,
       reason: reason ?? (force ? "unknown" : "cadence"),
@@ -222,6 +230,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dedupeDomain?: PreciseDashboardDedupeDomain,
     dedupeKey?: string,
   ) => {
+    setPreciseRequestInFlight(true);
     activeForcedPreciseGenerationRef.current = forced ? generation : null;
     activePreciseRequestRef.current = {
       force: forced,
@@ -252,6 +261,11 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     ),
     [],
   );
+  const markPreciseRequestSettled = useCallback(() => {
+    if (sourceToken === null || isSourceTokenCurrent(sourceToken)) {
+      setPreciseRequestInFlight(false);
+    }
+  }, [isSourceTokenCurrent, sourceToken]);
   const acceptSourceEnvelope = useCallback((envelope: CodexHomeSourceEnvelope) => {
     const result = acceptDashboardSourceEnvelope(sourceTransitionRef.current, envelope);
     if (!result.accepted) {
@@ -277,10 +291,15 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       return true;
     }
 
+    void recordPerformanceEvent(
+      `frontend source envelope accepted initialized=${result.initialized ? 1 : 0} changed=${result.sourceChanged ? 1 : 0} generation=${acceptedSourceToken.transitionGeneration}`,
+    );
+
     setSourceToken((current) => isSourceTokenCurrent(acceptedSourceToken)
       ? acceptedSourceToken
       : current);
     setFastSnapshotLoaded(false);
+    setPreciseRequestInFlight(false);
     setStartupDashboardUnavailable(false);
     setStartupRetrySequence(0);
     setSelectedLiveThreadId("");
@@ -538,9 +557,17 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       throughGeneration,
     );
     if (acknowledged && isSourceTokenCurrent(sourceToken)) {
-      // The acknowledgement changes native exact-index state. Only a fresh
-      // precise snapshot without the episode token may advance the baseline.
-      requestPreciseRefresh(true, "source-change", throughGeneration);
+      // This acknowledgement removes only the reviewed safety marker. A
+      // source-change request here used to turn that metadata write into a
+      // second full scan immediately after the normal refresh. Clear the
+      // marker locally and let the existing cadence/source probe publish the
+      // next canonical snapshot; token and quota values are unchanged.
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? clearPreciseAttributionSafety(current)
+        : current);
+      void recordPerformanceEvent(
+        `frontend attribution safety acknowledged generation=${throughGeneration}; deferred precise refresh`,
+      );
     }
     return acknowledged;
   }, [isSourceTokenCurrent, requestPreciseRefresh, source, sourceToken]);
@@ -966,6 +993,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     onUsageCacheInitialized: markUsageCacheInitialized,
     onUsageCacheStatus: updateUsageCacheStatus,
     onPreciseRequestStarted: markPreciseRequestStarted,
+    onPreciseRequestSettled: markPreciseRequestSettled,
     onQuota: mergeQuotaSnapshot,
     onResetCredits: mergeResetCreditSnapshot,
     onLiveThreadOptions: mergeThreadOptions,
@@ -1014,7 +1042,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       }
     };
     void poll();
-    const active = state.loading || refreshTaskCount > 0;
+    // refreshTaskCount is only the soft UI budget. The native precise owner
+    // deliberately continues beyond that budget for large histories, so keep
+    // polling until the actual single-flight settles.
+    const active = state.loading || refreshTaskCount > 0 || preciseRequestInFlight;
     if (!active) {
       return () => {
         cancelled = true;
@@ -1027,7 +1058,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [refreshTaskCount, source, sourceToken, state.loading]);
+  }, [preciseRequestInFlight, refreshTaskCount, source, sourceToken, state.loading]);
 
   return {
     state,

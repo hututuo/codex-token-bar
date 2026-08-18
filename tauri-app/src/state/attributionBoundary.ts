@@ -2,10 +2,12 @@ const RFC3339_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+
 
 /**
  * Return the semantic attribution boundary represented by an RFC3339
- * timestamp. Attribution callbacks can carry different string renderings of
- * the same second (for example, `.123Z` versus `.000Z`); dedupe must use this
- * shared unit rather than the source spelling. Invalid or missing values are
- * intentionally rejected so callers fall back to a real native refresh.
+ * timestamp. The exact index publishes attribution in fixed five-minute
+ * buckets, so a poll timestamp is only a new boundary when it enters a new
+ * bucket. Keeping the key at bucket precision prevents every quota poll (or
+ * a millisecond rendering of the same poll) from promoting another full
+ * dashboard aggregation. Invalid or missing values are intentionally rejected
+ * so callers fall back to a real native refresh.
  */
 export function canonicalAttributionBoundaryKey(
   value: string | null | undefined,
@@ -22,5 +24,6 @@ export function canonicalAttributionBoundaryKey(
     return undefined;
   }
   const unixSeconds = Math.floor(milliseconds / 1_000);
-  return Number.isSafeInteger(unixSeconds) ? String(unixSeconds) : undefined;
+  const bucketStart = Math.floor(unixSeconds / 300) * 300;
+  return Number.isSafeInteger(bucketStart) ? String(bucketStart) : undefined;
 }

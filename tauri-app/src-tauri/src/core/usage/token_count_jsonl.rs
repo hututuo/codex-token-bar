@@ -930,13 +930,10 @@ impl PreciseRefreshCoordinator {
 
     fn summary_refresh_due(&self) -> bool {
         let now = Instant::now();
-        let current_source_revision = self.source_revision.load(Ordering::SeqCst);
-        let refreshed_source_revision = self.refreshed_source_revision.load(Ordering::SeqCst);
         let mut schedule = self
             .schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let source_dirty = current_source_revision > refreshed_source_revision;
         let success_expired = schedule
             .last_success_at
             .is_none_or(|completed| {
@@ -947,14 +944,24 @@ impl PreciseRefreshCoordinator {
                 now.saturating_duration_since(attempt)
                     >= PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL
             });
-        if (!source_dirty && !success_expired) || !retry_due {
+        // A watcher event is a coalescing hint, not a request to start a new
+        // owner immediately after every append. Once a successful owner has
+        // published, keep the existing cadence window even when the source
+        // revision advances while it is running. Failed owners retain their
+        // bounded retry interval. Manual refreshes bypass this gate through
+        // `enforce_reuse_window = false`.
+        if schedule.last_error.is_none() {
+            if !success_expired {
+                return false;
+            }
+        } else if !retry_due {
             return false;
         }
         schedule.last_attempt_at = Some(now);
         true
     }
 
-    fn record_result(&self, flight: &PreciseRefreshFlight, result: &PreciseRefreshResult) {
+    fn record_result(&self, _flight: &PreciseRefreshFlight, result: &PreciseRefreshResult) {
         let mut schedule = self
             .schedule
             .lock()
@@ -963,8 +970,12 @@ impl PreciseRefreshCoordinator {
             Ok(_) => {
                 schedule.last_success_at = Some(Instant::now());
                 schedule.last_error = None;
+                // Mark everything observed by the completed owner as covered.
+                // Changes arriving after this load remain dirty and are
+                // picked up at the next cadence; they do not recursively
+                // create another full owner while this one is publishing.
                 self.refreshed_source_revision
-                    .fetch_max(flight.source_revision_at_start, Ordering::SeqCst);
+                    .store(self.source_revision.load(Ordering::SeqCst), Ordering::SeqCst);
             }
             Err(error) => schedule.last_error = Some(error.clone()),
         }
@@ -1406,7 +1417,6 @@ fn run_precise_refresh_inner(
                 &mut warnings,
                 discovery.0,
                 discovery.1,
-                || coordinator.source_revision.load(Ordering::SeqCst),
             )
         };
         match sync_result {
@@ -1971,6 +1981,64 @@ mod precise_refresh_trace_tests {
         assert!(coordinator
             .take_previous_completed_owner(PreciseRefreshIntent::Full)
             .is_none());
+    }
+
+    #[test]
+    fn source_events_coalesce_until_success_cadence_and_failures_keep_retrying() {
+        let coordinator = Arc::new(PreciseRefreshCoordinator {
+            home_key: PreciseRefreshHomeKey {
+                canonical_home: PathBuf::from("cadence-home"),
+                physical_home_identity: "cadence-physical-home".into(),
+            },
+            flight: Mutex::new(None),
+            previous_completed_owner: Mutex::new(None),
+            schedule: Mutex::new(PreciseRefreshScheduleState {
+                last_attempt_at: Some(Instant::now()),
+                last_success_at: Some(Instant::now()),
+                last_error: None,
+            }),
+            source_revision: AtomicU64::new(2),
+            refreshed_source_revision: AtomicU64::new(1),
+        });
+
+        assert!(
+            !coordinator.summary_refresh_due(),
+            "a watcher append after a successful owner must not launch a second owner immediately"
+        );
+
+        coordinator
+            .schedule
+            .lock()
+            .unwrap()
+            .last_error = Some("transient".into());
+        coordinator
+            .schedule
+            .lock()
+            .unwrap()
+            .last_attempt_at = Some(Instant::now());
+        assert!(!coordinator.summary_refresh_due());
+        coordinator
+            .schedule
+            .lock()
+            .unwrap()
+            .last_attempt_at = Some(Instant::now() - PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL);
+        assert!(coordinator.summary_refresh_due());
+
+        let flight = PreciseRefreshFlight::new(
+            PreciseRefreshIntent::Summary,
+            false,
+            None,
+            None,
+            1,
+            None,
+        );
+        coordinator.source_revision.store(3, Ordering::SeqCst);
+        coordinator.record_result(&flight, &empty_result());
+        assert_eq!(
+            coordinator.refreshed_source_revision.load(Ordering::SeqCst),
+            3,
+            "the completed owner must cover the source revision observed at publish"
+        );
     }
 }
 
