@@ -8,7 +8,8 @@ import {
   type CodexRadarReadState,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
-import { withTimeout } from "../platform/runtime";
+import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
+import { recordPerformanceEvent } from "./startupClient";
 
 const CODEX_RADAR_ENDPOINT = "https://codexradar.com/current.json";
 const CODEX_RADAR_CACHE_MS = 600_000;
@@ -53,6 +54,8 @@ export async function readCodexRadarState(
 
 async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null): Promise<CodexRadarReadState> {
   const refreshedAt = new Date().toISOString();
+  const startedAt = performance.now();
+  traceRadarPerformance(`radar_state start has_previous=${previousSnapshot ? 1 : 0}`);
   try {
     const baseSnapshot = await fetchCodexRadarRootSnapshot();
     const feed = await fetchCodexRadarFeedState(baseSnapshot.links.rss, previousSnapshot);
@@ -68,9 +71,15 @@ async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null)
       snapshot,
       readAt: Date.now(),
     };
+    traceRadarPerformance(
+      `radar_state success elapsed_ms=${Math.round(performance.now() - startedAt)} feed_items=${feed.items.length}`,
+    );
     return publishState(stateFromSnapshot(snapshot));
   } catch (error) {
     const diagnostic = diagnosticFromError(error, "root");
+    traceRadarPerformance(
+      `radar_state failure elapsed_ms=${Math.round(performance.now() - startedAt)} category=${diagnostic.category} has_previous=${previousSnapshot ? 1 : 0}`,
+    );
     if (previousSnapshot) {
       const snapshot = withRadarState(previousSnapshot, {
         diagnostics: [
@@ -112,6 +121,8 @@ function publishState(state: CodexRadarReadState): CodexRadarReadState {
 }
 
 async function fetchCodexRadarRootSnapshot(): Promise<CodexRadarSnapshot> {
+  const startedAt = performance.now();
+  traceRadarPerformance("radar_root start");
   const response = await withTimeout(
     fetch(CODEX_RADAR_ENDPOINT, {
       cache: "no-store",
@@ -131,6 +142,9 @@ async function fetchCodexRadarRootSnapshot(): Promise<CodexRadarSnapshot> {
   if (!codexRadarSnapshotHasContent(snapshot)) {
     throw new Error("Codex Radar 空数据");
   }
+  traceRadarPerformance(
+    `radar_root success elapsed_ms=${Math.round(performance.now() - startedAt)} http=${response.status}`,
+  );
   return snapshot;
 }
 
@@ -142,6 +156,8 @@ async function fetchCodexRadarFeedState(
     return { diagnostics: [], items: [], staleDataDisplayed: false };
   }
 
+  const startedAt = performance.now();
+  traceRadarPerformance("radar_feed start");
   try {
     const response = await withTimeout(
       fetch(feedUrl, {
@@ -155,15 +171,28 @@ async function fetchCodexRadarFeedState(
     if (!response.ok) {
       throw new Error(`Codex Radar RSS HTTP ${response.status}`);
     }
-    return { diagnostics: [], items: parseCodexRadarFeedXml(await response.text()), staleDataDisplayed: false };
+    const items = parseCodexRadarFeedXml(await response.text());
+    traceRadarPerformance(
+      `radar_feed success elapsed_ms=${Math.round(performance.now() - startedAt)} http=${response.status} items=${items.length}`,
+    );
+    return { diagnostics: [], items, staleDataDisplayed: false };
   } catch (error) {
     const previousItems = previousSnapshot?.feedItems ?? [];
     const diagnostic = diagnosticFromError(error, "feed");
+    traceRadarPerformance(
+      `radar_feed failure elapsed_ms=${Math.round(performance.now() - startedAt)} category=${diagnostic.category} has_previous=${previousItems.length > 0 ? 1 : 0}`,
+    );
     return {
       diagnostics: [diagnostic],
       items: previousItems,
       staleDataDisplayed: previousItems.length > 0,
     };
+  }
+}
+
+function traceRadarPerformance(label: string): void {
+  if (isTauriRuntimeAvailable()) {
+    void recordPerformanceEvent(label);
   }
 }
 

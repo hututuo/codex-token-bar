@@ -767,7 +767,10 @@ button {
 .dash-head__strip {
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(130px, 0.7fr) minmax(230px, 1.45fr) minmax(185px, 0.95fr) minmax(145px, 0.72fr);
+  /* Let the selected Codex Home absorb the flexible space.  The path is the
+     only value that can grow substantially; keep the thread summary compact
+     so the freshness/progress indicator keeps a readable width. */
+  grid-template-columns: minmax(130px, 0.7fr) minmax(260px, 2.2fr) minmax(120px, 0.4fr) minmax(145px, 0.75fr);
   align-items: stretch;
   background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
 }
@@ -3331,11 +3334,7 @@ button.quota-side-card:hover {
 }
 
 .radar-score-row span {
-  color: var(--radar-score-color, var(--muted));
-}
-
-.radar-model-row span {
-  color: var(--radar-score-color, var(--muted));
+  color: var(--muted);
 }
 
 .radar-mini-row,
@@ -8811,11 +8810,20 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   gap: 0;
 }
 
+.floating-model-usage--cost .floating-model-usage-items {
+  gap: 0;
+}
+
 .floating-model-usage--cost {
   min-height: calc(11px * var(--floating-scale));
 }
 
 .floating-model-usage--share .floating-model-usage-item {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.floating-model-usage--cost .floating-model-usage-item {
   flex: 1 1 0;
   justify-content: center;
 }

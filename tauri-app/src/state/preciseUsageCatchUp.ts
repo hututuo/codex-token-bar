@@ -16,7 +16,7 @@ export interface PreciseUsageCatchUpPlan {
  * A quota refresh can finish while an older exact scan is already in flight.
  * The old scan publishes a conservative pre-sync coverage watermark, so it may
  * still trail the accepted quota. Schedule at most one post-settlement catch-up
- * for each distinct quota second; never spin indefinitely on a bad clock or
+ * for each distinct five-minute quota bucket; never spin indefinitely on a bad clock or
  * malformed native snapshot.
  */
 export function planPreciseUsageCatchUp({

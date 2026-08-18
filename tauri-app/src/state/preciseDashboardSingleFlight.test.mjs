@@ -415,7 +415,7 @@ test("repeated quota/catch-up/attribution requests reuse one settled revision", 
 test("a real trigger revision advance runs precise once and then coalesces repeats", async () => {
   const token = sourceToken("reasoned-forward");
   const firstBoundary = "2026-08-06T00:00:00.000Z";
-  const nextBoundary = "2026-08-06T00:00:01.000Z";
+  const nextBoundary = "2026-08-06T00:05:00.000Z";
   let invocationCount = 0;
   let coverage = firstBoundary;
   const loader = async () => {
@@ -447,7 +447,7 @@ test("a real trigger revision advance runs precise once and then coalesces repea
   assert.equal(invocationCount, 2);
 });
 
-test("millisecond renderings coalesce quota/attribution and attribution/catch-up boundaries", async () => {
+test("five-minute renderings coalesce quota/attribution and attribution/catch-up boundaries", async () => {
   const transitions = [
     ["quota", "attribution"],
     ["attribution", "catch-up"],
@@ -462,7 +462,7 @@ test("millisecond renderings coalesce quota/attribution and attribution/catch-up
     };
     const firstTimestamp = "2026-08-06T00:00:00.123Z";
     const sameSecondTimestamp = "2026-08-06T00:00:00.000Z";
-    const nextSecondTimestamp = "2026-08-06T00:00:01.000Z";
+    const nextBucketTimestamp = "2026-08-06T00:05:00.000Z";
 
     await loadPreciseDashboardSingleFlight(
       token,
@@ -478,22 +478,22 @@ test("millisecond renderings coalesce quota/attribution and attribution/catch-up
     ).result;
     assert.equal(invocationCount, 1, `${firstReason}->${secondReason} must share one second`);
 
-    coverageTimestamp = nextSecondTimestamp;
+    coverageTimestamp = nextBucketTimestamp;
     await loadPreciseDashboardSingleFlight(
       token,
       loader,
       undefined,
-      attributionRequest(secondReason, canonicalAttributionBoundaryKey(nextSecondTimestamp)),
+      attributionRequest(secondReason, canonicalAttributionBoundaryKey(nextBucketTimestamp)),
     ).result;
-    assert.equal(invocationCount, 2, "a new Unix second must trigger a fresh full");
+    assert.equal(invocationCount, 2, "a new five-minute bucket must trigger a fresh full");
   }
 });
 
 test("cadence coverage gates quota during and after settlement", async () => {
   const token = sourceToken("coverage-cadence-quota");
-  const boundary99 = "2026-08-06T00:01:39.000Z";
-  const boundary100 = "2026-08-06T00:01:40.000Z";
-  const boundary101 = "2026-08-06T00:01:41.000Z";
+  const boundary99 = "2026-08-06T00:04:39.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
+  const boundary101 = "2026-08-06T00:10:41.000Z";
   const loads = [];
   let invocationCount = 0;
   let nextCoverage = boundary100;
@@ -543,9 +543,9 @@ test("cadence coverage gates quota during and after settlement", async () => {
 
 test("attribution coverage reuses lower/equal boundaries and loads a newer one", async () => {
   const token = sourceToken("coverage-attribution");
-  const boundary99 = "2026-08-06T00:01:39.000Z";
-  const boundary100 = "2026-08-06T00:01:40.000Z";
-  const boundary101 = "2026-08-06T00:01:41.000Z";
+  const boundary99 = "2026-08-06T00:04:39.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
+  const boundary101 = "2026-08-06T00:10:41.000Z";
   let invocationCount = 0;
   let nextCoverage = boundary100;
   const loader = async () => {
@@ -585,9 +585,9 @@ test("attribution coverage reuses lower/equal boundaries and loads a newer one",
 
 test("an active owner tracks the maximum attribution boundary and runs one trailing full", async () => {
   const token = sourceToken("coverage-max");
-  const boundary99 = "2026-08-06T00:01:39.000Z";
-  const boundary100 = "2026-08-06T00:01:40.000Z";
-  const boundary101 = "2026-08-06T00:01:41.000Z";
+  const boundary99 = "2026-08-06T00:04:39.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
+  const boundary101 = "2026-08-06T00:10:41.000Z";
   const loads = [];
   let invocationCount = 0;
   const loader = () => {
@@ -629,8 +629,8 @@ test("an active owner tracks the maximum attribution boundary and runs one trail
 
 test("a boundary queued in the settlement turn still contributes to the maximum", async () => {
   const token = sourceToken("coverage-settlement-turn");
-  const boundary100 = "2026-08-06T00:01:40.000Z";
-  const boundary101 = "2026-08-06T00:01:41.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
+  const boundary101 = "2026-08-06T00:10:41.000Z";
   const loads = [];
   let invocationCount = 0;
   const loader = () => {
@@ -660,7 +660,7 @@ test("a boundary queued in the settlement turn still contributes to the maximum"
 
 test("invalid, stale, and failed attribution boundaries never reuse coverage", async () => {
   const token = sourceToken("coverage-fail-safe");
-  const boundary100 = "2026-08-06T00:01:40.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
   let invocationCount = 0;
   const loader = async () => {
     invocationCount += 1;
@@ -694,7 +694,7 @@ test("invalid, stale, and failed attribution boundaries never reuse coverage", a
 
 test("a boundary owner retries one transient loader error but never loops", async () => {
   const token = sourceToken("coverage-error");
-  const boundary100 = "2026-08-06T00:01:40.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
   let invocationCount = 0;
   const loader = async () => {
     invocationCount += 1;
@@ -716,8 +716,8 @@ test("a boundary owner retries one transient loader error but never loops", asyn
 
 test("an insufficient trailing boundary leaves the source dirty for the next request", async () => {
   const token = sourceToken("coverage-trailing-stale");
-  const boundary99 = "2026-08-06T00:01:39.000Z";
-  const boundary100 = "2026-08-06T00:01:40.000Z";
+  const boundary99 = "2026-08-06T00:04:39.000Z";
+  const boundary100 = "2026-08-06T00:05:40.000Z";
   let invocationCount = 0;
   const loader = async () => {
     invocationCount += 1;

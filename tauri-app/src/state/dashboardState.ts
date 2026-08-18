@@ -44,7 +44,49 @@ export function dashboardSnapshotHasTrustedStartupData(snapshot: DashboardSnapsh
     && Number.isFinite(Date.parse(coveredAt));
   // A last-good stale snapshot is still trusted for display when it carries a
   // valid precise coverage boundary; freshness is reported separately.
-  return hasCoverage;
+  if (hasCoverage) {
+    return true;
+  }
+
+  // Older published caches may contain a real dashboard but no coverage
+  // watermark (the watermark was introduced after those caches were written).
+  // Do not replace that useful data with an all-zero placeholder while the
+  // current precise owner is rebuilding the watermark. A genuinely empty
+  // account still fails closed and waits for the first exact result.
+  return hasMaterializedStartupData(snapshot);
+}
+
+function hasMaterializedStartupData(snapshot: DashboardSnapshot): boolean {
+  const stats = snapshot.stats;
+  const hasStats = [
+    stats.totalTokens,
+    stats.peakDayTokens,
+    stats.peakThreadTokens,
+    stats.totalCalls,
+    stats.totalThreads,
+  ].some((value) => Number.isFinite(value) && value > 0);
+  if (hasStats) {
+    return true;
+  }
+
+  const hasUsageHistory = snapshot.activityDays.some((day) => (
+    (Number.isFinite(day.tokens) && day.tokens > 0)
+      || (Number.isFinite(day.calls) && day.calls > 0)
+  )) || [snapshot.recentUsage24h, snapshot.recentUsage7d, snapshot.recentUsage30d]
+    .some((points) => points.some((point) => (
+      (Number.isFinite(point.tokens) && point.tokens > 0)
+        || (Number.isFinite(point.calls) && point.calls > 0)
+    )));
+  if (hasUsageHistory || snapshot.cacheHitRanking.length > 0) {
+    return true;
+  }
+
+  const hasMeasuredQuota = snapshot.quota.fiveHour.availability === "measured"
+    || snapshot.quota.sevenDay.availability === "measured";
+  const accountName = snapshot.account.displayName.trim();
+  return hasMeasuredQuota
+    || (accountName.length > 0
+      && !["读取中", "账户待读取", "未知账户", "本地用户", "计划待读取"].includes(accountName));
 }
 
 export function readyDashboardState(state: DashboardAppState): DashboardReadyState | null {
@@ -128,6 +170,7 @@ export {
 export {
   mergeLiveRate,
   mergeLiveThreadOptions,
+  clearPreciseAttributionSafety,
   markPreciseRecentUsageStale,
   mergePreciseDashboard,
   mergeQuota,

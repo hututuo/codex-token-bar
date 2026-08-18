@@ -1208,7 +1208,8 @@ final class CodexUsageStoreTests: XCTestCase {
         store.prepareInitialPreciseRefreshWindowForTesting()
         store.requestAutomaticRefreshForTesting()
         await Task.yield()
-        XCTAssertEqual(await loader.requestCountValue(), 0)
+        let requestCountBeforeStartupOwner = await loader.requestCountValue()
+        XCTAssertEqual(requestCountBeforeStartupOwner, 0)
 
         store.requestInitialPreciseRefreshForTesting()
         await loader.waitUntilRequestCount(1)
@@ -1219,7 +1220,8 @@ final class CodexUsageStoreTests: XCTestCase {
                 && !store.isUsageRefreshOrDetailHydrationActive
         }
 
-        XCTAssertEqual(await loader.requestCountValue(), 1)
+        let requestCountAfterStartupOwner = await loader.requestCountValue()
+        XCTAssertEqual(requestCountAfterStartupOwner, 1)
     }
 
     func testStartupPreciseOwnerFailureGetsOneBoundedCompensationPass() async {
@@ -1256,7 +1258,8 @@ final class CodexUsageStoreTests: XCTestCase {
                 && !store.isUsageRefreshOrDetailHydrationActive
         }
 
-        XCTAssertEqual(await loader.requestCountValue(), 2)
+        let requestCountAfterCompensation = await loader.requestCountValue()
+        XCTAssertEqual(requestCountAfterCompensation, 2)
     }
 
     func testDashboardExpansionWaitsForActiveDetailHydrationWithoutSecondNumericOwner() async {
@@ -1295,7 +1298,8 @@ final class CodexUsageStoreTests: XCTestCase {
         store.setOnlyCompactSurfaceVisible(true)
         store.setOnlyCompactSurfaceVisible(false)
         await Task.yield()
-        XCTAssertEqual(await loader.requestCountValue(), 1)
+        let requestCountDuringDetailHydration = await loader.requestCountValue()
+        XCTAssertEqual(requestCountDuringDetailHydration, 1)
         XCTAssertTrue(store.isDetailHydrating)
 
         await loader.yield(final, request: 0)
@@ -1304,7 +1308,8 @@ final class CodexUsageStoreTests: XCTestCase {
             store.snapshot.cacheUsage.attributionEventsComplete
                 && !store.isUsageRefreshOrDetailHydrationActive
         }
-        XCTAssertEqual(await loader.requestCountValue(), 1)
+        let requestCountAfterDetailHydration = await loader.requestCountValue()
+        XCTAssertEqual(requestCountAfterDetailHydration, 1)
     }
 
     func testStalePrecisePhaseCannotPublishAfterSourceBindingChanges() async {

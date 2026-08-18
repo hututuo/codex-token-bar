@@ -48,6 +48,7 @@ interface PreciseDashboardLoadOptions {
     dedupeDomain?: PreciseDashboardDedupeDomain,
     dedupeKey?: string,
   ) => void;
+  onPreciseRequestSettled?: () => void;
   onLoadEnd?: () => void;
   onLoadStart?: () => void;
 }
@@ -71,6 +72,7 @@ export function usePreciseDashboardLoad({
   onUsageCacheInitialized,
   onUsageCacheStatus,
   onPreciseRequestStarted,
+  onPreciseRequestSettled,
   onLoadEnd,
   onLoadStart,
 }: PreciseDashboardLoadOptions) {
@@ -215,6 +217,7 @@ export function usePreciseDashboardLoad({
         }
         reportFailure();
       } finally {
+        onPreciseRequestSettled?.();
         onLoadEnd?.();
       }
     }

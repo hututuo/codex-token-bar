@@ -46,6 +46,7 @@ const statsConfig: Array<[keyof DashboardStats, string, (value: number) => strin
 ];
 
 type ModelCostScope = "today" | "sevenDay" | "lifetime";
+type ModelAttributionDisplayState = "current" | "stale" | "pending";
 
 function StatsStripView({
   stats,
@@ -72,21 +73,36 @@ function StatsStripView({
     resetAtUnix: sevenDayResetAtUnix,
     priceModel,
   }), [priceModel, recentUsageFiveMinute, sevenDayResetAtUnix]);
+  const sevenDayModelDisplayState: ModelAttributionDisplayState =
+    recent7dModelCost?.quality === "measured"
+      ? (preciseDataFresh ? "current" : "stale")
+      : "pending";
+  const todayModelDisplayState: ModelAttributionDisplayState = todayTokens <= 0
+    ? "current"
+    : todayModelBreakdowns.length > 0
+    ? (preciseDataFresh ? "current" : "stale")
+    : "pending";
   const modelCostRows = modelCostScope === "today"
     ? todayModelBreakdowns
     : modelCostScope === "lifetime"
     ? stats.modelBreakdowns ?? []
-    : recent7dModelCost?.modelBreakdowns ?? [];
+    : sevenDayModelDisplayState === "current" || sevenDayModelDisplayState === "stale"
+    ? recent7dModelCost?.modelBreakdowns ?? []
+    : [];
   const expectedModelTokens = modelCostScope === "today"
     ? todayTokens
     : modelCostScope === "lifetime"
     ? stats.totalTokens
     : recent7dModelCost?.modelBreakdowns.reduce((total, row) => total + row.breakdown.totalTokens, 0) ?? 0;
   const modelCostDataAvailable = modelCostScope === "sevenDay"
-    ? recent7dModelCost !== null
+    ? sevenDayModelDisplayState !== "pending"
+    : modelCostScope === "today"
+    ? todayModelDisplayState !== "pending"
     : modelCostRowsAvailable(modelCostRows, preciseDataFresh);
   const modelDetailAvailable = modelCostScope === "sevenDay"
-    ? recent7dModelCost !== null
+    ? sevenDayModelDisplayState !== "pending"
+    : modelCostScope === "today"
+    ? todayModelDisplayState !== "pending"
     : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
     modelCostDataAvailable && modelDetailAvailable
@@ -94,8 +110,11 @@ function StatsStripView({
       : []
   ), [modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
   const modelCostTotal = modelCostItems.reduce((total, item) => total + (item.costUSD ?? 0), 0);
-  const sevenDayPrecisePending = modelCostScope === "sevenDay"
-    && (!preciseDataFresh || recent7dModelCost?.quality === "estimated");
+  const selectedModelDisplayState = modelCostScope === "sevenDay"
+    ? sevenDayModelDisplayState
+    : modelCostScope === "today"
+    ? todayModelDisplayState
+    : "current";
   const independentReferenceSummary = modelCostItems
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
@@ -164,9 +183,9 @@ function StatsStripView({
               </button>
             </div>
             <strong className="stats-model-cost-title">各模型 API 等值费用</strong>
-            {sevenDayPrecisePending ? (
+            {selectedModelDisplayState !== "current" ? (
               <span className="stats-model-cost-status" role="status">
-                正在精准计算中…
+                正在精准计算中…{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
               </span>
             ) : null}
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
@@ -182,8 +201,10 @@ function StatsStripView({
               </span>
             ) : null}
           </div>
-          {modelCostScope === "sevenDay" && recent7dModelCost === null ? (
+          {modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">本7d模型明细待读取</span>
+          ) : modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
+            <span className="stats-model-cost-empty">今日模型明细待读取</span>
           ) : !modelCostDataAvailable ? (
             <span className="stats-model-cost-empty">模型费用待读取</span>
           ) : !modelDetailAvailable ? (

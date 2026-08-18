@@ -43,6 +43,24 @@ enum ModelUsagePresentation {
         })
     }
 
+    /// Normalizes rows returned by a compact aggregate.  The compact index
+    /// query intentionally returns one row per raw `events.model` value, so
+    /// aliases such as `gpt5.6`/`gpt-5.6-sol` would otherwise remain split.
+    /// Compact today's rows do not carry one timestamp per event; the caller
+    /// supplies the effective date for the already-filtered day so Auto Review
+    /// follows the same versioned routing rule as the event-based path.
+    static func rows(
+        from aggregatedRows: [ModelTokenBreakdown],
+        at effectiveDate: Date
+    ) -> [ModelTokenBreakdown] {
+        combinedRows(aggregatedRows.map { row in
+            ModelTokenBreakdown(
+                model: displayModelKey(for: row.model, at: effectiveDate),
+                breakdown: row.breakdown
+            )
+        })
+    }
+
     static func compactText(from rows: [ModelTokenBreakdown], limit: Int = 3) -> String? {
         let slices = slices(from: rows)
         guard !slices.isEmpty else { return nil }
@@ -84,6 +102,12 @@ enum ModelUsagePresentation {
         if OfficialAPIPriceModel.detected(from: normalized) == .gpt54Legacy {
             return "gpt-5.4"
         }
+        // A bare GPT-5.6 slug does not identify the Sol/Terra/Luna lane.
+        // Keep it as a distinct generic family instead of silently counting
+        // it as Sol.
+        if normalized == "gpt-5.6" || normalized == "gpt-5.6-generic" {
+            return "gpt-5.6-generic"
+        }
         if normalized.contains("gpt-5.6") {
             if normalized.contains("luna") { return "gpt-5.6-luna" }
             if normalized.contains("terra") { return "gpt-5.6-terra" }
@@ -99,8 +123,9 @@ enum ModelUsagePresentation {
         case "gpt-5.6-sol": return "Sol"
         case "gpt-5.6-terra": return "Terra"
         case "gpt-5.6-luna": return "Luna"
+        case "gpt-5.6-generic": return "5.6（未分型）"
         case "codex-auto-review": return "Auto Review（Luna）"
-        case "gpt-5.4-mini": return "5.4 mini"
+        case "gpt-5.4-mini": return "5.4 m"
         case "gpt-5.4": return "5.4"
         case "gpt-5.3-codex": return "5.3"
         case "gpt-5.3-codex-spark": return "Spark"
@@ -159,6 +184,7 @@ enum ModelUsagePresentation {
         case "gpt-5.6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
         case "gpt-5.6-terra": return Color(red: 0.57, green: 0.32, blue: 0.90)
         case "gpt-5.6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
+        case "gpt-5.6-generic": return Color(red: 0.48, green: 0.53, blue: 0.62)
         case "gpt-5.4": return Color(red: 0.95, green: 0.56, blue: 0.08)
         case "gpt-5.4-mini": return Color(red: 0.18, green: 0.70, blue: 0.36)
         case "gpt-5.3-codex": return Color(red: 0.86, green: 0.27, blue: 0.46)
@@ -205,7 +231,7 @@ enum ModelUsagePresentation {
         case "gpt-5.6-terra": return "Terra"
         case "gpt-5.3-codex": return "5.3"
         case "gpt-5.2-codex": return "5.2"
-        case "gpt-5.4-mini": return "5.4 mini"
+        case "gpt-5.4-mini": return "5.4 m"
         default: return suffix
         }
     }

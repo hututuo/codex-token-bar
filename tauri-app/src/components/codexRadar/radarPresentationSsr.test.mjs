@@ -288,7 +288,7 @@ test("Codex Radar summary carries accent color through labels and right-side val
   assert.match(component, /rankedCodexCrowdRadarModels\(crowdRadar, 3\)/);
   assert.match(css, /grid-template-columns:\s*0\.82fr 1\.08fr 1\.08fr 1\.02fr/);
   assert.match(css, /\.radar-block-title\s*\{[^}]*color:\s*var\(--radar-accent, var\(--muted\)\)/s);
-  assert.match(css, /\.radar-score-row span\s*\{[^}]*color:\s*var\(--radar-score-color, var\(--muted\)\)/s);
+  assert.match(css, /\.radar-score-row span,\s*\.radar-model-row span,\s*\.radar-muted\s*\{[^}]*color:\s*var\(--muted\)/s);
   assert.match(css, /\.radar-quota-row span\s*\{[^}]*color:\s*var\(--radar-accent, var\(--muted\)\)/s);
 });
 

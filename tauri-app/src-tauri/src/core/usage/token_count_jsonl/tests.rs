@@ -1,7 +1,7 @@
 use super::exact_usage_index::{
     integrity_receipt_path_for_testing, open_existing_index_for_testing, open_index_for_testing,
     repair_orphaned_index_rows_for_testing, ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY,
-    STAGED_FULL_REBUILD_PARSER_REVISION,
+    STAGED_FULL_REBUILD_PARSER_REVISION, estimate_precise_scan_total_with_source_revision,
 };
 use super::session_files::session_id_from_file;
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
@@ -1868,6 +1868,7 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     set_precise_refresh_sync_hook_for_testing(None);
     assert_eq!(old_timepoint.stats.total_tokens, 120);
     assert_eq!(old_timepoint.stats.total_calls, 1);
+    assert!(!old_timepoint.precise_attribution_current_scan_unsafe);
     assert_eq!(
         prefix_rehashes.load(Ordering::SeqCst),
         1,
@@ -1877,12 +1878,108 @@ fn exact_index_commits_the_scan_start_prefix_while_the_active_file_appends() {
     let after_append = dashboard_snapshot(&root).unwrap();
     assert_eq!(after_append.stats.total_tokens, 170);
     assert_eq!(after_append.stats.total_calls, 2);
+    assert!(!after_append.precise_attribution_current_scan_unsafe);
     assert_eq!(
         prefix_rehashes.load(Ordering::SeqCst),
         1,
         "a stable follow-up scan must not rehash an unchanged file"
     );
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_discovery_remains_a_usable_candidate_hint_after_file_metadata_drifts() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019ediscovery-drift-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+
+    let discovery = estimate_precise_scan_total_with_source_revision(
+        &root,
+        StdDuration::from_secs(2),
+        1,
+    )
+    .unwrap();
+    assert_eq!(discovery.candidate_total, 1);
+
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle, "{{\"metadata\":\"appended after discovery\"}}").unwrap();
+    handle.flush().unwrap();
+
+    assert!(
+        discovery.is_usable(&root),
+        "a stale candidate signature must be revalidated by the formal scan, not discard the plan"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn precise_scan_plan_defers_files_created_after_discovery_until_next_plan() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let first = session_dir.join("rollout-019ediscovery-first-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &first,
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#],
+    );
+    let discovery = estimate_precise_scan_total_with_source_revision(
+        &root,
+        StdDuration::from_secs(2),
+        1,
+    )
+    .unwrap();
+    assert_eq!(discovery.candidate_total, 1);
+
+    let second = session_dir.join("rollout-019ediscovery-second-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &second,
+        &[r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":0,"total_tokens":200}}}}"#],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index
+        .sync_with_scan_plan(&root, &mut warnings, Some(discovery), Some(1))
+        .unwrap();
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        100,
+        "the formal pass must consume only the discovery candidates"
+    );
+
+    let next_discovery = estimate_precise_scan_total_with_source_revision(
+        &root,
+        StdDuration::from_secs(2),
+        2,
+    )
+    .unwrap();
+    index
+        .sync_with_scan_plan(
+            &root,
+            &mut warnings,
+            Some(next_discovery.clone()),
+            Some(next_discovery.candidate_total),
+        )
+        .unwrap();
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        300,
+        "the next discovery must pick up the file created after the prior plan"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1954,7 +2051,7 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
 }
 
 #[test]
-fn exact_index_append_falls_back_to_full_rebuild_when_open_line_crosses_chunk_boundary() {
+fn exact_index_append_reuses_checkpoint_when_open_line_crosses_chunk_boundary() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1964,9 +2061,9 @@ fn exact_index_append_falls_back_to_full_rebuild_when_open_line_crosses_chunk_bo
     let first_line = br#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
     let second_line = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
 
-    // 让未完成的第二条 token 行行首落在首个块内、行尾越过 4 MiB 块边界：
-    // 此时检查点的续扫位置（行首）< 尾块起点，续扫不变量无法满足。
-    let open_line_start = EXACT_INDEX_CHUNK_SIZE - 100;
+    // 让未完成的第二条 token 行行首落在第二个块内、行尾越过 4 MiB 块边界：
+    // 续扫应从检查点所在块起点重新 hash，而不是回退到文件头。
+    let open_line_start = EXACT_INDEX_CHUNK_SIZE * 2 - 100;
     let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
     handle.write_all(first_line).unwrap();
     handle.write_all(b"\n").unwrap();
@@ -1987,7 +2084,7 @@ fn exact_index_append_falls_back_to_full_rebuild_when_open_line_crosses_chunk_bo
     // 首轮：只统计完整行，检查点固化在未完成行行首（块边界之前）。
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
-    // 补完该行：修复前第二轮扫描在这里报"续扫边界无效"，且每轮复现。
+    // 补完该行：即使未完成行跨 chunk，也应局部续扫。
     let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
     handle.write_all(&second_line[split..]).unwrap();
     handle.write_all(b"\n").unwrap();
@@ -1999,12 +2096,62 @@ fn exact_index_append_falls_back_to_full_rebuild_when_open_line_crosses_chunk_bo
     assert_eq!(refreshed.stats.total_tokens, 150);
     assert_eq!(refreshed.stats.total_calls, 2);
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
-    assert_eq!(
-        append_bytes, 0,
-        "跨块未完成行必须回退全量重建，不能走追加路径"
+    assert!(append_bytes > 0, "追加路径必须读取检查点后的必要范围");
+    assert_eq!(full_bytes, 0, "纯追加不能触发单文件全量重建");
+    assert!(
+        append_bytes < fs::metadata(&file).unwrap().len(),
+        "跨 chunk 追加只应从检查点所在 chunk 读取，而不是重读文件头"
     );
-    assert_eq!(full_bytes, fs::metadata(&file).unwrap().len());
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_append_at_chunk_boundary_keeps_previous_tail_validation_local() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eappend-boundary-0000-0000-0000-exact.jsonl");
+    let first_line = br#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#;
+    let second_line = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
+    let pad_prefix = br#"{"padding":""#;
+    let pad_suffix = b"\"}\n";
+    let first_line_size = first_line.len() as u64 + 1;
+    let pad_body = usize::try_from(
+        EXACT_INDEX_CHUNK_SIZE
+            .saturating_mul(2)
+            .saturating_sub(first_line_size)
+            .saturating_sub(pad_prefix.len() as u64)
+            .saturating_sub(pad_suffix.len() as u64),
+    )
+    .unwrap();
+    let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
+    handle.write_all(pad_prefix).unwrap();
+    handle.write_all(&vec![b'x'; pad_body]).unwrap();
+    handle.write_all(pad_suffix).unwrap();
+    handle.write_all(first_line).unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+    assert_eq!(fs::metadata(&file).unwrap().len(), EXACT_INDEX_CHUNK_SIZE * 2);
+
+    let initial = dashboard_snapshot(&root).unwrap();
+    assert_eq!(initial.stats.total_tokens, 120);
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    handle.write_all(second_line).unwrap();
+    handle.write_all(b"\n").unwrap();
+    handle.flush().unwrap();
+    drop(handle);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let refreshed = dashboard_snapshot(&root).unwrap();
+    assert_eq!(refreshed.stats.total_tokens, 150);
+    let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_bytes, 0);
+    assert!(append_bytes >= EXACT_INDEX_CHUNK_SIZE);
+    assert!(append_bytes < fs::metadata(&file).unwrap().len());
     fs::remove_dir_all(root).unwrap();
 }
 

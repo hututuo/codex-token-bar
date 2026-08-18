@@ -5,6 +5,9 @@ import {
   dashboardSecondaryModelUsageItems,
   floatingModelUsageAccessibilityText,
   floatingModelUsageOverflowText,
+  floatingModelUsagePageCount,
+  floatingModelUsagePageItems,
+  floatingModelUsagePageSizes,
   floatingModelUsageValue,
   floatingTodayModelUsageItems,
 } from "./floatingModelUsage.ts";
@@ -41,7 +44,7 @@ test("Spark stays visible in share and shows its reference price in cost", () =>
   ], "gpt56Sol"), /Spark \$0\.00（不计入总计）/);
 });
 
-test("today model usage keeps four core placeholders and shares one cost order", () => {
+test("today model usage keeps a default trio and shares one cost order", () => {
   const rows = [
     row("gpt-5.6-luna", 2_000_000, 0, 0, 2_000_000, 1),
     row("gpt-5.6-sol", 1_000_000, 0, 1_000_000, 2_000_000, 1),
@@ -52,20 +55,28 @@ test("today model usage keeps four core placeholders and shares one cost order",
     { label: "Sol", tokens: 2_000_000 },
     { label: "Luna", tokens: 2_000_000 },
     { label: "Terra", tokens: 0 },
-    { label: "5.4", tokens: 0 },
   ]);
-  assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0, 0]);
+  assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0]);
   assert.deepEqual(
     floatingTodayModelUsageItems(rows, "gpt56Sol", { showPlaceholders: true }).map((item) => item.key),
     items.map((item) => item.key),
   );
 });
 
+test("one used model receives only enough zero placeholders to reach three", () => {
+  const items = floatingTodayModelUsageItems([
+    row("gpt-5.4", 1_000, 0, 0, 1_000, 1),
+  ], "gpt56Sol", { showPlaceholders: true });
+
+  assert.deepEqual(items.map((item) => item.label), ["5.4", "Sol", "Terra"]);
+  assert.equal(items.length, 3);
+});
+
 test("cold-start empty model rows remain pending until a trusted summary exists", () => {
   assert.deepEqual(floatingTodayModelUsageItems([], "gpt56Sol"), []);
   assert.equal(
     floatingTodayModelUsageItems([], "gpt56Sol", { showPlaceholders: true }).length,
-    4,
+    3,
   );
 });
 
@@ -76,6 +87,7 @@ test("model usage overflow explains every hidden model", () => {
     row("gpt-5.6-terra", 400_000, 0, 0, 400_000, 1),
     row("codex-auto-review", 300_000, 0, 0, 300_000, 1),
     row("gpt-5.5", 1, 0, 0, 1, 1),
+    row("gpt-5.4", 0, 0, 0, 0, 0),
   ], "gpt56Sol", { showPlaceholders: true });
 
   assert.equal(items.length, 5);
@@ -84,6 +96,31 @@ test("model usage overflow explains every hidden model", () => {
     "更多模型\n5.4 · 0 tokens · 占比 0% · $0.00",
   );
   assert.equal(floatingModelUsageOverflowText(items.slice(0, 4)), null);
+});
+
+test("cost model pages stay balanced while never exceeding four items", () => {
+  assert.deepEqual(floatingModelUsagePageSizes(4), [4]);
+  assert.deepEqual(floatingModelUsagePageSizes(5), [3, 2]);
+  assert.deepEqual(floatingModelUsagePageSizes(6), [3, 3]);
+  assert.deepEqual(floatingModelUsagePageSizes(7), [4, 3]);
+  assert.deepEqual(floatingModelUsagePageSizes(8), [4, 4]);
+
+  const items = floatingTodayModelUsageItems([
+    row("gpt-5.6-sol", 1_000, 0, 0, 1_000, 1),
+    row("gpt-5.6-terra", 900, 0, 0, 900, 1),
+    row("gpt-5.6-luna", 800, 0, 0, 800, 1),
+    row("gpt-5.4", 700, 0, 0, 700, 1),
+    row("gpt-5.3-codex", 600, 0, 0, 600, 1),
+  ], "gpt56Sol");
+  assert.equal(floatingModelUsagePageCount("cost", items), 2);
+  const firstPage = floatingModelUsagePageItems("cost", items, 0);
+  const secondPage = floatingModelUsagePageItems("cost", items, 1);
+  assert.equal(firstPage.length, 3);
+  assert.equal(secondPage.length, 2);
+  assert.deepEqual(
+    new Set([...firstPage, ...secondPage].map((item) => item.key)),
+    new Set(items.map((item) => item.key)),
+  );
 });
 
 test("dashboard groups keep Sol Terra Luna expanded and wrap used secondary models", () => {

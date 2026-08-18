@@ -26,6 +26,19 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(slices.reduce(0) { $0 + $1.tokens }, 100)
     }
 
+    func testBareGPT56DoesNotPretendToBeSol() {
+        let slices = ModelUsagePresentation.slices(from: [row("gpt-5.6", tokens: 100, calls: 1)])
+
+        XCTAssertEqual(slices.map(\.label), ["5.6（未分型）"])
+        XCTAssertEqual(ModelUsagePresentation.key(for: "gpt-5.6"), "gpt-5.6-generic")
+    }
+
+    func testFloatingModelLabelsUseCompactModelNames() {
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.2-codex"), "5.2")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4"), "5.4")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4-mini"), "5.4 m")
+    }
+
     func testAutoReviewRemainsSeparateFromRealGPT54AndGPT53() {
         let rows = [
             row("codex-auto-review", tokens: 600, calls: 2),
@@ -67,6 +80,28 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(
             ModelUsagePresentation.slices(from: rows).map(\.label),
             ["Auto Review（5.4）", "Auto Review（Luna）"]
+        )
+    }
+
+    func testCompactAggregatedRowsNormalizeAliasesBeforePresentation() throws {
+        let afterCutover = try XCTUnwrap(CodexAutoReviewPricingPolicy.rules.last?.effectiveFrom)
+            .addingTimeInterval(1)
+        let rows = ModelUsagePresentation.rows(
+            from: [
+                row("gpt-5.6-sol", tokens: 600, calls: 2),
+                row("gpt_5.6_sol", tokens: 100, calls: 1),
+                row("codex-auto-review", tokens: 300, calls: 1),
+            ],
+            at: afterCutover
+        )
+
+        XCTAssertEqual(
+            ModelUsagePresentation.slices(from: rows).map(\.label),
+            ["Sol", "Auto Review（Luna）"]
+        )
+        XCTAssertEqual(
+            ModelUsagePresentation.slices(from: rows).map(\.tokens),
+            [700, 300]
         )
     }
 

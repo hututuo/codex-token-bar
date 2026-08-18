@@ -104,7 +104,7 @@ export function markPreciseDashboardSourceDirty(sourceToken: CodexHomeSourceToke
 /**
  * Force requests with a stable idempotent trigger key may reuse the
  * immediately completed snapshot when no dirty marker intervened. Attribution
- * boundaries must carry a canonical Unix-second key; a raw revision is only
+ * boundaries must carry a canonical five-minute bucket key; a raw revision is only
  * diagnostic metadata and never a freshness proof. Manual/source-change,
  * retry, and unknown requests intentionally return false for fail-safe
  * semantics.

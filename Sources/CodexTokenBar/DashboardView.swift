@@ -1024,10 +1024,17 @@ struct DashboardView: View {
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
                 todayModelBreakdowns: store.todayModelBreakdowns,
+                todayModelBreakdownsFresh: store.todayModelBreakdownsFresh,
                 planLabel: quotaStore.snapshot.planType ?? "",
                 isPreparingUsageCache: store.isPreparingUsageCache,
+                isRefreshing: store.isRefreshing,
+                preciseTimeSeriesFresh: store.preciseTimeSeriesFresh,
                 cacheStatus: store.status
             )
+            // LiveRateMonitor publishes independently of historical usage. The
+            // equatable boundary keeps those one-second rate ticks from
+            // rebuilding the expensive model-attribution strip.
+            .equatable()
 
             CodexRadarStrip(
                 snapshot: radarStore.snapshot,

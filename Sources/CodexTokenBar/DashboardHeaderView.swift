@@ -678,13 +678,16 @@ struct StatStripStatusLinePresentation: Equatable {
     }
 }
 
-struct StatStrip: View {
+struct StatStrip: View, @preconcurrency Equatable {
     let snapshot: DashboardSnapshot
     var quotaSnapshot: AccountQuotaSnapshot? = nil
     var todayModelBreakdowns: [ModelTokenBreakdown] = []
+    var todayModelBreakdownsFresh = false
     var showsModelCostRow = true
     var planLabel = ""
     var isPreparingUsageCache = false
+    var isRefreshing = false
+    var preciseTimeSeriesFresh = false
     var cacheStatus = ""
 
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
@@ -733,6 +736,24 @@ struct StatStrip: View {
         )
     }
 
+    private var todayTokens: Int {
+        snapshot.dailyUsage.last {
+            Calendar.current.isDateInToday($0.date)
+        }?.tokens ?? 0
+    }
+
+    private var todayModelDisplayState: ModelAttributionDisplayState {
+        guard todayTokens > 0 else { return .current }
+        guard !todayModelBreakdowns.isEmpty else { return .pending }
+        return todayModelBreakdownsFresh && !isRefreshing ? .current : .stale
+    }
+
+    private var sevenDayModelDisplayState: ModelAttributionDisplayState {
+        let state = sevenDayModelData.displayState
+        guard state == .current else { return state }
+        return isRefreshing || !preciseTimeSeriesFresh ? .stale : .current
+    }
+
     private var modelCostScopeBinding: Binding<DashboardModelCostScope> {
         Binding(
             get: { DashboardModelCostScope.storedValue(for: modelCostScopeRaw) },
@@ -740,7 +761,55 @@ struct StatStrip: View {
         )
     }
 
+    /// Live-rate publications invalidate the dashboard root once per second,
+    /// but they do not change this historical strip.  Keep the equality key
+    /// deliberately metadata-based: the exact index generation and snapshot
+    /// timestamp are the authoritative change signals, while avoiding an
+    /// O(all-attribution-events) comparison on every live tick.
+    static func == (lhs: StatStrip, rhs: StatStrip) -> Bool {
+        let left = lhs.snapshot
+        let right = rhs.snapshot
+        return left.generatedAt == right.generatedAt
+            && left.preciseTimeSeriesGeneratedAt == right.preciseTimeSeriesGeneratedAt
+            && left.usagePrecision == right.usagePrecision
+            && left.stats.totalTokens == right.stats.totalTokens
+            && left.stats.peakDayTokens == right.stats.peakDayTokens
+            && left.stats.peakThreadTokens == right.stats.peakThreadTokens
+            && left.stats.currentStreakDays == right.stats.currentStreakDays
+            && left.stats.longestStreakDays == right.stats.longestStreakDays
+            && left.stats.totalCalls == right.stats.totalCalls
+            && left.stats.firstUsageAt == right.stats.firstUsageAt
+            && left.dailyUsage.last == right.dailyUsage.last
+            && left.cacheUsage.total == right.cacheUsage.total
+            && left.cacheUsage.attributionProvenanceEpoch == right.cacheUsage.attributionProvenanceEpoch
+            && left.cacheUsage.attributionGeneration == right.cacheUsage.attributionGeneration
+            && left.cacheUsage.attributionEventsComplete == right.cacheUsage.attributionEventsComplete
+            && left.cacheUsage.attributionModelBucketsComplete == right.cacheUsage.attributionModelBucketsComplete
+            && left.cacheUsage.attributionCurrentScanUnsafeCauseDetected == right.cacheUsage.attributionCurrentScanUnsafeCauseDetected
+            && left.cacheUsage.attributionEvents.count == right.cacheUsage.attributionEvents.count
+            && left.cacheUsage.attributionEvents.last?.id == right.cacheUsage.attributionEvents.last?.id
+            && left.cacheUsage.modelBreakdowns == right.cacheUsage.modelBreakdowns
+            && left.cacheUsage.dailyModelBreakdowns == right.cacheUsage.dailyModelBreakdowns
+            && left.cacheUsage.recentBins.count == right.cacheUsage.recentBins.count
+            && left.cacheUsage.recentBins.last == right.cacheUsage.recentBins.last
+            && lhs.quotaSnapshot == rhs.quotaSnapshot
+            && lhs.todayModelBreakdowns == rhs.todayModelBreakdowns
+            && lhs.todayModelBreakdownsFresh == rhs.todayModelBreakdownsFresh
+            && lhs.showsModelCostRow == rhs.showsModelCostRow
+            && lhs.planLabel == rhs.planLabel
+            && lhs.isPreparingUsageCache == rhs.isPreparingUsageCache
+            && lhs.isRefreshing == rhs.isRefreshing
+            && lhs.preciseTimeSeriesFresh == rhs.preciseTimeSeriesFresh
+            && lhs.cacheStatus == rhs.cacheStatus
+            && lhs.quotaEstimateModelRaw == rhs.quotaEstimateModelRaw
+            && lhs.modelCostScopeRaw == rhs.modelCostScopeRaw
+    }
+
     var body: some View {
+        let savingsPresentation = self.savingsPresentation
+        let sevenDayModelData = self.sevenDayModelData
+        let todayTokens = self.todayTokens
+
         VStack(spacing: 2) {
             HStack(spacing: 0) {
                 StatCell(value: tokenValue(stats.totalTokens.abbreviatedTokens), label: "累计 Token 数")
@@ -782,13 +851,14 @@ struct StatStrip: View {
                     todayRows: todayModelBreakdowns,
                     lifetimeRows: snapshot.cacheUsage.modelBreakdowns,
                     sevenDayRows: sevenDayModelData.rows,
-                    todayTokens: snapshot.dailyUsage.last(where: { Calendar.current.isDateInToday($0.date) })?.tokens ?? 0,
+                    todayTokens: todayTokens,
                     lifetimeTokens: snapshot.stats.totalTokens,
                     sevenDayTokens: sevenDayModelData.tokens,
                     fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
                     dataAvailable: snapshot.hasPreciseTokenUsage,
+                    todayModelDisplayState: todayModelDisplayState,
                     sevenDayDataAvailable: sevenDayModelData.dataAvailable,
-                    sevenDayDataEstimated: sevenDayModelData.isEstimated,
+                    sevenDayModelDisplayState: sevenDayModelDisplayState,
                     sevenDayEstimateSource: sevenDayModelData.estimateSource
                 )
             }
@@ -825,10 +895,21 @@ enum DashboardModelCostScope: String, CaseIterable, Identifiable {
     }
 }
 
+enum ModelAttributionDisplayState: Equatable {
+    case current
+    case stale
+    case pending
+
+    var isWaiting: Bool {
+        self != .current
+    }
+}
+
 struct DashboardSevenDayModelData: Equatable {
     let rows: [ModelTokenBreakdown]
     let tokens: Int
     let dataAvailable: Bool
+    let displayState: ModelAttributionDisplayState
     let isEstimated: Bool
     let estimateSource: String?
 
@@ -845,6 +926,7 @@ struct DashboardSevenDayModelData: Equatable {
             rows = []
             tokens = 0
             self.dataAvailable = false
+            displayState = .pending
             isEstimated = false
             estimateSource = nil
             return
@@ -860,33 +942,42 @@ struct DashboardSevenDayModelData: Equatable {
             rows = ModelUsagePresentation.rows(from: events)
             tokens = events.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
             self.dataAvailable = true
+            displayState = .current
             isEstimated = false
             estimateSource = nil
             return
         }
 
-        // The existing recent canvas is already aggregated into five-minute
-        // buckets. Use it as a fast numeric estimate while the heavier exact
-        // model attribution is still being prepared. Keep the model nil so a
-        // fallback price is visible as an estimate rather than false model
-        // attribution.
-        let recent = cacheUsage.recentBins.filter {
-            $0.start >= start && $0.start < resetAt
+        // A complete event projection can be retained while the current
+        // numeric scan is being refreshed. Show that last trusted model view
+        // as stale; never turn an anonymous five-minute aggregate into a
+        // fabricated Sol/Terra/Luna attribution.
+        if cacheUsage.attributionEventsComplete,
+           !cacheUsage.attributionCurrentScanUnsafeCauseDetected {
+            let trustedEvents = cacheUsage.attributionEvents.filter {
+                $0.start >= start && $0.start < resetAt
+            }
+            if !trustedEvents.isEmpty {
+                rows = ModelUsagePresentation.rows(from: trustedEvents)
+                tokens = trustedEvents.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
+                self.dataAvailable = true
+                displayState = .stale
+                isEstimated = true
+                estimateSource = "上次可信模型明细"
+                return
+            }
         }
-        let quickBreakdown = recent.map(\.breakdown).combined
-        guard !recent.isEmpty, quickBreakdown.totalTokens > 0 else {
-            rows = []
-            tokens = 0
-            self.dataAvailable = false
-            isEstimated = false
-            estimateSource = nil
-            return
-        }
-        rows = [ModelTokenBreakdown(model: nil, breakdown: quickBreakdown)]
-        tokens = quickBreakdown.totalTokens
-        self.dataAvailable = true
+
+        // Five-minute buckets remain valid for charts and total-token
+        // progress, but they do not carry enough information for model
+        // attribution. Keep the model-cost surface pending until exact rows
+        // are available.
+        rows = []
+        tokens = 0
+        self.dataAvailable = false
+        displayState = .pending
         isEstimated = true
-        estimateSource = "5分钟桶用量缓存"
+        estimateSource = "精确模型归因"
     }
 }
 
@@ -900,8 +991,9 @@ struct DashboardModelCostRow: View {
     let sevenDayTokens: Int
     let fallbackModel: OfficialAPIPriceModel
     let dataAvailable: Bool
+    let todayModelDisplayState: ModelAttributionDisplayState
     let sevenDayDataAvailable: Bool
-    let sevenDayDataEstimated: Bool
+    let sevenDayModelDisplayState: ModelAttributionDisplayState
     let sevenDayEstimateSource: String?
 
     private var sourceRows: [ModelTokenBreakdown] {
@@ -927,26 +1019,6 @@ struct DashboardModelCostRow: View {
         )
     }
 
-    private var totalCost: Double {
-        items.compactMap(\.costUSD).reduce(0, +)
-    }
-
-    private var referenceCostSummary: String? {
-        let entries = items.compactMap { item -> String? in
-            guard let referenceCostUSD = item.referenceCostUSD else { return nil }
-            return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
-        }
-        return entries.isEmpty ? nil : entries.joined(separator: " · ")
-    }
-
-    private var primaryItems: [FloatingTodayModelUsageItem] {
-        FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: items)
-    }
-
-    private var secondaryItems: [FloatingTodayModelUsageItem] {
-        FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: items)
-    }
-
     private var expectedTokens: Int {
         switch scope {
         case .sevenDay: return sevenDayTokens
@@ -967,6 +1039,14 @@ struct DashboardModelCostRow: View {
         }
     }
 
+    private var selectedModelDisplayState: ModelAttributionDisplayState {
+        switch scope {
+        case .sevenDay: return sevenDayModelDisplayState
+        case .today: return todayModelDisplayState
+        case .lifetime: return .current
+        }
+    }
+
     private var emptyDetailText: String {
         switch scope {
         case .sevenDay: return "本7d暂无模型用量"
@@ -976,6 +1056,24 @@ struct DashboardModelCostRow: View {
     }
 
     var body: some View {
+        // `body` can be revisited by SwiftUI while a live-rate tick is being
+        // published.  Materialize the model-cost presentation once per
+        // transaction instead of re-normalizing the same rows for every
+        // conditional and every card section below.
+        let visibleItems = items
+        let visibleTotalCost = visibleItems.compactMap(\.costUSD).reduce(0, +)
+        let visibleReferenceEntries = visibleItems.compactMap { item -> String? in
+            guard let referenceCostUSD = item.referenceCostUSD else { return nil }
+            return "\(item.label) 参考 \(referenceCostUSD.quotaEstimatorMoneyText)"
+        }
+        let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
+            ? nil
+            : visibleReferenceEntries.joined(separator: " · ")
+        let visiblePrimaryItems = FloatingTodayModelUsagePresentation.dashboardPrimaryItems(from: visibleItems)
+        let visibleSecondaryItems = FloatingTodayModelUsagePresentation.dashboardSecondaryItems(from: visibleItems)
+        let selectedAvailable = selectedDataAvailable
+        let modelDetailAvailable = hasModelDetail
+
         VStack(spacing: 6) {
             HStack(spacing: 9) {
                 DashboardModelCostScopePicker(scope: $scope)
@@ -985,25 +1083,35 @@ struct DashboardModelCostRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize()
 
-                if scope == .sevenDay, sevenDayDataEstimated {
-                    Text("正在精准计算中…")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(AppTheme.accentBlue)
-                        .fixedSize()
-                        .help(sevenDayEstimateSource.map { "先按\($0)快速估算，精确模型归因完成后自动替换。" } ?? "先显示快速估算，精确模型归因完成后自动替换。")
+                if selectedModelDisplayState != .current {
+                    HStack(spacing: 4) {
+                        Text("正在精准计算中…")
+                        if selectedModelDisplayState == .stale {
+                            Text("显示上次可信结果")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(AppTheme.accentBlue)
+                    .fixedSize()
+                    .help(
+                        sevenDayEstimateSource.map {
+                            "\($0)保留显示，精确模型归因完成后自动替换。"
+                        } ?? "精确模型归因完成后自动替换。"
+                    )
                 }
 
                 Spacer(minLength: 4)
 
-                if selectedDataAvailable, hasModelDetail, !items.isEmpty {
+                if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("合计 \(totalCost.quotaEstimatorMoneyText)")
+                        Text("合计 \(visibleTotalCost.quotaEstimatorMoneyText)")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
                             .fixedSize()
-                        if let referenceCostSummary {
-                            Text(referenceCostSummary)
+                        if let visibleReferenceCostSummary {
+                            Text(visibleReferenceCostSummary)
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()
@@ -1013,24 +1121,28 @@ struct DashboardModelCostRow: View {
                 }
             }
 
-            if !selectedDataAvailable {
+            if !selectedAvailable {
                 if scope == .sevenDay {
-                    Text("本7d模型明细待读取")
+                    Text(selectedModelDisplayState == .stale
+                        ? "正在精准计算中，显示上次可信结果"
+                        : "本7d模型明细待读取")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Text("待读取")
+                    Text(selectedModelDisplayState == .stale
+                        ? "正在精准计算中，显示上次可信结果"
+                        : "今日模型明细待读取")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else if !hasModelDetail {
+            } else if !modelDetailAvailable {
                 Text(missingDetailText)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            } else if items.isEmpty {
+            } else if visibleItems.isEmpty {
                 Text(emptyDetailText)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -1044,14 +1156,14 @@ struct DashboardModelCostRow: View {
                         .frame(width: 28, alignment: .leading)
 
                     HStack(spacing: 7) {
-                        ForEach(primaryItems) { item in
+                        ForEach(visiblePrimaryItems) { item in
                             DashboardPrimaryModelCostCard(item: item)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                if !secondaryItems.isEmpty {
+                if !visibleSecondaryItems.isEmpty {
                     HStack(alignment: .top, spacing: 10) {
                         Text("其他")
                             .font(.system(size: 9.5, weight: .bold))
@@ -1067,7 +1179,7 @@ struct DashboardModelCostRow: View {
                             alignment: .leading,
                             spacing: 6
                         ) {
-                            ForEach(secondaryItems) { item in
+                            ForEach(visibleSecondaryItems) { item in
                                 DashboardSecondaryModelCostChip(item: item)
                             }
                         }

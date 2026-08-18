@@ -79,6 +79,10 @@ final class CodexUsageStore: ObservableObject {
 
     @Published private(set) var snapshot: DashboardSnapshot = .empty
     private(set) var todayModelBreakdowns: [ModelTokenBreakdown] = []
+    /// True when today's model rows came from a successful compact or exact
+    /// model-aware read. Rows can remain populated while the next refresh is
+    /// running; the UI then presents them as a stale trusted snapshot.
+    @Published private(set) var todayModelBreakdownsFresh = false
     /// The last successful exact model snapshot's local day. A fast/compact
     /// refresh can temporarily lack attribution rows; retaining this marker
     /// lets us keep that snapshot only within the same day and source.
@@ -224,14 +228,36 @@ final class CodexUsageStore: ObservableObject {
     }
 
     /// Attribution compares local usage with a point-in-time quota snapshot.
-    /// This path bypasses the compact-summary optimization so the time series
-    /// can explicitly catch up to a newer quota observation.
+    /// Attribution is represented by five-minute index buckets. Once the
+    /// current bucket is already covered, another quota poll in that same
+    /// bucket must not start a second full historical aggregation; the normal
+    /// cadence will publish the next bucket. A continuity loss or a bucket
+    /// transition still takes the exact path immediately.
     func refreshPreciseTimeSeriesForAttribution() {
+        if shouldDeferAttributionRefreshForCurrentBucket() {
+            isCompactSummaryPending = true
+            return
+        }
         refresh(
             includePreciseScan: true,
             forceFullTimeSeries: true,
             requestKind: .automatic
         )
+    }
+
+    private func shouldDeferAttributionRefreshForCurrentBucket(now: Date = Date()) -> Bool {
+        guard preciseTimeSeriesFresh,
+              preciseTimeSeriesContinuityLossID == nil,
+              !isInitialLoading,
+              let generatedAt = snapshot.preciseTimeSeriesGeneratedAt else {
+            return false
+        }
+        return Self.fiveMinuteBucketStart(for: generatedAt)
+            == Self.fiveMinuteBucketStart(for: now)
+    }
+
+    private static func fiveMinuteBucketStart(for date: Date) -> Int64 {
+        Int64(floor(date.timeIntervalSince1970 / 300))
     }
 
     /// Refresh the process-local view from the crash-durable continuity ledger.
@@ -409,6 +435,7 @@ final class CodexUsageStore: ObservableObject {
         isPreparingUsageCache = false
         preciseTimeSeriesFresh = false
         isCompactSummaryPending = false
+        todayModelBreakdownsFresh = false
         todayModelBreakdownsDay = nil
         guard identityChanged else { return true }
 
@@ -551,6 +578,7 @@ final class CodexUsageStore: ObservableObject {
             isCompactSummaryPending = false
             snapshot = .empty
             todayModelBreakdowns = []
+            todayModelBreakdownsFresh = false
             todayModelBreakdownsDay = nil
             snapshotSourceID = nil
             preciseTimeSeriesFresh = false
@@ -579,6 +607,7 @@ final class CodexUsageStore: ObservableObject {
         if let snapshotSourceID, snapshotSourceID != sourceID {
             snapshot = .empty
             todayModelBreakdowns = []
+            todayModelBreakdownsFresh = false
             todayModelBreakdownsDay = nil
             self.snapshotSourceID = nil
             preciseTimeSeriesFresh = false
@@ -770,6 +799,10 @@ final class CodexUsageStore: ObservableObject {
                             }
                             if loaded.hasPreciseTokenUsage {
                                 self.publish(loaded, sourceID: sourceID)
+                                if loaded.cacheUsage.attributionModelBucketsComplete,
+                                   !loaded.cacheUsage.attributionCurrentScanUnsafeCauseDetected {
+                                    self.todayModelBreakdownsFresh = true
+                                }
                                 if loaded.cacheUsage.attributionEventsComplete {
                                     sawFinalPrecisePhase = true
                                     self.isDetailHydrating = false
@@ -854,8 +887,9 @@ final class CodexUsageStore: ObservableObject {
                     // Numeric aggregation already committed atomically. A
                     // detail-only error is not an exact-total failure, does
                     // not open continuity recovery, and does not stale totals.
-                    self.isDetailHydrating = false
-                    self.isCompactSummaryPending = false
+                        self.isDetailHydrating = false
+                        self.isCompactSummaryPending = false
+                        self.todayModelBreakdownsFresh = false
                     self.status = "\(source.originLabel) · token_count · 数值已更新，会话明细暂不可用"
                     shouldScheduleTransientDatabaseRecovery = false
                     trace?.end("detail-failed", metadata: [
@@ -884,6 +918,7 @@ final class CodexUsageStore: ObservableObject {
                     if !retainedTrustedSnapshot {
                         self.snapshot = .empty
                         self.todayModelBreakdowns = []
+                        self.todayModelBreakdownsFresh = false
                         self.todayModelBreakdownsDay = nil
                         self.snapshotSourceID = nil
                     }
@@ -1122,6 +1157,10 @@ final class CodexUsageStore: ObservableObject {
                 self.todayModelBreakdowns = availableRows
                 todayModelBreakdownsDay = Self.startOfDay(snapshot.generatedAt)
             }
+            todayModelBreakdownsFresh = !shouldRetainPrevious
+                && (availableRows.isEmpty
+                    ? Self.todayTokenCount(in: snapshot, now: snapshot.generatedAt) == 0
+                    : true)
         }
         self.snapshot = snapshot
         snapshotSourceID = sourceID

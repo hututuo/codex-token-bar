@@ -458,10 +458,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           <div className="radar-model-row">
             {secondary.length > 0
               ? secondary.map((row) => (
-                  <span
-                    key={row.label}
-                    style={{ "--radar-score-color": radarScoreAccent(row.point) } as CSSProperties}
-                  >
+                  <span key={row.label}>
                     {compactRadarModelName(row.label)} {displayRadarNumber(row.point.score)}
                   </span>
                 ))
@@ -484,10 +481,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
           <div className="radar-model-row">
             {crowdLeaders.length > 1
               ? crowdLeaders.slice(1).map((row) => (
-                  <span
-                    key={`${row.model}-${row.effort}`}
-                    style={{ "--radar-score-color": semanticMetricColor(row.passRate * 100) } as CSSProperties}
-                  >
+                  <span key={`${row.model}-${row.effort}`}>
                     {crowdRadarModelLabel(row)} {(row.passRate * 150).toFixed(1)}
                   </span>
                 ))

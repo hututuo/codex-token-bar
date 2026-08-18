@@ -24,23 +24,86 @@ export function mergePreciseDashboard(
   state: DashboardAppState,
   precise: DashboardSnapshot,
 ): DashboardAppState {
+  const previous = state.dashboard;
+  const incomingCoverageAt = precise.preciseRecentUsageCoveredAt ?? null;
+  const incomingCoverageIsTrusted = precise.preciseRecentUsageFresh === true
+    && incomingCoverageAt !== null
+    && Number.isFinite(Date.parse(incomingCoverageAt));
+  const previousCoverageAt = previous?.preciseRecentUsageCoveredAt ?? null;
+  const previousCoverageIsTrusted = previousCoverageAt !== null
+    && Number.isFinite(Date.parse(previousCoverageAt));
+  if (previous !== null && previousCoverageIsTrusted && !incomingCoverageIsTrusted) {
+    // A failed/incomplete owner result is a status update, not a new usage
+    // truth. Keep the last materialized canvas intact so a long exact scan
+    // cannot replace real values with the zero/"待读取" placeholder snapshot.
+    // The stale bit and diagnostics still make the incomplete read visible.
+    return {
+      ...state,
+      dashboard: {
+        ...previous,
+        preciseRecentUsageFresh: false,
+        preciseAttributionCurrentScanUnsafe: previous.preciseAttributionCurrentScanUnsafe
+          || precise.preciseAttributionCurrentScanUnsafe,
+        warnings: mergeWarnings(
+          removeUsagePrecisionWarnings(previous.warnings),
+          precise.warnings,
+        ),
+        diagnostics: mergeQuotaDiagnostics(
+          previous.diagnostics ?? [],
+          precise.diagnostics ?? [],
+        ),
+      },
+    };
+  }
   return {
     ...state,
     dashboard:
-      state.dashboard === null
+      previous === null
         ? precise
         : {
             ...precise,
-            quotaUpdatedAt: state.dashboard.quotaUpdatedAt ?? null,
-            attributionIdentity: state.dashboard.attributionIdentity ?? null,
-            account: state.dashboard.account,
-            quota: state.dashboard.quota,
-            activityDays: mergeActivityQuotaHistory(precise.activityDays, state.dashboard.activityDays),
-            recentUsage24h: mergeQuotaHistory(precise.recentUsage24h, state.dashboard.recentUsage24h),
-            recentUsage7d: mergeQuotaHistory(precise.recentUsage7d, state.dashboard.recentUsage7d),
-            recentUsage30d: mergeQuotaHistory(precise.recentUsage30d, state.dashboard.recentUsage30d),
-            warnings: mergeWarnings(removeUsagePrecisionWarnings(state.dashboard.warnings), precise.warnings),
-            diagnostics: mergeQuotaDiagnostics(state.dashboard.diagnostics ?? [], precise.diagnostics ?? []),
+            // An incomplete scan intentionally publishes no new coverage
+            // watermark. Keep the previous trusted watermark so the UI can
+            // continue showing last-good data with a stale indicator instead
+            // of falling back to the all-zero startup canvas.
+            preciseRecentUsageCoveredAt: incomingCoverageIsTrusted
+              ? incomingCoverageAt
+              : previous.preciseRecentUsageCoveredAt ?? null,
+            preciseRecentUsageFresh: incomingCoverageIsTrusted,
+            preciseObserverEpoch: incomingCoverageIsTrusted
+              ? precise.preciseObserverEpoch
+              : previous.preciseObserverEpoch ?? null,
+            preciseObserverStartedAtUnixMicros: incomingCoverageIsTrusted
+              ? precise.preciseObserverStartedAtUnixMicros
+              : previous.preciseObserverStartedAtUnixMicros ?? null,
+            preciseObserverSequence: incomingCoverageIsTrusted
+              ? precise.preciseObserverSequence
+              : previous.preciseObserverSequence ?? null,
+            preciseAttributionProvenanceEpoch: incomingCoverageIsTrusted
+              ? precise.preciseAttributionProvenanceEpoch
+              : previous.preciseAttributionProvenanceEpoch ?? null,
+            preciseAttributionGeneration: incomingCoverageIsTrusted
+              ? precise.preciseAttributionGeneration
+              : previous.preciseAttributionGeneration ?? null,
+            preciseAttributionUnsafeSinceGeneration: incomingCoverageIsTrusted
+              ? precise.preciseAttributionUnsafeSinceGeneration
+              : previous.preciseAttributionUnsafeSinceGeneration ?? null,
+            preciseAttributionUnsafeId: incomingCoverageIsTrusted
+              ? precise.preciseAttributionUnsafeId
+              : previous.preciseAttributionUnsafeId ?? null,
+            preciseAttributionCurrentScanUnsafe: incomingCoverageIsTrusted
+              ? precise.preciseAttributionCurrentScanUnsafe
+              : true,
+            quotaUpdatedAt: previous.quotaUpdatedAt ?? null,
+            attributionIdentity: previous.attributionIdentity ?? null,
+            account: previous.account,
+            quota: previous.quota,
+            activityDays: mergeActivityQuotaHistory(precise.activityDays, previous.activityDays),
+            recentUsage24h: mergeQuotaHistory(precise.recentUsage24h, previous.recentUsage24h),
+            recentUsage7d: mergeQuotaHistory(precise.recentUsage7d, previous.recentUsage7d),
+            recentUsage30d: mergeQuotaHistory(precise.recentUsage30d, previous.recentUsage30d),
+            warnings: mergeWarnings(removeUsagePrecisionWarnings(previous.warnings), precise.warnings),
+            diagnostics: mergeQuotaDiagnostics(previous.diagnostics ?? [], precise.diagnostics ?? []),
           },
   };
 }
@@ -54,6 +117,33 @@ export function markPreciseRecentUsageStale(state: DashboardAppState): Dashboard
     dashboard: {
       ...state.dashboard,
       preciseRecentUsageFresh: false,
+    },
+  };
+}
+
+/**
+ * The native safety acknowledgement only removes an already-reviewed
+ * attribution episode marker. It does not change token usage or quota data,
+ * so the UI can clear the marker locally and wait for the next scheduled
+ * source probe instead of forcing a second full exact scan immediately.
+ */
+export function clearPreciseAttributionSafety(
+  state: DashboardAppState,
+): DashboardAppState {
+  const dashboard = state.dashboard;
+  if (dashboard === null
+    || (dashboard.preciseAttributionUnsafeSinceGeneration == null
+      && dashboard.preciseAttributionUnsafeId == null
+      && dashboard.preciseAttributionCurrentScanUnsafe !== true)) {
+    return state;
+  }
+  return {
+    ...state,
+    dashboard: {
+      ...dashboard,
+      preciseAttributionUnsafeSinceGeneration: null,
+      preciseAttributionUnsafeId: null,
+      preciseAttributionCurrentScanUnsafe: false,
     },
   };
 }

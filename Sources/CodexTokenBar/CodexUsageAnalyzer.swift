@@ -199,11 +199,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 let totals = try historyIndex.compactTotals(
                     todayStart: calendar.startOfDay(for: Date())
                 )
+                let normalizedTodayModelBreakdowns = ModelUsagePresentation.rows(
+                    from: totals.todayModelBreakdowns,
+                    at: Date()
+                )
                 return CompactUsageSummary(
                     totalTokens: totals.totalTokens,
                     todayTokens: totals.todayTokens,
                     todayCalls: totals.todayCalls,
-                    todayModelBreakdowns: totals.todayModelBreakdowns,
+                    todayModelBreakdowns: normalizedTodayModelBreakdowns,
                     generatedAt: Date()
                 )
             }

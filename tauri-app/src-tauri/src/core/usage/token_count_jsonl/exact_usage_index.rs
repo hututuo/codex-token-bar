@@ -135,6 +135,18 @@ struct ExactScanCompleteness {
     incomplete_source_scan: bool,
 }
 
+#[derive(Default)]
+struct ExactScanDiagnostics {
+    candidate_count: u64,
+    scanned_files: u64,
+    append_scan_bytes: u64,
+    full_body_bytes: u64,
+    pending_tail_bytes: u64,
+    full_rebuild_files: u64,
+    source_drift: bool,
+    published_watermark: u64,
+}
+
 impl ExactScanCompleteness {
     fn mark_incomplete(&mut self) {
         self.incomplete_source_scan = true;
@@ -309,13 +321,14 @@ pub(super) struct PreciseScanDiscovery {
     directory_signatures: Vec<DirectorySignature>,
     pub(super) candidates: Vec<PreciseScanCandidate>,
     pub(super) candidate_total: u64,
+    boundary_warnings: Vec<String>,
 }
 
 impl PreciseScanDiscovery {
-    pub(super) fn is_current(&self, codex_home: &Path, source_revision: u64) -> bool {
-        if self.source_revision != source_revision {
-            return false;
-        }
+    /// The discovery pass is a candidate hint, not an authority.  It remains
+    /// usable after a watcher event as long as the physical Home is still the
+    /// same; every candidate is reopened and re-signed by the durable scan.
+    pub(super) fn is_usable(&self, codex_home: &Path) -> bool {
         let Ok(canonical_home) = canonical_codex_home(codex_home) else {
             return false;
         };
@@ -325,15 +338,7 @@ impl PreciseScanDiscovery {
         {
             return false;
         }
-        if !self.directory_signatures.iter().all(|expected| {
-            directory_signature(&expected.path) == *expected
-        }) {
-            return false;
-        }
-        self.candidates.iter().all(|candidate| {
-            file_signature(&candidate.canonical_path)
-                .is_ok_and(|signature| signature == candidate.signature)
-        })
+        true
     }
 }
 
@@ -1173,7 +1178,7 @@ impl ExactUsageIndex {
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
-        self.sync_with_scan_plan(codex_home, warnings, None, None, || 0)
+        self.sync_with_scan_plan(codex_home, warnings, None, None)
     }
 
     /// Runs the unchanged durable index scan while optionally exposing a
@@ -1185,27 +1190,30 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
         scan_total: Option<u64>,
     ) -> Result<u64, String> {
-        self.sync_with_scan_plan(codex_home, warnings, None, scan_total, || 0)
+        self.sync_with_scan_plan(codex_home, warnings, None, scan_total)
     }
 
-    /// Runs the durable scan, consuming a same-call discovery plan when it is
-    /// still tied to the same Home/source revision.  Every candidate is still
-    /// opened and signed by `process_session_file`; a stale plan is discarded
-    /// and the existing directory/SQLite walker remains authoritative.
-    pub(super) fn sync_with_scan_plan<F>(
+    /// Runs the durable scan, consuming a read-only discovery plan as a
+    /// candidate hint.  The plan may be stale by the time this starts; every
+    /// candidate is still opened and signed by `process_session_file`, while
+    /// files created after discovery wait for the next scheduled discovery.
+    pub(super) fn sync_with_scan_plan(
         &mut self,
         codex_home: &Path,
         warnings: &mut Vec<LocalDataWarning>,
         discovery: Option<PreciseScanDiscovery>,
         scan_total_override: Option<u64>,
-        current_source_revision: F,
-    ) -> Result<u64, String>
-    where
-        F: Fn() -> u64,
-    {
+    ) -> Result<u64, String> {
         let scan_total = scan_total_override.or_else(|| {
             discovery.as_ref().map(|plan| plan.candidate_total)
         });
+        let mut diagnostics = ExactScanDiagnostics {
+            candidate_count: discovery
+                .as_ref()
+                .map(|plan| plan.candidates.len() as u64)
+                .unwrap_or_default(),
+            ..ExactScanDiagnostics::default()
+        };
         let index_path = database_path(codex_home)?;
         let operation_lock_path = sqlite_sidecar_path(&index_path, ".operation.lock");
         let _operation_lock = CrossProcessFileLock::acquire_wait_with_hook(
@@ -1236,11 +1244,6 @@ impl ExactUsageIndex {
                 None
             }
         };
-        // The fallback directory walker has no discovery plan to revalidate.
-        // Capture the source revision before either walker and mark this
-        // generation incomplete if a watcher event arrives before publish;
-        // the next dirty refresh then owns the changed files.
-        let scan_start_source_revision = current_source_revision();
         prune_published_tombstone_versions(&self.connection)?;
         prepare_scan_temp_tables(&self.connection)?;
         let generation = begin_or_resume_generation(&mut self.connection)?;
@@ -1254,10 +1257,12 @@ impl ExactUsageIndex {
             0,
             scan_total,
         );
-        let reusable_discovery = discovery.filter(|plan| {
-            plan.is_current(codex_home, current_source_revision())
-        });
+        let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
         if let Some(plan) = reusable_discovery {
+            for message in plan.boundary_warnings {
+                scan_completeness.mark_incomplete();
+                warnings.push(scan_warning(message));
+            }
             for candidate in plan.candidates {
                 process_scan_file_with_progress(
                     &mut self.connection,
@@ -1270,39 +1275,8 @@ impl ExactUsageIndex {
                     &mut scanned_files,
                     &mut scanned_paths,
                     scan_total,
+                    &mut diagnostics,
                     Some(candidate.signature),
-                )?;
-            }
-            // A watcher event may arrive after the metadata validation but
-            // before candidate processing finishes.  Re-enter the durable
-            // walker in that case so additions/deletions are not hidden by a
-            // stale denominator.
-            if current_source_revision() != plan.source_revision {
-                let mut visit = |connection: &mut Connection,
-                                 file: &Path,
-                                 warnings: &mut Vec<LocalDataWarning>,
-                                 scan_completeness: &mut ExactScanCompleteness|
-                 -> Result<(), String> {
-                    process_scan_file_with_progress(
-                        connection,
-                        generation,
-                        codex_home,
-                        file,
-                        warnings,
-                        scan_completeness,
-                        &mut full_rebuild_jobs,
-                        &mut scanned_files,
-                        &mut scanned_paths,
-                        scan_total,
-                        None,
-                    )
-                };
-                visit_session_files(
-                    &mut self.connection,
-                    codex_home,
-                    warnings,
-                    &mut scan_completeness,
-                    &mut visit,
                 )?;
             }
         } else {
@@ -1322,6 +1296,7 @@ impl ExactUsageIndex {
                     &mut scanned_files,
                     &mut scanned_paths,
                     scan_total,
+                    &mut diagnostics,
                     None,
                 )
             };
@@ -1347,6 +1322,16 @@ impl ExactUsageIndex {
             warnings,
             &mut scan_completeness,
         )?;
+        diagnostics.scanned_files = scanned_files;
+        diagnostics.full_rebuild_files = diagnostics
+            .full_rebuild_files
+            .saturating_add(full_rebuild_jobs.len() as u64);
+        let staged_full_body_bytes = staged.iter().fold(0_u64, |total, item| {
+            total.saturating_add(item.job.signature.size)
+        });
+        diagnostics.full_body_bytes = diagnostics
+            .full_body_bytes
+            .saturating_add(staged_full_body_bytes);
         #[cfg(test)]
         if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
             return Err("injected interruption after durable exact token staging".into());
@@ -1372,13 +1357,6 @@ impl ExactUsageIndex {
                 )));
             }
         }
-        if current_source_revision() != scan_start_source_revision {
-            scan_completeness.mark_incomplete();
-            warnings.push(scan_warning(
-                "Codex Home 在精确 token 扫描期间发生新的源变更，本轮结果保留但标记为过期，下一轮将重新扫描。"
-                    .into(),
-            ));
-        }
         let revision = finalize_generation(
             &mut self.connection,
             generation,
@@ -1386,6 +1364,18 @@ impl ExactUsageIndex {
             warnings,
             scan_completeness,
         )?;
+        diagnostics.published_watermark = revision;
+        startup_trace::mark_performance(format!(
+            "precise_scan candidate_count={} scanned_files={} append_scan_bytes={} full_body_bytes={} pending_tail_bytes={} full_rebuild_files={} source_drift={} published_watermark={}",
+            diagnostics.candidate_count,
+            diagnostics.scanned_files,
+            diagnostics.append_scan_bytes,
+            diagnostics.full_body_bytes,
+            diagnostics.pending_tail_bytes,
+            diagnostics.full_rebuild_files,
+            u8::from(diagnostics.source_drift),
+            diagnostics.published_watermark,
+        ));
         if self.migration_pending {
             let migration_complete = migration_markers_complete(&self.connection, true)?;
             if migration_complete {
@@ -4723,6 +4713,7 @@ fn process_scan_file_with_progress(
     scanned_files: &mut u64,
     scanned_paths: &mut HashSet<PathBuf>,
     scan_total: Option<u64>,
+    diagnostics: &mut ExactScanDiagnostics,
     expected_signature: Option<FileSignature>,
 ) -> Result<(), String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
@@ -4736,6 +4727,7 @@ fn process_scan_file_with_progress(
         file,
         warnings,
         scan_completeness,
+        diagnostics,
         expected_signature,
     )? {
         full_rebuild_jobs.push(job);
@@ -4758,6 +4750,7 @@ fn process_session_file(
     file: &Path,
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: &mut ExactScanCompleteness,
+    diagnostics: &mut ExactScanDiagnostics,
     expected_signature: Option<FileSignature>,
 ) -> Result<Option<FullRebuildJob>, String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
@@ -4770,14 +4763,19 @@ fn process_session_file(
     let mut handle = match fs::File::open(file) {
         Ok(handle) => handle,
         Err(error) => {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                connection
-                    .execute(
-                        "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
-                        params![&path],
-                    )
-                    .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?;
+            // The discovery list is intentionally allowed to become stale.
+            // A candidate that disappears before the durable pass is handled
+            // by the normal missing-file/tombstone reconciliation on publish;
+            // it is not an incomplete scan or an unsafe attribution incident.
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
             }
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO exact_seen_files(path) VALUES (?1)",
+                    params![&path],
+                )
+                .map_err(|error| format!("无法记录会话文件扫描状态：{error}"))?;
             scan_completeness.mark_incomplete();
             warnings.push(scan_warning(format!(
                 "读取会话文件失败，本轮跳过该文件：{}（{}）",
@@ -4805,15 +4803,13 @@ fn process_session_file(
             return Ok(None);
         }
     };
+    // A discovery candidate is only a hint.  Its signature may legitimately
+    // be older than the one observed here because the session appended while
+    // the durable pass was waiting or processing another candidate.  The
+    // current signature is authoritative; process_session_file below decides
+    // append versus rewrite from the persisted checkpoint and prefix audit.
     if expected_signature.is_some_and(|expected| expected != signature) {
-        // The discovery metadata raced with a rewrite.  Re-read the current
-        // signature and continue through the normal durable replacement path;
-        // the incomplete bit keeps attribution coverage conservative.
-        scan_completeness.mark_incomplete();
-        warnings.push(scan_warning(format!(
-            "预扫描后会话文件签名已变化，按正式扫描重新校验：{}",
-            file.display()
-        )));
+        diagnostics.source_drift = true;
     }
     let newly_seen = connection
         .execute(
@@ -4881,6 +4877,7 @@ fn process_session_file(
                 signature,
                 &checkpoint,
                 warnings,
+                diagnostics,
             )?
         {
             return Ok(None);
@@ -4904,6 +4901,7 @@ fn process_session_file(
             &mut handle,
             signature,
             warnings,
+            diagnostics,
         )?;
         return Ok(None);
     }
@@ -4926,7 +4924,9 @@ fn rebuild_session_file_direct(
     handle: &mut fs::File,
     signature: FileSignature,
     warnings: &mut Vec<LocalDataWarning>,
+    diagnostics: &mut ExactScanDiagnostics,
 ) -> Result<(), String> {
+    diagnostics.full_rebuild_files = diagnostics.full_rebuild_files.saturating_add(1);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始单文件精确 token 索引事务：{error}"))?;
@@ -4981,6 +4981,10 @@ fn rebuild_session_file_direct(
     )?;
     #[cfg(test)]
     FULL_SCAN_BYTES.fetch_add(signature.size, Ordering::SeqCst);
+    diagnostics.full_body_bytes = diagnostics.full_body_bytes.saturating_add(signature.size);
+    diagnostics.pending_tail_bytes = diagnostics
+        .pending_tail_bytes
+        .saturating_add(signature.size.saturating_sub(parsed.resume_offset));
     drop(sink);
     debug_assert_eq!(parsed.bytes_read, signature.size);
 
@@ -5110,6 +5114,7 @@ fn append_session_file(
     signature: FileSignature,
     checkpoint: &IndexedFileCheckpoint,
     warnings: &mut Vec<LocalDataWarning>,
+    diagnostics: &mut ExactScanDiagnostics,
 ) -> Result<bool, String> {
     if checkpoint.resume_offset > checkpoint.size
         || !audit_checkpoint_chunk(connection, handle, file, path, checkpoint)?
@@ -5128,16 +5133,24 @@ fn append_session_file(
     if checkpoint.size > 0 && stored_tail.is_none() {
         return Ok(false);
     }
-    let hashing_start_offset = tail_chunk_index
-        .unwrap_or(0)
-        .saturating_mul(EXACT_INDEX_CHUNK_SIZE);
-    // 活动文件的未完成行可以合法地跨过块边界：此时续扫起点（resume_offset，
-    // 未完成行的行首）落在尾块起点之前，续扫不变量无法满足。必须回退全量
-    // 重建（Ok(false)）而不是让流式层报错——报错会使整轮同步失败，检查点
-    // 固化后每轮复现，该 Home 的精确统计将永久停摆无自愈。
-    if checkpoint.resume_offset < hashing_start_offset {
-        return Ok(false);
-    }
+    // The parser state is valid at resume_offset (the start of the last
+    // complete line or the unfinished tail).  Hash from the containing chunk
+    // boundary, then skip to resume_offset for parsing.  This keeps prefix
+    // validation chunk-aligned without rebuilding the whole file when an
+    // unfinished JSON line crosses the old tail chunk boundary.
+    let resume_chunk = checkpoint.resume_offset / EXACT_INDEX_CHUNK_SIZE;
+    // At an exact chunk boundary, the previous chunk is the last committed
+    // chunk and is still needed for validation_chunk_hash.  Treat the
+    // boundary as belonging to that previous chunk for hashing purposes while
+    // keeping parsing at the persisted resume offset.
+    let hashing_start_chunk = if checkpoint.resume_offset > 0
+        && checkpoint.resume_offset % EXACT_INDEX_CHUNK_SIZE == 0
+    {
+        resume_chunk.saturating_sub(1)
+    } else {
+        resume_chunk
+    };
+    let hashing_start_offset = hashing_start_chunk.saturating_mul(EXACT_INDEX_CHUNK_SIZE);
 
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -5203,6 +5216,12 @@ fn append_session_file(
         signature.size.saturating_sub(hashing_start_offset),
         Ordering::SeqCst,
     );
+    diagnostics.append_scan_bytes = diagnostics
+        .append_scan_bytes
+        .saturating_add(signature.size.saturating_sub(hashing_start_offset));
+    diagnostics.pending_tail_bytes = diagnostics
+        .pending_tail_bytes
+        .saturating_add(signature.size.saturating_sub(parsed.resume_offset));
     drop(sink);
     run_after_prefix_scan_hook_for_testing(file);
 
@@ -5229,7 +5248,7 @@ fn append_session_file(
         &transaction,
         generation,
         path,
-        tail_chunk_index.unwrap_or(0),
+        hashing_start_chunk,
         &parsed.chunk_hashes,
     )?;
     let old_chunk_count = checkpoint
@@ -5893,10 +5912,9 @@ fn suppress_missing_tombstones_under(connection: &Connection, root: &Path) -> Re
 /// This deliberately does not open the exact index, touch any temporary scan
 /// tables, or participate in generation/fingerprint/tombstone decisions. The
 /// durable scanner remains the sole source of truth; this plan may become
-/// stale while files are being created, removed, or rewritten.  Directory
-/// metadata is retained as a cheap reconciliation fence so a newly-created
-/// JSONL can trigger the durable walker without rescanning directories during
-/// the normal unchanged path.
+/// stale while files are being created, removed, or rewritten. Directory
+/// metadata is retained for diagnostics, but never decides whether the
+/// durable scanner may consume the candidate list.
 pub(super) fn estimate_precise_scan_total(
     codex_home: &Path,
     timeout: StdDuration,
@@ -5917,6 +5935,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
     let discovered_at = SystemTime::now();
     let mut candidates = HashMap::new();
     let mut directories = HashMap::new();
+    let mut boundary_warnings = Vec::new();
     let state_database = codex_home.join("state_5.sqlite");
     directories.insert(
         state_database.clone(),
@@ -5933,6 +5952,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
                 &deadline,
                 &mut candidates,
                 &mut directories,
+                &mut boundary_warnings,
             )?;
         }
     }
@@ -5942,6 +5962,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
         &deadline,
         &mut candidates,
         &mut directories,
+        &mut boundary_warnings,
     )?;
 
     ensure_estimate_deadline(&deadline)?;
@@ -5967,6 +5988,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
         directory_signatures,
         candidates,
         candidate_total,
+        boundary_warnings,
     })
 }
 
@@ -5976,6 +5998,7 @@ fn estimate_session_directory(
     deadline: &Instant,
     candidates: &mut HashMap<PathBuf, FileSignature>,
     directories: &mut HashMap<PathBuf, DirectorySignature>,
+    boundary_warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -6005,6 +6028,11 @@ fn estimate_session_directory(
                 continue;
             };
             if !canonical.starts_with(canonical_home) {
+                boundary_warnings.push(format!(
+                    "拒绝读取 Codex Home 外的会话文件：{} -> {}",
+                    path.display(),
+                    canonical.display()
+                ));
                 continue;
             }
             if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {
@@ -6023,6 +6051,7 @@ fn estimate_active_rollouts(
     deadline: &Instant,
     candidates: &mut HashMap<PathBuf, FileSignature>,
     directories: &mut HashMap<PathBuf, DirectorySignature>,
+    boundary_warnings: &mut Vec<String>,
 ) -> Result<(), String> {
     ensure_estimate_deadline(deadline)?;
     let database = codex_home.join("state_5.sqlite");
@@ -6066,6 +6095,11 @@ fn estimate_active_rollouts(
             continue;
         };
         if !canonical.starts_with(canonical_home) {
+            boundary_warnings.push(format!(
+                "拒绝读取 Codex Home 外的 active rollout 会话文件：{} -> {}",
+                path.display(),
+                canonical.display()
+            ));
             continue;
         }
         if fs::metadata(&canonical).is_ok_and(|metadata| metadata.is_file()) {

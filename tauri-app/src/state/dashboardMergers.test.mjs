@@ -73,6 +73,85 @@ test("exact-read start marks prior recent usage stale while quota merge preserve
   });
 });
 
+test("attribution safety acknowledgement clears only the local episode marker", async () => {
+  return withSsrModules(async (load) => {
+    const { clearPreciseAttributionSafety } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      preciseAttributionProvenanceEpoch: "epoch-1",
+      preciseAttributionGeneration: 42,
+      preciseAttributionUnsafeSinceGeneration: 40,
+      preciseAttributionUnsafeId: "unsafe-1",
+      preciseAttributionCurrentScanUnsafe: true,
+      stats: {
+        totalTokens: 123,
+        peakDayTokens: 123,
+        peakThreadTokens: 123,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 2,
+        totalThreads: 1,
+      },
+    });
+
+    const next = clearPreciseAttributionSafety(state);
+
+    assert.equal(next.dashboard.preciseAttributionProvenanceEpoch, "epoch-1");
+    assert.equal(next.dashboard.preciseAttributionGeneration, 42);
+    assert.equal(next.dashboard.preciseAttributionUnsafeSinceGeneration, null);
+    assert.equal(next.dashboard.preciseAttributionUnsafeId, null);
+    assert.equal(next.dashboard.preciseAttributionCurrentScanUnsafe, false);
+    assert.equal(next.dashboard.stats.totalTokens, 123);
+  });
+});
+
+test("incomplete precise result keeps the last trusted coverage visible", async () => {
+  return withSsrModules(async (load) => {
+    const { dashboardSnapshotHasTrustedStartupData } = await load("/src/state/dashboardState.ts");
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      preciseRecentUsageCoveredAt: "2026-07-31T05:05:00Z",
+      preciseRecentUsageFresh: true,
+      stats: {
+        totalTokens: 100,
+        peakDayTokens: 100,
+        peakThreadTokens: 100,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 1,
+        totalThreads: 1,
+      },
+    });
+    const incomplete = dashboardFixture({
+      preciseRecentUsageCoveredAt: null,
+      preciseRecentUsageFresh: false,
+      stats: {
+        totalTokens: 120,
+        peakDayTokens: 120,
+        peakThreadTokens: 120,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 2,
+        totalThreads: 1,
+      },
+    });
+
+    const next = mergePreciseDashboard(state, incomplete);
+
+    assert.equal(next.dashboard.preciseRecentUsageCoveredAt, "2026-07-31T05:05:00Z");
+    assert.equal(next.dashboard.preciseRecentUsageFresh, false);
+    assert.equal(next.dashboard.stats.totalTokens, 100);
+    assert.equal(next.dashboard.stats.totalCalls, 1);
+    assert.equal(dashboardSnapshotHasTrustedStartupData(next.dashboard), true);
+  });
+});
+
+test("all-zero legacy startup placeholder remains unavailable", async () => {
+  return withSsrModules(async (load) => {
+    const { dashboardSnapshotHasTrustedStartupData } = await load("/src/state/dashboardState.ts");
+    assert.equal(dashboardSnapshotHasTrustedStartupData(dashboardFixture()), false);
+  });
+});
+
 test("mergeQuota overlays the full 30-day five-minute canvas without changing 7d or 30d axes", async () => {
   return withSsrModules(async (load) => {
     const { mergeQuota } = await load("/src/state/dashboardMergers.ts");

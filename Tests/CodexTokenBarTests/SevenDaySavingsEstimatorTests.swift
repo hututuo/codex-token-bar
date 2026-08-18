@@ -136,7 +136,7 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
         XCTAssertTrue(presentation.helpText.contains("快速估算"))
     }
 
-    func testDashboardModelRowsUseFiveMinuteFallbackWhileExactModelsLoad() {
+    func testDashboardModelRowsStayPendingWhileExactModelsLoadWithoutTrustedRows() {
         let resetAt = now.addingTimeInterval(24 * 60 * 60)
         let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
         let recent = TokenCacheBucket(
@@ -151,12 +151,40 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
             dataAvailable: true
         )
 
+        XCTAssertFalse(data.dataAvailable)
+        XCTAssertTrue(data.isEstimated)
+        XCTAssertEqual(data.estimateSource, "精确模型归因")
+        XCTAssertEqual(data.displayState, .pending)
+        XCTAssertEqual(data.tokens, 0)
+        XCTAssertTrue(data.rows.isEmpty)
+    }
+
+    func testDashboardModelRowsKeepTrustedEventsAsStaleWhileExactModelsLoad() {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60)
+        let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let sol = TokenCacheAttributionEvent(
+            id: "trusted-sol",
+            start: cycleStart.addingTimeInterval(5 * 60),
+            model: "gpt-5.6-sol",
+            breakdown: breakdown(input: 2_000_000, output: 100_000)
+        )
+
+        let data = DashboardSevenDayModelData(
+            cacheUsage: usage(
+                events: [sol],
+                complete: true,
+                modelBucketsComplete: false
+            ),
+            quotaSnapshot: quota(resetAt: resetAt),
+            now: now,
+            dataAvailable: true
+        )
+
         XCTAssertTrue(data.dataAvailable)
         XCTAssertTrue(data.isEstimated)
-        XCTAssertEqual(data.estimateSource, "5分钟桶用量缓存")
+        XCTAssertEqual(data.displayState, .stale)
+        XCTAssertEqual(data.rows.map(\.model), ["gpt-5.6-sol"])
         XCTAssertEqual(data.tokens, 2_100_000)
-        XCTAssertEqual(data.rows.count, 1)
-        XCTAssertNil(data.rows.first?.model)
     }
 
     func testDashboardModelRowsUseCompleteEventsAndKeepSparkAsIndependentRow() {

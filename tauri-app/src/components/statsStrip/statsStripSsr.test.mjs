@@ -108,6 +108,94 @@ test("StatsStrip keeps model costs pending while precise usage is unavailable", 
   });
 });
 
+test("StatsStrip does not render an anonymous 7d fallback model", async () => {
+  await withSsrModules(async (load) => {
+    const { StatsStrip } = await load("/src/components/StatsStrip.tsx");
+    const resetAtUnix = Math.floor(new Date("2026-07-08T00:00:00Z").getTime() / 1_000);
+    const html = renderToStaticMarkup(React.createElement(StatsStrip, {
+      stats: {
+        totalTokens: 1_000_000,
+        peakDayTokens: 1_000_000,
+        peakThreadTokens: 1_000_000,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 1,
+        totalThreads: 1,
+      },
+      recentUsageFiveMinute: [{
+        label: "7d",
+        startUnix: resetAtUnix - 60,
+        tokens: 1_000_000,
+        calls: 1,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        cacheHitRate: null,
+        fiveHourRemainingPercent: null,
+        sevenDayRemainingPercent: null,
+      }],
+      sevenDayResetAtUnix: resetAtUnix,
+      preciseDataFresh: true,
+      planLabel: "Pro",
+      warnings: [],
+    }));
+
+    assert.match(html, /本7d模型明细待读取/);
+    assert.match(html, /正在精准计算中/);
+    assert.doesNotMatch(html, /未知模型/);
+    assert.doesNotMatch(html, /5\.6（未分型）/);
+  });
+});
+
+test("StatsStrip keeps trusted 7d model rows visible while marking them stale", async () => {
+  await withSsrModules(async (load) => {
+    const { StatsStrip } = await load("/src/components/StatsStrip.tsx");
+    const resetAtUnix = Math.floor(new Date("2026-07-08T00:00:00Z").getTime() / 1_000);
+    const html = renderToStaticMarkup(React.createElement(StatsStrip, {
+      stats: {
+        totalTokens: 1_000_000,
+        peakDayTokens: 1_000_000,
+        peakThreadTokens: 1_000_000,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 1,
+        totalThreads: 1,
+      },
+      recentUsageFiveMinute: [{
+        label: "7d",
+        startUnix: resetAtUnix - 60,
+        tokens: 1_000_000,
+        calls: 1,
+        inputTokens: 1_000_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 1_000_000,
+        modelBreakdowns: [{
+          model: "gpt-5.6-sol",
+          breakdown: {
+            inputTokens: 1_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 1_000_000,
+            calls: 1,
+          },
+        }],
+        cacheHitRate: null,
+        fiveHourRemainingPercent: null,
+        sevenDayRemainingPercent: null,
+      }],
+      sevenDayResetAtUnix: resetAtUnix,
+      preciseDataFresh: false,
+      planLabel: "Pro",
+      warnings: [],
+    }));
+
+    assert.match(html, /正在精准计算中… 显示上次可信结果/);
+    assert.match(html, /Sol/);
+    assert.doesNotMatch(html, /本7d模型明细待读取/);
+  });
+});
+
 test("StatsStrip does not treat the initial warning-free placeholder as real zero usage", async () => {
   await withSsrModules(async (load) => {
     const { StatsStrip } = await load("/src/components/StatsStrip.tsx");

@@ -37,6 +37,7 @@ pub fn begin(label: &str) {
         return;
     };
     let _ = writeln!(file, "{:>6}ms {label}", start.elapsed().as_millis());
+    mark_performance(format!("process_start pid={}", std::process::id()));
 }
 
 pub fn mark(label: &str) {
