@@ -8904,6 +8904,11 @@ fn refreshed_usage_summary_snapshot_waits_for_the_lightweight_publication() {
     assert_eq!(summary.total_tokens, 120);
     assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 0);
     wait_for_usage_summary_refreshes_for_testing();
+    assert_eq!(
+        precise_dashboard_progress(&root).phase,
+        "idle",
+        "a summary-only owner must not publish the full precise complete phase"
+    );
 
     let forced_calls = Arc::new(AtomicU64::new(0));
     let forced_calls_for_hook = Arc::clone(&forced_calls);
@@ -8918,6 +8923,8 @@ fn refreshed_usage_summary_snapshot_waits_for_the_lightweight_publication() {
     assert_eq!(forced.total_tokens, 120);
     assert_eq!(forced_calls.load(Ordering::SeqCst), 1);
     assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 0);
+    wait_for_usage_summary_refreshes_for_testing();
+    assert_eq!(precise_dashboard_progress(&root).phase, "idle");
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -8953,6 +8960,37 @@ fn promoted_full_owner_releases_summary_waiters_before_full_completion() {
     assert_eq!(published.total_tokens, 120);
     assert!(!flight.is_done());
     thread.join().unwrap();
+}
+
+#[test]
+fn summary_only_success_is_not_a_full_precise_completion() {
+    let summary = TokenUsageSummary {
+        total_tokens: 120,
+        today_tokens: 120,
+        today_requests: 1,
+        today_model_breakdowns: Vec::new(),
+    };
+    let summary_only = PreciseRefreshResult {
+        summary: Ok(summary.clone()),
+        full: None,
+        migration_pending: false,
+    };
+    assert_eq!(
+        summary_only.terminal_progress(),
+        PreciseRefreshTerminalProgress::SummaryOnlySuccess
+    );
+
+    let full = PreciseRefreshResult {
+        summary: Ok(summary),
+        full: Some(Ok(persistent_numeric_test_snapshot(
+            &TokenUsageSummary::default(),
+        ))),
+        migration_pending: false,
+    };
+    assert_eq!(
+        full.terminal_progress(),
+        PreciseRefreshTerminalProgress::FullSuccess
+    );
 }
 
 fn temp_root() -> PathBuf {

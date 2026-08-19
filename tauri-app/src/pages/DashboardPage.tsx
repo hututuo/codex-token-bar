@@ -257,6 +257,7 @@ export function DashboardPage({
             ?? null}
           usageSummaryUpdatedAt={dashboard.usageSummaryUpdatedAt ?? dashboard.generatedAt}
           usageSummaryFresh={dashboard.usageSummaryFresh === true}
+          preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
           onCustomAccountDisplayNameChange={onCustomAccountDisplayNameChange}

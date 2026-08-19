@@ -92,12 +92,39 @@ test("DashboardHeader renders the Chinese updated timestamp and refresh progress
     const idle = renderComponent(DashboardHeader, headerProps());
     const refreshing = renderComponent(DashboardHeader, headerProps({
       refreshing: true,
+      usageSummaryFresh: false,
     }));
 
     assert.match(idle, /更新于 \d{2}:\d{2}:\d{2}/);
     assert.doesNotMatch(idle, /Updated/);
-    assert.match(refreshing, /更新于 同步中/);
+    assert.match(refreshing, /摘要同步中/);
+    assert.doesNotMatch(refreshing, /更新于 同步中/);
     assert.doesNotMatch(refreshing, /Updated|refresh-label/);
+  });
+});
+
+test("DashboardHeader cannot look complete before the full model and chart snapshot is current", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const html = renderComponent(DashboardHeader, headerProps({
+      aggregateCoveredAt: null,
+      preciseDataFresh: false,
+      usageSummaryFresh: true,
+      preciseProgress: {
+        phase: "complete",
+        message: "精确统计数值已更新",
+        completed: 1,
+        total: 1,
+        fraction: 1,
+        startedAt: "2026-07-06T02:30:00.000Z",
+        updatedAt: "2026-07-06T02:30:10.000Z",
+      },
+    }));
+
+    assert.match(html, /class="dash-head__freshness is-waiting"/);
+    assert.match(html, /等待精确统计/);
+    assert.match(html, /模型与图表同步中/);
+    assert.doesNotMatch(html, /摘要 \d{2}:\d{2}:\d{2} · 图表至/);
   });
 });
 

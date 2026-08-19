@@ -1310,9 +1310,9 @@ fn run_precise_refresh(
     // "continue on next launch". Keep this decision tied to the durable
     // migration markers returned by the owner instead of inferring it from
     // the shared UI progress phase.
-    let migration_pending = result.migration_pending;
+    let terminal_progress = result.terminal_progress();
     let message = result.terminal_message();
-    if migration_pending {
+    if terminal_progress == PreciseRefreshTerminalProgress::MigrationPending {
         // A pending migration is an expected resumable state, not a failed
         // precise read. Keep the phase visible so startup can distinguish
         // "upgrade awaiting the next scan" from an actual owner error.
@@ -1327,10 +1327,18 @@ fn run_precise_refresh(
         ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
             *slot.borrow_mut() = None;
         });
+    } else if terminal_progress == PreciseRefreshTerminalProgress::SummaryOnlySuccess {
+        // The lightweight summary is published before the full five-minute and
+        // model dashboard. A summary-only owner must not claim the shared
+        // precise workflow is complete, especially during cold startup.
+        update_precise_dashboard_progress(canonical_home, "idle", message, 0, None);
+        ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
     } else {
         finish_precise_dashboard_progress(
             canonical_home,
-            result.summary.is_ok() || result.full.as_ref().is_some_and(Result::is_ok),
+            terminal_progress == PreciseRefreshTerminalProgress::FullSuccess,
             message,
         );
     }
@@ -1675,6 +1683,14 @@ struct PreciseRefreshResult {
     migration_pending: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreciseRefreshTerminalProgress {
+    MigrationPending,
+    SummaryOnlySuccess,
+    FullSuccess,
+    Failed,
+}
+
 impl PreciseRefreshResult {
     fn failure(error: String) -> Self {
         Self {
@@ -1690,6 +1706,17 @@ impl PreciseRefreshResult {
             (_, Some(Ok(_))) => "精确统计已更新",
             (Ok(_), None) => "精确统计数值已更新",
             _ => "精确统计失败，保留上次可信数据",
+        }
+    }
+
+    fn terminal_progress(&self) -> PreciseRefreshTerminalProgress {
+        if self.migration_pending {
+            return PreciseRefreshTerminalProgress::MigrationPending;
+        }
+        match (&self.summary, &self.full) {
+            (_, Some(Ok(_))) => PreciseRefreshTerminalProgress::FullSuccess,
+            (Ok(_), None) => PreciseRefreshTerminalProgress::SummaryOnlySuccess,
+            _ => PreciseRefreshTerminalProgress::Failed,
         }
     }
 }

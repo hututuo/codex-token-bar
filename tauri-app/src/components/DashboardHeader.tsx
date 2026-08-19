@@ -28,6 +28,8 @@ interface DashboardHeaderProps {
   usageSummaryUpdatedAt?: string | null;
   /** Light-summary publication is independent from five-minute chart progress. */
   usageSummaryFresh?: boolean;
+  /** Full five-minute/model snapshot freshness; required before the header may look complete. */
+  preciseDataFresh?: boolean;
   aggregateCoveredAt?: string | null;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
@@ -69,6 +71,7 @@ export function DashboardHeader({
   generatedAt,
   usageSummaryUpdatedAt = null,
   usageSummaryFresh,
+  preciseDataFresh,
   aggregateCoveredAt = null,
   onCodexHomeChange,
   onCodexHomeReset,
@@ -144,7 +147,9 @@ export function DashboardHeader({
   // light-summary state may replace the published summary timestamp.
   const lightSummarySyncing = usageSummaryFresh === false
     || (usageSummaryFresh === undefined && refreshing);
-  const updatedLabel = lightSummarySyncing ? "同步中" : timeLabel;
+  const fullPrecisionPending = preciseDataFresh === false
+    || (preciseDataFresh === true && aggregateCoveredAt === null);
+  const freshnessStage = activeProgress?.stage ?? (fullPrecisionPending ? "waiting" : null);
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
   const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
   const updateButtonLabel = appUpdateState.kind === "checking"
@@ -231,17 +236,19 @@ export function DashboardHeader({
             <small>运行线程</small>
             <strong>{runningThreadHeaderText(runningThreads)}</strong>
           </span>
-          <span className={`dash-head__freshness${activeProgress ? ` is-${activeProgress.stage}` : ""}`}>
-            <small>{activeProgress?.phaseLabel ?? "本地统计"}</small>
+          <span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
+            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "本地统计")}</small>
             <strong>
               <i aria-hidden="true" className="precise-progress-dot" />
               {activeProgress
                 ? activeProgress.text
-                : lightSummarySyncing
-                  ? `摘要更新于 ${updatedLabel}`
+                : fullPrecisionPending
+                  ? "模型与图表同步中"
+                  : lightSummarySyncing
+                    ? "摘要同步中"
                   : aggregateTimeLabel === null
-                    ? `更新于 ${updatedLabel}`
-                    : `摘要 ${updatedLabel} · 图表至 ${aggregateTimeLabel}`}
+                    ? `更新于 ${timeLabel}`
+                    : `摘要 ${timeLabel} · 图表至 ${aggregateTimeLabel}`}
               {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
             </strong>
             {activeProgress?.showsReassurance ? (
