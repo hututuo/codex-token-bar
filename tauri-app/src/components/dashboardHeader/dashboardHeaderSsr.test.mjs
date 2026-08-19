@@ -130,7 +130,8 @@ test("DashboardHeader renders phase labels, counts, reassurance, and explicit te
         updatedAt: "2026-07-06T02:30:10.000Z",
       },
     }));
-    assert.match(complete, /已就绪/);
+    assert.match(complete, /更新于/);
+    assert.doesNotMatch(complete, /已就绪/);
     assert.doesNotMatch(complete, /首次升级可能需要几分钟/);
     assert.doesNotMatch(complete, /role="progressbar"/);
 

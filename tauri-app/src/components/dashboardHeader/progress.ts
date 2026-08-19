@@ -36,7 +36,7 @@ const phaseLabels: Record<DashboardHeaderProgressStage, string> = {
   preparing: "准备精确统计",
   scanning: "扫描历史",
   publishing: "发布精确统计",
-  complete: "已就绪",
+  complete: "本地统计",
   failed: "失败",
 };
 
@@ -141,6 +141,6 @@ export function presentDashboardHeaderProgress(
     showsReassurance: stage !== "idle" && stage !== "complete",
     needsAttention: stage === "failed",
     isReady: stage === "complete",
-    isVisible: stage !== "idle",
+    isVisible: stage !== "idle" && stage !== "complete",
   };
 }

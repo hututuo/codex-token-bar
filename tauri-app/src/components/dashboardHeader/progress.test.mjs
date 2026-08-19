@@ -82,7 +82,7 @@ test("single-file reconciliation and waiting remain distinct from migration", ()
   })), "reconciliation");
 });
 
-test("publishing exposes a determinate bar and completion is the only ready state", () => {
+test("publishing exposes a determinate bar and completion returns to freshness", () => {
   const publishing = presentDashboardHeaderProgress(progress({
     phase: "publishing",
     message: "正在发布精确统计结果",
@@ -96,7 +96,6 @@ test("publishing exposes a determinate bar and completion is the only ready stat
 
   const idle = presentDashboardHeaderProgress(progress());
   assert.equal(idle?.isVisible, false);
-  assert.notEqual(idle?.text, "已就绪");
 
   const complete = presentDashboardHeaderProgress(progress({
     phase: "complete",
@@ -105,8 +104,8 @@ test("publishing exposes a determinate bar and completion is the only ready stat
     total: 1,
     fraction: 1,
   }));
-  assert.equal(complete?.text, "已就绪");
-  assert.equal(complete?.isVisible, true);
+  assert.equal(complete?.text, "本地统计");
+  assert.equal(complete?.isVisible, false);
   assert.equal(complete?.showsProgress, false);
   assert.equal(complete?.showsReassurance, false);
   assert.equal(complete?.isReady, true);

@@ -175,7 +175,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
                 total: 1
             )
         )
-        XCTAssertEqual(complete.text, "已就绪")
+        XCTAssertEqual(complete.text, "本地统计")
         XCTAssertFalse(complete.showsReassurance)
         XCTAssertFalse(complete.needsAttention)
         XCTAssertTrue(complete.isReady)
@@ -194,7 +194,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertEqual(failed.countText, "1/4")
     }
 
-    func testHeaderFreshnessShowsReadyOnlyAfterCompleteProgress() {
+    func testHeaderFreshnessReturnsToUpdatedTimestampAfterCompleteProgress() {
         let generatedAt = Date(timeIntervalSince1970: 1_720_000_000)
         let idle = DashboardHeaderFreshnessPresentation(
             status: "读取完成",
@@ -202,7 +202,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
             generatedAt: generatedAt,
             progress: .idle
         )
-        XCTAssertFalse(idle.text.contains("已就绪"))
+        XCTAssertTrue(idle.text.hasPrefix("更新于 "))
 
         let complete = DashboardHeaderFreshnessPresentation(
             status: "读取完成",
@@ -215,7 +215,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
                 total: 1
             )
         )
-        XCTAssertEqual(complete.text, "已就绪")
+        XCTAssertTrue(complete.text.hasPrefix("更新于 "))
     }
 
     func testFailedModelBackfillKeepsTheLastRealProgressCount() {

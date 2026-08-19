@@ -98,12 +98,12 @@ enum DashboardHeaderProgressStage: Equatable {
         case .preparing: return "准备精确统计"
         case .scanning: return "扫描历史"
         case .publishing: return "发布精确统计"
-        case .complete: return "已就绪"
+        case .complete: return "本地统计"
         case .failed: return "失败"
         }
     }
 
-    var isVisible: Bool { self != .idle }
+    var isVisible: Bool { self != .idle && self != .complete }
 
     var showsProgress: Bool {
         switch self {
