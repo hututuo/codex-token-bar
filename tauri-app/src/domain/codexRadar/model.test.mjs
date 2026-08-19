@@ -94,6 +94,9 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   assert.equal(compactRadarModelName("DSH F max"), "DSH F max");
   assert.equal(compactRadarModelName("DSH-V4-Pro high"), "DSH P high");
   assert.equal(compactRadarModelName("DSH R1 medium"), "DSH R1 medium");
+  assert.equal(compactRadarModelName("grok-4.6 xhigh"), "G4.6 XH");
+  assert.equal(compactRadarModelName("k3 high"), "K3 H");
+  assert.equal(compactRadarModelName("glm-5.3 max"), "GLM5.3 max");
 });
 
 test("current Sol max score outranks older Terra and keeps its effort in the compact label", () => {

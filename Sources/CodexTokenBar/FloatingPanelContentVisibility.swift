@@ -405,6 +405,11 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         sanitizedPagePairs(pairs).map(\.id).joined(separator: ",")
     }
 
+    static func initialPageIndex(for groups: [FloatingPanelContentGroup]) -> Int {
+        guard groups.contains(.radar), groups.contains(.crowdRadar) else { return 0 }
+        return groups.firstIndex(of: .radar) ?? 0
+    }
+
     static func replacingPagePartner(
         in pairs: [FloatingPanelPagePair],
         for group: FloatingPanelContentGroup,

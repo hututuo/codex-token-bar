@@ -63,6 +63,7 @@ const CROWD_RADAR_COMMAND_TIMEOUT_MS = 22_000;
 const WRAPPER_KEYS = ["data", "result", "snapshot", "payload", "response", "body"];
 const CROWD_RADAR_RECOVERY_DELAYS_MS = [2_000, 8_000] as const;
 const CROWD_RADAR_FAILURE_COOLDOWN_MS = 10_000;
+export const CROWD_RADAR_MINIMUM_RANKED_SAMPLE_COUNT = 45;
 
 let crowdRadarReadInFlight: Promise<CodexCrowdRadarSnapshot> | null = null;
 let crowdRadarReadFailure: {
@@ -272,7 +273,7 @@ export function rankedCodexCrowdRadarModels(
     ? requestedModels
     : mode === "recent" ? snapshot?.models ?? [] : [];
   return [...fallbackModels]
-    .filter((row) => scoreSampleCount(row) > 0)
+    .filter((row) => scoreSampleCount(row) >= CROWD_RADAR_MINIMUM_RANKED_SAMPLE_COUNT)
     .sort(compareCrowdRadarModels)
     .slice(0, Math.max(0, Math.floor(limit)));
 }

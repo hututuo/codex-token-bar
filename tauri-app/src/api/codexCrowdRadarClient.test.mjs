@@ -19,7 +19,7 @@ test("crowd radar picks the highest pass rate and formats model family", () => {
     models: [
       { model: "gpt-5.6-sol", effort: "max", graded: 79, passed: 53, passRate: 0.675, cells: 77 },
       { model: "gpt-5.6-luna", effort: "high", graded: 61, passed: 43, passRate: 0.705, cells: 60 },
-      { model: "gpt-5.6-terra", effort: "ultra", graded: 45, passed: 36, passRate: 0.795, cells: 44 },
+      { model: "gpt-5.6-terra", effort: "ultra", graded: 45, passed: 36, passRate: 0.795, cells: 45 },
     ],
     recentModels: [],
     realtimeAvailable: true,
@@ -38,6 +38,21 @@ test("crowd radar compacts DeepSeek variants for floating and detail labels", ()
   assert.equal(crowdRadarModelLabel({ model: "DeepSeek R1", effort: "medium" }), "DS R1 medium");
   assert.equal(crowdRadarModelLabel({ model: "DSH V4 Flash", effort: "max" }), "DSH F max");
   assert.equal(crowdRadarModelLabel({ model: "DSH-V4-Pro", effort: "high" }), "DSH P high");
+  assert.equal(crowdRadarModelLabel({ model: "grok-4.6", effort: "xhigh" }), "G4.6 XH");
+  assert.equal(crowdRadarModelLabel({ model: "k3", effort: "high" }), "K3 H");
+  assert.equal(crowdRadarModelLabel({ model: "glm-5.3", effort: "max" }), "GLM5.3 max");
+});
+
+test("crowd radar hides rankings with fewer than 45 judged samples", () => {
+  const snapshot = {
+    models: [
+      { model: "grok-4.6", effort: "high", passRate: 0.9, scoreSamples: 44 },
+      { model: "grok-4.6", effort: "xhigh", passRate: 0.8, scoreSamples: 45 },
+    ],
+    recentModels: [],
+    realtimeAvailable: true,
+  };
+  assert.deepEqual(rankedCodexCrowdRadarModels(snapshot).map((row) => row.effort), ["xhigh"]);
 });
 
 test("crowd radar reads through the bounded native command instead of browser CORS", () => {
@@ -126,14 +141,8 @@ test("crowd radar uses each cell latest run by default and p/n for recent mode",
     scoreSamples: 2,
     latestGradedAt: "2026-07-22T23:00:00Z",
   });
-  assert.deepEqual(
-    rankedCodexCrowdRadarModels(snapshot, 2).map((row) => row.model),
-    ["gpt-5.6-sol", "gpt-5.6-terra"],
-  );
-  assert.deepEqual(
-    rankedCodexCrowdRadarModels(snapshot, 2, "recent").map((row) => row.model),
-    ["gpt-5.6-terra", "gpt-5.6-sol"],
-  );
+  assert.deepEqual(rankedCodexCrowdRadarModels(snapshot, 2), []);
+  assert.deepEqual(rankedCodexCrowdRadarModels(snapshot, 2, "recent"), []);
   assert.equal(snapshot.recentModels[0].scorePassed, 1);
   assert.equal(snapshot.recentModels[0].scoreSamples, 6);
 });
@@ -327,10 +336,7 @@ test("published or old cumulative points never become the realtime ranking", () 
 
   assert.equal(snapshot.realtimeAvailable, false);
   assert.deepEqual(rankedCodexCrowdRadarModels(snapshot), []);
-  assert.deepEqual(
-    rankedCodexCrowdRadarModels(snapshot, 1, "recent").map((row) => [row.model, row.scorePassed, row.scoreSamples]),
-    [["gpt-5.6-sol", 0, 3]],
-  );
+  assert.deepEqual(rankedCodexCrowdRadarModels(snapshot, 1, "recent"), []);
 });
 
 test("recovery scheduling is short, bounded, and has no fourth retry", async () => {
@@ -436,8 +442,8 @@ test("crowd radar tie order ignores cumulative graded totals", () => {
         passed: 9_999,
         passRate: 1,
         cells: 1,
-        scorePassed: 1,
-        scoreSamples: 1,
+        scorePassed: 45,
+        scoreSamples: 45,
         latestGradedAt: null,
       },
       {
@@ -447,8 +453,8 @@ test("crowd radar tie order ignores cumulative graded totals", () => {
         passed: 1,
         passRate: 1,
         cells: 1,
-        scorePassed: 1,
-        scoreSamples: 1,
+        scorePassed: 45,
+        scoreSamples: 45,
         latestGradedAt: null,
       },
     ],

@@ -4,6 +4,23 @@ import XCTest
 @testable import CodexTokenBar
 
 final class AccountQuotaPaceInsightTests: XCTestCase {
+    func testLastDayWithHighRemainingQuotaEncouragesUsingMore() throws {
+        let snapshot = AccountQuotaSnapshot(
+            sevenDay: AccountQuotaWindow(
+                label: "7d",
+                usedPercent: 83,
+                resetsAt: Date().addingTimeInterval(12 * 60 * 60)
+            ),
+            status: "额度已读取"
+        )
+
+        let insight = try XCTUnwrap(snapshot.sevenDayPaceStatus)
+        XCTAssertEqual(insight.severity, .roomy)
+        XCTAssertEqual(insight.title, "最后一天，可以冲")
+        XCTAssertEqual(insight.compactTitle, "可以冲")
+        XCTAssertGreaterThanOrEqual(insight.deltaPercent, 8)
+    }
+
     func testEveryReachableDetailBoundaryFitsWithoutEllipsis() {
         let cases: [(remaining: Int, expected: Int, hours: Int?, expectedText: String)] = [
             (100, 100, nil, "7d余100% · 均100% · 贴线"),

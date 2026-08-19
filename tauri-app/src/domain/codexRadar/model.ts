@@ -688,6 +688,22 @@ export function compactRadarModelName(label: string): string {
     const effort = label.match(/\b(ultra|max|xhigh|high|medium|low|minimal)\b/i)?.[1]?.toLowerCase();
     return effort ? `${familyName} ${effort}` : familyName;
   }
+  const normalizedTokens = tokens.map((token) => token.toLowerCase());
+  const effort = ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"]
+    .find((candidate) => normalizedTokens.includes(candidate));
+  const shortEffort = effort ? ({
+    ultra: "U", max: "max", xhigh: "XH", high: "H",
+    medium: "M", low: "L", minimal: "Min",
+  } as Record<string, string>)[effort] : undefined;
+  if (normalizedTokens.slice(0, 3).join("|") === "grok|4|6") {
+    return ["G4.6", shortEffort].filter(Boolean).join(" ");
+  }
+  if (normalizedTokens[0] === "k3") {
+    return ["K3", shortEffort].filter(Boolean).join(" ");
+  }
+  if (normalizedTokens.slice(0, 3).join("|") === "glm|5|3") {
+    return ["GLM5.3", shortEffort].filter(Boolean).join(" ");
+  }
   return label
     .replace(/^GPT-5\.6[\s-]*/i, "")
     .replace(/^GPT-5\.5\s+/i, "")

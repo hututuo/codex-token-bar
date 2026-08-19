@@ -21,6 +21,7 @@ import {
   embedsRunningThreadsInMetricsRow,
   embedsUsageStatusInRateRow,
   floatingContentRowHeight,
+  initialFloatingPageIndex,
   layoutFloatingContentRows,
   type FloatingContentLayoutRow,
 } from "./floatingContent";
@@ -332,7 +333,7 @@ function FloatingPagedContentRow({
   onPageNavigation,
   ...props
 }: FloatingPagedContentRowProps) {
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(() => initialFloatingPageIndex(row.groups));
   const pages = floatingPagedContentDescriptors(row, props.snapshot, props.priceModel);
   const safeIndex = pages.length > 0 ? selectedIndex % pages.length : 0;
   const selectedPage = pages[safeIndex] ?? { group: row.primaryGroup, modelPageIndex: 0 };

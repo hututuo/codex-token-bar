@@ -37,6 +37,10 @@ enum CodexRadarPresentationText {
         let familyNames = ["Sol", "Luna", "Terra"]
         let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
         let effortNames = ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"]
+        let compactEffort: [String: String] = [
+            "ultra": "U", "xhigh": "XH", "high": "H", "medium": "M",
+            "low": "L", "minimal": "Min", "max": "max",
+        ]
         let isDeepSeek = tokens.contains(where: { $0.caseInsensitiveCompare("DeepSeek") == .orderedSame })
         let isHarness = tokens.first?.caseInsensitiveCompare("DSH") == .orderedSame
         if isDeepSeek || isHarness {
@@ -77,7 +81,20 @@ enum CodexRadarPresentationText {
             })
             return effort.map { "\(family) \($0)" } ?? family
         }
-        return rawValue
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercasedTokens = tokens.map { $0.lowercased() }
+        let effort = effortNames.first(where: { lowercasedTokens.contains($0) })
+        let shortEffort = effort.flatMap { compactEffort[$0] }
+        if lowercasedTokens.starts(with: ["grok", "4", "6"]) {
+            return (["G4.6", shortEffort].compactMap { $0 }).joined(separator: " ")
+        }
+        if lowercasedTokens.first == "k3" {
+            return (["K3", shortEffort].compactMap { $0 }).joined(separator: " ")
+        }
+        if lowercasedTokens.starts(with: ["glm", "5", "3"]) {
+            return (["GLM5.3", shortEffort].compactMap { $0 }).joined(separator: " ")
+        }
+        return normalized
             .replacingOccurrences(of: #"^GPT-5\.6[\s-]*"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "GPT-5.5 ", with: "")
             .replacingOccurrences(of: "GPT-5.4 ", with: "5.4 ")

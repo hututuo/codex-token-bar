@@ -189,6 +189,17 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
     }
 
+    func testRadarPairInitiallyShowsOrdinaryRadar() {
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.initialPageIndex(for: [.crowdRadar, .radar]),
+            1
+        )
+        XCTAssertEqual(
+            FloatingPanelContentVisibility.initialPageIndex(for: [.radar, .crowdRadar]),
+            0
+        )
+    }
+
     func testReplacingPagePartnerRemovesPreviousPairOnBothSides() {
         let pairs = [
             FloatingPanelPagePair(first: .todayModelShare, second: .todayModelCost),

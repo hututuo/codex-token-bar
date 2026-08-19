@@ -7,6 +7,7 @@ import {
   floatingContentGap,
   floatingContentHeight,
   floatingContentRowHeight,
+  initialFloatingPageIndex,
   layoutFloatingContentGroups,
   layoutFloatingContentRows,
   mergeFloatingPage,
@@ -199,6 +200,11 @@ test("paged radar rows reserve the taller page when switching to crowd radar", (
   assert.deepEqual(row.groups, ["radar", "crowdRadar"]);
   assert.equal(floatingContentRowHeight(row), 24);
   assert.equal(floatingContentHeight(visibility), 88);
+});
+
+test("radar and crowd paging initially shows the ordinary radar", () => {
+  assert.equal(initialFloatingPageIndex(["crowdRadar", "radar"]), 1);
+  assert.equal(initialFloatingPageIndex(["radar", "crowdRadar"]), 0);
 });
 
 test("paged rows combine model share and cost without losing their configured default page", () => {

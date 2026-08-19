@@ -29,7 +29,7 @@ final class CodexCrowdRadarTests: XCTestCase {
             models: [
                 CodexCrowdRadarModel(model: "gpt-5.6-sol", effort: "max", graded: 79, passed: 53, passRate: 0.675, cells: 77),
                 CodexCrowdRadarModel(model: "gpt-5.6-luna", effort: "high", graded: 61, passed: 43, passRate: 0.705, cells: 60),
-                CodexCrowdRadarModel(model: "gpt-5.6-terra", effort: "ultra", graded: 45, passed: 36, passRate: 0.795, cells: 44)
+                CodexCrowdRadarModel(model: "gpt-5.6-terra", effort: "ultra", graded: 45, passed: 36, passRate: 0.795, cells: 45)
             ]
         )
         XCTAssertEqual(snapshot.rankedModels.map(\.label), ["Terra ultra", "Luna high", "Sol max"])
@@ -54,6 +54,27 @@ final class CodexCrowdRadarTests: XCTestCase {
             CodexCrowdRadarModel(model: "DSH-V4-Pro", effort: "high", graded: 1, passed: 1, passRate: 1, cells: 1).label,
             "DSH P high"
         )
+        XCTAssertEqual(
+            CodexCrowdRadarModel(model: "grok-4.6", effort: "xhigh", graded: 59, passed: 38, passRate: 38.0 / 59.0, cells: 59).label,
+            "G4.6 XH"
+        )
+    }
+
+    func testCrowdRadarHidesModelsBelowFortyFiveJudgedSamples() {
+        let snapshot = CodexCrowdRadarSnapshot(
+            generatedAt: "2026-08-19T14:00:00Z",
+            taskCount: 59,
+            cellCount: 0,
+            contributorCount: 0,
+            pendingGrades: 0,
+            errorGrades: 0,
+            models: [
+                CodexCrowdRadarModel(model: "grok-4.6", effort: "high", graded: 44, passed: 30, passRate: 30.0 / 44.0, cells: 44),
+                CodexCrowdRadarModel(model: "grok-4.6", effort: "xhigh", graded: 45, passed: 31, passRate: 31.0 / 45.0, cells: 45),
+            ]
+        )
+
+        XCTAssertEqual(snapshot.rankedModels.map(\.effort), ["xhigh"])
     }
 
     func testParserDecodesCurrentDirectResponseShape() throws {
@@ -120,14 +141,8 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.models.first?.scorePassed, 2)
         XCTAssertEqual(snapshot.models.first?.scoreSamples, 2)
         XCTAssertEqual(snapshot.models.first?.passRate ?? 0, 1, accuracy: 0.0001)
-        XCTAssertEqual(
-            snapshot.rankedModels(for: .realtime).map(\.model),
-            ["gpt-5.6-sol", "gpt-5.6-terra"]
-        )
-        XCTAssertEqual(
-            snapshot.rankedModels(for: .recent).map(\.model),
-            ["gpt-5.6-terra", "gpt-5.6-sol"]
-        )
+        XCTAssertTrue(snapshot.rankedModels(for: .realtime).isEmpty)
+        XCTAssertTrue(snapshot.rankedModels(for: .recent).isEmpty)
         XCTAssertEqual(snapshot.recentModels.first?.scorePassed, 1)
         XCTAssertEqual(snapshot.recentModels.first?.scoreSamples, 6)
     }
@@ -255,11 +270,8 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.generatedAt, "2026-08-07T04:50:48+08:00")
         XCTAssertFalse(snapshot.realtimeAvailable)
         XCTAssertTrue(snapshot.rankedModels(for: .realtime).isEmpty)
-        let recent = try XCTUnwrap(snapshot.rankedModels(for: .recent).first)
-        XCTAssertEqual(recent.model, "gpt-5.6-sol")
-        XCTAssertEqual(recent.scorePassed, 0)
-        XCTAssertEqual(recent.scoreSamples, 3)
-        XCTAssertEqual(recent.passRate, 0, accuracy: 0.0001)
+        XCTAssertTrue(snapshot.rankedModels(for: .recent).isEmpty)
+        XCTAssertEqual(snapshot.recentModels.first?.scoreSamples, 3)
     }
 
     func testParserKeepsTableWhenLeaderboardIsUnavailableAndAcceptsStringTaskIDs() throws {
@@ -310,8 +322,8 @@ final class CodexCrowdRadarTests: XCTestCase {
                     passed: 9_999,
                     passRate: 1,
                     cells: 1,
-                    scorePassed: 1,
-                    scoreSamples: 1
+                    scorePassed: 45,
+                    scoreSamples: 45
                 ),
                 CodexCrowdRadarModel(
                     model: "gpt-5.6-sol",
@@ -320,8 +332,8 @@ final class CodexCrowdRadarTests: XCTestCase {
                     passed: 1,
                     passRate: 1,
                     cells: 1,
-                    scorePassed: 1,
-                    scoreSamples: 1
+                    scorePassed: 45,
+                    scoreSamples: 45
                 )
             ]
         )

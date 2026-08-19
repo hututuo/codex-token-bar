@@ -68,6 +68,8 @@ struct CodexCrowdRadarModel: Equatable, Sendable, Identifiable {
 }
 
 struct CodexCrowdRadarSnapshot: Equatable, Sendable {
+    static let minimumRankedSampleCount = 45
+
     let generatedAt: String
     let taskCount: Int
     let cellCount: Int
@@ -113,7 +115,7 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
 
     func rankedModels(for mode: CodexCrowdRadarMode) -> [CodexCrowdRadarModel] {
         models(for: mode)
-            .filter { $0.scoreSamples > 0 }
+            .filter { $0.scoreSamples >= Self.minimumRankedSampleCount }
             .sorted(by: Self.ranksBefore)
     }
 

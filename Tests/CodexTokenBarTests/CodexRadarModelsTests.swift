@@ -20,6 +20,9 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH F max"), "DSH F max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH-V4-Pro high"), "DSH P high")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH R1 medium"), "DSH R1 medium")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("grok-4.6 xhigh"), "G4.6 XH")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("k3 high"), "K3 H")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("glm-5.3 max"), "GLM5.3 max")
     }
 
     func testCurrentSolMaxScoreOutranksOlderTerraAndKeepsItsEffortInCompactLabel() {

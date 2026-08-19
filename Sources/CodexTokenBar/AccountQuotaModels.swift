@@ -473,7 +473,21 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
             )
         }
 
-        if isFinalHours && (delta < 0 || remaining < 12) {
+        if isLastDay && delta >= 8 {
+            return AccountQuotaPaceStatus(
+                severity: .roomy,
+                iconName: "flag.checkered",
+                title: "最后一天，可以冲",
+                compactTitle: "可以冲",
+                detail: detail,
+                compactDetail: deltaText,
+                remainingPercent: remaining,
+                expectedRemainingPercent: expectedRemaining,
+                deltaPercent: delta
+            )
+        }
+
+        if isFinalHours && delta < 0 {
             return AccountQuotaPaceStatus(
                 severity: .urgent,
                 iconName: "moon.stars",
@@ -487,7 +501,7 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
             )
         }
 
-        if isLastDay && isEvening && (delta < 0 || remaining < 18) {
+        if isLastDay && isEvening && delta < 0 {
             return AccountQuotaPaceStatus(
                 severity: .urgent,
                 iconName: "moon.stars",

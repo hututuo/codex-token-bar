@@ -573,7 +573,10 @@ struct TokenDisplayCard: View {
         guard !pages.isEmpty else {
             return PagedContentDescriptor(group: row.group, modelPageIndex: 0)
         }
-        let index = selectedPageIndexByRowID[row.id, default: 0]
+        let index = selectedPageIndexByRowID[
+            row.id,
+            default: FloatingPanelContentVisibility.initialPageIndex(for: row.groups)
+        ]
         return pages[index % pages.count]
     }
 
@@ -593,7 +596,10 @@ struct TokenDisplayCard: View {
             : restingColor
 
         return Button {
-            let current = selectedPageIndexByRowID[row.id, default: 0]
+            let current = selectedPageIndexByRowID[
+                row.id,
+                default: FloatingPanelContentVisibility.initialPageIndex(for: row.groups)
+            ]
             selectedPageIndexByRowID[row.id] = (current + delta + pageCount) % pageCount
             onPageNavigation?()
         } label: {

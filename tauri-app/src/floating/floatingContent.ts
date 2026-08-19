@@ -125,6 +125,11 @@ export function sanitizeFloatingPagePairs(value: unknown): FloatingContentPagePa
   return result;
 }
 
+export function initialFloatingPageIndex(groups: FloatingContentGroup[]): number {
+  if (!groups.includes("radar") || !groups.includes("crowdRadar")) return 0;
+  return groups.indexOf("radar");
+}
+
 export function replaceFloatingPagePartner(
   pairs: FloatingContentPagePair[],
   group: FloatingContentGroup,
