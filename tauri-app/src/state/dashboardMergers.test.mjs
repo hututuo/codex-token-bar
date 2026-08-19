@@ -258,6 +258,39 @@ test("older cached lightweight summary cannot roll back a newer full snapshot", 
   });
 });
 
+test("older same-source lightweight cache finishes an in-flight refresh without rolling back", async () => {
+  return withSsrModules(async (load) => {
+    const { markUsageSummaryStale, mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      usageSummaryFresh: true,
+      usageSummaryUpdatedAt: "2026-08-18T01:03:00Z",
+      usageSummary: {
+        totalTokens: 650,
+        todayTokens: 300,
+        todayRequests: 4,
+        dashboardRevision: 12,
+        aggregateBoundaryUnix: 1_787_000_000,
+        generatedAt: "2026-08-18T01:03:00Z",
+      },
+    });
+    const stale = markUsageSummaryStale(state);
+
+    const next = mergeUsageSummary(stale, {
+      totalTokens: 500,
+      todayTokens: 250,
+      todayRequests: 3,
+      dashboardRevision: 11,
+      aggregateBoundaryUnix: 1_786_999_700,
+      generatedAt: "2026-08-18T01:01:00Z",
+    });
+
+    assert.equal(next.dashboard.usageSummaryFresh, true);
+    assert.equal(next.dashboard.usageSummary.totalTokens, 650);
+    assert.equal(next.dashboard.usageSummary.todayTokens, 300);
+    assert.equal(next.dashboard.usageSummary.generatedAt, "2026-08-18T01:03:00Z");
+  });
+});
+
 test("newer full snapshot supersedes the temporary lightweight summary", async () => {
   return withSsrModules(async (load) => {
     const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");

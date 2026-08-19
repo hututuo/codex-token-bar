@@ -483,8 +483,23 @@ export function mergeUsageSummary(
   if (dashboard.usageSummary !== null && dashboard.usageSummary !== undefined) {
     const previousLineage = normalizeSummaryLineage(dashboard, dashboard.usageSummary);
     const relation = compareDashboardLineage(previousLineage, incomingLineage);
+    if (relation === "incoming-older") {
+      // A cache-only native read can legitimately return an older publication
+      // while the dashboard already holds a newer summary from the same
+      // source. Do not roll the payload back, but do finish the lightweight
+      // refresh: the retained payload is strictly newer than the successful
+      // read and remains the best trusted summary.
+      return dashboard.usageSummaryFresh !== false
+        ? state
+        : {
+            ...state,
+            dashboard: {
+              ...dashboard,
+              usageSummaryFresh: true,
+            },
+          };
+    }
     if (relation === "source-mismatch"
-      || relation === "incoming-older"
       || relation === "incomparable"
       || (relation === "unknown"
         && previousLineage.hasComparableLineage
