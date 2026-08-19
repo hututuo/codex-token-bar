@@ -154,19 +154,34 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let todayCalls: Int
         let todayModelBreakdowns: [ModelTokenBreakdown]
         let generatedAt: Date
+        let homeIdentity: String?
+        let coverageKind: DashboardSnapshotCoverageKind
+        let observedThrough: Date?
+        let settledThrough: Date?
+        let exactGeneration: Int64?
 
         init(
             totalTokens: Int,
             todayTokens: Int,
             todayCalls: Int,
             todayModelBreakdowns: [ModelTokenBreakdown] = [],
-            generatedAt: Date
+            generatedAt: Date,
+            homeIdentity: String? = nil,
+            coverageKind: DashboardSnapshotCoverageKind = .summary,
+            observedThrough: Date? = nil,
+            settledThrough: Date? = nil,
+            exactGeneration: Int64? = nil
         ) {
             self.totalTokens = totalTokens
             self.todayTokens = todayTokens
             self.todayCalls = todayCalls
             self.todayModelBreakdowns = todayModelBreakdowns
             self.generatedAt = generatedAt
+            self.homeIdentity = homeIdentity
+            self.coverageKind = coverageKind
+            self.observedThrough = observedThrough
+            self.settledThrough = settledThrough
+            self.exactGeneration = exactGeneration
         }
     }
 
@@ -184,7 +199,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 return nil
             }
             let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
-            _ = try historyIndex.synchronize(
+            let synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
                 sessionID: sessionID(from:)
             ) { [self] file, sessionID, request, insertFingerprint, emit in
@@ -216,12 +231,17 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 from: totals.todayModelBreakdowns,
                 at: Date()
             )
+            let summaryGeneratedAt = Date()
             let summary = CompactUsageSummary(
                 totalTokens: totals.totalTokens,
                 todayTokens: totals.todayTokens,
                 todayCalls: totals.todayCalls,
                 todayModelBreakdowns: normalizedTodayModelBreakdowns,
-                generatedAt: Date()
+                generatedAt: summaryGeneratedAt,
+                homeIdentity: dataSource.stableIdentityKey,
+                coverageKind: .summary,
+                observedThrough: summaryGeneratedAt,
+                exactGeneration: synchronization.attributionGeneration
             )
             trace?.end("ok", metadata: [
                 "tokens": String(summary.totalTokens)
@@ -333,6 +353,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 hourlyUsage: phase.snapshot.hourlyUsage,
                 pluginUsage: phase.snapshot.pluginUsage,
                 cacheUsage: hydratedCacheUsage,
+                coverageKind: .full,
+                homeIdentity: dataSource.stableIdentityKey,
+                observedThrough: phase.snapshot.observedThrough,
+                settledThrough: phase.snapshot.settledThrough,
+                exactGeneration: phase.snapshot.exactGeneration,
                 preciseTimeSeriesGeneratedAt: phase.preciseCoverageAt,
                 generatedAt: Date()
             )
@@ -466,6 +491,12 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 hourlyUsage: cached.hourlyUsage,
                 pluginUsage: cached.pluginUsage,
                 cacheUsage: stableCacheUsage,
+                homeIdentity: dataSource.stableIdentityKey,
+                coverageKind: .full,
+                observedThrough: preciseCoverageAt,
+                settledThrough: cached.settledThrough
+                    ?? cached.preciseTimeSeriesGeneratedAt,
+                exactGeneration: initialAttributionState.generation,
                 preciseTimeSeriesGeneratedAt: preciseCoverageAt,
                 generatedAt: Date()
             ))
@@ -673,6 +704,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             pluginUsage: metadata.plugins,
             cacheUsage: numericCacheUsage,
             usagePrecision: .precise,
+            homeIdentity: dataSource.stableIdentityKey,
+            coverageKind: .settled,
+            observedThrough: preciseCoverageAt,
+            settledThrough: settledThrough,
+            exactGeneration: synchronization.attributionGeneration,
             // Numeric time-series coverage is complete at this boundary.
             // Event-level attribution/detail readiness remains represented by
             // `attributionEventsComplete` and is intentionally independent.

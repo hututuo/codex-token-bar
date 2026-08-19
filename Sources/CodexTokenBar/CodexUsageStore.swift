@@ -1182,13 +1182,186 @@ final class CodexUsageStore: ObservableObject {
         dataSource.stableIdentityKey
     }
 
+    /// Merge one asynchronous snapshot without allowing an older lineage to
+    /// roll back the headline/open bucket of a newer snapshot. A newer
+    /// summary may still reuse richer chart/detail fields already published;
+    /// conversely, an older but more complete response may contribute only
+    /// those richer fields. The source/Home guard is intentionally fail-closed
+    /// when both sides carry an identity.
+    static func mergeSnapshots(
+        _ incoming: DashboardSnapshot,
+        into current: DashboardSnapshot
+    ) -> DashboardSnapshot {
+        guard current.homeIdentity == nil
+                || incoming.homeIdentity == nil
+                || current.homeIdentity == incoming.homeIdentity else {
+            return current
+        }
+
+        let currentHasLineage = current.exactGeneration != nil
+            || current.settledThrough != nil
+            || current.observedThrough != nil
+        let incomingHasLineage = incoming.exactGeneration != nil
+            || incoming.settledThrough != nil
+            || incoming.observedThrough != nil
+
+        // A legacy snapshot carries no lineage. Keep the old replacement
+        // behavior for it; the next producer writes an explicit marker.
+        if !currentHasLineage && !incomingHasLineage {
+            return incoming
+        }
+
+        let incomingIsNewer = incomingLineageIsNewer(incoming, than: current)
+
+        let detailIsRicher = incoming.coverageKind.rank > current.coverageKind.rank
+        if incomingIsNewer {
+            guard !detailIsRicher else { return incoming }
+            guard current.coverageKind.rank > incoming.coverageKind.rank else {
+                return incoming
+            }
+            return mergeNewerHeadline(incoming, retainingDetailsFrom: current)
+        }
+
+        guard detailIsRicher else { return current }
+        return mergeHeadline(current, withDetailsFrom: incoming)
+    }
+
+    private static func incomingLineageIsNewer(
+        _ incoming: DashboardSnapshot,
+        than current: DashboardSnapshot
+    ) -> Bool {
+        return {
+            if let lhs = incoming.exactGeneration,
+               let rhs = current.exactGeneration,
+               lhs != rhs {
+                return lhs > rhs
+            }
+            if incoming.exactGeneration != nil && current.exactGeneration == nil {
+                return true
+            }
+            if incoming.exactGeneration == nil && current.exactGeneration != nil {
+                return false
+            }
+            if let lhs = incoming.settledThrough,
+               let rhs = current.settledThrough,
+               lhs != rhs {
+                return lhs > rhs
+            }
+            if incoming.settledThrough != nil && current.settledThrough == nil {
+                return true
+            }
+            if incoming.settledThrough == nil && current.settledThrough != nil {
+                return false
+            }
+            if let lhs = incoming.observedThrough,
+               let rhs = current.observedThrough,
+               lhs != rhs {
+                return lhs > rhs
+            }
+            if incoming.observedThrough != nil && current.observedThrough == nil {
+                return true
+            }
+            if incoming.observedThrough == nil && current.observedThrough != nil {
+                return false
+            }
+            if incoming.coverageKind.rank != current.coverageKind.rank {
+                return incoming.coverageKind.rank > current.coverageKind.rank
+            }
+            return incoming.generatedAt >= current.generatedAt
+        }()
+    }
+
+    private static func mergeHeadline(
+        _ headline: DashboardSnapshot,
+        withDetailsFrom details: DashboardSnapshot
+    ) -> DashboardSnapshot {
+        DashboardSnapshot(
+            stats: headline.stats,
+            dailyUsage: details.dailyUsage,
+            recentBins: details.recentBins,
+            hourlyUsage: details.hourlyUsage,
+            pluginUsage: details.pluginUsage,
+            cacheUsage: details.coverageKind.rank >= headline.coverageKind.rank
+                ? details.cacheUsage
+                : headline.cacheUsage,
+            usagePrecision: details.usagePrecision.hasPreciseTokenUsage
+                ? details.usagePrecision
+                : headline.usagePrecision,
+            preciseTimeSeriesGeneratedAt: max(
+                headline.preciseTimeSeriesGeneratedAt,
+                details.preciseTimeSeriesGeneratedAt
+            ),
+            generatedAt: headline.generatedAt,
+            homeIdentity: headline.homeIdentity ?? details.homeIdentity,
+            coverageKind: maxCoverage(headline.coverageKind, details.coverageKind),
+            observedThrough: max(headline.observedThrough, details.observedThrough),
+            settledThrough: max(headline.settledThrough, details.settledThrough),
+            exactGeneration: max(headline.exactGeneration, details.exactGeneration)
+        )
+    }
+
+    private static func mergeNewerHeadline(
+        _ headline: DashboardSnapshot,
+        retainingDetailsFrom older: DashboardSnapshot
+    ) -> DashboardSnapshot {
+        // A newer settled phase owns the latest numeric/chart buckets. A
+        // newer compact summary does not, so it retains the already-published
+        // richer chart while still advancing the headline/generation.
+        let retainOlderCharts = headline.coverageKind == .summary
+        let retainOlderCache = older.coverageKind.rank > headline.coverageKind.rank
+        DashboardSnapshot(
+            stats: headline.stats,
+            dailyUsage: retainOlderCharts ? older.dailyUsage : headline.dailyUsage,
+            recentBins: retainOlderCharts ? older.recentBins : headline.recentBins,
+            hourlyUsage: retainOlderCharts ? older.hourlyUsage : headline.hourlyUsage,
+            pluginUsage: retainOlderCharts ? older.pluginUsage : headline.pluginUsage,
+            cacheUsage: retainOlderCache ? older.cacheUsage : headline.cacheUsage,
+            usagePrecision: retainOlderCache
+                ? older.usagePrecision
+                : headline.usagePrecision,
+            preciseTimeSeriesGeneratedAt: max(
+                headline.preciseTimeSeriesGeneratedAt,
+                older.preciseTimeSeriesGeneratedAt
+            ),
+            generatedAt: headline.generatedAt,
+            homeIdentity: headline.homeIdentity ?? older.homeIdentity,
+            coverageKind: maxCoverage(headline.coverageKind, older.coverageKind),
+            observedThrough: max(headline.observedThrough, older.observedThrough),
+            settledThrough: max(headline.settledThrough, older.settledThrough),
+            exactGeneration: max(headline.exactGeneration, older.exactGeneration)
+        )
+    }
+
+    private static func max<T: Comparable>(_ lhs: T?, _ rhs: T?) -> T? {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?): return Swift.max(lhs, rhs)
+        case let (lhs?, nil): return lhs
+        case let (nil, rhs?): return rhs
+        case (nil, nil): return nil
+        }
+    }
+
+    private static func maxCoverage(
+        _ lhs: DashboardSnapshotCoverageKind,
+        _ rhs: DashboardSnapshotCoverageKind
+    ) -> DashboardSnapshotCoverageKind {
+        lhs.rank >= rhs.rank ? lhs : rhs
+    }
+
     private func publish(
         _ snapshot: DashboardSnapshot,
         todayModelBreakdowns: [ModelTokenBreakdown]? = nil,
         sourceID: String
     ) {
-        let availableRows = todayModelBreakdowns
-            ?? Self.todayModelBreakdownsIfAvailable(in: snapshot, now: snapshot.generatedAt)
+        let previousSnapshot = self.snapshot
+        let shouldReplaceEmpty = !hasDisplayableSnapshot(previousSnapshot)
+        let shouldAdoptIncomingDetails = shouldReplaceEmpty
+            || Self.incomingLineageIsNewer(snapshot, than: previousSnapshot)
+            || snapshot.coverageKind.rank > previousSnapshot.coverageKind.rank
+        let availableRows = shouldAdoptIncomingDetails
+            ? (todayModelBreakdowns
+                ?? Self.todayModelBreakdownsIfAvailable(in: snapshot, now: snapshot.generatedAt))
+            : nil
         if let availableRows {
             let hasTodayUsage = Self.todayTokenCount(in: snapshot, now: snapshot.generatedAt) > 0
             let shouldRetainPrevious = availableRows.isEmpty
@@ -1205,9 +1378,11 @@ final class CodexUsageStore: ObservableObject {
                     ? Self.todayTokenCount(in: snapshot, now: snapshot.generatedAt) == 0
                     : true)
         }
-        self.snapshot = snapshot
-        todayUsageSummary = snapshot.dailyUsage.first {
-            Calendar.current.isDate($0.date, inSameDayAs: snapshot.generatedAt)
+        self.snapshot = shouldReplaceEmpty
+            ? snapshot
+            : Self.mergeSnapshots(snapshot, into: previousSnapshot)
+        todayUsageSummary = self.snapshot.dailyUsage.first {
+            Calendar.current.isDate($0.date, inSameDayAs: self.snapshot.generatedAt)
         }
         snapshotSourceID = sourceID
     }
@@ -1627,6 +1802,11 @@ final class CodexUsageStore: ObservableObject {
             cacheUsage: previous.cacheUsage,
             usagePrecision: previous.usagePrecision,
             preciseTimeSeriesGeneratedAt: previous.preciseTimeSeriesGeneratedAt,
+            homeIdentity: summary.homeIdentity ?? previous.homeIdentity,
+            coverageKind: summary.coverageKind,
+            observedThrough: summary.observedThrough ?? summary.generatedAt,
+            settledThrough: summary.settledThrough ?? previous.settledThrough,
+            exactGeneration: summary.exactGeneration ?? previous.exactGeneration,
             generatedAt: summary.generatedAt
         )
     }

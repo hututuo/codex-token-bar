@@ -153,6 +153,9 @@ extension CodexUsageAnalyzer {
             pluginUsage: Array(plugins),
             cacheUsage: .empty,
             usagePrecision: usagePrecision,
+            homeIdentity: dataSource.stableIdentityKey,
+            coverageKind: .summary,
+            observedThrough: Date(),
             generatedAt: Date()
         )
     }

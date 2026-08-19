@@ -2436,6 +2436,145 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(preciseLoadCount, 2)
     }
 
+    func testSnapshotLineageOlderFullCannotRollBackNewerSummaryHeadline() {
+        let observed = Date(timeIntervalSince1970: 5_000)
+        let current = makeSnapshot(
+            totalTokens: 2_000,
+            dayTokens: 200,
+            generatedAt: observed,
+            homeIdentity: "home-a",
+            coverageKind: .summary,
+            observedThrough: observed,
+            settledThrough: observed,
+            exactGeneration: 2
+        )
+        let olderFull = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            generatedAt: observed.addingTimeInterval(-1),
+            homeIdentity: "home-a",
+            coverageKind: .full,
+            observedThrough: observed.addingTimeInterval(-60),
+            settledThrough: observed.addingTimeInterval(-60),
+            exactGeneration: 1
+        )
+
+        let merged = CodexUsageStore.mergeSnapshots(olderFull, into: current)
+        XCTAssertEqual(merged.stats.totalTokens, 2_000)
+        XCTAssertEqual(merged.stats.peakDayTokens, 200)
+        XCTAssertEqual(merged.recentBins, olderFull.recentBins)
+        XCTAssertEqual(merged.coverageKind, .full)
+        XCTAssertEqual(merged.exactGeneration, 2)
+    }
+
+    func testSnapshotLineageNewerSummaryKeepsOlderFullDetails() {
+        let observed = Date(timeIntervalSince1970: 6_000)
+        let olderFull = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            generatedAt: observed,
+            homeIdentity: "home-a",
+            coverageKind: .full,
+            observedThrough: observed,
+            settledThrough: observed,
+            exactGeneration: 1
+        )
+        let newerSummary = makeSnapshot(
+            totalTokens: 2_000,
+            dayTokens: 200,
+            generatedAt: observed.addingTimeInterval(60),
+            homeIdentity: "home-a",
+            coverageKind: .summary,
+            observedThrough: observed.addingTimeInterval(60),
+            settledThrough: observed.addingTimeInterval(60),
+            exactGeneration: 2
+        )
+
+        let merged = CodexUsageStore.mergeSnapshots(newerSummary, into: olderFull)
+        XCTAssertEqual(merged.stats.totalTokens, 2_000)
+        XCTAssertEqual(merged.stats.peakDayTokens, 200)
+        XCTAssertEqual(merged.recentBins, olderFull.recentBins)
+        XCTAssertEqual(merged.coverageKind, .full)
+        XCTAssertEqual(merged.exactGeneration, 2)
+    }
+
+    func testSnapshotLineageDoesNotMergeDifferentHomes() {
+        let current = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            homeIdentity: "home-a",
+            exactGeneration: 1
+        )
+        let incoming = makeSnapshot(
+            totalTokens: 9_000,
+            dayTokens: 900,
+            homeIdentity: "home-b",
+            exactGeneration: 9
+        )
+
+        let merged = CodexUsageStore.mergeSnapshots(incoming, into: current)
+        XCTAssertEqual(merged.stats.totalTokens, 1_000)
+        XCTAssertEqual(merged.homeIdentity, "home-a")
+    }
+
+    func testSnapshotLineageSameMillisecondUsesTheSameLineageBeforeGeneratedAt() {
+        let timestamp = Date(timeIntervalSince1970: 7_000)
+        let current = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            generatedAt: timestamp,
+            homeIdentity: "home-a",
+            coverageKind: .settled,
+            observedThrough: timestamp,
+            settledThrough: timestamp,
+            exactGeneration: 4
+        )
+        let incoming = makeSnapshot(
+            totalTokens: 2_000,
+            dayTokens: 200,
+            generatedAt: timestamp,
+            homeIdentity: "home-a",
+            coverageKind: .settled,
+            observedThrough: timestamp,
+            settledThrough: timestamp,
+            exactGeneration: 4
+        )
+
+        let merged = CodexUsageStore.mergeSnapshots(incoming, into: current)
+        XCTAssertEqual(merged.stats.totalTokens, 2_000)
+        XCTAssertEqual(merged.exactGeneration, 4)
+    }
+
+    func testSnapshotLineageReadsLegacyCodableSnapshotWithoutNewFields() throws {
+        let snapshot = makeSnapshot(
+            totalTokens: 1_000,
+            dayTokens: 100,
+            homeIdentity: "home-a",
+            coverageKind: .full,
+            observedThrough: Date(timeIntervalSince1970: 8_000),
+            settledThrough: Date(timeIntervalSince1970: 8_000),
+            exactGeneration: 8
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(snapshot),
+                options: []
+            ) as? [String: Any]
+        )
+        for key in ["homeIdentity", "coverageKind", "observedThrough", "settledThrough", "exactGeneration"] {
+            object.removeValue(forKey: key)
+        }
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(DashboardSnapshot.self, from: legacyData)
+
+        XCTAssertNil(decoded.homeIdentity)
+        XCTAssertEqual(decoded.coverageKind, .full)
+        XCTAssertNil(decoded.observedThrough)
+        XCTAssertNil(decoded.settledThrough)
+        XCTAssertNil(decoded.exactGeneration)
+        XCTAssertEqual(decoded.stats.totalTokens, snapshot.stats.totalTokens)
+    }
+
     private func makeSnapshot(
         totalTokens: Int,
         dayTokens: Int,
@@ -2449,7 +2588,12 @@ final class CodexUsageStoreTests: XCTestCase {
         attributionGeneration: Int64? = nil,
         attributionUnsafeSinceGeneration: Int64? = nil,
         attributionCurrentScanUnsafeCauseDetected: Bool = false,
-        attributionSourceMutationDetected: Bool = false
+        attributionSourceMutationDetected: Bool = false,
+        homeIdentity: String? = nil,
+        coverageKind: DashboardSnapshotCoverageKind = .full,
+        observedThrough: Date? = nil,
+        settledThrough: Date? = nil,
+        exactGeneration: Int64? = nil
     ) -> DashboardSnapshot {
         return DashboardSnapshot(
             stats: DashboardStats(
@@ -2500,6 +2644,11 @@ final class CodexUsageStoreTests: XCTestCase {
             ),
             usagePrecision: usagePrecision,
             preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
+            homeIdentity: homeIdentity,
+            coverageKind: coverageKind,
+            observedThrough: observedThrough,
+            settledThrough: settledThrough,
+            exactGeneration: exactGeneration,
             generatedAt: generatedAt
         )
     }

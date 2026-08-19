@@ -561,6 +561,24 @@ enum DashboardUsagePrecision: String, Codable, Equatable {
     }
 }
 
+/// Describes how far a dashboard snapshot has been materialized.  This is
+/// deliberately a small, additive lineage marker: old on-disk snapshots that
+/// predate it decode as `.full` below, while new producers can distinguish a
+/// compact headline from settled numeric data and hydrated detail.
+enum DashboardSnapshotCoverageKind: String, Codable, Equatable, Sendable {
+    case summary
+    case settled
+    case full
+
+    var rank: Int {
+        switch self {
+        case .summary: return 0
+        case .settled: return 1
+        case .full: return 2
+        }
+    }
+}
+
 extension Double {
     var percentString: String {
         guard isFinite else { return "0%" }
@@ -578,6 +596,14 @@ struct DashboardSnapshot: Codable {
     let usagePrecision: DashboardUsagePrecision
     let preciseTimeSeriesGeneratedAt: Date?
     let generatedAt: Date
+    /// Stable Codex Home identity. Optional keeps snapshots written before
+    /// lineage was introduced readable and prevents an unknown legacy value
+    /// from being treated as a cross-Home match.
+    let homeIdentity: String?
+    let coverageKind: DashboardSnapshotCoverageKind
+    let observedThrough: Date?
+    let settledThrough: Date?
+    let exactGeneration: Int64?
 
     var hasPreciseTokenUsage: Bool {
         usagePrecision.hasPreciseTokenUsage
@@ -592,7 +618,12 @@ struct DashboardSnapshot: Codable {
         cacheUsage: TokenCacheUsage,
         usagePrecision: DashboardUsagePrecision = .precise,
         preciseTimeSeriesGeneratedAt: Date? = nil,
-        generatedAt: Date
+        generatedAt: Date,
+        homeIdentity: String? = nil,
+        coverageKind: DashboardSnapshotCoverageKind = .full,
+        observedThrough: Date? = nil,
+        settledThrough: Date? = nil,
+        exactGeneration: Int64? = nil
     ) {
         self.stats = stats
         self.dailyUsage = dailyUsage
@@ -603,6 +634,11 @@ struct DashboardSnapshot: Codable {
         self.usagePrecision = usagePrecision
         self.preciseTimeSeriesGeneratedAt = preciseTimeSeriesGeneratedAt
         self.generatedAt = generatedAt
+        self.homeIdentity = homeIdentity
+        self.coverageKind = coverageKind
+        self.observedThrough = observedThrough
+        self.settledThrough = settledThrough
+        self.exactGeneration = exactGeneration
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -615,6 +651,11 @@ struct DashboardSnapshot: Codable {
         case usagePrecision
         case preciseTimeSeriesGeneratedAt
         case generatedAt
+        case homeIdentity
+        case coverageKind
+        case observedThrough
+        case settledThrough
+        case exactGeneration
     }
 
     init(from decoder: Decoder) throws {
@@ -628,6 +669,14 @@ struct DashboardSnapshot: Codable {
         usagePrecision = try container.decodeIfPresent(DashboardUsagePrecision.self, forKey: .usagePrecision) ?? .precise
         preciseTimeSeriesGeneratedAt = try container.decodeIfPresent(Date.self, forKey: .preciseTimeSeriesGeneratedAt)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        homeIdentity = try container.decodeIfPresent(String.self, forKey: .homeIdentity)
+        coverageKind = try container.decodeIfPresent(
+            DashboardSnapshotCoverageKind.self,
+            forKey: .coverageKind
+        ) ?? .full
+        observedThrough = try container.decodeIfPresent(Date.self, forKey: .observedThrough)
+        settledThrough = try container.decodeIfPresent(Date.self, forKey: .settledThrough)
+        exactGeneration = try container.decodeIfPresent(Int64.self, forKey: .exactGeneration)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -641,6 +690,11 @@ struct DashboardSnapshot: Codable {
         try container.encode(usagePrecision, forKey: .usagePrecision)
         try container.encodeIfPresent(preciseTimeSeriesGeneratedAt, forKey: .preciseTimeSeriesGeneratedAt)
         try container.encode(generatedAt, forKey: .generatedAt)
+        try container.encodeIfPresent(homeIdentity, forKey: .homeIdentity)
+        try container.encode(coverageKind, forKey: .coverageKind)
+        try container.encodeIfPresent(observedThrough, forKey: .observedThrough)
+        try container.encodeIfPresent(settledThrough, forKey: .settledThrough)
+        try container.encodeIfPresent(exactGeneration, forKey: .exactGeneration)
     }
 }
 

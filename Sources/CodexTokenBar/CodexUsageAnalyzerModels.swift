@@ -247,6 +247,10 @@ extension CodexUsageAnalyzer {
             let cacheHourly: [TokenCacheBucket]
             let cacheRecentBins: [TokenCacheBucket]
             let preciseTimeSeriesGeneratedAt: Date?
+            let coverageKind: DashboardSnapshotCoverageKind?
+            let observedThrough: Date?
+            let settledThrough: Date?
+            let exactGeneration: Int64?
 
             init(
                 snapshot: DashboardSnapshot,
@@ -273,6 +277,10 @@ extension CodexUsageAnalyzer {
                 cacheHourly = snapshot.cacheUsage.hourly
                 cacheRecentBins = snapshot.cacheUsage.recentBins
                 preciseTimeSeriesGeneratedAt = snapshot.preciseTimeSeriesGeneratedAt
+                coverageKind = snapshot.coverageKind
+                observedThrough = snapshot.observedThrough
+                settledThrough = snapshot.settledThrough
+                exactGeneration = snapshot.exactGeneration
             }
 
             func restoredSnapshot(
@@ -311,6 +319,11 @@ extension CodexUsageAnalyzer {
                     pluginUsage: pluginUsage,
                     cacheUsage: cacheUsage,
                     usagePrecision: .precise,
+                    homeIdentity: homeIdentityKey,
+                    coverageKind: coverageKind ?? .full,
+                    observedThrough: observedThrough,
+                    settledThrough: settledThrough,
+                    exactGeneration: exactGeneration ?? signature.attributionGeneration,
                     preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
                     generatedAt: generatedAt
                 )
