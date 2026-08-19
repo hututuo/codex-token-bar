@@ -1611,8 +1611,7 @@ fn summary_after_precise_sync(
         flight.set_trace_status("summary_empty");
         return Err(no_token_events_error(warnings));
     }
-    let local_offset = crate::core::localtime::local_offset();
-    let summary = match index.summary(OffsetDateTime::now_utc(), local_offset) {
+    let summary = match index.summary_with_system_timezone(OffsetDateTime::now_utc()) {
         Ok(summary) => summary,
         Err(error) => {
             flight.set_trace_status("summary_error");
@@ -2370,11 +2369,10 @@ fn build_full_dashboard_after_precise_sync(
 
     record_dashboard_aggregate_build_for_testing(codex_home);
     let now_utc = OffsetDateTime::now_utc();
-    let local_offset = crate::core::localtime::local_offset();
     let data = {
         let _stage =
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::DashboardData);
-        match index.dashboard_data(codex_home, now_utc, local_offset, warnings) {
+        match index.dashboard_data_with_system_timezone(codex_home, now_utc, warnings) {
             Ok(data) => data,
             Err(error) => {
                 flight.set_trace_status("dashboard_data_error");
@@ -2580,7 +2578,7 @@ fn activity_days_and_stats_at(
 fn cached_dashboard_usage_summary_cache_only(
     codex_home: &Path,
 ) -> Result<Option<TokenUsageSummary>, String> {
-    let local_offset = crate::core::localtime::local_offset();
+    let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
     if let Some(summary) =
         cached_dashboard_usage_summary_at(codex_home, now_utc, local_offset)?
@@ -2597,7 +2595,7 @@ fn cached_dashboard_usage_summary_cache_only(
 fn cached_dashboard_usage_summary_snapshot_cache_only(
     codex_home: &Path,
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
-    let local_offset = crate::core::localtime::local_offset();
+    let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
     if let Some(summary) =
         cached_dashboard_usage_summary_snapshot_at(codex_home, now_utc, local_offset)?
@@ -2861,7 +2859,7 @@ struct DashboardScanSignature {
 }
 
 fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
-    let local_offset = crate::core::localtime::local_offset();
+    let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
     DashboardScanSignature {
         codex_home: codex_home.to_path_buf(),

@@ -18,6 +18,7 @@ use crate::core::{
     app_operation_lock::AppOperationGuard, atomic_file, cross_process_lock::CrossProcessFileLock,
     sqlite, startup_trace,
 };
+use crate::core::localtime;
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
     RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
@@ -515,6 +516,35 @@ impl UsageBinTotals {
             cached_input_tokens: self.cached_input_tokens,
             output_tokens: self.output_tokens,
             calls: self.calls,
+        }
+    }
+}
+
+/// Controls how local-day projections are evaluated. Production dashboard
+/// reads use the system IANA rules at each event timestamp; the fixed variant
+/// remains for deterministic unit tests and callers that intentionally inject
+/// an offset. Neither mode changes the UTC event rows or five-minute buckets.
+#[derive(Clone, Copy)]
+enum LocalDayMode {
+    Fixed(UtcOffset),
+    System,
+}
+
+impl LocalDayMode {
+    fn date_at(self, unix_timestamp: i64) -> Date {
+        match self {
+            Self::Fixed(offset) => OffsetDateTime::from_unix_timestamp(unix_timestamp)
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH)
+                .to_offset(offset)
+                .date(),
+            Self::System => localtime::local_date_at(unix_timestamp),
+        }
+    }
+
+    fn day_bounds(self, date: Date) -> Result<(i64, i64), String> {
+        match self {
+            Self::Fixed(offset) => fixed_local_day_bounds(date, offset),
+            Self::System => localtime::local_day_bounds(date),
         }
     }
 }
@@ -1673,8 +1703,26 @@ impl ExactUsageIndex {
         now_utc: OffsetDateTime,
         local_offset: UtcOffset,
     ) -> Result<TokenUsageSummary, String> {
-        let today = now_utc.to_offset(local_offset).date();
-        let (start, end) = local_day_bounds(today, local_offset)?;
+        self.summary_at(now_utc, LocalDayMode::Fixed(local_offset))
+    }
+
+    /// Computes the summary's local-day projection with the system IANA rules
+    /// at each event timestamp. Exact event rows and UTC five-minute buckets
+    /// remain untouched; only the read-time projection changes.
+    pub(super) fn summary_with_system_timezone(
+        &self,
+        now_utc: OffsetDateTime,
+    ) -> Result<TokenUsageSummary, String> {
+        self.summary_at(now_utc, LocalDayMode::System)
+    }
+
+    fn summary_at(
+        &self,
+        now_utc: OffsetDateTime,
+        local_day_mode: LocalDayMode,
+    ) -> Result<TokenUsageSummary, String> {
+        let today = local_day_mode.date_at(now_utc.unix_timestamp());
+        let (start, end) = local_day_mode.day_bounds(today)?;
         let (total, today_tokens, today_requests) = self
             .connection
             .query_row(
@@ -1688,22 +1736,20 @@ impl ExactUsageIndex {
                          AND f.path = t.file_path
                     ), 0),
                     COALESCE((
-                        SELECT SUM(b.total_tokens)
-                        FROM dashboard_5m b
-                        WHERE b.file_generation = COALESCE(
-                            (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'),
-                            0
-                        )
-                          AND b.bucket_start >= ?1 AND b.bucket_start < ?2
+                        SELECT SUM(e.tokens)
+                        FROM events e
+                        JOIN published_files f
+                          ON f.generation = e.file_generation
+                         AND f.path = e.file_path
+                        WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                     ), 0),
                     COALESCE((
-                        SELECT SUM(b.calls)
-                        FROM dashboard_5m b
-                        WHERE b.file_generation = COALESCE(
-                            (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'),
-                            0
-                        )
-                          AND b.bucket_start >= ?1 AND b.bucket_start < ?2
+                        SELECT COUNT(*)
+                        FROM events e
+                        JOIN published_files f
+                          ON f.generation = e.file_generation
+                         AND f.path = e.file_path
+                        WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                     ), 0)
                 "#,
                 params![start, end],
@@ -1720,7 +1766,7 @@ impl ExactUsageIndex {
             total_tokens: nonnegative_u64(total),
             today_tokens: nonnegative_u64(today_tokens),
             today_requests: saturating_u32(today_requests),
-            today_model_breakdowns: self.model_breakdowns_between(start, end)?,
+            today_model_breakdowns: self.model_breakdowns_between(start, end, local_day_mode)?,
         })
     }
 
@@ -1728,7 +1774,11 @@ impl ExactUsageIndex {
         &self,
         start: i64,
         end: i64,
+        local_day_mode: LocalDayMode,
     ) -> Result<Vec<ModelTokenBreakdown>, String> {
+        if matches!(local_day_mode, LocalDayMode::System) {
+            return self.model_breakdowns_from_events(start, end);
+        }
         let mut statement = self
             .connection
             .prepare(
@@ -1766,6 +1816,50 @@ impl ExactUsageIndex {
             })
             .map_err(|error| format!("无法读取今日逐模型 token 汇总：{error}"))?;
         rows.map(|row| row.map_err(|error| format!("无法解码今日逐模型 token 汇总：{error}")))
+            .collect()
+    }
+
+    fn model_breakdowns_from_events(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<ModelTokenBreakdown>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    e.model,
+                    COALESCE(SUM(e.input_tokens), 0),
+                    COALESCE(SUM(MIN(e.cached_input_tokens, e.input_tokens)), 0),
+                    COALESCE(SUM(e.output_tokens), 0),
+                    COALESCE(SUM(e.tokens), 0),
+                    COUNT(*)
+                FROM events e
+                JOIN published_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                WHERE e.timestamp >= ?1 AND e.timestamp < ?2
+                GROUP BY e.model
+                ORDER BY SUM(e.tokens) DESC
+                "#,
+            )
+            .map_err(|error| format!("无法准备本地日逐模型 token 汇总：{error}"))?;
+        let rows = statement
+            .query_map(params![start, end], |row| {
+                Ok(ModelTokenBreakdown {
+                    model: row.get(0)?,
+                    breakdown: TokenCacheBreakdown {
+                        input_tokens: nonnegative_u64(row.get::<_, i64>(1)?),
+                        cached_input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
+                        output_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
+                        total_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
+                        calls: saturating_u32(row.get::<_, i64>(5)?),
+                    },
+                })
+            })
+            .map_err(|error| format!("无法读取本地日逐模型 token 汇总：{error}"))?;
+        rows.map(|row| row.map_err(|error| format!("无法解码本地日逐模型 token 汇总：{error}")))
             .collect()
     }
 
@@ -1903,6 +1997,41 @@ impl ExactUsageIndex {
         local_offset: UtcOffset,
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
+        self.dashboard_data_at(
+            codex_home,
+            now_utc,
+            local_offset,
+            LocalDayMode::Fixed(local_offset),
+            warnings,
+        )
+    }
+
+    /// Read the complete dashboard with per-event system IANA local-day
+    /// classification. UTC event timestamps and 5-minute aggregate rows are
+    /// read-only; a timezone change only misses the disposable local view.
+    pub(super) fn dashboard_data_with_system_timezone(
+        &self,
+        codex_home: &Path,
+        now_utc: OffsetDateTime,
+        warnings: &mut Vec<LocalDataWarning>,
+    ) -> Result<ExactDashboardData, String> {
+        self.dashboard_data_at(
+            codex_home,
+            now_utc,
+            localtime::local_offset_at(now_utc.unix_timestamp()),
+            LocalDayMode::System,
+            warnings,
+        )
+    }
+
+    fn dashboard_data_at(
+        &self,
+        codex_home: &Path,
+        now_utc: OffsetDateTime,
+        local_offset: UtcOffset,
+        local_day_mode: LocalDayMode,
+        warnings: &mut Vec<LocalDataWarning>,
+    ) -> Result<ExactDashboardData, String> {
         let dashboard_started = Instant::now();
         let settled_through = Self::latest_eligible_aggregate_boundary(now_utc);
         // The small temp published-files selector avoids copying every event,
@@ -1919,11 +2048,11 @@ impl ExactUsageIndex {
         let prepare_snapshot_ms = prepare_started.elapsed().as_millis();
 
         let activity_started = Instant::now();
-        let activity_days = self.activity_days(now_utc, local_offset, settled_through)?;
+        let activity_days = self.activity_days(now_utc, local_day_mode)?;
         let activity_days_ms = activity_started.elapsed().as_millis();
 
         let stats_started = Instant::now();
-        let (stats, summary) = self.stats(&activity_days, now_utc, local_offset)?;
+        let (stats, summary) = self.stats(&activity_days, now_utc, local_day_mode)?;
         let stats_ms = stats_started.elapsed().as_millis();
 
         let usage_series_started = Instant::now();
@@ -2076,103 +2205,77 @@ impl ExactUsageIndex {
     fn activity_days(
         &self,
         now_utc: OffsetDateTime,
-        local_offset: UtcOffset,
-        settled_through: i64,
+        local_day_mode: LocalDayMode,
     ) -> Result<Vec<ActivityDay>, String> {
-        let today = now_utc.to_offset(local_offset).date();
+        let today = local_day_mode.date_at(now_utc.unix_timestamp());
         let start_day = today - Duration::days(364);
-        let (start_unix, _) = local_day_bounds(start_day, local_offset)?;
-        let (_, local_end_unix) = local_day_bounds(today, local_offset)?;
-        let end_unix = local_end_unix.min(settled_through);
-        let offset_seconds = local_offset.whole_seconds();
-        let mut grouped = HashMap::new();
+        let (start_unix, _) = local_day_mode.day_bounds(start_day)?;
+        let (_, local_end_unix) = local_day_mode.day_bounds(today)?;
+        // Exact events are already durable rows. Include the current local
+        // day through the requested read instant (rather than the delayed
+        // aggregate settlement watermark); the latter only protects UTC
+        // five-minute charts from an in-flight bucket.
+        let end_unix = local_end_unix.min(now_utc.unix_timestamp().saturating_add(1));
+        let mut grouped = HashMap::<Date, UsageBinTotals>::new();
+        let mut model_grouped = HashMap::<Date, Vec<ModelTokenBreakdown>>::new();
         let mut statement = self
             .connection
             .prepare(
                 r#"
                 SELECT
-                    strftime('%Y-%m-%d', bucket_start, 'unixepoch', printf('%+d seconds', ?1)),
-                    COALESCE(SUM(total_tokens), 0),
-                    COALESCE(SUM(calls), 0),
-                    COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(cached_input_tokens), 0)
-                FROM published_dashboard_5m
-                WHERE bucket_start >= ?2 AND bucket_start < ?3
-                GROUP BY 1
+                    e.timestamp,
+                    e.model,
+                    e.tokens,
+                    e.input_tokens,
+                    e.cached_input_tokens,
+                    e.output_tokens
+                FROM published_events e
+                WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                 "#,
             )
             .map_err(|error| format!("无法准备 365 日精确 token 汇总：{error}"))?;
         let rows = statement
-            .query_map(params![offset_seconds, start_unix, end_unix], |row| {
+            .query_map(params![start_unix, end_unix], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             })
             .map_err(|error| format!("无法读取 365 日精确 token 汇总：{error}"))?;
         for row in rows {
-            let (date, tokens, calls, input, cached) =
+            let (timestamp, model, tokens, input, cached, output) =
                 row.map_err(|error| format!("无法解码 365 日精确 token 汇总：{error}"))?;
-            grouped.insert(date, (tokens, calls, input, cached));
+            let date = local_day_mode.date_at(timestamp);
+            let totals = UsageBinTotals {
+                tokens: nonnegative_u64(tokens),
+                calls: 1,
+                input_tokens: nonnegative_u64(input),
+                cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
+                output_tokens: nonnegative_u64(output),
+            };
+            grouped.entry(date).or_default().add_breakdown(totals);
+            add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals);
         }
-
-        let mut model_grouped: HashMap<String, Vec<ModelTokenBreakdown>> = HashMap::new();
-        let mut model_statement = self
-            .connection
-            .prepare(
-                r#"
-                SELECT
-                    strftime('%Y-%m-%d', bucket_start, 'unixepoch', printf('%+d seconds', ?1)),
-                    model,
-                    COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(cached_input_tokens), 0),
-                    COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(total_tokens), 0),
-                    COALESCE(SUM(calls), 0)
-                FROM published_dashboard_5m
-                WHERE bucket_start >= ?2 AND bucket_start < ?3
-                GROUP BY 1, model
-                ORDER BY 1
-                "#,
-            )
-            .map_err(|error| format!("无法准备 365 日逐模型 token 汇总：{error}"))?;
-        let model_rows = model_statement
-            .query_map(params![offset_seconds, start_unix, end_unix], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    ModelTokenBreakdown {
-                        model: row.get(1)?,
-                        breakdown: TokenCacheBreakdown {
-                            input_tokens: nonnegative_u64(row.get::<_, i64>(2)?),
-                            cached_input_tokens: nonnegative_u64(row.get::<_, i64>(3)?),
-                            output_tokens: nonnegative_u64(row.get::<_, i64>(4)?),
-                            total_tokens: nonnegative_u64(row.get::<_, i64>(5)?),
-                            calls: saturating_u32(row.get::<_, i64>(6)?),
-                        },
-                    },
-                ))
-            })
-            .map_err(|error| format!("无法读取 365 日逐模型 token 汇总：{error}"))?;
-        for row in model_rows {
-            let (date, breakdown) =
-                row.map_err(|error| format!("无法解码 365 日逐模型 token 汇总：{error}"))?;
-            model_grouped.entry(date).or_default().push(breakdown);
-        }
-
         Ok((0..365)
             .map(|offset| {
                 let day = start_day + Duration::days(offset);
                 let date = format_date(day);
-                let (tokens, calls, input, cached) = grouped.remove(&date).unwrap_or((0, 0, 0, 0));
+                let totals = grouped.remove(&day).unwrap_or_default();
                 ActivityDay {
-                    model_breakdowns: model_grouped.remove(&date).unwrap_or_default(),
+                    model_breakdowns: model_grouped.remove(&day).unwrap_or_default(),
                     date,
-                    tokens: nonnegative_u64(tokens),
-                    calls: saturating_u32(calls),
-                    cache_hit_rate: cache_hit_rate(input, cached),
+                    tokens: totals.tokens,
+                    calls: totals.calls,
+                    cache_hit_rate: if totals.input_tokens == 0 {
+                        0.0
+                    } else {
+                        (totals.cached_input_tokens as f64 / totals.input_tokens as f64)
+                            .clamp(0.0, 1.0)
+                    },
                     five_hour_remaining_percent: None,
                     seven_day_remaining_percent: None,
                 }
@@ -2184,10 +2287,10 @@ impl ExactUsageIndex {
         &self,
         days: &[ActivityDay],
         now_utc: OffsetDateTime,
-        local_offset: UtcOffset,
+        local_day_mode: LocalDayMode,
     ) -> Result<(DashboardStats, TokenUsageSummary), String> {
-        let today = now_utc.to_offset(local_offset).date();
-        let (today_start, today_end) = local_day_bounds(today, local_offset)?;
+        let today = local_day_mode.date_at(now_utc.unix_timestamp());
+        let (today_start, today_end) = local_day_mode.day_bounds(today)?;
         let row = self
             .connection
             .query_row(
@@ -2201,14 +2304,14 @@ impl ExactUsageIndex {
                     COALESCE(SUM(output_tokens), 0),
                     MIN(first_timestamp),
                     COALESCE((
-                        SELECT SUM(total_tokens)
-                        FROM published_dashboard_5m
-                        WHERE bucket_start >= ?1 AND bucket_start < ?2
+                        SELECT SUM(e.tokens)
+                        FROM published_events e
+                        WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                     ), 0),
                     COALESCE((
-                        SELECT SUM(calls)
-                        FROM published_dashboard_5m
-                        WHERE bucket_start >= ?1 AND bucket_start < ?2
+                        SELECT COUNT(*)
+                        FROM published_events e
+                        WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                     ), 0)
                 FROM published_dashboard_file_totals
                 "#,
@@ -2289,7 +2392,7 @@ impl ExactUsageIndex {
             total_calls: saturating_u32(row.1),
             total_threads: saturating_u32(row.2),
             total_input_tokens: nonnegative_u64(row.3),
-            total_cached_input_tokens: nonnegative_u64(row.4),
+                total_cached_input_tokens: nonnegative_u64(row.4),
             total_output_tokens: nonnegative_u64(row.5),
             model_breakdowns,
             first_usage_at: row.6.and_then(format_rfc3339_unix),
@@ -2300,7 +2403,11 @@ impl ExactUsageIndex {
                 total_tokens: nonnegative_u64(row.0),
                 today_tokens: nonnegative_u64(row.7),
                 today_requests: saturating_u32(row.8),
-                today_model_breakdowns: self.model_breakdowns_between(today_start, today_end)?,
+                today_model_breakdowns: self.model_breakdowns_between(
+                    today_start,
+                    today_end,
+                    local_day_mode,
+                )?,
             },
         ))
     }
@@ -9675,7 +9782,7 @@ fn cache_hit_rate(input: i64, cached: i64) -> f64 {
     }
 }
 
-fn local_day_bounds(date: Date, offset: UtcOffset) -> Result<(i64, i64), String> {
+fn fixed_local_day_bounds(date: Date, offset: UtcOffset) -> Result<(i64, i64), String> {
     let start = date
         .with_hms(0, 0, 0)
         .map_err(|error| format!("无法计算本地日期边界：{error}"))?
@@ -9688,6 +9795,7 @@ fn local_day_bounds(date: Date, offset: UtcOffset) -> Result<(i64, i64), String>
         .unix_timestamp();
     Ok((start, end))
 }
+
 
 fn format_date(date: Date) -> String {
     date.format(format_description!("[year]-[month]-[day]"))
