@@ -1,7 +1,17 @@
+import AppKit
 import XCTest
 @testable import CodexTokenBar
 
 final class StartupPresentationTests: XCTestCase {
+    @MainActor
+    func testClosingLastDashboardWindowKeepsMenuBarAppRunning() {
+        let delegate = CodexTokenBarApplicationDelegate()
+
+        XCTAssertFalse(
+            delegate.applicationShouldTerminateAfterLastWindowClosed(NSApplication.shared)
+        )
+    }
+
     func testStartupKeepsDockIconVisibleWhileDashboardCanHide() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -49,6 +59,7 @@ final class StartupPresentationTests: XCTestCase {
         XCTAssertTrue(appSource.contains("@NSApplicationDelegateAdaptor(CodexTokenBarApplicationDelegate.self)"))
         XCTAssertTrue(appSource.contains("Window(\"Codex Token Bar\", id: \"dashboard\")"))
         XCTAssertFalse(appSource.contains("WindowGroup(id: \"dashboard\")"))
+        XCTAssertTrue(presentationSource.contains("applicationShouldTerminateAfterLastWindowClosed"))
         XCTAssertTrue(presentationSource.contains("applicationShouldHandleReopen"))
         XCTAssertTrue(presentationSource.contains("DashboardReopenCoordinator.shared.handleApplicationReopen"))
     }
