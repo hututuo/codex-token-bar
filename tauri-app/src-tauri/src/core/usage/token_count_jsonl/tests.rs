@@ -2915,6 +2915,17 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
             legacy_version.to_string(),
             "the final schema marker must wait for historical enrichment"
         );
+        assert_eq!(
+            structurally_migrated
+                .query_row(
+                    "SELECT model, reasoning_output_tokens FROM published_events",
+                    [],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .unwrap(),
+            (None, None),
+            "structure-only migration must preserve unknown historical fields as NULL"
+        );
         drop(structurally_migrated);
 
         ExactUsageIndex::reset_scan_bytes_for_testing();
@@ -3240,6 +3251,67 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
             )
             .unwrap(),
         "future-v9"
+    );
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_refuses_unknown_event_enrichment_revision_before_migration_writes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019efuture-enrichment.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    let before = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = 'model-reasoning-v999' WHERE key = 'event_enrichment_revision'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("unknown enrichment revision must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.contains("历史字段补全版本"), "{error}");
+    assert!(error.contains("已拒绝覆盖"), "{error}");
+
+    let connection = Connection::open(&index_path).unwrap();
+    let after = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'event_enrichment_revision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "model-reasoning-v999"
     );
     drop(connection);
     fs::remove_dir_all(root).unwrap();
