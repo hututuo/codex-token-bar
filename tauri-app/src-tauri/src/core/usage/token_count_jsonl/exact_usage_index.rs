@@ -15,8 +15,8 @@ use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
 use crate::core::{
-    app_operation_lock::AppOperationGuard, atomic_file,
-    cross_process_lock::CrossProcessFileLock, sqlite, startup_trace,
+    app_operation_lock::AppOperationGuard, atomic_file, cross_process_lock::CrossProcessFileLock,
+    sqlite, startup_trace,
 };
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
@@ -366,7 +366,9 @@ impl PreciseScanDiscovery {
             return false;
         };
         if canonical_home != self.canonical_home
-            || attribution_watch_root_physical_identity(&canonical_home).ok().as_deref()
+            || attribution_watch_root_physical_identity(&canonical_home)
+                .ok()
+                .as_deref()
                 != Some(self.physical_home_identity.as_str())
         {
             return false;
@@ -648,6 +650,10 @@ impl ExactUsageIndex {
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
         let mut has_schema_version = raw_schema_version.is_some();
         let mut schema_version = raw_schema_version.and_then(|value| value.parse::<i64>().ok());
+        // A future session-catalog revision must be rejected before any index
+        // migration or schema DDL runs.  In particular, do not let the
+        // legacy initializer below DROP a table owned by a newer build.
+        validate_session_catalog_schema_version(&connection)?;
         let mut should_report_migration = schema_version.is_some_and(|version| {
             (GITHUB_BASE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).contains(&version)
         });
@@ -655,16 +661,14 @@ impl ExactUsageIndex {
             // A prior build can have advanced schema_version before a replay,
             // orphan, catalog, or attribution marker was durably written. Keep
             // the migration channel visible and retry those markers on open.
-            should_report_migration = metadata_text(
-                &connection,
-                "fork_replay_boundary_revision",
-            )?
-            .as_deref()
-            != Some(FORK_REPLAY_BOUNDARY_REVISION)
+            should_report_migration = metadata_text(&connection, "fork_replay_boundary_revision")?
+                .as_deref()
+                != Some(FORK_REPLAY_BOUNDARY_REVISION)
                 || metadata_text(&connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
                     != Some(ORPHAN_REPAIR_REVISION)
                 || metadata_i64(&connection, "session_catalog_schema_version")?
                     != Some(SESSION_CATALOG_SCHEMA_VERSION)
+                || !column_exists_checked(&connection, "events", "reasoning_output_tokens")?
                 || metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?.is_none()
                 || metadata_text(&connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.is_none()
                 || metadata_text(&connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?.is_none();
@@ -704,8 +708,7 @@ impl ExactUsageIndex {
                 // 9-field fingerprint blobs that would break deduplication.
                 drop(connection);
                 remove_index_storage(&path)?;
-                connection =
-                    managed_index_connection(&path, open_index_connection(&path, true)?)?;
+                connection = managed_index_connection(&path, open_index_connection(&path, true)?)?;
                 schema_version = None;
                 has_schema_version = false;
             } else if schema_version.is_some() {
@@ -857,13 +860,9 @@ impl ExactUsageIndex {
         // malformed/missing value is treated as absent by metadata_i64 and is
         // safely re-seeded from the trusted generic revision.
         if metadata_i64(&connection, DASHBOARD_REVISION_KEY)?.is_none() {
-            let revision = metadata_i64(&connection, "revision")?
-                .unwrap_or_else(fresh_revision_seed);
-            set_metadata(
-                &connection,
-                DASHBOARD_REVISION_KEY,
-                &revision.to_string(),
-            )?;
+            let revision =
+                metadata_i64(&connection, "revision")?.unwrap_or_else(fresh_revision_seed);
+            set_metadata(&connection, DASHBOARD_REVISION_KEY, &revision.to_string())?;
         }
         let migration_markers_complete = !should_report_migration
             || migration_markers_complete(&connection, replay_migration_complete)?;
@@ -1241,9 +1240,8 @@ impl ExactUsageIndex {
         // have written a schema this binary does not understand. Reject it
         // before the scan transaction can touch any aggregate rows.
         self.validate_dashboard_aggregate_compatibility()?;
-        let scan_total = scan_total_override.or_else(|| {
-            discovery.as_ref().map(|plan| plan.candidate_total)
-        });
+        let scan_total =
+            scan_total_override.or_else(|| discovery.as_ref().map(|plan| plan.candidate_total));
         let mut diagnostics = ExactScanDiagnostics {
             candidate_count: discovery
                 .as_ref()
@@ -1565,11 +1563,7 @@ impl ExactUsageIndex {
             .unwrap_or(0)
             .saturating_add(1);
         set_metadata(&transaction, "revision", &revision.to_string())?;
-        set_metadata(
-            &transaction,
-            DASHBOARD_REVISION_KEY,
-            &revision.to_string(),
-        )?;
+        set_metadata(&transaction, DASHBOARD_REVISION_KEY, &revision.to_string())?;
         transaction
             .commit()
             .map_err(|error| format!("无法提交精确 token 归因安全确认：{error}"))?;
@@ -1779,25 +1773,16 @@ impl ExactUsageIndex {
     /// currently published exact generation. The first upgrade groups the
     /// existing SQLite events once in one transaction; it never opens JSONL.
     /// Normal append/rewrite transactions maintain the same tables per file.
-    pub(super) fn ensure_dashboard_aggregates(
-        &mut self,
-        codex_home: &Path,
-    ) -> Result<(), String> {
+    pub(super) fn ensure_dashboard_aggregates(&mut self, codex_home: &Path) -> Result<(), String> {
         self.validate_dashboard_aggregate_compatibility()?;
-        let stored_version = metadata_i64(
-            &self.connection,
-            DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
-        )?;
-        let published_generation = metadata_i64(&self.connection, "published_generation")?
-            .unwrap_or(0);
-        let aggregate_generation = metadata_i64(
-            &self.connection,
-            DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
-        )?;
-        let pricing_revision = metadata_text(
-            &self.connection,
-            DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
-        )?;
+        let stored_version =
+            metadata_i64(&self.connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?;
+        let published_generation =
+            metadata_i64(&self.connection, "published_generation")?.unwrap_or(0);
+        let aggregate_generation =
+            metadata_i64(&self.connection, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?;
+        let pricing_revision =
+            metadata_text(&self.connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)?;
         if stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
             && aggregate_generation == Some(published_generation)
             && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
@@ -1853,20 +1838,17 @@ impl ExactUsageIndex {
     }
 
     fn validate_dashboard_aggregate_compatibility(&self) -> Result<(), String> {
-        let stored_version = metadata_i64(
-            &self.connection,
-            DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
-        )?;
+        let stored_version =
+            metadata_i64(&self.connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?;
         if stored_version.is_some_and(|version| version > DASHBOARD_AGGREGATE_SCHEMA_VERSION) {
             return Err(format!(
                 "仪表盘聚合索引版本 {:?} 高于当前支持版本 {}，已拒绝覆盖",
                 stored_version, DASHBOARD_AGGREGATE_SCHEMA_VERSION
             ));
         }
-        if let Some(pricing_revision) = metadata_text(
-            &self.connection,
-            DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
-        )? {
+        if let Some(pricing_revision) =
+            metadata_text(&self.connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)?
+        {
             if !is_known_dashboard_pricing_revision(&pricing_revision) {
                 return Err(format!(
                     "仪表盘聚合计价契约 {pricing_revision} 未被当前版本识别，已拒绝覆盖"
@@ -2850,7 +2832,10 @@ pub(super) fn peek_startup_identity(
             ));
         }
         Ok(metadata) if !metadata.is_file() => {
-            return Err(format!("精确 token 索引路径不是普通文件：{}", path.display()));
+            return Err(format!(
+                "精确 token 索引路径不是普通文件：{}",
+                path.display()
+            ));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -2904,8 +2889,7 @@ pub(super) fn peek_startup_identity(
         )
     })?;
     let expected_home_identity = canonical_home.to_string_lossy();
-    let stored_home_identity =
-        required_startup_metadata_text(&connection, "codex_home_identity")?;
+    let stored_home_identity = required_startup_metadata_text(&connection, "codex_home_identity")?;
     if stored_home_identity != expected_home_identity {
         return Err("精确 token 启动缓存 Home identity 不匹配".into());
     }
@@ -2920,8 +2904,7 @@ pub(super) fn peek_startup_identity(
     let dashboard_revision = metadata_i64(&connection, DASHBOARD_REVISION_KEY)?
         .map(nonnegative_u64)
         .unwrap_or(revision);
-    let published_generation =
-        required_startup_metadata_u64(&connection, "published_generation")?;
+    let published_generation = required_startup_metadata_u64(&connection, "published_generation")?;
     let attribution_safety = startup_attribution_safety_state(&connection, published_generation)?;
     Ok(Some(StartupIndexIdentity {
         revision,
@@ -2947,10 +2930,8 @@ fn startup_attribution_safety_state(
     {
         return Err("精确 token 启动缓存 unsafe 谱系标识无效".into());
     }
-    let unsafe_generation = optional_startup_metadata_u64(
-        connection,
-        ATTRIBUTION_UNSAFE_GENERATION_KEY,
-    )?;
+    let unsafe_generation =
+        optional_startup_metadata_u64(connection, ATTRIBUTION_UNSAFE_GENERATION_KEY)?;
     let unsafe_id = metadata_text(connection, ATTRIBUTION_UNSAFE_ID_KEY)?;
     if unsafe_id
         .as_deref()
@@ -3260,12 +3241,13 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    reasoning_output_tokens,
                     model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                 "#,
                 params![
                     self.file_generation,
@@ -3277,6 +3259,7 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
                     checked_i64(event.input_tokens, "输入 token")?,
                     checked_i64(event.cached_input_tokens, "缓存输入 token")?,
                     checked_i64(event.output_tokens, "输出 token")?,
+                    checked_i64(event.reasoning_output_tokens, "推理输出 token")?,
                     event.model,
                     user_prompt_start,
                     user_prompt_end,
@@ -3321,12 +3304,13 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    reasoning_output_tokens,
                     model,
                     user_prompt_start,
                     user_prompt_end,
                     assistant_response_start,
                     assistant_response_end
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                 "#,
                 params![
                     checked_i64(self.ordinal, "暂存事件序号")?,
@@ -3335,6 +3319,7 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
                     checked_i64(event.input_tokens, "暂存输入 token")?,
                     checked_i64(event.cached_input_tokens, "暂存缓存输入 token")?,
                     checked_i64(event.output_tokens, "暂存输出 token")?,
+                    checked_i64(event.reasoning_output_tokens, "暂存推理输出 token")?,
                     event.model,
                     checked_optional_i64(
                         event.source_offsets.user_prompt.map(|range| range.start),
@@ -3839,6 +3824,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
                 input_tokens INTEGER NOT NULL,
                 cached_input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
+                reasoning_output_tokens INTEGER NOT NULL,
                 model TEXT,
                 user_prompt_start INTEGER,
                 user_prompt_end INTEGER,
@@ -4127,6 +4113,7 @@ fn import_staged_full_rebuild(
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    reasoning_output_tokens,
                     model,
                     user_prompt_start,
                     user_prompt_end,
@@ -4143,6 +4130,7 @@ fn import_staged_full_rebuild(
                     input_tokens,
                     cached_input_tokens,
                     output_tokens,
+                    reasoning_output_tokens,
                     model,
                     user_prompt_start,
                     user_prompt_end,
@@ -4162,11 +4150,7 @@ fn import_staged_full_rebuild(
                 validated.event_count, imported_events
             ));
         }
-        refresh_dashboard_file_aggregates(
-            &transaction,
-            generation,
-            &validated.job.path,
-        )?;
+        refresh_dashboard_file_aggregates(&transaction, generation, &validated.job.path)?;
         transaction
             .execute(
                 r#"
@@ -4493,9 +4477,7 @@ fn mark_dashboard_changed(transaction: &Transaction<'_>) -> Result<(), String> {
     set_metadata(transaction, BUILDING_DASHBOARD_CHANGED_KEY, "1")
 }
 
-fn rebuild_published_dashboard_aggregates(
-    transaction: &Transaction<'_>,
-) -> Result<(), String> {
+fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Result<(), String> {
     transaction
         .execute_batch(
             r#"
@@ -4674,10 +4656,8 @@ fn refresh_dashboard_file_aggregates(
         )
         .map(|(start, end)| start.zip(end))
         .map_err(|error| format!("无法读取单文件旧版五分钟聚合范围：{error}"))?;
-    let previous_bounds = merge_dashboard_bucket_bounds(
-        current_build_bounds,
-        previous_published_bounds,
-    );
+    let previous_bounds =
+        merge_dashboard_bucket_bounds(current_build_bounds, previous_published_bounds);
     transaction
         .execute(
             "DELETE FROM dashboard_file_5m WHERE file_generation = ?1 AND file_path = ?2",
@@ -5344,9 +5324,8 @@ fn finalize_generation(
     backfill_missing_dashboard_aggregates_for_generation(&transaction, generation)?;
     let rotate_attribution_provenance =
         metadata_i64(&transaction, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY)?.unwrap_or(0) != 0;
-    let source_index_changed = metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?
-        .unwrap_or(0)
-        != 0;
+    let source_index_changed =
+        metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.unwrap_or(0) != 0;
     if source_index_changed
         && metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
             == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
@@ -5421,9 +5400,8 @@ fn finalize_generation(
         if current_scan_incomplete { "1" } else { "0" },
     )?;
     let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
-    let dashboard_changed = metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?
-        .unwrap_or(0)
-        != 0;
+    let dashboard_changed =
+        metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.unwrap_or(0) != 0;
     let current_revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
     let revision = if changed {
         if dashboard_changed {
@@ -5438,8 +5416,8 @@ fn finalize_generation(
         current_revision
     };
     set_metadata(&transaction, "revision", &revision.to_string())?;
-    let current_dashboard_revision = metadata_i64(&transaction, DASHBOARD_REVISION_KEY)?
-        .unwrap_or(current_revision);
+    let current_dashboard_revision =
+        metadata_i64(&transaction, DASHBOARD_REVISION_KEY)?.unwrap_or(current_revision);
     let dashboard_revision = if dashboard_changed {
         current_dashboard_revision.saturating_add(1)
     } else {
@@ -5456,8 +5434,7 @@ fn finalize_generation(
         // Every changed file updated its derived rows in the same transaction
         // that wrote/replaced its events. Unchanged files keep their prior
         // versioned aggregate rows, selected through published_files.
-        let aggregate_generation = metadata_i64(&transaction, "published_generation")?
-            .unwrap_or(0);
+        let aggregate_generation = metadata_i64(&transaction, "published_generation")?.unwrap_or(0);
         set_metadata(
             &transaction,
             DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
@@ -6189,13 +6166,12 @@ fn append_session_file(
     // chunk and is still needed for validation_chunk_hash.  Treat the
     // boundary as belonging to that previous chunk for hashing purposes while
     // keeping parsing at the persisted resume offset.
-    let hashing_start_chunk = if checkpoint.resume_offset > 0
-        && checkpoint.resume_offset % EXACT_INDEX_CHUNK_SIZE == 0
-    {
-        resume_chunk.saturating_sub(1)
-    } else {
-        resume_chunk
-    };
+    let hashing_start_chunk =
+        if checkpoint.resume_offset > 0 && checkpoint.resume_offset % EXACT_INDEX_CHUNK_SIZE == 0 {
+            resume_chunk.saturating_sub(1)
+        } else {
+            resume_chunk
+        };
     let hashing_start_offset = hashing_start_chunk.saturating_mul(EXACT_INDEX_CHUNK_SIZE);
 
     let transaction = connection
@@ -6298,12 +6274,7 @@ fn append_session_file(
         hashing_start_chunk,
         &parsed.chunk_hashes,
     )?;
-    update_dashboard_append_aggregates(
-        &transaction,
-        generation,
-        path,
-        aggregate_ordinal,
-    )?;
+    update_dashboard_append_aggregates(&transaction, generation, path, aggregate_ordinal)?;
     let old_chunk_count = checkpoint
         .size
         .checked_sub(1)
@@ -6413,6 +6384,7 @@ fn copy_append_checkpoint_rows(
                 input_tokens,
                 cached_input_tokens,
                 output_tokens,
+                reasoning_output_tokens,
                 model,
                 user_prompt_start,
                 user_prompt_end,
@@ -6429,6 +6401,7 @@ fn copy_append_checkpoint_rows(
                 input_tokens,
                 cached_input_tokens,
                 output_tokens,
+                reasoning_output_tokens,
                 model,
                 user_prompt_start,
                 user_prompt_end,
@@ -6440,12 +6413,7 @@ fn copy_append_checkpoint_rows(
             params![generation, checkpoint_generation, path],
         )
         .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
-    copy_dashboard_file_aggregates(
-        transaction,
-        generation,
-        checkpoint_generation,
-        path,
-    )?;
+    copy_dashboard_file_aggregates(transaction, generation, checkpoint_generation, path)?;
     transaction
         .execute(
             r#"
@@ -6996,10 +6964,7 @@ pub(super) fn estimate_precise_scan_total_with_source_revision(
     let mut directories = HashMap::new();
     let mut boundary_warnings = Vec::new();
     let state_database = codex_home.join("state_5.sqlite");
-    directories.insert(
-        state_database.clone(),
-        directory_signature(&state_database),
-    );
+    directories.insert(state_database.clone(), directory_signature(&state_database));
 
     for root_name in ["sessions", "archived_sessions"] {
         let root = codex_home.join(root_name);
@@ -7064,12 +7029,18 @@ fn estimate_session_directory(
         ensure_estimate_deadline(deadline)?;
         directories.insert(directory.clone(), directory_signature(&directory));
         let entries = fs::read_dir(&directory).map_err(|error| {
-            format!("无法预扫描精确 token 会话目录 {}：{error}", directory.display())
+            format!(
+                "无法预扫描精确 token 会话目录 {}：{error}",
+                directory.display()
+            )
         })?;
         for entry in entries {
             ensure_estimate_deadline(deadline)?;
             let entry = entry.map_err(|error| {
-                format!("无法预扫描精确 token 会话目录项 {}：{error}", directory.display())
+                format!(
+                    "无法预扫描精确 token 会话目录项 {}：{error}",
+                    directory.display()
+                )
             })?;
             let path = entry.path();
             let metadata = match fs::symlink_metadata(&path) {
@@ -7080,7 +7051,10 @@ fn estimate_session_directory(
                 pending.push(path);
                 continue;
             }
-            if path.extension().is_none_or(|extension| extension != "jsonl") {
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+            {
                 continue;
             }
             let Ok(canonical) = fs::canonicalize(&path) else {
@@ -7147,7 +7121,10 @@ fn estimate_active_rollouts(
                 codex_home.join(path)
             }
         };
-        if path.extension().is_none_or(|extension| extension != "jsonl") {
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
             continue;
         }
         let Ok(canonical) = fs::canonicalize(&path) else {
@@ -7516,10 +7493,7 @@ fn publish_thread_metadata_only(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始会话标题索引发布事务：{error}"))?;
-    if !apply_thread_metadata_stage(
-        &transaction,
-        ThreadMetadataStage::Updated(staged),
-    )? {
+    if !apply_thread_metadata_stage(&transaction, ThreadMetadataStage::Updated(staged))? {
         let revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
         transaction
             .commit()
@@ -7569,8 +7543,7 @@ fn open_index_connection_with_recovery(
     let _ = existed_before_hint;
     if !existed_before {
         let connection = open_index_connection(path, true)?;
-        return managed_index_connection(path, connection)
-            .map(|connection| (connection, false));
+        return managed_index_connection(path, connection).map(|connection| (connection, false));
     }
 
     let state_has_active_connection = {
@@ -8208,6 +8181,11 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
             "INTEGER NOT NULL DEFAULT 0",
         ),
         ("events", "model", "TEXT"),
+        // Reasoning was not present in the GitHub v0.8.3 events table. Keep
+        // the legacy value NULL so an old row is never mistaken for an
+        // observed zero; the current parser writes an explicit zero when the
+        // source reports no reasoning output.
+        ("events", "reasoning_output_tokens", "INTEGER"),
     ] {
         let table_exists = connection
             .query_row(
@@ -8366,6 +8344,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 input_tokens INTEGER NOT NULL,
                 cached_input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL,
+                reasoning_output_tokens INTEGER,
                 model TEXT,
                 user_prompt_start INTEGER,
                 user_prompt_end INTEGER,
@@ -8552,7 +8531,33 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("无法初始化精确 token 索引结构：{error}"))
 }
 
+fn validate_session_catalog_schema_version(connection: &Connection) -> Result<(), String> {
+    let Some(raw_version) = metadata_text(connection, "session_catalog_schema_version")? else {
+        // A missing marker is the legacy/uninitialized case and is safe for
+        // the current initializer to create.
+        return Ok(());
+    };
+    let version = raw_version.parse::<i64>().map_err(|_| {
+        format!("精确 token 会话目录 schema 版本未知或损坏（{raw_version}），已拒绝覆盖")
+    })?;
+    if version > SESSION_CATALOG_SCHEMA_VERSION {
+        return Err(format!(
+            "精确 token 会话目录 schema 版本 {version} 高于当前支持版本 {SESSION_CATALOG_SCHEMA_VERSION}，已拒绝覆盖"
+        ));
+    }
+    if version < 0 {
+        return Err(format!(
+            "精确 token 会话目录 schema 版本 {version} 无效，已拒绝覆盖"
+        ));
+    }
+    Ok(())
+}
+
 fn initialize_session_catalog_schema(connection: &Connection) -> Result<(), String> {
+    // Keep this guard here as well as in `open`: callers/tests that initialize
+    // the catalog directly must receive the same fail-closed behavior before
+    // the legacy DROP/CREATE path can run.
+    validate_session_catalog_schema_version(connection)?;
     let stored_version = metadata_i64(connection, "session_catalog_schema_version")?;
     if stored_version != Some(SESSION_CATALOG_SCHEMA_VERSION) {
         connection

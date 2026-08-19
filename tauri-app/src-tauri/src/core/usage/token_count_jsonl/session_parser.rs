@@ -41,6 +41,12 @@ pub(super) struct ExactTokenEvent {
     pub(super) input_tokens: u64,
     pub(super) cached_input_tokens: u64,
     pub(super) output_tokens: u64,
+    /// Reasoning output reported by the source token snapshot.  This is kept
+    /// on the canonical event even though the current dashboard projections do
+    /// not consume it yet; old SQLite rows remain NULL after the structural
+    /// migration, while newly parsed rows always write the observed value
+    /// (including an explicit zero).
+    pub(super) reasoning_output_tokens: u64,
     pub(super) model: Option<String>,
     pub(super) source_offsets: ExactEventSourceOffsets,
 }
@@ -281,11 +287,12 @@ pub(super) fn stream_session_file_exact_from(
             // complete parent history once per subagent.
             if is_explicit_subagent_fork
                 && fork_replay_active
-                && turn_context.timestamp.zip(
-                    last_skipped_fork_replay_token_at.or(fork_replay_started_at),
-                ).is_some_and(|(timestamp, reference)| {
-                    timestamp - reference > FORK_REPLAY_EXIT_GRACE
-                })
+                && turn_context
+                    .timestamp
+                    .zip(last_skipped_fork_replay_token_at.or(fork_replay_started_at))
+                    .is_some_and(|(timestamp, reference)| {
+                        timestamp - reference > FORK_REPLAY_EXIT_GRACE
+                    })
             {
                 fork_replay_active = false;
             }
@@ -370,6 +377,10 @@ pub(super) fn stream_session_file_exact_from(
                 .last
                 .as_ref()
                 .map_or(0, |usage| usage.output_tokens),
+            reasoning_output_tokens: usage_line
+                .last
+                .as_ref()
+                .map_or(0, |usage| usage.reasoning_output_tokens),
             model: current_model.clone(),
             source_offsets: ExactEventSourceOffsets {
                 user_prompt: current_user_prompt,
