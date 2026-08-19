@@ -18,11 +18,14 @@ pub struct PreciseDashboardProgress {
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSnapshot {
     pub generated_at: String,
-    /// Time through which the last successful full exact-usage sync proved the
-    /// five-minute recent-usage series complete. This deliberately does not
-    /// advance for the compact startup/metadata-only snapshot.
+    /// Last source observation completed by the full exact-usage owner. This
+    /// deliberately does not advance for compact startup/metadata-only reads.
     #[serde(default)]
     pub precise_recent_usage_covered_at: Option<String>,
+    /// Latest fully settled five-minute aggregate boundary. Unlike
+    /// `precise_recent_usage_covered_at`, this is the actual chart watermark.
+    #[serde(default)]
+    pub settled_through: Option<String>,
     /// Explicit trust bit for the recent-usage series. Frontends must not infer
     /// this from warning copy or from a non-empty placeholder canvas.
     #[serde(default)]

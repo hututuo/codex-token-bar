@@ -237,6 +237,19 @@ final class CodexUsageStore: ObservableObject {
         )
     }
 
+    /// Refreshes only the exact headline/today-model summary. A detailed
+    /// request arriving during this owner is promoted through
+    /// `pendingFullRefresh`, so wake handling can safely request both without
+    /// starting two competing scanners.
+    func refreshLightSummary() {
+        refresh(
+            includePreciseScan: true,
+            forceFullTimeSeries: false,
+            requestKind: .automatic,
+            compactSummaryOnly: true
+        )
+    }
+
     /// Attribution compares local usage with a point-in-time quota snapshot.
     /// Attribution is represented by five-minute index buckets. Once the
     /// current bucket is already covered, another quota poll in that same

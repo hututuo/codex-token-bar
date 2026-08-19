@@ -871,14 +871,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     };
   }, []);
 
-  const refreshUsageSummary = useCallback(async () => {
+  const refreshUsageSummary = useCallback(async (force = false) => {
     if (sourceToken === null
       || !isSourceTokenCurrent(sourceToken)
       || !source.readUsageSummarySnapshot) return;
     try {
       const summary = await source.readUsageSummarySnapshot(
         sourceToken,
-        usageRefreshSettings.usageLightRefreshIntervalSeconds,
+        force ? 0 : usageRefreshSettings.usageLightRefreshIntervalSeconds,
       );
       if (summary !== null && isSourceTokenCurrent(sourceToken)) {
         setState((current) => isSourceTokenCurrent(sourceToken)
@@ -932,8 +932,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       : usageRefreshSettings.usageBackgroundAggregateIntervalMinutes;
     const nowMs = Date.now();
     const eligibleBoundary = latestEligibleBoundary(nowMs / 1_000);
-    const coveredAt = state.dashboard?.preciseRecentUsageCoveredAt
-      ?? state.dashboard?.settledThrough
+    const coveredAt = state.dashboard?.settledThrough
+      ?? state.dashboard?.preciseRecentUsageCoveredAt
       ?? null;
     const coveredSeconds = coveredAt === null ? Number.NaN : Date.parse(coveredAt) / 1_000;
 
@@ -1042,10 +1042,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
   const refreshAfterWake = useCallback(() => {
     const eligibleBoundary = latestEligibleBoundary(Date.now() / 1_000);
+    wakeRefreshSequenceRef.current += 1;
+    const wakeKey = `${eligibleBoundary}:${wakeRefreshSequenceRef.current}`;
     const context = makeDashboardWakeRefreshContext({
       dashboardGeneratedAt: state.dashboard?.generatedAt ?? null,
-      preciseCoveredAt: state.dashboard?.preciseRecentUsageCoveredAt
-        ?? state.dashboard?.settledThrough
+      preciseCoveredAt: state.dashboard?.settledThrough
+        ?? state.dashboard?.preciseRecentUsageCoveredAt
         ?? null,
       preciseFresh: state.dashboard?.preciseRecentUsageFresh,
       eligibleBoundarySeconds: eligibleBoundary,
@@ -1056,14 +1058,17 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
     const plan = makeDashboardRefreshPlan("systemWake", context);
     applyDashboardRefreshPlan(plan, {
+      refreshLightSummary: () => {
+        void refreshUsageSummary(true);
+      },
       refreshPreciseUsage: () => {
         const boundaryKey = String(eligibleBoundary);
         requestPreciseRefresh(
           true,
-          "cadence",
+          "wake",
           boundaryKey,
-          "aggregate-boundary",
-          boundaryKey,
+          "wake",
+          wakeKey,
         );
       },
       refreshQuota: () => {
@@ -1075,6 +1080,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
   }, [
     dashboardVisible,
+    refreshUsageSummary,
     requestPreciseRefresh,
     state.dashboard?.generatedAt,
     state.dashboard?.preciseRecentUsageCoveredAt,

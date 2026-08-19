@@ -10,6 +10,7 @@ import {
 
 function dispatchCounts(actions) {
   const counts = {
+    lightSummary: 0,
     preciseUsage: 0,
     forceQuota: 0,
     radar: 0,
@@ -17,6 +18,9 @@ function dispatchCounts(actions) {
   };
 
   applyDashboardRefreshPlan(actions, {
+    refreshLightSummary: () => {
+      counts.lightSummary += 1;
+    },
     refreshPreciseUsage: () => {
       counts.preciseUsage += 1;
     },
@@ -55,6 +59,7 @@ test("quota retry is quota only", () => {
   assert.deepEqual(dispatchCounts(makeDashboardRefreshPlan("quotaRetry", {
     providerVisible: true,
   })), {
+    lightSummary: 0,
     preciseUsage: 0,
     forceQuota: 1,
     radar: 0,
@@ -66,6 +71,7 @@ test("manual refresh dispatches precise usage forced quota and radar without pro
   assert.deepEqual(dispatchCounts(makeDashboardRefreshPlan("manual", {
     providerVisible: false,
   })), {
+    lightSummary: 0,
     preciseUsage: 1,
     forceQuota: 1,
     radar: 1,
@@ -75,12 +81,14 @@ test("manual refresh dispatches precise usage forced quota and radar without pro
 
 test("manual refresh dispatches provider scan only while the repair surface is visible", () => {
   assert.deepEqual(manualDispatchCounts(false), {
+    lightSummary: 0,
     preciseUsage: 1,
     forceQuota: 1,
     radar: 1,
     providerScan: 0,
   });
   assert.deepEqual(manualDispatchCounts(true), {
+    lightSummary: 0,
     preciseUsage: 1,
     forceQuota: 1,
     radar: 1,
@@ -96,6 +104,7 @@ test("system wake always refreshes quota but does not scan providers", () => {
     radarVisible: false,
     radarStale: false,
   }), [
+    "lightSummary",
     "forceQuota",
   ]);
 });
@@ -108,6 +117,7 @@ test("system wake refreshes usage only when stale and radar when visible", () =>
     radarVisible: true,
     radarStale: false,
   }), [
+    "lightSummary",
     "forceQuota",
     "radar",
   ]);
@@ -119,6 +129,7 @@ test("system wake refreshes usage only when stale and radar when visible", () =>
     radarVisible: false,
     radarStale: true,
   }), [
+    "lightSummary",
     "preciseUsage",
     "forceQuota",
     "radar",
@@ -181,6 +192,7 @@ test("system wake dispatches quota and visible radar without duplicating a curre
       visibleRefreshIntervalMs: intervalMs,
     }),
   )), {
+    lightSummary: 1,
     preciseUsage: 0,
     forceQuota: 1,
     radar: 1,
@@ -195,6 +207,7 @@ test("system wake dispatches quota and visible radar without duplicating a curre
       visibleRefreshIntervalMs: intervalMs,
     }),
   )), {
+    lightSummary: 1,
     preciseUsage: 0,
     forceQuota: 1,
     radar: 0,
@@ -205,6 +218,7 @@ test("system wake dispatches quota and visible radar without duplicating a curre
 test("applyDashboardRefreshPlan dispatches actions in plan order", () => {
   const calls = [];
   applyDashboardRefreshPlan(["preciseUsage", "forceQuota", "radar"], {
+    refreshLightSummary: () => calls.push("lightSummary"),
     refreshPreciseUsage: () => calls.push("preciseUsage"),
     refreshQuota: () => calls.push("forceQuota"),
     refreshRadar: () => calls.push("radar"),
@@ -216,6 +230,7 @@ test("applyDashboardRefreshPlan dispatches actions in plan order", () => {
 
 function manualDispatchCounts(providerRepairVisible) {
   const counts = {
+    lightSummary: 0,
     preciseUsage: 0,
     forceQuota: 0,
     radar: 0,
@@ -225,6 +240,9 @@ function manualDispatchCounts(providerRepairVisible) {
   applyManualDashboardRefresh({
     providerRepairVisible,
     dispatchers: {
+      refreshLightSummary: () => {
+        counts.lightSummary += 1;
+      },
       refreshPreciseUsage: () => {
         counts.preciseUsage += 1;
       },

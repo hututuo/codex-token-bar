@@ -7095,6 +7095,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     assert!(!full.cache_usage.turns.is_empty());
     assert!(full.precise_recent_usage_fresh);
     assert!(full.precise_recent_usage_covered_at.is_some());
+    assert!(full.settled_through.is_some());
     let persisted = fs::read(&cache_path).unwrap();
     assert!(
         persisted.len() < 4 * 1024 * 1024,
@@ -7117,6 +7118,10 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     assert_eq!(
         json["coverageAt"].as_str(),
         full.precise_recent_usage_covered_at.as_deref()
+    );
+    assert_eq!(
+        json["settledThrough"].as_str(),
+        full.settled_through.as_deref()
     );
     assert!(json.get("account").is_none());
     assert!(json.get("quota").is_none());
@@ -7141,6 +7146,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         startup.precise_recent_usage_covered_at,
         full.precise_recent_usage_covered_at
     );
+    assert_eq!(startup.settled_through, full.settled_through);
     let compact_index = ExactUsageIndex::open(&root).unwrap();
     let compact_signature = dashboard_index_signature(&root, compact_index.revision().unwrap());
     drop(compact_index);
@@ -8874,6 +8880,79 @@ fn usage_summary_snapshot_cache_miss_schedules_one_lightweight_background_refres
     }
 
     panic!("usage summary background build did not finish");
+}
+
+#[test]
+fn refreshed_usage_summary_snapshot_waits_for_the_lightweight_publication() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let _cache_env = AggregateCacheEnvGuard::new(root.join("token-aggregate-cache.json"));
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let rollout = session_dir.join("rollout-019esummary-immediate-0000-0000.jsonl");
+    write_lines(
+        &rollout,
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    let summary = refreshed_usage_summary_snapshot_with_interval(&root, Some(60))
+        .unwrap()
+        .expect("the completed lightweight owner must be returned immediately");
+    assert_eq!(summary.total_tokens, 120);
+    assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 0);
+    wait_for_usage_summary_refreshes_for_testing();
+
+    let forced_calls = Arc::new(AtomicU64::new(0));
+    let forced_calls_for_hook = Arc::clone(&forced_calls);
+    set_precise_refresh_sync_hook_for_testing(Some(Arc::new(move |_| {
+        forced_calls_for_hook.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })));
+    let forced = refreshed_usage_summary_snapshot_with_interval(&root, Some(0))
+        .unwrap()
+        .expect("wake refresh must bypass the ordinary cadence reuse window");
+    set_precise_refresh_sync_hook_for_testing(None);
+    assert_eq!(forced.total_tokens, 120);
+    assert_eq!(forced_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 0);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn promoted_full_owner_releases_summary_waiters_before_full_completion() {
+    let flight = PreciseRefreshFlight::new(
+        PreciseRefreshIntent::Summary,
+        false,
+        None,
+        None,
+        0,
+        None,
+    );
+    assert!(flight.request_full());
+    let waiter = Arc::clone(&flight);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        tx.send(waiter.wait_summary()).unwrap();
+    });
+
+    let summary = TokenUsageSummary {
+        total_tokens: 120,
+        today_tokens: 120,
+        today_requests: 1,
+        today_model_breakdowns: Vec::new(),
+    };
+    flight.publish_summary(&Ok(summary));
+    let published = rx
+        .recv_timeout(StdDuration::from_secs(1))
+        .expect("summary waiter must not wait for the promoted full dashboard")
+        .unwrap();
+    assert_eq!(published.total_tokens, 120);
+    assert!(!flight.is_done());
+    thread.join().unwrap();
 }
 
 fn temp_root() -> PathBuf {

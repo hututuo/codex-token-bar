@@ -1,6 +1,7 @@
 export type DashboardRefreshTrigger = "manual" | "systemWake" | "quotaRetry";
 
 export type DashboardRefreshAction =
+  | "lightSummary"
   | "preciseUsage"
   | "forceQuota"
   | "radar"
@@ -15,6 +16,7 @@ export interface DashboardRefreshContext {
 }
 
 export interface DashboardRefreshDispatchers {
+  refreshLightSummary: () => void;
   refreshPreciseUsage: () => void;
   refreshQuota: () => void;
   refreshRadar: () => void;
@@ -78,6 +80,7 @@ export function makeDashboardRefreshPlan(
   }
 
   const actions: DashboardRefreshAction[] = [];
+  actions.push("lightSummary");
   if (context.usageStale === true) {
     actions.push("preciseUsage");
   }
@@ -103,6 +106,9 @@ export function applyDashboardRefreshPlan(
   dispatchers: DashboardRefreshDispatchers,
 ) {
   actions.forEach((action) => {
+    if (action === "lightSummary") {
+      dispatchers.refreshLightSummary();
+    }
     if (action === "preciseUsage") {
       dispatchers.refreshPreciseUsage();
     }

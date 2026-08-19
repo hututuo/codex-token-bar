@@ -1677,12 +1677,10 @@ pub async fn read_usage_summary_snapshot(
     require_window_label(&window, "read_usage_summary_snapshot")?;
     let started = Instant::now();
     let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
-        let cached = token_count_jsonl::usage_summary_snapshot(&codex_home)?;
-        token_count_jsonl::schedule_usage_summary_refresh_with_interval(
+        token_count_jsonl::refreshed_usage_summary_snapshot_with_interval(
             &codex_home,
             refresh_interval_seconds,
-        )?;
-        Ok(cached)
+        )
     })
     .await;
     startup_trace::mark_performance(format!(

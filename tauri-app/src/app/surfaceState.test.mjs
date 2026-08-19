@@ -289,6 +289,7 @@ test("direct compact quota fallback remains capped at one-minute refreshes", asy
 
 test("dashboard and direct compact quota fallback force refresh after system wake", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
   const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
   const wakeRefresh = await readFile(new URL("../utils/useWakeRefresh.ts", import.meta.url), "utf8");
 
@@ -298,6 +299,10 @@ test("dashboard and direct compact quota fallback force refresh after system wak
   assert.equal(dashboardData.includes("useWakeRefresh({"), true);
   assert.equal(dashboardData.includes("makeDashboardWakeRefreshContext({"), true);
   assert.equal(dashboardData.includes("makeDashboardRefreshPlan(\"systemWake\", context)"), true);
+  assert.equal(dashboardData.includes("void refreshUsageSummary(true)"), true);
+  assert.equal(dashboardData.includes("\"wake\",\n          boundaryKey,\n          \"wake\""), true);
+  assert.equal(dashboardData.includes("state.dashboard?.settledThrough\n      ?? state.dashboard?.preciseRecentUsageCoveredAt"), true);
+  assert.equal(dashboardPage.includes("aggregateCoveredAt={dashboard.settledThrough"), true);
   assert.equal(compactQuota.includes("useWakeRefresh({"), true);
   assert.equal(compactQuota.includes("void refreshQuota(true)"), true);
 });

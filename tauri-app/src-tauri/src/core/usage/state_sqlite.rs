@@ -37,6 +37,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
     Ok(DashboardSnapshot {
         generated_at,
         precise_recent_usage_covered_at: None,
+        settled_through: None,
         precise_recent_usage_fresh: false,
         precise_observer_epoch: None,
         precise_observer_started_at_unix_micros: None,

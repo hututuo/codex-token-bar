@@ -52,6 +52,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
 
         XCTAssertEqual(plan.trigger, .systemWake)
         XCTAssertEqual(plan.actions, [
+            .refreshLightSummary,
             .refreshQuota(force: true),
             .reloadQuotaHistoryTimeline
         ])
@@ -70,7 +71,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
             )
         )
         XCTAssertEqual(active.actions, [
-            .refreshUsage,
+            .refreshLightSummary,
             .refreshQuota(force: true),
             .reloadQuotaHistoryTimeline,
             .refreshRadar
@@ -87,6 +88,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
             )
         )
         XCTAssertEqual(stale.actions, [
+            .refreshLightSummary,
             .refreshUsage,
             .refreshQuota(force: true),
             .reloadQuotaHistoryTimeline,
@@ -106,6 +108,7 @@ final class DashboardRefreshPlanTests: XCTestCase {
             .reloadQuotaHistoryTimeline
         ])
         XCTAssertFalse(plan.actions.contains(.refreshUsage))
+        XCTAssertFalse(plan.actions.contains(.refreshLightSummary))
         XCTAssertFalse(plan.actions.contains(.refreshRadar))
         XCTAssertFalse(plan.actions.contains(.scanProviders))
     }

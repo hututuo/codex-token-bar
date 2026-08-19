@@ -719,6 +719,7 @@ impl PreciseRefreshFlight {
                 full_requested: intent == PreciseRefreshIntent::Full,
                 full_build_started: false,
                 promotion_closed: false,
+                summary_result: None,
                 result: None,
             }),
             wake: Condvar::new(),
@@ -852,6 +853,37 @@ impl PreciseRefreshFlight {
             .as_ref()
             .expect("precise refresh result is published before waking waiters")
             .clone()
+    }
+
+    fn publish_summary(&self, summary: &Result<TokenUsageSummary, String>) {
+        let Ok(summary) = summary else { return };
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.summary_result.is_none() {
+            state.summary_result = Some(Ok(summary.clone()));
+            self.wake.notify_all();
+        }
+    }
+
+    fn wait_summary(&self) -> Result<TokenUsageSummary, String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if let Some(summary) = state.summary_result.as_ref() {
+                return summary.clone();
+            }
+            if let Some(result) = state.result.as_ref() {
+                return result.summary.clone();
+            }
+            state = self
+                .wake
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
     }
 
     fn trace_flight_id(&self) -> u64 {
@@ -1479,6 +1511,7 @@ fn run_precise_refresh_inner(
         let signature = dashboard_index_signature(canonical_home, dashboard_revision);
         summary_after_precise_sync(&index, canonical_home, &signature, &warnings, flight)
     };
+    flight.publish_summary(&summary);
     let claim_full = {
         let _stage =
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::ClaimFull);
@@ -2127,6 +2160,7 @@ struct PreciseRefreshFlightState {
     full_requested: bool,
     full_build_started: bool,
     promotion_closed: bool,
+    summary_result: Option<Result<TokenUsageSummary, String>>,
     result: Option<PreciseRefreshResult>,
 }
 
@@ -2408,10 +2442,18 @@ fn build_full_dashboard_after_precise_sync(
             .format(&Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
     });
+    let settled_through = precise_scan_complete
+        .then(|| {
+            OffsetDateTime::from_unix_timestamp(data.settled_through)
+                .ok()
+                .and_then(|value| value.format(&Rfc3339).ok())
+        })
+        .flatten();
 
     let mut snapshot = DashboardSnapshot {
         generated_at: generated_at.clone(),
         precise_recent_usage_covered_at,
+        settled_through,
         precise_recent_usage_fresh: precise_scan_complete,
         precise_observer_epoch: precise_scan_complete.then_some(observer_identity.epoch.clone()),
         precise_observer_started_at_unix_micros: precise_scan_complete
@@ -2521,6 +2563,29 @@ pub fn usage_summary_snapshot(
     codex_home: &Path,
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     cached_dashboard_usage_summary_snapshot_cache_only(codex_home)
+}
+
+/// Refreshes (or joins) the lightweight owner and returns the cache only after
+/// that owner has published. Callers therefore never need a second polling
+/// interval merely to observe a successful refresh.
+pub fn refreshed_usage_summary_snapshot_with_interval(
+    codex_home: &Path,
+    refresh_interval_seconds: Option<u64>,
+) -> Result<Option<TokenUsageSummarySnapshot>, String> {
+    let configured_seconds = match refresh_interval_seconds {
+        Some(0) => 0,
+        Some(value @ (60 | 150 | 300 | 600)) => value,
+        _ => PRECISE_SUMMARY_REFRESH_TTL.as_secs(),
+    };
+    let reuse_window = StdDuration::from_secs(configured_seconds);
+    let scheduled = schedule_precise_refresh(codex_home, reuse_window)?;
+    if let Some(flight) = scheduled {
+        flight.wait_summary()?;
+    } else if let Some(error) = precise_refresh_coordinator(codex_home)?.last_summary_refresh_error()
+    {
+        return Err(error);
+    }
+    usage_summary_snapshot(codex_home)
 }
 
 pub fn schedule_usage_summary_refresh(
@@ -2788,6 +2853,8 @@ struct PersistentNumericDashboardCacheV20 {
     binding: PersistentNumericCacheBinding,
     built_at: String,
     coverage_at: Option<String>,
+    #[serde(default)]
+    settled_through: Option<String>,
     summary: TokenUsageSummary,
     stats: crate::models::DashboardStats,
     activity_days: Vec<crate::models::ActivityDay>,
@@ -3104,6 +3171,7 @@ fn startup_snapshot_from_persistent_numeric(
     DashboardSnapshot {
         generated_at: cache.built_at.clone(),
         precise_recent_usage_covered_at: cache.coverage_at.clone(),
+        settled_through: cache.settled_through.clone(),
         precise_recent_usage_fresh: false,
         precise_observer_epoch: None,
         precise_observer_started_at_unix_micros: None,
@@ -3380,6 +3448,7 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
             .format(&Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
         precise_recent_usage_covered_at: None,
+        settled_through: None,
         precise_recent_usage_fresh: false,
         precise_observer_epoch: None,
         precise_observer_started_at_unix_micros: None,
@@ -3514,6 +3583,10 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
                     .coverage_at
                     .as_deref()
                     .is_some_and(|value| !valid_persistent_cache_timestamp(value))
+                || cache
+                    .settled_through
+                    .as_deref()
+                    .is_some_and(|value| !valid_persistent_cache_timestamp(value))
             {
                 return None;
             }
@@ -3590,6 +3663,7 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
         binding: binding.clone(),
         built_at: snapshot.generated_at.clone(),
         coverage_at: snapshot.precise_recent_usage_covered_at.clone(),
+        settled_through: snapshot.settled_through.clone(),
         summary: aggregate.summary.clone(),
         stats: snapshot.stats.clone(),
         activity_days: snapshot.activity_days.clone(),

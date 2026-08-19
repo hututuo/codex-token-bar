@@ -443,6 +443,8 @@ final class DashboardRuntime: ObservableObject {
         let plan = DashboardRefreshPlan.make(trigger: trigger, context: context)
         for action in plan.actions {
             switch action {
+            case .refreshLightSummary:
+                usageStore.refreshLightSummary()
             case .refreshUsage:
                 usageStore.refresh()
                 synchronizeSourceTransition()

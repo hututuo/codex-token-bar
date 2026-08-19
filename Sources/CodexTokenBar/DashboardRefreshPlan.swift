@@ -29,6 +29,7 @@ enum DashboardRefreshTrigger: Equatable {
 }
 
 enum DashboardRefreshAction: Equatable {
+    case refreshLightSummary
     case refreshUsage
     case refreshQuota(force: Bool)
     case refreshRadar
@@ -104,8 +105,8 @@ struct DashboardRefreshPlan: Equatable {
             }
             return DashboardRefreshPlan(trigger: trigger, actions: actions)
         case .systemWake:
-            var actions: [DashboardRefreshAction] = []
-            if context.dashboardVisible || context.usageStale {
+            var actions: [DashboardRefreshAction] = [.refreshLightSummary]
+            if context.usageStale {
                 actions.append(.refreshUsage)
             }
             actions.append(.refreshQuota(force: true))

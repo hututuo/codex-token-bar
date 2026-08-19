@@ -76,6 +76,7 @@ export function useDashboardActions({
     applyManualDashboardRefresh({
       providerRepairVisible,
       dispatchers: {
+        refreshLightSummary: () => {},
         refreshPreciseUsage: () => requestPreciseRefresh(true, "manual"),
         refreshQuota: () => {
           setForceNextQuotaLoad(true);
@@ -107,6 +108,7 @@ export function useDashboardActions({
   const reloadQuota = useCallback(() => {
     const plan = makeDashboardRefreshPlan("quotaRetry", { providerVisible: false });
     applyDashboardRefreshPlan(plan, {
+      refreshLightSummary: () => {},
       refreshPreciseUsage: () => {},
       refreshQuota: () => {
         setForceNextQuotaLoad(true);
