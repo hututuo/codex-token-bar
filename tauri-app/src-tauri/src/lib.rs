@@ -21,7 +21,7 @@ pub fn run() {
     }
     core::startup_trace::begin("primary process start");
 
-    let run_result = tauri::Builder::default()
+    let app_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
@@ -194,7 +194,27 @@ pub fn run() {
             commands::session_management::delete_session_threads,
             commands::session_management::create_session_recovery_archives,
         ])
-        .run(tauri::generate_context!());
+        .build(tauri::generate_context!());
+    let run_result = app_result.map(|app| {
+        app.run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                if let Err(error) =
+                    platform::handle_application_reopen(app, has_visible_windows)
+                {
+                    core::startup_trace::mark(&format!(
+                        "dashboard reopen failed: {error}"
+                    ));
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
+    });
     if let Err(error) = run_result {
         platform::report_startup_failure(&format!(
             "Codex Token Bar 运行时启动失败：{error}\n\n请检查 WebView2 Runtime、显卡驱动和应用数据目录权限。"

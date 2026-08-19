@@ -55,3 +55,17 @@ test("status tray left click toggles status panel while its menu opens dashboard
   );
   assert.match(surfaces, /app\.exit\(0\)/);
 });
+
+test("macOS Dock reopen is wired to recreate the dashboard after all windows close", async () => {
+  const lib = await readFile(new URL("../../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const surfaces = await readFile(new URL("../../src-tauri/src/platform/surfaces.rs", import.meta.url), "utf8");
+
+  assert.match(lib, /\.build\(tauri::generate_context!\(\)\)/);
+  assert.match(lib, /app\.run\(\|app, event\|/);
+  assert.match(lib, /tauri::RunEvent::Reopen/);
+  assert.match(lib, /platform::handle_application_reopen\(app, has_visible_windows\)/);
+  assert.match(
+    surfaces,
+    /fn perform_application_reopen[\s\S]*?if has_visible_windows[\s\S]*?show_dashboard\(\)/,
+  );
+});
