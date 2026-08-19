@@ -6496,6 +6496,134 @@ fn cache_usage_keeps_latest_candidates_beyond_low_hit_cutoff() {
 }
 
 #[test]
+fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_derived_rows() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019esub1000-latest-0000-0000-000000000001";
+    let first_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(2))
+        .format(&Rfc3339)
+        .unwrap();
+    let second_timestamp = (OffsetDateTime::now_utc() - time::Duration::minutes(1))
+        .format(&Rfc3339)
+        .unwrap();
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[
+            format!(
+                r#"{{"timestamp":"{first_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":400,"cached_input_tokens":200,"output_tokens":50,"total_tokens":450}}}}}}}}"#
+            ),
+            format!(
+                r#"{{"timestamp":"{second_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":400,"cached_input_tokens":200,"output_tokens":50,"total_tokens":450}}}}}}}}"#
+            ),
+        ],
+    );
+
+    let first = dashboard_snapshot(&root).unwrap();
+    let session = first
+        .cache_usage
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .expect("latest session with sub-1000 input must be visible");
+    assert_eq!(session.breakdown.calls, 2);
+    assert_eq!(session.breakdown.input_tokens, 800);
+    assert_eq!(
+        first
+            .cache_usage
+            .turns
+            .iter()
+            .filter(|turn| turn.session_id == session_id)
+            .count(),
+        2,
+        "latest turns with sub-1000 input must be visible"
+    );
+    assert!(first
+        .cache_usage
+        .turns
+        .iter()
+        .filter(|turn| turn.session_id == session_id)
+        .all(|turn| turn.breakdown.input_tokens < 1_000));
+    assert!(
+        first.cache_hit_ranking.is_empty(),
+        "low-hit ranking must retain the 1000-input cutoff"
+    );
+
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let event_count_before = connection
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_turn_candidates", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+    connection
+        .execute("DELETE FROM dashboard_turn_candidates", [])
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '3' WHERE key = 'dashboard_aggregate_schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    reset_dashboard_aggregate_build_count_for_testing();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let upgraded = dashboard_snapshot(&root).unwrap();
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert!(upgraded
+        .cache_usage
+        .sessions
+        .iter()
+        .any(|session| session.id == session_id));
+    assert_eq!(
+        upgraded
+            .cache_usage
+            .turns
+            .iter()
+            .filter(|turn| turn.session_id == session_id)
+            .count(),
+        2
+    );
+    assert!(upgraded.cache_hit_ranking.is_empty());
+
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        event_count_before
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_turn_candidates", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'dashboard_aggregate_schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "4"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_snapshot_reuses_cached_aggregate_when_session_signatures_are_unchanged() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

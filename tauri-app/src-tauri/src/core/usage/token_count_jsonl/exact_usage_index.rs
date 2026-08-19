@@ -97,7 +97,10 @@ const DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY: &str =
     "dashboard_aggregate_published_generation";
 const DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY: &str = "dashboard_aggregate_settled_through";
 const DASHBOARD_AGGREGATE_PRICING_REVISION_KEY: &str = "dashboard_aggregate_pricing_revision";
-const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 3;
+// Keep every token turn in the derived candidate table so the latest-first
+// cache ranking can include small requests; low-hit queries apply the 1000
+// input-token cutoff at read time.
+const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 4;
 const DASHBOARD_AGGREGATE_PRICING_REVISION: &str = "raw-token-v1";
 
 fn is_known_dashboard_pricing_revision(value: &str) -> bool {
@@ -3118,9 +3121,11 @@ impl ExactUsageIndex {
                 CASE WHEN input_tokens > 0 THEN cached_tokens * 1.0 / input_tokens ELSE 0 END AS hit_rate,
                 input_tokens - cached_tokens AS uncached
             FROM dashboard_session_rows
-            WHERE calls > 0 AND input_tokens >= ?1 {turn_predicate}
+            WHERE calls > 0
+              AND (?1 = 1 OR input_tokens >= ?2)
+              {turn_predicate}
             {ordering}
-            LIMIT ?2
+            LIMIT ?3
             "#
         );
         let mut statement = self
@@ -3129,7 +3134,7 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法准备会话缓存候选：{error}"))?;
         let rows = statement
             .query_map(
-                params![CACHE_USAGE_MIN_INPUT_TOKENS, CACHE_USAGE_CANDIDATE_LIMIT],
+                params![latest_first, CACHE_USAGE_MIN_INPUT_TOKENS, CACHE_USAGE_CANDIDATE_LIMIT],
                 |row| {
                     Ok(SessionCacheUsage {
                         id: row.get(0)?,
@@ -3252,9 +3257,10 @@ impl ExactUsageIndex {
                     ),
                     0
                 )
-                  AND c.input_tokens >= ?1 {turn_predicate}
+                  AND (?1 = 1 OR c.input_tokens >= ?2)
+                  {turn_predicate}
                 {ordering}
-                LIMIT ?2
+                LIMIT ?3
             )
             SELECT
                 turn_rows.event_id,
@@ -3294,7 +3300,7 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法准备轮次缓存候选：{error}"))?;
         let rows = statement
             .query_map(
-                params![CACHE_USAGE_MIN_INPUT_TOKENS, CACHE_USAGE_CANDIDATE_LIMIT],
+                params![latest_first, CACHE_USAGE_MIN_INPUT_TOKENS, CACHE_USAGE_CANDIDATE_LIMIT],
                 |row| {
                     let event_id = row.get::<_, i64>(0)?;
                     let timestamp = row.get::<_, i64>(3)?;
@@ -5254,9 +5260,8 @@ fn rebuild_published_dashboard_aggregates(transaction: &Transaction<'_>) -> Resu
                 assistant_response_start, assistant_response_end,
                 turn_index, session_calls
             FROM ranked
-            WHERE input_tokens >= ?2
             "#,
-            params![published_generation, CACHE_USAGE_MIN_INPUT_TOKENS],
+            params![published_generation],
         )
         .map_err(|error| format!("无法从精确事件回填轮次候选聚合：{error}"))?;
     Ok(())
@@ -5448,9 +5453,8 @@ fn refresh_dashboard_turn_candidates_for_touched_sessions(
                 assistant_response_start, assistant_response_end,
                 turn_index, session_calls
             FROM ranked
-            WHERE input_tokens >= ?2
             "#,
-            params![generation, CACHE_USAGE_MIN_INPUT_TOKENS],
+            params![generation],
         )
         .map(|_| ())
         .map_err(|error| format!("无法更新受影响会话的轮次候选聚合：{error}"))
