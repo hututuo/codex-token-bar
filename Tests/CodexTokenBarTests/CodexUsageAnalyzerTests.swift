@@ -5040,9 +5040,24 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
             CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
             CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
-            let migrated = try analyzer.load()
+            let progress = PreciseIndexProgressProbe()
+            let migrated = try analyzer.load(
+                onNumericPhase: nil,
+                onProgress: { progress.append($0) }
+            )
             XCTAssertEqual(migrated.stats.totalTokens, 120)
             XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
+            let modelBackfill = progress.values.filter { $0.phase == .backfillingModel }
+            XCTAssertEqual(modelBackfill.first?.completed, 0)
+            XCTAssertEqual(modelBackfill.first?.total, 1)
+            XCTAssertEqual(modelBackfill.last?.completed, 1)
+            XCTAssertEqual(modelBackfill.last?.total, 1)
+            XCTAssertTrue(
+                modelBackfill.contains {
+                    $0.message.contains("可能需要几分钟")
+                        && $0.message.contains("原始数据不会丢失")
+                }
+            )
 
             let after = try XCTUnwrap(
                 database.readRows(
@@ -6683,6 +6698,23 @@ private final class DashboardSnapshotPhaseProbe: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return snapshots
+    }
+}
+
+private final class PreciseIndexProgressProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var progresses: [PreciseIndexProgress] = []
+
+    func append(_ progress: PreciseIndexProgress) {
+        lock.lock()
+        progresses.append(progress)
+        lock.unlock()
+    }
+
+    var values: [PreciseIndexProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return progresses
     }
 }
 
