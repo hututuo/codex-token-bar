@@ -85,6 +85,71 @@ test("DashboardHeader running thread states never turn loading into fake zero", 
   });
 });
 
+test("DashboardHeader renders phase labels, counts, reassurance, and explicit terminal states", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const upgrading = renderComponent(DashboardHeader, headerProps({
+      usageSummaryFresh: true,
+      preciseProgress: {
+        phase: "migrating",
+        message: "正在升级索引字段",
+        completed: 2,
+        total: 4,
+        fraction: 0.5,
+        startedAt: "2026-07-06T02:30:00.000Z",
+        updatedAt: "2026-07-06T02:30:10.000Z",
+      },
+    }));
+    assert.match(upgrading, /索引升级/);
+    assert.match(upgrading, /2\/4/);
+    assert.match(upgrading, /首次升级可能需要几分钟，原始数据不会丢失/);
+    assert.match(upgrading, /role="progressbar"/);
+
+    const model = renderComponent(DashboardHeader, headerProps({
+      preciseProgress: {
+        phase: "scanning",
+        message: "补齐 reasoning 字段",
+        completed: 3,
+        total: 8,
+        fraction: 0.375,
+        startedAt: "2026-07-06T02:30:00.000Z",
+        updatedAt: "2026-07-06T02:30:10.000Z",
+      },
+    }));
+    assert.match(model, /历史模型补齐/);
+    assert.match(model, /3\/8/);
+
+    const complete = renderComponent(DashboardHeader, headerProps({
+      preciseProgress: {
+        phase: "complete",
+        message: "精确统计已更新",
+        completed: 1,
+        total: 1,
+        fraction: 1,
+        startedAt: "2026-07-06T02:30:00.000Z",
+        updatedAt: "2026-07-06T02:30:10.000Z",
+      },
+    }));
+    assert.match(complete, /已就绪/);
+    assert.doesNotMatch(complete, /首次升级可能需要几分钟/);
+    assert.doesNotMatch(complete, /role="progressbar"/);
+
+    const failed = renderComponent(DashboardHeader, headerProps({
+      preciseProgress: {
+        phase: "failed",
+        message: "保留上次可信数据",
+        completed: 1,
+        total: 4,
+        fraction: 0.25,
+        startedAt: "2026-07-06T02:30:00.000Z",
+        updatedAt: "2026-07-06T02:30:10.000Z",
+      },
+    }));
+    assert.match(failed, /失败/);
+    assert.match(failed, /1\/4/);
+  });
+});
+
 function headerProps(overrides = {}) {
   return {
     account: {

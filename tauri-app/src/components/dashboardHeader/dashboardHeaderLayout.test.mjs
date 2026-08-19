@@ -21,4 +21,7 @@ test("DashboardHeader CSS keeps a compact top band and a wrapping status strip",
   assert.match(css, /\.dash-head__menu\s*\{[^}]*position:\s*absolute/s);
   assert.match(css, /\.dash-head__menu\s*\{[^}]*z-index:\s*42/s);
   assert.match(css, /\.dash-head__platform > small\s*\{[^}]*display:\s*flex/s);
+  assert.match(css, /\.dash-head__freshness\.is-historyModelBackfill \.precise-progress-dot/s);
+  assert.match(css, /\.dash-head__freshness\.is-reconciliation \.precise-progress-dot/s);
+  assert.match(css, /\.precise-progress-hint\s*\{[^}]*text-overflow:\s*ellipsis/s);
 });

@@ -898,7 +898,10 @@ button {
 .dash-head__freshness.is-migrating,
 .dash-head__freshness.is-scanning,
 .dash-head__freshness.is-backfillingModel,
-.dash-head__freshness.is-publishing {
+.dash-head__freshness.is-historyModelBackfill,
+.dash-head__freshness.is-reconciliation,
+.dash-head__freshness.is-publishing,
+.dash-head__freshness.is-failed {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   grid-template-rows: auto auto;
@@ -917,12 +920,35 @@ button {
   background: #e28a1b;
 }
 
-.dash-head__freshness.is-backfillingModel .precise-progress-dot {
+.dash-head__freshness.is-backfillingModel .precise-progress-dot,
+.dash-head__freshness.is-historyModelBackfill .precise-progress-dot {
   background: #8a55d9;
+}
+
+.dash-head__freshness.is-reconciliation .precise-progress-dot {
+  background: #e28a1b;
 }
 
 .dash-head__freshness.is-publishing .precise-progress-dot {
   background: #159b96;
+}
+
+.dash-head__freshness.is-failed .precise-progress-dot {
+  background: var(--danger, #d64545);
+}
+
+.dash-head__freshness.is-failed strong {
+  color: var(--danger, #d64545);
+}
+
+.precise-progress-hint {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .precise-progress-bar {

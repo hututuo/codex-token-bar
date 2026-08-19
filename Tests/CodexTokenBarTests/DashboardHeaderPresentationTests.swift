@@ -97,6 +97,127 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertFalse(current.needsAttention)
     }
 
+    func testPreciseProgressPresentationKeepsBackendFactsAndSeparatesStages() {
+        let migration = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .migrating,
+                message: "正在升级索引字段",
+                completed: 2,
+                total: 4
+            )
+        )
+        XCTAssertEqual(migration.stage, .structureUpgrade)
+        XCTAssertEqual(migration.countText, "2/4")
+        XCTAssertTrue(migration.showsProgress)
+        XCTAssertTrue(migration.showsReassurance)
+        XCTAssertTrue(migration.text.contains("正在升级索引字段"))
+
+        let attributionLedger = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .migrating,
+                message: "正在回填归因账本",
+                completed: 1,
+                total: 4
+            )
+        )
+        XCTAssertEqual(attributionLedger.stage, .structureUpgrade)
+
+        let modelBackfill = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .migrating,
+                message: "backfill historical model + reasoning",
+                completed: 3,
+                total: 8
+            )
+        )
+        XCTAssertEqual(modelBackfill.stage, .historyModelBackfill)
+        XCTAssertEqual(modelBackfill.countText, "3/8")
+
+        let routineScan = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .scanning,
+                message: "正在扫描精确历史",
+                completed: 5,
+                total: 12
+            )
+        )
+        XCTAssertEqual(routineScan.stage, .scanning)
+        XCTAssertFalse(routineScan.text.contains("索引升级"))
+        XCTAssertFalse(routineScan.text.contains("历史模型补齐"))
+
+        let reconciliation = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .waiting,
+                message: "等待单文件 reconciliation",
+                completed: 0,
+                total: nil
+            )
+        )
+        XCTAssertEqual(reconciliation.stage, .reconciliation)
+        XCTAssertTrue(reconciliation.showsProgress)
+
+        let publishing = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .publishing,
+                message: "正在发布精确索引",
+                completed: 1,
+                total: 1
+            )
+        )
+        XCTAssertEqual(publishing.stage, .publishing)
+        XCTAssertEqual(publishing.countText, "1/1")
+
+        let complete = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .complete,
+                message: "精确统计已更新",
+                completed: 1,
+                total: 1
+            )
+        )
+        XCTAssertEqual(complete.text, "已就绪")
+        XCTAssertFalse(complete.showsReassurance)
+        XCTAssertFalse(complete.needsAttention)
+        XCTAssertTrue(complete.isReady)
+
+        let failed = DashboardHeaderProgressPresentation(
+            progress: PreciseIndexProgress(
+                phase: .failed,
+                message: "保留上次可信数据",
+                completed: 1,
+                total: 4
+            )
+        )
+        XCTAssertTrue(failed.text.contains("失败"))
+        XCTAssertTrue(failed.needsAttention)
+        XCTAssertFalse(failed.isReady)
+        XCTAssertEqual(failed.countText, "1/4")
+    }
+
+    func testHeaderFreshnessShowsReadyOnlyAfterCompleteProgress() {
+        let generatedAt = Date(timeIntervalSince1970: 1_720_000_000)
+        let idle = DashboardHeaderFreshnessPresentation(
+            status: "读取完成",
+            isRefreshing: false,
+            generatedAt: generatedAt,
+            progress: .idle
+        )
+        XCTAssertFalse(idle.text.contains("已就绪"))
+
+        let complete = DashboardHeaderFreshnessPresentation(
+            status: "读取完成",
+            isRefreshing: false,
+            generatedAt: generatedAt,
+            progress: PreciseIndexProgress(
+                phase: .complete,
+                message: "精确统计已更新",
+                completed: 1,
+                total: 1
+            )
+        )
+        XCTAssertEqual(complete.text, "已就绪")
+    }
+
     func testHeaderExposesIndependentSessionEnhancementAndAutoResumeEntries() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -73,6 +73,143 @@ enum DashboardHeaderContextLayout {
     static let badgeSpacing: CGFloat = 5
 }
 
+/// The progress stream is intentionally kept as the sole source of truth for
+/// the header. This presentation layer only gives the raw phases a stable,
+/// human-readable label; it never estimates duration or invents work.
+enum DashboardHeaderProgressStage: Equatable {
+    case idle
+    case structureUpgrade
+    case historyModelBackfill
+    case reconciliation
+    case waiting
+    case preparing
+    case scanning
+    case publishing
+    case complete
+    case failed
+
+    var title: String {
+        switch self {
+        case .idle: return "等待精确统计"
+        case .structureUpgrade: return "索引升级"
+        case .historyModelBackfill: return "历史模型补齐"
+        case .reconciliation: return "单文件对账"
+        case .waiting: return "等待精确统计"
+        case .preparing: return "准备精确统计"
+        case .scanning: return "扫描历史"
+        case .publishing: return "发布精确统计"
+        case .complete: return "已就绪"
+        case .failed: return "失败"
+        }
+    }
+
+    var isVisible: Bool { self != .idle }
+
+    var showsProgress: Bool {
+        switch self {
+        case .structureUpgrade, .historyModelBackfill, .reconciliation, .waiting,
+             .preparing, .scanning, .publishing:
+            return true
+        case .idle, .complete, .failed:
+            return false
+        }
+    }
+
+    private static func messageContainsAny(_ message: String, _ terms: [String]) -> Bool {
+        let normalized = message.lowercased()
+        return terms.contains { normalized.contains($0) }
+    }
+
+    static func resolve(_ progress: PreciseIndexProgress) -> Self {
+        let message = progress.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch progress.phase {
+        case .idle:
+            return .idle
+        case .complete:
+            return .complete
+        case .failed:
+            return .failed
+        case .backfillingModel:
+            return .historyModelBackfill
+        case .migrating:
+            // Tauri versions have emitted both `model` and `reasoning` in the
+            // migration detail. Keep that wording compatible with Swift's
+            // explicit backfillingModel phase.
+            return messageContainsAny(
+                message,
+                ["model", "reasoning", "模型"]
+            ) ? .historyModelBackfill : .structureUpgrade
+        case .waiting:
+            return messageContainsAny(
+                message,
+                ["reconcil", "对账", "单文件", "单个文件"]
+            ) ? .reconciliation : .waiting
+        case .preparing:
+            return messageContainsAny(
+                message,
+                ["model", "reasoning", "模型"]
+            ) ? .historyModelBackfill : .preparing
+        case .scanning:
+            if messageContainsAny(message, ["reconcil", "对账", "单文件", "单个文件"]) {
+                return .reconciliation
+            }
+            return messageContainsAny(
+                message,
+                ["model", "reasoning", "模型"]
+            ) ? .historyModelBackfill : .scanning
+        case .publishing:
+            return .publishing
+        }
+    }
+}
+
+struct DashboardHeaderProgressPresentation: Equatable {
+    static let reassurance = "首次升级可能需要几分钟，原始数据不会丢失"
+
+    let stage: DashboardHeaderProgressStage
+    let text: String
+    let countText: String?
+    let fraction: Double?
+    let showsProgress: Bool
+    let showsReassurance: Bool
+    let needsAttention: Bool
+    let isReady: Bool
+
+    init(progress: PreciseIndexProgress) {
+        let stage = DashboardHeaderProgressStage.resolve(progress)
+        let rawMessage = progress.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.stage = stage
+        switch stage {
+        case .idle:
+            text = rawMessage.isEmpty ? stage.title : rawMessage
+        case .complete:
+            text = stage.title
+        case .failed:
+            if rawMessage.isEmpty {
+                text = "失败：精确统计失败"
+            } else if rawMessage.contains("失败") {
+                text = rawMessage
+            } else {
+                text = "失败：\(rawMessage)"
+            }
+        default:
+            if rawMessage.isEmpty {
+                text = stage.title
+            } else if rawMessage.contains(stage.title) {
+                text = rawMessage
+            } else {
+                text = "\(stage.title)：\(rawMessage)"
+            }
+        }
+        countText = progress.total.map { "\(progress.completed)/\($0)" }
+        fraction = progress.fraction
+        showsProgress = stage.showsProgress
+        showsReassurance = stage.isVisible && stage != .complete
+        needsAttention = stage == .failed
+        isReady = stage == .complete
+    }
+}
+
 struct DashboardHeaderFreshnessPresentation: Equatable {
     let text: String
     let needsAttention: Bool
@@ -86,11 +223,12 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
         aggregateCoveredAt: Date? = nil,
         progress: PreciseIndexProgress = .idle
     ) {
-        if progress.isActive {
-            text = progress.message
-            needsAttention = progress.phase == .failed
-            showsProgress = true
-            progressFraction = progress.fraction
+        let progressPresentation = DashboardHeaderProgressPresentation(progress: progress)
+        if progressPresentation.stage.isVisible {
+            text = progressPresentation.text
+            needsAttention = progressPresentation.needsAttention
+            showsProgress = progressPresentation.showsProgress
+            progressFraction = progressPresentation.fraction
             return
         }
         if isRefreshing {
@@ -243,6 +381,10 @@ struct HeaderView: View {
         )
     }
 
+    private var progressPresentation: DashboardHeaderProgressPresentation {
+        DashboardHeaderProgressPresentation(progress: preciseIndexProgress)
+    }
+
     private var runningThreadPresentation: RunningThreadPresentation {
         RunningThreadPresentation(summary: runningThreadSummary)
     }
@@ -259,10 +401,10 @@ struct HeaderView: View {
     }
 
     private var preciseProgressColor: Color {
-        switch preciseIndexProgress.phase {
-        case .waiting, .migrating:
+        switch progressPresentation.stage {
+        case .waiting, .structureUpgrade:
             return .orange
-        case .backfillingModel:
+        case .historyModelBackfill:
             return .purple
         case .publishing:
             return .teal
@@ -270,6 +412,8 @@ struct HeaderView: View {
             return AppTheme.accentBlue
         case .failed:
             return AppTheme.accentRed
+        case .reconciliation:
+            return .orange
         case .idle, .complete:
             return headerPrecisionColor
         }
@@ -392,12 +536,29 @@ struct HeaderView: View {
                             Circle()
                                 .fill(preciseProgressColor)
                                 .frame(width: 6, height: 6)
-                            Text(headerPrecisionLabel)
-                                .foregroundStyle(headerPrecisionColor)
-                            Text(freshnessPresentation.text)
-                                .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 4) {
+                                    Text(headerPrecisionLabel)
+                                        .foregroundStyle(headerPrecisionColor)
+                                    Text(freshnessPresentation.text)
+                                        .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if let countText = progressPresentation.countText,
+                                       progressPresentation.stage.isVisible {
+                                        Text(countText)
+                                            .foregroundStyle(.secondary)
+                                            .monospacedDigit()
+                                    }
+                                }
+                                if progressPresentation.showsReassurance {
+                                    Text(DashboardHeaderProgressPresentation.reassurance)
+                                        .font(.system(size: 9, weight: .regular))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
+                            }
                             if freshnessPresentation.showsProgress {
                                 if let fraction = freshnessPresentation.progressFraction {
                                     ProgressView(value: fraction)
@@ -412,6 +573,16 @@ struct HeaderView: View {
                         }
                         .font(.system(size: 11, weight: .medium))
                         .padding(.horizontal, 10)
+                        .help(
+                            progressPresentation.showsReassurance
+                                ? DashboardHeaderProgressPresentation.reassurance
+                                : freshnessPresentation.text
+                        )
+                        .accessibilityValue(
+                            progressPresentation.countText.map {
+                                "\(freshnessPresentation.text)，\($0)"
+                            } ?? freshnessPresentation.text
+                        )
                     }
                     .padding(4)
                     .background(

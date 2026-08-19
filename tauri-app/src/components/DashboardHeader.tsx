@@ -11,6 +11,10 @@ import {
   resolveAccountDisplayName,
   shouldCommitDisplayNameOnKey,
 } from "./dashboardHeader/model";
+import {
+  PRECISE_PROGRESS_REASSURANCE,
+  presentDashboardHeaderProgress,
+} from "./dashboardHeader/progress";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
@@ -129,13 +133,12 @@ export function DashboardHeader({
         hour: "2-digit",
         minute: "2-digit",
       }).format(new Date(aggregateCoveredAt));
-  // Once the lightweight summary is current, do not let a slower chart/index
-  // owner make the primary status look unpublished. The chart timestamp below
-  // remains visible independently, while migration/scanning progress is still
-  // shown when the light summary has not published yet.
-  const activeProgress = preciseProgress && usageSummaryFresh !== true
-    && !["idle", "complete"].includes(preciseProgress.phase)
-    ? preciseProgress
+  // The progress endpoint is the source of truth for the index owner. Keep it
+  // visible even after the lightweight summary publishes so migration/model
+  // backfill cannot be mistaken for a finished read.
+  const progressPresentation = presentDashboardHeaderProgress(preciseProgress);
+  const activeProgress = progressPresentation?.isVisible
+    ? progressPresentation
     : null;
   // `refreshing` includes the slower chart/index owner. Only the explicit
   // light-summary state may replace the published summary timestamp.
@@ -228,26 +231,29 @@ export function DashboardHeader({
             <small>运行线程</small>
             <strong>{runningThreadHeaderText(runningThreads)}</strong>
           </span>
-          <span className={`dash-head__freshness${activeProgress ? ` is-${activeProgress.phase}` : ""}`}>
-            <small>本地统计</small>
+          <span className={`dash-head__freshness${activeProgress ? ` is-${activeProgress.stage}` : ""}`}>
+            <small>{activeProgress?.phaseLabel ?? "本地统计"}</small>
             <strong>
               <i aria-hidden="true" className="precise-progress-dot" />
               {activeProgress
-                ? activeProgress.message
+                ? activeProgress.text
                 : lightSummarySyncing
                   ? `摘要更新于 ${updatedLabel}`
                   : aggregateTimeLabel === null
                     ? `更新于 ${updatedLabel}`
                     : `摘要 ${updatedLabel} · 图表至 ${aggregateTimeLabel}`}
-              {activeProgress?.total != null ? ` ${activeProgress.completed}/${activeProgress.total}` : ""}
+              {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
             </strong>
-            {activeProgress ? (
+            {activeProgress?.showsReassurance ? (
+              <small className="precise-progress-hint">{PRECISE_PROGRESS_REASSURANCE}</small>
+            ) : null}
+            {activeProgress?.showsProgress ? (
               <span
-                aria-label={activeProgress.total == null ? activeProgress.message : `${activeProgress.completed}/${activeProgress.total}`}
-                aria-valuemax={activeProgress.total ?? undefined}
-                aria-valuemin={activeProgress.total == null ? undefined : 0}
-                aria-valuenow={activeProgress.total == null ? undefined : activeProgress.completed}
-                className={`precise-progress-bar${activeProgress.total == null ? " is-indeterminate" : ""}`}
+                aria-label={activeProgress.countLabel ?? activeProgress.text}
+                aria-valuemax={preciseProgress?.total ?? undefined}
+                aria-valuemin={preciseProgress?.total == null ? undefined : 0}
+                aria-valuenow={preciseProgress?.total == null ? undefined : preciseProgress.completed}
+                className={`precise-progress-bar${activeProgress.fraction == null ? " is-indeterminate" : ""}`}
                 role="progressbar"
               >
                 <span style={{ width: `${Math.round((activeProgress.fraction ?? 0) * 100)}%` }} />
