@@ -77,6 +77,12 @@ extension CodexUsageAnalyzer {
             recentStart
         }
 
+        var aggregateReadStart: Date? {
+            [dailyStart, recentStart, hourlyStart]
+                .compactMap { $0 }
+                .min()
+        }
+
         var attributionCoverageEnd: Date? {
             recentStart?.addingTimeInterval(
                 Double(Self.recentBinCount) * Self.recentBinInterval
@@ -258,7 +264,9 @@ extension CodexUsageAnalyzer {
                 cacheHourlyByStart[hour, default: TokenCacheAccumulator()].add(breakdown)
             }
 
-            if start <= now {
+            if let dailyStart,
+               start >= dailyStart,
+               start <= now {
                 let cacheDay = calendar.startOfDay(for: start)
                 cacheDailyByDate[cacheDay, default: TokenCacheAccumulator()].add(breakdown)
             }

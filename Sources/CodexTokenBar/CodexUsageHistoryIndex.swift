@@ -242,9 +242,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private struct FullRebuildJob {
+        enum Reason {
+            case sourceChange
+            case eventEnrichment
+        }
+
         let file: URL
         let sessionID: String
         let observedSignature: SourceSignature
+        let reason: Reason
     }
 
     private struct StagedFullRebuild {
@@ -311,13 +317,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         case unresolved
     }
 
-    private static let schemaVersion = "5"
-    private static let inPlaceSchemaVersions: Set<String> = ["2", "3", "4", "5"]
+    private static let schemaVersion = "6"
+    private static let inPlaceSchemaVersions: Set<String> = ["2", "3", "4", "5", "6"]
     private static let forkReplayBoundaryRevision = "explicit-subagent-delayed-context-v3"
     /// Bump whenever event parsing or source-bucket identity semantics change.
     /// Existing attribution ledgers then fail closed instead of reconciling
     /// contributions produced by incompatible parsers.
     private static let attributionProvenanceRevision = "source-bucket-v4-fork-replay-boundary-v2"
+    /// Only revisions that were actually emitted by released/known builds may
+    /// be upgraded in place.  Treat every other non-empty value as a future
+    /// contract and fail before touching the ledger or its revision marker.
+    private static let knownLegacyAttributionProvenanceRevisions: Set<String> = [
+        "legacy-ledger-v1",
+        "source-bucket-v2-incremental-parser-v1",
+        "source-bucket-v3-model-aware-parser-v1",
+    ]
+    private static let eventEnrichmentRevisionKey = "event_enrichment_revision"
+    private static let eventEnrichmentRevision = "model-v1"
     private static let dashboardAggregateSchemaVersion = "3"
     private static let dashboardAggregatePricingRevision = "raw-token-v1"
     private static let knownDashboardAggregatePricingRevisions: Set<String> = [
@@ -473,11 +489,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     func attributionState() throws -> AttributionState {
-        try withExclusiveAccess {
-            try driver.withConnection { connection in
-                try configure(connection)
-                return try currentAttributionState(connection: connection)
-            }
+        try driver.withConnection { connection in
+            try configure(connection)
+            return try currentAttributionState(connection: connection)
         }
     }
 
@@ -516,11 +530,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     func sessionCatalogEntries() throws -> [SessionCatalogEntry] {
-        try withExclusiveAccess {
-            try readSessionCatalogEntriesExclusively()
-                .map(\.entry)
-                .sorted { $0.path < $1.path }
-        }
+        try readSessionCatalogEntriesExclusively()
+            .map(\.entry)
+            .sorted { $0.path < $1.path }
     }
 
     func synchronizeSessionCatalog(
@@ -879,6 +891,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         var sourceMutationDetected = false
         var dirtyTurnCandidateSessions = Set<String>()
+        var eventEnrichmentTotal = 0
 
         onProgress?(
             0,
@@ -889,12 +902,45 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try driver.withConnection { connection in
             try configure(connection)
             let indexedSources = try indexedSources(connection: connection)
+            let enrichmentPendingSourceIDs = try eventEnrichmentPendingSourceIDs(
+                connection: connection
+            )
+            eventEnrichmentTotal = enrichmentPendingSourceIDs.count
 
             for file in canonicalFiles {
                 try autoreleasepool {
                     let path = file.path
                     let existing = indexedSources[path]
                     let observedMetadata = try sourceSignatureMetadata(for: file)
+                    if let existing,
+                       enrichmentPendingSourceIDs.contains(existing.id) {
+                        let observed = try sourceSignature(
+                            metadata: observedMetadata,
+                            for: file
+                        )
+                        let isStablePublishedPrefix = observed.deviceID
+                                == existing.signature.deviceID
+                            && observed.inode == existing.signature.inode
+                            && observed.size >= existing.signature.size
+                        if !isStablePublishedPrefix {
+                            rewrittenFiles += 1
+                        }
+                        dirtyTurnCandidateSessions.insert(existing.sessionID)
+                        dirtyTurnCandidateSessions.insert(sessionID(file))
+                        fullRebuildJobs.append(
+                            FullRebuildJob(
+                                file: file,
+                                sessionID: sessionID(file),
+                                observedSignature: isStablePublishedPrefix
+                                    ? existing.signature
+                                    : observed,
+                                reason: isStablePublishedPrefix
+                                    ? .eventEnrichment
+                                    : .sourceChange
+                            )
+                        )
+                        return
+                    }
                     if let existing,
                        isTrustedContentProbe(existing.signature.contentProbe),
                        sourceMetadataMatches(existing.signature, observedMetadata) {
@@ -936,7 +982,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             FullRebuildJob(
                                 file: file,
                                 sessionID: parsedSessionID,
-                                observedSignature: observed
+                                observedSignature: observed,
+                                reason: .sourceChange
                             )
                         )
                     }
@@ -949,11 +996,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
         }
 
-        onProgress?(canonicalFiles.count, canonicalFiles.count, .publishing)
+        if eventEnrichmentTotal > 0 {
+            onProgress?(0, eventEnrichmentTotal, .backfillingModel)
+        } else {
+            onProgress?(canonicalFiles.count, canonicalFiles.count, .publishing)
+        }
         let stagedRebuilds = try stageFullRebuilds(
             fullRebuildJobs,
-            parser: parser
-        )
+            parser: parser,
+            eventEnrichmentTotal: eventEnrichmentTotal
+        ) { completed, total in
+            onProgress?(completed, total, .backfillingModel)
+        }
         if Self.stagingTestState.consumeFailure() {
             throw SQLiteDatabaseError(
                 operation: "Injected exact usage staging interruption",
@@ -967,6 +1021,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var provenanceRotated = false
         let finalAttributionState = try driver.withConnection { connection in
             try configure(connection)
+            for staged in stagedRebuilds where staged.job.reason == .eventEnrichment {
+                guard let source = try indexedSource(
+                    path: staged.job.file.path,
+                    connection: connection
+                ) else {
+                    rewrittenFiles += 1
+                    continue
+                }
+                let matches = try stagedEventsMatchPublishedSource(
+                    staged,
+                    sourceID: source.id,
+                    connection: connection
+                )
+                if !matches {
+                    // The current parser disagrees with the old published
+                    // event identity or numeric payload. Treat this as the
+                    // planned single-file reconciliation, never as a reason
+                    // to rebuild unrelated sources.
+                    rewrittenFiles += 1
+                }
+            }
             for staged in stagedRebuilds {
                 let resolution = try lineageReplacement(
                     for: staged,
@@ -1043,31 +1118,32 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let removedSourceIDs = currentSources
                     .filter { !observedPaths.contains($0.path) }
                     .map(\.id)
+                let currentSessionBySourceID = Dictionary(
+                    uniqueKeysWithValues: currentSources.compactMap { source in
+                        source.sessionID.map { (source.id, $0) }
+                    }
+                )
                 removedFiles = removedSourceIDs.count
                 sourceMutationDetected = sourceMutationDetected
                     || !removedSourceIDs.isEmpty
-                var removedDashboardBounds: ClosedRange<Int64>?
+                var removedDashboardBuckets = Set<Int64>()
                 for sourceID in removedSourceIDs {
-                    if let removedSessionID = currentSources
-                        .first(where: { $0.id == sourceID })?
-                        .sessionID {
+                    if let removedSessionID = currentSessionBySourceID[sourceID] {
                         dirtyTurnCandidateSessions.insert(removedSessionID)
                     }
-                    removedDashboardBounds = mergedDashboardBucketBounds(
-                        removedDashboardBounds,
-                        try dashboardBucketBounds(
-                            sourceID: sourceID,
-                            connection: transaction
-                        )
-                    )
+                    let sourceBuckets = try transaction.readRows(
+                        "SELECT bucket_start FROM dashboard_source_5m WHERE source_id = ?;",
+                        bindings: [.int64(sourceID)]
+                    ) { $0.int64(0) }.compactMap { $0 }
+                    removedDashboardBuckets.formUnion(sourceBuckets)
                     try transaction.execute(
                         "DELETE FROM sources WHERE source_id = ?;",
                         bindings: [.int64(sourceID)]
                     )
                 }
-                if let removedDashboardBounds {
+                for bucket in removedDashboardBuckets.sorted() {
                     try refreshDashboardFiveMinuteAggregates(
-                        affectedBuckets: removedDashboardBounds,
+                        affectedBuckets: bucket...bucket,
                         connection: transaction
                     )
                 }
@@ -1103,6 +1179,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     """,
                     bindings: [.text(String(publishedGeneration))]
                 )
+                _ = try finalizeEventEnrichmentIfComplete(
+                    connection: transaction
+                )
                 if unsafeEpisodeBegan {
                     try markAttributionUnsafe(
                         provenanceEpoch: current.provenanceEpoch,
@@ -1114,7 +1193,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
         }
         removeStagingDirectory()
-        onProgress?(1, 1, .publishing)
+        if eventEnrichmentTotal > 0 {
+            onProgress?(eventEnrichmentTotal, eventEnrichmentTotal, .publishing)
+        } else {
+            onProgress?(1, 1, .publishing)
+        }
 
         return SynchronizationResult(
             changedFiles: changedFiles,
@@ -1144,20 +1227,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         from start: Date,
         before end: Date
     ) throws -> [TokenCacheAttributionEvent] {
-        try withExclusiveAccess {
-            try driver.withConnection { connection in
-                try configure(connection)
-                return try connection.transaction { transaction in
-                    let current = try currentAttributionState(connection: transaction)
-                    guard current.provenanceEpoch == provenanceEpoch else {
-                        throw SQLiteDatabaseError(
-                            operation: "Read exact usage attribution ledger",
-                            code: SQLITE_ABORT,
-                            message: "Requested provenance epoch was superseded",
-                            path: driver.url.path
-                        )
-                    }
-                    return try transaction.readRows(
+        try driver.withConnection { connection in
+            try configure(connection)
+            let current = try currentAttributionState(connection: connection)
+            guard current.provenanceEpoch == provenanceEpoch else {
+                throw SQLiteDatabaseError(
+                    operation: "Read exact usage attribution ledger",
+                    code: SQLITE_ABORT,
+                    message: "Requested provenance epoch was superseded",
+                    path: driver.url.path
+                )
+            }
+            return try connection.readRows(
                         """
                         SELECT
                             source_lineage,
@@ -1207,28 +1288,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             )
                         )
                     }
-                    .compactMap { $0 }
-                }
-            }
+            .compactMap { $0 }
         }
     }
 
     // 决策口径：紧凑 surface 刷新只跑轻量聚合 SQL（累计 token、今日 token、
     // 今日调用数、今日逐模型用量），不得顺带构建时间序列/排行/摘录。
-    func compactTotals(todayStart: Date) throws -> CompactTotals {
-        try withExclusiveAccess {
-            try driver.withConnection { connection in
+    func compactTotals(todayStart: Date, before tomorrowStart: Date) throws -> CompactTotals {
+        try driver.withConnection { connection in
                 let total = try connection.readRows(
                     "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_source_totals;"
                 ) { row in row.int(0) ?? 0 }.first ?? 0
                 let start = todayStart.timeIntervalSince1970
+                let end = tomorrowStart.timeIntervalSince1970
                 let todayTokens = try connection.readRows(
-                    "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_5m WHERE bucket_start >= ?;",
-                    bindings: [.int64(Int64(start))]
+                    "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_5m WHERE bucket_start >= ? AND bucket_start < ?;",
+                    bindings: [.int64(Int64(start)), .int64(Int64(end))]
                 ) { row in row.int(0) ?? 0 }.first ?? 0
                 let todayCalls = try connection.readRows(
-                    "SELECT COALESCE(SUM(calls), 0) FROM dashboard_5m WHERE bucket_start >= ?;",
-                    bindings: [.int64(Int64(start))]
+                    "SELECT COALESCE(SUM(calls), 0) FROM dashboard_5m WHERE bucket_start >= ? AND bucket_start < ?;",
+                    bindings: [.int64(Int64(start)), .int64(Int64(end))]
                 ) { row in row.int(0) ?? 0 }.first ?? 0
                 let todayModelBreakdowns = try connection.readRows(
                     """
@@ -1242,10 +1321,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         COALESCE(SUM(calls), 0)
                     FROM dashboard_5m
                     WHERE bucket_start >= ?
+                      AND bucket_start < ?
                     GROUP BY model
                     ORDER BY SUM(total_tokens) DESC;
                     """,
-                    bindings: [.int64(Int64(start))]
+                    bindings: [.int64(Int64(start)), .int64(Int64(end))]
                 ) { row in
                     ModelTokenBreakdown(
                         model: row.text(0).flatMap { $0.isEmpty ? nil : $0 },
@@ -1265,7 +1345,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     todayCalls: todayCalls,
                     todayModelBreakdowns: todayModelBreakdowns
                 )
-            }
         }
     }
 
@@ -1297,29 +1376,40 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     func forEachStoredEvent(_ body: (StoredEvent) throws -> Void) throws {
-        try withExclusiveAccess {
-            try forEachStoredEventExclusively(body)
-        }
+        try forEachStoredEventExclusively(body)
     }
 
     func forEachAggregatedUsageRow(
+        from visibleStart: Date,
         _ body: (AggregatedUsageRow) throws -> Void
     ) throws {
-        try withExclusiveAccess {
-            try driver.forEachRow(
+        try driver.forEachRow(
                 """
-                SELECT
-                    b.bucket_start,
-                    b.model,
-                    b.input_tokens,
-                    b.cached_input_tokens,
-                    b.output_tokens,
-                    b.reasoning_output_tokens,
-                    b.total_tokens,
-                    b.calls
-                FROM dashboard_5m b
-                ORDER BY b.bucket_start, b.model;
-                """
+                WITH bounded AS (
+                    SELECT
+                        bucket_start, model,
+                        input_tokens, cached_input_tokens, output_tokens,
+                        reasoning_output_tokens, total_tokens, calls
+                    FROM dashboard_5m
+                    WHERE bucket_start >= ?
+
+                    UNION ALL
+
+                    SELECT
+                        MIN(bucket_start), model,
+                        SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                        SUM(reasoning_output_tokens), SUM(total_tokens), SUM(calls)
+                    FROM dashboard_5m
+                    WHERE bucket_start < ?
+                    GROUP BY model
+                )
+                SELECT * FROM bounded
+                ORDER BY bucket_start, model;
+                """,
+                bindings: [
+                    .int64(Int64(visibleStart.timeIntervalSince1970)),
+                    .int64(Int64(visibleStart.timeIntervalSince1970)),
+                ]
             ) { row in
                 guard let bucketStart = row.int64(0),
                       let inputTokens = row.int(2),
@@ -1343,28 +1433,43 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     )
                 ))
             }
-        }
     }
 
     func forEachAggregatedSessionRow(
+        limit: Int = 256,
         _ body: (AggregatedSessionRow) throws -> Void
     ) throws {
-        try withExclusiveAccess {
-            try driver.forEachRow(
+        try driver.forEachRow(
                 """
-                SELECT
-                    session_id,
-                    SUM(input_tokens),
-                    SUM(cached_input_tokens),
-                    SUM(output_tokens),
-                    SUM(reasoning_output_tokens),
-                    SUM(total_tokens),
-                    SUM(calls),
-                    MAX(last_timestamp)
-                FROM dashboard_source_totals
-                GROUP BY session_id
-                ORDER BY session_id;
-                """
+                WITH grouped AS (
+                    SELECT
+                        session_id,
+                        SUM(input_tokens) AS input_tokens,
+                        SUM(cached_input_tokens) AS cached_input_tokens,
+                        SUM(output_tokens) AS output_tokens,
+                        SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                        SUM(total_tokens) AS total_tokens,
+                        SUM(calls) AS calls,
+                        MAX(last_timestamp) AS last_timestamp
+                    FROM dashboard_source_totals
+                    GROUP BY session_id
+                ), selected AS (
+                    SELECT * FROM (
+                        SELECT * FROM grouped
+                        ORDER BY total_tokens DESC, session_id
+                        LIMIT ?
+                    )
+                    UNION
+                    SELECT * FROM (
+                        SELECT * FROM grouped
+                        ORDER BY last_timestamp DESC, session_id
+                        LIMIT ?
+                    )
+                )
+                SELECT * FROM selected
+                ORDER BY last_timestamp DESC, total_tokens DESC, session_id;
+                """,
+                bindings: [.int(limit), .int(limit)]
             ) { row in
                 guard let sessionID = row.text(0),
                       let inputTokens = row.int(1),
@@ -1388,12 +1493,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     )
                 ))
             }
-        }
+    }
+
+    func aggregatedSessionCount() throws -> Int {
+        try driver.readRows(
+            "SELECT COUNT(DISTINCT session_id) FROM dashboard_source_totals;"
+        ) { $0.int(0) ?? 0 }.first ?? 0
     }
 
     func boundedTurnCandidates(limit: Int = 128) throws -> [TurnCacheUsage] {
-        try withExclusiveAccess {
-            try driver.withConnection { connection in
+        try driver.withConnection { connection in
                 var candidates: [String: TurnCacheUsage] = [:]
                 let selections = [
                     (
@@ -1464,18 +1573,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     }
                 }
                 return Array(candidates.values)
-            }
         }
     }
 
     func firstAggregatedEventAt() throws -> Date? {
-        try withExclusiveAccess {
-            try driver.readRows(
-                "SELECT MIN(first_timestamp) FROM dashboard_source_totals;"
-            ) { row in
-                row.double(0).map { Date(timeIntervalSince1970: $0) }
-            }.first ?? nil
-        }
+        try driver.readRows(
+            "SELECT MIN(first_timestamp) FROM dashboard_source_totals;"
+        ) { row in
+            row.double(0).map { Date(timeIntervalSince1970: $0) }
+        }.first ?? nil
     }
 
     private func forEachStoredEventExclusively(
@@ -1637,9 +1743,34 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let storedProvenanceRevision = try connection.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'provenance_revision' LIMIT 1;"
             ) { row in row.text(0) }.first ?? nil
+            if let storedProvenanceRevision,
+               storedProvenanceRevision != Self.attributionProvenanceRevision,
+               !Self.knownLegacyAttributionProvenanceRevisions.contains(
+                   storedProvenanceRevision
+               ) {
+                throw SQLiteDatabaseError(
+                    operation: "Open exact usage attribution ledger",
+                    code: SQLITE_MISMATCH,
+                    message: "Attribution provenance \(storedProvenanceRevision) is newer or unknown; refusing to rewrite it",
+                    path: driver.url.path
+                )
+            }
             let storedReplayBoundaryRevision = try connection.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'fork_replay_boundary_revision' LIMIT 1;"
             ) { row in row.text(0) }.first ?? nil
+            let storedEventEnrichmentRevision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                bindings: [.text(Self.eventEnrichmentRevisionKey)]
+            ) { row in row.text(0) }.first ?? nil
+            if let storedEventEnrichmentRevision,
+               storedEventEnrichmentRevision != Self.eventEnrichmentRevision {
+                throw SQLiteDatabaseError(
+                    operation: "Open exact usage event enrichment",
+                    code: SQLITE_MISMATCH,
+                    message: "Event enrichment revision \(storedEventEnrichmentRevision) is newer or unknown; refusing to rewrite it",
+                    path: driver.url.path
+                )
+            }
             let sessionCatalogMetaExists = try connection.readRows(
                 """
                 SELECT COUNT(*)
@@ -1664,6 +1795,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     """
                 ) { row in row.text(0) }.first ?? nil)
                 : nil
+            if let sessionCatalogVersion,
+               sessionCatalogVersion != Self.sessionCatalogSchemaVersion {
+                throw SQLiteDatabaseError(
+                    operation: "Open exact usage session catalog",
+                    code: SQLITE_MISMATCH,
+                    message: "Session catalog schema \(sessionCatalogVersion) is newer or unknown; refusing to rewrite it",
+                    path: driver.url.path
+                )
+            }
             let storedDashboardAggregateVersion = try connection.readRows(
                 "SELECT value FROM schema_meta WHERE key = 'dashboard_aggregate_schema_version' LIMIT 1;"
             ) { row in row.text(0) }.first ?? nil
@@ -1706,12 +1846,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let migrationNeedsDashboardAggregate = storedDashboardAggregateVersion
                 != Self.dashboardAggregateSchemaVersion
                 || storedDashboardPricingRevision != Self.dashboardAggregatePricingRevision
+            let migrationNeedsEventEnrichment = currentVersion != nil
+                && storedEventEnrichmentRevision != Self.eventEnrichmentRevision
             let migrationTotal = [
                 migrationNeedsSchemaFields,
                 migrationNeedsReplayBoundary,
                 migrationNeedsLedger,
                 migrationNeedsSessionCatalog,
                 migrationNeedsDashboardAggregate,
+                migrationNeedsEventEnrichment,
             ].filter { $0 }.count
             let migrationMessagePrefix =
                 "正在升级索引（首次可能短暂占用 CPU/磁盘；原始数据不会丢失）"
@@ -1873,6 +2016,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON sources(session_id, source_id);
                 CREATE INDEX IF NOT EXISTS sources_session_nocase
                     ON sources(session_id COLLATE NOCASE, source_id);
+
+                CREATE TABLE IF NOT EXISTS event_enrichment_sources (
+                    source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+                    revision TEXT NOT NULL,
+                    completed_size INTEGER NOT NULL,
+                    completed_probe TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS attribution_source_buckets (
                     provenance_epoch TEXT NOT NULL,
@@ -2120,6 +2270,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 reportMigration("索引会话目录已提交")
             }
 
+            let eventEnrichmentRequiresSync = migrationNeedsEventEnrichment
+                && priorSourceCount > 0
+            if migrationNeedsEventEnrichment {
+                if eventEnrichmentRequiresSync {
+                    reportMigration("等待补齐历史模型；首次升级可能需要几分钟")
+                } else {
+                    migrationCompleted += 1
+                    reportMigration("历史模型无需补齐")
+                }
+            }
+
             // Publish schema/replay revisions only after all migration pieces,
             // including an unresolved=false replay probe and session catalog,
             // have committed successfully.  An interrupted migration therefore
@@ -2131,6 +2292,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 || migrationNeedsReplayBoundary
                 || migrationNeedsLedger
                 || migrationNeedsSessionCatalog
+                || migrationNeedsEventEnrichment
             guard requiresFinalMigrationCommit else { return }
             try connection.transaction { transaction in
                 try transaction.execute(
@@ -2151,14 +2313,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         bindings: [.text(Self.attributionProvenanceRevision)]
                     )
                 }
-                try transaction.execute(
-                    """
-                    INSERT INTO schema_meta(key, value)
-                    VALUES ('schema_version', ?)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                    """,
-                    bindings: [.text(Self.schemaVersion)]
-                )
+                if !eventEnrichmentRequiresSync {
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('schema_version', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [.text(Self.schemaVersion)]
+                    )
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES (?, ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [
+                            .text(Self.eventEnrichmentRevisionKey),
+                            .text(Self.eventEnrichmentRevision),
+                        ]
+                    )
+                }
             }
             if migrationTotal > 0,
                migrationCompleted == migrationTotal {
@@ -2947,11 +3122,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }.first ?? nil
         if let currentVersion,
            currentVersion != Self.sessionCatalogSchemaVersion {
-            try connection.execute(
-                """
-                DROP TABLE IF EXISTS session_catalog_entries;
-                DELETE FROM session_catalog_meta;
-                """
+            throw SQLiteDatabaseError(
+                operation: "Prepare exact usage session catalog",
+                code: SQLITE_MISMATCH,
+                message: "Session catalog schema \(currentVersion) is newer or unknown; refusing to rewrite it",
+                path: driver.url.path
             )
         }
         try connection.execute(
@@ -3354,6 +3529,85 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }.compactMap { $0 }
     }
 
+    private func eventEnrichmentPendingSourceIDs(
+        connection: SQLiteDatabaseConnection
+    ) throws -> Set<Int64> {
+        Set(try connection.readRows(
+            """
+            SELECT s.source_id
+            FROM sources s
+            LEFT JOIN event_enrichment_sources e
+              ON e.source_id = s.source_id
+             AND e.revision = ?
+            WHERE e.source_id IS NULL
+            ORDER BY s.source_id;
+            """,
+            bindings: [.text(Self.eventEnrichmentRevision)]
+        ) { $0.int64(0) }.compactMap { $0 })
+    }
+
+    private func markEventEnrichmentComplete(
+        sourceID: Int64,
+        signature: SourceSignature,
+        connection: SQLiteDatabaseConnection
+    ) throws {
+        try connection.execute(
+            """
+            INSERT INTO event_enrichment_sources(
+                source_id, revision, completed_size, completed_probe
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(source_id) DO UPDATE SET
+                revision = excluded.revision,
+                completed_size = excluded.completed_size,
+                completed_probe = excluded.completed_probe;
+            """,
+            bindings: [
+                .int64(sourceID),
+                .text(Self.eventEnrichmentRevision),
+                .int64(try sqliteInt64(signature.size)),
+                .text(signature.contentProbe),
+            ]
+        )
+    }
+
+    @discardableResult
+    private func finalizeEventEnrichmentIfComplete(
+        connection: SQLiteDatabaseConnection
+    ) throws -> Bool {
+        guard try eventEnrichmentPendingSourceIDs(connection: connection).isEmpty else {
+            return false
+        }
+        let replayRevision = try connection.readRows(
+            "SELECT value FROM schema_meta WHERE key = 'fork_replay_boundary_revision' LIMIT 1;"
+        ) { $0.text(0) }.first ?? nil
+        let provenanceRevision = try connection.readRows(
+            "SELECT value FROM schema_meta WHERE key = 'provenance_revision' LIMIT 1;"
+        ) { $0.text(0) }.first ?? nil
+        let catalogVersion = try connection.readRows(
+            "SELECT value FROM session_catalog_meta WHERE key = 'schema_version' LIMIT 1;"
+        ) { $0.text(0) }.first ?? nil
+        guard replayRevision == Self.forkReplayBoundaryRevision,
+              provenanceRevision == Self.attributionProvenanceRevision,
+              catalogVersion == Self.sessionCatalogSchemaVersion else {
+            return false
+        }
+        try connection.execute(
+            """
+            INSERT INTO schema_meta(key, value)
+            VALUES
+                (?, ?),
+                ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [
+                .text(Self.eventEnrichmentRevisionKey),
+                .text(Self.eventEnrichmentRevision),
+                .text(Self.schemaVersion),
+            ]
+        )
+        return true
+    }
+
     private func canAttemptAppend(
         from source: IndexedSource,
         to observed: SourceSignature
@@ -3523,6 +3777,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     generation: generation,
                     parseResult: result,
                     auditChunkIndex: nextAuditChunk,
+                    connection: transaction
+                )
+                try markEventEnrichmentComplete(
+                    sourceID: existing.id,
+                    signature: observedSignature,
                     connection: transaction
                 )
                 if let firstAffectedAttributionBucket,
@@ -3770,11 +4029,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         private let lock = NSLock()
         private var values: [StagedFullRebuild] = []
         private var firstError: Error?
+        private var completedEventEnrichmentJobs = 0
 
-        func append(_ value: StagedFullRebuild) {
+        func append(_ value: StagedFullRebuild) -> Int? {
             lock.lock()
+            defer { lock.unlock() }
             values.append(value)
-            lock.unlock()
+            guard value.job.reason == .eventEnrichment else { return nil }
+            completedEventEnrichmentJobs += 1
+            return completedEventEnrichmentJobs
         }
 
         func record(_ error: Error) {
@@ -3803,9 +4066,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    private final class EventEnrichmentProgressBox: @unchecked Sendable {
+        let callback: (Int, Int) -> Void
+
+        init(_ callback: @escaping (Int, Int) -> Void) {
+            self.callback = callback
+        }
+    }
+
     private func stageFullRebuilds(
         _ jobs: [FullRebuildJob],
-        parser: @escaping SessionParser
+        parser: @escaping SessionParser,
+        eventEnrichmentTotal: Int,
+        onEventEnrichmentProgress: @escaping (Int, Int) -> Void
     ) throws -> [StagedFullRebuild] {
         guard !jobs.isEmpty else { return [] }
         let jobs = jobs.sorted {
@@ -3833,15 +4106,22 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             : workerCount
         let collector = StageCollector()
         let parserBox = SessionParserBox(parser)
+        let progressBox = EventEnrichmentProgressBox(onEventEnrichmentProgress)
 
         for job in jobs {
             let queue = job.observedSignature.size >= heavyThreshold ? heavyQueue : lightQueue
             queue.addOperation { [self] in
                 autoreleasepool {
                     do {
-                        collector.append(
+                        let completed = collector.append(
                             try stageFullRebuild(job, parser: parserBox.parser)
                         )
+                        if let completed, eventEnrichmentTotal > 0 {
+                            progressBox.callback(
+                                min(completed, eventEnrichmentTotal),
+                                eventEnrichmentTotal
+                            )
+                        }
                     } catch {
                         collector.record(error)
                     }
@@ -4349,6 +4629,50 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return storedChunks == stagedChunks
     }
 
+    private func stagedEventsMatchPublishedSource(
+        _ staged: StagedFullRebuild,
+        sourceID: Int64,
+        connection: SQLiteDatabaseConnection
+    ) throws -> Bool {
+        try connection.execute(
+            "ATTACH DATABASE ? AS event_enrichment_stage;",
+            bindings: [.text(staged.databaseURL.path)]
+        )
+        defer {
+            try? connection.execute("DETACH DATABASE event_enrichment_stage;")
+        }
+        let mismatch = try connection.readRows(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM events published
+                LEFT JOIN event_enrichment_stage.events staged
+                  ON staged.source_offset = published.source_offset
+                WHERE published.source_id = ?
+                  AND (
+                    staged.source_offset IS NULL
+                    OR published.timestamp IS NOT staged.timestamp
+                    OR published.tokens IS NOT staged.tokens
+                    OR published.input_tokens IS NOT staged.input_tokens
+                    OR published.cached_input_tokens IS NOT staged.cached_input_tokens
+                    OR published.output_tokens IS NOT staged.output_tokens
+                    OR published.reasoning_output_tokens IS NOT staged.reasoning_output_tokens
+                  )
+                UNION ALL
+                SELECT 1
+                FROM event_enrichment_stage.events staged
+                LEFT JOIN events published
+                  ON published.source_id = ?
+                 AND published.source_offset = staged.source_offset
+                WHERE published.source_offset IS NULL
+                LIMIT 1
+            );
+            """,
+            bindings: [.int64(sourceID), .int64(sourceID)]
+        ) { $0.int(0) ?? 1 }.first ?? 1
+        return mismatch == 0
+    }
+
     private func importStagedFullRebuild(
         _ staged: StagedFullRebuild,
         generation: String,
@@ -4574,6 +4898,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 sourceID: source.id,
                 sessionID: staged.job.sessionID,
                 affectedBuckets: nil,
+                connection: transaction
+            )
+            try markEventEnrichmentComplete(
+                sourceID: source.id,
+                signature: staged.committedSignature,
                 connection: transaction
             )
         }

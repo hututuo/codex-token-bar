@@ -1,6 +1,85 @@
 import Foundation
 
 extension CodexUsageAnalyzer {
+    struct StateRefreshSnapshot {
+        let metadata: (plugins: [PluginUsage], reasoning: String)
+        let officialSummary: OfficialThreadSummary?
+        let threadInfo: [String: ThreadInfo]
+    }
+
+    /// One precise refresh opens `state_5.sqlite` once and derives every
+    /// read-only thread projection from the same row set.  This prevents the
+    /// metadata, official-count and detail paths from observing three
+    /// different WAL moments or paying three open/prepare cycles.
+    func loadStateRefreshSnapshot() -> StateRefreshSnapshot {
+        let db = dataSource.stateDatabase.path
+        guard fileManager.fileExists(atPath: db),
+              let rows = try? sqliteRows(
+                db: db,
+                sql: """
+                SELECT
+                    id,
+                    title,
+                    first_user_message,
+                    preview,
+                    reasoning_effort,
+                    COALESCE(updated_at_ms, updated_at)
+                FROM threads
+                ORDER BY COALESCE(updated_at_ms, updated_at) DESC;
+                """
+              ) else {
+            return StateRefreshSnapshot(
+                metadata: ([], "未知"),
+                officialSummary: nil,
+                threadInfo: [:]
+            )
+        }
+
+        var pluginCounts: [String: Int] = [:]
+        var reasoningCounts: [String: Int] = [:]
+        var info: [String: ThreadInfo] = [:]
+        for (index, row) in rows.enumerated() {
+            if index < 500 {
+                let text = [row[safe: 1], row[safe: 2], row[safe: 3]]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+                collectPluginMentions(from: text, into: &pluginCounts)
+                collectReasoningEffort(row[safe: 4], into: &reasoningCounts)
+            }
+            guard let id = row[safe: 0], !id.isEmpty else { continue }
+            let title = firstNonEmpty([
+                row[safe: 1],
+                row[safe: 2],
+                row[safe: 3],
+            ]) ?? "Untitled"
+            info[id] = ThreadInfo(
+                title: title,
+                updatedAt: parseThreadTimestamp(row[safe: 5])
+            )
+        }
+        let pluginItems: [PluginUsage] = pluginCounts.map { entry in
+            PluginUsage(name: entry.key, runs: entry.value)
+        }
+        let sortedPlugins = pluginItems.sorted { lhs, rhs in
+            if lhs.runs == rhs.runs {
+                return lhs.name < rhs.name
+            }
+            return lhs.runs > rhs.runs
+        }
+        let plugins = Array(sortedPlugins.prefix(8))
+        let reasoning = reasoningCounts.max(by: { $0.value < $1.value })
+            .map { "\($0.key) · \($0.value)" } ?? "未知"
+        return StateRefreshSnapshot(
+            metadata: (plugins, reasoning),
+            officialSummary: OfficialThreadSummary(
+                totalTokens: 0,
+                peakThreadTokens: 0,
+                totalThreads: rows.count
+            ),
+            threadInfo: info
+        )
+    }
+
     func loadFromStateSQLite(
         includeTimeSeries: Bool = true,
         usagePrecision: DashboardUsagePrecision = .metadataOnly

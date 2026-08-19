@@ -178,41 +178,53 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "source": dataSource.displayPath
         ])
         do {
-            let summary = try CodexUsageHistoryIndex.withExclusiveAccess(
-                codexHome: dataSource.codexHome
-            ) { () -> CompactUsageSummary? in
-                let sessionFiles = try usageJSONLFiles()
-                guard !sessionFiles.isEmpty else { return nil }
-                let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
-                _ = try historyIndex.synchronize(
-                    files: sessionFiles,
-                    sessionID: sessionID(from:)
-                ) { [self] file, sessionID, request, insertFingerprint, emit in
-                    try parseSessionIntoHistoryIndex(
-                        file: file,
-                        sessionID: sessionID,
-                        request: request,
-                        insertFingerprint: insertFingerprint,
-                        emit: emit
-                    )
-                }
-                let totals = try historyIndex.compactTotals(
-                    todayStart: calendar.startOfDay(for: Date())
-                )
-                let normalizedTodayModelBreakdowns = ModelUsagePresentation.rows(
-                    from: totals.todayModelBreakdowns,
-                    at: Date()
-                )
-                return CompactUsageSummary(
-                    totalTokens: totals.totalTokens,
-                    todayTokens: totals.todayTokens,
-                    todayCalls: totals.todayCalls,
-                    todayModelBreakdowns: normalizedTodayModelBreakdowns,
-                    generatedAt: Date()
+            let sessionFiles = try usageJSONLFiles()
+            guard !sessionFiles.isEmpty else {
+                trace?.end("no-token-jsonl-files")
+                return nil
+            }
+            let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+            _ = try historyIndex.synchronize(
+                files: sessionFiles,
+                sessionID: sessionID(from:)
+            ) { [self] file, sessionID, request, insertFingerprint, emit in
+                try parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
                 )
             }
-            trace?.end(summary == nil ? "no-token-jsonl-files" : "ok", metadata: [
-                "tokens": summary.map { String($0.totalTokens) } ?? "-"
+            let now = Date()
+            let todayStart = calendar.startOfDay(for: now)
+            guard let tomorrowStart = calendar.date(
+                byAdding: .day,
+                value: 1,
+                to: todayStart
+            ) else {
+                throw CodexUsageDiscoveryError.traversalFailed(
+                    path: dataSource.displayPath,
+                    reason: "无法计算下一自然日边界"
+                )
+            }
+            let totals = try historyIndex.compactTotals(
+                todayStart: todayStart,
+                before: tomorrowStart
+            )
+            let normalizedTodayModelBreakdowns = ModelUsagePresentation.rows(
+                from: totals.todayModelBreakdowns,
+                at: Date()
+            )
+            let summary = CompactUsageSummary(
+                totalTokens: totals.totalTokens,
+                todayTokens: totals.todayTokens,
+                todayCalls: totals.todayCalls,
+                todayModelBreakdowns: normalizedTodayModelBreakdowns,
+                generatedAt: Date()
+            )
+            trace?.end("ok", metadata: [
+                "tokens": String(summary.totalTokens)
             ])
             return summary
         } catch {
@@ -260,17 +272,13 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil,
         onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil
     ) throws -> DashboardSnapshot {
-        // Discovery, synchronization, numeric aggregation, and the durable
-        // numeric commit are one per-index phase. Excerpt hydration deliberately
-        // runs after this scope so an active append can start the next numeric
-        // phase without waiting for old detail work.
+        // Discovery and pure in-memory derivation do not need the index write
+        // gate. `CodexUsageHistoryIndex.synchronize` owns the short writer
+        // section, while its read methods use WAL snapshots. Excerpt hydration
+        // remains outside both boundaries.
         let prepared: PreparedPreciseLoad
         do {
-            prepared = try CodexUsageHistoryIndex.withExclusiveAccess(
-                codexHome: dataSource.codexHome
-            ) {
-                try loadFromTokenCountJSONLExclusively(onProgress: onProgress)
-            }
+            prepared = try loadFromTokenCountJSONLExclusively(onProgress: onProgress)
         } catch let error as CodexUsagePreciseDataUnavailableError {
             throw error
         } catch let error as CodexUsageHistoryIndexError {
@@ -333,9 +341,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // generation while this detail phase was reading excerpts. Only a
             // still-exact completion can become the in-memory detail receipt or
             // replace the durable numeric last-good file.
-            let stored = (try? CodexUsageHistoryIndex.withExclusiveAccess(
-                codexHome: dataSource.codexHome
-            ) {
+            let stored = (try? {
                 let currentState = try phase.historyIndex.attributionState()
                 guard currentState.provenanceEpoch
                         == phase.signature.attributionProvenanceEpoch,
@@ -343,13 +349,6 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                         == phase.signature.attributionGeneration else {
                     return false
                 }
-                let currentFiles = try usageJSONLFiles()
-                let currentSignature = sessionTreeSignature(
-                    for: currentFiles,
-                    attributionProvenanceEpoch: currentState.provenanceEpoch,
-                    attributionGeneration: currentState.generation
-                )
-                guard currentSignature == phase.signature else { return false }
                 Self.sessionEventCache.recordSnapshotBuildForTesting()
                 Self.sessionEventCache.storeSnapshot(
                     finalSnapshot,
@@ -358,7 +357,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     signature: phase.signature
                 )
                 return true
-            }) ?? false
+            }()) ?? false
             guard stored else {
                 detailTrace?.end("superseded")
                 return phase.snapshot
@@ -482,13 +481,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let aggregationNow = settledThrough.addingTimeInterval(-0.001)
         var aggregation = UsageAggregationBuilder(calendar: calendar, now: aggregationNow)
         trace?.mark("threadMetadata.begin")
-        let metadata = loadThreadMetadata()
+        let stateRefresh = loadStateRefreshSnapshot()
+        let metadata = stateRefresh.metadata
         trace?.mark("threadMetadata.end", metadata: ["plugins": String(metadata.plugins.count)])
 
         trace?.mark("parseSessions.begin")
         let synchronization: CodexUsageHistoryIndex.SynchronizationResult
         let durableAttributionEvents: [TokenCacheAttributionEvent]
         let firstAggregatedEventAt: Date?
+        let exactSessionCount: Int
         do {
             synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
@@ -502,11 +503,20 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     emit: emit
                 )
             } onProgress: { completed, total, phase in
+                let message: String
+                switch phase {
+                case .scanning:
+                    message = "正在扫描精确历史 \(completed)/\(total)"
+                case .backfillingModel:
+                    message = "正在补齐历史模型 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失"
+                case .publishing:
+                    message = "正在提交索引升级结果"
+                default:
+                    message = "正在升级精确索引"
+                }
                 onProgress?(PreciseIndexProgress(
                     phase: phase,
-                    message: phase == .scanning
-                        ? "正在扫描精确历史 \(completed)/\(total)"
-                        : "正在发布精确索引",
+                    message: message,
                     completed: completed,
                     total: total
                 ))
@@ -535,7 +545,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 durableAttributionEvents = []
             }
 
-            try historyIndex.forEachAggregatedUsageRow { row in
+            let aggregateReadStart = aggregation.aggregateReadStart
+                ?? aggregationNow
+            try historyIndex.forEachAggregatedUsageRow(from: aggregateReadStart) { row in
                 aggregation.consumeAggregate(row)
             }
             try historyIndex.forEachAggregatedSessionRow { row in
@@ -544,6 +556,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             for turn in try historyIndex.boundedTurnCandidates() {
                 aggregation.considerTurnCandidate(turn)
             }
+            exactSessionCount = try historyIndex.aggregatedSessionCount()
             firstAggregatedEventAt = try historyIndex.firstAggregatedEventAt()
         } catch {
             throw CodexUsageHistoryIndexError(operation: "同步或查询", underlying: error)
@@ -570,12 +583,12 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let hourlyUsage = aggregation.hourlyUsage()
         trace?.mark("hourlyUsage.end", metadata: ["count": String(hourlyUsage.count)])
         trace?.mark("officialSummary.begin")
-        let officialSummary = loadOfficialThreadSummary()
+        let officialSummary = stateRefresh.officialSummary
         trace?.mark("officialSummary.end", metadata: [
             "hasSummary": officialSummary == nil ? "0" : "1"
         ])
         trace?.mark("threadInfo.begin")
-        let threadInfo = loadThreadInfo()
+        let threadInfo = stateRefresh.threadInfo
         trace?.mark("threadInfo.end", metadata: ["count": String(threadInfo.count)])
         trace?.mark("cacheUsage.begin")
         let attributionCurrentScanUnsafeCauseDetected =
@@ -608,7 +621,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             ),
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: aggregation.totalCalls,
-            totalThreads: officialSummary?.totalThreads ?? aggregation.totalSessionCount,
+            totalThreads: officialSummary?.totalThreads ?? exactSessionCount,
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
             totalSkillsUsed: metadata.plugins.count,

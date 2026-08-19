@@ -3583,6 +3583,130 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testFutureProvenanceRevisionFailsClosedBeforeLedgerWrites() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureProvenance")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute(
+            "UPDATE schema_meta SET value = 'future-source-bucket-v99' WHERE key = 'provenance_revision';"
+        )
+        try database.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('future_provenance_sentinel', 'keep');"
+        )
+        let ledgerRows = try scalarInt(
+            "SELECT COUNT(*) FROM attribution_source_buckets;",
+            in: database
+        )
+
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("provenance"))
+            XCTAssertTrue(error.localizedDescription.contains("newer or unknown"))
+        }
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'provenance_revision';"
+            ) { $0.text(0) }.first,
+            "future-source-bucket-v99"
+        )
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM schema_meta WHERE key = 'future_provenance_sentinel';"
+            ) { $0.text(0) }.first,
+            "keep"
+        )
+        XCTAssertEqual(
+            try scalarInt("SELECT COUNT(*) FROM attribution_source_buckets;", in: database),
+            ledgerRows
+        )
+    }
+
+    func testFutureSessionCatalogFailsClosedWithoutDroppingFutureColumns() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureCatalog")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        _ = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute(
+            "ALTER TABLE session_catalog_entries ADD COLUMN future_marker TEXT;"
+        )
+        try database.execute(
+            "UPDATE session_catalog_meta SET value = '99' WHERE key = 'schema_version';"
+        )
+
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("catalog"))
+            XCTAssertTrue(error.localizedDescription.contains("newer or unknown"))
+        }
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT value FROM session_catalog_meta WHERE key = 'schema_version';"
+            ) { $0.text(0) }.first,
+            "99"
+        )
+        XCTAssertEqual(
+            try scalarInt(
+                "SELECT COUNT(*) FROM pragma_table_info('session_catalog_entries') WHERE name = 'future_marker';",
+                in: database
+            ),
+            1
+        )
+    }
+
+    func testCompactTotalsUsesClosedNaturalDayRange() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageCompactDayRange")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        let todayStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let tomorrowStart = todayStart.addingTimeInterval(86_400)
+        try database.execute(
+            """
+            INSERT INTO dashboard_5m(
+                bucket_start, model, input_tokens, cached_input_tokens,
+                output_tokens, reasoning_output_tokens, total_tokens, calls
+            ) VALUES
+                (?, 'gpt-5.6-sol', 80, 20, 20, 0, 100, 1),
+                (?, 'gpt-5.6-terra', 160, 40, 40, 0, 200, 2);
+            """,
+            bindings: [
+                .int64(Int64(todayStart.timeIntervalSince1970)),
+                .int64(Int64(tomorrowStart.timeIntervalSince1970)),
+            ]
+        )
+
+        let totals = try index.compactTotals(
+            todayStart: todayStart,
+            before: tomorrowStart
+        )
+        XCTAssertEqual(totals.todayTokens, 100)
+        XCTAssertEqual(totals.todayCalls, 1)
+        XCTAssertEqual(totals.todayModelBreakdowns.map(\.model), ["gpt-5.6-sol"])
+    }
+
     func testDifferentCanonicalSessionReappearancePreservesTombstoneMaximumAndTurnsUnsafe() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerTombstoneReappearance")
@@ -4279,11 +4403,15 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
         let now = Date()
-        try tokenCountLine(
-            timestamp: now.addingTimeInterval(-60),
-            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
-            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
-        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+        try [
+            turnContextLine(timestamp: now.addingTimeInterval(-61), model: "gpt-5.6-sol"),
+            tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            ),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let initial = try analyzer.load()
@@ -4316,7 +4444,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 "SELECT value FROM schema_meta WHERE key = 'schema_version';"
             ) { $0.text(0) }.compactMap { $0 }.first
         )
-        XCTAssertEqual(schemaVersion, "5")
+        XCTAssertEqual(schemaVersion, "6")
 
         try appendLines([
             try tokenCountLine(
@@ -4562,7 +4690,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let sessionID = "019eaaaa-bbbb-4ccc-8ddd-0000000000ab"
         let canonicalLineage = "session:\(sessionID)"
 
-        // GitHub's published schema v3 and the current schema v5 both migrate
+        // GitHub's published schema v3 and the previous schema v5 both migrate
         // in place. Dropping the new index before each reopen proves that the
         // normal schema path recreates it before attribution backfill runs.
         for schemaVersion in ["3", "5"] {
@@ -4636,7 +4764,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             )
             try database.execute(
                 """
-                UPDATE schema_meta SET value = 'legacy-attribution-index-test'
+                UPDATE schema_meta SET value = 'source-bucket-v3-model-aware-parser-v1'
                     WHERE key = 'provenance_revision';
                 """
             )
@@ -4659,7 +4787,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "5"
+                "6"
             )
 
             let planDetails = try database.readRows(
@@ -4749,11 +4877,18 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-06-17-\(sessionID).jsonl")
         let now = Date()
-        try tokenCountLine(
-            timestamp: now.addingTimeInterval(-60),
-            total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
-            last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
-        ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+        try [
+            turnContextLine(
+                timestamp: now.addingTimeInterval(-61),
+                model: "gpt-5.6-sol"
+            ),
+            tokenCountLine(
+                timestamp: now.addingTimeInterval(-60),
+                total: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120),
+                last: Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+            ),
+        ].joined(separator: "\n").appending("\n")
+            .write(to: sessionFile, atomically: true, encoding: .utf8)
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let initial = try analyzer.load()
@@ -4895,17 +5030,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             try database.execute(
                 "UPDATE schema_meta SET value = '\(schemaVersion)' WHERE key = 'schema_version';"
             )
+            try database.execute(
+                "DELETE FROM schema_meta WHERE key = 'event_enrichment_revision';"
+            )
+            try database.execute("DELETE FROM event_enrichment_sources;")
+            if !missingColumns.contains(where: { $0 == ("events", "model") }) {
+                try database.execute("UPDATE events SET model = NULL;")
+            }
 
             CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
-            let migratedIndex = try CodexUsageHistoryIndex(codexHome: codexHome)
-            XCTAssertEqual(
-                try migratedIndex.compactTotals(todayStart: Date(timeIntervalSince1970: 0)).totalTokens,
-                120
-            )
-            var migratedTokens: [Int] = []
-            try migratedIndex.forEachStoredEvent { migratedTokens.append($0.event.tokens) }
-            XCTAssertEqual(migratedTokens, [120])
-            XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 0)
+            CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+            let migrated = try analyzer.load()
+            XCTAssertEqual(migrated.stats.totalTokens, 120)
+            XCTAssertEqual(CodexUsageAnalyzer.fullSessionParseCountForTesting, 1)
 
             let after = try XCTUnwrap(
                 database.readRows(
@@ -4955,7 +5092,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                     1
                 )
             } else {
-                XCTAssertEqual(after.attributionGeneration, expectedAttributionGeneration)
+                XCTAssertGreaterThan(
+                    try XCTUnwrap(after.attributionGeneration),
+                    try XCTUnwrap(expectedAttributionGeneration)
+                )
+                expectedAttributionGeneration = after.attributionGeneration
             }
             XCTAssertEqual(
                 try XCTUnwrap(
@@ -4963,7 +5104,39 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                         "SELECT value FROM schema_meta WHERE key = 'schema_version';"
                     ) { $0.text(0) }.compactMap { $0 }.first
                 ),
-                "5"
+                "6"
+            )
+            XCTAssertEqual(
+                try database.readRows("SELECT model FROM events LIMIT 1;") {
+                    $0.text(0)
+                }.first ?? nil,
+                "gpt-5.6-sol"
+            )
+            XCTAssertEqual(
+                try database.readRows(
+                    "SELECT value FROM schema_meta WHERE key = 'event_enrichment_revision';"
+                ) { $0.text(0) }.first ?? nil,
+                "model-v1"
+            )
+            var repeatedParserCalls = 0
+            let reopened = try CodexUsageHistoryIndex(codexHome: codexHome)
+            _ = try reopened.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, parsedSessionID, request, insertFingerprint, emit in
+                repeatedParserCalls += 1
+                return try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: parsedSessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+            XCTAssertEqual(
+                repeatedParserCalls,
+                0,
+                "a completed source enrichment must not reread JSONL on the next launch"
             )
             for (table, column) in [
                 ("sources", "current_model"),
@@ -5021,7 +5194,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let unresolvedIndex = try CodexUsageHistoryIndex(codexHome: codexHome)
         XCTAssertEqual(
-            try unresolvedIndex.compactTotals(todayStart: Date(timeIntervalSince1970: 0)).totalTokens,
+            try unresolvedIndex.compactTotals(
+                todayStart: Date(timeIntervalSince1970: 0),
+                before: .distantFuture
+            ).totalTokens,
             120
         )
         let unresolvedMarkerCount = try scalarInt(
@@ -5043,7 +5219,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         ).appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
         let retriedIndex = try CodexUsageHistoryIndex(codexHome: codexHome)
         XCTAssertEqual(
-            try retriedIndex.compactTotals(todayStart: Date(timeIntervalSince1970: 0)).totalTokens,
+            try retriedIndex.compactTotals(
+                todayStart: Date(timeIntervalSince1970: 0),
+                before: .distantFuture
+            ).totalTokens,
             120
         )
         XCTAssertEqual(
