@@ -732,6 +732,25 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(snapshot.hourlyUsage.isEmpty)
     }
 
+    func testPreciseTotalThreadsCountsOnlySessionsWithPublishedTokenEvents() throws {
+        let codexHome = try makeCodexHome()
+        try seedStateDatabase(at: codexHome)
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019ep2-8-token-bearing-session",
+            timestamp: Date().addingTimeInterval(-30),
+            totalTokens: 120
+        )
+
+        let snapshot = try CodexUsageAnalyzer(
+            dataSource: dataSource(for: codexHome)
+        ).load()
+
+        XCTAssertEqual(snapshot.usagePrecision, .precise)
+        XCTAssertEqual(snapshot.stats.totalThreads, 1)
+        XCTAssertEqual(snapshot.stats.totalTokens, 120)
+    }
+
     func testPersistentExactSnapshotRestoresFastNumericSurfaceAcrossRestartAndFullLoadHydratesDetails() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexPersistentExactSnapshot")
@@ -5860,7 +5879,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(snapshot.usagePrecision, .precise)
-        XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.stats.totalThreads, 1)
         XCTAssertEqual(snapshot.stats.totalTokens, eventCount)
         XCTAssertEqual(snapshot.stats.totalCalls, eventCount)
     }
@@ -5895,7 +5914,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
 
         XCTAssertEqual(snapshot.usagePrecision, .precise)
-        XCTAssertEqual(snapshot.stats.totalThreads, 2)
+        XCTAssertEqual(snapshot.stats.totalThreads, 1)
         XCTAssertEqual(snapshot.stats.totalTokens, 1_320)
         XCTAssertEqual(snapshot.stats.totalCalls, 1)
     }

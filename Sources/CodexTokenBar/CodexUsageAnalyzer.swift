@@ -698,7 +698,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             ),
             longestStreakDays: longestStreakDays(from: daily),
             totalCalls: aggregation.totalCalls,
-            totalThreads: officialSummary?.totalThreads ?? exactSessionCount,
+            // A precise usage dashboard counts only sessions that actually
+            // contributed published token events. State SQLite may contain
+            // empty/imported threads and remains authoritative only for the
+            // metadata-only fallback.
+            totalThreads: exactSessionCount,
             mostUsedReasoning: metadata.reasoning,
             skillsExplored: metadata.plugins.filter { $0.name.hasPrefix("$") }.count,
             totalSkillsUsed: metadata.plugins.count,
