@@ -47,6 +47,8 @@ final class StartupPresentationTests: XCTestCase {
         )
 
         XCTAssertTrue(appSource.contains("@NSApplicationDelegateAdaptor(CodexTokenBarApplicationDelegate.self)"))
+        XCTAssertTrue(appSource.contains("Window(\"Codex Token Bar\", id: \"dashboard\")"))
+        XCTAssertFalse(appSource.contains("WindowGroup(id: \"dashboard\")"))
         XCTAssertTrue(presentationSource.contains("applicationShouldHandleReopen"))
         XCTAssertTrue(presentationSource.contains("DashboardReopenCoordinator.shared.handleApplicationReopen"))
     }

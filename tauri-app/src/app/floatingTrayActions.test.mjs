@@ -66,6 +66,6 @@ test("macOS Dock reopen is wired to recreate the dashboard after all windows clo
   assert.match(lib, /platform::handle_application_reopen\(app, has_visible_windows\)/);
   assert.match(
     surfaces,
-    /fn perform_application_reopen[\s\S]*?if has_visible_windows[\s\S]*?show_dashboard\(\)/,
+    /fn perform_application_reopen[\s\S]*?show_dashboard\(\)/,
   );
 });

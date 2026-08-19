@@ -55,7 +55,7 @@ struct CodexTokenBarApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(id: "dashboard") {
+        Window("Codex Token Bar", id: "dashboard") {
             DashboardView(
                 loginItemStore: loginItemStore,
                 updateSettingsStore: updateSettingsStore,

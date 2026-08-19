@@ -644,18 +644,14 @@ pub fn show_dashboard_window(app: &tauri::AppHandle) -> Result<bool, String> {
 /// native Reopen event must explicitly recreate or reveal the dashboard.
 pub fn handle_application_reopen(
     app: &tauri::AppHandle,
-    has_visible_windows: bool,
+    _has_visible_windows: bool,
 ) -> Result<bool, String> {
-    perform_application_reopen(has_visible_windows, || show_dashboard_window(app))
+    perform_application_reopen(|| show_dashboard_window(app))
 }
 
 fn perform_application_reopen(
-    has_visible_windows: bool,
     show_dashboard: impl FnOnce() -> Result<bool, String>,
 ) -> Result<bool, String> {
-    if has_visible_windows {
-        return Ok(false);
-    }
     show_dashboard()
 }
 
@@ -2916,7 +2912,7 @@ mod tests {
     #[test]
     fn dock_reopen_recreates_dashboard_when_no_window_is_visible() {
         let mut show_calls = 0;
-        let shown = perform_application_reopen(false, || {
+        let shown = perform_application_reopen(|| {
             show_calls += 1;
             Ok(true)
         })
@@ -2927,16 +2923,16 @@ mod tests {
     }
 
     #[test]
-    fn dock_reopen_does_not_disturb_an_existing_visible_window() {
+    fn dock_reopen_still_routes_to_dashboard_when_an_auxiliary_window_is_visible() {
         let mut show_calls = 0;
-        let shown = perform_application_reopen(true, || {
+        let shown = perform_application_reopen(|| {
             show_calls += 1;
             Ok(true)
         })
         .unwrap();
 
-        assert!(!shown);
-        assert_eq!(show_calls, 0);
+        assert!(shown);
+        assert_eq!(show_calls, 1);
     }
 
     #[test]
