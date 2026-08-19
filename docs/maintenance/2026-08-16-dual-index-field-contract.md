@@ -26,8 +26,8 @@ Swift 和 Tauri **不需要互相打开、互相写入或互相识别对方的 S
 
 | 项目 | Swift | Tauri | 说明 |
 |---|---|---|---|
-| 主精确索引 schema | `5` | `8` | 两套物理格式，不能互换 |
-| 当前支持的旧版本 | `2–5` 原位迁移 | `6–8` 原位迁移 | 只要求旧索引升级到同端新版本 |
+| 主精确索引 schema | `6` | `9` | 两套物理格式，不能互换 |
+| 当前支持的旧版本 | `2–6` 原位迁移 | `6–9` 原位迁移 | 只要求旧索引升级到同端新版本 |
 | 主元数据表 | `schema_meta` | `metadata` | 键名和诊断标记不完全相同 |
 | 会话目录 schema | `1` | `1` | 表结构仍不相同 |
 | 主解析/replay revision | `token-event-v2-explicit-subagent-delayed-context-v3`（快照兼容标识） | `explicit-subagent-delayed-context-v3` | 语义应保持一致，物理 marker 名称可不同 |
@@ -106,7 +106,7 @@ Swift 和 Tauri 都有名为 `events` 的表，但不是同一套主键模型。
 | input Token | `input_tokens INTEGER NOT NULL` | `input_tokens INTEGER NOT NULL` | 一致 |
 | cached input Token | `cached_input_tokens INTEGER NOT NULL` | `cached_input_tokens INTEGER NOT NULL` | 一致 |
 | output Token | `output_tokens INTEGER NOT NULL` | `output_tokens INTEGER NOT NULL` | 一致 |
-| reasoning output Token | `reasoning_output_tokens INTEGER NOT NULL` | **当前缺失** | 这是当前双端最重要的结构缺口；若未来计价/统计使用，Tauri 必须新增列并迁移 |
+| reasoning output Token | `reasoning_output_tokens INTEGER NOT NULL` | `reasoning_output_tokens INTEGER` | 逻辑一致；Swift 当前使用非空零值，Tauri 旧事件允许 `NULL` 表示尚未补齐，真实零才写 `0` |
 | 模型 | `model TEXT` | `model TEXT` | 一致；未知模型使用 `NULL`，不能写成零金额模型 |
 | 用户 prompt 起点 | `user_prompt_offset INTEGER` | `user_prompt_start INTEGER` | 同一语义 |
 | 用户 prompt 终点 | 缺失 | `user_prompt_end INTEGER` | Tauri 端专属 |
@@ -122,7 +122,7 @@ Swift 事件表定义见：[CodexUsageHistoryIndex.swift](</Users/huyiyang/AI ag
 - `cached_input_tokens <= input_tokens`，除非明确标记数据损坏。
 - `timestamp` 统一先转成逻辑 Unix 秒再做 5 分钟分桶；不能直接混用 SQLite 原始值。
 - `model = NULL` 表示未知，不得在迁移时伪造为某个具体模型。
-- reasoning output 尚未在 Tauri 主事件表落盘；任何依赖该字段的功能必须先补契约和迁移。
+- Tauri 新事件会直接落盘 reasoning output；旧事件由 `model-reasoning-v1` 历史补齐迁移恢复，补齐完成前 `NULL` 只能解释为未知，不能解释为零。
 
 ## 5. 指纹和分块字段契约
 
@@ -188,7 +188,7 @@ Swift 的来源桶 key 同时包含 `sourceID + bucket_start + model`，因此 S
 | 单来源累计 | `dashboard_source_totals(source_id, session_id, ...)` | `dashboard_file_totals(file_generation, file_path, session_id, ...)` | 都保存一个当前可见源文件的数值累计；身份键沿用各自主索引模型 |
 | 单来源五分钟桶 | `dashboard_source_5m(source_id, bucket_start, model, ...)` | `dashboard_file_5m(file_generation, file_path, bucket_start, model_key, model, ...)` | 都是 UTC epoch 对齐的五分钟桶；Tauri 用 `model_key` 给 NULL 模型提供稳定主键 |
 | 全局五分钟桶 | `dashboard_5m(bucket_start, model, ...)` | `dashboard_5m(file_generation, bucket_start, model_key, model, ...)` | Swift 只保留当前全局投影；Tauri 按发布 generation 保持原子切换 |
-| 派生 schema | `dashboard_aggregate_schema_version` | `dashboard_aggregate_schema_version` | 当前均为 3；独立于主 schema 递增 |
+| 派生 schema | `dashboard_aggregate_schema_version` | `dashboard_aggregate_schema_version` | Swift 当前为 3，Tauri 当前为 4；独立于主 schema 递增，数值不要求相同 |
 | 主索引水位 | `dashboard_aggregate_exact_generation` | `dashboard_aggregate_exact_generation` | 表示派生行已经覆盖到的本端主索引代次，数值不能跨端比较 |
 | 完整画布水位 | `dashboard_aggregate_published_generation` + `dashboard_aggregate_settled_through` | 同名 metadata | 只有完整聚合事务完成后推进；轻量摘要不能推进 |
 | 计价版本 | `dashboard_aggregate_pricing_revision` | 同名 metadata | 表内只保存原始 Token；价格规则变化在读取时重新计价，不回写美元金额 |
@@ -200,7 +200,7 @@ Swift 的来源桶 key 同时包含 `sourceID + bucket_start + model`，因此 S
 - Tauri 全局桶必须汇总 `published_files` 中每个 path 的最新可见版本，不能只汇总本轮 building generation，否则未变化文件会从总量中消失。
 - 轻量摘要可以比完整画布新，但只能更新累计、今日、今日调用和今日模型；不能改写 24h/7d/30d、热力图或排行。
 - 遇到高于当前支持的派生 schema 时，必须在正式扫描事务前 fail-closed，保留未知版本的 metadata 和所有行。
-- `dashboard_turn_candidates` 只保存数值候选和源偏移，不保存 prompt/assistant 正文；append、rewrite、delete 只按受影响 session 重建，正文仍在详情 hydration 阶段按源文件签名读取。
+- `dashboard_turn_candidates` 只保存数值候选和源偏移，不保存 prompt/assistant 正文；append、rewrite、delete 只按受影响 session 重建，正文仍在详情 hydration 阶段按源文件签名读取。Tauri v4 开始保留全部 Token turn，`input_tokens >= 1000` 只在低命中读取时应用；latest 候选不使用该门槛。
 - 派生层损坏或无法证明脏范围时，可以从本端现有 `events` 回填；只有主精确索引本身损坏时才进入 JSONL 恢复。
 
 ## 7. 会话目录字段契约
@@ -235,7 +235,7 @@ Swift 的来源桶 key 同时包含 `sourceID + bucket_start + model`，因此 S
 | manifest | 有 `session_id`、文件 stat、replay 状态、event_count、resume_offset、current_model | 以上字段外，还包含 `path`、`parser_revision`、file ID、prompt/assistant end、fingerprint_count、chunk_count | Tauri 字段更多；新增字段要分别更新 staged validator |
 | staged event 顺序 | `source_offset` | `ordinal` | 逻辑均为源内顺序 |
 | staged timestamp | `REAL` | `INTEGER` | 同主事件表的时间规则 |
-| staged token breakdown | Swift 含 reasoning output | Tauri 当前缺 reasoning output | 与主事件表保持同样缺口 |
+| staged token breakdown | Swift 含 reasoning output | Tauri 含 nullable reasoning output | 与各自主事件表保持同一缺失语义；Tauri 旧来源补齐前可为 `NULL` |
 | staged fingerprint | `value TEXT` | `fingerprint BLOB` | 编码不同 |
 | staged chunk | `chunk_index`、`byte_count`、`sha256` | 相同逻辑字段 | hash 编码不同 |
 
