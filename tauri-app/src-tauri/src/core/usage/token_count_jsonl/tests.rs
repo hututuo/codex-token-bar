@@ -3639,6 +3639,174 @@ fn exact_index_installs_the_published_summary_covering_index() {
 }
 
 #[test]
+fn p1_1_noop_sync_does_not_allocate_generation_revision_or_wal() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ep1-noop-0000-0000-0000-exact.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let wal_path = index_path.with_extension("sqlite3-wal");
+    let connection = Connection::open(&index_path).unwrap();
+    let read_state = |connection: &Connection| {
+        connection
+            .query_row(
+                r#"
+                SELECT
+                    CAST((SELECT value FROM metadata WHERE key = 'revision') AS INTEGER),
+                    CAST((SELECT value FROM metadata WHERE key = 'published_generation') AS INTEGER),
+                    CAST((SELECT value FROM metadata WHERE key = 'building_generation') AS INTEGER),
+                    (SELECT COALESCE(MAX(generation), 0) FROM files),
+                    (SELECT COUNT(*) FROM files),
+                    (SELECT COUNT(*) FROM events),
+                    (SELECT COUNT(*) FROM dashboard_file_totals),
+                    (SELECT COUNT(*) FROM dashboard_file_5m),
+                    (SELECT COUNT(*) FROM dashboard_5m),
+                    (SELECT COUNT(*) FROM dashboard_turn_candidates)
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                    ))
+                },
+            )
+            .unwrap()
+    };
+    let before = read_state(&connection);
+    let wal_before = fs::read(&wal_path).ok();
+
+    let revision = index.sync(&root, &mut Vec::new()).unwrap();
+
+    assert_eq!(revision, u64::try_from(before.0).unwrap());
+    assert_eq!(read_state(&connection), before);
+    assert_eq!(fs::read(&wal_path).ok(), wal_before);
+
+    drop(connection);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn p1_4_failed_thread_metadata_staging_keeps_published_rows_and_signature() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019ep1-metadata-failure-0000-0000-000000000001";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+        ],
+    );
+    create_state_database(&root, session_id, "019ep1-metadata-other-0000-0000-000000000002");
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let read_published_metadata = |connection: &Connection| {
+        let rows = connection
+            .prepare(
+                "SELECT session_id, title, updated_at FROM session_metadata ORDER BY session_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    };
+    let connection = Connection::open(&index_path).unwrap();
+    let before_revision = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'revision'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let before_signature = connection
+        .query_row(
+            "SELECT (SELECT value FROM metadata WHERE key = 'state_size'), (SELECT value FROM metadata WHERE key = 'state_modified_ns')",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap();
+    let before_metadata = read_published_metadata(&connection);
+    let wal_path = index_path.with_extension("sqlite3-wal");
+    let wal_before = fs::read(&wal_path).ok();
+
+    // Keep a valid SQLite container so source discovery can still prove that
+    // there are no active rollout paths, but omit the columns required by the
+    // metadata reader. The read-only staging must fail before touching the
+    // published rows or their state signature.
+    let state_database = root.join("state_5.sqlite");
+    fs::remove_file(&state_database).unwrap();
+    let malformed = Connection::open(&state_database).unwrap();
+    malformed
+        .execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY);")
+        .unwrap();
+    drop(malformed);
+
+    let mut warnings = Vec::new();
+    let revision = index.sync(&root, &mut warnings).unwrap();
+    assert_eq!(revision, u64::try_from(before_revision).unwrap());
+    assert!(warnings.iter().any(|warning| {
+        warning.source == "thread_info" && warning.message.contains("读取会话标题索引结构失败")
+    }));
+
+    let after_revision = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'revision'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    let after_signature = connection
+        .query_row(
+            "SELECT (SELECT value FROM metadata WHERE key = 'state_size'), (SELECT value FROM metadata WHERE key = 'state_modified_ns')",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_revision, before_revision);
+    assert_eq!(after_signature, before_signature);
+    assert_eq!(read_published_metadata(&connection), before_metadata);
+    assert_eq!(fs::read(&wal_path).ok(), wal_before);
+
+    drop(connection);
+    drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

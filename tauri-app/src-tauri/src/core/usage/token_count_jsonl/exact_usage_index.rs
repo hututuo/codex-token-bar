@@ -311,6 +311,21 @@ struct FileSignature {
     changed_ns: i128,
 }
 
+#[derive(Clone, Debug)]
+struct StagedThreadMetadata {
+    signature: Option<(String, String)>,
+    rows: Vec<(String, String, Option<i64>)>,
+}
+
+enum ThreadMetadataStage {
+    /// The state database signature still matches the published metadata.
+    Unchanged,
+    /// The complete replacement was read successfully and is safe to apply.
+    Updated(StagedThreadMetadata),
+    /// Reading the replacement failed. Keep the published rows and signature.
+    Failed,
+}
+
 /// Read-only metadata captured by the startup discovery pass.  The durable
 /// scanner remains the only writer/authority; this plan is only a same-owner
 /// hint that lets a normal scan consume the candidates without immediately
@@ -1254,6 +1269,40 @@ impl ExactUsageIndex {
         )?;
         let integrity_gate = index_integrity_gate(&index_path);
         let _sync_gate_guard = integrity_gate.enter_silent(&index_path);
+
+        // A steady-state refresh is common: the source files and state
+        // database have not changed since the last publication. Probe that
+        // case before touching the durable scan state. In particular, do not
+        // call begin_or_resume_generation here: it allocates a new generation
+        // and copies the published dashboard rows even when the scan would be
+        // a no-op.
+        if !self.migration_pending
+            && metadata_i64(&self.connection, "building_generation")?.is_none()
+        {
+            let sources_changed = self.sources_changed(codex_home, warnings)?;
+            if !sources_changed {
+                let previous = (
+                    metadata_text(&self.connection, "state_size")?,
+                    metadata_text(&self.connection, "state_modified_ns")?,
+                );
+                match stage_thread_metadata(codex_home, previous, warnings)? {
+                    ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
+                        return self.revision();
+                    }
+                    ThreadMetadataStage::Updated(staged) => {
+                        return publish_thread_metadata_only(&mut self.connection, staged);
+                    }
+                }
+            } else {
+                // sources_changed uses a temporary published-files snapshot.
+                // Drop it before the durable scan so dashboard reads cannot
+                // accidentally keep the pre-scan generation selector.
+                self.connection
+                    .execute("DROP TABLE IF EXISTS temp.published_files", [])
+                    .map_err(|error| format!("无法清理精确 token 源文件快照：{error}"))?;
+            }
+        }
+
         self.connection.mark_receipt_dirty();
         let mut scan_completeness = ExactScanCompleteness::default();
         let scan_start_home_identity = match attribution_watch_root_physical_identity(codex_home) {
@@ -7299,71 +7348,154 @@ fn sync_thread_metadata(
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<bool, String> {
-    let database = codex_home.join("state_5.sqlite");
-    let signature = if database.is_file() {
-        Some(file_signature(&database)?)
-    } else {
-        None
-    };
     let previous = (
         metadata_text(transaction, "state_size")?,
         metadata_text(transaction, "state_modified_ns")?,
     );
-    let current = signature.map(|value| (value.size.to_string(), value.modified_ns.to_string()));
-    if previous == current.clone().unzip() {
-        return Ok(false);
-    }
+    let stage = stage_thread_metadata(codex_home, previous, warnings)?;
+    apply_thread_metadata_stage(transaction, stage)
+}
 
-    transaction
-        .execute("DELETE FROM session_metadata", [])
-        .map_err(|error| format!("无法刷新会话标题索引：{error}"))?;
-    if let Some((size, modified_ns)) = current {
-        match sqlite::open_read_only(&database, StdDuration::from_secs(3)) {
-            Ok(connection) => match connection.prepare(
-                r#"
-                SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)
-                FROM threads
-                "#,
-            ) {
-                Ok(mut statement) => {
-                    let rows = statement
-                        .query_map([], |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                first_non_empty([
-                                    row.get::<_, Option<String>>(1)?,
-                                    row.get::<_, Option<String>>(2)?,
-                                    row.get::<_, Option<String>>(3)?,
-                                ])
-                                .unwrap_or_else(|| "Untitled".into()),
-                                row.get::<_, Option<i64>>(4)?
-                                    .map(normalize_thread_timestamp),
-                            ))
-                        })
-                        .map_err(|error| format!("读取会话标题索引失败：{error}"))?;
-                    for row in rows {
-                        let (session_id, title, updated_at) =
-                            row.map_err(|error| format!("读取会话标题索引失败：{error}"))?;
-                        transaction
-                            .execute(
-                                "INSERT OR REPLACE INTO session_metadata(session_id, title, updated_at) VALUES (?1, ?2, ?3)",
-                                params![session_id, title, updated_at],
-                            )
-                            .map_err(|error| format!("写入会话标题索引失败：{error}"))?;
-                    }
-                }
-                Err(error) => warnings.push(thread_info_warning(format!(
-                    "读取会话标题索引结构失败：{}（{}）",
+fn stage_thread_metadata(
+    codex_home: &Path,
+    previous: (Option<String>, Option<String>),
+    warnings: &mut Vec<LocalDataWarning>,
+) -> Result<ThreadMetadataStage, String> {
+    let database = codex_home.join("state_5.sqlite");
+    let database_exists = match fs::symlink_metadata(&database) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "检查会话标题索引失败：{}（{}）",
+                database.display(),
+                error
+            )));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    let signature = if database_exists {
+        if !database.is_file() {
+            warnings.push(thread_info_warning(format!(
+                "会话标题索引路径不是普通文件：{}",
+                database.display()
+            )));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+        match file_signature(&database) {
+            Ok(value) => Some((value.size.to_string(), value.modified_ns.to_string())),
+            Err(error) => {
+                warnings.push(thread_info_warning(format!(
+                    "读取会话标题索引签名失败：{}（{}）",
                     database.display(),
                     error
-                ))),
-            },
-            Err(error) => warnings.push(thread_info_warning(format!(
+                )));
+                return Ok(ThreadMetadataStage::Failed);
+            }
+        }
+    } else {
+        None
+    };
+    if previous == signature.clone().unzip() {
+        return Ok(ThreadMetadataStage::Unchanged);
+    }
+
+    let Some((size, modified_ns)) = signature else {
+        return Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
+            signature: None,
+            rows: Vec::new(),
+        }));
+    };
+
+    let connection = match sqlite::open_read_only(&database, StdDuration::from_secs(3)) {
+        Ok(connection) => connection,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
                 "读取会话标题索引失败：{}（{}）",
                 database.display(),
                 error
-            ))),
+            )));
+            return Ok(ThreadMetadataStage::Failed);
         }
+    };
+    let mut statement = match connection.prepare(
+        r#"
+        SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)
+        FROM threads
+        "#,
+    ) {
+        Ok(statement) => statement,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "读取会话标题索引结构失败：{}（{}）",
+                database.display(),
+                error
+            )));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    let rows = match statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            first_non_empty([
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ])
+            .unwrap_or_else(|| "Untitled".into()),
+            row.get::<_, Option<i64>>(4)?
+                .map(normalize_thread_timestamp),
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!(
+                "读取会话标题索引失败：{}（{}）",
+                database.display(),
+                error
+            )));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    let mut staged_rows = Vec::new();
+    for row in rows {
+        match row {
+            Ok(row) => staged_rows.push(row),
+            Err(error) => {
+                warnings.push(thread_info_warning(format!(
+                    "读取会话标题索引失败：{}（{}）",
+                    database.display(),
+                    error
+                )));
+                return Ok(ThreadMetadataStage::Failed);
+            }
+        }
+    }
+    Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
+        signature: Some((size, modified_ns)),
+        rows: staged_rows,
+    }))
+}
+
+fn apply_thread_metadata_stage(
+    transaction: &Transaction<'_>,
+    stage: ThreadMetadataStage,
+) -> Result<bool, String> {
+    let ThreadMetadataStage::Updated(staged) = stage else {
+        return Ok(false);
+    };
+    transaction
+        .execute("DELETE FROM session_metadata", [])
+        .map_err(|error| format!("无法刷新会话标题索引：{error}"))?;
+    for (session_id, title, updated_at) in staged.rows {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO session_metadata(session_id, title, updated_at) VALUES (?1, ?2, ?3)",
+                params![session_id, title, updated_at],
+            )
+            .map_err(|error| format!("写入会话标题索引失败：{error}"))?;
+    }
+    if let Some((size, modified_ns)) = staged.signature {
         set_metadata(transaction, "state_size", &size)?;
         set_metadata(transaction, "state_modified_ns", &modified_ns)?;
     } else {
@@ -7375,6 +7507,33 @@ fn sync_thread_metadata(
             .map_err(|error| format!("无法清理会话标题索引签名：{error}"))?;
     }
     Ok(true)
+}
+
+fn publish_thread_metadata_only(
+    connection: &mut Connection,
+    staged: StagedThreadMetadata,
+) -> Result<u64, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始会话标题索引发布事务：{error}"))?;
+    if !apply_thread_metadata_stage(
+        &transaction,
+        ThreadMetadataStage::Updated(staged),
+    )? {
+        let revision = metadata_i64(&transaction, "revision")?.unwrap_or(0);
+        transaction
+            .commit()
+            .map_err(|error| format!("无法结束会话标题索引发布事务：{error}"))?;
+        return Ok(u64::try_from(revision).unwrap_or(0));
+    }
+    let revision = metadata_i64(&transaction, "revision")?
+        .unwrap_or(0)
+        .saturating_add(1);
+    set_metadata(&transaction, "revision", &revision.to_string())?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交会话标题索引发布事务：{error}"))?;
+    Ok(u64::try_from(revision).unwrap_or(0))
 }
 
 fn existing_regular_index(path: &Path) -> Result<bool, String> {
