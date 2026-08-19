@@ -35,6 +35,8 @@ type LineagePayload = {
   generatedAt?: string | null;
   preciseRecentUsageCoveredAt?: string | null;
   preciseRecentUsageFresh?: boolean;
+  /** Pre-lineage exact owner used attribution generation as its receipt. */
+  preciseAttributionGeneration?: DashboardLineageScalar;
 };
 
 interface NormalizedDashboardLineage {
@@ -61,7 +63,10 @@ function normalizeDashboardLineage(
 ): NormalizedDashboardLineage {
   const homeIdentity = nonEmptyText(payload.homeIdentity);
   const usageRevision = normalizeScalar(payload.usageRevision ?? payload.dashboardRevision);
-  const exactGeneration = normalizeScalar(payload.exactGeneration);
+  const exactGeneration = normalizeScalar(
+    payload.exactGeneration
+      ?? (role === "full" ? payload.preciseAttributionGeneration : undefined),
+  );
   const aggregateBoundary = normalizeBoundaryValue(payload.aggregateBoundaryUnix);
   const fallbackCoveredAt = nonEmptyText(payload.preciseRecentUsageCoveredAt);
   const explicitCoverage = payload.coverageKind === "summary"
