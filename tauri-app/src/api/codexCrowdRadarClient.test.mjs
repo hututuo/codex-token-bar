@@ -5,6 +5,7 @@ import {
   bestCodexCrowdRadarModel,
   crowdRadarModelLabel,
   normalizeCodexCrowdRadarPayload,
+  pagedCodexCrowdRadarModels,
   rankedCodexCrowdRadarModels,
 } from "./codexCrowdRadarClient.ts";
 
@@ -53,6 +54,19 @@ test("crowd radar hides rankings with fewer than 45 judged samples", () => {
     realtimeAvailable: true,
   };
   assert.deepEqual(rankedCodexCrowdRadarModels(snapshot).map((row) => row.effort), ["xhigh"]);
+});
+
+test("crowd radar paginates three ranked results per page", () => {
+  const models = Array.from({ length: 7 }, (_, index) => ({
+    model: `model-${index + 1}`,
+    effort: "high",
+    passRate: (50 - index) / 50,
+    scoreSamples: 50,
+  }));
+  const snapshot = { models, recentModels: [], realtimeAvailable: true };
+  assert.deepEqual(pagedCodexCrowdRadarModels(snapshot, 0).map((row) => row.model), ["model-1", "model-2", "model-3"]);
+  assert.deepEqual(pagedCodexCrowdRadarModels(snapshot, 1).map((row) => row.model), ["model-4", "model-5", "model-6"]);
+  assert.deepEqual(pagedCodexCrowdRadarModels(snapshot, 2).map((row) => row.model), ["model-7"]);
 });
 
 test("crowd radar reads through the bounded native command instead of browser CORS", () => {

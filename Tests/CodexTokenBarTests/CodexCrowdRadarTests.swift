@@ -77,6 +77,32 @@ final class CodexCrowdRadarTests: XCTestCase {
         XCTAssertEqual(snapshot.rankedModels.map(\.effort), ["xhigh"])
     }
 
+    func testCrowdRadarPaginatesThreeResultsPerPage() {
+        let models = (1...7).map { index in
+            CodexCrowdRadarModel(
+                model: "model-\(index)",
+                effort: "high",
+                graded: 50,
+                passed: 51 - index,
+                passRate: Double(51 - index) / 50,
+                cells: 50
+            )
+        }
+        let snapshot = CodexCrowdRadarSnapshot(
+            generatedAt: "",
+            taskCount: 50,
+            cellCount: 0,
+            contributorCount: 0,
+            pendingGrades: 0,
+            errorGrades: 0,
+            models: models
+        )
+
+        XCTAssertEqual(snapshot.rankedModels(page: 0).map(\.model), ["model-1", "model-2", "model-3"])
+        XCTAssertEqual(snapshot.rankedModels(page: 1).map(\.model), ["model-4", "model-5", "model-6"])
+        XCTAssertEqual(snapshot.rankedModels(page: 2).map(\.model), ["model-7"])
+    }
+
     func testParserDecodesCurrentDirectResponseShape() throws {
         let table = Data(#"""
         {

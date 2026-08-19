@@ -283,6 +283,17 @@ export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {
   return compactRadarModelName(`${family} ${row.effort}`.trim());
 }
 
+export function pagedCodexCrowdRadarModels(
+  snapshot: CodexCrowdRadarSnapshot | null | undefined,
+  pageIndex: number,
+  pageSize = 3,
+): CodexCrowdRadarModel[] {
+  const safePage = Math.max(0, Math.trunc(pageIndex));
+  const safePageSize = Math.max(1, Math.trunc(pageSize));
+  const start = safePage * safePageSize;
+  return rankedCodexCrowdRadarModels(snapshot, start + safePageSize).slice(start, start + safePageSize);
+}
+
 function parseModels(leaderboard: Record<string, unknown> | null): CodexCrowdRadarModel[] {
   const container = valueFor(leaderboard, [
     "models",

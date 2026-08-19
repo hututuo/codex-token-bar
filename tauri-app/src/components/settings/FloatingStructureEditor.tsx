@@ -688,6 +688,24 @@ export function FloatingStructureEditor({
           <span>每一行就是悬浮窗的一行；拖动行排序，拖到“已隐藏”即可隐藏。</span>
         </div>
         <div className="floating-structure-actions">
+          <label className="fs-page-count" title="每页显示 3 个众测结果">
+            <span>众测页数</span>
+            <select
+              aria-label="众测雷达页数"
+              onChange={(event) => {
+                const pageCount = Number(event.currentTarget.value);
+                commit(
+                  { ...visibility, crowdRadarPageCount: pageCount },
+                  `众测雷达改为 ${pageCount} 页`,
+                );
+              }}
+              value={visibility.crowdRadarPageCount}
+            >
+              <option value={1}>1页</option>
+              <option value={2}>2页</option>
+              <option value={3}>3页</option>
+            </select>
+          </label>
           <label className="fs-arrow-toggle" title="关闭后只隐藏箭头图案，左右边缘仍可点击翻页">
             <input
               checked={visibility.showPageNavigationArrows}
@@ -958,7 +976,7 @@ export function FloatingStructureEditor({
 
       {resetPending ? (
         <div className="fs-reset-confirm" role="alertdialog" aria-label="恢复默认布局确认">
-          <span>恢复默认显示、顺序、翻页箭头和“模型占比 → 模型费用”组合？</span>
+          <span>恢复默认显示、顺序、翻页箭头、众测 2 页和“模型占比 → 模型费用”组合？</span>
           <button onClick={() => setResetPending(false)} type="button">取消</button>
           <button onClick={() => {
             setResetPending(false);

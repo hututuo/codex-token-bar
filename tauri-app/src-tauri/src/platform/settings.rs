@@ -2686,6 +2686,7 @@ fn sanitize_floating_content_visibility(
         show_quota: visibility.show_quota,
         show_radar: visibility.show_radar,
         show_crowd_radar: visibility.show_crowd_radar,
+        crowd_radar_page_count: visibility.crowd_radar_page_count.clamp(1, 3),
         show_page_navigation_arrows: visibility.show_page_navigation_arrows,
         order: sanitize_floating_content_order(visibility.order),
         page_pairs: sanitize_floating_page_pairs(visibility.page_pairs),
@@ -3087,6 +3088,7 @@ mod tests {
                 "textTone": 4,
                 "contentVisibility": {
                     "showRadar": false,
+                    "crowdRadarPageCount": 9,
                     "showPageNavigationArrows": false,
                     "order": ["quota", "quota", "unknown", "rateAndBar"]
                 }
@@ -3123,6 +3125,17 @@ mod tests {
                 .floating_window
                 .content_visibility
                 .show_crowd_radar
+        );
+        assert_eq!(
+            sanitized
+                .floating_window
+                .content_visibility
+                .crowd_radar_page_count,
+            3
+        );
+        assert_eq!(
+            FloatingContentVisibilitySnapshot::default().crowd_radar_page_count,
+            2
         );
         assert!(
             sanitized

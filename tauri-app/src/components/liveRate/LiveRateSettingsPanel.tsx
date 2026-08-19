@@ -660,7 +660,7 @@ function isFloatingGroupVisible(visibility: FloatingContentVisibility, group: Fl
   return Boolean(visibility[visibilityKey(group)]);
 }
 
-function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentVisibility, "order" | "pagePairs"> {
+function visibilityKey(group: FloatingContentGroup): keyof Omit<FloatingContentVisibility, "order" | "pagePairs" | "showPageNavigationArrows" | "crowdRadarPageCount"> {
   switch (group) {
     case "rateAndBar":
       return "showRateAndBar";

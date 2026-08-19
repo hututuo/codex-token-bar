@@ -40,6 +40,7 @@ export const DEFAULT_FLOATING_CONTENT_VISIBILITY: FloatingContentVisibility = {
   showQuota: true,
   showRadar: true,
   showCrowdRadar: true,
+  crowdRadarPageCount: 2,
   showPageNavigationArrows: false,
   order: FLOATING_CONTENT_GROUPS,
   pagePairs: DEFAULT_FLOATING_PAGE_PAIRS,
@@ -68,10 +69,17 @@ export function sanitizeFloatingContentVisibility(value: Partial<FloatingContent
     showQuota: value?.showQuota ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showQuota,
     showRadar: value?.showRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showRadar,
     showCrowdRadar: value?.showCrowdRadar ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showCrowdRadar,
+    crowdRadarPageCount: sanitizeCrowdRadarPageCount(value?.crowdRadarPageCount),
     showPageNavigationArrows: value?.showPageNavigationArrows ?? DEFAULT_FLOATING_CONTENT_VISIBILITY.showPageNavigationArrows,
     order: sanitizeContentOrder(value?.order),
     pagePairs: sanitizeFloatingPagePairs(value?.pagePairs),
   };
+}
+
+export function sanitizeCrowdRadarPageCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(3, Math.max(1, Math.trunc(value)))
+    : DEFAULT_FLOATING_CONTENT_VISIBILITY.crowdRadarPageCount;
 }
 
 export interface FloatingContentLayoutRow {
@@ -323,7 +331,7 @@ export function isFloatingGroupVisible(
   }
 }
 
-export type FloatingVisibilityKey = Exclude<keyof FloatingContentVisibility, "order" | "pagePairs" | "showPageNavigationArrows">;
+export type FloatingVisibilityKey = Exclude<keyof FloatingContentVisibility, "order" | "pagePairs" | "showPageNavigationArrows" | "crowdRadarPageCount">;
 
 export function floatingVisibilityKey(group: FloatingContentGroup): FloatingVisibilityKey {
   switch (group) {

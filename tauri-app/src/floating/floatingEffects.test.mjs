@@ -37,11 +37,12 @@ test("floating settings events win over a stale startup settings read", () => {
 
 test("crowd radar compares three compact results without a visual title or lower-value coverage fields", () => {
   const crowdRow = /export function FloatingCrowdRadarRow[\s\S]*?\n}\n\nfunction floatingRadarSecondaryIQText/.exec(previewSource)?.[0] ?? "";
-  assert.match(crowdRow, /rankedCodexCrowdRadarModels\(snapshot, 3\)/);
+  assert.match(crowdRow, /const start = Math\.max\(0, Math\.trunc\(pageIndex\)\) \* 3/);
+  assert.match(crowdRow, /pagedCodexCrowdRadarModels\(snapshot, pageIndex\)/);
   assert.match(crowdRow, /floating-crowd-radar-trailing/);
   assert.match(crowdRow, /floating-crowd-radar-result/);
   assert.doesNotMatch(crowdRow, />众测</);
-  assert.match(crowdRow, /index=\{2\} model=\{leaders\[2\]\}/);
+  assert.match(crowdRow, /index=\{start \+ 2\} model=\{leaders\[2\]\}/);
   assert.match(crowdRow, /IQ .*model\.scorePassed.*model\.scoreSamples/);
   assert.doesNotMatch(crowdRow, /IQ .*model\.scoreSamples.*判/);
   assert.doesNotMatch(crowdRow, /IQ .*model\.graded.*判/);
@@ -50,6 +51,14 @@ test("crowd radar compares three compact results without a visual title or lower
   assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-2px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(4px \* var\(--floating-scale\)\);/);
+});
+
+test("floating settings expose one two or three crowd radar pages", () => {
+  assert.match(structureEditorSource, /aria-label="众测雷达页数"/);
+  assert.match(structureEditorSource, /<option value=\{1\}>1页<\/option>/);
+  assert.match(structureEditorSource, /<option value=\{2\}>2页<\/option>/);
+  assert.match(structureEditorSource, /<option value=\{3\}>3页<\/option>/);
+  assert.match(structureEditorSource, /crowdRadarPageCount: pageCount/);
 });
 
 test("ripple uses a Swift-style sprite image atlas instead of realtime DOM canvas drawing", () => {

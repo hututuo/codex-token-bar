@@ -589,6 +589,8 @@ pub struct FloatingContentVisibilitySnapshot {
     pub show_radar: bool,
     #[serde(default = "default_enabled")]
     pub show_crowd_radar: bool,
+    #[serde(default = "default_crowd_radar_page_count")]
+    pub crowd_radar_page_count: u8,
     #[serde(default)]
     pub show_page_navigation_arrows: bool,
     #[serde(default = "default_floating_content_order")]
@@ -609,6 +611,7 @@ impl Default for FloatingContentVisibilitySnapshot {
             show_quota: default_enabled(),
             show_radar: default_enabled(),
             show_crowd_radar: default_enabled(),
+            crowd_radar_page_count: default_crowd_radar_page_count(),
             show_page_navigation_arrows: false,
             order: default_floating_content_order(),
             page_pairs: default_floating_page_pairs(),
@@ -635,6 +638,10 @@ fn default_floating_content_order() -> Vec<String> {
 
 fn default_floating_page_pairs() -> Vec<Vec<String>> {
     vec![vec!["todayModelShare".into(), "todayModelCost".into()]]
+}
+
+fn default_crowd_radar_page_count() -> u8 {
+    2
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

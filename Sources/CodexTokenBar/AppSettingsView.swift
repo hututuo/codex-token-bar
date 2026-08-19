@@ -140,6 +140,7 @@ struct AppSettingsView: View {
     @Binding var showQuota: Bool
     @Binding var showRadar: Bool
     @Binding var showCrowdRadar: Bool
+    @Binding var crowdRadarPageCount: Int
     @Binding var contentOrderRaw: String
     @Binding var pagePairsRaw: String
     @Binding var showPageNavigationArrows: Bool
@@ -1145,6 +1146,7 @@ struct AppSettingsView: View {
                     showQuota: showQuota,
                     showRadar: showRadar,
                     showCrowdRadar: showCrowdRadar,
+                    crowdRadarPageCount: crowdRadarPageCount,
                     showPageNavigationArrows: showPageNavigationArrows,
                     groupOrder: orderedGroups,
                     pagePairs: pagePairs
@@ -1160,6 +1162,7 @@ struct AppSettingsView: View {
                 showQuota = next.showQuota
                 showRadar = next.showRadar
                 showCrowdRadar = next.showCrowdRadar
+                crowdRadarPageCount = next.crowdRadarPageCount
                 showPageNavigationArrows = next.showPageNavigationArrows
                 contentOrderRaw = FloatingPanelContentVisibility.encodedOrder(next.groupOrder)
                 pagePairsRaw = FloatingPanelContentVisibility.encodedPagePairs(next.pagePairs)

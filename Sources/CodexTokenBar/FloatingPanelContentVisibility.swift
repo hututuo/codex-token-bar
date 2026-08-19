@@ -126,6 +126,8 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     static let quotaKey = "floatingPanelShowQuota"
     static let radarKey = "floatingPanelShowRadar"
     static let crowdRadarKey = "floatingPanelShowCrowdRadar"
+    static let crowdRadarPageCountKey = "floatingPanelCrowdRadarPageCount"
+    static let defaultCrowdRadarPageCount = 2
     static let orderKey = "floatingPanelContentOrderV01"
     static let pagePairsKey = "floatingPanelPagePairsV01"
     static let pageNavigationArrowsKey = "floatingPanelShowPageNavigationArrows"
@@ -170,6 +172,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
     var showQuota: Bool
     var showRadar: Bool
     var showCrowdRadar: Bool
+    var crowdRadarPageCount: Int
     var showPageNavigationArrows: Bool
     var groupOrder = Self.defaultOrder
     var pagePairs = Self.defaultPagePairs
@@ -184,6 +187,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         showQuota: Bool,
         showRadar: Bool,
         showCrowdRadar: Bool = false,
+        crowdRadarPageCount: Int = Self.defaultCrowdRadarPageCount,
         showPageNavigationArrows: Bool = false,
         groupOrder: [FloatingPanelContentGroup] = Self.defaultOrder,
         pagePairs: [FloatingPanelPagePair] = Self.defaultPagePairs
@@ -197,6 +201,7 @@ struct FloatingPanelContentVisibility: Equatable, Sendable {
         self.showQuota = showQuota
         self.showRadar = showRadar
         self.showCrowdRadar = showCrowdRadar
+        self.crowdRadarPageCount = min(max(crowdRadarPageCount, 1), 3)
         self.showPageNavigationArrows = showPageNavigationArrows
         self.groupOrder = groupOrder
         self.pagePairs = Self.sanitizedPagePairs(pagePairs)

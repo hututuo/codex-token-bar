@@ -6395,6 +6395,26 @@ button.quota-side-card:hover {
   padding: 5px 6px;
 }
 
+.fs-page-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+.fs-page-count select {
+  height: 25px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--settings-surface-raised, var(--panel));
+  color: var(--text);
+  font: inherit;
+  padding: 0 5px;
+}
+
 .fs-row-handle {
   width: 33px;
   cursor: grab;

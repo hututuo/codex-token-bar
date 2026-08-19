@@ -539,7 +539,10 @@ struct TokenDisplayCard: View {
         case .radar:
             TokenDisplayRadarStrip(presentation: radarPresentation)
         case .crowdRadar:
-            TokenDisplayCrowdRadarRow(presentation: radarPresentation)
+            TokenDisplayCrowdRadarRow(
+                presentation: radarPresentation,
+                pageIndex: modelPageIndex
+            )
         }
     }
 
@@ -547,6 +550,11 @@ struct TokenDisplayCard: View {
         for row: FloatingPanelPresentationRow
     ) -> [PagedContentDescriptor] {
         row.groups.flatMap { group -> [PagedContentDescriptor] in
+            if group == .crowdRadar {
+                return (0..<visibility.crowdRadarPageCount).map {
+                    PagedContentDescriptor(group: group, modelPageIndex: $0)
+                }
+            }
             guard group == .todayModelCost else {
                 return [PagedContentDescriptor(group: group, modelPageIndex: 0)]
             }
@@ -575,7 +583,7 @@ struct TokenDisplayCard: View {
         }
         let index = selectedPageIndexByRowID[
             row.id,
-            default: FloatingPanelContentVisibility.initialPageIndex(for: row.groups)
+            default: FloatingPanelContentVisibility.initialPageIndex(for: pages.map(\.group))
         ]
         return pages[index % pages.count]
     }
@@ -598,7 +606,7 @@ struct TokenDisplayCard: View {
         return Button {
             let current = selectedPageIndexByRowID[
                 row.id,
-                default: FloatingPanelContentVisibility.initialPageIndex(for: row.groups)
+                default: FloatingPanelContentVisibility.initialPageIndex(for: pages.map(\.group))
             ]
             selectedPageIndexByRowID[row.id] = (current + delta + pageCount) % pageCount
             onPageNavigation?()

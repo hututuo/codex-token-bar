@@ -305,24 +305,26 @@ struct TokenDisplayRadarStrip: View {
 
 struct TokenDisplayCrowdRadarRow: View {
     let presentation: CodexRadarPresentationState
+    var pageIndex = 0
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
         if let crowd = presentation.crowdSnapshot, !crowd.rankedModels.isEmpty {
-            let leaders = Array(crowd.rankedModels.prefix(3))
+            let start = max(0, pageIndex) * 3
+            let leaders = crowd.rankedModels(page: pageIndex)
             TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor) {
-                resultView(leaders.first, position: 1)
+                resultView(leaders.first, position: start + 1)
             } trailing: {
                 HStack(spacing: 4.scaled(by: displayScale)) {
-                    resultView(leaders.dropFirst().first, position: 2)
+                    resultView(leaders.dropFirst().first, position: start + 2)
                     Rectangle()
                         .fill(textPalette.dividerColor)
                         .frame(
                             width: 1,
                             height: (14 * FloatingTokenPanelMetrics.crowdRadarTypographyScale).scaled(by: displayScale)
                         )
-                    resultView(leaders.dropFirst(2).first, position: 3)
+                    resultView(leaders.dropFirst(2).first, position: start + 3)
                 }
             }
             .font(.system(
@@ -334,7 +336,7 @@ struct TokenDisplayCrowdRadarRow: View {
             .minimumScaleFactor(0.76)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("众测雷达")
-            .accessibilityValue(accessibilityValue(leaders))
+            .accessibilityValue(accessibilityValue(leaders, start: start))
         } else {
             HStack {
                 Spacer()
@@ -360,9 +362,9 @@ struct TokenDisplayCrowdRadarRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func accessibilityValue(_ leaders: [CodexCrowdRadarModel]) -> String {
+    private func accessibilityValue(_ leaders: [CodexCrowdRadarModel], start: Int) -> String {
         leaders.enumerated().map { index, model in
-            "第\(index + 1)名 \(model.label)，IQ \(String(format: "%.1f", model.iq))，本口径通过 \(model.scorePassed)/\(model.scoreSamples)"
+            "第\(start + index + 1)名 \(model.label)，IQ \(String(format: "%.1f", model.iq))，本口径通过 \(model.scorePassed)/\(model.scoreSamples)"
         }.joined(separator: "；")
     }
 }

@@ -386,7 +386,7 @@ export function StatusPanelApp() {
         return (
           <article className="status-summary-card status-summary-card--wide" key={section}>
             <header><span>众测雷达</span></header>
-            <FloatingCrowdRadarRow snapshot={crowdRadarSnapshot} style={{}} />
+            <FloatingCrowdRadarRow pageIndex={0} snapshot={crowdRadarSnapshot} style={{}} />
           </article>
         );
     }

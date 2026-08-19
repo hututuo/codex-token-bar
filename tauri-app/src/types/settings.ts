@@ -43,6 +43,7 @@ export interface FloatingContentVisibility {
   showQuota: boolean;
   showRadar: boolean;
   showCrowdRadar: boolean;
+  crowdRadarPageCount: number;
   showPageNavigationArrows: boolean;
   order: FloatingContentGroup[];
   pagePairs: FloatingContentPagePair[];

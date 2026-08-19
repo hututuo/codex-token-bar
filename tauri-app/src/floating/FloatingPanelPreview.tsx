@@ -33,7 +33,7 @@ import {
   floatingPanelAppearance,
   floatingPanelSettingsForVisibility,
 } from "./floatingPresentation";
-import { crowdRadarModelLabel, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
+import { crowdRadarModelLabel, pagedCodexCrowdRadarModels, rankedCodexCrowdRadarModels, type CodexCrowdRadarSnapshot } from "../api/codexCrowdRadarClient";
 import type { OfficialAPIPriceModel } from "../settings/quotaPriceModel";
 import {
   FLOATING_MODEL_USAGE_VISIBLE_LIMIT,
@@ -333,8 +333,15 @@ function FloatingPagedContentRow({
   onPageNavigation,
   ...props
 }: FloatingPagedContentRowProps) {
-  const [selectedIndex, setSelectedIndex] = useState(() => initialFloatingPageIndex(row.groups));
-  const pages = floatingPagedContentDescriptors(row, props.snapshot, props.priceModel);
+  const pages = floatingPagedContentDescriptors(
+    row,
+    props.snapshot,
+    props.priceModel,
+    props.settings.contentVisibility.crowdRadarPageCount,
+  );
+  const [selectedIndex, setSelectedIndex] = useState(() => (
+    initialFloatingPageIndex(pages.map((page) => page.group))
+  ));
   const safeIndex = pages.length > 0 ? selectedIndex % pages.length : 0;
   const selectedPage = pages[safeIndex] ?? { group: row.primaryGroup, modelPageIndex: 0 };
   const paged = pages.length > 1;
@@ -410,8 +417,15 @@ function floatingPagedContentDescriptors(
   row: FloatingContentLayoutRow,
   snapshot: FloatingPanelSnapshot,
   priceModel: OfficialAPIPriceModel,
+  crowdRadarPageCount: number,
 ): Array<{ group: FloatingContentGroup; modelPageIndex: number }> {
   return row.groups.flatMap((group): Array<{ group: FloatingContentGroup; modelPageIndex: number }> => {
+    if (group === "crowdRadar") {
+      return Array.from({ length: crowdRadarPageCount }, (_, modelPageIndex) => ({
+        group,
+        modelPageIndex,
+      }));
+    }
     if (group !== "todayModelCost") {
       return [{ group, modelPageIndex: 0 }];
     }
@@ -539,7 +553,7 @@ function FloatingContentRow({
     case "radar":
       return <FloatingRadarRow snapshot={radarSnapshot} style={style} />;
     case "crowdRadar":
-      return <FloatingCrowdRadarRow snapshot={crowdRadarSnapshot} style={style} />;
+      return <FloatingCrowdRadarRow pageIndex={modelPageIndex} snapshot={crowdRadarSnapshot} style={style} />;
     case "quota": {
       const quotaWindows = [
         {
@@ -703,14 +717,15 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
   );
 }
 
-export function FloatingCrowdRadarRow({ snapshot, style }: { snapshot?: CodexCrowdRadarSnapshot | null; style: CSSProperties }) {
-  const leaders = rankedCodexCrowdRadarModels(snapshot, 3);
+export function FloatingCrowdRadarRow({ pageIndex = 0, snapshot, style }: { pageIndex?: number; snapshot?: CodexCrowdRadarSnapshot | null; style: CSSProperties }) {
+  const start = Math.max(0, Math.trunc(pageIndex)) * 3;
+  const leaders = pagedCodexCrowdRadarModels(snapshot, pageIndex);
   return (
     <div className="floating-row floating-crowd-radar" style={style}>
-      <FloatingCrowdRadarResult index={0} model={leaders[0]} />
+      <FloatingCrowdRadarResult index={start} model={leaders[0]} />
       <div className="floating-crowd-radar-trailing">
-        <FloatingCrowdRadarResult index={1} model={leaders[1]} />
-        <FloatingCrowdRadarResult index={2} model={leaders[2]} />
+        <FloatingCrowdRadarResult index={start + 1} model={leaders[1]} />
+        <FloatingCrowdRadarResult index={start + 2} model={leaders[2]} />
       </div>
     </div>
   );

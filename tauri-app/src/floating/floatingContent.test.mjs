@@ -174,6 +174,13 @@ test("page navigation arrow visibility defaults off and preserves explicit choic
   assert.equal(sanitizeFloatingContentVisibility({ showPageNavigationArrows: true }).showPageNavigationArrows, true);
 });
 
+test("crowd radar defaults to two pages and clamps settings to one through three", () => {
+  assert.equal(DEFAULT_FLOATING_CONTENT_VISIBILITY.crowdRadarPageCount, 2);
+  assert.equal(sanitizeFloatingContentVisibility({ crowdRadarPageCount: 0 }).crowdRadarPageCount, 1);
+  assert.equal(sanitizeFloatingContentVisibility({ crowdRadarPageCount: 3 }).crowdRadarPageCount, 3);
+  assert.equal(sanitizeFloatingContentVisibility({ crowdRadarPageCount: 9 }).crowdRadarPageCount, 3);
+});
+
 test("paging guide pointer targets the first real paged row", () => {
   assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 58.5);
   assert.equal(firstPagedFloatingRowCenterY(sanitizeFloatingContentVisibility({
@@ -204,6 +211,7 @@ test("paged radar rows reserve the taller page when switching to crowd radar", (
 
 test("radar and crowd paging initially shows the ordinary radar", () => {
   assert.equal(initialFloatingPageIndex(["crowdRadar", "radar"]), 1);
+  assert.equal(initialFloatingPageIndex(["crowdRadar", "crowdRadar", "radar"]), 2);
   assert.equal(initialFloatingPageIndex(["radar", "crowdRadar"]), 0);
 });
 

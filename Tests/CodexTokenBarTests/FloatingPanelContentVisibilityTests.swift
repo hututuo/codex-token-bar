@@ -195,8 +195,38 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             1
         )
         XCTAssertEqual(
+            FloatingPanelContentVisibility.initialPageIndex(for: [.crowdRadar, .crowdRadar, .radar]),
+            2
+        )
+        XCTAssertEqual(
             FloatingPanelContentVisibility.initialPageIndex(for: [.radar, .crowdRadar]),
             0
+        )
+    }
+
+    func testCrowdRadarDefaultsToTwoPagesAndClampsToOneThroughThree() {
+        XCTAssertEqual(FloatingPanelContentVisibility.default.crowdRadarPageCount, 2)
+        XCTAssertEqual(
+            FloatingPanelContentVisibility(
+                showRateAndBar: true,
+                showUsageStatus: true,
+                showMetrics: true,
+                showQuota: true,
+                showRadar: true,
+                crowdRadarPageCount: 0
+            ).crowdRadarPageCount,
+            1
+        )
+        XCTAssertEqual(
+            FloatingPanelContentVisibility(
+                showRateAndBar: true,
+                showUsageStatus: true,
+                showMetrics: true,
+                showQuota: true,
+                showRadar: true,
+                crowdRadarPageCount: 8
+            ).crowdRadarPageCount,
+            3
         )
     }
 
@@ -1280,7 +1310,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             endingBefore: "private func tokenDisplayRadarProbabilityText"
         ))
 
-        XCTAssertTrue(crowdRow.contains("let leaders = Array(crowd.rankedModels.prefix(3))"))
+        XCTAssertTrue(crowdRow.contains("let start = max(0, pageIndex) * 3"))
+        XCTAssertTrue(crowdRow.contains("let leaders = crowd.rankedModels(page: pageIndex)"))
         XCTAssertEqual(
             componentsSource.components(separatedBy: "TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor)").count - 1,
             2
@@ -1288,9 +1319,9 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(componentsSource.contains("let leadingWidth = contentWidth * 0.37"))
         XCTAssertFalse(crowdRow.contains("Text(\"众测\")"))
         XCTAssertFalse(crowdRow.contains("Label(\"众测雷达\", systemImage:"))
-        XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: 1)"))
-        XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst().first, position: 2)"))
-        XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst(2).first, position: 3)"))
+        XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: start + 1)"))
+        XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst().first, position: start + 2)"))
+        XCTAssertTrue(crowdRow.contains("resultView(leaders.dropFirst(2).first, position: start + 3)"))
         XCTAssertTrue(crowdRow.contains("· \\($0.scorePassed)/\\($0.scoreSamples)"))
         XCTAssertFalse(crowdRow.contains("· \\($0.scoreSamples)判"))
         XCTAssertFalse(crowdRow.contains("· \\($0.graded)判"))
@@ -1526,6 +1557,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * displayScale)"))
         XCTAssertFalse(panel.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * scale)"))
         XCTAssertFalse(editor.contains(".padding(.horizontal, FloatingTokenPanelMetrics.horizontalPadding * previewScale)"))
+        XCTAssertTrue(editor.contains("Picker(\"众测页数\", selection: crowdRadarPageCountBinding)"))
+        XCTAssertTrue(editor.contains("Text(\"众测 \\(pageCount)页\")"))
         XCTAssertTrue(source.contains(".scaleEffect(x: 0.58, y: 0.92, anchor: .center)"))
         XCTAssertTrue(source.contains("let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing"))
         XCTAssertTrue(source.contains(".overlay(alignment: edgeAlignment)"))

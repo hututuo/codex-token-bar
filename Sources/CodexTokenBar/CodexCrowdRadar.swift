@@ -123,6 +123,12 @@ struct CodexCrowdRadarSnapshot: Equatable, Sendable {
         rankedModels(for: .realtime)
     }
 
+    func rankedModels(page: Int, pageSize: Int = 3) -> [CodexCrowdRadarModel] {
+        let safePage = max(0, page)
+        let safePageSize = max(1, pageSize)
+        return Array(rankedModels.dropFirst(safePage * safePageSize).prefix(safePageSize))
+    }
+
     var bestModel: CodexCrowdRadarModel? { rankedModels.first }
 
     func bestModel(for mode: CodexCrowdRadarMode) -> CodexCrowdRadarModel? {

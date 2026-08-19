@@ -99,6 +99,7 @@ struct DashboardView: View {
     @AppStorage(FloatingPanelContentVisibility.quotaKey) private var floatingPanelShowQuota = FloatingPanelContentVisibility.default.showQuota
     @AppStorage(FloatingPanelContentVisibility.radarKey) private var floatingPanelShowRadar = FloatingPanelContentVisibility.default.showRadar
     @AppStorage(FloatingPanelContentVisibility.crowdRadarKey) private var floatingPanelShowCrowdRadar = FloatingPanelContentVisibility.default.showCrowdRadar
+    @AppStorage(FloatingPanelContentVisibility.crowdRadarPageCountKey) private var floatingPanelCrowdRadarPageCount = FloatingPanelContentVisibility.defaultCrowdRadarPageCount
     @AppStorage(FloatingPanelContentVisibility.orderKey) private var floatingPanelContentOrderRaw = FloatingPanelContentVisibility.defaultOrderRaw
     @AppStorage(FloatingPanelContentVisibility.pagePairsKey) private var floatingPanelPagePairsRaw = FloatingPanelContentVisibility.defaultPagePairsRaw
     @AppStorage(FloatingPanelContentVisibility.pageNavigationArrowsKey) private var floatingPanelShowPageNavigationArrows = FloatingPanelContentVisibility.default.showPageNavigationArrows
@@ -512,6 +513,7 @@ struct DashboardView: View {
                 showQuota: $floatingPanelShowQuota,
                 showRadar: $floatingPanelShowRadar,
                 showCrowdRadar: $floatingPanelShowCrowdRadar,
+                crowdRadarPageCount: $floatingPanelCrowdRadarPageCount,
                 contentOrderRaw: $floatingPanelContentOrderRaw,
                 pagePairsRaw: $floatingPanelPagePairsRaw,
                 showPageNavigationArrows: $floatingPanelShowPageNavigationArrows,
@@ -1150,6 +1152,7 @@ struct DashboardView: View {
             showQuota: floatingPanelShowQuota,
             showRadar: floatingPanelShowRadar,
             showCrowdRadar: floatingPanelShowCrowdRadar,
+            crowdRadarPageCount: floatingPanelCrowdRadarPageCount,
             showPageNavigationArrows: floatingPanelShowPageNavigationArrows,
             groupOrder: FloatingPanelContentVisibility.order(from: floatingPanelContentOrderRaw),
             pagePairs: FloatingPanelContentVisibility.pagePairs(from: floatingPanelPagePairsRaw)

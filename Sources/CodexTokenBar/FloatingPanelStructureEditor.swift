@@ -94,6 +94,16 @@ struct FloatingPanelStructureEditor: View {
                 }
                 Spacer(minLength: 12)
                 HStack(spacing: 10) {
+                    Picker("众测页数", selection: crowdRadarPageCountBinding) {
+                        ForEach(1...3, id: \.self) { pageCount in
+                            Text("众测 \(pageCount)页").tag(pageCount)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.mini)
+                    .fixedSize()
+                    .help("每页显示 3 个众测结果")
                     Toggle("显示翻页箭头", isOn: pageNavigationArrowsBinding)
                         .toggleStyle(.switch)
                         .controlSize(.mini)
@@ -147,7 +157,7 @@ struct FloatingPanelStructureEditor: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将恢复默认显示、顺序、翻页箭头和“今日模型占比 → 今日模型费用”组合。")
+            Text("将恢复默认显示、顺序、翻页箭头、众测 2 页和“今日模型占比 → 今日模型费用”组合。")
         }
         .onAppear {
             if selectedRowID == nil {
@@ -163,6 +173,17 @@ struct FloatingPanelStructureEditor: View {
         .onDisappear {
             finishDrag()
         }
+    }
+
+    private var crowdRadarPageCountBinding: Binding<Int> {
+        Binding(
+            get: { visibility.crowdRadarPageCount },
+            set: { pageCount in
+                var next = visibility
+                next.crowdRadarPageCount = min(max(pageCount, 1), 3)
+                commit(next, message: "众测雷达改为 \(next.crowdRadarPageCount) 页")
+            }
+        )
     }
 
     private var editorColumn: some View {

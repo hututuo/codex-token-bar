@@ -119,7 +119,12 @@ test("floating settings combine appearance, content, paging, and the real previe
     assert.ok(panel.querySelector(".floating-structure-grid.is-controls-only"));
     assert.equal(panel.querySelector('[aria-label="悬浮窗外观预览"]'), null);
     assert.equal(panel.querySelector(".app-settings-preview"), null);
-    assert.equal(panel.querySelectorAll(".floating-structure-shell select").length, 0);
+    const crowdPageSelect = panel.querySelector('select[aria-label="众测雷达页数"]');
+    assert.ok(crowdPageSelect);
+    assert.equal(crowdPageSelect.value, "2");
+    crowdPageSelect.value = "3";
+    await act(async () => crowdPageSelect.dispatchEvent(new window.Event("change", { bubbles: true, cancelable: true })));
+    assert.equal(calls.floatingContentVisibilities.at(-1).crowdRadarPageCount, 3);
 
     const arrowToggle = panel.querySelector('.fs-arrow-toggle input[type="checkbox"]');
     assert.ok(arrowToggle);
