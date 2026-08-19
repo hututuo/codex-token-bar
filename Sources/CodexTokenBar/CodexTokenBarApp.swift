@@ -3,6 +3,8 @@ import SwiftUI
 
 @main
 struct CodexTokenBarApp: App {
+    @NSApplicationDelegateAdaptor(CodexTokenBarApplicationDelegate.self)
+    private var applicationDelegate
     @StateObject private var loginItemStore = LoginItemStore()
     @StateObject private var updateSettingsStore: AppUpdateSettingsStore
     @StateObject private var floatingPanel: FloatingTokenPanelController

@@ -2,6 +2,41 @@ import AppKit
 import Foundation
 import ServiceManagement
 
+@MainActor
+final class DashboardReopenCoordinator {
+    static let shared = DashboardReopenCoordinator()
+
+    private var reopenAction: (() -> Void)?
+
+    func install(_ action: @escaping () -> Void) {
+        reopenAction = action
+    }
+
+    @discardableResult
+    func handleApplicationReopen(hasVisibleWindows: Bool) -> Bool {
+        if hasVisibleWindows {
+            return true
+        }
+        guard let reopenAction else {
+            return false
+        }
+        reopenAction()
+        return true
+    }
+}
+
+@MainActor
+final class CodexTokenBarApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        DashboardReopenCoordinator.shared.handleApplicationReopen(
+            hasVisibleWindows: flag
+        )
+    }
+}
+
 enum StartupPresentation {
     private static let setupGuideCompletedKey = "setupGuideCompletedV01"
     private static let loginLaunchWindowSeconds: TimeInterval = 180

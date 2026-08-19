@@ -355,11 +355,13 @@ struct DashboardView: View {
             showingInterfaceScaleMenu = false
         }
         .onAppear {
-            runtime.setDashboardOpenAction {
+            let dashboardOpenAction = {
                 StartupPresentation.showDashboardWindow {
                     openWindow(id: "dashboard")
                 }
             }
+            runtime.setDashboardOpenAction(dashboardOpenAction)
+            DashboardReopenCoordinator.shared.install(dashboardOpenAction)
             applyDisplaySurfaceDefaultsIfNeeded()
             runtime.acquireConsumer(
                 runtimeConsumerID,
