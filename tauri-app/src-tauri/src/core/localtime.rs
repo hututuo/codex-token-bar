@@ -217,6 +217,11 @@ mod tests {
                 local_date_at(unix("2026-01-01T18:30:00Z")),
                 Date::from_calendar_date(2026, time::Month::January, 2).unwrap()
             );
+            let kathmandu_day =
+                Date::from_calendar_date(2026, time::Month::January, 2).unwrap();
+            let (start, end) = local_day_bounds(kathmandu_day).unwrap();
+            assert_eq!(start, unix("2026-01-01T18:15:00Z"));
+            assert_eq!(end, unix("2026-01-02T18:15:00Z"));
         }
 
         #[test]

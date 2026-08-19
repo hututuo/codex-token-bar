@@ -80,7 +80,11 @@ static FAIL_NEXT_PRECISE_REFRESH_SPAWN: std::sync::atomic::AtomicBool =
 const LEGACY_DASHBOARD_AGGREGATE_CACHE_V16: u32 = 16;
 const LEGACY_DASHBOARD_AGGREGATE_CACHE_V17: u32 = 17;
 const LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 18;
-const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 19;
+// V20 invalidates the V19 local-day projection cache. V19 used one fixed
+// current UTC offset for all historical events, which is wrong across DST or
+// a timezone change. Rebuilding this disposable cache reads the exact SQLite
+// events only; it never rescans JSONL bodies.
+const DASHBOARD_AGGREGATE_CACHE_VERSION: u32 = 20;
 const AGGREGATE_CHECKPOINT_INTERVAL: StdDuration = StdDuration::from_secs(15 * 60);
 const PRECISE_SUMMARY_REFRESH_TTL: StdDuration = StdDuration::from_secs(3 * 60);
 const PRECISE_SUMMARY_FAILURE_RETRY_INTERVAL: StdDuration = StdDuration::from_secs(30);
@@ -2652,11 +2656,11 @@ pub(crate) fn cached_dashboard_snapshot_for_startup(
     }
 
     // A completed exact sync can monotonically advance the current revision
-    // before the next V19 checkpoint is due. Under the same Home, physical
+    // before the next V20 checkpoint is due. Under the same Home, physical
     // identity, parser/schema and attribution provenance, the older numeric
     // envelope remains a trustworthy stale last-good. It must never be marked
     // current or used for attribution coverage.
-    if let Some(cached_revision) = cached_v19_revision_for_startup()
+    if let Some(cached_revision) = cached_v20_revision_for_startup()
         .filter(|cached_revision| *cached_revision <= index_identity.dashboard_revision)
     {
         let mut stale_signature = canonical_signature.clone();
@@ -2778,7 +2782,7 @@ struct PersistentNumericCacheBinding {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PersistentNumericDashboardCacheV19 {
+struct PersistentNumericDashboardCacheV20 {
     version: u32,
     #[serde(flatten)]
     binding: PersistentNumericCacheBinding,
@@ -3092,7 +3096,7 @@ fn sanitize_numeric_recent_usage_points(points: &mut [crate::models::RecentUsage
 }
 
 fn startup_snapshot_from_persistent_numeric(
-    cache: &PersistentNumericDashboardCacheV19,
+    cache: &PersistentNumericDashboardCacheV20,
 ) -> DashboardSnapshot {
     let recent_usage_24h = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_24h);
     let recent_usage_7d = restore_persistent_numeric_recent_usage_points(&cache.recent_usage_7d);
@@ -3220,7 +3224,7 @@ fn cached_dashboard_startup_snapshot(
         .and_then(|cached| cached.snapshot.map(sanitize_legacy_snapshot_for_startup))
 }
 
-fn cached_v19_revision_for_startup() -> Option<u64> {
+fn cached_v20_revision_for_startup() -> Option<u64> {
     DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
         .lock()
@@ -3416,7 +3420,7 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
 }
 
 fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSummary) {
-    // A summary refresh may run after a full V19 publish. Hydrate first so the
+    // A summary refresh may run after a full V20 publish. Hydrate first so the
     // existing binding is carried forward instead of silently downgrading the
     // in-memory aggregate to an unbound snapshot.
     let _ = hydrate_dashboard_aggregate_cache_once();
@@ -3502,7 +3506,7 @@ fn decode_persistent_dashboard_aggregate(data: &[u8]) -> Option<CachedDashboardA
         .and_then(|version| u32::try_from(version).ok())?;
     match version {
         DASHBOARD_AGGREGATE_CACHE_VERSION => {
-            let cache = serde_json::from_slice::<PersistentNumericDashboardCacheV19>(data).ok()?;
+            let cache = serde_json::from_slice::<PersistentNumericDashboardCacheV20>(data).ok()?;
             if cache.version != DASHBOARD_AGGREGATE_CACHE_VERSION
                 || !persistent_numeric_cache_binding_is_well_formed(&cache.binding)
                 || !valid_persistent_cache_timestamp(&cache.built_at)
@@ -3581,7 +3585,7 @@ fn save_persistent_dashboard_aggregate(aggregate: &CachedDashboardAggregate) -> 
     ) {
         return Ok(());
     }
-    let payload = PersistentNumericDashboardCacheV19 {
+    let payload = PersistentNumericDashboardCacheV20 {
         version: DASHBOARD_AGGREGATE_CACHE_VERSION,
         binding: binding.clone(),
         built_at: snapshot.generated_at.clone(),
@@ -3633,7 +3637,7 @@ fn aggregate_checkpoint_due_with_binding(
     if version != DASHBOARD_AGGREGATE_CACHE_VERSION {
         return true;
     }
-    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCacheV19>(&data) else {
+    let Ok(existing) = serde_json::from_slice::<PersistentNumericDashboardCacheV20>(&data) else {
         return true;
     };
     if existing.binding.signature != *signature

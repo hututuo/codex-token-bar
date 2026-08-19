@@ -2807,7 +2807,7 @@ fn live_exact_index_cold_and_warm_scans_when_explicitly_enabled() {
 }
 
 #[test]
-fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
+fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -2819,7 +2819,8 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
     write_lines(
         &file,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
         ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
@@ -2827,7 +2828,7 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
     let connection = Connection::open(&index_path).unwrap();
     let before = connection
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+            "SELECT (SELECT COUNT(*) FROM published_events), (SELECT COUNT(*) FROM published_files), (SELECT COUNT(*) FROM file_fingerprints ff JOIN published_files f ON f.generation = ff.file_generation AND f.path = ff.file_path), (SELECT COUNT(*) FROM file_chunks fc JOIN published_files f ON f.generation = fc.file_generation AND f.path = fc.file_path), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
             [],
             |row| {
                 Ok((
@@ -2872,7 +2873,49 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
                 [legacy_version],
             )
             .unwrap();
+        connection
+            .execute(
+                "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM event_enrichment_sources", [])
+            .unwrap();
+        let model_column_exists = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'model'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+        if model_column_exists {
+            connection.execute("UPDATE events SET model = NULL", []).unwrap();
+        }
         drop(connection);
+
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        let structural = ExactUsageIndex::open(&root).unwrap();
+        drop(structural);
+        assert_eq!(
+            ExactUsageIndex::scan_bytes_for_testing(),
+            (0, 0),
+            "v{legacy_version} structural migration must not read JSONL bodies"
+        );
+        let structurally_migrated = Connection::open(&index_path).unwrap();
+        assert_eq!(
+            structurally_migrated
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            legacy_version.to_string(),
+            "the final schema marker must wait for historical enrichment"
+        );
+        drop(structurally_migrated);
 
         ExactUsageIndex::reset_scan_bytes_for_testing();
         assert_eq!(
@@ -2880,15 +2923,17 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
             120,
             "v{legacy_version} migration must leave the published dashboard immediately readable"
         );
+        let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+        assert_eq!(append_scan_bytes, 0);
         assert_eq!(
-            ExactUsageIndex::scan_bytes_for_testing(),
-            (0, 0),
-            "v{legacy_version} migration must not rescan the JSONL source"
+            full_scan_bytes,
+            fs::metadata(&file).unwrap().len(),
+            "v{legacy_version} must enrich the old published watermark exactly once"
         );
         let connection = Connection::open(&index_path).unwrap();
         let after = connection
             .query_row(
-                "SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM files), (SELECT COUNT(*) FROM file_fingerprints), (SELECT COUNT(*) FROM file_chunks), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
+                "SELECT (SELECT COUNT(*) FROM published_events), (SELECT COUNT(*) FROM published_files), (SELECT COUNT(*) FROM file_fingerprints ff JOIN published_files f ON f.generation = ff.file_generation AND f.path = ff.file_path), (SELECT COUNT(*) FROM file_chunks fc JOIN published_files f ON f.generation = fc.file_generation AND f.path = fc.file_path), (SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation')",
                 [],
                 |row| {
                     Ok((
@@ -2902,9 +2947,11 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
             )
             .unwrap();
         assert_eq!(
-            after, before,
-            "v{legacy_version} migration changed durable counts"
+            (after.0, after.1, after.2, after.3),
+            (before.0, before.1, before.2, before.3),
+            "v{legacy_version} migration changed published event/file identity"
         );
+        assert!(after.4 > before.4, "enrichment must publish one new generation");
         assert_eq!(
             connection
                 .query_row(
@@ -2913,7 +2960,35 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            "8"
+            "9"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'event_enrichment_revision'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "model-reasoning-v1"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT model FROM published_events", [], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
+                .unwrap(),
+            Some("gpt-5.6-sol".into())
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT reasoning_output_tokens FROM published_events",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap(),
+            Some(7)
         );
         for (table, column) in [
             ("files", "current_model"),
@@ -2936,8 +3011,133 @@ fn exact_index_migrates_github_v6_and_v7_in_place_without_rebuilding() {
             );
         }
         drop(connection);
+
+        ExactUsageIndex::reset_scan_bytes_for_testing();
+        assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+        assert_eq!(
+            ExactUsageIndex::scan_bytes_for_testing(),
+            (0, 0),
+            "completed enrichment must not reread historical JSONL"
+        );
     }
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eenrichment-resume.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":9,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN model", [])
+        .unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute("DELETE FROM event_enrichment_sources", [])
+        .unwrap();
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    ExactUsageIndex::fail_after_staging_once_for_testing();
+    let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("injected interruption"), "{error}");
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (fs::metadata(&file).unwrap().len(), 0)
+    );
+    drop(interrupted);
+
+    let interrupted_database = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        interrupted_database
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "6"
+    );
+    assert_eq!(
+        interrupted_database
+            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        120
+    );
+    drop(interrupted_database);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    resumed.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (0, 0),
+        "the durable private stage must be reused after interruption"
+    );
+    drop(resumed);
+
+    let completed = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        completed
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "9"
+    );
+    assert_eq!(
+        completed
+            .query_row("SELECT model FROM published_events", [], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .unwrap(),
+        Some("gpt-5.6-luna".into())
+    );
+    assert_eq!(
+        completed
+            .query_row(
+                "SELECT reasoning_output_tokens FROM published_events",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .unwrap(),
+        Some(9)
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -6242,7 +6442,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
         persisted.len()
     );
     let json: serde_json::Value = serde_json::from_slice(&persisted).unwrap();
-    assert_eq!(json["version"], 19);
+    assert_eq!(json["version"], 20);
     assert!(json.get("snapshot").is_none());
     let persisted_text = String::from_utf8_lossy(&persisted);
     assert!(!persisted_text.contains("sourceContribution"));
@@ -6283,6 +6483,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
     );
     let compact_index = ExactUsageIndex::open(&root).unwrap();
     let compact_signature = dashboard_index_signature(&root, compact_index.revision().unwrap());
+    drop(compact_index);
     let compact_summary = cached_dashboard_usage_summary(&root).unwrap();
     store_usage_summary(compact_signature.clone(), compact_summary);
     assert!(
@@ -6300,7 +6501,7 @@ fn dashboard_aggregate_persists_a_compact_startup_snapshot_then_rebuilds_full_de
 }
 
 #[test]
-fn v19_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
+fn v20_startup_accepts_stale_last_good_after_monotonic_index_advance_without_open() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -6342,7 +6543,7 @@ fn v19_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
     ExactUsageIndex::clear_integrity_signature_for_testing(&root);
     ExactUsageIndex::reset_quick_check_count_for_testing();
     let stale = cached_dashboard_snapshot_for_startup(&root)
-        .expect("same-provenance monotonic advance should retain stale V19 numerics");
+        .expect("same-provenance monotonic advance should retain stale V20 numerics");
 
     assert_eq!(stale.stats.total_tokens, 120);
     assert!(!stale.precise_recent_usage_fresh);
@@ -6668,7 +6869,7 @@ fn legacy_dashboard_envelope_accepts_public_v16_v17_v18_and_sanitizes_stale_rest
 }
 
 #[test]
-fn public_v16_schema6_is_rejected_at_startup_then_upgraded_without_jsonl_scan() {
+fn public_v16_schema6_keeps_startup_last_good_then_enriches_once() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -6705,13 +6906,15 @@ fn public_v16_schema6_is_rejected_at_startup_then_upgraded_without_jsonl_scan() 
     )
     .unwrap();
 
-    // Recreate the public v0.8.3 exact schema6 shape. The current index must
-    // migrate this in place to schema8; it must not cold-scan the JSONL.
+    // Recreate the public v0.8.3 exact schema6 shape. Startup may keep the
+    // trusted last-good envelope while the normal owner performs one measured
+    // model/reasoning enrichment pass over the old published watermark.
     let connection = Connection::open(&index_path).unwrap();
     for (table, column) in [
         ("files", "current_model"),
         ("files", "is_explicit_subagent_fork"),
         ("events", "model"),
+        ("events", "reasoning_output_tokens"),
     ] {
         connection
             .execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
@@ -6723,18 +6926,30 @@ fn public_v16_schema6_is_rejected_at_startup_then_upgraded_without_jsonl_scan() 
             [],
         )
         .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute("DELETE FROM event_enrichment_sources", [])
+        .unwrap();
     drop(connection);
 
     reset_dashboard_aggregate_build_count_for_testing();
     assert!(
-        cached_dashboard_snapshot_for_startup(&root).is_none(),
-        "a stale envelope bound to the wrong exact schema must not be shown"
+        cached_dashboard_snapshot_for_startup(&root).is_some(),
+        "a supported old schema must keep its trusted startup last-good during enrichment"
     );
 
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let rebuilt = dashboard_snapshot(&root).unwrap();
     assert_eq!(rebuilt.stats.total_tokens, 120);
-    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (fs::metadata(session_dir.join("rollout-019epublic-v16-upgrade.jsonl")).unwrap().len(), 0)
+    );
     let upgraded: serde_json::Value =
         serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
     assert_eq!(upgraded["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
@@ -6755,7 +6970,7 @@ fn public_v16_schema6_is_rejected_at_startup_then_upgraded_without_jsonl_scan() 
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "8"
+        "9"
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -6778,7 +6993,7 @@ fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
     let current =
         serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap()).unwrap();
     let signature = serde_json::from_value::<DashboardScanSignature>(current["signature"].clone())
-        .expect("V19 signature should remain decodable by the legacy adapter");
+        .expect("current signature should remain decodable by the legacy adapter");
     let legacy = PersistentDashboardAggregateCache {
         version: LEGACY_DASHBOARD_AGGREGATE_CACHE_VERSION,
         signature,
@@ -6943,7 +7158,7 @@ fn legacy_alias_startup_matches_raw_signature_but_uses_only_canonical_index() {
 }
 
 #[test]
-fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
+fn v20_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("dashboard-aggregate.json");
@@ -6958,7 +7173,7 @@ fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
     );
     dashboard_snapshot(&root).unwrap();
     let baseline = serde_json::from_slice::<serde_json::Value>(&fs::read(&cache_path).unwrap())
-        .expect("full dashboard should publish V19 JSON");
+        .expect("full dashboard should publish V20 JSON");
     assert_eq!(baseline["version"], DASHBOARD_AGGREGATE_CACHE_VERSION);
 
     {
@@ -6967,7 +7182,7 @@ fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
             reset_dashboard_aggregate_build_count_for_testing();
             assert!(
                 cached_dashboard_snapshot_for_startup(&root).is_none(),
-                "mismatched V19 binding must not hydrate startup numerics: {candidate}"
+                "mismatched V20 binding must not hydrate startup numerics: {candidate}"
             );
         };
 
@@ -6990,7 +7205,7 @@ fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
         provenance["preciseAttributionProvenanceEpoch"] =
             serde_json::json!(Uuid::new_v4().to_string());
         assert_miss(provenance);
-        assert_miss(serde_json::json!({"version": 19, "truncated": true}));
+        assert_miss(serde_json::json!({"version": 20, "truncated": true}));
         fs::write(&cache_path, b"{").unwrap();
         reset_dashboard_aggregate_build_count_for_testing();
         assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
@@ -7026,13 +7241,16 @@ fn v19_startup_rejects_binding_signature_and_corrupt_cache_mismatches() {
         .unwrap();
     drop(connection);
     reset_dashboard_aggregate_build_count_for_testing();
-    assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
+    assert!(
+        cached_dashboard_snapshot_for_startup(&root).is_some(),
+        "a supported v7 index upgrade must keep the trusted last-good cache visible"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
 #[test]
-fn v19_startup_rejects_symlink_cache_without_following_it() {
+fn v20_startup_rejects_symlink_cache_without_following_it() {
     use std::os::unix::fs::symlink;
 
     let _test_state = app_paths::app_path_test_env_guard(&[]);
@@ -7091,7 +7309,7 @@ fn usage_summary_does_not_poison_dashboard_aggregate_cache() {
 }
 
 #[test]
-fn usage_summary_rejects_v11_and_reuses_rebuilt_v19_dashboard_aggregate() {
+fn usage_summary_rejects_v11_and_reuses_rebuilt_v20_dashboard_aggregate() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let cache_path = root.join("token-aggregate-cache.json");
@@ -7127,7 +7345,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v19_dashboard_aggregate() {
     assert_eq!(summary.total_tokens, 120);
     let snapshot = dashboard_snapshot(&root).unwrap();
     assert_eq!(snapshot.stats.total_tokens, 120);
-    assert!(aggregate_cache_text().contains(r#""version":19"#));
+    assert!(aggregate_cache_text().contains(r#""version":20"#));
     assert!(aggregate_cache_text().contains(r#""totalTokens":120"#));
 
     reset_dashboard_aggregate_build_count_for_testing();
@@ -7136,7 +7354,7 @@ fn usage_summary_rejects_v11_and_reuses_rebuilt_v19_dashboard_aggregate() {
     assert_eq!(
         dashboard_aggregate_build_count_for_testing(&root),
         0,
-        "current v19 aggregate should be reused after memory state is cleared"
+        "current v20 aggregate should be reused after memory state is cleared"
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -7181,14 +7399,14 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     reset_dashboard_aggregate_build_count_for_testing();
     assert_eq!(
         cached_dashboard_snapshot_for_startup(&home_a)
-            .expect("home A should restore its own V19 startup numerics")
+            .expect("home A should restore its own V20 startup numerics")
             .stats
             .total_tokens,
         120
     );
     assert!(
         cached_dashboard_snapshot_for_startup(&home_b).is_none(),
-        "home B must not hydrate home A's one-file V19 cache"
+        "home B must not hydrate home A's one-file V20 cache"
     );
 
     let snapshot_b = dashboard_snapshot(&home_b).unwrap();
@@ -7522,7 +7740,7 @@ fn aggregate_persistence_failure_keeps_memory_snapshot_with_one_warning() {
 }
 
 #[test]
-fn v19_atomic_replace_failure_keeps_last_good_cache_bytes() {
+fn v20_atomic_replace_failure_keeps_last_good_cache_bytes() {
     let root = temp_root();
     let path = root.join("dashboard-aggregate.json");
     fs::create_dir_all(&root).unwrap();

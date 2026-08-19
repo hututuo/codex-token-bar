@@ -37,8 +37,8 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::Barrier;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
@@ -52,7 +52,7 @@ use uuid::Uuid;
 // GitHub v0.8.3 ships schema v6 with the current 11-field fingerprint. Every
 // later known schema must migrate that index in place; only pre-v6 layouts may
 // be discarded because their incompatible fingerprint blobs can re-count data.
-const INDEX_SCHEMA_VERSION: i64 = 8;
+const INDEX_SCHEMA_VERSION: i64 = 9;
 const GITHUB_BASE_SCHEMA_VERSION: i64 = 6;
 const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 1;
 const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
@@ -69,6 +69,8 @@ pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = EXACT_SESSION_PARSE
 // been verified.
 pub(super) const ORPHAN_REPAIR_REVISION_KEY: &str = "orphan_repair_revision";
 pub(super) const ORPHAN_REPAIR_REVISION: &str = "events-fingerprints-chunks-v1";
+const EVENT_ENRICHMENT_REVISION_KEY: &str = "event_enrichment_revision";
+const EVENT_ENRICHMENT_REVISION: &str = "model-reasoning-v1";
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 1;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -449,6 +451,16 @@ struct FullRebuildJob {
     path: String,
     session_id: String,
     signature: FileSignature,
+    event_enrichment: bool,
+    expected_published_prefix_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug)]
+struct EventEnrichmentCandidate {
+    path: String,
+    session_id: String,
+    signature: FileSignature,
+    prefix_sha256: [u8; 32],
 }
 
 #[derive(Clone, Debug)]
@@ -684,9 +696,24 @@ impl ExactUsageIndex {
         // migration or schema DDL runs.  In particular, do not let the
         // legacy initializer below DROP a table owned by a newer build.
         validate_session_catalog_schema_version(&connection)?;
+        let stored_event_enrichment_revision =
+            metadata_text(&connection, EVENT_ENRICHMENT_REVISION_KEY)?;
+        if stored_event_enrichment_revision
+            .as_deref()
+            .is_some_and(|revision| revision != EVENT_ENRICHMENT_REVISION)
+        {
+            return Err(format!(
+                "精确 token 历史字段补全版本 {} 高于或不同于当前支持版本 {}，已拒绝覆盖",
+                stored_event_enrichment_revision.as_deref().unwrap_or_default(),
+                EVENT_ENRICHMENT_REVISION
+            ));
+        }
+        let event_enrichment_requires_sync = schema_version.is_some()
+            && stored_event_enrichment_revision.as_deref() != Some(EVENT_ENRICHMENT_REVISION)
+            && event_enrichment_source_count(&connection)? > 0;
         let mut should_report_migration = schema_version.is_some_and(|version| {
             (GITHUB_BASE_SCHEMA_VERSION..INDEX_SCHEMA_VERSION).contains(&version)
-        });
+        }) || event_enrichment_requires_sync;
         if !should_report_migration && schema_version == Some(INDEX_SCHEMA_VERSION) {
             // A prior build can have advanced schema_version before a replay,
             // orphan, catalog, or attribution marker was durably written. Keep
@@ -699,6 +726,8 @@ impl ExactUsageIndex {
                 || metadata_i64(&connection, "session_catalog_schema_version")?
                     != Some(SESSION_CATALOG_SCHEMA_VERSION)
                 || !column_exists_checked(&connection, "events", "reasoning_output_tokens")?
+                || metadata_text(&connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+                    != Some(EVENT_ENRICHMENT_REVISION)
                 || metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?.is_none()
                 || metadata_text(&connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.is_none()
                 || metadata_text(&connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?.is_none();
@@ -802,12 +831,18 @@ impl ExactUsageIndex {
         }
         initialize_session_catalog_schema(&connection)?;
         if (!should_report_migration || replay_migration_complete)
+            && !event_enrichment_requires_sync
             && schema_version != Some(INDEX_SCHEMA_VERSION)
         {
             set_metadata(
                 &connection,
                 "schema_version",
                 &INDEX_SCHEMA_VERSION.to_string(),
+            )?;
+            set_metadata(
+                &connection,
+                EVENT_ENRICHMENT_REVISION_KEY,
+                EVENT_ENRICHMENT_REVISION,
             )?;
             // Known GitHub v6/v7 databases are upgraded in place. Only a new
             // or intentionally discarded pre-v6 database starts from zero.
@@ -861,6 +896,16 @@ impl ExactUsageIndex {
             set_metadata(&connection, "revision", &fresh_revision_seed().to_string())?;
             set_metadata(&connection, "published_generation", "0")?;
             set_metadata(&connection, "session_catalog_published_generation", "0")?;
+            set_metadata(
+                &connection,
+                EVENT_ENRICHMENT_REVISION_KEY,
+                EVENT_ENRICHMENT_REVISION,
+            )?;
+            set_metadata(
+                &connection,
+                "schema_version",
+                &INDEX_SCHEMA_VERSION.to_string(),
+            )?;
         }
         if metadata_text(&connection, "codex_home_physical_identity")?.is_none() {
             set_metadata(
@@ -878,7 +923,11 @@ impl ExactUsageIndex {
             super::update_precise_dashboard_progress(
                 codex_home,
                 "migrating",
-                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（等待扫描回填归因账本）",
+                if event_enrichment_requires_sync {
+                    "正在准备历史 model/reasoning 补全；首次升级可能需要几分钟，原始数据不会丢失"
+                } else {
+                    "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（等待扫描回填归因账本）"
+                },
                 5,
                 Some(MIGRATION_STAGE_TOTAL),
             );
@@ -1298,6 +1347,19 @@ impl ExactUsageIndex {
         let integrity_gate = index_integrity_gate(&index_path);
         let _sync_gate_guard = integrity_gate.enter_silent(&index_path);
 
+        // Historical model/reasoning enrichment is a one-time, serial owner.
+        // It finishes the old published watermarks first and deliberately
+        // returns before the normal incremental owner can consume new tails.
+        if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+            != Some(EVENT_ENRICHMENT_REVISION)
+        {
+            return self.synchronize_event_enrichment(
+                codex_home,
+                &index_path,
+                warnings,
+            );
+        }
+
         // A steady-state refresh is common: the source files and state
         // database have not changed since the last publication. Probe that
         // case before touching the durable scan state. In particular, do not
@@ -1420,6 +1482,7 @@ impl ExactUsageIndex {
             codex_home,
             warnings,
             &mut scan_completeness,
+            None,
         )?;
         diagnostics.scanned_files = scanned_files;
         diagnostics.full_rebuild_files = diagnostics
@@ -1517,6 +1580,293 @@ impl ExactUsageIndex {
                 5,
                 Some(MIGRATION_STAGE_TOTAL),
             );
+        }
+        self.ensure_dashboard_aggregates(codex_home)?;
+        Ok(revision)
+    }
+
+    fn synchronize_event_enrichment(
+        &mut self,
+        codex_home: &Path,
+        index_path: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+    ) -> Result<u64, String> {
+        self.connection.mark_receipt_dirty();
+        let candidates = event_enrichment_pending_candidates(&self.connection)?;
+        let total = candidates.len() as u64;
+        super::update_precise_dashboard_progress(
+            codex_home,
+            "backfillingModel",
+            "正在补齐历史 model/reasoning；首次升级可能需要几分钟，原始数据不会丢失",
+            0,
+            Some(total),
+        );
+
+        if candidates.is_empty() {
+            let mut revision = self.revision()?;
+            let published = metadata_i64(&self.connection, "published_generation")?.unwrap_or(0);
+            if let Some(building) = metadata_i64(&self.connection, "building_generation")?
+                .filter(|building| *building > published)
+            {
+                prepare_scan_temp_tables(&self.connection)?;
+                self.connection
+                    .execute(
+                        r#"
+                        INSERT OR IGNORE INTO exact_seen_files(path)
+                        WITH latest AS (
+                            SELECT path, MAX(generation) AS generation
+                            FROM files
+                            WHERE generation <= ?1
+                            GROUP BY path
+                        )
+                        SELECT f.path
+                        FROM latest
+                        JOIN files f
+                          ON f.path = latest.path
+                         AND f.generation = latest.generation
+                        WHERE f.deleted = 0
+                        "#,
+                        params![building],
+                    )
+                    .map_err(|error| format!("无法恢复历史字段补全发布清单：{error}"))?;
+                revision = finalize_generation(
+                    &mut self.connection,
+                    building,
+                    codex_home,
+                    warnings,
+                    ExactScanCompleteness::default(),
+                )?;
+            }
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("无法开始历史字段补全完成事务：{error}"))?;
+            set_metadata(
+                &transaction,
+                EVENT_ENRICHMENT_REVISION_KEY,
+                EVENT_ENRICHMENT_REVISION,
+            )?;
+            set_metadata(
+                &transaction,
+                "schema_version",
+                &INDEX_SCHEMA_VERSION.to_string(),
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| format!("无法提交历史字段补全完成状态：{error}"))?;
+            self.migration_pending = !migration_markers_complete(&self.connection, true)?;
+            return Ok(revision);
+        }
+
+        prepare_scan_temp_tables(&self.connection)?;
+        self.connection
+            .execute(
+                "INSERT OR IGNORE INTO exact_seen_files(path) SELECT path FROM published_files",
+                [],
+            )
+            .map_err(|error| format!("无法固定历史字段补全来源清单：{error}"))?;
+        let generation = begin_or_resume_generation(&mut self.connection)?;
+        let mut scan_completeness = ExactScanCompleteness::default();
+        let mut jobs = Vec::with_capacity(candidates.len());
+        let mut completed = 0_u64;
+
+        for candidate in candidates {
+            let file = PathBuf::from(&candidate.path);
+            let handle = match fs::File::open(&file) {
+                Ok(handle) => handle,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.connection
+                        .execute(
+                            "DELETE FROM exact_seen_files WHERE path = ?1",
+                            params![&candidate.path],
+                        )
+                        .map_err(|error| format!("无法登记历史字段补全来源删除：{error}"))?;
+                    completed = completed.saturating_add(1);
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "backfillingModel",
+                        "正在补齐历史 model/reasoning；首次升级可能需要几分钟，原始数据不会丢失",
+                        completed,
+                        Some(total),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    scan_completeness.mark_incomplete();
+                    warnings.push(scan_warning(format!(
+                        "历史字段补全暂时无法读取来源，保留上次可信数据并将在下次启动继续：{}（{}）",
+                        file.display(),
+                        error
+                    )));
+                    super::update_precise_dashboard_progress(
+                        codex_home,
+                        "backfillingModel",
+                        "历史 model/reasoning 补全等待重试；原始数据不会丢失",
+                        completed,
+                        Some(total),
+                    );
+                    continue;
+                }
+            };
+            let current_signature = match file_signature_from_handle(&handle, &file) {
+                Ok(signature) => signature,
+                Err(error) => {
+                    scan_completeness.mark_incomplete();
+                    warnings.push(scan_warning(format!(
+                        "历史字段补全暂时无法确认来源身份，保留上次可信数据并将在下次启动继续：{}（{}）",
+                        file.display(),
+                        error
+                    )));
+                    continue;
+                }
+            };
+            drop(handle);
+            let stable_published_prefix = current_signature.identity == candidate.signature.identity
+                && current_signature.size >= candidate.signature.size;
+            if !stable_published_prefix {
+                set_metadata(
+                    &self.connection,
+                    BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+                    "1",
+                )?;
+            }
+            jobs.push(FullRebuildJob {
+                file,
+                path: candidate.path,
+                session_id: candidate.session_id,
+                signature: if stable_published_prefix {
+                    candidate.signature
+                } else {
+                    current_signature
+                },
+                event_enrichment: true,
+                expected_published_prefix_sha256: stable_published_prefix
+                    .then_some(candidate.prefix_sha256),
+            });
+        }
+
+        let progress_home = codex_home.to_path_buf();
+        let completed_before_staging = completed;
+        let progress_callback: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |staged_count| {
+            super::update_precise_dashboard_progress(
+                &progress_home,
+                "backfillingModel",
+                "正在补齐历史 model/reasoning；首次升级可能需要几分钟，原始数据不会丢失",
+                completed_before_staging.saturating_add(staged_count),
+                Some(total),
+            );
+        });
+        let staged = stage_full_rebuilds(
+            &jobs,
+            index_path,
+            codex_home,
+            warnings,
+            &mut scan_completeness,
+            Some(progress_callback),
+        )?;
+        #[cfg(test)]
+        if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
+            return Err("injected interruption after durable exact token staging".into());
+        }
+
+        for mut staged_file in staged {
+            let prefix_matches = staged_file
+                .job
+                .expected_published_prefix_sha256
+                .is_none_or(|expected| expected == staged_file.prefix_sha256);
+            let events_match = prefix_matches
+                && staged_enrichment_matches_published_events(
+                    &self.connection,
+                    &staged_file,
+                )?;
+            if !prefix_matches {
+                set_metadata(
+                    &self.connection,
+                    BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+                    "1",
+                )?;
+                let current_signature = file_signature(&staged_file.job.file)?;
+                let replacement_job = FullRebuildJob {
+                    signature: current_signature,
+                    expected_published_prefix_sha256: None,
+                    ..staged_file.job.clone()
+                };
+                let mut local_warnings = Vec::new();
+                staged_file = match stage_or_reuse_full_rebuild(
+                    &replacement_job,
+                    index_path,
+                    codex_home,
+                    &mut local_warnings,
+                ) {
+                    Ok(staged) => staged,
+                    Err(StagedFullRebuildError::IncompleteSource(error)) => {
+                        scan_completeness.mark_incomplete();
+                        warnings.push(scan_warning(error));
+                        continue;
+                    }
+                    Err(StagedFullRebuildError::Fatal(error)) => return Err(error),
+                };
+                warnings.append(&mut local_warnings);
+            } else if !events_match {
+                // The current parser disagrees with the old event identity or
+                // numeric payload.  Keep the scope to this source and publish
+                // the staged current-parser result as its reconciliation.
+                set_metadata(
+                    &self.connection,
+                    BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+                    "1",
+                )?;
+            }
+            import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
+            remove_index_storage(&staged_file.database_path)?;
+        }
+
+        let revision = finalize_generation(
+            &mut self.connection,
+            generation,
+            codex_home,
+            warnings,
+            scan_completeness,
+        )?;
+        let pending = event_enrichment_pending_candidates(&self.connection)?;
+        if pending.is_empty() {
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("无法开始历史字段补全发布事务：{error}"))?;
+            set_metadata(
+                &transaction,
+                EVENT_ENRICHMENT_REVISION_KEY,
+                EVENT_ENRICHMENT_REVISION,
+            )?;
+            set_metadata(
+                &transaction,
+                "schema_version",
+                &INDEX_SCHEMA_VERSION.to_string(),
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| format!("无法提交历史字段补全发布状态：{error}"))?;
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "migrating",
+                "历史 model/reasoning 补全已完成，正在提交索引升级",
+                total,
+                Some(total),
+            );
+        } else {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "backfillingModel",
+                "历史 model/reasoning 补全未完成，保留上次可信数据并将在下次启动继续",
+                total.saturating_sub(pending.len() as u64),
+                Some(total),
+            );
+        }
+        self.migration_pending = !migration_markers_complete(&self.connection, true)?;
+        remove_staging_directory(index_path)?;
+        if !self.migration_pending {
+            self.connection.mark_receipt_eligible();
         }
         self.ensure_dashboard_aggregates(codex_home)?;
         Ok(revision)
@@ -2957,16 +3307,16 @@ pub(super) fn peek_startup_identity(
     let connection = sqlite::open_read_only(&path, StdDuration::from_millis(100))
         .map_err(|error| format!("无法只读打开精确 token 索引 {}：{error}", path.display()))?;
     let schema_version = required_startup_metadata_i64(&connection, "schema_version")?;
-    if schema_version != INDEX_SCHEMA_VERSION {
+    if !(GITHUB_BASE_SCHEMA_VERSION..=INDEX_SCHEMA_VERSION).contains(&schema_version) {
         return Err(format!(
-            "精确 token 启动缓存要求 schema {}，当前为 {}",
-            INDEX_SCHEMA_VERSION, schema_version
+            "精确 token 启动缓存只接受 schema {}…{}，当前为 {}",
+            GITHUB_BASE_SCHEMA_VERSION, INDEX_SCHEMA_VERSION, schema_version
         ));
     }
     // A freshly staged full index is built with the current parser and is
     // atomically published without these one-time migration markers. An
     // existing index gets the markers on normal open. Missing is therefore
-    // valid for a V19 envelope that independently matches this exact
+    // valid for a V20 envelope that independently matches this exact
     // revision/generation/provenance; an explicitly incompatible marker is
     // never valid.
     let parser_revision = metadata_text(&connection, "fork_replay_boundary_revision")?;
@@ -3533,6 +3883,7 @@ fn stage_full_rebuilds(
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: &mut ExactScanCompleteness,
+    on_completed: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 ) -> Result<Vec<StagedFullRebuild>, String> {
     if jobs.is_empty() {
         return Ok(Vec::new());
@@ -3547,12 +3898,15 @@ fn stage_full_rebuilds(
             .then_with(|| left.path.cmp(&right.path))
     });
 
+    let completed = AtomicU64::new(0);
     let mut results = if ordered_jobs.len() == 1 {
         vec![stage_full_rebuild_result(
             0,
             &ordered_jobs[0],
             index_path,
             codex_home,
+            &completed,
+            on_completed.as_deref(),
         )]
     } else {
         let indexed_jobs = ordered_jobs.iter().enumerate().collect::<Vec<_>>();
@@ -3567,7 +3921,14 @@ fn stage_full_rebuilds(
             if has_heavy_jobs {
                 scope.spawn(|| {
                     for (order, job) in heavy_jobs {
-                        let result = stage_full_rebuild_result(order, job, index_path, codex_home);
+                        let result = stage_full_rebuild_result(
+                            order,
+                            job,
+                            index_path,
+                            codex_home,
+                            &completed,
+                            on_completed.as_deref(),
+                        );
                         collected
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3588,7 +3949,14 @@ fn stage_full_rebuilds(
                     let Some((order, job)) = light_jobs.get(light_index).copied() else {
                         break;
                     };
-                    let result = stage_full_rebuild_result(order, job, index_path, codex_home);
+                    let result = stage_full_rebuild_result(
+                        order,
+                        job,
+                        index_path,
+                        codex_home,
+                        &completed,
+                        on_completed.as_deref(),
+                    );
                     collected
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3633,9 +4001,17 @@ fn stage_full_rebuild_result(
     job: &FullRebuildJob,
     index_path: &Path,
     codex_home: &Path,
+    completed: &AtomicU64,
+    on_completed: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> StagedFullRebuildResult {
     let mut warnings = Vec::new();
     let result = stage_or_reuse_full_rebuild(job, index_path, codex_home, &mut warnings);
+    if result.is_ok() {
+        let value = completed.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        if let Some(on_completed) = on_completed {
+            on_completed(value);
+        }
+    }
     StagedFullRebuildResult {
         order,
         result,
@@ -4283,6 +4659,33 @@ fn import_staged_full_rebuild(
             validated.parser_state,
             0,
         )?;
+        if validated.job.event_enrichment {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO event_enrichment_sources(
+                        path,
+                        revision,
+                        file_generation,
+                        completed_size,
+                        completed_prefix_sha256
+                    ) VALUES (?1, ?2, ?3, ?4, ?5)
+                    ON CONFLICT(path) DO UPDATE SET
+                        revision = excluded.revision,
+                        file_generation = excluded.file_generation,
+                        completed_size = excluded.completed_size,
+                        completed_prefix_sha256 = excluded.completed_prefix_sha256
+                    "#,
+                    params![
+                        &validated.job.path,
+                        EVENT_ENRICHMENT_REVISION,
+                        generation,
+                        checked_i64(validated.job.signature.size, "历史字段补全来源大小")?,
+                        validated.prefix_sha256.as_slice(),
+                    ],
+                )
+                .map_err(|error| format!("无法保存历史 model/reasoning 补全检查点：{error}"))?;
+        }
         mark_dashboard_changed(&transaction)?;
         transaction
             .commit()
@@ -4296,6 +4699,63 @@ fn import_staged_full_rebuild(
         (Err(error), _) => Err(error),
         (Ok(()), Err(error)) => Err(error),
         (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+fn staged_enrichment_matches_published_events(
+    connection: &Connection,
+    staged: &StagedFullRebuild,
+) -> Result<bool, String> {
+    let stage_path = staged.database_path.to_str().ok_or_else(|| {
+        format!(
+            "历史字段补全暂存路径不是有效 UTF-8：{}",
+            staged.database_path.display()
+        )
+    })?;
+    connection
+        .execute(
+            "ATTACH DATABASE ?1 AS exact_enrichment_compare",
+            params![stage_path],
+        )
+        .map_err(|error| format!("无法附加历史字段补全暂存：{error}"))?;
+    let comparison = connection
+        .query_row(
+            r#"
+            SELECT NOT EXISTS(
+                SELECT 1
+                FROM published_events published
+                LEFT JOIN exact_enrichment_compare.events staged
+                  ON staged.ordinal = published.ordinal
+                WHERE published.file_path = ?1
+                  AND (
+                    staged.ordinal IS NULL
+                    OR staged.timestamp IS NOT published.timestamp
+                    OR staged.tokens IS NOT published.tokens
+                    OR staged.input_tokens IS NOT published.input_tokens
+                    OR staged.cached_input_tokens IS NOT published.cached_input_tokens
+                    OR staged.output_tokens IS NOT published.output_tokens
+                  )
+                UNION ALL
+                SELECT 1
+                FROM exact_enrichment_compare.events staged
+                LEFT JOIN published_events published
+                  ON published.file_path = ?1
+                 AND published.ordinal = staged.ordinal
+                WHERE published.ordinal IS NULL
+                LIMIT 1
+            )
+            "#,
+            params![&staged.job.path],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法核对历史 model/reasoning 补全事件：{error}"));
+    let detach = connection
+        .execute_batch("DETACH DATABASE exact_enrichment_compare")
+        .map_err(|error| format!("无法卸载历史字段补全暂存：{error}"));
+    match (comparison, detach) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(matches), Ok(())) => Ok(matches),
     }
 }
 
@@ -6041,6 +6501,8 @@ fn process_session_file(
         path,
         session_id: session_id_from_file(file),
         signature,
+        event_enrichment: false,
+        expected_published_prefix_sha256: None,
     }))
 }
 
@@ -8280,6 +8742,9 @@ fn delete_file_version_rows(
 }
 
 fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("无法开始精确 token 字段迁移事务：{error}"))?;
     for (table, column, definition) in [
         ("files", "current_model", "TEXT"),
         (
@@ -8294,7 +8759,7 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
         // source reports no reasoning output.
         ("events", "reasoning_output_tokens", "INTEGER"),
     ] {
-        let table_exists = connection
+        let table_exists = transaction
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
                 params![table],
@@ -8305,8 +8770,8 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
         if !table_exists {
             continue;
         }
-        if !column_exists_checked(connection, table, column)? {
-            connection
+        if !column_exists_checked(&transaction, table, column)? {
+            transaction
                 .execute(
                     &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
                     [],
@@ -8316,7 +8781,9 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
                 })?;
         }
     }
-    Ok(())
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交精确 token 字段迁移事务：{error}"))
 }
 
 fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<bool, String> {
@@ -8477,6 +8944,21 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
                 ON events(session_id, timestamp, file_generation, file_path, ordinal);
             CREATE INDEX IF NOT EXISTS events_input_tokens_idx
                 ON events(input_tokens, timestamp, file_generation, file_path, ordinal);
+
+            -- Durable per-source receipts for the one-time model/reasoning
+            -- enrichment.  A receipt points at the exact file version that
+            -- was parsed by the current SessionParser, so an interrupted
+            -- upgrade resumes without rereading already committed sources.
+            CREATE TABLE IF NOT EXISTS event_enrichment_sources (
+                path TEXT PRIMARY KEY,
+                revision TEXT NOT NULL,
+                file_generation INTEGER NOT NULL,
+                completed_size INTEGER NOT NULL,
+                completed_prefix_sha256 BLOB NOT NULL,
+                FOREIGN KEY(file_generation, path)
+                    REFERENCES files(generation, path)
+                    ON DELETE CASCADE
+            ) WITHOUT ROWID;
 
             -- Disposable dashboard aggregates. Rows remain versioned by the
             -- owning file generation, so publication is still controlled by
@@ -9673,6 +10155,112 @@ fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, Strin
     Ok(metadata_text(connection, key)?.and_then(|value| value.parse().ok()))
 }
 
+fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String> {
+    let files_exist = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查历史字段补全来源表：{error}"))?;
+    if !files_exist {
+        return Ok(0);
+    }
+    connection
+        .query_row(
+            r#"
+            WITH latest AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation <= COALESCE(
+                    (SELECT CAST(value AS INTEGER) FROM metadata
+                     WHERE key = 'published_generation'),
+                    0
+                )
+                GROUP BY path
+            )
+            SELECT COUNT(*)
+            FROM latest
+            JOIN files f
+              ON f.path = latest.path
+             AND f.generation = latest.generation
+            WHERE f.deleted = 0
+            "#,
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(nonnegative_u64)
+        .map_err(|error| format!("无法统计历史字段补全来源：{error}"))
+}
+
+fn event_enrichment_pending_candidates(
+    connection: &Connection,
+) -> Result<Vec<EventEnrichmentCandidate>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                f.path,
+                f.session_id,
+                f.size,
+                f.modified_ns,
+                f.device_id,
+                f.file_id,
+                f.changed_ns,
+                f.prefix_sha256
+            FROM published_files f
+            LEFT JOIN event_enrichment_sources receipt
+              ON receipt.path = f.path
+             AND receipt.revision = ?1
+            WHERE receipt.path IS NULL
+            ORDER BY f.path
+            "#,
+        )
+        .map_err(|error| format!("无法准备历史 model/reasoning 补全来源：{error}"))?;
+    let rows = statement
+        .query_map(params![EVENT_ENRICHMENT_REVISION], |row| {
+            let size = nonnegative_u64(row.get::<_, i64>(2)?);
+            let modified_ns = row
+                .get::<_, String>(3)?
+                .parse::<u128>()
+                .unwrap_or_default();
+            let device_id = row
+                .get::<_, String>(4)?
+                .parse::<u64>()
+                .unwrap_or_default();
+            let file_id = row
+                .get::<_, String>(5)?
+                .parse::<u64>()
+                .unwrap_or_default();
+            let changed_ns = row
+                .get::<_, String>(6)?
+                .parse::<i128>()
+                .unwrap_or_default();
+            let raw_prefix = row.get::<_, Vec<u8>>(7)?;
+            let prefix_sha256: [u8; 32] = raw_prefix.try_into().map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    7,
+                    "prefix_sha256".into(),
+                    rusqlite::types::Type::Blob,
+                )
+            })?;
+            Ok(EventEnrichmentCandidate {
+                path: row.get(0)?,
+                session_id: row.get(1)?,
+                signature: FileSignature {
+                    size,
+                    modified_ns,
+                    identity: FileIdentity { device_id, file_id },
+                    changed_ns,
+                },
+                prefix_sha256,
+            })
+        })
+        .map_err(|error| format!("无法读取历史 model/reasoning 补全来源：{error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("无法解码历史 model/reasoning 补全来源：{error}"))
+}
+
 fn migration_markers_complete(
     connection: &Connection,
     replay_migration_complete: bool,
@@ -9689,7 +10277,9 @@ fn migration_markers_complete(
         && metadata_text(connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?
             .is_some_and(|value| !value.trim().is_empty())
         && metadata_text(connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?
-            .is_some_and(|value| !value.trim().is_empty()))
+            .is_some_and(|value| !value.trim().is_empty())
+        && metadata_text(connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+            == Some(EVENT_ENRICHMENT_REVISION))
 }
 
 fn attribution_safety_state(connection: &Connection) -> Result<AttributionSafetyState, String> {
