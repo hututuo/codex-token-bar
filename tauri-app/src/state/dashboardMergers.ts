@@ -2,6 +2,8 @@ import type {
   AccountQuotaBundle,
   ActivityDay,
   DashboardSnapshot,
+  DashboardCoverageKind,
+  DashboardLineageScalar,
   LiveRateSnapshot,
   LiveThreadOption,
   QuotaHistoryDailyPoint,
@@ -21,23 +23,323 @@ import {
   replaceResetCreditWarnings,
 } from "./dashboardWarnings";
 
+type LineagePayload = {
+  homeIdentity?: string | null;
+  usageRevision?: DashboardLineageScalar;
+  coverageKind?: DashboardCoverageKind | null;
+  observedThrough?: DashboardLineageScalar;
+  settledThrough?: DashboardLineageScalar;
+  exactGeneration?: DashboardLineageScalar;
+  dashboardRevision?: DashboardLineageScalar;
+  aggregateBoundaryUnix?: DashboardLineageScalar;
+  generatedAt?: string | null;
+  preciseRecentUsageCoveredAt?: string | null;
+  preciseRecentUsageFresh?: boolean;
+};
+
+interface NormalizedDashboardLineage {
+  homeIdentity: string | null;
+  usageRevision: string | null;
+  coverageKind: DashboardCoverageKind | null;
+  observedThrough: string | null;
+  settledThrough: string | null;
+  exactGeneration: string | null;
+  generatedAt: string | null;
+  hasComparableLineage: boolean;
+}
+
+type LineageRelation = "incoming-newer" | "incoming-older" | "equal" | "incomparable" | "unknown" | "source-mismatch";
+
+/**
+ * Normalize the small cross-owner lineage tuple at the frontend boundary.
+ * Numeric revisions stay as decimal strings so a large native u64 is never
+ * rounded by JavaScript before it reaches the merge decision.
+ */
+function normalizeDashboardLineage(
+  payload: LineagePayload,
+  role: "summary" | "full",
+): NormalizedDashboardLineage {
+  const homeIdentity = nonEmptyText(payload.homeIdentity);
+  const usageRevision = normalizeScalar(payload.usageRevision ?? payload.dashboardRevision);
+  const exactGeneration = normalizeScalar(payload.exactGeneration);
+  const aggregateBoundary = normalizeBoundaryValue(payload.aggregateBoundaryUnix);
+  const fallbackCoveredAt = nonEmptyText(payload.preciseRecentUsageCoveredAt);
+  const explicitCoverage = payload.coverageKind === "summary"
+    || payload.coverageKind === "settled"
+    || payload.coverageKind === "full"
+    ? payload.coverageKind
+    : null;
+  const coverageKind = explicitCoverage
+    ?? (role === "summary"
+      ? "summary"
+      : fallbackCoveredAt !== null || normalizeBoundaryValue(payload.settledThrough) !== null
+        ? "settled"
+        : null);
+  const observedThrough = normalizeBoundaryValue(payload.observedThrough)
+    ?? (role === "summary" ? aggregateBoundary : null);
+  const settledThrough = normalizeBoundaryValue(payload.settledThrough)
+    ?? (role === "summary" ? aggregateBoundary : fallbackCoveredAt ?? aggregateBoundary);
+  const generatedAt = nonEmptyText(payload.generatedAt);
+  return {
+    homeIdentity,
+    usageRevision,
+    coverageKind,
+    observedThrough,
+    settledThrough,
+    exactGeneration,
+    generatedAt,
+    hasComparableLineage: homeIdentity !== null
+      || usageRevision !== null
+      || coverageKind !== null
+      || observedThrough !== null
+      || settledThrough !== null
+      || exactGeneration !== null,
+  };
+}
+
+function normalizeSummaryLineage(
+  dashboard: DashboardSnapshot,
+  summary: UsageSummarySnapshot,
+): NormalizedDashboardLineage {
+  // Do not spread the full dashboard into this object: a full snapshot's
+  // coverage kind must not silently become the summary lane's coverage kind.
+  return normalizeDashboardLineage({
+    homeIdentity: summary.homeIdentity ?? dashboard.homeIdentity,
+    usageRevision: summary.usageRevision
+      ?? summary.dashboardRevision
+      ?? dashboard.usageRevision
+      ?? dashboard.dashboardRevision,
+    coverageKind: summary.coverageKind ?? "summary",
+    observedThrough: summary.observedThrough,
+    settledThrough: summary.settledThrough ?? summary.aggregateBoundaryUnix,
+    exactGeneration: summary.exactGeneration ?? dashboard.exactGeneration,
+    generatedAt: summary.generatedAt ?? dashboard.usageSummaryUpdatedAt,
+  }, "summary");
+}
+
+function normalizeFullLineage(snapshot: DashboardSnapshot): NormalizedDashboardLineage {
+  return normalizeDashboardLineage(snapshot, "full");
+}
+
+function nonEmptyText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+function normalizeScalar(value: DashboardLineageScalar | undefined): string | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : null;
+  }
+  const text = nonEmptyText(value);
+  if (text === null) return null;
+  if (/^-?\d+$/.test(text)) {
+    try {
+      return BigInt(text).toString();
+    } catch {
+      return text;
+    }
+  }
+  return text;
+}
+
+function normalizeBoundaryValue(value: DashboardLineageScalar | undefined): string | null {
+  return normalizeScalar(value);
+}
+
+function compareScalar(left: string | null, right: string | null): number | null {
+  if (left === null || right === null) return null;
+  if (left === right) return 0;
+  if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) {
+    try {
+      const a = BigInt(left);
+      const b = BigInt(right);
+      return a < b ? -1 : 1;
+    } catch {
+      return null;
+    }
+  }
+  // Non-numeric revisions are opaque. Equality is safe; ordering is not.
+  return null;
+}
+
+function boundaryRank(value: string): bigint | null {
+  if (/^-?\d+$/.test(value)) {
+    try {
+      // Unix boundaries in payloads are seconds; timestamps are milliseconds.
+      return BigInt(value) * 1_000n;
+    } catch {
+      return null;
+    }
+  }
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? BigInt(Math.trunc(milliseconds)) : null;
+}
+
+function compareBoundary(left: string | null, right: string | null): number | null {
+  if (left === null || right === null) return null;
+  if (left === right) return 0;
+  const a = boundaryRank(left);
+  const b = boundaryRank(right);
+  if (a === null || b === null) return null;
+  return a < b ? -1 : 1;
+}
+
+function compareGeneratedAt(left: string | null, right: string | null): number | null {
+  if (left === null || right === null) return null;
+  if (left === right) return 0;
+  const a = Date.parse(left);
+  const b = Date.parse(right);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return a < b ? -1 : 1;
+}
+
+/** Compare source lineage first; publication time is only the final tie-break. */
+function compareDashboardLineage(
+  previous: NormalizedDashboardLineage,
+  incoming: NormalizedDashboardLineage,
+): LineageRelation {
+  if (previous.homeIdentity !== null
+    && incoming.homeIdentity !== null
+    && previous.homeIdentity !== incoming.homeIdentity) {
+    return "source-mismatch";
+  }
+
+  const comparisons = [
+    compareScalar(previous.exactGeneration, incoming.exactGeneration),
+    compareScalar(previous.usageRevision, incoming.usageRevision),
+    compareBoundary(previous.observedThrough, incoming.observedThrough),
+    compareBoundary(previous.settledThrough, incoming.settledThrough),
+  ].filter((value): value is number => value !== null && value !== 0);
+  if (comparisons.length > 0) {
+    const hasPositive = comparisons.some((value) => value > 0);
+    const hasNegative = comparisons.some((value) => value < 0);
+    if (hasPositive && hasNegative) return "incomparable";
+    return hasPositive ? "incoming-older" : "incoming-newer";
+  }
+
+  if (previous.coverageKind !== null
+    && incoming.coverageKind !== null
+    && previous.coverageKind !== incoming.coverageKind) {
+    const rank: Record<DashboardCoverageKind, number> = { summary: 0, settled: 1, full: 2 };
+    return rank[incoming.coverageKind] > rank[previous.coverageKind]
+      ? "incoming-newer"
+      : "incoming-older";
+  }
+
+  // generatedAt is intentionally consulted only after every available
+  // lineage component tied. It can never establish freshness by itself when
+  // one side carries a revision/boundary that the other side lacks.
+  if (previous.hasComparableLineage && incoming.hasComparableLineage) {
+    const generated = compareGeneratedAt(previous.generatedAt, incoming.generatedAt);
+    if (generated !== null && generated !== 0) {
+      return generated > 0 ? "incoming-older" : "incoming-newer";
+    }
+    return "equal";
+  }
+  return "unknown";
+}
+
+function summaryLineageIsNewerThanSettledFull(
+  summary: NormalizedDashboardLineage,
+  full: NormalizedDashboardLineage,
+): boolean {
+  if (full.coverageKind !== "settled" || summary.coverageKind !== "summary") {
+    return false;
+  }
+  if (summary.observedThrough === null) {
+    // An explicitly settled-only full cannot prove it supersedes a summary
+    // with no open-boundary receipt. Keep the summary conservatively.
+    return !summary.hasComparableLineage || full.settledThrough === null;
+  }
+  const comparison = compareBoundary(summary.observedThrough, full.settledThrough);
+  return comparison === null || comparison >= 0;
+}
+
+function shouldRetainSummaryForFull(
+  dashboard: DashboardSnapshot,
+  precise: DashboardSnapshot,
+): boolean {
+  const summary = dashboard.usageSummary;
+  if (summary === null || summary === undefined) return false;
+  const previousSummaryLineage = normalizeSummaryLineage(dashboard, summary);
+  const incomingFullLineage = normalizeFullLineage(precise);
+  if (summaryLineageIsNewerThanSettledFull(previousSummaryLineage, incomingFullLineage)) {
+    return true;
+  }
+  const relation = compareDashboardLineage(previousSummaryLineage, incomingFullLineage);
+  if (relation === "incoming-older" || relation === "incomparable" || relation === "source-mismatch") {
+    return true;
+  }
+  if (relation === "unknown") {
+    // A full snapshot with no receipt cannot displace a summary that already
+    // carries a receipt. A trusted full snapshot may replace a legacy summary
+    // only when that summary has no comparable lineage at all.
+    return previousSummaryLineage.hasComparableLineage
+      || incomingFullLineage.coverageKind !== "full";
+  }
+  return false;
+}
+
+function hasMaterializedDashboard(snapshot: DashboardSnapshot): boolean {
+  const values = [
+    snapshot.stats.totalTokens,
+    snapshot.stats.peakDayTokens,
+    snapshot.stats.peakThreadTokens,
+    snapshot.stats.totalCalls,
+    snapshot.stats.totalThreads,
+  ];
+  return snapshot.usageSummary !== null
+    && snapshot.usageSummary !== undefined
+    || values.some((value) => Number.isFinite(value) && value > 0)
+    || [snapshot.recentUsage24h, snapshot.recentUsage7d, snapshot.recentUsage30d]
+      .some((points) => points.some((point) => point.tokens > 0 || point.calls > 0));
+}
+
+function validBoundary(value: string | null): boolean {
+  return value !== null && boundaryRank(value) !== null;
+}
+
 export function mergePreciseDashboard(
   state: DashboardAppState,
   precise: DashboardSnapshot,
 ): DashboardAppState {
   const previous = state.dashboard;
-  const incomingCoverageAt = precise.preciseRecentUsageCoveredAt ?? null;
+  const incomingLineage = normalizeFullLineage(precise);
+  const incomingCoverageAt = nonEmptyText(precise.preciseRecentUsageCoveredAt)
+    ?? incomingLineage.settledThrough;
   const incomingCoverageIsTrusted = precise.preciseRecentUsageFresh === true
-    && incomingCoverageAt !== null
-    && Number.isFinite(Date.parse(incomingCoverageAt));
-  const previousCoverageAt = previous?.preciseRecentUsageCoveredAt ?? null;
-  const previousCoverageIsTrusted = previousCoverageAt !== null
-    && Number.isFinite(Date.parse(previousCoverageAt));
-  if (previous !== null && previousCoverageIsTrusted && !incomingCoverageIsTrusted) {
+    && validBoundary(incomingCoverageAt);
+  const previousCoverageAt = previous === null
+    ? null
+    : nonEmptyText(previous.preciseRecentUsageCoveredAt) ?? normalizeFullLineage(previous).settledThrough;
+  const previousCoverageIsTrusted = previous !== null
+    && previous.preciseRecentUsageFresh === true
+    && validBoundary(previousCoverageAt);
+
+  if (previous !== null) {
+    if (previousLineageHomeMismatch(previous, precise)) {
+      return state;
+    }
+
+    // A successful but older exact result is still not new truth. This guard
+    // is separate from the failure path so a late native completion cannot
+    // roll the settled canvas back even when both reads report fresh=true.
+    const previousFullLineage = normalizeFullLineage(previous);
+    const fullRelation = compareDashboardLineage(previousFullLineage, incomingLineage);
+    if (incomingCoverageIsTrusted
+      && previousFullLineage.hasComparableLineage
+      && (fullRelation === "incoming-older" || fullRelation === "incomparable")) {
+      return state;
+    }
+  }
+
+  const previousHasLastGood = previous !== null
+    && (previousCoverageIsTrusted || hasMaterializedDashboard(previous));
+  if (previous !== null && !incomingCoverageIsTrusted && previousHasLastGood) {
     // A failed/incomplete owner result is a status update, not a new usage
-    // truth. Keep the last materialized canvas intact so a long exact scan
-    // cannot replace real values with the zero/"待读取" placeholder snapshot.
-    // The stale bit and diagnostics still make the incomplete read visible.
+    // truth. Keep every last-good payload field and only publish status and
+    // diagnostics from the failed attempt.
     return {
       ...state,
       dashboard: {
@@ -56,16 +358,18 @@ export function mergePreciseDashboard(
       },
     };
   }
-  const previousSummaryTime = previous?.usageSummary?.generatedAt
-    ? Date.parse(previous.usageSummary.generatedAt)
-    : Number.NaN;
-  const preciseTime = Date.parse(precise.generatedAt);
-  const keepNewerLightSummary = previous?.usageSummary !== null
-    && previous?.usageSummary !== undefined
-    && Number.isFinite(previousSummaryTime)
-    && Number.isFinite(preciseTime)
-    && previousSummaryTime > preciseTime;
-  const retainedLightSummary = keepNewerLightSummary ? previous?.usageSummary ?? null : null;
+
+  const retainedLightSummary = previous !== null && incomingCoverageIsTrusted
+    && shouldRetainSummaryForFull(previous, precise)
+    ? previous.usageSummary ?? null
+    : null;
+  const incomingLightSummary = precise.usageSummary ?? null;
+  const nextLightSummary = retainedLightSummary ?? incomingLightSummary;
+  const summaryUpdatedAt = retainedLightSummary?.generatedAt
+    ?? (retainedLightSummary !== null ? previous?.usageSummaryUpdatedAt : null)
+    ?? precise.usageSummaryUpdatedAt
+    ?? (nextLightSummary === null ? precise.generatedAt : nextLightSummary.generatedAt)
+    ?? null;
   return {
     ...state,
     dashboard:
@@ -73,13 +377,26 @@ export function mergePreciseDashboard(
         ? precise
         : {
             ...precise,
-            usageSummary: retainedLightSummary,
-            usageSummaryUpdatedAt: retainedLightSummary?.generatedAt
-              ?? precise.usageSummaryUpdatedAt
-              ?? precise.generatedAt,
+            homeIdentity: precise.homeIdentity ?? previous.homeIdentity ?? null,
+            usageRevision: precise.usageRevision ?? previous.usageRevision ?? null,
+            coverageKind: precise.coverageKind ?? previous.coverageKind ?? null,
+            observedThrough: precise.observedThrough ?? previous.observedThrough ?? null,
+            settledThrough: precise.settledThrough
+              ?? (incomingCoverageIsTrusted ? incomingCoverageAt : null)
+              ?? previous.settledThrough
+              ?? null,
+            exactGeneration: precise.exactGeneration ?? previous.exactGeneration ?? null,
+            dashboardRevision: precise.dashboardRevision ?? previous.dashboardRevision ?? null,
+            aggregateBoundaryUnix: precise.aggregateBoundaryUnix
+              ?? previous.aggregateBoundaryUnix
+              ?? null,
+            usageSummary: nextLightSummary,
+            usageSummaryUpdatedAt: summaryUpdatedAt,
             usageSummaryFresh: retainedLightSummary !== null
-              ? previous?.usageSummaryFresh !== false
-              : false,
+              ? previous.usageSummaryFresh !== false
+              : incomingLightSummary !== null
+                ? precise.usageSummaryFresh !== false
+                : false,
             stats: retainedLightSummary === null
               ? precise.stats
               : {
@@ -132,6 +449,15 @@ export function mergePreciseDashboard(
   };
 }
 
+function previousLineageHomeMismatch(
+  previous: DashboardSnapshot,
+  incoming: DashboardSnapshot,
+): boolean {
+  const previousHome = normalizeFullLineage(previous).homeIdentity;
+  const incomingHome = normalizeFullLineage(incoming).homeIdentity;
+  return previousHome !== null && incomingHome !== null && previousHome !== incomingHome;
+}
+
 /**
  * Apply the lightweight exact-index summary without touching charts,
  * rankings, quota history, or the last settled aggregate watermark.
@@ -139,34 +465,41 @@ export function mergePreciseDashboard(
 export function mergeUsageSummary(
   state: DashboardAppState,
   summary: UsageSummarySnapshot,
-  generatedAt = summary.generatedAt ?? new Date().toISOString(),
+  generatedAt?: string,
 ): DashboardAppState {
   const dashboard = state.dashboard;
   if (dashboard === null) return state;
-  const incomingTime = Date.parse(generatedAt);
-  const previousSummaryTime = Date.parse(
-    dashboard.usageSummaryUpdatedAt ?? dashboard.usageSummary?.generatedAt ?? "",
-  );
-  // This lane has its own clock. A cache summary may legitimately predate a
-  // newer five-minute dashboard snapshot; comparing against dashboard.generatedAt
-  // would discard the only trusted model rows and leave today's card pending.
-  if (Number.isFinite(incomingTime)
-    && Number.isFinite(previousSummaryTime)
-    && incomingTime < previousSummaryTime) return state;
+
+  const publicationAt = nonEmptyText(generatedAt) ?? nonEmptyText(summary.generatedAt);
+  const incomingSummary = publicationAt === null || summary.generatedAt === publicationAt
+    ? summary
+    : { ...summary, generatedAt: publicationAt };
+  const incomingLineage = normalizeSummaryLineage(dashboard, incomingSummary);
+  if (dashboard.usageSummary !== null && dashboard.usageSummary !== undefined) {
+    const previousLineage = normalizeSummaryLineage(dashboard, dashboard.usageSummary);
+    const relation = compareDashboardLineage(previousLineage, incomingLineage);
+    if (relation === "source-mismatch"
+      || relation === "incoming-older"
+      || relation === "incomparable"
+      || (relation === "unknown"
+        && previousLineage.hasComparableLineage
+        && !incomingLineage.hasComparableLineage)) {
+      return state;
+    }
+  }
 
   return {
     ...state,
     dashboard: {
       ...dashboard,
-      usageSummaryUpdatedAt: generatedAt,
+      usageSummaryUpdatedAt: publicationAt ?? dashboard.usageSummaryUpdatedAt ?? null,
       usageSummary: {
-        ...summary,
-        generatedAt,
+        ...incomingSummary,
       },
       usageSummaryFresh: true,
       stats: {
         ...dashboard.stats,
-        totalTokens: Math.max(0, summary.totalTokens),
+        totalTokens: Math.max(0, incomingSummary.totalTokens),
       },
     },
   };

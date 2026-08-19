@@ -6,6 +6,17 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
   const now = new Date();
   return {
     generatedAt: now.toISOString(),
+    homeIdentity: null,
+    usageRevision: null,
+    coverageKind: null,
+    observedThrough: null,
+    settledThrough: null,
+    exactGeneration: null,
+    dashboardRevision: null,
+    aggregateBoundaryUnix: null,
+    usageSummaryUpdatedAt: null,
+    usageSummary: null,
+    usageSummaryFresh: false,
     preciseRecentUsageCoveredAt: null,
     preciseRecentUsageFresh: false,
     preciseObserverEpoch: null,

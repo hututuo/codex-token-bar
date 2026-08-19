@@ -194,7 +194,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   // change the effect dependency and cancel the in-flight owner.
   const activeForcedPreciseGenerationRef = useRef<number | null>(null);
   const activePreciseRequestRef = useRef<PreciseDashboardRequestIntent | null>(null);
-  latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
+  latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt
+    ?? state.dashboard?.settledThrough
+    ?? null;
   const markRenderCommit = useRenderCommitPerformanceTrace(state.dashboard);
 
   const requestPreciseRefresh = useCallback((
@@ -405,7 +407,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
     const catchUp = planPreciseUsageCatchUp({
       quotaUpdatedAt: latestComparisonUpdatedAtRef.current,
-      preciseCoveredAt: precise.preciseRecentUsageCoveredAt,
+      preciseCoveredAt: precise.preciseRecentUsageCoveredAt ?? precise.settledThrough,
       preciseFresh: precise.preciseRecentUsageFresh,
       requestedForQuotaBoundaryKey: preciseCatchUpQuotaRef.current,
     });
@@ -929,7 +931,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       : usageRefreshSettings.usageBackgroundAggregateIntervalMinutes;
     const nowMs = Date.now();
     const eligibleBoundary = latestEligibleBoundary(nowMs / 1_000);
-    const coveredAt = state.dashboard?.preciseRecentUsageCoveredAt ?? null;
+    const coveredAt = state.dashboard?.preciseRecentUsageCoveredAt
+      ?? state.dashboard?.settledThrough
+      ?? null;
     const coveredSeconds = coveredAt === null ? Number.NaN : Date.parse(coveredAt) / 1_000;
 
     // A cached startup snapshot with no coverage is already handled by the
@@ -980,6 +984,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     requestPreciseRefresh,
     sourceToken,
     state.dashboard?.preciseRecentUsageCoveredAt,
+    state.dashboard?.settledThrough,
     state.dashboard?.preciseRecentUsageFresh,
     state.loading,
     usageRefreshSettings.usageBackgroundAggregateIntervalMinutes,
@@ -1038,7 +1043,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     const eligibleBoundary = latestEligibleBoundary(Date.now() / 1_000);
     const context = makeDashboardWakeRefreshContext({
       dashboardGeneratedAt: state.dashboard?.generatedAt ?? null,
-      preciseCoveredAt: state.dashboard?.preciseRecentUsageCoveredAt ?? null,
+      preciseCoveredAt: state.dashboard?.preciseRecentUsageCoveredAt
+        ?? state.dashboard?.settledThrough
+        ?? null,
       preciseFresh: state.dashboard?.preciseRecentUsageFresh,
       eligibleBoundarySeconds: eligibleBoundary,
       dashboardVisible,
@@ -1070,6 +1077,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     requestPreciseRefresh,
     state.dashboard?.generatedAt,
     state.dashboard?.preciseRecentUsageCoveredAt,
+    state.dashboard?.settledThrough,
     state.dashboard?.preciseRecentUsageFresh,
     usageRefreshSettings.usageVisibleAggregateIntervalMinutes,
   ]);

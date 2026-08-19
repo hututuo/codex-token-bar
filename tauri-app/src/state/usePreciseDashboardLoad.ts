@@ -204,7 +204,7 @@ export function usePreciseDashboardLoad({
           (result) => {
             if (result === null
               || result.preciseRecentUsageFresh !== true
-              || !result.preciseRecentUsageCoveredAt) {
+              || !(result.preciseRecentUsageCoveredAt ?? result.settledThrough)) {
               reportFailure();
             }
           },

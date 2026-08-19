@@ -293,6 +293,201 @@ test("newer full snapshot supersedes the temporary lightweight summary", async (
   });
 });
 
+test("settled-only full does not replace a newer open-bucket summary", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      homeIdentity: "home-A",
+      usageSummary: {
+        homeIdentity: "home-A",
+        usageRevision: 12,
+        coverageKind: "summary",
+        observedThrough: "2026-08-18T01:10:00Z",
+        settledThrough: "2026-08-18T01:05:00Z",
+        totalTokens: 900,
+        todayTokens: 400,
+        todayRequests: 4,
+        generatedAt: "2026-08-18T01:11:00Z",
+      },
+      usageSummaryUpdatedAt: "2026-08-18T01:11:00Z",
+      usageSummaryFresh: true,
+      stats: {
+        totalTokens: 900,
+        peakDayTokens: 400,
+        peakThreadTokens: 300,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 4,
+        totalThreads: 1,
+      },
+    });
+    const settled = dashboardFixture({
+      homeIdentity: "home-A",
+      usageRevision: 12,
+      exactGeneration: 13,
+      coverageKind: "settled",
+      observedThrough: "2026-08-18T01:05:00Z",
+      settledThrough: "2026-08-18T01:05:00Z",
+      generatedAt: "2026-08-18T02:00:00Z",
+      preciseRecentUsageCoveredAt: "2026-08-18T01:05:00Z",
+      preciseRecentUsageFresh: true,
+      stats: {
+        totalTokens: 1_000,
+        peakDayTokens: 500,
+        peakThreadTokens: 350,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 5,
+        totalThreads: 1,
+      },
+    });
+
+    const next = mergePreciseDashboard(state, settled);
+
+    assert.equal(next.dashboard.usageSummary.totalTokens, 900);
+    assert.equal(next.dashboard.stats.totalTokens, 900);
+    assert.equal(next.dashboard.usageSummary.observedThrough, "2026-08-18T01:10:00Z");
+  });
+});
+
+test("generatedAt alone cannot clear a summary when full coverage is unproven", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      usageSummary: {
+        coverageKind: "summary",
+        totalTokens: 900,
+        todayTokens: 400,
+        todayRequests: 4,
+        generatedAt: "2026-08-18T01:10:00Z",
+      },
+      usageSummaryUpdatedAt: "2026-08-18T01:10:00Z",
+      usageSummaryFresh: true,
+      stats: { ...dashboardFixture().stats, totalTokens: 900 },
+    });
+    const unprovenFull = dashboardFixture({
+      generatedAt: "2026-08-18T02:10:00Z",
+      preciseRecentUsageCoveredAt: null,
+      preciseRecentUsageFresh: true,
+      coverageKind: null,
+      stats: { ...dashboardFixture().stats, totalTokens: 1 },
+    });
+
+    const next = mergePreciseDashboard(state, unprovenFull);
+
+    assert.equal(next.dashboard.usageSummary.totalTokens, 900);
+    assert.equal(next.dashboard.stats.totalTokens, 900);
+  });
+});
+
+test("summary lineage rejects an older revision even when its generatedAt is later", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      usageSummary: {
+        usageRevision: 9,
+        coverageKind: "summary",
+        observedThrough: "2026-08-18T01:05:00Z",
+        totalTokens: 900,
+        todayTokens: 400,
+        todayRequests: 4,
+        generatedAt: "2026-08-18T01:05:00Z",
+      },
+      usageSummaryUpdatedAt: "2026-08-18T01:05:00Z",
+    });
+
+    const next = mergeUsageSummary(state, {
+      usageRevision: 8,
+      coverageKind: "summary",
+      observedThrough: "2026-08-18T01:05:00Z",
+      totalTokens: 100,
+      todayTokens: 100,
+      todayRequests: 1,
+      generatedAt: "2026-08-18T02:05:00Z",
+    });
+
+    assert.equal(next, state);
+  });
+});
+
+test("failed precise payload changes freshness only and keeps last-good lineage", async () => {
+  return withSsrModules(async (load) => {
+    const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      homeIdentity: "home-A",
+      usageRevision: 12,
+      exactGeneration: 13,
+      coverageKind: "full",
+      settledThrough: "2026-08-18T01:05:00Z",
+      preciseRecentUsageCoveredAt: "2026-08-18T01:05:00Z",
+      preciseRecentUsageFresh: true,
+      stats: {
+        totalTokens: 900,
+        peakDayTokens: 400,
+        peakThreadTokens: 300,
+        currentStreakDays: 1,
+        longestStreakDays: 1,
+        totalCalls: 4,
+        totalThreads: 1,
+      },
+      recentUsage24h: [recentUsagePoint({ startUnix: 100, tokens: 900 })],
+    });
+    const failed = dashboardFixture({
+      homeIdentity: "home-A",
+      usageRevision: 13,
+      exactGeneration: 14,
+      coverageKind: "full",
+      preciseRecentUsageCoveredAt: null,
+      preciseRecentUsageFresh: false,
+      stats: { ...state.dashboard.stats, totalTokens: 1 },
+      recentUsage24h: [recentUsagePoint({ startUnix: 100, tokens: 1 })],
+      warnings: [{ source: "token_count", message: "扫描失败" }],
+    });
+
+    const next = mergePreciseDashboard(state, failed);
+
+    assert.equal(next.dashboard.preciseRecentUsageFresh, false);
+    assert.equal(next.dashboard.stats.totalTokens, 900);
+    assert.equal(next.dashboard.recentUsage24h[0].tokens, 900);
+    assert.equal(next.dashboard.exactGeneration, 13);
+    assert.equal(next.dashboard.warnings[0].message, "扫描失败");
+  });
+});
+
+test("lineage Home identity prevents a late payload from another source", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary, mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      homeIdentity: "home-A",
+      usageSummary: {
+        homeIdentity: "home-A",
+        coverageKind: "summary",
+        usageRevision: 2,
+        totalTokens: 20,
+        todayTokens: 20,
+        todayRequests: 1,
+      },
+    });
+    const summary = mergeUsageSummary(state, {
+      homeIdentity: "home-B",
+      coverageKind: "summary",
+      usageRevision: 99,
+      totalTokens: 999,
+      todayTokens: 999,
+      todayRequests: 9,
+    });
+    assert.equal(summary, state);
+
+    const precise = mergePreciseDashboard(state, dashboardFixture({
+      homeIdentity: "home-B",
+      preciseRecentUsageCoveredAt: "2026-08-18T01:00:00Z",
+      preciseRecentUsageFresh: true,
+      stats: { ...state.dashboard.stats, totalTokens: 999 },
+    }));
+    assert.equal(precise, state);
+  });
+});
+
 test("all-zero legacy startup placeholder remains unavailable", async () => {
   return withSsrModules(async (load) => {
     const { dashboardSnapshotHasTrustedStartupData } = await load("/src/state/dashboardState.ts");

@@ -473,11 +473,11 @@ function recordCoverageRequest(
 function isSuccessfulPreciseSnapshot(
   snapshot: DashboardSnapshot | null,
 ): snapshot is DashboardSnapshot {
+  const coveredAt = preciseCoverageBoundary(snapshot);
   return snapshot !== null
     && snapshot.preciseRecentUsageFresh === true
-    && typeof snapshot.preciseRecentUsageCoveredAt === "string"
-    && snapshot.preciseRecentUsageCoveredAt.length > 0
-    && canonicalAttributionBoundaryKey(snapshot.preciseRecentUsageCoveredAt) !== undefined;
+    && coveredAt !== null
+    && preciseCoverageBoundarySeconds(coveredAt) !== undefined;
 }
 
 function preciseSnapshotCoversBoundary(
@@ -487,14 +487,10 @@ function preciseSnapshotCoversBoundary(
   if (snapshot === undefined || !isSuccessfulPreciseSnapshot(snapshot)) {
     return false;
   }
-  const coveredAt = snapshot.preciseRecentUsageCoveredAt;
-  if (coveredAt === null || coveredAt === undefined) {
-    return false;
-  }
-  const coveredKey = canonicalAttributionBoundaryKey(coveredAt);
-  const coveredSeconds = coveredKey === undefined
+  const coveredAt = preciseCoverageBoundary(snapshot);
+  const coveredSeconds = coveredAt === null
     ? undefined
-    : canonicalBoundarySeconds(coveredKey);
+    : preciseCoverageBoundarySeconds(coveredAt);
   return coveredSeconds !== undefined && coveredSeconds >= boundarySeconds;
 }
 
@@ -505,11 +501,38 @@ function preciseSnapshotPublishedGenerationMatches(
   if (!snapshot || !isCanonicalPublishedGeneration(expectedPublishedGeneration)) {
     return false;
   }
-  const cachedGeneration = snapshot.preciseAttributionGeneration;
-  return typeof cachedGeneration === "number"
-    && Number.isSafeInteger(cachedGeneration)
-    && cachedGeneration >= 0
-    && String(cachedGeneration) === expectedPublishedGeneration;
+  const cachedGeneration = snapshot.exactGeneration ?? snapshot.preciseAttributionGeneration;
+  return canonicalGeneration(cachedGeneration) === expectedPublishedGeneration;
+}
+
+function canonicalGeneration(value: unknown): string | undefined {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? String(value) : undefined;
+  }
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)$/.test(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function preciseCoverageBoundary(snapshot: DashboardSnapshot | null | undefined): string | null {
+  const value = snapshot?.preciseRecentUsageCoveredAt ?? snapshot?.settledThrough;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function preciseCoverageBoundarySeconds(value: string): number | undefined {
+  const key = canonicalAttributionBoundaryKey(value);
+  if (key !== undefined) {
+    return canonicalBoundarySeconds(key);
+  }
+  if (/^(0|[1-9]\d*)$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : undefined;
+  }
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return undefined;
+  const seconds = Math.floor(milliseconds / 1_000);
+  return Number.isSafeInteger(seconds) ? seconds : undefined;
 }
 
 function isCanonicalPublishedGeneration(value: unknown): value is string {

@@ -38,10 +38,8 @@ export interface DashboardReadyState {
  * trusted last-good stale case and remains displayable.
  */
 export function dashboardSnapshotHasTrustedStartupData(snapshot: DashboardSnapshot): boolean {
-  const coveredAt = snapshot.preciseRecentUsageCoveredAt;
-  const hasCoverage = typeof coveredAt === "string"
-    && coveredAt.trim().length > 0
-    && Number.isFinite(Date.parse(coveredAt));
+  const coveredAt = snapshot.preciseRecentUsageCoveredAt ?? snapshot.settledThrough;
+  const hasCoverage = validCoverageBoundary(coveredAt);
   // A last-good stale snapshot is still trusted for display when it carries a
   // valid precise coverage boundary; freshness is reported separately.
   if (hasCoverage) {
@@ -54,6 +52,15 @@ export function dashboardSnapshotHasTrustedStartupData(snapshot: DashboardSnapsh
   // current precise owner is rebuilding the watermark. A genuinely empty
   // account still fails closed and waits for the first exact result.
   return hasMaterializedStartupData(snapshot);
+}
+
+function validCoverageBoundary(value: string | null | undefined): boolean {
+  if (typeof value !== "string" || value.trim().length === 0) return false;
+  if (/^(0|[1-9]\d*)$/.test(value.trim())) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds);
+  }
+  return Number.isFinite(Date.parse(value));
 }
 
 function hasMaterializedStartupData(snapshot: DashboardSnapshot): boolean {

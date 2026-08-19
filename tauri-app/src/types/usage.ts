@@ -25,6 +25,27 @@ export type PreciseDashboardDedupeDomain =
 
 export type PreciseDashboardRequestRevision = string | number;
 
+/**
+ * Small, transport-safe lineage attached to numeric dashboard payloads.
+ *
+ * These fields are deliberately independent from `generatedAt`: the native
+ * owner can publish an open/observed bucket after a settled aggregate has
+ * already been materialised, and wall-clock publication time is not a source
+ * freshness proof.
+ */
+export type DashboardLineageScalar = number | string | null;
+
+export type DashboardCoverageKind = "summary" | "settled" | "full";
+
+export interface DashboardPayloadLineage {
+  homeIdentity?: string | null;
+  usageRevision?: DashboardLineageScalar;
+  coverageKind?: DashboardCoverageKind | null;
+  observedThrough?: string | null;
+  settledThrough?: string | null;
+  exactGeneration?: DashboardLineageScalar;
+}
+
 export interface DashboardStats {
   totalTokens: number;
   peakDayTokens: number;
@@ -124,8 +145,11 @@ export interface TokenCacheUsage {
   turns: TurnCacheUsage[];
 }
 
-export interface DashboardSnapshot {
+export interface DashboardSnapshot extends DashboardPayloadLineage {
   generatedAt: string;
+  /** Compatibility aliases emitted by older exact-index owners. */
+  dashboardRevision?: DashboardLineageScalar;
+  aggregateBoundaryUnix?: DashboardLineageScalar;
   /** Frontend publication time of the latest lightweight numeric summary. */
   usageSummaryUpdatedAt?: string | null;
   /** Latest lightweight totals; deliberately separate from chart buckets. */
@@ -200,11 +224,19 @@ export interface PreciseDashboardProgress {
 }
 
 export interface UsageSummarySnapshot {
+  /** Minimal source identity and freshness lineage for the summary lane. */
+  homeIdentity?: string | null;
+  usageRevision?: DashboardLineageScalar;
+  coverageKind?: DashboardCoverageKind | null;
+  observedThrough?: string | null;
+  settledThrough?: string | null;
+  exactGeneration?: DashboardLineageScalar;
   totalTokens: number;
   todayTokens: number;
   todayRequests: number;
   todayModelBreakdowns?: ModelTokenBreakdown[];
-  dashboardRevision?: number;
-  aggregateBoundaryUnix?: number;
+  /** V19 summary names retained for old Rust payloads. */
+  dashboardRevision?: DashboardLineageScalar;
+  aggregateBoundaryUnix?: DashboardLineageScalar;
   generatedAt?: string;
 }
