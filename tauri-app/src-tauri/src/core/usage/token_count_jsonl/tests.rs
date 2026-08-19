@@ -1422,7 +1422,62 @@ fn persistent_duplicate_session_lineage_does_not_rotate_until_it_becomes_clean()
 }
 
 #[test]
-fn incomplete_session_directory_scan_keeps_published_stats_and_blocks_safety_ack() {
+fn missing_session_roots_keep_the_previous_published_generation() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let retained_session_dir = root.join("retained-sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019emissing-root-safe.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
+    let connection = Connection::open(&index_path).unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    fs::rename(&session_dir, &retained_session_dir).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let error = index.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("会话根目录暂时不可用"), "{error}");
+    drop(index);
+
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        100
+    );
+    drop(connection);
+    fs::rename(&retained_session_dir, &session_dir).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unreadable_primary_session_root_keeps_the_previous_published_generation() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -1437,34 +1492,48 @@ fn incomplete_session_directory_scan_keeps_published_stats_and_blocks_safety_ack
     let initial = dashboard_snapshot(&root).unwrap();
     assert_eq!(initial.stats.total_tokens, 100);
     assert!(initial.precise_recent_usage_fresh);
-    assert!(!initial.precise_attribution_current_scan_unsafe);
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let connection = Connection::open(&index_path).unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
 
     let retained_session_dir = root.join("retained-sessions");
     fs::rename(&session_dir, &retained_session_dir).unwrap();
     fs::write(&session_dir, b"not-a-directory").unwrap();
-    let incomplete = dashboard_snapshot(&root).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let error = index.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("会话根目录暂时不可用"), "{error}");
+    drop(index);
+
+    let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
-        incomplete.stats.total_tokens, 100,
-        "an incomplete directory enumeration must keep the last published totals"
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before,
+        "an unreadable primary root must not advance the published selector"
     );
-    assert!(!incomplete.precise_recent_usage_fresh);
-    assert!(incomplete.precise_recent_usage_covered_at.is_none());
-    assert!(incomplete.precise_attribution_current_scan_unsafe);
-    assert!(incomplete.warnings.iter().any(|warning| {
-        warning.source == "jsonl_scan" && warning.message.contains("本轮跳过该目录")
-    }));
-    let epoch = incomplete
-        .precise_attribution_provenance_epoch
-        .clone()
-        .unwrap();
-    let unsafe_id = incomplete.precise_attribution_unsafe_id.clone().unwrap();
-    assert!(!acknowledge_attribution_safety(
-        &root,
-        &epoch,
-        &unsafe_id,
-        incomplete.precise_attribution_generation.unwrap(),
-    )
-    .unwrap());
+    assert_eq!(
+        connection
+            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        100
+    );
+    drop(connection);
 
     fs::remove_file(&session_dir).unwrap();
     fs::rename(&retained_session_dir, &session_dir).unwrap();
@@ -1472,17 +1541,11 @@ fn incomplete_session_directory_scan_keeps_published_stats_and_blocks_safety_ack
     assert_eq!(recovered.stats.total_tokens, 100);
     assert!(recovered.precise_recent_usage_fresh);
     assert!(recovered.precise_recent_usage_covered_at.is_some());
-    assert!(!recovered.precise_attribution_current_scan_unsafe);
-    assert_eq!(
-        recovered.precise_attribution_unsafe_id.as_deref(),
-        Some(unsafe_id.as_str()),
-        "a complete recovery scan must restore freshness without silently clearing the sticky unsafe episode"
-    );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn codex_home_replacement_during_precise_scan_marks_the_generation_unsafe() {
+fn codex_home_replacement_during_precise_scan_blocks_generation_publish() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
     let retired_root = root.with_extension("retired-precise-root");
@@ -1521,14 +1584,24 @@ fn codex_home_replacement_during_precise_scan_marks_the_generation_unsafe() {
         Ok(())
     })));
 
-    let snapshot = dashboard_snapshot(&root).unwrap();
+    let error = dashboard_snapshot(&root).unwrap_err();
     set_precise_refresh_sync_hook_for_testing(None);
-    assert_eq!(snapshot.stats.total_tokens, 100);
-    assert!(!snapshot.precise_recent_usage_fresh);
-    assert!(snapshot.precise_attribution_current_scan_unsafe);
-    assert!(snapshot.warnings.iter().any(|warning| {
-        warning.source == "jsonl_scan" && warning.message.contains("同路径替换")
-    }));
+    assert!(error.contains("已保留上一份可信索引并停止本轮发布"), "{error}");
+
+    let retired_index = retired_root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    let connection = Connection::open(retired_index).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0,
+        "a replaced Home must not publish the staged source from either identity"
+    );
+    drop(connection);
 
     fs::remove_dir_all(root).unwrap();
     fs::remove_dir_all(retired_root).unwrap();
@@ -2882,6 +2955,12 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
         connection
             .execute("DELETE FROM event_enrichment_sources", [])
             .unwrap();
+        connection
+            .execute(
+                "DELETE FROM metadata WHERE key = 'codex_home_physical_identity'",
+                [],
+            )
+            .unwrap();
         let model_column_exists = connection
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'model'",
@@ -2904,6 +2983,18 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
             "v{legacy_version} structural migration must not read JSONL bodies"
         );
         let structurally_migrated = Connection::open(&index_path).unwrap();
+        assert!(
+            structurally_migrated
+                .query_row(
+                    "SELECT value FROM metadata WHERE key = 'codex_home_physical_identity'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+                .len()
+                > 0,
+            "the public legacy index must bind its missing physical Home identity in place"
+        );
         assert_eq!(
             structurally_migrated
                 .query_row(
@@ -3153,6 +3244,262 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
 }
 
 #[test]
+fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eenrichment-missing-resume.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":9,"total_tokens":100}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection.execute("ALTER TABLE events DROP COLUMN model", []).unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .unwrap();
+    connection
+        .execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'", [])
+        .unwrap();
+    connection
+        .execute("DELETE FROM metadata WHERE key = 'event_enrichment_revision'", [])
+        .unwrap();
+    connection
+        .execute("DELETE FROM event_enrichment_sources", [])
+        .unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
+    let canonical_file = fs::canonicalize(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+
+    let mut interrupted = ExactUsageIndex::open(&root).unwrap();
+    ExactUsageIndex::fail_after_staging_once_for_testing();
+    let error = interrupted.sync(&root, &mut Vec::new()).unwrap_err();
+    assert!(error.contains("injected interruption"), "{error}");
+    drop(interrupted);
+
+    let interrupted_database = Connection::open(&index_path).unwrap();
+    let building = interrupted_database
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'building_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert!(building > published_before);
+    assert_eq!(
+        interrupted_database
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before,
+        "the interrupted enrichment must keep the previous published selector"
+    );
+    assert_eq!(
+        interrupted_database
+            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        100,
+        "the previous complete generation must stay readable until resume publishes"
+    );
+    assert_eq!(
+        interrupted_database
+            .query_row(
+                "SELECT deleted FROM files WHERE generation = ?1 AND path = ?2",
+                params![building, canonical_file.to_string_lossy().as_ref()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "the missing source tombstone must be durable before publication"
+    );
+    assert_eq!(
+        interrupted_database
+            .query_row(
+                "SELECT file_generation FROM event_enrichment_sources WHERE path = ?1 AND revision = 'model-reasoning-v1'",
+                [canonical_file.to_string_lossy().as_ref()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        building,
+        "the enrichment receipt must point at the durable tombstone generation"
+    );
+    drop(interrupted_database);
+
+    let mut resumed = ExactUsageIndex::open(&root).unwrap();
+    resumed.sync(&root, &mut Vec::new()).unwrap();
+    drop(resumed);
+
+    let completed = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        completed
+            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0,
+        "resume must publish the durable tombstone instead of resurrecting the missing source"
+    );
+    assert_eq!(
+        completed
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'event_enrichment_revision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "model-reasoning-v1"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn event_enrichment_keeps_the_previous_published_generation_until_every_source_completes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let first = session_dir.join("rollout-019eenrichment-atomic-a.jsonl");
+    let second = session_dir.join("rollout-019eenrichment-atomic-b.jsonl");
+    let first_lines = [
+        r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+        r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"reasoning_output_tokens":7,"total_tokens":100}}}}"#,
+    ];
+    let second_lines = [
+        r#"{"timestamp":"2026-07-20T01:00:59Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+        r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"reasoning_output_tokens":9,"total_tokens":50}}}}"#,
+    ];
+    write_lines(&first, &first_lines);
+    write_lines(&second, &second_lines);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection.execute("ALTER TABLE events DROP COLUMN model", []).unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .unwrap();
+    connection
+        .execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'", [])
+        .unwrap();
+    connection
+        .execute("DELETE FROM metadata WHERE key = 'event_enrichment_revision'", [])
+        .unwrap();
+    connection
+        .execute("DELETE FROM event_enrichment_sources", [])
+        .unwrap();
+    let published_before = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    let canonical_second = fs::canonicalize(&second).unwrap();
+    ExactUsageIndex::set_before_staging_open_hook_for_testing(canonical_second, |path| {
+        fs::remove_file(path).unwrap();
+    });
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let revision_before = index.revision().unwrap();
+    assert_eq!(index.sync(&root, &mut Vec::new()).unwrap(), revision_before);
+    let progress = precise_dashboard_progress(&root);
+    assert_eq!(progress.phase, "backfillingModel");
+    assert_eq!(progress.completed, 1);
+    assert_eq!(progress.total, Some(2));
+
+    let interrupted = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        interrupted
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        published_before,
+        "partial enrichment must not advance the published selector"
+    );
+    assert_eq!(
+        interrupted
+            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        150,
+        "readers must keep the complete previous generation"
+    );
+    assert_eq!(
+        interrupted
+            .query_row(
+                "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = 'model-reasoning-v1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "the completed source receipt must remain durable for resume"
+    );
+    assert_eq!(
+        interrupted
+            .query_row(
+                "SELECT COUNT(*) FROM metadata WHERE key = 'event_enrichment_revision'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    drop(interrupted);
+
+    write_lines(&second, &second_lines);
+    assert!(index.sync(&root, &mut Vec::new()).unwrap() > revision_before);
+    assert_eq!(
+        index
+            .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)
+            .unwrap()
+            .total_tokens,
+        150
+    );
+    drop(index);
+    let completed = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        completed
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'event_enrichment_revision'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "model-reasoning-v1"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -3314,6 +3661,119 @@ fn exact_index_refuses_unknown_event_enrichment_revision_before_migration_writes
         "model-reasoning-v999"
     );
     drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_restores_a_missing_marker_for_the_known_session_catalog_shape() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eknown-unmarked-catalog.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO session_catalog_files(path, archived, thread_id, cwd, source, session_id, forked_from_id, parent_thread_id, size, modified_ns, created_ns, modified_at, created_at, stat_device_id, stat_file_id, stat_changed_ns, device_id, file_id, changed_ns, first_line_bytes, first_line_sha256, last_seen_generation) VALUES (?1, 0, 'known-thread', '/known', 'known', NULL, NULL, NULL, 0, '0', '0', NULL, NULL, 'known-device', 'known-file', '0', 'known-device', 'known-file', '0', 0, X'00', 7)",
+            ["/known/catalog.jsonl"],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'session_catalog_schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let index = ExactUsageIndex::open(&root).unwrap();
+    drop(index);
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'session_catalog_schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT thread_id FROM session_catalog_files WHERE path = '/known/catalog.jsonl'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "known-thread"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn exact_index_refuses_unmarked_unknown_session_catalog_shape_without_dropping_it() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019eunmarked-future-catalog.jsonl"),
+        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "ALTER TABLE session_catalog_files ADD COLUMN future_marker TEXT",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE session_catalog_files SET future_marker = 'keep-me'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'session_catalog_schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("an unmarked unknown catalog shape must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.contains("缺少 schema 标记"), "{error}");
+    assert!(error.contains("已拒绝删除或覆盖"), "{error}");
+
+    let connection = Connection::open(&index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_catalog_files') WHERE name = 'future_marker'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

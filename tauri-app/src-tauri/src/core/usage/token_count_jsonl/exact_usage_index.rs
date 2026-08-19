@@ -153,6 +153,7 @@ pub(super) struct StartupIndexIdentity {
 #[derive(Default)]
 struct ExactScanCompleteness {
     incomplete_source_scan: bool,
+    block_generation_publish: bool,
 }
 
 #[derive(Default)]
@@ -170,6 +171,11 @@ struct ExactScanDiagnostics {
 impl ExactScanCompleteness {
     fn mark_incomplete(&mut self) {
         self.incomplete_source_scan = true;
+    }
+
+    fn block_publish(&mut self) {
+        self.incomplete_source_scan = true;
+        self.block_generation_publish = true;
     }
 }
 
@@ -868,10 +874,21 @@ impl ExactUsageIndex {
 
         let identity = codex_home_identity(codex_home);
         let physical_identity = attribution_watch_root_physical_identity(codex_home)?;
+        let stored_identity = metadata_text(&connection, "codex_home_identity")?;
         let stored_physical_identity = metadata_text(&connection, "codex_home_physical_identity")?;
-        if metadata_text(&connection, "codex_home_identity")?.as_deref() != Some(&identity)
-            || stored_physical_identity.as_deref() != Some(&physical_identity)
-        {
+        let logical_identity_mismatch = stored_identity
+            .as_deref()
+            .is_some_and(|stored| stored != identity);
+        let physical_identity_mismatch = stored_physical_identity
+            .as_deref()
+            .is_some_and(|stored| stored != physical_identity);
+        if stored_identity.is_none() && event_enrichment_source_count(&connection)? > 0 {
+            return Err(
+                "精确 token 旧索引缺少 Codex Home 身份，已拒绝在来源不明时覆盖现有数据"
+                    .into(),
+            );
+        }
+        if logical_identity_mismatch || physical_identity_mismatch {
             connection
                 .execute_batch(
                     r#"
@@ -906,13 +923,21 @@ impl ExactUsageIndex {
                 "schema_version",
                 &INDEX_SCHEMA_VERSION.to_string(),
             )?;
-        }
-        if metadata_text(&connection, "codex_home_physical_identity")?.is_none() {
-            set_metadata(
-                &connection,
-                "codex_home_physical_identity",
-                &physical_identity,
-            )?;
+        } else {
+            // Public v0.8.3 indexes persisted the logical Home identity but
+            // predate the physical identity marker. Bind that marker in place:
+            // absence is a known legacy shape, not evidence that the Home was
+            // replaced. Only an explicit mismatch above resets the source.
+            if stored_identity.is_none() {
+                set_metadata(&connection, "codex_home_identity", &identity)?;
+            }
+            if stored_physical_identity.is_none() {
+                set_metadata(
+                    &connection,
+                    "codex_home_physical_identity",
+                    &physical_identity,
+                )?;
+            }
         }
         if metadata_text(&connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
             .is_none_or(|value| value.trim().is_empty())
@@ -924,7 +949,7 @@ impl ExactUsageIndex {
                 codex_home,
                 "migrating",
                 if event_enrichment_requires_sync {
-                    "正在准备历史 model/reasoning 补全；首次升级可能需要几分钟，原始数据不会丢失"
+                    "正在准备补全历史模型与 reasoning 信息；首次升级可能需要几分钟，原始数据不会丢失"
                 } else {
                     "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（等待扫描回填归因账本）"
                 },
@@ -1503,21 +1528,36 @@ impl ExactUsageIndex {
             remove_index_storage(&staged_file.database_path)?;
             run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
         }
-        match attribution_watch_root_physical_identity(codex_home) {
-            Ok(identity) if scan_start_home_identity.as_ref() == Some(&identity) => {}
+        let scan_home_identity_stable = match attribution_watch_root_physical_identity(codex_home) {
+            Ok(identity) if scan_start_home_identity.as_ref() == Some(&identity) => true,
             Ok(_) => {
                 scan_completeness.mark_incomplete();
                 warnings.push(scan_warning(
                     "Codex Home 在精确 token 扫描期间被同路径替换，本轮归因已停止建立安全覆盖"
                         .into(),
                 ));
+                false
             }
             Err(error) => {
                 scan_completeness.mark_incomplete();
                 warnings.push(scan_warning(format!(
                     "精确 token 扫描结束时无法复核 Codex Home 物理身份：{error}"
                 )));
+                false
             }
+        };
+        if !scan_home_identity_stable {
+            self.connection.mark_receipt_dirty();
+            return Err(
+                "Codex Home 在精确扫描期间变化或暂时无法确认，已保留上一份可信索引并停止本轮发布"
+                    .into(),
+            );
+        }
+        if scan_completeness.block_generation_publish {
+            self.connection.mark_receipt_dirty();
+            return Err(
+                "会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into(),
+            );
         }
         let revision = finalize_generation(
             &mut self.connection,
@@ -1592,13 +1632,14 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<u64, String> {
         self.connection.mark_receipt_dirty();
+        let total = event_enrichment_source_count(&self.connection)?;
+        let completed_receipts = event_enrichment_receipt_count(&self.connection)?.min(total);
         let candidates = event_enrichment_pending_candidates(&self.connection)?;
-        let total = candidates.len() as u64;
         super::update_precise_dashboard_progress(
             codex_home,
             "backfillingModel",
-            "正在补齐历史 model/reasoning；首次升级可能需要几分钟，原始数据不会丢失",
-            0,
+            "正在补全历史模型与 reasoning 信息；首次升级可能需要几分钟，原始数据不会丢失",
+            completed_receipts,
             Some(total),
         );
 
@@ -1668,13 +1709,18 @@ impl ExactUsageIndex {
         let generation = begin_or_resume_generation(&mut self.connection)?;
         let mut scan_completeness = ExactScanCompleteness::default();
         let mut jobs = Vec::with_capacity(candidates.len());
-        let mut completed = 0_u64;
+        let mut completed = completed_receipts;
 
         for candidate in candidates {
             let file = PathBuf::from(&candidate.path);
             let handle = match fs::File::open(&file) {
                 Ok(handle) => handle,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    record_missing_event_enrichment_source(
+                        &mut self.connection,
+                        generation,
+                        &candidate,
+                    )?;
                     self.connection
                         .execute(
                             "DELETE FROM exact_seen_files WHERE path = ?1",
@@ -1685,7 +1731,7 @@ impl ExactUsageIndex {
                     super::update_precise_dashboard_progress(
                         codex_home,
                         "backfillingModel",
-                        "正在补齐历史 model/reasoning；首次升级可能需要几分钟，原始数据不会丢失",
+                        "正在补全历史模型与 reasoning 信息；首次升级可能需要几分钟，原始数据不会丢失",
                         completed,
                         Some(total),
                     );
@@ -1751,7 +1797,7 @@ impl ExactUsageIndex {
             super::update_precise_dashboard_progress(
                 &progress_home,
                 "backfillingModel",
-                "正在补齐历史 model/reasoning；首次升级可能需要几分钟，原始数据不会丢失",
+                "正在补全历史模型与 reasoning 信息；首次升级可能需要几分钟，原始数据不会丢失",
                 completed_before_staging.saturating_add(staged_count),
                 Some(total),
             );
@@ -1764,6 +1810,9 @@ impl ExactUsageIndex {
             &mut scan_completeness,
             Some(progress_callback),
         )?;
+        if staged.len() != jobs.len() {
+            scan_completeness.mark_incomplete();
+        }
         #[cfg(test)]
         if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
             return Err("injected interruption after durable exact token staging".into());
@@ -1819,6 +1868,21 @@ impl ExactUsageIndex {
             }
             import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
             remove_index_storage(&staged_file.database_path)?;
+            completed = completed.saturating_add(1).min(total);
+        }
+
+        let pending_before_publish = event_enrichment_pending_candidates(&self.connection)?;
+        if scan_completeness.incomplete_source_scan || !pending_before_publish.is_empty() {
+            super::update_precise_dashboard_progress(
+                codex_home,
+                "backfillingModel",
+                "历史 model/reasoning 补全未完成，保留上一整份可信索引并将在下次启动继续",
+                completed,
+                Some(total),
+            );
+            self.migration_pending = true;
+            self.connection.mark_receipt_dirty();
+            return self.revision();
         }
 
         let revision = finalize_generation(
@@ -1826,7 +1890,7 @@ impl ExactUsageIndex {
             generation,
             codex_home,
             warnings,
-            scan_completeness,
+            ExactScanCompleteness::default(),
         )?;
         let pending = event_enrichment_pending_candidates(&self.connection)?;
         if pending.is_empty() {
@@ -7353,10 +7417,11 @@ fn visit_session_files(
 ) -> Result<(), String> {
     super::record_dashboard_source_scan_for_testing();
     let canonical_home = canonical_codex_home(codex_home)?;
+    let canonical_sessions_root = canonical_home.join("sessions");
     let sessions_root = codex_home.join("sessions");
     let archived_sessions_root = codex_home.join("archived_sessions");
     if sessions_root.exists() || archived_sessions_root.exists() {
-        if sessions_root.exists() {
+        if sessions_root.is_dir() {
             enqueue_directory(
                 connection,
                 &canonical_home,
@@ -7365,11 +7430,12 @@ fn visit_session_files(
                 scan_completeness,
             )?;
         } else {
-            scan_completeness.mark_incomplete();
+            scan_completeness.block_publish();
             warnings.push(scan_warning(format!(
                 "会话目录不存在：{}",
                 sessions_root.display()
             )));
+            suppress_missing_tombstones_under(connection, &sessions_root)?;
         }
         if archived_sessions_root.exists() {
             enqueue_directory(
@@ -7405,7 +7471,11 @@ fn visit_session_files(
             let entries = match fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) => {
-                    scan_completeness.mark_incomplete();
+                    if directory == canonical_sessions_root {
+                        scan_completeness.block_publish();
+                    } else {
+                        scan_completeness.mark_incomplete();
+                    }
                     warnings.push(scan_warning(format!(
                         "读取会话目录失败，本轮跳过该目录：{}（{}）",
                         directory.display(),
@@ -7466,11 +7536,13 @@ fn visit_session_files(
             }
         }
     } else {
-        scan_completeness.mark_incomplete();
+        scan_completeness.block_publish();
         warnings.push(scan_warning(format!(
             "会话目录不存在：{}",
             sessions_root.display()
         )));
+        suppress_missing_tombstones_under(connection, &sessions_root)?;
+        suppress_missing_tombstones_under(connection, &archived_sessions_root)?;
     }
 
     visit_active_rollouts(
@@ -9120,10 +9192,67 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("无法初始化精确 token 索引结构：{error}"))
 }
 
+const SESSION_CATALOG_SCHEMA_COLUMNS: &[&str] = &[
+    "path",
+    "archived",
+    "thread_id",
+    "cwd",
+    "source",
+    "session_id",
+    "forked_from_id",
+    "parent_thread_id",
+    "size",
+    "modified_ns",
+    "created_ns",
+    "modified_at",
+    "created_at",
+    "stat_device_id",
+    "stat_file_id",
+    "stat_changed_ns",
+    "device_id",
+    "file_id",
+    "changed_ns",
+    "first_line_bytes",
+    "first_line_sha256",
+    "last_seen_generation",
+];
+
+fn session_catalog_columns(connection: &Connection) -> Result<Option<Vec<String>>, String> {
+    let exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_catalog_files')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查会话目录增量索引表：{error}"))?;
+    if !exists {
+        return Ok(None);
+    }
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('session_catalog_files') ORDER BY cid")
+        .map_err(|error| format!("无法检查会话目录增量索引字段：{error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("无法读取会话目录增量索引字段：{error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("无法解码会话目录增量索引字段：{error}"))?;
+    Ok(Some(columns))
+}
+
 fn validate_session_catalog_schema_version(connection: &Connection) -> Result<(), String> {
     let Some(raw_version) = metadata_text(connection, "session_catalog_schema_version")? else {
-        // A missing marker is the legacy/uninitialized case and is safe for
-        // the current initializer to create.
+        if let Some(columns) = session_catalog_columns(connection)? {
+            let expected = SESSION_CATALOG_SCHEMA_COLUMNS
+                .iter()
+                .map(|column| (*column).to_string())
+                .collect::<Vec<_>>();
+            if columns != expected {
+                return Err(
+                    "精确 token 会话目录缺少 schema 标记且表结构不是当前已知形状，已拒绝删除或覆盖"
+                        .into(),
+                );
+            }
+        }
         return Ok(());
     };
     let version = raw_version.parse::<i64>().map_err(|_| {
@@ -9148,6 +9277,28 @@ fn initialize_session_catalog_schema(connection: &Connection) -> Result<(), Stri
     // the legacy DROP/CREATE path can run.
     validate_session_catalog_schema_version(connection)?;
     let stored_version = metadata_i64(connection, "session_catalog_schema_version")?;
+    if stored_version.is_none() && session_catalog_columns(connection)?.is_some() {
+        connection
+            .execute_batch(
+                r#"
+                BEGIN IMMEDIATE;
+                CREATE INDEX IF NOT EXISTS session_catalog_thread_id_idx
+                    ON session_catalog_files(thread_id, path);
+                INSERT OR REPLACE INTO metadata(key, value)
+                    VALUES ('session_catalog_schema_version', '1');
+                INSERT OR IGNORE INTO metadata(key, value)
+                    SELECT 'session_catalog_published_generation',
+                           CAST(COALESCE(MAX(last_seen_generation), 0) AS TEXT)
+                    FROM session_catalog_files;
+                COMMIT;
+                "#,
+            )
+            .map_err(|error| {
+                let _ = connection.execute_batch("ROLLBACK;");
+                format!("无法提交已知会话目录结构的缺失版本标记：{error}")
+            })?;
+        return Ok(());
+    }
     if stored_version != Some(SESSION_CATALOG_SCHEMA_VERSION) {
         connection
             .execute_batch(
@@ -10191,6 +10342,76 @@ fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String>
         )
         .map(nonnegative_u64)
         .map_err(|error| format!("无法统计历史字段补全来源：{error}"))
+}
+
+fn event_enrichment_receipt_count(connection: &Connection) -> Result<u64, String> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = ?1",
+            params![EVENT_ENRICHMENT_REVISION],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(nonnegative_u64)
+        .map_err(|error| format!("无法统计已完成的历史字段补全来源：{error}"))
+}
+
+fn record_missing_event_enrichment_source(
+    connection: &mut Connection,
+    generation: i64,
+    candidate: &EventEnrichmentCandidate,
+) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始已删除历史来源补全事务：{error}"))?;
+    delete_file_version_rows(&transaction, generation, &candidate.path)?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO files(
+                generation,
+                path,
+                deleted,
+                session_id,
+                size,
+                modified_ns,
+                device_id,
+                file_id,
+                changed_ns,
+                prefix_sha256
+            ) VALUES (?1, ?2, 1, '', 0, '0', '0', '0', '0', X'')
+            "#,
+            params![generation, &candidate.path],
+        )
+        .map_err(|error| format!("无法暂存已删除的历史 model/reasoning 来源：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO event_enrichment_sources(
+                path,
+                revision,
+                file_generation,
+                completed_size,
+                completed_prefix_sha256
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(path) DO UPDATE SET
+                revision = excluded.revision,
+                file_generation = excluded.file_generation,
+                completed_size = excluded.completed_size,
+                completed_prefix_sha256 = excluded.completed_prefix_sha256
+            "#,
+            params![
+                &candidate.path,
+                EVENT_ENRICHMENT_REVISION,
+                generation,
+                checked_i64(candidate.signature.size, "已删除历史字段补全来源大小")?,
+                candidate.prefix_sha256.as_slice(),
+            ],
+        )
+        .map_err(|error| format!("无法记录已删除的历史 model/reasoning 来源：{error}"))?;
+    mark_dashboard_changed(&transaction)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交已删除的历史 model/reasoning 来源：{error}"))
 }
 
 fn event_enrichment_pending_candidates(
