@@ -319,13 +319,13 @@ extension CodexUsageAnalyzer {
                     pluginUsage: pluginUsage,
                     cacheUsage: cacheUsage,
                     usagePrecision: .precise,
+                    preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
+                    generatedAt: generatedAt,
                     homeIdentity: homeIdentityKey,
                     coverageKind: coverageKind ?? .full,
                     observedThrough: observedThrough,
                     settledThrough: settledThrough,
-                    exactGeneration: exactGeneration ?? signature.attributionGeneration,
-                    preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
-                    generatedAt: generatedAt
+                    exactGeneration: exactGeneration ?? signature.attributionGeneration
                 )
             }
 

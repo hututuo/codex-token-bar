@@ -353,13 +353,14 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 hourlyUsage: phase.snapshot.hourlyUsage,
                 pluginUsage: phase.snapshot.pluginUsage,
                 cacheUsage: hydratedCacheUsage,
-                coverageKind: .full,
+                usagePrecision: phase.snapshot.usagePrecision,
+                preciseTimeSeriesGeneratedAt: phase.preciseCoverageAt,
+                generatedAt: Date(),
                 homeIdentity: dataSource.stableIdentityKey,
+                coverageKind: .full,
                 observedThrough: phase.snapshot.observedThrough,
                 settledThrough: phase.snapshot.settledThrough,
-                exactGeneration: phase.snapshot.exactGeneration,
-                preciseTimeSeriesGeneratedAt: phase.preciseCoverageAt,
-                generatedAt: Date()
+                exactGeneration: phase.snapshot.exactGeneration
             )
 
             // A concurrent numeric owner may have advanced the source tree or
@@ -491,14 +492,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 hourlyUsage: cached.hourlyUsage,
                 pluginUsage: cached.pluginUsage,
                 cacheUsage: stableCacheUsage,
+                usagePrecision: .precise,
+                preciseTimeSeriesGeneratedAt: preciseCoverageAt,
+                generatedAt: Date(),
                 homeIdentity: dataSource.stableIdentityKey,
                 coverageKind: .full,
                 observedThrough: preciseCoverageAt,
                 settledThrough: cached.settledThrough
                     ?? cached.preciseTimeSeriesGeneratedAt,
-                exactGeneration: initialAttributionState.generation,
-                preciseTimeSeriesGeneratedAt: preciseCoverageAt,
-                generatedAt: Date()
+                exactGeneration: initialAttributionState.generation
             ))
         }
         trace?.mark("snapshot-cache-miss")
@@ -704,16 +706,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             pluginUsage: metadata.plugins,
             cacheUsage: numericCacheUsage,
             usagePrecision: .precise,
+            preciseTimeSeriesGeneratedAt: settledThrough,
+            generatedAt: Date(),
             homeIdentity: dataSource.stableIdentityKey,
             coverageKind: .settled,
             observedThrough: preciseCoverageAt,
             settledThrough: settledThrough,
-            exactGeneration: synchronization.attributionGeneration,
+            exactGeneration: synchronization.attributionGeneration
             // Numeric time-series coverage is complete at this boundary.
             // Event-level attribution/detail readiness remains represented by
             // `attributionEventsComplete` and is intentionally independent.
-            preciseTimeSeriesGeneratedAt: settledThrough,
-            generatedAt: Date()
         )
         let synchronizedSignature = signature.withAttributionState(
             provenanceEpoch: synchronization.provenanceEpoch,

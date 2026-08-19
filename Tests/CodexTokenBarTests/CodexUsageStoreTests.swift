@@ -2644,12 +2644,12 @@ final class CodexUsageStoreTests: XCTestCase {
             ),
             usagePrecision: usagePrecision,
             preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
+            generatedAt: generatedAt,
             homeIdentity: homeIdentity,
             coverageKind: coverageKind,
             observedThrough: observedThrough,
             settledThrough: settledThrough,
-            exactGeneration: exactGeneration,
-            generatedAt: generatedAt
+            exactGeneration: exactGeneration
         )
     }
 

@@ -1211,6 +1211,17 @@ final class CodexUsageStore: ObservableObject {
             return incoming
         }
 
+        // A legacy producer may still return a snapshot without lineage after
+        // a newer producer has published one. Equal-coverage legacy data is
+        // safe to replace using the existing store ordering; a richer legacy
+        // response is handled below as detail-only so it cannot roll back the
+        // newer headline.
+        if !incomingHasLineage,
+           currentHasLineage,
+           incoming.coverageKind.rank == current.coverageKind.rank {
+            return incoming
+        }
+
         let incomingIsNewer = incomingLineageIsNewer(incoming, than: current)
 
         let detailIsRicher = incoming.coverageKind.rank > current.coverageKind.rank
@@ -1287,16 +1298,16 @@ final class CodexUsageStore: ObservableObject {
             usagePrecision: details.usagePrecision.hasPreciseTokenUsage
                 ? details.usagePrecision
                 : headline.usagePrecision,
-            preciseTimeSeriesGeneratedAt: max(
+            preciseTimeSeriesGeneratedAt: maxOptional(
                 headline.preciseTimeSeriesGeneratedAt,
                 details.preciseTimeSeriesGeneratedAt
             ),
             generatedAt: headline.generatedAt,
             homeIdentity: headline.homeIdentity ?? details.homeIdentity,
             coverageKind: maxCoverage(headline.coverageKind, details.coverageKind),
-            observedThrough: max(headline.observedThrough, details.observedThrough),
-            settledThrough: max(headline.settledThrough, details.settledThrough),
-            exactGeneration: max(headline.exactGeneration, details.exactGeneration)
+            observedThrough: maxOptional(headline.observedThrough, details.observedThrough),
+            settledThrough: maxOptional(headline.settledThrough, details.settledThrough),
+            exactGeneration: maxOptional(headline.exactGeneration, details.exactGeneration)
         )
     }
 
@@ -1309,7 +1320,7 @@ final class CodexUsageStore: ObservableObject {
         // richer chart while still advancing the headline/generation.
         let retainOlderCharts = headline.coverageKind == .summary
         let retainOlderCache = older.coverageKind.rank > headline.coverageKind.rank
-        DashboardSnapshot(
+        return DashboardSnapshot(
             stats: headline.stats,
             dailyUsage: retainOlderCharts ? older.dailyUsage : headline.dailyUsage,
             recentBins: retainOlderCharts ? older.recentBins : headline.recentBins,
@@ -1319,20 +1330,20 @@ final class CodexUsageStore: ObservableObject {
             usagePrecision: retainOlderCache
                 ? older.usagePrecision
                 : headline.usagePrecision,
-            preciseTimeSeriesGeneratedAt: max(
+            preciseTimeSeriesGeneratedAt: maxOptional(
                 headline.preciseTimeSeriesGeneratedAt,
                 older.preciseTimeSeriesGeneratedAt
             ),
             generatedAt: headline.generatedAt,
             homeIdentity: headline.homeIdentity ?? older.homeIdentity,
             coverageKind: maxCoverage(headline.coverageKind, older.coverageKind),
-            observedThrough: max(headline.observedThrough, older.observedThrough),
-            settledThrough: max(headline.settledThrough, older.settledThrough),
-            exactGeneration: max(headline.exactGeneration, older.exactGeneration)
+            observedThrough: maxOptional(headline.observedThrough, older.observedThrough),
+            settledThrough: maxOptional(headline.settledThrough, older.settledThrough),
+            exactGeneration: maxOptional(headline.exactGeneration, older.exactGeneration)
         )
     }
 
-    private static func max<T: Comparable>(_ lhs: T?, _ rhs: T?) -> T? {
+    private static func maxOptional<T: Comparable>(_ lhs: T?, _ rhs: T?) -> T? {
         switch (lhs, rhs) {
         case let (lhs?, rhs?): return Swift.max(lhs, rhs)
         case let (lhs?, nil): return lhs
@@ -1802,12 +1813,12 @@ final class CodexUsageStore: ObservableObject {
             cacheUsage: previous.cacheUsage,
             usagePrecision: previous.usagePrecision,
             preciseTimeSeriesGeneratedAt: previous.preciseTimeSeriesGeneratedAt,
+            generatedAt: summary.generatedAt,
             homeIdentity: summary.homeIdentity ?? previous.homeIdentity,
             coverageKind: summary.coverageKind,
             observedThrough: summary.observedThrough ?? summary.generatedAt,
             settledThrough: summary.settledThrough ?? previous.settledThrough,
-            exactGeneration: summary.exactGeneration ?? previous.exactGeneration,
-            generatedAt: summary.generatedAt
+            exactGeneration: summary.exactGeneration ?? previous.exactGeneration
         )
     }
 
