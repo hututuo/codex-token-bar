@@ -102,7 +102,7 @@ test("DashboardHeader renders phase labels, counts, reassurance, and explicit te
     }));
     assert.match(upgrading, /索引升级/);
     assert.match(upgrading, /2\/4/);
-    assert.match(upgrading, /首次升级可能需要几分钟，原始数据不会丢失/);
+    assert.match(upgrading, /首次升级可能需要几分钟，可能短暂占用 CPU 和磁盘，原始数据不会丢失/);
     assert.match(upgrading, /role="progressbar"/);
 
     const model = renderComponent(DashboardHeader, headerProps({
@@ -116,7 +116,7 @@ test("DashboardHeader renders phase labels, counts, reassurance, and explicit te
         updatedAt: "2026-07-06T02:30:10.000Z",
       },
     }));
-    assert.match(model, /历史模型补齐/);
+    assert.match(model, /历史模型补全/);
     assert.match(model, /3\/8/);
 
     const complete = renderComponent(DashboardHeader, headerProps({

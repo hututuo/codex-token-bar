@@ -188,7 +188,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     // 紧凑 surface 的轻量刷新：同步索引（增量）后只跑轻量聚合 SQL，
     // 不重放历史事件、不构建时间序列/排行/摘录，也不写 snapshot 缓存。
     // 无 token JSONL 文件时返回 nil，调用方回退全量路径。
-    func loadCompactSummary() throws -> CompactUsageSummary? {
+    func loadCompactSummary(
+        onProgress: ((PreciseIndexProgress) -> Void)? = nil
+    ) throws -> CompactUsageSummary? {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.compactSummary", metadata: [
             "source": dataSource.displayPath
         ])
@@ -198,7 +200,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 trace?.end("no-token-jsonl-files")
                 return nil
             }
-            let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
+            var structureMigrationReported = false
+            let historyIndex = try CodexUsageHistoryIndex(
+                codexHome: dataSource.codexHome,
+                onProgress: { progress in
+                    if progress.phase == .migrating {
+                        structureMigrationReported = true
+                    }
+                    onProgress?(progress)
+                }
+            )
             let synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
                 sessionID: sessionID(from:)
@@ -210,6 +221,17 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     insertFingerprint: insertFingerprint,
                     emit: emit
                 )
+            } onProgress: { completed, total, phase in
+                // A compact refresh remains silent for ordinary append scans.
+                // Only the one-time historical enrichment belongs in the
+                // top-right migration indicator.
+                guard phase == .backfillingModel else { return }
+                onProgress?(PreciseIndexProgress(
+                    phase: phase,
+                    message: "正在补全历史模型信息 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失",
+                    completed: completed,
+                    total: total
+                ))
             }
             let now = Date()
             let todayStart = calendar.startOfDay(for: now)
@@ -243,6 +265,23 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 observedThrough: summaryGeneratedAt,
                 exactGeneration: synchronization.attributionGeneration
             )
+            if structureMigrationReported || synchronization.eventEnrichmentTotal > 0 {
+                if synchronization.eventEnrichmentComplete {
+                    onProgress?(PreciseIndexProgress(
+                        phase: .complete,
+                        message: "索引升级与历史模型补全已完成",
+                        completed: 1,
+                        total: 1
+                    ))
+                } else {
+                    onProgress?(PreciseIndexProgress(
+                        phase: .backfillingModel,
+                        message: "正在补全历史模型信息；首次升级可能需要几分钟，原始数据不会丢失",
+                        completed: 0,
+                        total: synchronization.eventEnrichmentTotal
+                    ))
+                }
+            }
             trace?.end("ok", metadata: [
                 "tokens": String(summary.totalTokens)
             ])
@@ -434,12 +473,14 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let preciseCoverageAt = Date()
         let historyIndex: CodexUsageHistoryIndex
         let initialAttributionState: CodexUsageHistoryIndex.AttributionState
+        let initialEventEnrichmentComplete: Bool
         do {
             historyIndex = try CodexUsageHistoryIndex(
                 codexHome: dataSource.codexHome,
                 onProgress: onProgress
             )
             initialAttributionState = try historyIndex.attributionState()
+            initialEventEnrichmentComplete = try historyIndex.eventEnrichmentIsComplete()
         } catch {
             throw CodexUsageHistoryIndexError(operation: "打开或升级精确索引", underlying: error)
         }
@@ -454,7 +495,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "hasStateDB": signature.stateDatabase == nil ? "0" : "1",
             "attributionGeneration": String(signature.attributionGeneration)
         ])
-        if !initialAttributionState.currentScanUnsafeCauseDetected,
+        if initialEventEnrichmentComplete,
+           !initialAttributionState.currentScanUnsafeCauseDetected,
            let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature),
            cached.cacheUsage.attributionEventsComplete {
             trace?.end("snapshot-cache-hit", metadata: [
@@ -541,9 +583,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 case .scanning:
                     message = "正在扫描精确历史 \(completed)/\(total)"
                 case .backfillingModel:
-                    message = "正在补齐历史模型 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失"
+                    message = "正在补全历史模型信息 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失"
                 case .publishing:
-                    message = "正在提交索引升级结果"
+                    message = "正在提交精确统计结果"
                 default:
                     message = "正在升级精确索引"
                 }
@@ -638,6 +680,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 attributionCurrentScanUnsafeCauseDetected,
             attributionSourceMutationDetected:
                 synchronization.attributionSourceMutationDetected,
+            attributionEventsComplete: synchronization.eventEnrichmentComplete,
+            attributionModelBucketsComplete: synchronization.eventEnrichmentComplete,
             durableAttributionEvents: durableAttributionEvents
         )
         let totalTokens = aggregation.totalTokens

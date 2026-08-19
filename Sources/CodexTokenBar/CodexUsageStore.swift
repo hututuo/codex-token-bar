@@ -760,9 +760,33 @@ final class CodexUsageStore: ObservableObject {
                     if self.activeRefreshCompactOnly {
                         trace?.mark("compactSummary.begin")
                         // 轻量路径失败只回退全量，不让它变成整轮刷新失败。
-                        let summary = try? await self.snapshotLoader.loadCompactSummary(
-                            dataSource: source
-                        )
+                        let summary: CodexUsageAnalyzer.CompactUsageSummary?
+                        if let progressLoader = self.snapshotLoader
+                            as? any DashboardCompactSummaryProgressLoading {
+                            summary = try? await progressLoader.loadCompactSummary(
+                                dataSource: source
+                            ) { [weak self] progress in
+                                Task { @MainActor [weak self] in
+                                    guard let self,
+                                          self.isCurrentRefresh(
+                                              generation: generation,
+                                              bindingGeneration: bindingGeneration,
+                                              sourceID: sourceID
+                                          ) else { return }
+                                    let resolved = progress.preservingMigrationContext(
+                                        from: self.preciseIndexProgress
+                                    )
+                                    self.preciseIndexProgress = resolved
+                                    if resolved.isActive {
+                                        self.status = resolved.message
+                                    }
+                                }
+                            }
+                        } else {
+                            summary = try? await self.snapshotLoader.loadCompactSummary(
+                                dataSource: source
+                            )
+                        }
                         guard self.isCurrentRefresh(
                             generation: generation,
                             bindingGeneration: bindingGeneration,
@@ -821,9 +845,12 @@ final class CodexUsageStore: ObservableObject {
                                               bindingGeneration: bindingGeneration,
                                               sourceID: sourceID
                                           ) else { return }
-                                    self.preciseIndexProgress = progress
-                                    if progress.isActive {
-                                        self.status = progress.message
+                                    let resolved = progress.preservingMigrationContext(
+                                        from: self.preciseIndexProgress
+                                    )
+                                    self.preciseIndexProgress = resolved
+                                    if resolved.isActive {
+                                        self.status = resolved.message
                                     }
                                 }
                             }
@@ -873,18 +900,23 @@ final class CodexUsageStore: ObservableObject {
                                     // hydration continues independently and
                                     // must not hold totals in a processing state.
                                     sawNumericPrecisePhase = true
-                                    self.isDetailHydrating = true
+                                    let migrationStillActive = self.preciseIndexProgress.isMigrationRelated
+                                    self.isDetailHydrating = !migrationStillActive
                                     self.preciseTimeSeriesFresh =
                                         loaded.preciseTimeSeriesGeneratedAt != nil
                                     self.isCompactSummaryPending = false
                                     self.didRunPreciseScan = true
                                     UsageCacheLifecycle.markCurrentCachePrepared()
-                                    self.status = "\(source.originLabel) · token_count · 数值更新于 \(DateFormatter.statusString(from: loaded.generatedAt)) · 正在补齐会话明细..."
+                                    self.status = migrationStillActive
+                                        ? self.preciseIndexProgress.message
+                                        : "\(source.originLabel) · token_count · 数值更新于 \(DateFormatter.statusString(from: loaded.generatedAt)) · 正在补齐会话明细..."
                                     self.isRefreshing = false
                                     self.didFinishInitialLoad = true
                                     self.isInitialLoading = false
                                     self.isPreparingUsageCache = false
-                                    self.preciseIndexProgress = .idle
+                                    if !migrationStillActive {
+                                        self.preciseIndexProgress = .idle
+                                    }
                                     self.activeRefreshCompactOnly = false
                                     trace?.mark("preciseSnapshot.numericPhase", metadata: [
                                         "tokens": String(loaded.stats.totalTokens),
@@ -947,7 +979,7 @@ final class CodexUsageStore: ObservableObject {
                         .map { $0.operation.contains("升级") || $0.operation.contains("迁移") }
                         ?? false
                     let migrationWasActive = errorSuggestsMigration
-                        || priorProgress.phase == .migrating
+                        || priorProgress.isMigrationRelated
                         || priorProgress.message.contains("索引升级")
                     self.preciseIndexProgress = PreciseIndexProgress(
                         phase: .failed,

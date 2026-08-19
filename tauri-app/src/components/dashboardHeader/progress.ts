@@ -1,6 +1,6 @@
 import type { PreciseDashboardProgress } from "../../types/dashboard";
 
-export const PRECISE_PROGRESS_REASSURANCE = "首次升级可能需要几分钟，原始数据不会丢失";
+export const PRECISE_PROGRESS_REASSURANCE = "首次升级可能需要几分钟，可能短暂占用 CPU 和磁盘，原始数据不会丢失";
 
 export type DashboardHeaderProgressStage =
   | "idle"
@@ -30,7 +30,7 @@ export interface DashboardHeaderProgressPresentation {
 const phaseLabels: Record<DashboardHeaderProgressStage, string> = {
   idle: "本地统计",
   structureUpgrade: "索引升级",
-  historyModelBackfill: "历史模型补齐",
+  historyModelBackfill: "历史模型补全",
   reconciliation: "单文件对账",
   waiting: "等待精确统计",
   preparing: "准备精确统计",

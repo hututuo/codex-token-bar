@@ -326,6 +326,8 @@ extension CodexUsageAnalyzer {
             attributionUnsafeSinceGeneration: Int64? = nil,
             attributionCurrentScanUnsafeCauseDetected: Bool = false,
             attributionSourceMutationDetected: Bool = false,
+            attributionEventsComplete: Bool = true,
+            attributionModelBucketsComplete: Bool = true,
             durableAttributionEvents: [TokenCacheAttributionEvent]? = nil
         ) -> TokenCacheUsage {
             let daily = cacheDailyByDate
@@ -430,8 +432,8 @@ extension CodexUsageAnalyzer {
                 sessions: sessions,
                 turns: turns,
                 attributionEvents: attributionEvents,
-                attributionEventsComplete: true,
-                attributionModelBucketsComplete: true,
+                attributionEventsComplete: attributionEventsComplete,
+                attributionModelBucketsComplete: attributionModelBucketsComplete,
                 attributionProvenanceEpoch: attributionProvenanceEpoch,
                 attributionGeneration: attributionGeneration,
                 attributionUnsafeSinceGeneration: attributionUnsafeSinceGeneration,

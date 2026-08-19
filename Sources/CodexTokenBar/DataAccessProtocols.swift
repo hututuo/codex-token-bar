@@ -100,6 +100,35 @@ struct PreciseIndexProgress: Equatable, Sendable {
             return true
         }
     }
+
+    var isMigrationRelated: Bool {
+        switch phase {
+        case .migrating, .backfillingModel:
+            return true
+        case .publishing, .failed:
+            let normalized = message.lowercased()
+            return normalized.contains("索引升级")
+                || normalized.contains("历史模型")
+                || normalized.contains("model")
+                || normalized.contains("reasoning")
+        default:
+            return false
+        }
+    }
+
+    func preservingMigrationContext(from previous: PreciseIndexProgress) -> PreciseIndexProgress {
+        guard phase == .failed,
+              previous.isMigrationRelated,
+              total == nil else {
+            return self
+        }
+        return PreciseIndexProgress(
+            phase: .failed,
+            message: "索引升级失败，原始数据不会丢失，保留上次可信数据",
+            completed: previous.completed,
+            total: previous.total
+        )
+    }
 }
 
 protocol DashboardSnapshotProgressLoading: Sendable {
@@ -107,6 +136,13 @@ protocol DashboardSnapshotProgressLoading: Sendable {
         dataSource: CodexDataSource,
         onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
     ) -> AsyncThrowingStream<DashboardSnapshot, Error>
+}
+
+protocol DashboardCompactSummaryProgressLoading: Sendable {
+    func loadCompactSummary(
+        dataSource: CodexDataSource,
+        onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary?
 }
 
 struct DashboardFastSnapshotResult: Sendable {
@@ -203,7 +239,11 @@ extension DashboardSnapshotLoading {
     }
 }
 
-struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, DashboardSnapshotProgressLoading, Sendable {
+struct CodexDashboardSnapshotLoader:
+    DashboardSnapshotLoading,
+    DashboardSnapshotProgressLoading,
+    DashboardCompactSummaryProgressLoading,
+    Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).loadFastSnapshot()
@@ -330,6 +370,17 @@ struct CodexDashboardSnapshotLoader: DashboardSnapshotLoading, DashboardSnapshot
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
         try await Task.detached(priority: .utility) {
             try CodexUsageAnalyzer(dataSource: dataSource).loadCompactSummary()
+        }.value
+    }
+
+    func loadCompactSummary(
+        dataSource: CodexDataSource,
+        onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
+    ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        try await Task.detached(priority: .utility) {
+            try CodexUsageAnalyzer(dataSource: dataSource).loadCompactSummary(
+                onProgress: onProgress
+            )
         }.value
     }
 

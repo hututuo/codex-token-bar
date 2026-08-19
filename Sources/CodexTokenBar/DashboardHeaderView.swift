@@ -92,7 +92,7 @@ enum DashboardHeaderProgressStage: Equatable {
         switch self {
         case .idle: return "等待精确统计"
         case .structureUpgrade: return "索引升级"
-        case .historyModelBackfill: return "历史模型补齐"
+        case .historyModelBackfill: return "历史模型补全"
         case .reconciliation: return "单文件对账"
         case .waiting: return "等待精确统计"
         case .preparing: return "准备精确统计"
@@ -164,7 +164,7 @@ enum DashboardHeaderProgressStage: Equatable {
 }
 
 struct DashboardHeaderProgressPresentation: Equatable {
-    static let reassurance = "首次升级可能需要几分钟，原始数据不会丢失"
+    static let reassurance = "首次升级可能需要几分钟，可能短暂占用 CPU 和磁盘，原始数据不会丢失"
 
     let stage: DashboardHeaderProgressStage
     let text: String

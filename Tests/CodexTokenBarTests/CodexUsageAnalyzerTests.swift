@@ -471,6 +471,40 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(firstStart.timeIntervalSince1970.truncatingRemainder(dividingBy: 300), 0)
     }
 
+    func testStreamingAggregationDoesNotAdvertiseIncompleteModelEnrichmentAsComplete() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_785_462_000)
+        var aggregation = CodexUsageAnalyzer.UsageAggregationBuilder(
+            calendar: calendar,
+            now: now
+        )
+        aggregation.consume(
+            TokenEvent(
+                timestamp: now.addingTimeInterval(-60),
+                sessionID: "pending-model-enrichment",
+                tokens: 100,
+                inputTokens: 80,
+                cachedInputTokens: 20,
+                outputTokens: 20,
+                reasoningOutputTokens: 0,
+                userPrompt: "",
+                assistantResponse: ""
+            ),
+            stableID: "pending-model-enrichment-event",
+            turnIndexInSession: 1
+        )
+
+        let usage = aggregation.cacheUsage(
+            recentBins: aggregation.recentBins(),
+            threadInfo: [:],
+            attributionEventsComplete: false,
+            attributionModelBucketsComplete: false
+        )
+        XCTAssertFalse(usage.attributionEventsComplete)
+        XCTAssertFalse(usage.attributionModelBucketsComplete)
+    }
+
     func testExactHistoryIndexIgnoresAndRemovesLegacyConversationCaches() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerCache")
@@ -4651,7 +4685,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertGreaterThan(total, 1, "migration denominator must include replay/ledger work")
         XCTAssertTrue(progress.allSatisfy { $0.phase == .migrating })
         XCTAssertTrue(progress.allSatisfy { $0.completed <= total })
-        XCTAssertTrue(progress.contains { $0.message.contains("CPU/磁盘") })
+        XCTAssertTrue(
+            progress.contains {
+                $0.message.contains("CPU") && $0.message.contains("磁盘")
+            }
+        )
         XCTAssertTrue(progress.contains { $0.message.contains("原始数据不会丢失") })
         XCTAssertLessThan(
             progress.map(\.completed).max() ?? total,
@@ -5039,7 +5077,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             }
 
             CodexUsageAnalyzer.resetPreciseSnapshotBuildCountForTesting()
-            CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+            // Keep the previous complete in-memory snapshot: a missing
+            // enrichment marker must defeat that cache hit and run the
+            // one-time historical model pass.
             let progress = PreciseIndexProgressProbe()
             let migrated = try analyzer.load(
                 onNumericPhase: nil,

@@ -63,7 +63,7 @@ test("Tauri model and reasoning details map to historical model backfill", () =>
       phase: "scanning",
       message: "正在扫描精确历史",
     }))?.text ?? "",
-    /索引升级|历史模型补齐/
+    /索引升级|历史模型补全/
   );
 });
 
@@ -126,5 +126,8 @@ test("failed progress stays explicit and retains the backend count", () => {
   assert.equal(failed?.showsProgress, false);
   assert.equal(failed?.showsReassurance, true);
   assert.equal(failed?.isReady, false);
-  assert.equal(PRECISE_PROGRESS_REASSURANCE, "首次升级可能需要几分钟，原始数据不会丢失");
+  assert.equal(
+    PRECISE_PROGRESS_REASSURANCE,
+    "首次升级可能需要几分钟，可能短暂占用 CPU 和磁盘，原始数据不会丢失",
+  );
 });

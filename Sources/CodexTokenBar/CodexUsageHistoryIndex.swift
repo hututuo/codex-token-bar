@@ -136,6 +136,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let attributionUnsafeSinceGeneration: Int64?
         let lineageAmbiguityDetected: Bool
         let attributionUnsafe: Bool
+        let eventEnrichmentTotal: Int
+        let eventEnrichmentComplete: Bool
 
         var attributionSourceMutationDetected: Bool {
             attributionUnsafe
@@ -492,6 +494,20 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try driver.withConnection { connection in
             try configure(connection)
             return try currentAttributionState(connection: connection)
+        }
+    }
+
+    func eventEnrichmentIsComplete() throws -> Bool {
+        try driver.withConnection { connection in
+            try configure(connection)
+            let storedRevision = try connection.readRows(
+                "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                bindings: [.text(Self.eventEnrichmentRevisionKey)]
+            ) { $0.text(0) }.first ?? nil
+            guard storedRevision == Self.eventEnrichmentRevision else {
+                return false
+            }
+            return try eventEnrichmentPendingSourceIDs(connection: connection).isEmpty
         }
     }
 
@@ -1019,7 +1035,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var lineageReplacements: [String: LineageReplacement] = [:]
         var lineagesRequiringMaximumMerge = Set<String>()
         var provenanceRotated = false
-        let finalAttributionState = try driver.withConnection { connection in
+        let finalSynchronization = try driver.withConnection { connection in
             try configure(connection)
             for staged in stagedRebuilds where staged.job.reason == .eventEnrichment {
                 guard let source = try indexedSource(
@@ -1179,9 +1195,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     """,
                     bindings: [.text(String(publishedGeneration))]
                 )
-                _ = try finalizeEventEnrichmentIfComplete(
+                let eventEnrichmentComplete = try finalizeEventEnrichmentIfComplete(
                     connection: transaction
                 )
+                let eventEnrichmentPendingCount = eventEnrichmentComplete
+                    ? 0
+                    : try eventEnrichmentPendingSourceIDs(connection: transaction).count
                 if unsafeEpisodeBegan {
                     try markAttributionUnsafe(
                         provenanceEpoch: current.provenanceEpoch,
@@ -1189,12 +1208,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         connection: transaction
                     )
                 }
-                return try currentAttributionState(connection: transaction)
+                return (
+                    state: try currentAttributionState(connection: transaction),
+                    eventEnrichmentComplete: eventEnrichmentComplete,
+                    eventEnrichmentPendingCount: eventEnrichmentPendingCount
+                )
             }
         }
         removeStagingDirectory()
         if eventEnrichmentTotal > 0 {
-            onProgress?(eventEnrichmentTotal, eventEnrichmentTotal, .publishing)
+            if finalSynchronization.eventEnrichmentComplete {
+                onProgress?(eventEnrichmentTotal, eventEnrichmentTotal, .publishing)
+            } else {
+                onProgress?(
+                    max(0, eventEnrichmentTotal - finalSynchronization.eventEnrichmentPendingCount),
+                    eventEnrichmentTotal,
+                    .backfillingModel
+                )
+            }
         } else {
             onProgress?(1, 1, .publishing)
         }
@@ -1206,12 +1237,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             incrementallyParsedFiles: incrementallyParsedFiles,
             rewrittenFiles: rewrittenFiles,
             removedFiles: removedFiles,
-            provenanceEpoch: finalAttributionState.provenanceEpoch,
-            attributionGeneration: finalAttributionState.generation,
+            provenanceEpoch: finalSynchronization.state.provenanceEpoch,
+            attributionGeneration: finalSynchronization.state.generation,
             attributionUnsafeSinceGeneration:
-                finalAttributionState.unsafeSinceGeneration,
+                finalSynchronization.state.unsafeSinceGeneration,
             lineageAmbiguityDetected: lineageAmbiguityDetected,
-            attributionUnsafe: finalAttributionState.requiresSyntheticCutover
+            attributionUnsafe: finalSynchronization.state.requiresSyntheticCutover,
+            eventEnrichmentTotal: eventEnrichmentTotal,
+            eventEnrichmentComplete: finalSynchronization.eventEnrichmentComplete
         )
     }
 
@@ -1857,7 +1890,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 migrationNeedsEventEnrichment,
             ].filter { $0 }.count
             let migrationMessagePrefix =
-                "正在升级索引（首次可能短暂占用 CPU/磁盘；原始数据不会丢失）"
+                "正在升级索引结构（首次升级可能需要几分钟，可能短暂占用 CPU 和磁盘，原始数据不会丢失）"
             var migrationCompleted = 0
 
             func reportMigration(_ detail: String, completed: Int? = nil) {
@@ -2274,7 +2307,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 && priorSourceCount > 0
             if migrationNeedsEventEnrichment {
                 if eventEnrichmentRequiresSync {
-                    reportMigration("等待补齐历史模型；首次升级可能需要几分钟")
+                    reportMigration("等待补全历史模型信息；首次升级可能需要几分钟")
                 } else {
                     migrationCompleted += 1
                     reportMigration("历史模型无需补齐")

@@ -143,7 +143,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         )
         XCTAssertEqual(routineScan.stage, .scanning)
         XCTAssertFalse(routineScan.text.contains("索引升级"))
-        XCTAssertFalse(routineScan.text.contains("历史模型补齐"))
+        XCTAssertFalse(routineScan.text.contains("历史模型补全"))
 
         let reconciliation = DashboardHeaderProgressPresentation(
             progress: PreciseIndexProgress(
@@ -216,6 +216,27 @@ final class DashboardHeaderPresentationTests: XCTestCase {
             )
         )
         XCTAssertEqual(complete.text, "已就绪")
+    }
+
+    func testFailedModelBackfillKeepsTheLastRealProgressCount() {
+        let previous = PreciseIndexProgress(
+            phase: .backfillingModel,
+            message: "正在补全历史模型信息 3/8",
+            completed: 3,
+            total: 8
+        )
+        let failed = PreciseIndexProgress(
+            phase: .failed,
+            message: "精确统计失败，保留上次可信数据",
+            completed: 0,
+            total: nil
+        ).preservingMigrationContext(from: previous)
+
+        XCTAssertEqual(failed.phase, .failed)
+        XCTAssertEqual(failed.completed, 3)
+        XCTAssertEqual(failed.total, 8)
+        XCTAssertTrue(failed.message.contains("索引升级失败"))
+        XCTAssertTrue(failed.message.contains("原始数据不会丢失"))
     }
 
     func testHeaderExposesIndependentSessionEnhancementAndAutoResumeEntries() throws {

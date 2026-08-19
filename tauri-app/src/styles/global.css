@@ -896,6 +896,7 @@ button {
 .dash-head__freshness.is-preparing,
 .dash-head__freshness.is-waiting,
 .dash-head__freshness.is-migrating,
+.dash-head__freshness.is-structureUpgrade,
 .dash-head__freshness.is-scanning,
 .dash-head__freshness.is-backfillingModel,
 .dash-head__freshness.is-historyModelBackfill,
@@ -916,7 +917,8 @@ button {
 }
 
 .dash-head__freshness.is-waiting .precise-progress-dot,
-.dash-head__freshness.is-migrating .precise-progress-dot {
+.dash-head__freshness.is-migrating .precise-progress-dot,
+.dash-head__freshness.is-structureUpgrade .precise-progress-dot {
   background: #e28a1b;
 }
 

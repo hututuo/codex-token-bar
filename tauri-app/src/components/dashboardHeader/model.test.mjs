@@ -124,7 +124,7 @@ test("DashboardHeader keeps light-summary data while publishing progress remains
     assert.match(html, /发布精确统计/);
     assert.match(html, /正在发布精确统计结果/);
     assert.match(html, /1\/2/);
-    assert.match(html, /首次升级可能需要几分钟，原始数据不会丢失/);
+    assert.match(html, /首次升级可能需要几分钟，可能短暂占用 CPU 和磁盘，原始数据不会丢失/);
     assert.match(html, /class="precise-progress-bar"/);
     assert.doesNotMatch(html, /摘要 10:31:00 · 图表至 10:20/);
     assert.doesNotMatch(html, /同步中/);
