@@ -364,11 +364,18 @@ export function mergePreciseDashboard(
     };
   }
 
-  const retainedLightSummary = previous !== null && incomingCoverageIsTrusted
-    && shouldRetainSummaryForFull(previous, precise)
+  const incomingLightSummary = precise.usageSummary ?? null;
+  const retainLightSummaryForLineage = previous !== null && incomingCoverageIsTrusted
+    && shouldRetainSummaryForFull(previous, precise);
+  // Native full dashboard payloads intentionally do not carry the independent
+  // lightweight summary lane. A successful chart publish must not erase the
+  // already trusted today-model summary or reset its freshness to false.
+  const retainLightSummaryBecauseIncomingIsAbsent = previous?.usageSummary != null
+    && incomingLightSummary === null;
+  const retainedLightSummary = previous !== null
+    && (retainLightSummaryForLineage || retainLightSummaryBecauseIncomingIsAbsent)
     ? previous.usageSummary ?? null
     : null;
-  const incomingLightSummary = precise.usageSummary ?? null;
   const nextLightSummary = retainedLightSummary ?? incomingLightSummary;
   const summaryUpdatedAt = retainedLightSummary?.generatedAt
     ?? (retainedLightSummary !== null ? previous?.usageSummaryUpdatedAt : null)
@@ -402,7 +409,7 @@ export function mergePreciseDashboard(
               : incomingLightSummary !== null
                 ? precise.usageSummaryFresh !== false
                 : false,
-            stats: retainedLightSummary === null
+            stats: retainedLightSummary === null || !retainLightSummaryForLineage
               ? precise.stats
               : {
                   ...precise.stats,

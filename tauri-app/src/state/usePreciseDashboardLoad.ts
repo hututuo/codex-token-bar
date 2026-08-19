@@ -116,10 +116,9 @@ export function usePreciseDashboardLoad({
     );
 
     async function loadPreciseSnapshot() {
-      // A new exact read owns freshness until it publishes a full snapshot.
-      // If cache-status, native indexing, or the optional command fails, this
-      // explicit false remains instead of trusting the previous canvas.
-      onPreciseDashboardStale?.();
+      // Keep the last trusted canvas current while a replacement is in flight.
+      // A background refresh is not evidence that the published data became
+      // invalid; only an actual failed/incomplete result may mark it stale.
       onLoadStart?.();
       let effectiveForce = forcePreciseRefresh;
       let publishedGeneration: string | undefined;
@@ -128,6 +127,7 @@ export function usePreciseDashboardLoad({
       const reportFailure = () => {
         if (!cancelled && !failureReported) {
           failureReported = true;
+          onPreciseDashboardStale?.();
           onPreciseDashboardFailure?.();
         }
       };

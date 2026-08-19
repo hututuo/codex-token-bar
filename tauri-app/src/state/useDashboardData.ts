@@ -875,9 +875,6 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (sourceToken === null
       || !isSourceTokenCurrent(sourceToken)
       || !source.readUsageSummarySnapshot) return;
-    setState((current) => isSourceTokenCurrent(sourceToken)
-      ? markUsageSummaryStale(current)
-      : current);
     try {
       const summary = await source.readUsageSummarySnapshot(
         sourceToken,
@@ -889,8 +886,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
           : current);
       }
     } catch {
-      // Command diagnostics retain the failure. Keep the last trusted summary
-      // and let the next configured lightweight cadence retry it.
+      // Keep the last trusted payload, but mark it stale only after a real
+      // command failure. Merely starting a background refresh must not make
+      // the today-model card regress to "正在精准计算中".
+      setState((current) => isSourceTokenCurrent(sourceToken)
+        ? markUsageSummaryStale(current)
+        : current);
     }
   }, [
     isSourceTokenCurrent,

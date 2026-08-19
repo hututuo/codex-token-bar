@@ -54,7 +54,7 @@ test("quota metadata reaches DashboardSnapshot and survives a later precise usag
   });
 });
 
-test("exact-read start marks prior recent usage stale while quota merge preserves coverage metadata", async () => {
+test("explicit exact-read failure marks prior recent usage stale while quota merge preserves coverage metadata", async () => {
   return withSsrModules(async (load) => {
     const { markPreciseRecentUsageStale, mergeQuota } = await load("/src/state/dashboardMergers.ts");
     const state = stateWithDashboard({
@@ -291,12 +291,13 @@ test("older same-source lightweight cache finishes an in-flight refresh without 
   });
 });
 
-test("newer full snapshot supersedes the temporary lightweight summary", async () => {
+test("full snapshot without a lightweight lane preserves the trusted model summary", async () => {
   return withSsrModules(async (load) => {
     const { mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
     const state = stateWithDashboard({
       generatedAt: "2026-08-18T01:00:00Z",
       usageSummaryUpdatedAt: "2026-08-18T01:01:00Z",
+      usageSummaryFresh: true,
       usageSummary: {
         totalTokens: 500,
         todayTokens: 250,
@@ -320,8 +321,10 @@ test("newer full snapshot supersedes the temporary lightweight summary", async (
     });
 
     const next = mergePreciseDashboard(state, precise);
-    assert.equal(next.dashboard.usageSummary, null);
-    assert.equal(next.dashboard.usageSummaryUpdatedAt, "2026-08-18T01:02:00Z");
+    assert.equal(next.dashboard.usageSummary.totalTokens, 500);
+    assert.equal(next.dashboard.usageSummary.todayTokens, 250);
+    assert.equal(next.dashboard.usageSummaryFresh, true);
+    assert.equal(next.dashboard.usageSummaryUpdatedAt, "2026-08-18T01:01:00Z");
     assert.equal(next.dashboard.stats.totalTokens, 550);
   });
 });
