@@ -119,6 +119,16 @@ final class AutoResumeTaskManager: ObservableObject {
         tasks.contains { $0.configuration.enabled }
     }
 
+    /// Whether any enabled automatic-resume task needs the session's running
+    /// state while deciding whether to resume. Manual-only tasks do not hold
+    /// this lease; every automatic trigger is checked against an active turn
+    /// before the resume request is started.
+    var autoResumeNeedsRunningState: Bool {
+        tasks.contains {
+            $0.configuration.enabled && $0.configuration.hasAutomaticTrigger
+        }
+    }
+
     var protectedThreadIDs: Set<String> {
         Set(tasks.compactMap {
             guard $0.configuration.enabled else { return nil }
@@ -156,14 +166,7 @@ final class AutoResumeTaskManager: ObservableObject {
             }
             .store(in: &cancellables)
 
-        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.evaluateTick()
-            }
-        }
-        timer.tolerance = 2
-        RunLoop.main.add(timer, forMode: .common)
-        schedulerTimer = timer
+        reconcileSchedulerTimer()
         evaluateTick()
     }
 
@@ -185,6 +188,7 @@ final class AutoResumeTaskManager: ObservableObject {
         selectedTaskID = handle.id
         persistCollection()
         updateQuotaBackgroundActivity()
+        reconcileSchedulerTimer()
         if started {
             handle.controller.start()
         }
@@ -215,6 +219,7 @@ final class AutoResumeTaskManager: ObservableObject {
         capacityCursor = tasks.isEmpty ? 0 : min(capacityCursor, tasks.count - 1)
         persistCollection()
         updateQuotaBackgroundActivity()
+        reconcileSchedulerTimer()
         objectWillChange.send()
         return true
     }
@@ -311,8 +316,27 @@ final class AutoResumeTaskManager: ObservableObject {
                 handle.updatedAt = Date()
                 self.persistCollection()
                 self.updateQuotaBackgroundActivity()
+                self.reconcileSchedulerTimer()
             }
             .store(in: &handle.subscriptions)
+    }
+
+    private func reconcileSchedulerTimer() {
+        guard started, hasProtectedTasks else {
+            schedulerTimer?.invalidate()
+            schedulerTimer = nil
+            return
+        }
+        guard schedulerTimer == nil else { return }
+
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.evaluateTick()
+            }
+        }
+        timer.tolerance = 2
+        RunLoop.main.add(timer, forMode: .common)
+        schedulerTimer = timer
     }
 
     private func updateQuotaBackgroundActivity() {

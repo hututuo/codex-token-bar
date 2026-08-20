@@ -94,6 +94,76 @@ final class AutoResumeTaskManagerTests: XCTestCase {
         XCTAssertFalse(manager.deleteTask(id: "missing"))
     }
 
+    func testSchedulerTimerFollowsEnabledTaskPresence() throws {
+        let suiteName = "AutoResumeTaskManagerSchedulerTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = makeManager(defaults: defaults)
+        XCTAssertFalse(schedulerTimerIsInstalled(in: manager))
+
+        manager.start()
+        XCTAssertFalse(schedulerTimerIsInstalled(in: manager))
+
+        let target = AutoResumeThreadDescriptor(
+            id: "scheduler-thread",
+            title: "Scheduler",
+            cwd: "/tmp/project",
+            updatedAt: nil
+        )
+        guard case .created(let taskID) = manager.createTask(target: target),
+              let task = manager.task(id: taskID) else {
+            return XCTFail("scheduler task should be created")
+        }
+        XCTAssertFalse(schedulerTimerIsInstalled(in: manager))
+
+        task.controller.setEnabled(true)
+        XCTAssertTrue(schedulerTimerIsInstalled(in: manager))
+
+        task.controller.setEnabled(false)
+        XCTAssertFalse(schedulerTimerIsInstalled(in: manager))
+    }
+
+    func testAutoResumeNeedsRunningStateCoversAutomaticTriggersOnly() throws {
+        let suiteName = "AutoResumeTaskManagerRunningLeaseTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = makeManager(defaults: defaults)
+        XCTAssertFalse(manager.autoResumeNeedsRunningState)
+
+        let target = AutoResumeThreadDescriptor(
+            id: "running-state-thread",
+            title: "Running state",
+            cwd: "/tmp/project",
+            updatedAt: nil
+        )
+        guard case .created(let taskID) = manager.createTask(target: target),
+              let task = manager.task(id: taskID) else {
+            return XCTFail("running-state task should be created")
+        }
+        XCTAssertFalse(manager.autoResumeNeedsRunningState)
+
+        task.controller.setEnabled(true)
+        XCTAssertTrue(manager.autoResumeNeedsRunningState)
+
+        task.controller.setQuotaRecoveryEnabled(false)
+        XCTAssertFalse(manager.autoResumeNeedsRunningState)
+
+        task.controller.setScheduleMode(.interval)
+        XCTAssertTrue(manager.autoResumeNeedsRunningState)
+
+        task.controller.setScheduleMode(.off)
+        task.controller.setCapacityRecoveryEnabled(true)
+        XCTAssertTrue(manager.autoResumeNeedsRunningState)
+
+        task.controller.setCapacityRecoveryEnabled(false)
+        XCTAssertFalse(manager.autoResumeNeedsRunningState)
+
+        task.controller.setEnabled(false)
+        XCTAssertFalse(manager.autoResumeNeedsRunningState)
+    }
+
     func testCorruptProtectedTaskWithoutAnyTriggerFailsClosed() {
         var configuration = AutoResumeConfiguration.default
         configuration.enabled = true
@@ -128,6 +198,14 @@ final class AutoResumeTaskManagerTests: XCTestCase {
             notifier: AutoResumeTaskManagerNotifier(),
             codexBinaryProvider: { "/fake/codex" }
         )
+    }
+
+    private func schedulerTimerIsInstalled(in manager: AutoResumeTaskManager) -> Bool {
+        guard let timer = Mirror(reflecting: manager).children
+            .first(where: { $0.label == "schedulerTimer" }) else {
+            return false
+        }
+        return Mirror(reflecting: timer.value).children.first != nil
     }
 }
 
