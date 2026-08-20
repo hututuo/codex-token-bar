@@ -2974,6 +2974,47 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testUserConfirmedDerivedIndexRebuildPreservesRawAndCodexState() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageDerivedRebuild")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-derivedrebuild",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let stateDatabase = codexHome.appendingPathComponent("state_5.sqlite")
+        let stateDriver = SQLiteDatabaseDriver(url: stateDatabase)
+        try stateDriver.execute(
+            "CREATE TABLE sentinel(value TEXT NOT NULL); INSERT INTO sentinel(value) VALUES ('codex-owned-state');"
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        _ = try analyzer.load()
+        let indexURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let database = SQLiteDatabaseDriver(url: indexURL)
+        try database.execute(
+            "UPDATE schema_meta SET value = '99' WHERE key = 'schema_version';"
+        )
+
+        try CodexUsageHistoryIndex.rebuildDerivedIndex(codexHome: codexHome)
+        CodexUsageAnalyzer.removeDerivedUsageSnapshots(for: codexHome)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: indexURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sessionFile.path))
+        XCTAssertEqual(
+            try stateDriver.readRows("SELECT value FROM sentinel;") { $0.text(0) }
+                .compactMap { $0 },
+            ["codex-owned-state"]
+        )
+        XCTAssertEqual(try analyzer.load().stats.totalTokens, 120)
+    }
+
     func testExactHistoryIndexKeepsInterruptedStagesIsolatedAcrossCodexHomes() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerStageIsolation")
