@@ -222,6 +222,7 @@ final class DashboardRuntime: ObservableObject {
     private var isCorrectingFloatingPanelScale = false
     private var expensiveOwnersActive: Bool?
     private var autoResumeQuotaBackgroundEnabled = false
+    private var autoResumeRunningStateBackgroundEnabled = false
     private(set) var statusBarSummaryPresented = false
     private var dashboardOpenAction: (() -> Void)?
     private(set) var configuration: DashboardRuntimeConfiguration?
@@ -427,6 +428,21 @@ final class DashboardRuntime: ObservableObject {
         }
     }
 
+    func setAutoResumeRunningStateBackgroundEnabled(_ enabled: Bool) {
+        guard autoResumeRunningStateBackgroundEnabled != enabled else { return }
+        autoResumeRunningStateBackgroundEnabled = enabled
+        if enabled {
+            taskCompletionMonitor.bind(dataSource: usageStore.currentDataSource)
+        }
+        taskCompletionMonitor.setActive(
+            enabled || expensiveOwnersActive == true
+        )
+        if !enabled, expensiveOwnersActive != true,
+           let stateDatabase = usageStore.currentDataSource?.stateDatabase {
+            CodexStateDatabaseReadPool.shared.close(url: stateDatabase)
+        }
+    }
+
     @discardableResult
     func synchronizeSourceTransition() -> DashboardSourceTransitionResult {
         sourceTransitionCoordinator.transition(
@@ -537,6 +553,9 @@ final class DashboardRuntime: ObservableObject {
     private func applyBackgroundOwnerActivity(_ active: Bool) {
         guard expensiveOwnersActive != active else { return }
         expensiveOwnersActive = active
+        taskCompletionMonitor.setActive(
+            active || autoResumeRunningStateBackgroundEnabled
+        )
         if let backgroundOwnerActivityAction {
             backgroundOwnerActivityAction(active)
             return
@@ -551,6 +570,10 @@ final class DashboardRuntime: ObservableObject {
                 quotaStore.stop()
             }
             radarStore.stop()
+            if !autoResumeRunningStateBackgroundEnabled,
+               let stateDatabase = usageStore.currentDataSource?.stateDatabase {
+                CodexStateDatabaseReadPool.shared.close(url: stateDatabase)
+            }
         }
     }
 

@@ -66,7 +66,7 @@ final class LiveRateMonitor: ObservableObject {
     private var lastThreadOptionsSignature: LogStoreSignature?
     private var lastThreadOptionsRefreshAt: TimeInterval = 0
     private var lastThreadOptionsFailure: (mainIdentity: String?, attemptedAt: TimeInterval)?
-    private let threadOptionsRefreshTTL: TimeInterval = 5
+    private let threadOptionsRefreshTTL: TimeInterval = 10
     private var lastPollProcessedRows = false
     private var lastSnapshotPublishAt: TimeInterval = 0
     private var lastFallbackPollAt: TimeInterval = 0
@@ -716,7 +716,13 @@ final class LiveRateMonitor: ObservableObject {
         lastRefreshAt: TimeInterval,
         ttl: TimeInterval
     ) -> Bool {
-        previous != current || now - lastRefreshAt >= ttl
+        guard let previous else { return true }
+        if current.isPhysicalDatabaseReplacement(comparedTo: previous) {
+            return true
+        }
+        // Ordinary WAL growth only means data may have changed. It must not
+        // bypass the successful-result TTL on every 250 ms live-rate tick.
+        return now - lastRefreshAt >= ttl
     }
 
     private func refreshThreadOptionsIfNeeded(
@@ -828,6 +834,12 @@ final class LiveRateMonitor: ObservableObject {
         }
         let options = uniqueOwners.map {
             LiveThreadOption(id: $0.id, title: $0.title, updatedAtMS: $0.updatedAtMS, rolloutPath: $0.rolloutPath)
+        }
+        let currentSelectionValid = options.isEmpty
+            ? threadID.isEmpty && selectedThreadID.isEmpty
+            : options.contains { $0.id == threadID }
+        if threadOptions == options, currentSelectionValid {
+            return
         }
         threadOptions = options
         rolloutReadStates = Dictionary(uniqueKeysWithValues: options.compactMap { option in

@@ -113,6 +113,30 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
     }
 
     @MainActor
+    func testAutoResumeRunningStateIsOneIndependentTaskCompletionLease() {
+        let suiteName = "DashboardRuntimeAutoResumeLease.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let monitor = TaskCompletionMonitor(defaults: defaults)
+        monitor.stop()
+        let runtime = DashboardRuntime(
+            taskCompletionMonitor: monitor,
+            settings: defaults,
+            startupAction: {},
+            surfaceApplyAction: { _ in },
+            backgroundOwnerActivityAction: { _ in }
+        )
+
+        runtime.setAutoResumeRunningStateBackgroundEnabled(true)
+        XCTAssertTrue(monitor.isActive)
+        runtime.setAutoResumeRunningStateBackgroundEnabled(true)
+        XCTAssertTrue(monitor.isActive, "repeated tasks must not create separate leases")
+
+        runtime.setAutoResumeRunningStateBackgroundEnabled(false)
+        XCTAssertFalse(monitor.isActive)
+    }
+
+    @MainActor
     func testIconOnlyStatusSummaryTemporarilyRestoresAndReleasesRuntimeOwners() {
         let suiteName = "DashboardRuntimeCompositionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

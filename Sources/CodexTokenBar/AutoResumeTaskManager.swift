@@ -46,6 +46,7 @@ final class AutoResumeTaskManager: ObservableObject {
     private let defaults: UserDefaults
     private let dataSourceProvider: @MainActor () -> CodexDataSource?
     private let quotaBackgroundActivityChanged: @MainActor (Bool) -> Void
+    private let runningStateBackgroundActivityChanged: @MainActor (Bool) -> Void
     private let notifier: any AutoResumeNotifying
     private let codexBinaryProvider: @Sendable () throws -> String
     private let executionGate = AutoResumeLocalExecutionGate()
@@ -62,6 +63,7 @@ final class AutoResumeTaskManager: ObservableObject {
             CodexDataSourceResolver().resolve()
         },
         quotaBackgroundActivityChanged: @escaping @MainActor (Bool) -> Void = { _ in },
+        runningStateBackgroundActivityChanged: @escaping @MainActor (Bool) -> Void = { _ in },
         notifier: any AutoResumeNotifying = SystemAutoResumeNotifier(),
         codexBinaryProvider: @escaping @Sendable () throws -> String = {
             try CodexBinaryLocator.findExecutable()
@@ -72,6 +74,7 @@ final class AutoResumeTaskManager: ObservableObject {
         self.defaults = defaults
         self.dataSourceProvider = dataSourceProvider
         self.quotaBackgroundActivityChanged = quotaBackgroundActivityChanged
+        self.runningStateBackgroundActivityChanged = runningStateBackgroundActivityChanged
         self.notifier = notifier
         self.codexBinaryProvider = codexBinaryProvider
 
@@ -103,7 +106,7 @@ final class AutoResumeTaskManager: ObservableObject {
         }
         attachAllHandles()
         persistCollection()
-        updateQuotaBackgroundActivity()
+        updateBackgroundActivity()
     }
 
     isolated deinit {
@@ -124,9 +127,7 @@ final class AutoResumeTaskManager: ObservableObject {
     /// this lease; every automatic trigger is checked against an active turn
     /// before the resume request is started.
     var autoResumeNeedsRunningState: Bool {
-        tasks.contains {
-            $0.configuration.enabled && $0.configuration.hasAutomaticTrigger
-        }
+        automaticTriggerTaskExists()
     }
 
     var protectedThreadIDs: Set<String> {
@@ -187,7 +188,7 @@ final class AutoResumeTaskManager: ObservableObject {
         tasks.append(handle)
         selectedTaskID = handle.id
         persistCollection()
-        updateQuotaBackgroundActivity()
+        updateBackgroundActivity()
         reconcileSchedulerTimer()
         if started {
             handle.controller.start()
@@ -218,7 +219,7 @@ final class AutoResumeTaskManager: ObservableObject {
         }
         capacityCursor = tasks.isEmpty ? 0 : min(capacityCursor, tasks.count - 1)
         persistCollection()
-        updateQuotaBackgroundActivity()
+        updateBackgroundActivity()
         reconcileSchedulerTimer()
         objectWillChange.send()
         return true
@@ -311,18 +312,22 @@ final class AutoResumeTaskManager: ObservableObject {
             .store(in: &handle.subscriptions)
         handle.controller.$configuration
             .dropFirst()
-            .sink { [weak self, weak handle] _ in
+            .sink { [weak self, weak handle] configuration in
                 guard let self, let handle else { return }
                 handle.updatedAt = Date()
-                self.persistCollection()
-                self.updateQuotaBackgroundActivity()
-                self.reconcileSchedulerTimer()
+                self.persistCollection(overriding: (handle.id, configuration))
+                self.updateBackgroundActivity(overriding: (handle.id, configuration))
+                self.reconcileSchedulerTimer(
+                    needsRunningState: self.automaticTriggerTaskExists(
+                        overriding: (handle.id, configuration)
+                    )
+                )
             }
             .store(in: &handle.subscriptions)
     }
 
-    private func reconcileSchedulerTimer() {
-        guard started, hasProtectedTasks else {
+    private func reconcileSchedulerTimer(needsRunningState: Bool? = nil) {
+        guard started, needsRunningState ?? autoResumeNeedsRunningState else {
             schedulerTimer?.invalidate()
             schedulerTimer = nil
             return
@@ -339,23 +344,47 @@ final class AutoResumeTaskManager: ObservableObject {
         schedulerTimer = timer
     }
 
-    private func updateQuotaBackgroundActivity() {
+    private func automaticTriggerTaskExists(
+        overriding override: (id: String, configuration: AutoResumeConfiguration)? = nil
+    ) -> Bool {
+        tasks.contains { task in
+            let configuration = task.id == override?.id
+                ? override?.configuration ?? task.configuration
+                : task.configuration
+            return configuration.enabled && configuration.hasAutomaticTrigger
+        }
+    }
+
+    private func updateBackgroundActivity(
+        overriding override: (id: String, configuration: AutoResumeConfiguration)? = nil
+    ) {
         quotaBackgroundActivityChanged(
-            tasks.contains {
-                $0.configuration.enabled && $0.configuration.quotaRecoveryEnabled
+            tasks.contains { task in
+                let configuration = task.id == override?.id
+                    ? override?.configuration ?? task.configuration
+                    : task.configuration
+                return configuration.enabled && configuration.quotaRecoveryEnabled
             }
+        )
+        runningStateBackgroundActivityChanged(
+            automaticTriggerTaskExists(overriding: override)
         )
     }
 
-    private func persistCollection() {
+    private func persistCollection(
+        overriding override: (id: String, configuration: AutoResumeConfiguration)? = nil
+    ) {
         let collection = AutoResumeTaskCollection(
             selectedTaskID: selectedTaskID,
             tasks: tasks.map {
-                AutoResumeTaskDefinition(
+                let configuration = $0.id == override?.id
+                    ? override?.configuration ?? $0.configuration
+                    : $0.configuration
+                return AutoResumeTaskDefinition(
                     id: $0.id,
                     createdAt: $0.createdAt,
                     updatedAt: $0.updatedAt,
-                    configuration: $0.configuration
+                    configuration: configuration
                 )
             }
         ).normalized

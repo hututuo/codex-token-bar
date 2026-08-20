@@ -38,6 +38,9 @@ struct CodexTokenBarApp: App {
             },
             quotaBackgroundActivityChanged: { [weak dashboardRuntime] enabled in
                 dashboardRuntime?.setAutoResumeQuotaBackgroundEnabled(enabled)
+            },
+            runningStateBackgroundActivityChanged: { [weak dashboardRuntime] enabled in
+                dashboardRuntime?.setAutoResumeRunningStateBackgroundEnabled(enabled)
             }
         )
         self.updaterController = updaterController

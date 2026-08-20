@@ -275,7 +275,7 @@ final class LiveRateMonitorTests: XCTestCase {
     }
 
     @MainActor
-    func testThreadRefreshWiringSkipsRapidUnchangedQueriesAndReloadsOnWalRevision() async throws {
+    func testThreadRefreshWiringKeepsSuccessfulTTLAcrossWalRevision() async throws {
         let source = try makeCodexDataSource(named: "thread-refresh")
         try Data("state".utf8).write(to: source.stateDatabase)
         let rollout = source.codexHome.appendingPathComponent("new.jsonl")
@@ -295,6 +295,9 @@ final class LiveRateMonitorTests: XCTestCase {
 
         try Data("wal-change".utf8).write(to: URL(fileURLWithPath: source.stateDatabase.path + "-wal"))
         await monitor.testRefreshThreadOptionsIfNeeded(now: 101.1)
+        XCTAssertEqual(loader.loadCount, 1)
+
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 110.01)
 
         XCTAssertEqual(loader.loadCount, 2)
         XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-new"])
@@ -332,7 +335,7 @@ final class LiveRateMonitorTests: XCTestCase {
             "a failed state read must not be replayed on every 0.25-second active poll"
         )
 
-        await monitor.testRefreshThreadOptionsIfNeeded(now: 105.01)
+        await monitor.testRefreshThreadOptionsIfNeeded(now: 110.01)
         XCTAssertEqual(loader.loadCount, 2, "the normal thread-refresh TTL must still retry")
     }
 

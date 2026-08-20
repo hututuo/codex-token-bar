@@ -319,6 +319,33 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(secondRead, ["one", "two"])
     }
 
+    func testPersistentReaderReopensAfterMainDatabaseReplacementBetweenReads() throws {
+        let url = try makeDatabaseURL()
+        let writer = SQLiteDatabaseDriver(url: url)
+        try writer.execute("CREATE TABLE items (value TEXT NOT NULL);")
+        try writer.execute("INSERT INTO items (value) VALUES ('old');")
+
+        let reader = SQLitePersistentDatabaseReader(url: url, busyTimeoutMilliseconds: 100)
+        XCTAssertEqual(
+            try reader.readRows("SELECT value FROM items;") { $0.text(0) ?? "" },
+            ["old"]
+        )
+
+        let replacement = url.deletingLastPathComponent()
+            .appendingPathComponent("replacement.sqlite")
+        let replacementWriter = SQLiteDatabaseDriver(url: replacement)
+        try replacementWriter.execute("CREATE TABLE items (value TEXT NOT NULL);")
+        try replacementWriter.execute("INSERT INTO items (value) VALUES ('new');")
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.moveItem(at: replacement, to: url)
+
+        XCTAssertEqual(
+            try reader.readRows("SELECT value FROM items;") { $0.text(0) ?? "" },
+            ["new"],
+            "a retained reader must not keep serving the replaced main inode"
+        )
+    }
+
     func testReadOnlyDriverAcceptsStablePinnedHardLink() throws {
         let url = try makeDatabaseURL()
         let writer = SQLiteDatabaseDriver(url: url)

@@ -6,6 +6,53 @@ enum RunningThreadScanner {
     private static let readChunkSize = 256 * 1024
     private static let maximumLifecycleLineBytes = 2 * 1024 * 1024
     private static let maximumLifecyclePrefixBytes = 64 * 1024
+    private static let successfulDatabaseCandidateTTL: TimeInterval = 10
+    private static let databaseCandidateCache = DatabaseCandidateCache()
+
+    private struct DatabaseIdentity: Equatable {
+        let deviceID: UInt64
+        let fileID: UInt64
+    }
+
+    private final class DatabaseCandidateCache: @unchecked Sendable {
+        private struct Entry {
+            let identity: DatabaseIdentity
+            let checkedAt: Date
+            let paths: Set<String>
+        }
+
+        private let lock = NSLock()
+        private var entries: [String: Entry] = [:]
+
+        func value(
+            for key: String,
+            identity: DatabaseIdentity,
+            now: Date,
+            maximumAge: TimeInterval
+        ) -> Set<String>? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let entry = entries[key],
+                  entry.identity == identity,
+                  now.timeIntervalSince(entry.checkedAt) >= 0,
+                  now.timeIntervalSince(entry.checkedAt) < maximumAge else {
+                entries.removeValue(forKey: key)
+                return nil
+            }
+            return entry.paths
+        }
+
+        func store(
+            _ paths: Set<String>,
+            for key: String,
+            identity: DatabaseIdentity,
+            now: Date
+        ) {
+            lock.lock()
+            entries[key] = Entry(identity: identity, checkedAt: now, paths: paths)
+            lock.unlock()
+        }
+    }
 
     private struct FileFingerprint {
         let deviceID: UInt64?
@@ -69,6 +116,7 @@ enum RunningThreadScanner {
                 dataSource: dataSource,
                 canonicalSource: canonicalSource,
                 cutoff: cutoff,
+                now: now,
                 previousStates: previousStates,
                 fileManager: fileManager
             )
@@ -150,6 +198,7 @@ enum RunningThreadScanner {
         dataSource: CodexDataSource,
         canonicalSource: CanonicalSource,
         cutoff: Date,
+        now: Date,
         previousStates: [String: RunningThreadFileState],
         fileManager: FileManager
     ) throws -> [URL] {
@@ -158,6 +207,7 @@ enum RunningThreadScanner {
             databasePaths = try databaseCandidatePaths(
                 dataSource: dataSource,
                 cutoff: cutoff,
+                now: now,
                 fileManager: fileManager
             )
         } catch {
@@ -212,6 +262,7 @@ enum RunningThreadScanner {
     private static func databaseCandidatePaths(
         dataSource: CodexDataSource,
         cutoff: Date,
+        now: Date,
         fileManager: FileManager
     ) throws -> Set<String>? {
         let databaseURL = dataSource.stateDatabase
@@ -221,15 +272,26 @@ enum RunningThreadScanner {
             return nil
         }
 
-        return try SQLiteReadRecovery.run {
-            let database = SQLiteDatabaseDriver(
-                url: databaseURL,
-                readOnly: true,
-                createsFileIfMissing: false,
-                busyTimeoutMilliseconds: 500,
-                consistency: .externallyOwnedWAL
-            )
-            return try database.withConnection { connection in
+        let attributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
+        guard let deviceID = (attributes[.systemNumber] as? NSNumber)?.uint64Value,
+              let fileID = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value else {
+            return nil
+        }
+        let identity = DatabaseIdentity(deviceID: deviceID, fileID: fileID)
+        let cacheKey = "\(dataSource.stableIdentityKey)|\(databaseURL.standardizedFileURL.path)"
+        if let cached = databaseCandidateCache.value(
+            for: cacheKey,
+            identity: identity,
+            now: now,
+            maximumAge: successfulDatabaseCandidateTTL
+        ) {
+            return cached
+        }
+
+        let paths: Set<String>? = try SQLiteReadRecovery.run {
+            try CodexStateDatabaseReadPool.shared.withConnection(
+                url: databaseURL
+            ) { connection in
                 try connection.readTransaction { snapshot in
                     let columns = Set(
                         try snapshot.readRows("PRAGMA table_info(threads)") { statement in
@@ -273,6 +335,15 @@ enum RunningThreadScanner {
                 }
             }
         }
+        if let paths {
+            databaseCandidateCache.store(
+                paths,
+                for: cacheKey,
+                identity: identity,
+                now: now
+            )
+        }
+        return paths
     }
 
     private static func fallbackCandidatePaths(

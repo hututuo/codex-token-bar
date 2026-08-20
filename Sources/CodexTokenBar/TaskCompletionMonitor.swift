@@ -247,22 +247,27 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     func start(dataSource: CodexDataSource?) {
+        let wasInactive = !isActive
+        isActive = true
+        let bindingChanged = bind(dataSource: dataSource)
+        if wasInactive, !bindingChanged {
+            configureTimer()
+        }
+    }
+
+    /// Rebinds the source without implicitly acquiring a polling lease. This
+    /// is used by runtime source transitions while every surface is closed;
+    /// a path change must not resurrect a stopped 2-second timer.
+    @discardableResult
+    func bind(dataSource: CodexDataSource?) -> Bool {
         let oldSourceIdentity = self.dataSource?.stableIdentityKey
         let newSourceIdentity = dataSource?.stableIdentityKey
         let oldPath = self.dataSource?.codexHome.standardizedFileURL.path
         let newPath = dataSource?.codexHome.standardizedFileURL.path
         let identityChanged = oldSourceIdentity != newSourceIdentity
         let bindingChanged = oldPath != newPath
-        guard identityChanged || bindingChanged else {
-            if !isActive {
-                setActive(true)
-            }
-            return
-        }
+        guard identityChanged || bindingChanged else { return false }
 
-        // `start` is the source-binding entry point and therefore also
-        // reactivates a previously stopped monitor when a new binding arrives.
-        isActive = true
         self.dataSource = dataSource
         sourceBindingGeneration += 1
         pollGeneration += 1
@@ -302,6 +307,7 @@ final class TaskCompletionMonitor: ObservableObject {
 
         updateStatusText()
         configureTimer()
+        return true
     }
 
     func markAllRead() {
@@ -454,9 +460,11 @@ final class TaskCompletionMonitor: ObservableObject {
             return
         }
         runningThreadStates = result.states
-        if runningThreadSummary != result.summary {
-            runningThreadSummary = result.summary
-        }
+        let businessStateChanged = runningThreadSummary.main != result.summary.main
+            || runningThreadSummary.subagents != result.summary.subagents
+            || runningThreadSummary.freshness != result.summary.freshness
+        guard businessStateChanged else { return }
+        runningThreadSummary = result.summary
     }
 
     private func markRunningThreadSummaryStale() {

@@ -9,17 +9,19 @@ extension LiveRateMonitor {
         ORDER BY updated_at_ms DESC, updated_at DESC
         LIMIT 20;
         """
-        return try sqliteRows(
-            db: stateDB,
-            sql: sql,
-            consistency: .externallyOwnedWAL
-        ) { statement in
-            ThreadRow(
-                id: sqliteText(statement, 0) ?? "",
-                title: sqliteText(statement, 1) ?? "",
-                updatedAtMS: sqliteInt(statement, 3),
-                rolloutPath: sqliteText(statement, 2) ?? ""
-            )
+        return try CodexStateDatabaseReadPool.shared.withConnection(
+            url: URL(fileURLWithPath: stateDB)
+        ) { connection in
+            try connection.readTransaction { snapshot in
+                try snapshot.readRows(sql) { statement in
+                    ThreadRow(
+                        id: statement.text(0) ?? "",
+                        title: statement.text(1) ?? "",
+                        updatedAtMS: statement.int(3) ?? 0,
+                        rolloutPath: statement.text(2) ?? ""
+                    )
+                }
+            }
         }
     }
 

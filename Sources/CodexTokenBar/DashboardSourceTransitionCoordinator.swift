@@ -11,6 +11,7 @@ final class DashboardSourceTransitionCoordinator {
     private var hasBoundSource = false
     private var sourceIdentity: String?
     private var sourcePath: String?
+    private var stateDatabasePath: String?
 
     @discardableResult
     func transition(
@@ -23,6 +24,7 @@ final class DashboardSourceTransitionCoordinator {
     ) -> DashboardSourceTransitionResult {
         let nextIdentity = dataSource?.stableIdentityKey
         let nextPath = dataSource?.codexHome.standardizedFileURL.path
+        let nextStateDatabasePath = dataSource?.stateDatabase.standardizedFileURL.path
         let result: DashboardSourceTransitionResult
         if !hasBoundSource || sourceIdentity != nextIdentity {
             result = .identityTransition
@@ -33,12 +35,19 @@ final class DashboardSourceTransitionCoordinator {
         }
 
         hasBoundSource = true
+        if let stateDatabasePath,
+           stateDatabasePath != nextStateDatabasePath {
+            CodexStateDatabaseReadPool.shared.close(
+                url: URL(fileURLWithPath: stateDatabasePath)
+            )
+        }
         sourceIdentity = nextIdentity
         sourcePath = nextPath
+        stateDatabasePath = nextStateDatabasePath
         usageStore.setDataSource(dataSource)
         quotaStore.setDataSource(dataSource)
         liveMonitor.setDataSource(dataSource)
-        taskCompletionMonitor.start(dataSource: dataSource)
+        taskCompletionMonitor.bind(dataSource: dataSource)
         providerSyncStore.setDataSource(dataSource)
         switch result {
         case .identityTransition:

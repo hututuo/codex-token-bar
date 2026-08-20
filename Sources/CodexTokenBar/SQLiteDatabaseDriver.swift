@@ -564,6 +564,11 @@ private struct SQLiteDatabaseFamilySnapshot {
         try validateRetainedSidecar(shm, next.shm, label: "SHM")
     }
 
+    func identifiesSameMainFile(as other: SQLiteDatabaseFamilySnapshot) -> Bool {
+        guard let main, let otherMain = other.main else { return false }
+        return main.identifiesSameFile(as: otherMain)
+    }
+
     private func validateRetainedSidecar(_ previous: Member?, _ next: Member?, label: String) throws {
         guard let previous else { return }
         guard let next, previous.identifiesSameFile(as: next) else {
@@ -797,6 +802,7 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
     private let consistency: SQLiteConnectionConsistency
     private let lock = NSLock()
     private var database: OpaquePointer?
+    private var openedSnapshot: SQLiteDatabaseFamilySnapshot?
 
     init(
         url: URL,
@@ -810,10 +816,13 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
 
     deinit {
         lock.lock()
-        if let database {
-            sqlite3_close_v2(database)
-        }
-        database = nil
+        closeDatabase()
+        lock.unlock()
+    }
+
+    func close() {
+        lock.lock()
+        closeDatabase()
         lock.unlock()
     }
 
@@ -850,7 +859,14 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
             do {
                 let beforeRead = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
                 try beforeRead.validateSafeToOpen()
-                let connection = SQLiteDatabaseConnection(database: try databaseHandle(), path: url.path)
+                if let openedSnapshot,
+                   !openedSnapshot.identifiesSameMainFile(as: beforeRead) {
+                    closeDatabase()
+                }
+                let connection = SQLiteDatabaseConnection(
+                    database: try databaseHandle(openingSnapshot: beforeRead),
+                    path: url.path
+                )
                 let afterOpen = try SQLiteDatabaseFamilySnapshot(databaseURL: url)
                 try beforeRead.validateTransition(to: afterOpen)
                 let result = try body(connection)
@@ -864,7 +880,9 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
         }
     }
 
-    private func databaseHandle() throws -> OpaquePointer {
+    private func databaseHandle(
+        openingSnapshot: SQLiteDatabaseFamilySnapshot
+    ) throws -> OpaquePointer {
         if let database {
             return database
         }
@@ -893,6 +911,7 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
         sqlite3_extended_result_codes(opened, 1)
         sqlite3_busy_timeout(opened, busyTimeoutMilliseconds)
         database = opened
+        openedSnapshot = openingSnapshot
         return opened
     }
 
@@ -901,6 +920,55 @@ final class SQLitePersistentDatabaseReader: @unchecked Sendable {
             sqlite3_close_v2(database)
         }
         database = nil
+        openedSnapshot = nil
+    }
+}
+
+/// Process-local serialized reader pool for Codex-owned state SQLite. Both
+/// live-rate thread discovery and task-completion running-state checks reuse
+/// the same read-only handle per physical path. Every query is short-lived;
+/// ordinary WAL growth keeps the handle, while main-file replacement is
+/// detected by SQLitePersistentDatabaseReader and reopens safely.
+final class CodexStateDatabaseReadPool: @unchecked Sendable {
+    static let shared = CodexStateDatabaseReadPool()
+
+    private let lock = NSLock()
+    private var readers: [String: SQLitePersistentDatabaseReader] = [:]
+
+    func withConnection<T>(
+        url: URL,
+        _ body: (SQLiteDatabaseConnection) throws -> T
+    ) throws -> T {
+        let key = url.standardizedFileURL.path
+        lock.lock()
+        let reader: SQLitePersistentDatabaseReader
+        if let existing = readers[key] {
+            reader = existing
+        } else {
+            reader = SQLitePersistentDatabaseReader(
+                url: url,
+                busyTimeoutMilliseconds: 500
+            )
+            readers[key] = reader
+        }
+        lock.unlock()
+        return try reader.withConnection(body)
+    }
+
+    func close(url: URL) {
+        let key = url.standardizedFileURL.path
+        lock.lock()
+        let reader = readers.removeValue(forKey: key)
+        lock.unlock()
+        reader?.close()
+    }
+
+    func closeAll() {
+        lock.lock()
+        let activeReaders = Array(readers.values)
+        readers.removeAll()
+        lock.unlock()
+        activeReaders.forEach { $0.close() }
     }
 }
 
