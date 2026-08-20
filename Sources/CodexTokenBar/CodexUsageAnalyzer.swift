@@ -540,7 +540,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             initialAttributionState = try historyIndex.attributionState()
             initialEventEnrichmentComplete = try historyIndex.eventEnrichmentIsComplete()
         } catch {
-            throw CodexUsageHistoryIndexError(operation: "打开或升级精确索引", underlying: error)
+            let operation = CodexCrossProcessFileLock.isContention(error)
+                ? "获取精确索引所有权"
+                : "打开或升级精确索引"
+            throw CodexUsageHistoryIndexError(operation: operation, underlying: error)
         }
         let receiptMatchesPublishedIndex = requestedReceipt.map { receipt in
             receipt.signature.attributionProvenanceEpoch
@@ -639,11 +642,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let settledThrough = UsageRefreshCadencePolicy.latestEligibleBoundary(
             now: preciseCoverageAt
         )
-        // Builder bins are keyed by their start. Anchor just inside the last
-        // closed bucket so the still-open bucket is left for the next aggregate
-        // cycle while summary totals can still reflect the latest exact index.
+        // Keep the exact observation and the settled chart boundary separate:
+        // today's/model/attribution summaries may include the latest observed
+        // bucket, while chart bins remain limited to closed buckets.
         let aggregationNow = settledThrough.addingTimeInterval(-0.001)
-        var aggregation = UsageAggregationBuilder(calendar: calendar, now: aggregationNow)
+        var aggregation = UsageAggregationBuilder(
+            calendar: calendar,
+            now: preciseCoverageAt,
+            aggregateNow: aggregationNow
+        )
         trace?.mark("threadMetadata.begin")
         let stateRefresh = loadStateRefreshSnapshot()
         let metadata = stateRefresh.metadata
@@ -732,8 +739,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     from: attributionStart,
                     before: attributionEnd
                 )
+                trace?.mark("attributionLedger.loaded", metadata: [
+                    "count": String(durableAttributionEvents.count),
+                    "from": String(Int64(attributionStart.timeIntervalSince1970)),
+                    "before": String(Int64(attributionEnd.timeIntervalSince1970)),
+                    "epoch": synchronization.provenanceEpoch
+                ])
             } else {
                 durableAttributionEvents = []
+                trace?.mark("attributionLedger.emptyRange")
             }
 
             let aggregateReadStart = aggregation.aggregateReadStart

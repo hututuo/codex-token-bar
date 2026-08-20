@@ -496,7 +496,9 @@ final class TaskCompletionMonitor: ObservableObject {
         case let .available(threadIDs):
             officialUnreadThreadIDs = threadIDs
             hasCodexUnreadState = true
-            unreadThreadCountAvailable = true
+            if !unreadThreadCountAvailable {
+                unreadThreadCountAvailable = true
+            }
             refreshActiveOfficialUnreadState()
         case .unavailable:
             // A CDP snapshot is the only accepted source.  If it disappears,
@@ -505,7 +507,9 @@ final class TaskCompletionMonitor: ObservableObject {
             officialUnreadThreadIDs.removeAll()
             unreadThreadState = CodexUnreadThreadState()
             hasCodexUnreadState = false
-            unreadThreadCountAvailable = false
+            if unreadThreadCountAvailable {
+                unreadThreadCountAvailable = false
+            }
         }
     }
 

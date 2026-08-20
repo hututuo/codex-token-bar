@@ -11,6 +11,9 @@ extension CodexUsageAnalyzer {
 
         private let calendar: Calendar
         private let now: Date
+        /// Exact summary/model data may include the latest observed bucket;
+        /// chart bins remain capped at the settled aggregate boundary.
+        private let aggregateNow: Date
         private let dailyStart: Date?
         private let recentStart: Date?
         private let hourlyStart: Date?
@@ -32,14 +35,15 @@ extension CodexUsageAnalyzer {
         private var eventCount = 0
         private var turnCandidates = TurnCandidatePools()
 
-        init(calendar: Calendar, now: Date) {
+        init(calendar: Calendar, now: Date, aggregateNow: Date? = nil) {
             self.calendar = calendar
             self.now = now
+            self.aggregateNow = aggregateNow ?? now
             let today = calendar.startOfDay(for: now)
             dailyStart = calendar.date(byAdding: .day, value: -(Self.dayCount - 1), to: today)
             let currentRecentBinStart = Date(
                 timeIntervalSince1970: floor(
-                    now.timeIntervalSince1970 / Self.recentBinInterval
+                    self.aggregateNow.timeIntervalSince1970 / Self.recentBinInterval
                 ) * Self.recentBinInterval
             )
             recentStart = currentRecentBinStart.addingTimeInterval(
@@ -84,9 +88,16 @@ extension CodexUsageAnalyzer {
         }
 
         var attributionCoverageEnd: Date? {
-            recentStart?.addingTimeInterval(
-                Double(Self.recentBinCount) * Self.recentBinInterval
+            guard recentStart != nil else { return nil }
+            // Include the bucket containing the current exact observation in
+            // durable model attribution, even though the chart only exposes
+            // settled bins.
+            let observedBoundary = Date(
+                timeIntervalSince1970: floor(
+                    now.timeIntervalSince1970 / Self.recentBinInterval
+                ) * Self.recentBinInterval
             )
+            return observedBoundary.addingTimeInterval(Self.recentBinInterval)
         }
 
         var peakSessionTokens: Int {
@@ -140,7 +151,7 @@ extension CodexUsageAnalyzer {
 
             if let recentStart,
                event.timestamp >= recentStart,
-               event.timestamp <= now {
+               event.timestamp <= aggregateNow {
                 let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
                 let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
                 let current = recentUsageByStart[start] ?? (0, 0)
@@ -149,7 +160,7 @@ extension CodexUsageAnalyzer {
 
             if let hourlyStart,
                event.timestamp >= hourlyStart,
-               event.timestamp <= now,
+               event.timestamp <= aggregateNow,
                let hour = calendar.dateInterval(of: .hour, for: event.timestamp)?.start {
                 let current = hourlyUsageByStart[hour] ?? (0, 0)
                 hourlyUsageByStart[hour] = (current.tokens + event.tokens, current.calls + 1)
@@ -167,7 +178,7 @@ extension CodexUsageAnalyzer {
                     Double(Self.recentBinCount) * Self.recentBinInterval
                 )
                 if event.timestamp >= recentStart,
-                   event.timestamp <= now,
+                   event.timestamp <= aggregateNow,
                    event.timestamp < recentEnd {
                     let offset = floor(event.timestamp.timeIntervalSince(recentStart) / Self.recentBinInterval)
                     let start = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
@@ -241,7 +252,7 @@ extension CodexUsageAnalyzer {
 
             if let recentStart,
                start >= recentStart,
-               start <= now {
+               start <= aggregateNow {
                 let offset = floor(start.timeIntervalSince(recentStart) / Self.recentBinInterval)
                 let binStart = recentStart.addingTimeInterval(offset * Self.recentBinInterval)
                 let current = recentUsageByStart[binStart] ?? (0, 0)
@@ -254,7 +265,7 @@ extension CodexUsageAnalyzer {
 
             if let hourlyStart,
                start >= hourlyStart,
-               start <= now,
+               start <= aggregateNow,
                let hour = calendar.dateInterval(of: .hour, for: start)?.start {
                 let current = hourlyUsageByStart[hour] ?? (0, 0)
                 hourlyUsageByStart[hour] = (

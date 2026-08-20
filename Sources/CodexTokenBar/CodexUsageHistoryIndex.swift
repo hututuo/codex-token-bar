@@ -1201,19 +1201,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                 == existing.signature.deviceID
                             && observed.inode == existing.signature.inode
                             && observed.size >= existing.signature.size
-                        if !isStablePublishedPrefix {
+                        if !isStablePublishedPrefix || existing.checkpoint == nil {
                             rewrittenFiles += 1
                         }
+                        // Replay migration intentionally clears the source
+                        // checkpoint. In that state this is not a bounded
+                        // enrichment pass: rebuild the source at the current
+                        // formal size so bytes appended after migration are
+                        // included in the same targeted recovery.
+                        let canReusePublishedPrefix =
+                            isStablePublishedPrefix && existing.checkpoint != nil
                         dirtyTurnCandidateSessions.insert(existing.sessionID)
                         dirtyTurnCandidateSessions.insert(sessionID(file))
                         fullRebuildJobs.append(
                             FullRebuildJob(
                                 file: file,
                                 sessionID: sessionID(file),
-                                observedSignature: isStablePublishedPrefix
+                                observedSignature: canReusePublishedPrefix
                                     ? existing.signature
                                     : observed,
-                                reason: isStablePublishedPrefix
+                                reason: canReusePublishedPrefix
                                     ? .eventEnrichment
                                     : .sourceChange
                             )
@@ -2186,8 +2193,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             let migrationNeedsSchemaFields = !destructiveRebuildRequired
                 && shouldReportMigration
+            // A schema downgrade/legacy reopen is a migration boundary even
+            // when a previous interrupted attempt left the current replay
+            // marker behind. Revalidate the source rows instead of trusting
+            // that marker across schema generations.
             let migrationNeedsReplayBoundary = currentVersion != nil
-                && storedReplayBoundaryRevision != Self.forkReplayBoundaryRevision
+                && (
+                    storedReplayBoundaryRevision != Self.forkReplayBoundaryRevision
+                    || shouldReportMigration
+                )
+            if shouldReportMigration,
+               storedReplayBoundaryRevision == Self.forkReplayBoundaryRevision {
+                try connection.execute(
+                    "DELETE FROM schema_meta WHERE key = 'fork_replay_boundary_revision';"
+                )
+            }
             let migrationNeedsLedger = destructiveRebuildRequired
                 || storedProvenanceRevision != Self.attributionProvenanceRevision
             let migrationNeedsSessionCatalog = currentVersion != nil

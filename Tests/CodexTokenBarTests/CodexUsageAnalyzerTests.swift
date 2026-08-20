@@ -109,19 +109,22 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let now = Date()
 
         let lines = [
-            turnContextLine(timestamp: now.addingTimeInterval(-140), model: "gpt-5.6-sol"),
-            messageLine(timestamp: now.addingTimeInterval(-130), type: "user_message", message: "First question"),
-            messageLine(timestamp: now.addingTimeInterval(-120), type: "agent_message", message: "First answer"),
+            // Keep the fixture outside the currently open 5-minute bucket;
+            // settled chart series intentionally exclude that bucket while
+            // summary/model data still includes it.
+            turnContextLine(timestamp: now.addingTimeInterval(-640), model: "gpt-5.6-sol"),
+            messageLine(timestamp: now.addingTimeInterval(-630), type: "user_message", message: "First question"),
+            messageLine(timestamp: now.addingTimeInterval(-620), type: "agent_message", message: "First answer"),
             try tokenCountLine(
-                timestamp: now.addingTimeInterval(-110),
+                timestamp: now.addingTimeInterval(-610),
                 total: Usage(input: 100, cachedInput: 40, output: 20, reasoning: 5, total: 120),
                 last: Usage(input: 100, cachedInput: 40, output: 20, reasoning: 5, total: 120)
             ),
-            turnContextLine(timestamp: now.addingTimeInterval(-90), model: "gpt-5.6-terra"),
-            messageLine(timestamp: now.addingTimeInterval(-80), type: "user_message", message: "Second question"),
-            messageLine(timestamp: now.addingTimeInterval(-70), type: "agent_message", message: "Second answer"),
+            turnContextLine(timestamp: now.addingTimeInterval(-590), model: "gpt-5.6-terra"),
+            messageLine(timestamp: now.addingTimeInterval(-580), type: "user_message", message: "Second question"),
+            messageLine(timestamp: now.addingTimeInterval(-570), type: "agent_message", message: "Second answer"),
             try tokenCountLine(
-                timestamp: now.addingTimeInterval(-60),
+                timestamp: now.addingTimeInterval(-560),
                 total: Usage(input: 150, cachedInput: 50, output: 30, reasoning: 7, total: 180),
                 last: Usage(input: 50, cachedInput: 10, output: 10, reasoning: 2, total: 60)
             )
