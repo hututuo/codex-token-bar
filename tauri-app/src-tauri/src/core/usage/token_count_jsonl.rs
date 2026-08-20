@@ -774,6 +774,13 @@ impl PreciseRefreshFlight {
             .is_some_and(|result| matches!(result.full.as_ref(), Some(Ok(_))))
     }
 
+    fn full_requested(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .full_requested
+    }
+
     fn claim_full_build_or_close(&self) -> bool {
         let mut state = self
             .state
@@ -1403,7 +1410,22 @@ fn run_precise_refresh_inner(
     };
     let precise_coverage_at = OffsetDateTime::now_utc();
     let revision = if let Some(revision) = reused_completed_summary {
-        revision
+        if flight.full_requested() {
+            // A completed Summary may be promoted to Full without another
+            // exact scan. Refresh the disposable session title projection
+            // before the Full dashboard reads it; this does not create a new
+            // generation or reread JSONL.
+            match index.sync_thread_metadata_without_scan(canonical_home, &mut warnings) {
+                Ok(revision) => revision,
+                Err(error) => {
+                    flight.set_trace_status("thread_metadata_reuse_error");
+                    trace_precise_failure("thread_metadata_reuse", &error);
+                    return PreciseRefreshResult::failure(error);
+                }
+            }
+        } else {
+            revision
+        }
     } else {
         let sync_hook = {
             let _stage =
@@ -1463,11 +1485,17 @@ fn run_precise_refresh_inner(
         };
         let sync_result = {
             let _stage = PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::Sync);
-            index.sync_with_scan_plan(
+            let sync_mode = if flight.full_requested() {
+                exact_usage_index::ExactSyncMode::Full
+            } else {
+                exact_usage_index::ExactSyncMode::Summary
+            };
+            index.sync_with_scan_plan_mode(
                 canonical_home,
                 &mut warnings,
                 discovery.0,
                 discovery.1,
+                sync_mode,
             )
         };
         match sync_result {
@@ -1479,10 +1507,12 @@ fn run_precise_refresh_inner(
             }
         }
     };
-    if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
-        flight.set_trace_status("aggregate_upgrade_error");
-        trace_precise_failure("aggregate_upgrade", &error);
-        return PreciseRefreshResult::failure(error);
+    if flight.full_requested() {
+        if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
+            flight.set_trace_status("aggregate_upgrade_error");
+            trace_precise_failure("aggregate_upgrade", &error);
+            return PreciseRefreshResult::failure(error);
+        }
     }
     // Capture the durable exact-index migration state after the scan and any
     // disposable aggregate backfill. `ensure_dashboard_aggregates` may leave
@@ -3066,6 +3096,7 @@ struct DashboardScanSignature {
 }
 
 fn dashboard_index_signature(codex_home: &Path, index_revision: u64) -> DashboardScanSignature {
+    record_dashboard_source_scan_for_testing();
     let local_offset = crate::core::localtime::current_local_offset();
     let now_utc = OffsetDateTime::now_utc();
     DashboardScanSignature {

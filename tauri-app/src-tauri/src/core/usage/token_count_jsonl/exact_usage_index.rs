@@ -137,6 +137,22 @@ pub(super) struct ExactUsageIndex {
     migration_pending: bool,
 }
 
+/// Selects which derived work the in-process exact owner is allowed to do.
+/// Both modes use the same durable generation/checkpoint scan; Summary only
+/// publishes exact events and lets a later Full owner consume the disposable
+/// dashboard work from SQLite.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ExactSyncMode {
+    Summary,
+    Full,
+}
+
+impl ExactSyncMode {
+    fn builds_dashboard_derived_data(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct AttributionSafetyState {
     pub(super) provenance_epoch: String,
@@ -191,15 +207,39 @@ impl MigrationAssessment {
                 component,
                 stored,
                 supported,
-            } => Some(format!(
-                "精确 token {component} 版本 {stored} 高于或不同于当前支持版本 {supported}，需要升级软件，已拒绝写入或删除索引"
-            )),
+            } => {
+                let display_component = match *component {
+                    "event enrichment" => "历史字段补全",
+                    "session catalog schema" => "会话目录 schema",
+                    other => other,
+                };
+                let version_relation = if *component == "event enrichment" {
+                    "高于或不同于当前支持版本"
+                } else {
+                    "高于当前支持版本"
+                };
+                let version_separator = if *component == "event enrichment" {
+                    ""
+                } else {
+                    " "
+                };
+                Some(format!(
+                    "精确 token {display_component}{version_separator}版本 {stored} {version_relation} {supported}，需要升级软件，已拒绝覆盖；已拒绝写入或删除索引"
+                ))
+            }
             Self::Corrupt {
                 component,
                 raw_value,
-            } => Some(format!(
-                "精确 token {component} 标记已损坏（{raw_value:?}），已拒绝把损坏值当作缺失后覆盖"
-            )),
+            } => {
+                let display_component = if *component == "schema_version" {
+                    "schema 版本"
+                } else {
+                    *component
+                };
+                Some(format!(
+                    "精确 token {display_component}未知或损坏（{raw_value:?}），已拒绝把损坏值当作缺失后覆盖"
+                ))
+            }
             Self::Compatible | Self::KnownMigrationRequired(_) => None,
         }
     }
@@ -1935,6 +1975,23 @@ impl ExactUsageIndex {
         discovery: Option<PreciseScanDiscovery>,
         scan_total_override: Option<u64>,
     ) -> Result<u64, String> {
+        self.sync_with_scan_plan_mode(
+            codex_home,
+            warnings,
+            discovery,
+            scan_total_override,
+            ExactSyncMode::Full,
+        )
+    }
+
+    pub(super) fn sync_with_scan_plan_mode(
+        &mut self,
+        codex_home: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+        discovery: Option<PreciseScanDiscovery>,
+        scan_total_override: Option<u64>,
+        mode: ExactSyncMode,
+    ) -> Result<u64, String> {
         // The derived aggregate layer is disposable, but a newer build may
         // have written a schema this binary does not understand. Reject it
         // before the scan transaction can touch any aggregate rows.
@@ -1969,15 +2026,19 @@ impl ExactUsageIndex {
         let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
 
         // Historical model/reasoning enrichment is a one-time, serial owner.
-        // It finishes the old published watermarks first. Once that repair has
-        // published, keep this same owner and discovery plan in the ordinary
-        // checkpoint path so appended tails already visible to discovery are
-        // published in the same dashboard refresh.
-        if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
-            != Some(EVENT_ENRICHMENT_REVISION)
+        // A brand-new index has no published files to enrich yet; let the
+        // normal checkpoint scan create its first generation instead of
+        // returning early after merely stamping the enrichment revision.
+        // Once a generation has been published, enrichment owns that old
+        // watermark first and then the same owner continues through the
+        // ordinary checkpoint path.
+        let has_published_sources = event_enrichment_source_count(&self.connection)? > 0;
+        if has_published_sources
+            && metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+                != Some(EVENT_ENRICHMENT_REVISION)
         {
             let enrichment_revision =
-                self.synchronize_event_enrichment(codex_home, &index_path, warnings)?;
+                self.synchronize_event_enrichment(codex_home, &index_path, warnings, mode)?;
             if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
                 != Some(EVENT_ENRICHMENT_REVISION)
             {
@@ -2007,14 +2068,25 @@ impl ExactUsageIndex {
                     metadata_text(&self.connection, "state_size")?,
                     metadata_text(&self.connection, "state_modified_ns")?,
                 );
-                match stage_thread_metadata(codex_home, previous, warnings)? {
-                    ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
-                        return self.revision();
-                    }
-                    ThreadMetadataStage::Updated(staged) => {
-                        return publish_thread_metadata_only(&mut self.connection, staged);
-                    }
+                if !mode.builds_dashboard_derived_data() {
+                    // Summary owns exact facts only. Leave state_5.sqlite
+                    // metadata for the Full owner; its signature is not
+                    // advanced here, so a later owner will retry the same
+                    // incremental metadata publication.
+                    return self.revision();
                 }
+                let revision = match stage_thread_metadata(codex_home, previous, warnings)? {
+                    ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => self.revision()?,
+                    ThreadMetadataStage::Updated(staged) => {
+                        publish_thread_metadata_only(&mut self.connection, staged)?
+                    }
+                };
+                // A preceding Summary owner may have committed new exact
+                // events while intentionally leaving the disposable
+                // aggregate generation behind. A Full request with no new
+                // JSONL must still consume that dirty derived scope.
+                self.ensure_dashboard_aggregates(codex_home)?;
+                return Ok(revision);
             } else {
                 // sources_changed uses a temporary published-files snapshot.
                 // Drop it before the durable scan so dashboard reads cannot
@@ -2039,7 +2111,7 @@ impl ExactUsageIndex {
         };
         prune_published_tombstone_versions(&self.connection)?;
         prepare_scan_temp_tables(&self.connection)?;
-        let generation = begin_or_resume_generation(&mut self.connection)?;
+        let generation = begin_or_resume_generation(&mut self.connection, mode)?;
         let mut full_rebuild_jobs = Vec::new();
         let mut scanned_files = 0_u64;
         let mut scanned_paths = HashSet::new();
@@ -2069,6 +2141,7 @@ impl ExactUsageIndex {
                     scan_total,
                     &mut diagnostics,
                     Some(candidate.signature),
+                    mode,
                 )?;
             }
         } else {
@@ -2090,6 +2163,7 @@ impl ExactUsageIndex {
                     scan_total,
                     &mut diagnostics,
                     None,
+                    mode,
                 )
             };
             visit_session_files(
@@ -2135,7 +2209,12 @@ impl ExactUsageIndex {
                 return Err("injected interruption after durable exact token staging".into());
             }
             for staged_file in staged {
-                import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
+                import_staged_full_rebuild(
+                    &mut self.connection,
+                    generation,
+                    &staged_file,
+                    mode,
+                )?;
                 remove_index_storage(&staged_file.database_path)?;
                 run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
             }
@@ -2169,12 +2248,15 @@ impl ExactUsageIndex {
             self.connection.mark_receipt_dirty();
             return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
         }
+        let run_migrations = !migration_markers_complete(&self.connection, true)?;
         let revision = finalize_generation(
             &mut self.connection,
             generation,
             codex_home,
             warnings,
             scan_completeness,
+            mode,
+            run_migrations,
         )?;
         diagnostics.published_watermark = revision;
         startup_trace::mark_performance(format!(
@@ -2231,8 +2313,31 @@ impl ExactUsageIndex {
                 Some(MIGRATION_STAGE_TOTAL),
             );
         }
-        self.ensure_dashboard_aggregates(codex_home)?;
+        if mode.builds_dashboard_derived_data() {
+            self.ensure_dashboard_aggregates(codex_home)?;
+        }
         Ok(revision)
+    }
+
+    /// Refreshes the disposable session title projection without starting a
+    /// new exact generation. A Summary owner may have already published the
+    /// latest events; a Full request promoted afterwards still needs to make
+    /// the dashboard's session metadata current before reading the snapshot.
+    pub(super) fn sync_thread_metadata_without_scan(
+        &mut self,
+        codex_home: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+    ) -> Result<u64, String> {
+        let previous = (
+            metadata_text(&self.connection, "state_size")?,
+            metadata_text(&self.connection, "state_modified_ns")?,
+        );
+        match stage_thread_metadata(codex_home, previous, warnings)? {
+            ThreadMetadataStage::Updated(staged) => {
+                publish_thread_metadata_only(&mut self.connection, staged)
+            }
+            ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => self.revision(),
+        }
     }
 
     fn synchronize_event_enrichment(
@@ -2240,6 +2345,7 @@ impl ExactUsageIndex {
         codex_home: &Path,
         index_path: &Path,
         warnings: &mut Vec<LocalDataWarning>,
+        mode: ExactSyncMode,
     ) -> Result<u64, String> {
         self.connection.mark_receipt_dirty();
         let total = event_enrichment_source_count(&self.connection)?;
@@ -2286,6 +2392,8 @@ impl ExactUsageIndex {
                     codex_home,
                     warnings,
                     ExactScanCompleteness::default(),
+                    mode,
+                    true,
                 )?;
             }
             let transaction = self
@@ -2312,11 +2420,11 @@ impl ExactUsageIndex {
         prepare_scan_temp_tables(&self.connection)?;
         self.connection
             .execute(
-                "INSERT OR IGNORE INTO exact_seen_files(path) SELECT path FROM published_files",
+                "INSERT OR IGNORE INTO exact_seen_files(path) SELECT path FROM main.published_files",
                 [],
             )
             .map_err(|error| format!("无法固定历史字段补全来源清单：{error}"))?;
-        let generation = begin_or_resume_generation(&mut self.connection)?;
+        let generation = begin_or_resume_generation(&mut self.connection, mode)?;
         let mut scan_completeness = ExactScanCompleteness::default();
         let mut jobs = Vec::with_capacity(candidates.len());
         let mut completed = completed_receipts;
@@ -2335,8 +2443,12 @@ impl ExactUsageIndex {
                         .execute(
                             "DELETE FROM exact_seen_files WHERE path = ?1",
                             params![&candidate.path],
-                        )
-                        .map_err(|error| format!("无法登记历史字段补全来源删除：{error}"))?;
+                    )
+                    .map_err(|error| format!("无法登记历史字段补全来源删除：{error}"))?;
+                    #[cfg(test)]
+                    if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
+                        return Err("injected interruption after durable exact token staging".into());
+                    }
                     completed = completed.saturating_add(1);
                     super::update_precise_dashboard_progress(
                         codex_home,
@@ -2482,13 +2594,23 @@ impl ExactUsageIndex {
                         "1",
                     )?;
                 }
-                import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
+                import_staged_full_rebuild(
+                    &mut self.connection,
+                    generation,
+                    &staged_file,
+                    mode,
+                )?;
                 remove_index_storage(&staged_file.database_path)?;
                 completed = completed.saturating_add(1).min(total);
             }
         }
 
-        let pending_before_publish = event_enrichment_pending_candidates(&self.connection)?;
+        let pending_before_publish = match metadata_i64(&self.connection, "building_generation")? {
+            Some(building) => {
+                event_enrichment_pending_candidates_for_generation(&self.connection, building)?
+            }
+            None => event_enrichment_pending_candidates(&self.connection)?,
+        };
         if scan_completeness.incomplete_source_scan || !pending_before_publish.is_empty() {
             super::update_precise_dashboard_progress(
                 codex_home,
@@ -2508,6 +2630,8 @@ impl ExactUsageIndex {
             codex_home,
             warnings,
             ExactScanCompleteness::default(),
+            mode,
+            true,
         )?;
         let pending = event_enrichment_pending_candidates(&self.connection)?;
         if pending.is_empty() {
@@ -2796,11 +2920,11 @@ impl ExactUsageIndex {
                 r#"
                 SELECT
                     COALESCE((
-                        SELECT SUM(t.total_tokens)
-                        FROM dashboard_file_totals t
+                        SELECT SUM(e.tokens)
+                        FROM events e
                         JOIN published_files f
-                          ON f.generation = t.file_generation
-                         AND f.path = t.file_path
+                          ON f.generation = e.file_generation
+                         AND f.path = e.file_path
                     ), 0),
                     COALESCE((
                         SELECT SUM(e.tokens)
@@ -5473,6 +5597,7 @@ fn import_staged_full_rebuild(
     connection: &mut Connection,
     generation: i64,
     staged: &StagedFullRebuild,
+    mode: ExactSyncMode,
 ) -> Result<(), String> {
     let validated = {
         let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
@@ -5592,7 +5717,9 @@ fn import_staged_full_rebuild(
                 validated.event_count, imported_events
             ));
         }
-        refresh_dashboard_file_aggregates(&transaction, generation, &validated.job.path)?;
+        if mode.builds_dashboard_derived_data() {
+            refresh_dashboard_file_aggregates(&transaction, generation, &validated.job.path)?;
+        }
         transaction
             .execute(
                 r#"
@@ -5691,7 +5818,10 @@ fn staged_enrichment_matches_published_events(
             r#"
             SELECT NOT EXISTS(
                 SELECT 1
-                FROM published_events published
+                FROM main.events published
+                JOIN main.published_files published_file
+                  ON published_file.generation = published.file_generation
+                 AND published_file.path = published.file_path
                 LEFT JOIN exact_enrichment_compare.events staged
                   ON staged.ordinal = published.ordinal
                 WHERE published.file_path = ?1
@@ -5706,9 +5836,15 @@ fn staged_enrichment_matches_published_events(
                 UNION ALL
                 SELECT 1
                 FROM exact_enrichment_compare.events staged
-                LEFT JOIN published_events published
+                LEFT JOIN main.events published
                   ON published.file_path = ?1
                  AND published.ordinal = staged.ordinal
+                 AND EXISTS (
+                     SELECT 1
+                     FROM main.published_files published_file
+                     WHERE published_file.generation = published.file_generation
+                       AND published_file.path = published.file_path
+                 )
                 WHERE published.ordinal IS NULL
                 LIMIT 1
             )
@@ -5883,7 +6019,10 @@ fn prune_published_tombstone_versions(connection: &Connection) -> Result<(), Str
     }
 }
 
-fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String> {
+fn begin_or_resume_generation(
+    connection: &mut Connection,
+    mode: ExactSyncMode,
+) -> Result<i64, String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始精确 token 同步状态事务：{error}"))?;
@@ -5938,58 +6077,60 @@ fn begin_or_resume_generation(connection: &mut Connection) -> Result<i64, String
         BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
         "0",
     )?;
-    transaction
-        .execute(
-            "DELETE FROM dashboard_5m WHERE file_generation = ?1",
-            params![generation],
-        )
-        .map_err(|error| format!("无法清理新一轮全局五分钟聚合：{error}"))?;
-    transaction
-        .execute(
-            "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation = ?1",
-            params![generation],
-        )
-        .map_err(|error| format!("无法清理新一轮轮次候选聚合：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_5m(
-                file_generation, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+    if mode.builds_dashboard_derived_data() {
+        transaction
+            .execute(
+                "DELETE FROM dashboard_5m WHERE file_generation = ?1",
+                params![generation],
             )
-            SELECT
-                ?1, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-            FROM dashboard_5m
-            WHERE file_generation = ?2
-            "#,
-            params![generation, published],
-        )
-        .map_err(|error| format!("无法复制已发布全局五分钟聚合：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_turn_candidates(
-                aggregate_generation, event_id, source_file_generation,
-                file_path, ordinal, timestamp, session_id,
-                total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                user_prompt_start, user_prompt_end,
-                assistant_response_start, assistant_response_end,
-                turn_index, session_calls
+            .map_err(|error| format!("无法清理新一轮全局五分钟聚合：{error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation = ?1",
+                params![generation],
             )
-            SELECT
-                ?1, event_id, source_file_generation,
-                file_path, ordinal, timestamp, session_id,
-                total_tokens, input_tokens, cached_input_tokens, output_tokens,
-                user_prompt_start, user_prompt_end,
-                assistant_response_start, assistant_response_end,
-                turn_index, session_calls
-            FROM dashboard_turn_candidates
-            WHERE aggregate_generation = ?2
-            "#,
-            params![generation, published],
-        )
-        .map_err(|error| format!("无法复制已发布轮次候选聚合：{error}"))?;
+            .map_err(|error| format!("无法清理新一轮轮次候选聚合：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO dashboard_5m(
+                    file_generation, bucket_start, model_key, model,
+                    total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+                )
+                SELECT
+                    ?1, bucket_start, model_key, model,
+                    total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+                FROM dashboard_5m
+                WHERE file_generation = ?2
+                "#,
+                params![generation, published],
+            )
+            .map_err(|error| format!("无法复制已发布全局五分钟聚合：{error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO dashboard_turn_candidates(
+                    aggregate_generation, event_id, source_file_generation,
+                    file_path, ordinal, timestamp, session_id,
+                    total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                    user_prompt_start, user_prompt_end,
+                    assistant_response_start, assistant_response_end,
+                    turn_index, session_calls
+                )
+                SELECT
+                    ?1, event_id, source_file_generation,
+                    file_path, ordinal, timestamp, session_id,
+                    total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                    user_prompt_start, user_prompt_end,
+                    assistant_response_start, assistant_response_end,
+                    turn_index, session_calls
+                FROM dashboard_turn_candidates
+                WHERE aggregate_generation = ?2
+                "#,
+                params![generation, published],
+            )
+            .map_err(|error| format!("无法复制已发布轮次候选聚合：{error}"))?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("无法持久化精确 token 同步状态：{error}"))?;
@@ -6692,6 +6833,8 @@ fn finalize_generation(
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: ExactScanCompleteness,
+    mode: ExactSyncMode,
+    run_migrations: bool,
 ) -> Result<u64, String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -6840,13 +6983,15 @@ fn finalize_generation(
                 params![generation],
             )
             .map_err(|error| format!("无法登记本轮已删除的会话文件：{error}"))?;
-        if let Some((start, end)) = missing_dashboard_bounds {
+        if mode.builds_dashboard_derived_data() {
+            if let Some((start, end)) = missing_dashboard_bounds {
             refresh_dashboard_5m_range(&transaction, generation, start, end)?;
+            }
         }
         mark_dashboard_changed(&transaction)?;
     }
 
-    if sync_thread_metadata(&transaction, codex_home, warnings)? {
+    if mode.builds_dashboard_derived_data() && sync_thread_metadata(&transaction, codex_home, warnings)? {
         // Thread titles and timestamps are refreshed in the same SQLite
         // publication transaction, but they do not alter numeric token
         // aggregates or five-minute attribution buckets. Keep the generic
@@ -6854,84 +6999,88 @@ fn finalize_generation(
         // numeric cache lineage intact.
         set_metadata(&transaction, "building_changed", "1")?;
     }
-    backfill_missing_dashboard_aggregates_for_generation(&transaction, generation)?;
+    if mode.builds_dashboard_derived_data() {
+        backfill_missing_dashboard_aggregates_for_generation(&transaction, generation)?;
+    }
     let rotate_attribution_provenance =
         metadata_i64(&transaction, BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY)?.unwrap_or(0) != 0;
     let source_index_changed =
         metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.unwrap_or(0) != 0;
-    if source_index_changed
+    if mode.builds_dashboard_derived_data()
+        && source_index_changed
         && metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
             == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
     {
         refresh_dashboard_turn_candidates_for_touched_sessions(&transaction, generation)?;
     }
-    let safety_before = attribution_safety_state(&transaction)?;
-    let lineage_ambiguity_detected = visible_duplicate_session_lineage(&transaction, generation)?;
-    let ledger_integrity_mismatch = attribution_ledger_integrity_mismatch(&transaction)?;
-    let current_scan_unsafe_cause_detected = rotate_attribution_provenance
-        || lineage_ambiguity_detected
-        || ledger_integrity_mismatch
-        || scan_completeness.incomplete_source_scan;
-    // One unresolved incident owns one provenance rotation. A file that is
-    // truncated/replaced on every normal poll, or a duplicate UUID that stays
-    // present, must remain sticky unsafe without creating an epoch/WAL storm.
-    let rotate_for_new_unsafe_incident =
-        current_scan_unsafe_cause_detected && safety_before.unsafe_since_generation.is_none();
-    if synchronize_attribution_ledger(
-        &transaction,
-        generation,
-        source_index_changed,
-        rotate_for_new_unsafe_incident,
-        ledger_integrity_mismatch,
-    )? {
-        mark_dashboard_changed(&transaction)?;
-    }
-    let provenance_epoch = metadata_text(&transaction, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
-    if rotate_for_new_unsafe_incident {
+    let _current_scan_unsafe_cause_detected = if mode.builds_dashboard_derived_data()
+        || run_migrations
+        || source_index_changed
+    {
+        let safety_before = attribution_safety_state(&transaction)?;
+        let lineage_ambiguity_detected =
+            visible_duplicate_session_lineage(&transaction, generation)?;
+        let ledger_integrity_mismatch = attribution_ledger_integrity_mismatch(&transaction)?;
+        let detected = rotate_attribution_provenance
+            || lineage_ambiguity_detected
+            || ledger_integrity_mismatch
+            || scan_completeness.incomplete_source_scan;
+        // One unresolved incident owns one provenance rotation. A file that is
+        // truncated/replaced on every normal poll, or a duplicate UUID that stays
+        // present, must remain sticky unsafe without creating an epoch/WAL storm.
+        let rotate_for_new_unsafe_incident =
+            detected && safety_before.unsafe_since_generation.is_none();
+        if synchronize_attribution_ledger(
+            &transaction,
+            generation,
+            source_index_changed,
+            rotate_for_new_unsafe_incident,
+            ledger_integrity_mismatch,
+        )? {
+            mark_dashboard_changed(&transaction)?;
+        }
+        let provenance_epoch = metadata_text(&transaction, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "精确 token 来源谱系标识缺失".to_string())?;
+        if rotate_for_new_unsafe_incident {
+            set_metadata(&transaction, ATTRIBUTION_UNSAFE_EPOCH_KEY, &provenance_epoch)?;
+            set_metadata(
+                &transaction,
+                ATTRIBUTION_UNSAFE_GENERATION_KEY,
+                &generation.to_string(),
+            )?;
+            set_metadata(
+                &transaction,
+                ATTRIBUTION_UNSAFE_ID_KEY,
+                &Uuid::new_v4().to_string(),
+            )?;
+            mark_dashboard_changed(&transaction)?;
+        }
+        let previous_current_scan_unsafe =
+            metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?.unwrap_or(0) != 0;
+        if previous_current_scan_unsafe != detected {
+            mark_dashboard_changed(&transaction)?;
+        }
         set_metadata(
             &transaction,
-            ATTRIBUTION_UNSAFE_EPOCH_KEY,
-            &provenance_epoch,
+            ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
+            if detected { "1" } else { "0" },
         )?;
+        let current_scan_incomplete = scan_completeness.incomplete_source_scan;
+        let previous_current_scan_incomplete =
+            metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?.unwrap_or(0) != 0;
+        if previous_current_scan_incomplete != current_scan_incomplete {
+            mark_dashboard_changed(&transaction)?;
+        }
         set_metadata(
             &transaction,
-            ATTRIBUTION_UNSAFE_GENERATION_KEY,
-            &generation.to_string(),
+            ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
+            if current_scan_incomplete { "1" } else { "0" },
         )?;
-        set_metadata(
-            &transaction,
-            ATTRIBUTION_UNSAFE_ID_KEY,
-            &Uuid::new_v4().to_string(),
-        )?;
-        mark_dashboard_changed(&transaction)?;
-    }
-    let previous_current_scan_unsafe =
-        metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?.unwrap_or(0) != 0;
-    if previous_current_scan_unsafe != current_scan_unsafe_cause_detected {
-        mark_dashboard_changed(&transaction)?;
-    }
-    set_metadata(
-        &transaction,
-        ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
-        if current_scan_unsafe_cause_detected {
-            "1"
-        } else {
-            "0"
-        },
-    )?;
-    let current_scan_incomplete = scan_completeness.incomplete_source_scan;
-    let previous_current_scan_incomplete =
-        metadata_i64(&transaction, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?.unwrap_or(0) != 0;
-    if previous_current_scan_incomplete != current_scan_incomplete {
-        mark_dashboard_changed(&transaction)?;
-    }
-    set_metadata(
-        &transaction,
-        ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
-        if current_scan_incomplete { "1" } else { "0" },
-    )?;
+        detected
+    } else {
+        false
+    };
     let changed = metadata_i64(&transaction, "building_changed")?.unwrap_or(0) != 0;
     let dashboard_changed =
         metadata_i64(&transaction, BUILDING_DASHBOARD_CHANGED_KEY)?.unwrap_or(0) != 0;
@@ -6961,7 +7110,8 @@ fn finalize_generation(
         DASHBOARD_REVISION_KEY,
         &dashboard_revision.to_string(),
     )?;
-    if metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
+    if mode.builds_dashboard_derived_data()
+        && metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
         == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
     {
         // Every changed file updated its derived rows in the same transaction
@@ -7271,6 +7421,7 @@ fn process_scan_file_with_progress(
     scan_total: Option<u64>,
     diagnostics: &mut ExactScanDiagnostics,
     expected_signature: Option<FileSignature>,
+    mode: ExactSyncMode,
 ) -> Result<(), String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     if !scanned_paths.insert(canonical) {
@@ -7285,6 +7436,7 @@ fn process_scan_file_with_progress(
         scan_completeness,
         diagnostics,
         expected_signature,
+        mode,
     )? {
         full_rebuild_jobs.push(job);
     }
@@ -7308,6 +7460,7 @@ fn process_session_file(
     scan_completeness: &mut ExactScanCompleteness,
     diagnostics: &mut ExactScanDiagnostics,
     expected_signature: Option<FileSignature>,
+    mode: ExactSyncMode,
 ) -> Result<Option<FullRebuildJob>, String> {
     let canonical = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let path = canonical.to_string_lossy().into_owned();
@@ -7434,6 +7587,7 @@ fn process_session_file(
                 &checkpoint,
                 warnings,
                 diagnostics,
+                mode,
             )?
         {
             return Ok(None);
@@ -7673,6 +7827,7 @@ fn append_session_file(
     checkpoint: &IndexedFileCheckpoint,
     warnings: &mut Vec<LocalDataWarning>,
     diagnostics: &mut ExactScanDiagnostics,
+    mode: ExactSyncMode,
 ) -> Result<bool, String> {
     if checkpoint.resume_offset > checkpoint.size
         || !audit_checkpoint_chunk(connection, handle, file, path, checkpoint)?
@@ -7718,7 +7873,13 @@ fn append_session_file(
     // events/指纹/分块一起删掉（copied == 0），追加被迫退化为整文件重扫。同代次
     // 直接基于既有行续扫，收尾由 save_file_checkpoint 覆盖检查点。
     if checkpoint.generation != generation
-        && !copy_append_checkpoint_rows(&transaction, generation, checkpoint.generation, path)?
+        && !copy_append_checkpoint_rows(
+            &transaction,
+            generation,
+            checkpoint.generation,
+            path,
+            mode,
+        )?
     {
         return Ok(false);
     }
@@ -7809,7 +7970,9 @@ fn append_session_file(
         hashing_start_chunk,
         &parsed.chunk_hashes,
     )?;
-    update_dashboard_append_aggregates(&transaction, generation, path, aggregate_ordinal)?;
+    if mode.builds_dashboard_derived_data() {
+        update_dashboard_append_aggregates(&transaction, generation, path, aggregate_ordinal)?;
+    }
     let old_chunk_count = checkpoint
         .size
         .checked_sub(1)
@@ -7843,6 +8006,7 @@ fn copy_append_checkpoint_rows(
     generation: i64,
     checkpoint_generation: i64,
     path: &str,
+    mode: ExactSyncMode,
 ) -> Result<bool, String> {
     delete_file_version_rows(transaction, generation, path)?;
     let copied = transaction
@@ -7948,7 +8112,9 @@ fn copy_append_checkpoint_rows(
             params![generation, checkpoint_generation, path],
         )
         .map_err(|error| format!("无法复制会话文件既有 token 事件：{error}"))?;
-    copy_dashboard_file_aggregates(transaction, generation, checkpoint_generation, path)?;
+    if mode.builds_dashboard_derived_data() {
+        copy_dashboard_file_aggregates(transaction, generation, checkpoint_generation, path)?;
+    }
     transaction
         .execute(
             r#"
@@ -11430,7 +11596,7 @@ fn event_enrichment_pending_candidates(
                 f.file_id,
                 f.changed_ns,
                 f.prefix_sha256
-            FROM published_files f
+            FROM main.published_files f
             LEFT JOIN event_enrichment_sources receipt
               ON receipt.path = f.path
              AND receipt.revision = ?1
@@ -11480,6 +11646,77 @@ fn event_enrichment_pending_candidates(
         .map_err(|error| format!("无法读取历史 model/reasoning 补全来源：{error}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("无法解码历史 model/reasoning 补全来源：{error}"))
+}
+
+fn event_enrichment_pending_candidates_for_generation(
+    connection: &Connection,
+    generation: i64,
+) -> Result<Vec<EventEnrichmentCandidate>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                f.path,
+                f.session_id,
+                f.size,
+                f.modified_ns,
+                f.device_id,
+                f.file_id,
+                f.changed_ns,
+                f.prefix_sha256
+            FROM files f
+            LEFT JOIN event_enrichment_sources receipt
+              ON receipt.path = f.path
+             AND receipt.revision = ?1
+             AND receipt.parser_revision = ?2
+             AND receipt.device_id = f.device_id
+             AND receipt.file_id = f.file_id
+             AND receipt.completed_size = f.size
+             AND receipt.completed_prefix_sha256 = f.prefix_sha256
+            WHERE f.generation = ?3
+              AND f.deleted = 0
+              AND receipt.path IS NULL
+            ORDER BY f.path
+            "#,
+        )
+        .map_err(|error| format!("无法准备当前补全代次来源：{error}"))?;
+    let rows = statement
+        .query_map(
+            params![
+                EVENT_ENRICHMENT_REVISION,
+                STAGED_FULL_REBUILD_PARSER_REVISION,
+                generation,
+            ],
+            |row| {
+                let size = nonnegative_u64(row.get::<_, i64>(2)?);
+                let modified_ns = row.get::<_, String>(3)?.parse::<u128>().unwrap_or_default();
+                let device_id = row.get::<_, String>(4)?.parse::<u64>().unwrap_or_default();
+                let file_id = row.get::<_, String>(5)?.parse::<u64>().unwrap_or_default();
+                let changed_ns = row.get::<_, String>(6)?.parse::<i128>().unwrap_or_default();
+                let raw_prefix = row.get::<_, Vec<u8>>(7)?;
+                let prefix_sha256: [u8; 32] = raw_prefix.try_into().map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        7,
+                        "prefix_sha256".into(),
+                        rusqlite::types::Type::Blob,
+                    )
+                })?;
+                Ok(EventEnrichmentCandidate {
+                    path: row.get(0)?,
+                    session_id: row.get(1)?,
+                    signature: FileSignature {
+                        size,
+                        modified_ns,
+                        identity: FileIdentity { device_id, file_id },
+                        changed_ns,
+                    },
+                    prefix_sha256,
+                })
+            },
+        )
+        .map_err(|error| format!("无法读取当前补全代次来源：{error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("无法解码当前补全代次来源：{error}"))
 }
 
 fn migration_markers_complete(
