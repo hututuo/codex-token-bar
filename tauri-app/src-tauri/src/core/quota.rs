@@ -496,7 +496,7 @@ fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
 
 fn success_freshness_for_cadence_ms(cadence_ms: u64) -> Duration {
     let sanitized = match cadence_ms {
-        30_000 | 60_000 => cadence_ms,
+        30_000 | 60_000 | 120_000 | 180_000 | 300_000 | 600_000 => cadence_ms,
         _ => DEFAULT_QUOTA_REFRESH_CADENCE_MS,
     };
     Duration::from_millis(sanitized / 2).min(MAX_SUCCESS_FRESHNESS)
@@ -1439,6 +1439,7 @@ mod tests {
         let cases = [
             (30_000, Duration::from_secs(15)),
             (60_000, Duration::from_secs(30)),
+            (120_000, Duration::from_secs(30)),
             (180_000, Duration::from_secs(30)),
             (300_000, Duration::from_secs(30)),
             (600_000, Duration::from_secs(30)),
@@ -1468,7 +1469,7 @@ mod tests {
             Vec::new(),
         );
 
-        for cadence_ms in [30_000, 60_000, 180_000, 300_000, 600_000] {
+        for cadence_ms in [30_000, 60_000, 120_000, 180_000, 300_000, 600_000] {
             let freshness = success_freshness_for_cadence_ms(cadence_ms);
             let fresh = QuotaCacheEntry {
                 scope: quota_cache_scope(Path::new("freshness-home"), Some("sub:freshness".into())),

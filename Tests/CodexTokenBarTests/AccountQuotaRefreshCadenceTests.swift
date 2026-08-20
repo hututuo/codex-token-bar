@@ -3,8 +3,8 @@ import XCTest
 
 final class AccountQuotaRefreshCadenceTests: XCTestCase {
     func testAllowedRefreshCadencesAreFixedAndOrdered() {
-        XCTAssertEqual(AccountQuotaRefreshCadence.allCases.map(\.seconds), [30, 60])
-        XCTAssertEqual(AccountQuotaRefreshCadence.allCases.map(\.label), ["30 秒", "1 分钟"])
+        XCTAssertEqual(AccountQuotaRefreshCadence.allCases.map(\.seconds), [30, 60, 120, 180, 300, 600])
+        XCTAssertEqual(AccountQuotaRefreshCadence.allCases.map(\.label), ["30 秒", "1 分钟", "2 分钟", "3 分钟", "5 分钟", "10 分钟"])
     }
 
     func testDefaultRefreshCadenceIsOneMinute() {
@@ -20,11 +20,15 @@ final class AccountQuotaRefreshCadenceTests: XCTestCase {
     func testDisplayLabelsAreChineseAndCompact() {
         XCTAssertEqual(AccountQuotaRefreshCadence.thirtySeconds.label, "30 秒")
         XCTAssertEqual(AccountQuotaRefreshCadence.oneMinute.label, "1 分钟")
+        XCTAssertEqual(AccountQuotaRefreshCadence.twoMinutes.label, "2 分钟")
+        XCTAssertEqual(AccountQuotaRefreshCadence.threeMinutes.label, "3 分钟")
+        XCTAssertEqual(AccountQuotaRefreshCadence.fiveMinutes.label, "5 分钟")
+        XCTAssertEqual(AccountQuotaRefreshCadence.tenMinutes.label, "10 分钟")
     }
 
-    func testLegacyCadencesAreSanitizedToOneMinute() {
-        for rawValue in ["180", "300", "600"] {
-            XCTAssertEqual(AccountQuotaRefreshCadence.value(for: rawValue), .oneMinute)
+    func testEverySupportedCadenceRoundTripsFromStoredValue() {
+        for cadence in AccountQuotaRefreshCadence.allCases {
+            XCTAssertEqual(AccountQuotaRefreshCadence.value(for: cadence.rawValue), cadence)
         }
     }
 

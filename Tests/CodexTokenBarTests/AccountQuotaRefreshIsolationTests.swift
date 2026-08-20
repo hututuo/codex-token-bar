@@ -139,7 +139,7 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
         XCTAssertEqual(readCountAfterStop, readCountBeforeStop)
     }
 
-    func testAutomaticRefreshIntervalIsAlwaysClampedToOneMinute() {
+    func testAutomaticRefreshIntervalSupportsUpToTenMinutes() {
         let timerScheduler = IsolationTimerScheduler()
         let store = AccountQuotaStore(
             quotaReader: IsolationQuotaReader(results: []),
@@ -148,12 +148,12 @@ final class AccountQuotaRefreshIsolationTests: XCTestCase {
             observesUserDefaults: false
         )
 
-        XCTAssertEqual(store.automaticRefreshInterval, 60)
+        XCTAssertEqual(store.automaticRefreshInterval, 600)
         store.start()
-        XCTAssertEqual(timerScheduler.scheduledIntervals, [60])
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [600])
         store.setAutomaticRefreshInterval(300)
-        XCTAssertEqual(store.automaticRefreshInterval, 60)
-        XCTAssertEqual(timerScheduler.scheduledIntervals, [60])
+        XCTAssertEqual(store.automaticRefreshInterval, 300)
+        XCTAssertEqual(timerScheduler.scheduledIntervals, [600, 300])
         store.stop()
     }
 

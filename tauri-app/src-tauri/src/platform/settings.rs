@@ -2627,7 +2627,7 @@ fn stable_auto_resume_task_id(thread_id: &str) -> String {
 
 fn sanitize_quota_refresh_interval_ms(value: u64) -> u64 {
     match value {
-        30_000 | 60_000 => value,
+        30_000 | 60_000 | 120_000 | 180_000 | 300_000 | 600_000 => value,
         _ => 60_000,
     }
 }
@@ -3348,7 +3348,7 @@ mod tests {
 
     #[test]
     fn settings_accept_only_supported_quota_refresh_cadences() {
-        for accepted in [30_000, 60_000] {
+        for accepted in [30_000, 60_000, 120_000, 180_000, 300_000, 600_000] {
             let settings = AppSettingsSnapshot {
                 quota_refresh_interval_ms: accepted,
                 ..AppSettingsSnapshot::default()
@@ -3360,7 +3360,7 @@ mod tests {
             );
         }
 
-        for rejected in [0, 1, 31_000, 120_000, 180_000, 300_000, 600_000, 900_000] {
+        for rejected in [0, 1, 31_000, 90_000, 240_000, 900_000] {
             let settings = AppSettingsSnapshot {
                 quota_refresh_interval_ms: rejected,
                 ..AppSettingsSnapshot::default()
@@ -4296,7 +4296,7 @@ mod tests {
         let outcome = read_app_settings_at_with_diagnostics(&path).unwrap();
 
         assert_eq!(outcome.settings.custom_account_display_name, "recovered");
-        assert_eq!(outcome.settings.quota_refresh_interval_ms, 60_000);
+        assert_eq!(outcome.settings.quota_refresh_interval_ms, 180_000);
         assert!(outcome
             .diagnostic
             .as_deref()

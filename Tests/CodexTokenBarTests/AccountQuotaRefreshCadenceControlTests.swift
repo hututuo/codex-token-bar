@@ -14,14 +14,18 @@ final class AccountQuotaRefreshCadenceControlTests: XCTestCase {
             [
                 "额度刷新 30 秒",
                 "额度刷新 1 分钟",
+                "额度刷新 2 分钟",
+                "额度刷新 3 分钟",
+                "额度刷新 5 分钟",
+                "额度刷新 10 分钟",
             ]
         )
         XCTAssertTrue(presentations.allSatisfy { !$0.visibleLabel.contains("…") })
         XCTAssertTrue(presentations.allSatisfy { !$0.visibleLabel.contains("...") })
-        XCTAssertEqual(presentations.map(\.accessibilityLabel), Array(repeating: "额度刷新", count: 2))
+        XCTAssertEqual(presentations.map(\.accessibilityLabel), Array(repeating: "额度刷新", count: 6))
         XCTAssertEqual(
             presentations.map(\.accessibilityValue),
-            ["30 秒", "1 分钟"]
+            ["30 秒", "1 分钟", "2 分钟", "3 分钟", "5 分钟", "10 分钟"]
         )
         XCTAssertEqual(Set(presentations.map(\.disclosureSystemImage)), ["chevron.down"])
     }
@@ -41,7 +45,7 @@ final class AccountQuotaRefreshCadenceControlTests: XCTestCase {
 
     @MainActor
     func testHostedCadenceMenuKeepsStableSizeForCurrentAndLongestValues() {
-        for rawValue in [AccountQuotaRefreshCadence.thirtySeconds.rawValue, AccountQuotaRefreshCadence.oneMinute.rawValue] {
+        for rawValue in AccountQuotaRefreshCadence.allCases.map(\.rawValue) {
             let hostingView = NSHostingView(
                 rootView: AccountQuotaRefreshCadenceMenu(selectionRaw: .constant(rawValue))
             )

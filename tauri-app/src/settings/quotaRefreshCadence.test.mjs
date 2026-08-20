@@ -10,11 +10,11 @@ import {
 test("quota refresh cadence exposes the fixed supported intervals", () => {
   assert.deepEqual(
     QUOTA_REFRESH_CADENCE_OPTIONS.map((option) => option.valueMs),
-    [30_000, 60_000],
+    [30_000, 60_000, 120_000, 180_000, 300_000, 600_000],
   );
   assert.deepEqual(
     QUOTA_REFRESH_CADENCE_OPTIONS.map((option) => option.label),
-    ["30 秒", "1 分钟"],
+    ["30 秒", "1 分钟", "2 分钟", "3 分钟", "5 分钟", "10 分钟"],
   );
   assert.equal(DEFAULT_QUOTA_REFRESH_INTERVAL_MS, 60_000);
 });
@@ -25,14 +25,17 @@ test("quota refresh cadence sanitizes invalid values back to the current one-min
   }
 
   assert.equal(sanitizeQuotaRefreshIntervalMs(30_000), 30_000);
-  for (const legacy of [180_000, 300_000, 600_000]) {
-    assert.equal(sanitizeQuotaRefreshIntervalMs(legacy), 60_000);
+  for (const supported of [60_000, 120_000, 180_000, 300_000, 600_000]) {
+    assert.equal(sanitizeQuotaRefreshIntervalMs(supported), supported);
   }
 });
 
 test("quota refresh cadence labels use compact Chinese copy", () => {
   assert.equal(quotaRefreshCadenceLabel(30_000), "30 秒");
   assert.equal(quotaRefreshCadenceLabel(60_000), "1 分钟");
-  assert.equal(quotaRefreshCadenceLabel(600_000), "1 分钟");
+  assert.equal(quotaRefreshCadenceLabel(120_000), "2 分钟");
+  assert.equal(quotaRefreshCadenceLabel(180_000), "3 分钟");
+  assert.equal(quotaRefreshCadenceLabel(300_000), "5 分钟");
+  assert.equal(quotaRefreshCadenceLabel(600_000), "10 分钟");
   assert.equal(quotaRefreshCadenceLabel(123), "1 分钟");
 });

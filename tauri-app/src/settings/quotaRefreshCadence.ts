@@ -3,6 +3,10 @@ export const DEFAULT_QUOTA_REFRESH_INTERVAL_MS = 60_000;
 export const QUOTA_REFRESH_CADENCE_OPTIONS = [
   { valueMs: 30_000, label: "30 秒" },
   { valueMs: 60_000, label: "1 分钟" },
+  { valueMs: 120_000, label: "2 分钟" },
+  { valueMs: 180_000, label: "3 分钟" },
+  { valueMs: 300_000, label: "5 分钟" },
+  { valueMs: 600_000, label: "10 分钟" },
 ] as const;
 
 const ALLOWED_QUOTA_REFRESH_INTERVALS = new Set<number>(

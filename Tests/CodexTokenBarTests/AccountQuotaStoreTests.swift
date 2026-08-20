@@ -680,7 +680,7 @@ final class AccountQuotaStoreTests: XCTestCase {
             observesUserDefaults: false
         )
 
-        XCTAssertEqual(store.automaticRefreshInterval, 60)
+        XCTAssertEqual(store.automaticRefreshInterval, 300)
     }
 
     func testPersistedCadenceChangeReschedulesRunningTimerWithoutImmediateQuotaRequest() async {

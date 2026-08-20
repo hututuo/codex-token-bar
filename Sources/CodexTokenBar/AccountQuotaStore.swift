@@ -66,7 +66,8 @@ private final class FoundationAccountQuotaTimerToken: AccountQuotaTimerToken {
 
 @MainActor
 final class AccountQuotaStore: ObservableObject {
-    static let maximumAutomaticRefreshInterval: TimeInterval = 60
+    private static let maximumAutomaticRefreshInterval = AccountQuotaRefreshCadence.tenMinutes.seconds
+    private static let maximumRetryDelay: TimeInterval = 60
 
     @Published private(set) var snapshot = AccountQuotaSnapshot.empty
 
@@ -468,7 +469,7 @@ final class AccountQuotaStore: ObservableObject {
 
     private func scheduleQuotaRetry(sourceID: String, bindingGeneration: Int) {
         guard isStarted else { return }
-        let delay = quotaRetryBackoff.recordFailure(maximumDelay: Self.maximumAutomaticRefreshInterval)
+        let delay = quotaRetryBackoff.recordFailure(maximumDelay: Self.maximumRetryDelay)
         let scheduler = retryScheduler
         quotaRetryTask?.cancel()
         quotaRetryTask = Task { @MainActor [weak self] in
@@ -489,7 +490,7 @@ final class AccountQuotaStore: ObservableObject {
 
     private func scheduleResetCreditRetry(sourceID: String, bindingGeneration: Int) {
         guard isStarted else { return }
-        let delay = resetCreditRetryBackoff.recordFailure(maximumDelay: Self.maximumAutomaticRefreshInterval)
+        let delay = resetCreditRetryBackoff.recordFailure(maximumDelay: Self.maximumRetryDelay)
         let scheduler = retryScheduler
         resetCreditRetryTask?.cancel()
         resetCreditRetryTask = Task { @MainActor [weak self] in
