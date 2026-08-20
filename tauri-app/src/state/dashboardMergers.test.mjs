@@ -183,6 +183,89 @@ test("lightweight summary updates summary fields without rewriting chart buckets
   });
 });
 
+test("unchanged lightweight summary keeps state and publication time stable across a boundary tick", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const modelBreakdowns = [{
+      model: "gpt-5.6-luna",
+      breakdown: {
+        inputTokens: 200,
+        cachedInputTokens: 50,
+        outputTokens: 50,
+        totalTokens: 250,
+        calls: 3,
+      },
+    }];
+    const state = stateWithDashboard({
+      homeIdentity: "home-A",
+      usageRevision: 12,
+      exactGeneration: 18,
+      usageSummaryUpdatedAt: "2026-08-18T01:01:00Z",
+      usageSummaryFresh: true,
+      stats: { ...dashboardFixture().stats, totalTokens: 500 },
+      usageSummary: {
+        homeIdentity: "home-A",
+        usageRevision: 12,
+        exactGeneration: 18,
+        coverageKind: "summary",
+        aggregateBoundaryUnix: 1_787_000_000,
+        totalTokens: 500,
+        todayTokens: 250,
+        todayRequests: 3,
+        todayModelBreakdowns: modelBreakdowns,
+        generatedAt: "2026-08-18T01:01:00Z",
+      },
+    });
+
+    const next = mergeUsageSummary(state, {
+      homeIdentity: "home-A",
+      usageRevision: 12,
+      exactGeneration: 18,
+      coverageKind: "summary",
+      aggregateBoundaryUnix: 1_787_000_300,
+      totalTokens: 500,
+      todayTokens: 250,
+      todayRequests: 3,
+      todayModelBreakdowns: structuredClone(modelBreakdowns),
+      generatedAt: "2026-08-18T01:06:00Z",
+    });
+
+    assert.equal(next, state);
+    assert.equal(next.dashboard.usageSummaryUpdatedAt, "2026-08-18T01:01:00Z");
+    assert.equal(next.dashboard.usageSummary.generatedAt, "2026-08-18T01:01:00Z");
+  });
+});
+
+test("token/model or exact-generation changes advance lightweight publication time", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      usageSummaryUpdatedAt: "2026-08-18T01:01:00Z",
+      usageSummaryFresh: true,
+      stats: { ...dashboardFixture().stats, totalTokens: 500 },
+      usageSummary: {
+        exactGeneration: 18,
+        totalTokens: 500,
+        todayTokens: 250,
+        todayRequests: 3,
+        generatedAt: "2026-08-18T01:01:00Z",
+      },
+    });
+
+    const next = mergeUsageSummary(state, {
+      exactGeneration: 19,
+      totalTokens: 500,
+      todayTokens: 250,
+      todayRequests: 3,
+      generatedAt: "2026-08-18T01:07:00Z",
+    });
+
+    assert.notEqual(next, state);
+    assert.equal(next.dashboard.usageSummaryUpdatedAt, "2026-08-18T01:07:00Z");
+    assert.equal(next.dashboard.usageSummary.generatedAt, "2026-08-18T01:07:00Z");
+  });
+});
+
 test("lightweight model summary freshness is independent from chart freshness", async () => {
   return withSsrModules(async (load) => {
     const { markUsageSummaryStale, mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");

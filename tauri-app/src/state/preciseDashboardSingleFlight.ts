@@ -18,9 +18,14 @@ interface PreciseDashboardFlight {
     id: number;
     publish: PreciseDashboardSubscriber;
   };
-  rerunRequested: boolean;
-  rerunStarted: boolean;
-  trailingRefreshFailed: boolean;
+  /**
+   * A source/trigger change observed while the native owner is running. This
+   * is intentionally process-local: the next cadence must probe the source,
+   * but the current owner must not start a second native loader.
+   */
+  pendingCadenceCheck: boolean;
+  /** A real source-dirty observation, distinct from a trigger-only request. */
+  sourceDirtyObserved: boolean;
   settled: boolean;
   settlementWaiters: Set<() => void>;
   subscriberSequence: number;
@@ -71,6 +76,7 @@ const lastCompletedRequestsBySource = new Map<
   Map<PreciseDashboardDedupeDomain, PreciseDashboardRequestIdentity>
 >();
 const dirtySources = new Set<string>();
+const pendingCadenceChecks = new Set<string>();
 const MAX_PRECISE_SOURCE_CACHE_ENTRIES = 2;
 
 const SETTLED_FORCE_COALESCIBLE_REASONS: ReadonlySet<PreciseDashboardRefreshReason> = new Set([
@@ -92,13 +98,10 @@ export function markPreciseDashboardSourceDirty(sourceToken: CodexHomeSourceToke
   const existing = flightsBySource.get(key);
   if (existing && !existing.settled) {
     // A probe can observe a new append while the owner is still in flight. It
-    // must retain one trailing run rather than letting that generation vanish
-    // at the owner's stable boundary.
-    if (existing.rerunStarted) {
-      existing.trailingRefreshFailed = true;
-    } else {
-      existing.rerunRequested = true;
-    }
+    // must leave an in-memory cadence check rather than enqueueing another
+    // native loader at the owner's stable boundary.
+    existing.pendingCadenceCheck = true;
+    existing.sourceDirtyObserved = true;
   }
 }
 
@@ -208,21 +211,25 @@ export function loadPreciseDashboardSingleFlight(
       recordFlightRequest(existing, request);
       existing.latestLoader = loader;
     }
-    // A periodic callback that arrives while the owner is still running is
-    // already covered by that owner. Only an explicit/dirty request may ask
-    // the single-flight cycle for one trailing attempt.
+    // A request arriving while the owner is still running joins that owner.
+    // Explicit force requests still leave a process-local cadence check, but
+    // never enqueue a second native loader from this flight.
     if (force) {
-      dirtySources.add(key);
-      if (!existing.rerunStarted) {
-        existing.rerunRequested = true;
-      } else {
-        existing.trailingRefreshFailed = true;
-      }
+      existing.pendingCadenceCheck = true;
     }
     return flightHandle(existing, subscriber);
   }
   if (existing) {
     flightsBySource.delete(key);
+  }
+
+  // Trigger-only work observed during the previous owner is deliberately
+  // consumed by cadence, not by an arbitrary follow-up force request. The
+  // marker remains process-local and only makes this cadence tick reach the
+  // native owner instead of reusing the last-good snapshot.
+  const cadenceCheckPending = !force && pendingCadenceChecks.delete(key);
+  if (cadenceCheckPending) {
+    dirtySources.add(key);
   }
 
   const cached = lastSuccessfulSnapshotsBySource.get(key);
@@ -285,9 +292,8 @@ export function loadPreciseDashboardSingleFlight(
     initialRequest: request,
     coalescibleRequestsByDomain: new Map(),
     coverageBoundary: coverageRequest,
-    rerunRequested: false,
-    rerunStarted: false,
-    trailingRefreshFailed: false,
+    pendingCadenceCheck: false,
+    sourceDirtyObserved: false,
     settled: false,
     settlementWaiters: new Set(),
     subscriberSequence: 0,
@@ -299,17 +305,22 @@ export function loadPreciseDashboardSingleFlight(
       (result) => {
         const coverageSatisfied = flight.coverageBoundary === undefined
           || preciseSnapshotCoversBoundary(result, flight.coverageBoundary.boundarySeconds);
-        if (isSuccessfulPreciseSnapshot(result)
-          && coverageSatisfied
-          && !flight.trailingRefreshFailed) {
+        if (isSuccessfulPreciseSnapshot(result) && coverageSatisfied) {
           lastSuccessfulSnapshotsBySource.set(key, result);
           recordCompletedFlightRequests(key, flight);
-          dirtySources.delete(key);
+          if (flight.pendingCadenceCheck) {
+            // Keep the marker until the next cadence has a chance to run the
+            // source probe. It is not persisted and does not alter the index.
+            pendingCadenceChecks.add(key);
+          }
+          if (flight.sourceDirtyObserved) dirtySources.add(key);
+          else dirtySources.delete(key);
         } else {
-          // A stale/null/error result, or a failed trailing run, must not leave
-          // an older idempotency key able to hide the next retry.
+          // A stale/null/error result must not leave an older idempotency key
+          // able to hide the next retry.
           lastCompletedRequestsBySource.delete(key);
           dirtySources.add(key);
+          pendingCadenceChecks.delete(key);
         }
         settleFlight(flight, result);
         return result;
@@ -317,6 +328,7 @@ export function loadPreciseDashboardSingleFlight(
       (error) => {
         lastCompletedRequestsBySource.delete(key);
         dirtySources.add(key);
+        pendingCadenceChecks.delete(key);
         settleFlight(flight);
         throw error;
       },
@@ -355,22 +367,12 @@ async function runPreciseDashboardFlight(
       firstResult,
       flight.coverageBoundary.boundarySeconds,
     );
-  if (flight.rerunRequested || coverageNeedsTrailing) {
-    flight.rerunRequested = true;
-    flight.rerunStarted = true;
-    try {
-      const trailingResult = await flight.latestLoader();
-      if (trailingResult === null) {
-        flight.trailingRefreshFailed = true;
-      }
-      return trailingResult ?? firstResult;
-    } catch (error) {
-      flight.trailingRefreshFailed = true;
-      if (!firstFailed && firstResult !== null) {
-        return firstResult;
-      }
-      throw error;
-    }
+  if (coverageNeedsTrailing) {
+    // The native precise owner may have returned a snapshot that predates an
+    // explicitly requested aggregate boundary. Keep the source dirty for the
+    // next cadence probe; calling latestLoader here would repeat the native
+    // JSONL/index flight and defeat Rust's summary-to-full promotion.
+    flight.pendingCadenceCheck = true;
   }
   if (firstFailed) {
     throw firstError;
@@ -682,6 +684,13 @@ function prunePreciseDashboardCaches(currentKey: string): void {
       && !flightsBySource.has(key)) {
       dirtySources.delete(key);
       lastCompletedRequestsBySource.delete(key);
+    }
+  }
+  for (const key of pendingCadenceChecks) {
+    if (key !== currentKey
+      && !lastSuccessfulSnapshotsBySource.has(key)
+      && !flightsBySource.has(key)) {
+      pendingCadenceChecks.delete(key);
     }
   }
 }

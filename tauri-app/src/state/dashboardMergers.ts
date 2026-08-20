@@ -152,6 +152,53 @@ function normalizeBoundaryValue(value: DashboardLineageScalar | undefined): stri
   return normalizeScalar(value);
 }
 
+/**
+ * Return the independently meaningful part of the lightweight summary.
+ *
+ * `aggregateBoundaryUnix` is a cadence/checkpoint receipt, not a change to
+ * today's token totals or model rows. `generatedAt` is likewise a native
+ * publication timestamp. Keeping both out of this signature prevents a
+ * five-minute boundary tick from manufacturing a new summary publication.
+ * Exact/usage lineage remains included so a genuinely newer source revision
+ * can still advance the summary.
+ */
+function lightweightUsageSummarySignature(
+  dashboard: DashboardSnapshot,
+  summary: UsageSummarySnapshot,
+): string {
+  const coverageKind = summary.coverageKind === "summary"
+    || summary.coverageKind === "settled"
+    || summary.coverageKind === "full"
+    ? summary.coverageKind
+    : "summary";
+  const modelBreakdowns = (summary.todayModelBreakdowns ?? []).map((item) => [
+    item.model ?? null,
+    item.eventStartUnix ?? null,
+    item.breakdown.inputTokens,
+    item.breakdown.cachedInputTokens,
+    item.breakdown.outputTokens,
+    item.breakdown.totalTokens,
+    item.breakdown.calls,
+  ]);
+  return JSON.stringify([
+    summary.totalTokens,
+    summary.todayTokens,
+    summary.todayRequests,
+    modelBreakdowns,
+    nonEmptyText(summary.homeIdentity) ?? nonEmptyText(dashboard.homeIdentity),
+    normalizeScalar(
+      summary.usageRevision
+        ?? summary.dashboardRevision
+        ?? dashboard.usageRevision
+        ?? dashboard.dashboardRevision,
+    ),
+    coverageKind,
+    normalizeBoundaryValue(summary.observedThrough),
+    normalizeBoundaryValue(summary.settledThrough),
+    normalizeScalar(summary.exactGeneration ?? dashboard.exactGeneration),
+  ]);
+}
+
 function compareScalar(left: string | null, right: string | null): number | null {
   if (left === null || right === null) return null;
   if (left === right) return 0;
@@ -487,8 +534,9 @@ export function mergeUsageSummary(
     ? summary
     : { ...summary, generatedAt: publicationAt };
   const incomingLineage = normalizeSummaryLineage(dashboard, incomingSummary);
-  if (dashboard.usageSummary !== null && dashboard.usageSummary !== undefined) {
-    const previousLineage = normalizeSummaryLineage(dashboard, dashboard.usageSummary);
+  const previousSummary = dashboard.usageSummary;
+  if (previousSummary !== null && previousSummary !== undefined) {
+    const previousLineage = normalizeSummaryLineage(dashboard, previousSummary);
     const relation = compareDashboardLineage(previousLineage, incomingLineage);
     if (relation === "incoming-older") {
       // A cache-only native read can legitimately return an older publication
@@ -512,6 +560,25 @@ export function mergeUsageSummary(
         && previousLineage.hasComparableLineage
         && !incomingLineage.hasComparableLineage)) {
       return state;
+    }
+
+    const summarySignature = lightweightUsageSummarySignature(dashboard, incomingSummary);
+    const previousSignature = lightweightUsageSummarySignature(dashboard, previousSummary);
+    if (summarySignature === previousSignature
+      && dashboard.stats.totalTokens === incomingSummary.totalTokens) {
+      // Boundary receipts and native publication clocks are intentionally not
+      // UI changes. Returning the existing state also keeps StatsStrip's
+      // memoized props referentially stable during a quiet cadence tick.
+      if (dashboard.usageSummaryFresh !== false) {
+        return state;
+      }
+      return {
+        ...state,
+        dashboard: {
+          ...dashboard,
+          usageSummaryFresh: true,
+        },
+      };
     }
   }
 

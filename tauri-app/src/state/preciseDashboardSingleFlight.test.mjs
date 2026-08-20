@@ -8,7 +8,7 @@ import {
 } from "./preciseDashboardSingleFlight.ts";
 import { canonicalAttributionBoundaryKey } from "./attributionBoundary.ts";
 
-test("precise dashboard requests coalesce and run at most one trailing refresh", async () => {
+test("precise dashboard requests coalesce without a trailing refresh", async () => {
   const token = sourceToken("single-flight");
   const loads = [];
   let invocationCount = 0;
@@ -28,26 +28,17 @@ test("precise dashboard requests coalesce and run at most one trailing refresh",
 
   loads[0].resolve({ revision: 1 });
   await nextTurn();
-  assert.equal(invocationCount, 2, "a burst must schedule exactly one trailing refresh");
-
-  const duringTrailing = loadPreciseDashboardSingleFlight(token, loader);
-  assert.equal(duringTrailing.result, requests[0].result);
-  assert.equal(invocationCount, 2, "requests during the trailing refresh must not add a third run");
-
-  loads[1].resolve({ revision: 2 });
-  const results = await Promise.all([
-    ...requests.map((request) => request.result),
-    duringTrailing.result,
-  ]);
-  results.forEach((result) => assert.equal(result.revision, 2));
+  assert.equal(invocationCount, 1, "a burst must not schedule a second native loader");
+  const results = await Promise.all(requests.map((request) => request.result));
+  results.forEach((result) => assert.equal(result.revision, 1));
 
   const fresh = loadPreciseDashboardSingleFlight(token, loader);
-  assert.equal(invocationCount, 3, "a settled cycle must allow the next real refresh");
-  loads[2].resolve({ revision: 3 });
-  assert.equal((await fresh.result).revision, 3);
+  assert.equal(invocationCount, 2, "a settled cycle must allow the next real refresh");
+  loads[1].resolve({ revision: 2 });
+  assert.equal((await fresh.result).revision, 2);
 });
 
-test("a coalesced trailing refresh can recover a failed first run", async () => {
+test("a coalesced force request does not retry a failed owner", async () => {
   const token = sourceToken("retry");
   const loads = [];
   const loader = () => {
@@ -59,12 +50,9 @@ test("a coalesced trailing refresh can recover a failed first run", async () => 
   const first = loadPreciseDashboardSingleFlight(token, loader);
   const coalesced = loadPreciseDashboardSingleFlight(token, loader);
   loads[0].reject(new Error("transient index generation"));
-  await nextTurn();
-  assert.equal(loads.length, 2);
-  loads[1].resolve({ revision: 9 });
-
-  assert.equal((await first.result).revision, 9);
-  assert.equal((await coalesced.result).revision, 9);
+  await assert.rejects(first.result, /transient index generation/);
+  await assert.rejects(coalesced.result, /transient index generation/);
+  assert.equal(loads.length, 1);
 });
 
 test("a failed unshared cycle is removed before the next request", async () => {
@@ -86,29 +74,21 @@ test("a failed unshared cycle is removed before the next request", async () => {
   assert.equal(recovered.revision, 10);
 });
 
-test("a failed trailing refresh preserves the first successful snapshot", async () => {
-  for (const trailingOutcome of ["null", "reject"]) {
-    const token = sourceToken(`fallback-${trailingOutcome}`);
-    const loads = [];
-    const loader = () => {
-      const pending = deferred();
-      loads.push(pending);
-      return pending.promise;
-    };
+test("a force burst preserves the first successful snapshot without a trailing refresh", async () => {
+  const token = sourceToken("force-burst");
+  const loads = [];
+  const loader = () => {
+    const pending = deferred();
+    loads.push(pending);
+    return pending.promise;
+  };
 
-    const first = loadPreciseDashboardSingleFlight(token, loader);
-    const coalesced = loadPreciseDashboardSingleFlight(token, loader);
-    loads[0].resolve({ revision: 21 });
-    await nextTurn();
-    if (trailingOutcome === "null") {
-      loads[1].resolve(null);
-    } else {
-      loads[1].reject(new Error("trailing failed"));
-    }
-
-    assert.equal((await first.result).revision, 21);
-    assert.equal((await coalesced.result).revision, 21);
-  }
+  const first = loadPreciseDashboardSingleFlight(token, loader);
+  const coalesced = loadPreciseDashboardSingleFlight(token, loader);
+  loads[0].resolve({ revision: 21 });
+  assert.equal((await first.result).revision, 21);
+  assert.equal((await coalesced.result).revision, 21);
+  assert.equal(loads.length, 1);
 });
 
 test("only the latest subscriber publishes and UI waiters expire independently", async () => {
@@ -136,10 +116,9 @@ test("only the latest subscriber publishes and UI waiters expire independently",
   assert.deepEqual(published, []);
 
   loads[0].resolve({ revision: 30 });
-  await nextTurn();
-  loads[1].resolve({ revision: 31 });
   await current.result;
-  assert.deepEqual(published, [["current", 31]]);
+  assert.deepEqual(published, [["current", 30]]);
+  assert.equal(loads.length, 1);
 });
 
 test("a subscriber can start a fresh same-source cycle during settlement", async () => {
@@ -320,7 +299,7 @@ test("the source-scoped flight join check stays true only while the owner is act
   assert.equal(preciseDashboardFlightInProgress(token), false);
 });
 
-test("a new dirty generation during an owner keeps one trailing precise run", async () => {
+test("a new dirty generation during an owner waits for the next cadence", async () => {
   const token = sourceToken("dirty-during-owner");
   const loads = [];
   const loader = () => {
@@ -334,12 +313,16 @@ test("a new dirty generation during an owner keeps one trailing precise run", as
   assert.equal(loads.length, 1);
   loads[0].resolve(preciseSnapshot(60));
   await nextTurn();
-  assert.equal(loads.length, 2, "dirty observed before the owner settles needs one trailing run");
+  assert.equal(loads.length, 1, "dirty observed before settlement must not trail the owner");
+  assert.equal((await owner.result).revision, 60);
+
+  const cadence = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: false });
+  assert.equal(loads.length, 2, "the pending marker is consumed by the next cadence");
   loads[1].resolve(preciseSnapshot(61));
-  assert.equal((await owner.result).revision, 61);
+  assert.equal((await cadence.result).revision, 61);
 });
 
-test("different non-manual trigger reasons share one trailing owner", async () => {
+test("quota and attribution triggers share one owner without a trailing loader", async () => {
   const token = sourceToken("reasoned-trailing");
   const loads = [];
   const loader = () => {
@@ -377,12 +360,9 @@ test("different non-manual trigger reasons share one trailing owner", async () =
 
   loads[0].resolve(preciseSnapshot(91));
   await nextTurn();
-  assert.equal(loads.length, 2, "the active owner admits one trailing round for the burst");
-  loads[1].resolve(preciseSnapshot(92));
-
   const results = await Promise.all([owner.result, catchUp.result, attribution.result]);
-  results.forEach((result) => assert.equal(result.preciseAttributionGeneration, 92));
-  assert.equal(loads.length, 2);
+  results.forEach((result) => assert.equal(result.preciseAttributionGeneration, 91));
+  assert.equal(loads.length, 1);
 });
 
 test("repeated quota/catch-up/attribution requests reuse one settled revision", async () => {
@@ -541,6 +521,33 @@ test("cadence coverage gates quota during and after settlement", async () => {
   assert.equal(invocationCount, 2, "K=101 starts exactly one new native full");
 });
 
+test("an uncovered aggregate boundary does not duplicate the exact sync", async () => {
+  const token = sourceToken("aggregate-boundary-no-duplicate");
+  const requestedBoundary = "2026-08-06T00:10:41.000Z";
+  const submittedCoverage = "2026-08-06T00:05:40.000Z";
+  let exactSyncCount = 0;
+  const loader = async () => {
+    exactSyncCount += 1;
+    return preciseSnapshot(185 + exactSyncCount, submittedCoverage);
+  };
+
+  const result = await loadPreciseDashboardSingleFlight(
+    token,
+    loader,
+    undefined,
+    {
+      force: true,
+      reason: "cadence",
+      revision: requestedBoundary,
+      dedupeDomain: "aggregate-boundary",
+      dedupeKey: canonicalAttributionBoundaryKey(requestedBoundary),
+    },
+  ).result;
+
+  assert.equal(result.preciseRecentUsageCoveredAt, submittedCoverage);
+  assert.equal(exactSyncCount, 1, "one aggregate request must submit one exact sync");
+});
+
 test("attribution coverage reuses lower/equal boundaries and loads a newer one", async () => {
   const token = sourceToken("coverage-attribution");
   const boundary99 = "2026-08-06T00:04:39.000Z";
@@ -583,7 +590,7 @@ test("attribution coverage reuses lower/equal boundaries and loads a newer one",
   assert.equal(invocationCount, 2, "K=101 is a real newer boundary");
 });
 
-test("an active owner tracks the maximum attribution boundary and runs one trailing full", async () => {
+test("an active owner tracks the maximum attribution boundary for the next cadence", async () => {
   const token = sourceToken("coverage-max");
   const boundary99 = "2026-08-06T00:04:39.000Z";
   const boundary100 = "2026-08-06T00:05:40.000Z";
@@ -620,11 +627,9 @@ test("an active owner tracks the maximum attribution boundary and runs one trail
 
   loads[0].resolve(preciseSnapshot(200, boundary100));
   await nextTurn();
-  assert.equal(invocationCount, 2, "C=100 misses max K=101 once");
-  loads[1].resolve(preciseSnapshot(201, boundary101));
   const results = await Promise.all([owner.result, lower.result, middle.result, higher.result]);
-  results.forEach((result) => assert.equal(result.preciseAttributionGeneration, 201));
-  assert.equal(invocationCount, 2, "max-boundary requests share one trailing full");
+  results.forEach((result) => assert.equal(result.preciseAttributionGeneration, 200));
+  assert.equal(invocationCount, 1, "an attribution boundary miss must not trail the owner");
 });
 
 test("a boundary queued in the settlement turn still contributes to the maximum", async () => {
@@ -652,10 +657,8 @@ test("a boundary queued in the settlement turn still contributes to the maximum"
     );
   });
   await nextTurn();
-  assert.equal(invocationCount, 2, "the settlement-turn K=101 request asks for one trailing full");
-  loads[1].resolve(preciseSnapshot(211, boundary101));
   await Promise.all([owner.result, queuedBoundary.result]);
-  assert.equal(invocationCount, 2);
+  assert.equal(invocationCount, 1, "a settlement-turn boundary must not enqueue a second full");
 });
 
 test("invalid, stale, and failed attribution boundaries never reuse coverage", async () => {
@@ -676,7 +679,7 @@ test("invalid, stale, and failed attribution boundaries never reuse coverage", a
     undefined,
     boundaryRequest("attribution", boundary100),
   ).result;
-  assert.equal(invocationCount, 2, "stale first result gets one bounded trailing attempt");
+  assert.equal(invocationCount, 1, "stale first result must not enqueue a trailing attempt");
   await loadPreciseDashboardSingleFlight(
     token,
     loader,
@@ -689,10 +692,10 @@ test("invalid, stale, and failed attribution boundaries never reuse coverage", a
       dedupeKey: undefined,
     },
   ).result;
-  assert.equal(invocationCount, 3, "missing key cannot reuse a settled boundary");
+  assert.equal(invocationCount, 2, "missing key cannot reuse a settled boundary");
 });
 
-test("a boundary owner retries one transient loader error but never loops", async () => {
+test("a boundary owner leaves a transient loader error for the next request", async () => {
   const token = sourceToken("coverage-error");
   const boundary100 = "2026-08-06T00:05:40.000Z";
   let invocationCount = 0;
@@ -704,24 +707,31 @@ test("a boundary owner retries one transient loader error but never loops", asyn
     return preciseSnapshot(230 + invocationCount, boundary100);
   };
 
-  const result = await loadPreciseDashboardSingleFlight(
+  await assert.rejects(loadPreciseDashboardSingleFlight(
+    token,
+    loader,
+    undefined,
+    boundaryRequest("attribution", boundary100),
+  ).result, /transient precise read/);
+  assert.equal(invocationCount, 1, "one error must not trigger a second native loader");
+  const recovered = await loadPreciseDashboardSingleFlight(
     token,
     loader,
     undefined,
     boundaryRequest("attribution", boundary100),
   ).result;
-  assert.equal(result.preciseAttributionGeneration, 232);
-  assert.equal(invocationCount, 2, "one error gets one bounded recovery attempt");
+  assert.equal(recovered.preciseAttributionGeneration, 232);
+  assert.equal(invocationCount, 2, "the next request performs the bounded retry");
 });
 
-test("an insufficient trailing boundary leaves the source dirty for the next request", async () => {
+test("an insufficient boundary leaves the source dirty for the next request", async () => {
   const token = sourceToken("coverage-trailing-stale");
   const boundary99 = "2026-08-06T00:04:39.000Z";
   const boundary100 = "2026-08-06T00:05:40.000Z";
   let invocationCount = 0;
   const loader = async () => {
     invocationCount += 1;
-    return preciseSnapshot(240 + invocationCount, invocationCount < 3 ? boundary99 : boundary100);
+    return preciseSnapshot(240 + invocationCount, invocationCount < 2 ? boundary99 : boundary100);
   };
 
   const first = await loadPreciseDashboardSingleFlight(
@@ -731,7 +741,7 @@ test("an insufficient trailing boundary leaves the source dirty for the next req
     boundaryRequest("attribution", boundary100),
   ).result;
   assert.equal(first.preciseRecentUsageCoveredAt, boundary99);
-  assert.equal(invocationCount, 2, "one insufficient trailing attempt is bounded");
+  assert.equal(invocationCount, 1, "one insufficient owner must not trail itself");
 
   const recovered = await loadPreciseDashboardSingleFlight(
     token,
@@ -740,7 +750,7 @@ test("an insufficient trailing boundary leaves the source dirty for the next req
     boundaryRequest("catch-up", boundary100),
   ).result;
   assert.equal(recovered.preciseRecentUsageCoveredAt, boundary100);
-  assert.equal(invocationCount, 3, "dirty state prevents stale coverage reuse");
+  assert.equal(invocationCount, 2, "dirty state prevents stale coverage reuse");
 });
 
 test("invalid or missing attribution keys never reuse a settled raw revision", async () => {
@@ -864,9 +874,8 @@ test("one active owner records attribution and wake keys on its fresh trailing r
   assert.equal(loads.length, 1);
   loads[0].resolve(preciseSnapshot(131));
   await nextTurn();
-  assert.equal(loads.length, 2);
-  loads[1].resolve(preciseSnapshot(132));
   await Promise.all([owner.result, wake.result]);
+  assert.equal(loads.length, 1, "wake joining an owner must not enqueue a trailing full");
 
   await loadPreciseDashboardSingleFlight(
     token,
@@ -875,7 +884,7 @@ test("one active owner records attribution and wake keys on its fresh trailing r
     boundaryRequest("catch-up", boundary),
   ).result;
   await loadPreciseDashboardSingleFlight(token, loader, undefined, wakeRequest("wake-W")).result;
-  assert.equal(loads.length, 2, "both domains must be covered by the fresh trailing result");
+  assert.equal(loads.length, 1, "both domains reuse the submitted owner result");
 });
 
 test("a completed attribution key joins a later wake owner without a trailing round", async () => {
@@ -1075,7 +1084,7 @@ test("a source-dirty marker bypasses the periodic last-good snapshot", async () 
   assert.equal(invocationCount, 2);
 });
 
-test("a failed trailing run keeps the source dirty for the next cadence retry", async () => {
+test("a force burst keeps the source retryable for the next cadence", async () => {
   const token = sourceToken("failed-trailing-retry");
   const loads = [];
   const loader = () => {
@@ -1088,9 +1097,9 @@ test("a failed trailing run keeps the source dirty for the next cadence retry", 
   const forced = loadPreciseDashboardSingleFlight(token, loader, undefined, { force: true });
   loads[0].resolve(preciseSnapshot(70));
   await nextTurn();
-  loads[1].reject(new Error("trailing probe refresh failed"));
   assert.equal((await first.result).revision, 70);
   assert.equal((await forced.result).revision, 70);
+  assert.equal(loads.length, 1);
 
   const retry = loadPreciseDashboardSingleFlight(
     token,

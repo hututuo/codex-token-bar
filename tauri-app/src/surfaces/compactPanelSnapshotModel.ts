@@ -38,6 +38,14 @@ const baseFloatingPanelSnapshot: FloatingPanelSnapshot = {
 const LIVE_RATE_STREAM_WARNING_SOURCE = "live_rate_stream";
 const LIVE_RATE_SUMMARY_WARNING_SOURCE = "live_rate_summary";
 
+interface CompactSummaryCacheEntry {
+  signature: string;
+  /** Process-local observation time; never part of a rendered payload. */
+  lastCheckedAt: number;
+}
+
+const compactSummaryCache = new WeakMap<FloatingPanelSnapshot, CompactSummaryCacheEntry>();
+
 export function floatingSnapshotForLiveRate(
   liveRate: LiveRateSnapshot,
   usageSummary: UsageSummarySnapshot | null,
@@ -146,6 +154,13 @@ export function mergeFloatingUsageSummary(
   snapshot: FloatingPanelSnapshot,
   summary: UsageSummarySnapshot,
 ): FloatingPanelSnapshot {
+  const signature = compactUsageSummarySignature(summary);
+  const cached = compactSummaryCache.get(snapshot);
+  if (cached?.signature === signature) {
+    cached.lastCheckedAt = Date.now();
+    return snapshot;
+  }
+
   const incomingModelBreakdowns = summary.todayModelBreakdowns;
   // The native summary command may briefly return a numeric summary while its
   // exact model projection is still rebuilding. An empty/omitted breakdown in
@@ -157,15 +172,30 @@ export function mergeFloatingUsageSummary(
     && summary.todayTokens > 0
     && snapshot.todayModelBreakdowns.length > 0
   );
-  return {
+  const nextModelBreakdowns = keepTrustedModelBreakdowns
+    ? snapshot.todayModelBreakdowns
+    : incomingModelBreakdowns ?? [];
+  const nextTotalTokensLabel = `总 ${compactTokens(summary.totalTokens)}`;
+  const nextTodayTokensLabel = `今 ${compactTokens(summary.todayTokens)}`;
+  const nextRequestsLabel = `次 ${summary.todayRequests}`;
+  if (snapshot.totalTokensLabel === nextTotalTokensLabel
+    && snapshot.todayTokensLabel === nextTodayTokensLabel
+    && snapshot.requestsLabel === nextRequestsLabel
+    && modelBreakdownsSignature(snapshot.todayModelBreakdowns)
+      === modelBreakdownsSignature(nextModelBreakdowns)) {
+    compactSummaryCache.set(snapshot, { signature, lastCheckedAt: Date.now() });
+    return snapshot;
+  }
+
+  const next = {
     ...snapshot,
-    totalTokensLabel: `总 ${compactTokens(summary.totalTokens)}`,
-    todayTokensLabel: `今 ${compactTokens(summary.todayTokens)}`,
-    requestsLabel: `次 ${summary.todayRequests}`,
-    todayModelBreakdowns: keepTrustedModelBreakdowns
-      ? snapshot.todayModelBreakdowns
-      : incomingModelBreakdowns ?? [],
+    totalTokensLabel: nextTotalTokensLabel,
+    todayTokensLabel: nextTodayTokensLabel,
+    requestsLabel: nextRequestsLabel,
+    todayModelBreakdowns: nextModelBreakdowns,
   };
+  compactSummaryCache.set(next, { signature, lastCheckedAt: Date.now() });
+  return next;
 }
 
 export function preserveFloatingUsageSummary(
@@ -182,6 +212,34 @@ export function compactTokens(value: number): string {
     return `${(value / 10_000).toFixed(1)}万`;
   }
   return String(Math.max(0, Math.round(value)));
+}
+
+/**
+ * Compact usage only depends on numeric totals and model rows. In particular,
+ * native aggregate-boundary receipts and generated timestamps must not force a
+ * new floating snapshot or a React surface publication.
+ */
+function compactUsageSummarySignature(summary: UsageSummarySnapshot): string {
+  return JSON.stringify([
+    summary.totalTokens,
+    summary.todayTokens,
+    summary.todayRequests,
+    modelBreakdownsSignature(summary.todayModelBreakdowns ?? []),
+  ]);
+}
+
+function modelBreakdownsSignature(
+  rows: UsageSummarySnapshot["todayModelBreakdowns"],
+): string {
+  return JSON.stringify((rows ?? []).map((item) => [
+    item.model ?? null,
+    item.eventStartUnix ?? null,
+    item.breakdown.inputTokens,
+    item.breakdown.cachedInputTokens,
+    item.breakdown.outputTokens,
+    item.breakdown.totalTokens,
+    item.breakdown.calls,
+  ]));
 }
 
 function compactLiveRateStatus(liveRate: LiveRateSnapshot): { kind: "failure" | "pending"; label: string } | null {

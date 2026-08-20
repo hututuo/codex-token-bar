@@ -76,6 +76,50 @@ test("compact panel summary labels are generated from raw summary instead of com
   assert.equal(snapshot.requestsLabel, "次 534");
 });
 
+test("compact panel reuses the same snapshot across aggregate boundary and timestamp ticks", () => {
+  const liveRate = liveRateSnapshot();
+  const first = floatingSnapshotForLiveRate(liveRate, {
+    totalTokens: 500,
+    todayTokens: 50,
+    todayRequests: 5,
+    todayModelBreakdowns: [modelRow("gpt-5.6-sol", 50)],
+    aggregateBoundaryUnix: 1_787_000_000,
+    generatedAt: "2026-08-18T01:01:00Z",
+  });
+
+  const repeated = mergeFloatingUsageSummary(first, {
+    totalTokens: 500,
+    todayTokens: 50,
+    todayRequests: 5,
+    todayModelBreakdowns: [modelRow("gpt-5.6-sol", 50)],
+    aggregateBoundaryUnix: 1_787_000_300,
+    generatedAt: "2026-08-18T01:06:00Z",
+  });
+
+  assert.equal(repeated, first);
+});
+
+test("compact panel publishes when a model row changes despite an unchanged boundary", () => {
+  const first = floatingSnapshotForLiveRate(liveRateSnapshot(), {
+    totalTokens: 500,
+    todayTokens: 50,
+    todayRequests: 5,
+    todayModelBreakdowns: [modelRow("gpt-5.6-sol", 50)],
+    aggregateBoundaryUnix: 1_787_000_000,
+  });
+
+  const changed = mergeFloatingUsageSummary(first, {
+    totalTokens: 500,
+    todayTokens: 50,
+    todayRequests: 5,
+    todayModelBreakdowns: [modelRow("gpt-5.6-luna", 50)],
+    aggregateBoundaryUnix: 1_787_000_000,
+  });
+
+  assert.notEqual(changed, first);
+  assert.equal(changed.todayModelBreakdowns[0].model, "gpt-5.6-luna");
+});
+
 test("compact panel waits for trusted summary instead of using live-rate totals", () => {
   const snapshot = floatingSnapshotForLiveRate(
     liveRateSnapshot({
