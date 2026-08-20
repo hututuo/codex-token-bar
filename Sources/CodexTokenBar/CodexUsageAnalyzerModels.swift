@@ -556,6 +556,19 @@ extension CodexUsageAnalyzer {
             Self.persistPersistentExactSnapshot(persistentPayload)
         }
 
+        func removeDerivedSnapshots(for root: String) {
+            let canonicalRoot = Self.canonicalRootPath(root)
+            lock.lock()
+            snapshotStorage.removeValue(forKey: root)
+            snapshotStorage.removeValue(forKey: canonicalRoot)
+            persistentExactSnapshotStorage.removeValue(forKey: canonicalRoot)
+            didLoadPersistentExactSnapshotRoots.remove(canonicalRoot)
+            lock.unlock()
+            if let url = Self.persistentExactSnapshotURL(for: canonicalRoot) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
         func persistentExactSnapshot(
             for root: String,
             homeIdentityKey: String,
@@ -1278,6 +1291,10 @@ extension CodexUsageAnalyzer {
     }
 
     static let sessionEventCache = SessionEventCache()
+
+    static func removeDerivedUsageSnapshots(for codexHome: URL) {
+        sessionEventCache.removeDerivedSnapshots(for: codexHome.path)
+    }
     static var isPersistentSessionEventCacheDisabled: Bool {
         ProcessInfo.processInfo.environment["CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE"] == "1"
     }

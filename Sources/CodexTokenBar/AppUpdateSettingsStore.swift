@@ -28,4 +28,8 @@ final class AppUpdateSettingsStore: ObservableObject {
         updater.automaticallyChecksForUpdates = enabled
         refresh()
     }
+
+    func checkForUpdates() {
+        updater.checkForUpdates()
+    }
 }

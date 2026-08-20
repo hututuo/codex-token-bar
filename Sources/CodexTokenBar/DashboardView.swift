@@ -117,6 +117,7 @@ struct DashboardView: View {
     @State private var showingSessionManager = false
     @State private var appSettingsInitialCategory: AppSettingsCategory = .general
     @State private var exportAlert: DashboardExportAlertPresentation?
+    @State private var showingIndexRebuildConfirmation = false
     @State private var sharedAccountAttributionResult: SharedAccountUsageAttributionResult?
     private let sharedAccountSafetyDatabase = SharedAccountUsageSafetyDatabase.shared
     private let sharedAccountHighWatermarkStore = UserDefaultsSharedAccountUsageHighWatermarkStore(
@@ -551,6 +552,14 @@ struct DashboardView: View {
                 message: Text(presentation.message),
                 dismissButton: .default(Text("好"))
             )
+        }
+        .alert("为当前版本重建派生索引？", isPresented: $showingIndexRebuildConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("重建索引", role: .destructive) {
+                store.rebuildIndexForCurrentVersion()
+            }
+        } message: {
+            Text("只会删除当前 Swift 版的派生索引与 staging，然后从原始 JSONL 冷建。不会删除会话、state_5.sqlite、设置、额度历史或雷达数据。")
         }
         .toolbar {
             ToolbarItemGroup {
@@ -1023,6 +1032,42 @@ struct DashboardView: View {
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
                 showingResetCreditDetails: $showingResetCreditDetails
             )
+
+            if let upgrade = store.indexUpgradeRequired {
+                HStack(spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(AppTheme.accentAmber)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("当前索引需要更高版本的软件")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("\(upgrade.component)：索引为 \(upgrade.stored)，当前支持 \(upgrade.supported)。已停止精确索引写入与自动清理；额度、雷达和设置仍可使用。")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Button("稍后处理") {
+                        store.deferIndexUpgradeForCurrentRun()
+                    }
+                    .buttonStyle(.bordered)
+                    Button("为当前版本重建") {
+                        showingIndexRebuildConfirmation = true
+                    }
+                    .buttonStyle(.bordered)
+                    Button("升级软件") {
+                        updateSettingsStore.checkForUpdates()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                .background(AppTheme.panelBackground, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(AppTheme.accentAmber.opacity(0.55), lineWidth: 1)
+                )
+            }
 
             StatStrip(
                 snapshot: store.snapshot,

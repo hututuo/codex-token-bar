@@ -2825,6 +2825,155 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testExactHistoryBatchImportRollsBackAllSourcesTogether() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageBatchAtomicity")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true)
+        let first = try writeTokenCountRollout(
+            in: sessions,
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-batchatomicone",
+            timestamp: Date().addingTimeInterval(-120),
+            totalTokens: 120
+        )
+        let second = try writeTokenCountRollout(
+            in: sessions,
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-batchatomictwo",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 80
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let index = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextBatchAfterFirstImportForTesting()
+
+        XCTAssertThrowsError(
+            try index.synchronize(
+                files: [first, second],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, sessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        )
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events;", in: database), 0)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM sources;", in: database), 0)
+    }
+
+    func testFutureStagingManifestFailsClosedWithoutDeletingArtifact() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureStaging")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        let sessionFile = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-futurestaging",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        let interrupted = try CodexUsageHistoryIndex(codexHome: codexHome)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(
+            try interrupted.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, sessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        )
+        let stagingRoot = swiftUsageCacheRoot(in: cacheRoot)
+            .appendingPathComponent("staging", isDirectory: true)
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: stagingRoot,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let stagingDatabase = try XCTUnwrap(
+            enumerator.compactMap { $0 as? URL }.first {
+                $0.pathExtension == "sqlite"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+        )
+        let stage = SQLiteDatabaseDriver(url: stagingDatabase)
+        try stage.execute("UPDATE manifest SET manifest_schema_version = 99;")
+
+        let resumed = try CodexUsageHistoryIndex(codexHome: codexHome)
+        XCTAssertThrowsError(
+            try resumed.synchronize(
+                files: [sessionFile],
+                sessionID: analyzer.sessionID(from:)
+            ) { file, sessionID, request, insertFingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(
+                    file: file,
+                    sessionID: sessionID,
+                    request: request,
+                    insertFingerprint: insertFingerprint,
+                    emit: emit
+                )
+            }
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("staging manifest"))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stagingDatabase.path))
+        XCTAssertEqual(
+            try scalarInt("SELECT manifest_schema_version FROM manifest;", in: stage),
+            99
+        )
+    }
+
+    func testFutureEventEnrichmentReceiptFailsClosedBeforeSchemaWrites() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureReceipt")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+        }
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-futurereceipt",
+            timestamp: Date().addingTimeInterval(-60),
+            totalTokens: 120
+        )
+        _ = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+        let database = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: cacheRoot))
+        try database.execute(
+            "UPDATE event_enrichment_sources SET revision = 'model-v99';"
+        )
+
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: codexHome)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("receipt"))
+            XCTAssertTrue(error.localizedDescription.contains("newer or unknown"))
+        }
+        XCTAssertEqual(
+            try database.readRows(
+                "SELECT DISTINCT revision FROM event_enrichment_sources;"
+            ) { $0.text(0) }.compactMap { $0 },
+            ["model-v99"]
+        )
+    }
+
     func testExactHistoryIndexKeepsInterruptedStagesIsolatedAcrossCodexHomes() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageAnalyzerStageIsolation")

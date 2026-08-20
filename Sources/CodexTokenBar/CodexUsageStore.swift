@@ -96,6 +96,8 @@ final class CodexUsageStore: ObservableObject {
     @Published private(set) var isInitialLoading = true
     @Published private(set) var isPreparingUsageCache = false
     @Published private(set) var preciseIndexProgress: PreciseIndexProgress = .idle
+    @Published private(set) var indexUpgradeRequired:
+        CodexUsageIndexUpgradeRequiredError?
     /// Exact numeric time-series coverage; intentionally independent of
     /// attribution-event and excerpt/detail readiness.
     @Published private(set) var preciseTimeSeriesFresh = false
@@ -127,6 +129,7 @@ final class CodexUsageStore: ObservableObject {
     private var initialPreciseTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var transientDatabaseRecoveryTask: Task<Void, Never>?
+    private var indexRebuildTask: Task<Void, Never>?
     private let transientDatabaseRecoveryDelay: TimeInterval
     private var refreshGeneration = 0
     private(set) var sourceIdentityGeneration = 0
@@ -398,6 +401,13 @@ final class CodexUsageStore: ObservableObject {
     func setOnlyCompactSurfaceVisible(_ visible: Bool) {
         guard onlyCompactSurfaceVisible != visible else { return }
         onlyCompactSurfaceVisible = visible
+        if !visible, isRefreshing, activeRefreshCompactOnly {
+            // Promote the current lightweight owner. Its completion path owns
+            // the one follow-up aggregate request; never cancel it or start a
+            // competing scanner while the summary sync is still running.
+            pendingFullRefresh = true
+            return
+        }
         // The explicit cadence configuration owns dashboard-open catch-up.
         // Keep this compatibility path only for a real visible dashboard and
         // only when its published aggregate boundary is behind.
@@ -451,6 +461,8 @@ final class CodexUsageStore: ObservableObject {
         refreshTask = nil
         transientDatabaseRecoveryTask?.cancel()
         transientDatabaseRecoveryTask = nil
+        indexRebuildTask?.cancel()
+        indexRebuildTask = nil
         attributionSafetyAckTask?.cancel()
         attributionSafetyAckTask = nil
         pendingAttributionSafetyAckKey = nil
@@ -464,6 +476,7 @@ final class CodexUsageStore: ObservableObject {
         isPreparingUsageCache = false
         preciseTimeSeriesFresh = false
         isCompactSummaryPending = false
+        indexUpgradeRequired = nil
         todayModelBreakdownsFresh = false
         todayModelBreakdownsDay = nil
         todayUsageSummary = nil
@@ -504,6 +517,7 @@ final class CodexUsageStore: ObservableObject {
         let observerTakeover = continuitySafetyDatabase?.attemptObserverTakeover() ?? false
         let effectiveIncludePreciseScan = (includePreciseScan || observerTakeover)
             && (continuitySafetyDatabase?.isObserverOwner ?? true)
+            && indexUpgradeRequired == nil
         let effectiveForceFullTimeSeries = forceFullTimeSeries || observerTakeover
         let resolvedDataSource = resolver.resolve()
         let requestedSourceID = resolvedDataSource.map { refreshSourceID(for: $0) }
@@ -621,6 +635,13 @@ final class CodexUsageStore: ObservableObject {
             isPreparingUsageCache = false
             didFinishInitialLoad = true
             trace?.end("no-data-source")
+            return
+        }
+        if indexUpgradeRequired != nil, includePreciseScan, !observerTakeover {
+            status = hasDisplayableSnapshot(snapshot)
+                ? "需要升级软件才能继续精确统计（保留上次可信数据）"
+                : "需要升级软件才能读取当前精确索引"
+            trace?.end("upgrade-required-paused")
             return
         }
 
@@ -972,7 +993,27 @@ final class CodexUsageStore: ObservableObject {
                     trace?.end("stale-failed", metadata: ["error": error.localizedDescription])
                     return
                 }
-                if sawNumericPrecisePhase {
+                if let upgrade = Self.indexUpgradeRequiredError(from: error) {
+                    self.indexUpgradeRequired = upgrade
+                    self.isDetailHydrating = false
+                    self.isCompactSummaryPending = false
+                    self.preciseTimeSeriesFresh = false
+                    self.preciseIndexProgress = PreciseIndexProgress(
+                        phase: .failed,
+                        message: "索引来自更高版本，需要升级软件",
+                        completed: 0,
+                        total: nil
+                    )
+                    self.status = self.hasDisplayableSnapshot(self.snapshot)
+                        ? "需要升级软件才能继续精确统计（保留上次可信数据）"
+                        : "需要升级软件才能读取当前精确索引"
+                    shouldScheduleTransientDatabaseRecovery = false
+                    trace?.end("upgrade-required", metadata: [
+                        "component": upgrade.component,
+                        "stored": upgrade.stored,
+                        "supported": upgrade.supported,
+                    ])
+                } else if sawNumericPrecisePhase {
                     // Numeric aggregation already committed atomically. A
                     // detail-only error is not an exact-total failure, does
                     // not open continuity recovery, and does not stale totals.
@@ -1092,6 +1133,86 @@ final class CodexUsageStore: ObservableObject {
                 }
             }
         }
+    }
+
+    func deferIndexUpgradeForCurrentRun() {
+        guard indexUpgradeRequired != nil else { return }
+        transientDatabaseRecoveryTask?.cancel()
+        transientDatabaseRecoveryTask = nil
+        status = hasDisplayableSnapshot(snapshot)
+            ? "精确统计已暂停（保留上次可信数据）"
+            : "精确统计已暂停，额度、雷达和设置不受影响"
+    }
+
+    func rebuildIndexForCurrentVersion() {
+        guard let source = dataSource, indexUpgradeRequired != nil else { return }
+        let bindingKey = dataSourceBindingKey
+        indexRebuildTask?.cancel()
+        refreshTask?.cancel()
+        refreshTask = nil
+        transientDatabaseRecoveryTask?.cancel()
+        transientDatabaseRecoveryTask = nil
+        isRefreshing = true
+        isDetailHydrating = false
+        preciseTimeSeriesFresh = false
+        preciseIndexProgress = PreciseIndexProgress(
+            phase: .preparing,
+            message: "正在为当前版本重建派生索引",
+            completed: 0,
+            total: nil
+        )
+        status = "正在删除当前平台的派生索引；原始 JSONL 不会改动"
+        indexRebuildTask = Task { @MainActor [weak self] in
+            let failure = await Task.detached(priority: .utility) {
+                do {
+                    try CodexUsageHistoryIndex.rebuildDerivedIndex(
+                        codexHome: source.codexHome
+                    )
+                    CodexUsageAnalyzer.removeDerivedUsageSnapshots(
+                        for: source.codexHome
+                    )
+                    return Optional<String>.none
+                } catch {
+                    return Optional(error.localizedDescription)
+                }
+            }.value
+            guard let self,
+                  !Task.isCancelled,
+                  self.dataSourceBindingKey == bindingKey else { return }
+            self.indexRebuildTask = nil
+            self.isRefreshing = false
+            if let failure {
+                self.preciseIndexProgress = PreciseIndexProgress(
+                    phase: .failed,
+                    message: "派生索引重建准备失败",
+                    completed: 0,
+                    total: nil
+                )
+                self.status = "无法为当前版本重建派生索引：\(failure)"
+                return
+            }
+            self.indexUpgradeRequired = nil
+            self.preciseIndexProgress = .idle
+            self.status = "派生索引已清理，准备从原始 JSONL 重建"
+            self.refresh(
+                includePreciseScan: true,
+                forceFullTimeSeries: true,
+                requestKind: .explicit
+            )
+        }
+    }
+
+    private static func indexUpgradeRequiredError(
+        from error: Error
+    ) -> CodexUsageIndexUpgradeRequiredError? {
+        if let upgrade = error as? CodexUsageIndexUpgradeRequiredError {
+            return upgrade
+        }
+        if let wrapped = error as? CodexUsageHistoryIndexError {
+            return indexUpgradeRequiredError(from: wrapped.underlying)
+        }
+        let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? Error
+        return underlying.flatMap(indexUpgradeRequiredError(from:))
     }
 
     private func registerStartupPreciseIntentIfNeeded(
@@ -1411,6 +1532,26 @@ final class CodexUsageStore: ObservableObject {
     ) {
         let previousSnapshot = self.snapshot
         let shouldReplaceEmpty = !hasDisplayableSnapshot(previousSnapshot)
+        if !shouldReplaceEmpty,
+           let incomingGeneration = snapshot.exactGeneration,
+           incomingGeneration == previousSnapshot.exactGeneration,
+           snapshot.homeIdentity == previousSnapshot.homeIdentity,
+           snapshot.coverageKind == previousSnapshot.coverageKind,
+           snapshot.observedThrough == previousSnapshot.observedThrough,
+           snapshot.settledThrough == previousSnapshot.settledThrough,
+           snapshot.preciseTimeSeriesGeneratedAt == previousSnapshot.preciseTimeSeriesGeneratedAt,
+           snapshot.cacheUsage.attributionEventsComplete
+                == previousSnapshot.cacheUsage.attributionEventsComplete,
+           snapshot.cacheUsage.attributionModelBucketsComplete
+                == previousSnapshot.cacheUsage.attributionModelBucketsComplete,
+           Self.dashboardStatsEqual(snapshot.stats, previousSnapshot.stats),
+           snapshot.dailyUsage == previousSnapshot.dailyUsage,
+           (todayModelBreakdowns ?? Self.todayModelBreakdownsIfAvailable(
+                in: snapshot,
+                now: snapshot.generatedAt
+           )) == self.todayModelBreakdowns {
+            return
+        }
         let shouldAdoptIncomingDetails = shouldReplaceEmpty
             || Self.incomingLineageIsNewer(snapshot, than: previousSnapshot)
             || snapshot.coverageKind.rank > previousSnapshot.coverageKind.rank
@@ -1441,6 +1582,26 @@ final class CodexUsageStore: ObservableObject {
             Calendar.current.isDate($0.date, inSameDayAs: self.snapshot.generatedAt)
         }
         snapshotSourceID = sourceID
+    }
+
+    private static func dashboardStatsEqual(
+        _ lhs: DashboardStats,
+        _ rhs: DashboardStats
+    ) -> Bool {
+        lhs.totalTokens == rhs.totalTokens
+            && lhs.peakDayTokens == rhs.peakDayTokens
+            && lhs.peakThreadTokens == rhs.peakThreadTokens
+            && lhs.currentStreakDays == rhs.currentStreakDays
+            && lhs.longestStreakDays == rhs.longestStreakDays
+            && lhs.totalCalls == rhs.totalCalls
+            && lhs.totalThreads == rhs.totalThreads
+            && lhs.mostUsedReasoning == rhs.mostUsedReasoning
+            && lhs.skillsExplored == rhs.skillsExplored
+            && lhs.totalSkillsUsed == rhs.totalSkillsUsed
+            && lhs.totalInputTokens == rhs.totalInputTokens
+            && lhs.totalCachedInputTokens == rhs.totalCachedInputTokens
+            && lhs.totalOutputTokens == rhs.totalOutputTokens
+            && lhs.firstUsageAt == rhs.firstUsageAt
     }
 
     private static func todayModelBreakdownsIfAvailable(

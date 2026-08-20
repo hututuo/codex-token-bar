@@ -677,6 +677,47 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(display.standaloneUsageStatus, "用量读取失败")
     }
 
+    func testFutureIndexStopsAutomaticPreciseRetriesAndKeepsUpgradeState() async {
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/future-index/.codex"),
+            origin: .defaultHome
+        )
+        let upgrade = CodexUsageIndexUpgradeRequiredError(
+            component: "主 schema",
+            stored: "99",
+            supported: "6"
+        )
+        let loader = SequentialDashboardSnapshotLoader(
+            fastResults: [.success(.empty)],
+            preciseResults: [
+                .failure(CodexUsageHistoryIndexError(
+                    operation: "打开或升级精确索引",
+                    underlying: upgrade
+                )),
+            ]
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false
+        )
+
+        store.refresh()
+        await waitUntil("future index warning") {
+            store.indexUpgradeRequired == upgrade && !store.isRefreshing
+        }
+        XCTAssertNil(store.preciseTimeSeriesContinuityLossID)
+        XCTAssertTrue(store.status.contains("升级软件"))
+        let firstRequestCount = await loader.preciseRequestCount()
+        XCTAssertEqual(firstRequestCount, 1)
+
+        store.refreshLightSummary()
+        await Task.yield()
+        let secondRequestCount = await loader.preciseRequestCount()
+        XCTAssertEqual(secondRequestCount, 1)
+        XCTAssertEqual(store.indexUpgradeRequired, upgrade)
+    }
+
     func testMetadataOnlyPreciseResultRemainsDegradedAndDoesNotPrepareCache() async throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let stateRoot = FileManager.default.temporaryDirectory
