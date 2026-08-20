@@ -166,11 +166,6 @@ function lightweightUsageSummarySignature(
   dashboard: DashboardSnapshot,
   summary: UsageSummarySnapshot,
 ): string {
-  const coverageKind = summary.coverageKind === "summary"
-    || summary.coverageKind === "settled"
-    || summary.coverageKind === "full"
-    ? summary.coverageKind
-    : "summary";
   const modelBreakdowns = (summary.todayModelBreakdowns ?? []).map((item) => [
     item.model ?? null,
     item.eventStartUnix ?? null,
@@ -186,15 +181,10 @@ function lightweightUsageSummarySignature(
     summary.todayRequests,
     modelBreakdowns,
     nonEmptyText(summary.homeIdentity) ?? nonEmptyText(dashboard.homeIdentity),
-    normalizeScalar(
-      summary.usageRevision
-        ?? summary.dashboardRevision
-        ?? dashboard.usageRevision
-        ?? dashboard.dashboardRevision,
-    ),
-    coverageKind,
-    normalizeBoundaryValue(summary.observedThrough),
-    normalizeBoundaryValue(summary.settledThrough),
+    // A summary check can advance observed/settled time without changing any
+    // token fact.  Only the exact generation is a data lineage input here;
+    // aggregate-boundary and publication-clock changes belong to the chart
+    // lane and must not republish the lightweight strip.
     normalizeScalar(summary.exactGeneration ?? dashboard.exactGeneration),
   ]);
 }
@@ -536,6 +526,25 @@ export function mergeUsageSummary(
   const incomingLineage = normalizeSummaryLineage(dashboard, incomingSummary);
   const previousSummary = dashboard.usageSummary;
   if (previousSummary !== null && previousSummary !== undefined) {
+    const summarySignature = lightweightUsageSummarySignature(dashboard, incomingSummary);
+    const previousSignature = lightweightUsageSummarySignature(dashboard, previousSummary);
+    if (summarySignature === previousSignature
+      && dashboard.stats.totalTokens === incomingSummary.totalTokens) {
+      // Check time and native publication timestamps are not data changes.
+      // Keep the existing object (and generatedAt) stable during a quiet
+      // cadence tick; only clear a prior stale flag if this check succeeded.
+      if (dashboard.usageSummaryFresh !== false) {
+        return state;
+      }
+      return {
+        ...state,
+        dashboard: {
+          ...dashboard,
+          usageSummaryFresh: true,
+        },
+      };
+    }
+
     const previousLineage = normalizeSummaryLineage(dashboard, previousSummary);
     const relation = compareDashboardLineage(previousLineage, incomingLineage);
     if (relation === "incoming-older") {
@@ -562,24 +571,6 @@ export function mergeUsageSummary(
       return state;
     }
 
-    const summarySignature = lightweightUsageSummarySignature(dashboard, incomingSummary);
-    const previousSignature = lightweightUsageSummarySignature(dashboard, previousSummary);
-    if (summarySignature === previousSignature
-      && dashboard.stats.totalTokens === incomingSummary.totalTokens) {
-      // Boundary receipts and native publication clocks are intentionally not
-      // UI changes. Returning the existing state also keeps StatsStrip's
-      // memoized props referentially stable during a quiet cadence tick.
-      if (dashboard.usageSummaryFresh !== false) {
-        return state;
-      }
-      return {
-        ...state,
-        dashboard: {
-          ...dashboard,
-          usageSummaryFresh: true,
-        },
-      };
-    }
   }
 
   return {
