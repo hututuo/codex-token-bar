@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import CodexTokenBar
 
@@ -794,6 +795,57 @@ final class TaskCompletionMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.runningThreadSummary.main, 2)
         XCTAssertEqual(monitor.runningThreadSummary.subagents, 3)
         XCTAssertEqual(monitor.runningThreadSummary.freshness, .stale)
+    }
+
+    func testNoOpRunningThreadCheckDoesNotPublishSummary() {
+        let monitor = TaskCompletionMonitor(defaults: isolatedDefaults())
+        let firstCheck = Date(timeIntervalSince1970: 100)
+        let firstDataUpdate = Date(timeIntervalSince1970: 90)
+        let first = RunningThreadScanResult(
+            states: [:],
+            summary: RunningThreadSummary(
+                main: 2,
+                subagents: 1,
+                lastCheckedAt: firstCheck,
+                dataUpdatedAt: firstDataUpdate,
+                summaryRevision: 7,
+                freshness: .fresh
+            )
+        )
+        var publicationCount = 0
+        let cancellable = monitor.objectWillChange.sink { _ in
+            publicationCount += 1
+        }
+
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available([]),
+            runningThreadResult: first
+        )
+        publicationCount = 0
+
+        let second = RunningThreadScanResult(
+            states: [:],
+            summary: RunningThreadSummary(
+                main: 2,
+                subagents: 1,
+                lastCheckedAt: Date(timeIntervalSince1970: 200),
+                dataUpdatedAt: Date(timeIntervalSince1970: 190),
+                summaryRevision: 7,
+                freshness: .fresh
+            )
+        )
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available([]),
+            runningThreadResult: second
+        )
+
+        XCTAssertEqual(publicationCount, 0)
+        XCTAssertEqual(monitor.runningThreadLastCheckedAt, second.summary.lastCheckedAt)
+        XCTAssertEqual(monitor.runningThreadDataUpdatedAt, second.summary.dataUpdatedAt)
+        XCTAssertEqual(monitor.runningThreadSummary, first.summary)
+        withExtendedLifetime(cancellable) {}
     }
 
     func testSourceSwitchClearsRunningThreadCountsBeforeNewSourceLoads() throws {

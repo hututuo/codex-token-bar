@@ -171,6 +171,10 @@ final class TaskCompletionMonitor: ObservableObject {
     @Published private(set) var unreadThreadCount = 0
     @Published private(set) var unreadThreadCountAvailable = false
     @Published private(set) var runningThreadSummary = RunningThreadSummary.unavailable
+    /// Observation timestamps are intentionally not `@Published`: a
+    /// successful no-op check must not trigger a SwiftUI summary publication.
+    private(set) var runningThreadLastCheckedAt: Date?
+    private(set) var runningThreadDataUpdatedAt: Date?
 
     private let pollInterval: TimeInterval
     private let pollTimeout: TimeInterval
@@ -303,6 +307,8 @@ final class TaskCompletionMonitor: ObservableObject {
             fileStates = reboundStates
         }
         runningThreadStates.removeAll()
+        runningThreadLastCheckedAt = nil
+        runningThreadDataUpdatedAt = nil
         runningThreadSummary = dataSource == nil ? .unavailable : .loading
 
         updateStatusText()
@@ -460,10 +466,10 @@ final class TaskCompletionMonitor: ObservableObject {
             return
         }
         runningThreadStates = result.states
+        runningThreadLastCheckedAt = result.summary.lastCheckedAt
+        runningThreadDataUpdatedAt = result.summary.dataUpdatedAt
         let businessStateChanged = runningThreadSummary.main != result.summary.main
             || runningThreadSummary.subagents != result.summary.subagents
-            || runningThreadSummary.lastCheckedAt != result.summary.lastCheckedAt
-            || runningThreadSummary.dataUpdatedAt != result.summary.dataUpdatedAt
             || runningThreadSummary.summaryRevision != result.summary.summaryRevision
             || runningThreadSummary.freshness != result.summary.freshness
         guard businessStateChanged else { return }
