@@ -919,16 +919,19 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     fs::create_dir_all(&session_dir).unwrap();
     let changed_file = session_dir.join("rollout-019eexact-change-0000-0000-0000-index.jsonl");
     let deleted_file = session_dir.join("rollout-019eexact-delete-0000-0000-0000-index.jsonl");
+    let initial_changed_timestamp = recent_test_timestamp(10);
+    let initial_deleted_timestamp = recent_test_timestamp(9);
+    let rewritten_timestamp = recent_test_timestamp(8);
     write_lines(
         &changed_file,
         &[
-            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+            format!(r#"{{"timestamp":"{initial_changed_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#),
         ],
     );
     write_lines(
         &deleted_file,
         &[
-            r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#,
+            format!(r#"{{"timestamp":"{initial_deleted_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}}}}}"#),
         ],
     );
 
@@ -950,7 +953,7 @@ fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     write_lines(
         &changed_file,
         &[
-            r#"{"timestamp":"2026-07-20T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":15,"total_tokens":75}}}}"#,
+            format!(r#"{{"timestamp":"{rewritten_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":50,"cached_input_tokens":10,"output_tokens":15,"total_tokens":75}}}}}}}}"#),
         ],
     );
     let rebuilt = dashboard_snapshot(&root).unwrap();
@@ -1778,10 +1781,12 @@ fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
     fs::create_dir_all(&session_dir).unwrap();
     let stable_file = session_dir.join("rollout-019eledger-stable-0000-0000-0000.jsonl");
     let transient_file = session_dir.join("rollout-019eledger-transient-0000-0000-0000.jsonl");
+    let stable_timestamp = recent_test_timestamp(10);
+    let transient_timestamp = recent_test_timestamp(9);
     write_lines(
         &stable_file,
         &[
-            r#"{"timestamp":"2026-07-20T03:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}"#,
+            format!(r#"{{"timestamp":"{stable_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":0,"output_tokens":0,"total_tokens":100}}}}}}}}"#),
         ],
     );
     let initial = dashboard_snapshot(&root).unwrap();
@@ -1794,7 +1799,7 @@ fn compact_sync_preserves_a_source_deleted_before_the_next_full_snapshot() {
     write_lines(
         &transient_file,
         &[
-            r#"{"timestamp":"2026-07-20T03:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}"#,
+            format!(r#"{{"timestamp":"{transient_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":300,"cached_input_tokens":0,"output_tokens":0,"total_tokens":300}}}}}}}}"#),
         ],
     );
     assert_eq!(dashboard_usage_summary(&root).unwrap().total_tokens, 400);
@@ -2156,6 +2161,8 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
     let file = session_dir.join("rollout-019eappend-bytes-0000-0000-0000-exact.jsonl");
+    let initial_timestamp = recent_test_timestamp(10);
+    let appended_timestamp = recent_test_timestamp(9);
     let mut handle = std::io::BufWriter::new(fs::File::create(&file).unwrap());
     handle.write_all(br#"{"padding":""#).unwrap();
     let padding = vec![b'x'; 1024 * 1024];
@@ -2165,7 +2172,7 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     handle.write_all(b"\"}\n").unwrap();
     handle
         .write_all(
-            br#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#,
+            format!(r#"{{"timestamp":"{initial_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}}}}}"#).as_bytes(),
         )
         .unwrap();
     handle.write_all(b"\n").unwrap();
@@ -2184,9 +2191,9 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
     assert_eq!(cold_bytes, initial_size);
     assert_eq!(append_bytes_before, 0);
 
-    let appended = br#"{"timestamp":"2026-07-20T01:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#;
+    let appended = format!(r#"{{"timestamp":"{appended_timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}}}}}"#);
     let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
-    handle.write_all(appended).unwrap();
+    handle.write_all(appended.as_bytes()).unwrap();
     handle.write_all(b"\n").unwrap();
     handle.flush().unwrap();
     drop(handle);
@@ -9407,6 +9414,12 @@ fn write_lines<S: AsRef<str>>(path: &Path, lines: &[S]) {
     for line in lines {
         writeln!(file, "{}", line.as_ref()).unwrap();
     }
+}
+
+fn recent_test_timestamp(minutes_ago: i64) -> String {
+    (OffsetDateTime::now_utc() - time::Duration::minutes(minutes_ago))
+        .format(&Rfc3339)
+        .unwrap()
 }
 
 fn age_file(path: &Path, age: StdDuration) {

@@ -212,6 +212,7 @@ impl MigrationAssessment {
                 let display_component = match *component {
                     "event enrichment" => "历史字段补全",
                     "session catalog schema" => "会话目录 schema",
+                    "aggregate pricing" => "aggregate 计价契约",
                     other => other,
                 };
                 let version_relation = if *component == "event enrichment" {
@@ -1204,7 +1205,7 @@ impl ExactUsageIndex {
             let read_only =
                 sqlite::open_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
                     format!(
-                        "无法在完整性检查前只读探测精确 token 索引 {}：{error}",
+                        "无法在完整性检查前只读探测精确 token 索引 {}，已保留原索引并拒绝自动重建：{error}",
                         path.display()
                     )
                 })?;
@@ -1214,8 +1215,16 @@ impl ExactUsageIndex {
                     [],
                     |row| row.get::<_, bool>(0),
                 )
-                .map_err(|error| format!("无法只读检查精确 token 元数据表：{error}"))?;
-            let assessment = assess_index_migration(&read_only, true)?;
+                .map_err(|error| {
+                    format!(
+                        "无法只读检查精确 token 元数据表，已保留原索引并拒绝自动重建：{error}"
+                    )
+                })?;
+            let assessment = assess_index_migration(&read_only, true).map_err(|error| {
+                format!(
+                    "无法只读检查精确 token 索引兼容性，已保留原索引并拒绝自动重建：{error}"
+                )
+            })?;
             if let Some(error) = assessment.blocking_error() {
                 return Err(error);
             }
@@ -1277,7 +1286,7 @@ impl ExactUsageIndex {
         {
             if !is_known_dashboard_pricing_revision(&revision) {
                 return Err(format!(
-                    "精确 token aggregate pricing revision {revision} 未知，需要升级软件，已拒绝覆盖"
+                    "精确 token aggregate 计价契约 {revision} 未知，需要升级软件，已拒绝覆盖"
                 ));
             }
         }
@@ -2064,30 +2073,98 @@ impl ExactUsageIndex {
             } else {
                 self.sources_changed(codex_home, warnings)?
             };
-            if !sources_changed {
+            // A source probe can prove that JSONL files are unchanged while a
+            // previously published attribution bucket was removed or edited.
+            // The ledger integrity digest is cheap to recompute from SQLite;
+            // only a mismatch bypasses the normal no-op fast path so the next
+            // full owner can rotate and rebuild the ledger. Summary owners do
+            // not pay this cost or start a repair scan.
+            let ledger_integrity_mismatch = mode.builds_dashboard_derived_data()
+                && attribution_ledger_integrity_mismatch(&self.connection)?;
+            let safety_retry_required = mode.builds_dashboard_derived_data()
+                && (metadata_i64(&self.connection, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY)?
+                    .unwrap_or(0)
+                    != 0
+                    || metadata_i64(&self.connection, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY)?
+                        .unwrap_or(0)
+                        != 0);
+            if !sources_changed && !ledger_integrity_mismatch && !safety_retry_required {
+                // A rewrite can leave an obsolete file generation behind even
+                // when the next source probe is otherwise unchanged.  Clean
+                // only those already-published superseded rows here; this is
+                // a metadata-only repair and never reads JSONL bodies or
+                // allocates a new generation.  The common no-op path still
+                // performs zero writes because the candidate query is empty.
+                let obsolete_paths = self
+                    .connection
+                    .prepare(
+                        r#"
+                        SELECT DISTINCT candidate.path
+                        FROM files candidate
+                        WHERE candidate.generation < (
+                            SELECT MAX(visible.generation)
+                            FROM files visible
+                            WHERE visible.path = candidate.path
+                              AND visible.generation <= COALESCE(
+                                  (
+                                      SELECT CAST(value AS INTEGER)
+                                      FROM metadata
+                                      WHERE key = 'published_generation'
+                                  ),
+                                  0
+                              )
+                        )
+                        "#,
+                    )
+                    .map_err(|error| format!("无法检查会话文件旧索引版本：{error}"))?
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|error| format!("无法读取会话文件旧索引版本：{error}"))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("无法解码会话文件旧索引版本：{error}"))?;
+                for path in obsolete_paths {
+                    prune_obsolete_file_versions(&self.connection, &path)?;
+                }
                 let previous = (
                     metadata_text(&self.connection, "state_size")?,
                     metadata_text(&self.connection, "state_modified_ns")?,
                 );
+                let staged_thread_metadata = stage_thread_metadata(codex_home, previous, warnings)?;
                 if !mode.builds_dashboard_derived_data() {
                     // Summary owns exact facts only. Leave state_5.sqlite
                     // metadata for the Full owner; its signature is not
                     // advanced here, so a later owner will retry the same
                     // incremental metadata publication.
-                    return self.revision();
+                    return match staged_thread_metadata {
+                        ThreadMetadataStage::Updated(staged) => {
+                            publish_thread_metadata_only(&mut self.connection, staged)
+                        }
+                        ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
+                            self.revision()
+                        }
+                    };
                 }
-                let revision = match stage_thread_metadata(codex_home, previous, warnings)? {
-                    ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => self.revision()?,
-                    ThreadMetadataStage::Updated(staged) => {
-                        publish_thread_metadata_only(&mut self.connection, staged)?
-                    }
-                };
-                // A preceding Summary owner may have committed new exact
-                // events while intentionally leaving the disposable
-                // aggregate generation behind. A Full request with no new
-                // JSONL must still consume that dirty derived scope.
-                self.ensure_dashboard_aggregates(codex_home)?;
-                return Ok(revision);
+                if !safety_retry_required {
+                    // A preceding Summary owner may have committed new exact
+                    // events while intentionally leaving the disposable
+                    // aggregate generation behind. A Full request with no
+                    // new JSONL must still consume that dirty derived scope.
+                    // A state database that changed but could not be read is
+                    // deliberately kept in this metadata-only path: the
+                    // published JSONL rows remain trustworthy, and retrying
+                    // the same read on the next cadence must not allocate a
+                    // generation or write a WAL. Active rollout additions or
+                    // removals are already surfaced by sources_changed.
+                    let revision = match staged_thread_metadata {
+                        ThreadMetadataStage::Updated(staged) => {
+                            publish_thread_metadata_only(&mut self.connection, staged)?
+                        }
+                        ThreadMetadataStage::Unchanged | ThreadMetadataStage::Failed => {
+                            self.revision()?
+                        }
+                    };
+                    self.ensure_dashboard_aggregates(codex_home)?;
+                    return Ok(revision);
+                }
             } else {
                 // sources_changed uses a temporary published-files snapshot.
                 // Drop it before the durable scan so dashboard reads cannot
@@ -2775,12 +2852,28 @@ impl ExactUsageIndex {
             codex_home,
             warnings,
             &mut ignored_scan_completeness,
-            |_connection, file, _warnings, _scan_completeness| {
+            |_connection, file, scan_warnings, scan_completeness| {
                 let path = file.to_string_lossy().into_owned();
                 if !seen_files.insert(path.clone()) {
                     return Ok(());
                 }
-                let signature = file_signature(file)?;
+                let signature = match file_signature(file) {
+                    Ok(signature) => signature,
+                    Err(error) => {
+                        // A metadata/permission race is a source change, not
+                        // proof that the file disappeared.  Let the durable
+                        // scan classify it as incomplete and preserve the
+                        // published rows instead of aborting the probe.
+                        changed = true;
+                        scan_completeness.mark_incomplete();
+                        scan_warnings.push(scan_warning(format!(
+                            "无法读取会话文件签名，本轮保留已有统计：{}（{}）",
+                            file.display(),
+                            error
+                        )));
+                        return Ok(());
+                    }
+                };
                 let unchanged = published_files.get(&path).is_some_and(
                     |(size, modified_ns, device_id, file_id, changed_ns)| {
                         signature.matches_stored(*size, modified_ns, device_id, file_id, changed_ns)
@@ -9415,6 +9508,10 @@ fn estimate_active_rollouts(
             continue;
         }
         let Ok(canonical) = fs::canonicalize(&path) else {
+            boundary_warnings.push(format!(
+                "无法确认 active rollout 会话文件边界：{}",
+                path.display()
+            ));
             continue;
         };
         if !canonical.starts_with(canonical_home) {
@@ -10061,7 +10158,13 @@ fn receipt_storage_matches(
         && match (&receipt.wal, signature.wal) {
             (None, None) => true,
             (Some(stored), Some(current)) => receipt_file_signature_matches(stored, current),
-            _ => false,
+            // SQLite may leave a zero-byte WAL sidecar behind, or recreate an
+            // empty sidecar with a new inode on the next read-only open.  An
+            // empty WAL has no database state to validate; treating it as
+            // absent keeps the integrity receipt reusable without running
+            // quick_check on every startup.
+            (Some(stored), None) => stored.size == 0,
+            (None, Some(current)) => current.size == 0,
         }
 }
 
@@ -10177,7 +10280,10 @@ fn optional_index_sidecar_signature(path: &Path) -> Result<Option<FileSignature>
             "精确 token 索引侧写路径不是普通文件：{}",
             path.display()
         )),
-        Ok(_) => file_signature(path).map(Some),
+        Ok(_) => {
+            let signature = file_signature(path)?;
+            Ok((signature.size > 0).then_some(signature))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!(
             "无法检查精确 token 索引侧写路径 {}：{}",
@@ -10585,8 +10691,16 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
     if !files_table_exists {
         return Ok(true);
     }
-    if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
-        == Some(FORK_REPLAY_BOUNDARY_REVISION)
+    // A legacy schema can already carry the current replay marker from an
+    // earlier build.  The marker only proves that replay was checked for that
+    // schema generation; it must not suppress the first replay pass after a
+    // schema migration.  Once the current schema is durable, the marker can
+    // be trusted and the open path remains a no-op.
+    let schema_is_current = metadata_i64(connection, "schema_version")?
+        == Some(INDEX_SCHEMA_VERSION);
+    if schema_is_current
+        && metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
+            == Some(FORK_REPLAY_BOUNDARY_REVISION)
     {
         return Ok(true);
     }
@@ -11644,7 +11758,9 @@ fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
 pub(super) fn database_path(codex_home: &Path) -> Result<PathBuf, String> {
     #[cfg(test)]
     {
-        return Ok(codex_home
+        let canonical_home =
+            fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
+        return Ok(canonical_home
             .join(".codex-token-bar-test-cache")
             .join("exact-token-index.sqlite3"));
     }
