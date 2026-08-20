@@ -138,6 +138,15 @@ protocol DashboardSnapshotProgressLoading: Sendable {
     ) -> AsyncThrowingStream<DashboardSnapshot, Error>
 }
 
+protocol DashboardPromotedSnapshotLoading: Sendable {
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource,
+        reusing synchronizationReceipt:
+            CodexUsageAnalyzer.CompactUsageSummary.ExactSynchronizationReceipt,
+        onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error>
+}
+
 protocol DashboardCompactSummaryProgressLoading: Sendable {
     func loadCompactSummary(
         dataSource: CodexDataSource,
@@ -242,6 +251,7 @@ extension DashboardSnapshotLoading {
 struct CodexDashboardSnapshotLoader:
     DashboardSnapshotLoading,
     DashboardSnapshotProgressLoading,
+    DashboardPromotedSnapshotLoading,
     DashboardCompactSummaryProgressLoading,
     Sendable {
     func loadFastSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
@@ -362,6 +372,32 @@ struct CodexDashboardSnapshotLoader:
             continuation.onTermination = { _ in
                 task.cancel()
             }
+        }
+    }
+
+    func loadSnapshotPhases(
+        dataSource: CodexDataSource,
+        reusing synchronizationReceipt:
+            CodexUsageAnalyzer.CompactUsageSummary.ExactSynchronizationReceipt,
+        onProgress: @escaping @Sendable (PreciseIndexProgress) -> Void
+    ) -> AsyncThrowingStream<DashboardSnapshot, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .utility) {
+                do {
+                    let final = try CodexUsageAnalyzer(dataSource: dataSource).load(
+                        onNumericPhase: { numeric in
+                            continuation.yield(numeric)
+                        },
+                        onProgress: onProgress,
+                        reusing: synchronizationReceipt
+                    )
+                    continuation.yield(final)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 

@@ -65,7 +65,7 @@ extension CodexUsageAnalyzer {
         }
     }
 
-    struct SessionCacheKey: Codable, Equatable {
+    struct SessionCacheKey: Codable, Equatable, Sendable {
         let path: String
         let size: UInt64
         let modifiedAt: TimeInterval
@@ -75,7 +75,7 @@ extension CodexUsageAnalyzer {
         let statusChangedNanoseconds: Int64?
     }
 
-    struct SessionTreeSignature: Codable, Equatable {
+    struct SessionTreeSignature: Codable, Equatable, Sendable {
         let localDate: String
         let utcOffsetSeconds: Int
         let files: [SessionCacheKey]

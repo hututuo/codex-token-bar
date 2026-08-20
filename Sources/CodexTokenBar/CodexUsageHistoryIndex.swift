@@ -720,8 +720,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         sourceProbeTestState.reset()
     }
 
+    static func resetSynchronizationInvocationCountForTesting() {
+        sourceProbeTestState.resetSynchronizationCount()
+    }
+
     static var sourceContentProbeCountForTesting: Int {
         sourceProbeTestState.count
+    }
+
+    static var synchronizationInvocationCountForTesting: Int {
+        sourceProbeTestState.synchronizationCount
     }
 
     // 冷建 heavy 文件阈值（与 Rust PARALLEL_HEAVY_FILE_BYTES 同值）。
@@ -734,7 +742,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
-        try withExclusiveAccess {
+        Self.sourceProbeTestState.recordSynchronization()
+        return try withExclusiveAccess {
             try synchronizeExclusively(
                 files: files,
                 sessionID: sessionID,
@@ -6151,6 +6160,7 @@ private final class CodexUsageHistoryStagingTestState: @unchecked Sendable {
 private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
+    private var synchronizations = 0
 
     func record() {
         lock.lock()
@@ -6164,10 +6174,28 @@ private final class CodexUsageHistorySourceProbeTestState: @unchecked Sendable {
         lock.unlock()
     }
 
+    func recordSynchronization() {
+        lock.lock()
+        synchronizations += 1
+        lock.unlock()
+    }
+
+    func resetSynchronizationCount() {
+        lock.lock()
+        synchronizations = 0
+        lock.unlock()
+    }
+
     var count: Int {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+
+    var synchronizationCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return synchronizations
     }
 }
 

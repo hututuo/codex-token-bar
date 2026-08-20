@@ -65,7 +65,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
 
     func load(
         onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)?,
-        onProgress: (@Sendable (PreciseIndexProgress) -> Void)?
+        onProgress: (@Sendable (PreciseIndexProgress) -> Void)?,
+        reusing synchronizationReceipt:
+            CompactUsageSummary.ExactSynchronizationReceipt? = nil
     ) throws -> DashboardSnapshot {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.load", metadata: [
             "source": dataSource.displayPath
@@ -73,7 +75,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         do {
             let preciseSnapshot = try loadFromTokenCountJSONL(
                 onNumericPhase: onNumericPhase,
-                onProgress: onProgress
+                onProgress: onProgress,
+                reusing: synchronizationReceipt
             )
             trace?.end("precise", metadata: [
                 "tokens": String(preciseSnapshot.stats.totalTokens),
@@ -149,6 +152,14 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     struct CompactUsageSummary: Equatable {
+        struct ExactSynchronizationReceipt: Equatable, Sendable {
+            let homeIdentity: String
+            let sourcePaths: [String]
+            let signature: SessionTreeSignature
+            let observedAt: Date
+            let eventEnrichmentComplete: Bool
+        }
+
         let totalTokens: Int
         let todayTokens: Int
         let todayCalls: Int
@@ -159,6 +170,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let observedThrough: Date?
         let settledThrough: Date?
         let exactGeneration: Int64?
+        let exactSynchronizationReceipt: ExactSynchronizationReceipt?
 
         init(
             totalTokens: Int,
@@ -170,7 +182,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             coverageKind: DashboardSnapshotCoverageKind = .summary,
             observedThrough: Date? = nil,
             settledThrough: Date? = nil,
-            exactGeneration: Int64? = nil
+            exactGeneration: Int64? = nil,
+            exactSynchronizationReceipt: ExactSynchronizationReceipt? = nil
         ) {
             self.totalTokens = totalTokens
             self.todayTokens = todayTokens
@@ -182,6 +195,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             self.observedThrough = observedThrough
             self.settledThrough = settledThrough
             self.exactGeneration = exactGeneration
+            self.exactSynchronizationReceipt = exactSynchronizationReceipt
         }
     }
 
@@ -254,6 +268,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 at: Date()
             )
             let summaryGeneratedAt = Date()
+            let synchronizedSignature = sessionTreeSignature(
+                for: sessionFiles,
+                attributionProvenanceEpoch: synchronization.provenanceEpoch,
+                attributionGeneration: synchronization.attributionGeneration
+            )
             let summary = CompactUsageSummary(
                 totalTokens: totals.totalTokens,
                 todayTokens: totals.todayTokens,
@@ -263,7 +282,14 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 homeIdentity: dataSource.stableIdentityKey,
                 coverageKind: .summary,
                 observedThrough: summaryGeneratedAt,
-                exactGeneration: synchronization.attributionGeneration
+                exactGeneration: synchronization.attributionGeneration,
+                exactSynchronizationReceipt: CompactUsageSummary.ExactSynchronizationReceipt(
+                    homeIdentity: dataSource.stableIdentityKey,
+                    sourcePaths: sessionFiles.map { $0.standardizedFileURL.path },
+                    signature: synchronizedSignature,
+                    observedAt: summaryGeneratedAt,
+                    eventEnrichmentComplete: synchronization.eventEnrichmentComplete
+                )
             )
             if structureMigrationReported || synchronization.eventEnrichmentTotal > 0 {
                 if synchronization.eventEnrichmentComplete {
@@ -329,7 +355,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
 
     private func loadFromTokenCountJSONL(
         onNumericPhase: (@Sendable (DashboardSnapshot) -> Void)? = nil,
-        onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil
+        onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil,
+        reusing synchronizationReceipt:
+            CompactUsageSummary.ExactSynchronizationReceipt? = nil
     ) throws -> DashboardSnapshot {
         // Discovery and pure in-memory derivation do not need the index write
         // gate. `CodexUsageHistoryIndex.synchronize` owns the short writer
@@ -337,7 +365,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         // remains outside both boundaries.
         let prepared: PreparedPreciseLoad
         do {
-            prepared = try loadFromTokenCountJSONLExclusively(onProgress: onProgress)
+            prepared = try loadFromTokenCountJSONLExclusively(
+                onProgress: onProgress,
+                reusing: synchronizationReceipt
+            )
         } catch let error as CodexUsagePreciseDataUnavailableError {
             throw error
         } catch let error as CodexUsageHistoryIndexError {
@@ -449,13 +480,25 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     private func loadFromTokenCountJSONLExclusively(
-        onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil
+        onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil,
+        reusing synchronizationReceipt:
+            CompactUsageSummary.ExactSynchronizationReceipt? = nil
     ) throws -> PreparedPreciseLoad {
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
+        let requestedReceipt = synchronizationReceipt.flatMap { receipt in
+            receipt.homeIdentity == dataSource.stableIdentityKey ? receipt : nil
+        }
         trace?.mark("jsonlFiles.begin")
-        let sessionFiles = try usageJSONLFiles()
+        var sessionFiles: [URL]
+        if let requestedReceipt {
+            sessionFiles = requestedReceipt.sourcePaths.map {
+                URL(fileURLWithPath: $0)
+            }
+        } else {
+            sessionFiles = try usageJSONLFiles()
+        }
         trace?.mark("jsonlFiles.end", metadata: ["count": String(sessionFiles.count)])
         onProgress?(PreciseIndexProgress(
             phase: .preparing,
@@ -470,7 +513,6 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 path: dataSource.displayPath
             )
         }
-        let preciseCoverageAt = Date()
         let historyIndex: CodexUsageHistoryIndex
         let initialAttributionState: CodexUsageHistoryIndex.AttributionState
         let initialEventEnrichmentComplete: Bool
@@ -484,12 +526,35 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         } catch {
             throw CodexUsageHistoryIndexError(operation: "打开或升级精确索引", underlying: error)
         }
+        let receiptMatchesPublishedIndex = requestedReceipt.map { receipt in
+            receipt.signature.attributionProvenanceEpoch
+                    == initialAttributionState.provenanceEpoch
+                && receipt.signature.attributionGeneration
+                    == initialAttributionState.generation
+        } ?? false
+        if requestedReceipt != nil, !receiptMatchesPublishedIndex {
+            // Another owner advanced the exact generation before promotion.
+            // Discard the process-local receipt and perform a normal discovery
+            // and synchronization rather than aggregating the wrong generation.
+            sessionFiles = try usageJSONLFiles()
+            guard !sessionFiles.isEmpty else {
+                throw CodexUsagePreciseDataUnavailableError(
+                    reason: .noTokenJSONLFiles,
+                    path: dataSource.displayPath
+                )
+            }
+        }
+        let preciseCoverageAt = receiptMatchesPublishedIndex
+            ? requestedReceipt?.observedAt ?? Date()
+            : Date()
         trace?.mark("signature.begin")
-        let signature = sessionTreeSignature(
-            for: sessionFiles,
-            attributionProvenanceEpoch: initialAttributionState.provenanceEpoch,
-            attributionGeneration: initialAttributionState.generation
-        )
+        let signature = receiptMatchesPublishedIndex
+            ? requestedReceipt!.signature
+            : sessionTreeSignature(
+                for: sessionFiles,
+                attributionProvenanceEpoch: initialAttributionState.provenanceEpoch,
+                attributionGeneration: initialAttributionState.generation
+            )
         trace?.mark("signature.end", metadata: [
             "files": String(signature.files.count),
             "hasStateDB": signature.stateDatabase == nil ? "0" : "1",
@@ -566,35 +631,62 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let firstAggregatedEventAt: Date?
         let exactSessionCount: Int
         do {
-            synchronization = try historyIndex.synchronize(
-                files: sessionFiles,
-                sessionID: sessionID(from:)
-            ) { [self] file, sessionID, request, insertFingerprint, emit in
-                try parseSessionIntoHistoryIndex(
-                    file: file,
-                    sessionID: sessionID,
-                    request: request,
-                    insertFingerprint: insertFingerprint,
-                    emit: emit
+            if receiptMatchesPublishedIndex {
+                synchronization = CodexUsageHistoryIndex.SynchronizationResult(
+                    changedFiles: 0,
+                    unchangedFiles: sessionFiles.count,
+                    indexedEvents: 0,
+                    incrementallyParsedFiles: 0,
+                    rewrittenFiles:
+                        initialAttributionState.currentScanUnsafeCauseDetected ? 1 : 0,
+                    removedFiles: 0,
+                    provenanceEpoch: initialAttributionState.provenanceEpoch,
+                    attributionGeneration: initialAttributionState.generation,
+                    attributionUnsafeSinceGeneration:
+                        initialAttributionState.unsafeSinceGeneration,
+                    lineageAmbiguityDetected:
+                        initialAttributionState.currentScanUnsafeCauseDetected,
+                    attributionUnsafe: initialAttributionState.requiresSyntheticCutover,
+                    eventEnrichmentTotal: 0,
+                    eventEnrichmentComplete:
+                        requestedReceipt?.eventEnrichmentComplete
+                            ?? initialEventEnrichmentComplete
                 )
-            } onProgress: { completed, total, phase in
-                let message: String
-                switch phase {
-                case .scanning:
-                    message = "正在扫描精确历史 \(completed)/\(total)"
-                case .backfillingModel:
-                    message = "正在补全历史模型信息 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失"
-                case .publishing:
-                    message = "正在提交精确统计结果"
-                default:
-                    message = "正在升级精确索引"
+                trace?.mark("historyIndex.reusedCompactSynchronization", metadata: [
+                    "generation": String(initialAttributionState.generation),
+                    "files": String(sessionFiles.count),
+                ])
+            } else {
+                synchronization = try historyIndex.synchronize(
+                    files: sessionFiles,
+                    sessionID: sessionID(from:)
+                ) { [self] file, sessionID, request, insertFingerprint, emit in
+                    try parseSessionIntoHistoryIndex(
+                        file: file,
+                        sessionID: sessionID,
+                        request: request,
+                        insertFingerprint: insertFingerprint,
+                        emit: emit
+                    )
+                } onProgress: { completed, total, phase in
+                    let message: String
+                    switch phase {
+                    case .scanning:
+                        message = "正在扫描精确历史 \(completed)/\(total)"
+                    case .backfillingModel:
+                        message = "正在补全历史模型信息 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失"
+                    case .publishing:
+                        message = "正在提交精确统计结果"
+                    default:
+                        message = "正在升级精确索引"
+                    }
+                    onProgress?(PreciseIndexProgress(
+                        phase: phase,
+                        message: message,
+                        completed: completed,
+                        total: total
+                    ))
                 }
-                onProgress?(PreciseIndexProgress(
-                    phase: phase,
-                    message: message,
-                    completed: completed,
-                    total: total
-                ))
             }
             trace?.mark("historyIndex.synchronized", metadata: [
                 "changedFiles": String(synchronization.changedFiles),

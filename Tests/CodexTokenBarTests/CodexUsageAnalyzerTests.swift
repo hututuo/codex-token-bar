@@ -6397,6 +6397,35 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(summary.todayModelBreakdowns.first?.breakdown.calls, 1)
     }
 
+    func testPromotedFullAggregationReusesCompactSynchronization() throws {
+        let codexHome = try makeCodexHome()
+        _ = try writeTokenCountRollout(
+            in: codexHome.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-promotedowner",
+            timestamp: Date().addingTimeInterval(-10 * 60),
+            totalTokens: 120
+        )
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        CodexUsageHistoryIndex.resetSynchronizationInvocationCountForTesting()
+        let summary = try XCTUnwrap(analyzer.loadCompactSummary())
+        let receipt = try XCTUnwrap(summary.exactSynchronizationReceipt)
+        XCTAssertEqual(CodexUsageHistoryIndex.synchronizationInvocationCountForTesting, 1)
+
+        let snapshot = try analyzer.load(
+            onNumericPhase: nil,
+            onProgress: nil,
+            reusing: receipt
+        )
+
+        XCTAssertEqual(snapshot.stats.totalTokens, 120)
+        XCTAssertEqual(snapshot.exactGeneration, summary.exactGeneration)
+        XCTAssertEqual(
+            CodexUsageHistoryIndex.synchronizationInvocationCountForTesting,
+            1,
+            "light-to-full promotion must aggregate the committed generation without a second JSONL synchronization"
+        )
+    }
+
     func testOpeningExactHistoryDoesNotRunWholeDatabaseQuickCheck() throws {
         let codexHome = try makeCodexHome()
         XCTAssertNoThrow(try CodexUsageHistoryIndex(codexHome: codexHome))

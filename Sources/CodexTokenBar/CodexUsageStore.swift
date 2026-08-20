@@ -148,6 +148,8 @@ final class CodexUsageStore: ObservableObject {
     private var onlyCompactSurfaceVisible = false
     private var activeRefreshCompactOnly = false
     private var pendingFullRefresh = false
+    private var latestCompactSynchronizationReceipt:
+        CodexUsageAnalyzer.CompactUsageSummary.ExactSynchronizationReceipt?
     private var attributionSafetyAckTask: Task<Void, Never>?
     private var pendingAttributionSafetyAckKey: String?
     private let continuityDefaults: UserDefaults
@@ -471,6 +473,7 @@ final class CodexUsageStore: ObservableObject {
         activeRefreshSourceID = nil
         activeRefreshCompactOnly = false
         pendingFullRefresh = false
+        latestCompactSynchronizationReceipt = nil
         isRefreshing = false
         isDetailHydrating = false
         isPreparingUsageCache = false
@@ -678,6 +681,9 @@ final class CodexUsageStore: ObservableObject {
             && prefersCompactSummary
             && (compactSummaryOnly == true
                 || (snapshot.hasPreciseTokenUsage && snapshotSourceID == sourceID))
+        let promotedSynchronizationReceipt = activeRefreshCompactOnly
+            ? nil
+            : latestCompactSynchronizationReceipt
         let startupRefreshRole = startupPreciseRefreshRole(
             for: requestKind,
             sourceID: sourceID,
@@ -830,6 +836,8 @@ final class CodexUsageStore: ObservableObject {
                             return
                         }
                         if let summary {
+                            self.latestCompactSynchronizationReceipt =
+                                summary.exactSynchronizationReceipt
                             self.publish(
                                 Self.applyingCompactSummary(summary, to: self.snapshot),
                                 todayModelBreakdowns: summary.todayModelBreakdowns,
@@ -870,7 +878,27 @@ final class CodexUsageStore: ObservableObject {
                         trace?.mark("preciseSnapshot.begin")
                         var sawFinalPrecisePhase = false
                         let precisePhases: AsyncThrowingStream<DashboardSnapshot, Error>
-                        if let progressLoader = self.snapshotLoader as? any DashboardSnapshotProgressLoading {
+                        if let promotedSynchronizationReceipt,
+                           let promotedLoader = self.snapshotLoader
+                            as? any DashboardPromotedSnapshotLoading {
+                            precisePhases = promotedLoader.loadSnapshotPhases(
+                                dataSource: source,
+                                reusing: promotedSynchronizationReceipt
+                            ) { [weak self] progress in
+                                Task { @MainActor [weak self] in
+                                    guard let self,
+                                          self.isCurrentRefresh(
+                                              generation: generation,
+                                              bindingGeneration: bindingGeneration,
+                                              sourceID: sourceID
+                                          ) else { return }
+                                    self.preciseIndexProgress = progress
+                                    if progress.isActive {
+                                        self.status = progress.message
+                                    }
+                                }
+                            }
+                        } else if let progressLoader = self.snapshotLoader as? any DashboardSnapshotProgressLoading {
                             precisePhases = progressLoader.loadSnapshotPhases(dataSource: source) { [weak self] progress in
                                 Task { @MainActor [weak self] in
                                     guard let self,
@@ -914,7 +942,8 @@ final class CodexUsageStore: ObservableObject {
                                     self.preciseTimeSeriesFresh =
                                         loaded.preciseTimeSeriesGeneratedAt != nil
                                     self.isCompactSummaryPending = false
-                                    self.didRunPreciseScan = true
+                                self.didRunPreciseScan = true
+                                self.latestCompactSynchronizationReceipt = nil
                                     UsageCacheLifecycle.markCurrentCachePrepared()
                                     self.status = "\(source.originLabel) · token_count · 更新于 \(DateFormatter.statusString(from: loaded.generatedAt))"
                                     self.preciseIndexProgress = PreciseIndexProgress(
@@ -940,6 +969,7 @@ final class CodexUsageStore: ObservableObject {
                                         loaded.preciseTimeSeriesGeneratedAt != nil
                                     self.isCompactSummaryPending = false
                                     self.didRunPreciseScan = true
+                                    self.latestCompactSynchronizationReceipt = nil
                                     UsageCacheLifecycle.markCurrentCachePrepared()
                                     self.status = migrationStillActive
                                         ? self.preciseIndexProgress.message
