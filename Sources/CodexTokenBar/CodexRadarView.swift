@@ -221,18 +221,14 @@ private struct CodexRadarModelIQBlock: View {
                     .monospacedDigit()
                 Text(primary.map { CodexRadarPresentationText.compactModelName($0.modelDisplayName) } ?? "待读取")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(primaryAccent ?? .secondary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
                 ForEach((snapshot?.modelIQ.secondaryModelRows ?? []).prefix(3), id: \.label) { row in
                     Text("\(CodexRadarPresentationText.compactModelName(row.label)) \(CodexRadarModelIQPoint.display(row.point.score))")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(AppTheme.radarScoreColor(
-                            passed: row.point.passed,
-                            tasks: row.point.tasks,
-                            score: row.point.score
-                        ))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
@@ -274,7 +270,7 @@ private struct CodexCrowdRadarBlock: View {
                     .monospacedDigit()
                 Text(best?.label ?? "待读取")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(bestAccent ?? .secondary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
             }
@@ -283,7 +279,7 @@ private struct CodexCrowdRadarBlock: View {
                     ForEach(Array(leaders.dropFirst()), id: \.id) { model in
                         Text("\(model.label) \(String(format: "%.1f", model.iq))")
                             .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(accent(for: model))
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.68)
                     }

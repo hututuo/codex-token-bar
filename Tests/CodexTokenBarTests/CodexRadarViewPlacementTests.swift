@@ -195,7 +195,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(source.contains("众测刷新失败，显示上次排行"))
     }
 
-    func testRadarStripBalancesAccentColorAcrossEverySummaryColumn() throws {
+    func testRadarStripKeepsMiddleColumnAccentOnTitlesAndPrimaryScoresOnly() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -203,20 +203,13 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let radarView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/CodexRadarView.swift")
         let source = try String(contentsOf: radarView, encoding: .utf8)
 
-        XCTAssertTrue(source.contains(".foregroundStyle(primaryAccent ?? .secondary)"))
+        XCTAssertTrue(source.contains(".foregroundStyle(primaryAccent ?? .primary)"))
+        XCTAssertFalse(source.contains(".foregroundStyle(primaryAccent ?? .secondary)"))
         XCTAssertTrue(source.contains("accent: AppTheme.accentCyan"))
         XCTAssertTrue(source.contains("let bestAccent = best.map { accent(for: $0) }"))
-        XCTAssertTrue(
-            source.contains(
-                """
-                AppTheme.radarScoreColor(
-                            passed: model.scorePassed,
-                            tasks: model.scoreSamples,
-                            score: model.iq
-                        )
-                """
-            )
-        )
+        XCTAssertTrue(source.contains(".foregroundStyle(bestAccent ?? .primary)"))
+        XCTAssertFalse(source.contains(".foregroundStyle(bestAccent ?? .secondary)"))
+        XCTAssertFalse(source.contains(".foregroundStyle(accent(for: model))"))
         XCTAssertTrue(source.contains("Text(title)\n                .foregroundStyle(accent ?? .secondary)"))
     }
 }
