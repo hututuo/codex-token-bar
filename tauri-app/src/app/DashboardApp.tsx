@@ -41,6 +41,7 @@ export function DashboardApp() {
     readyState,
     refreshing,
     preciseProgress,
+    preciseIndexUpgradeRequired,
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
@@ -58,6 +59,8 @@ export function DashboardApp() {
     runningThreads,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
+    deferPreciseIndexUpgrade,
+    rebuildPreciseIndex,
   } = useDashboardData({
     liveRateEnabled,
     providerRepairVisible: providerRepairOpen,
@@ -108,6 +111,7 @@ export function DashboardApp() {
         usageCacheInitializing={usageCacheInitializing}
         radarRefreshGeneration={radarRefreshGeneration}
         preciseProgress={preciseProgress}
+        preciseIndexUpgradeRequired={preciseIndexUpgradeRequired}
         onFloatingOpacityChange={shellSettings.updateFloatingOpacity}
         onFloatingScaleChange={shellSettings.updateFloatingScale}
         onTokenRateFullScaleChange={shellSettings.updateTokenRateFullScale}
@@ -146,6 +150,8 @@ export function DashboardApp() {
           appUpdateState,
           setAppUpdateState,
         )}
+        onDeferPreciseIndexUpgrade={deferPreciseIndexUpgrade}
+        onRebuildPreciseIndex={rebuildPreciseIndex}
         onToggleAutostart={shellSettings.toggleAutostart}
         onReconnectThreadDelete={threadDeleteBridge.activate}
         refreshing={refreshing}

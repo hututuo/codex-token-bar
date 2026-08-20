@@ -17,6 +17,10 @@ export {
   type CommandFailureDiagnostic,
 };
 
+export function clearCommandDiagnostic(command: string) {
+  clearCommandFailure(command);
+}
+
 export async function callCommand<T>(
   command: string,
   fallback: T,
@@ -112,8 +116,20 @@ export function normalizeCommandError(error: unknown): Error {
     return new Error(error);
   }
   try {
-    return new Error(JSON.stringify(error));
+    const normalized = new Error(JSON.stringify(error));
+    Object.defineProperty(normalized, "commandPayload", {
+      configurable: false,
+      enumerable: false,
+      value: error,
+      writable: false,
+    });
+    return normalized;
   } catch {
     return new Error(String(error));
   }
+}
+
+export function commandErrorPayload(error: unknown): unknown {
+  if (typeof error !== "object" || error === null) return null;
+  return (error as { commandPayload?: unknown }).commandPayload ?? null;
 }

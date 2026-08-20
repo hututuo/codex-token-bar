@@ -162,7 +162,29 @@ enum MigrationAssessment {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExactIndexUpgradeRequired {
+    pub(crate) component: String,
+    pub(crate) stored: String,
+    pub(crate) supported: String,
+}
+
 impl MigrationAssessment {
+    fn upgrade_required(&self) -> Option<ExactIndexUpgradeRequired> {
+        match self {
+            Self::UpgradeRequired {
+                component,
+                stored,
+                supported,
+            } => Some(ExactIndexUpgradeRequired {
+                component: (*component).into(),
+                stored: stored.clone(),
+                supported: supported.clone(),
+            }),
+            Self::Compatible | Self::KnownMigrationRequired(_) | Self::Corrupt { .. } => None,
+        }
+    }
+
     fn blocking_error(&self) -> Option<String> {
         match self {
             Self::UpgradeRequired {
@@ -181,6 +203,62 @@ impl MigrationAssessment {
             Self::Compatible | Self::KnownMigrationRequired(_) => None,
         }
     }
+}
+
+/// Read-only compatibility probe used by the command boundary before starting
+/// a precise owner. It deliberately does not run quick_check, DDL, repair, or
+/// any cleanup, so a newer binary's index remains byte-for-byte untouched.
+pub(super) fn index_upgrade_required(
+    codex_home: &Path,
+) -> Result<Option<ExactIndexUpgradeRequired>, String> {
+    let path = database_path(codex_home)?;
+    if !existing_regular_index(&path)? {
+        return Ok(None);
+    }
+    let read_only = sqlite::open_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
+        format!(
+            "无法只读探测精确 token 索引兼容性 {}：{error}",
+            path.display()
+        )
+    })?;
+    let assessment = assess_index_migration(&read_only, true)?;
+    if let Some(upgrade) = assessment.upgrade_required() {
+        return Ok(Some(upgrade));
+    }
+    if let Some(error) = assessment.blocking_error() {
+        return Err(error);
+    }
+    Ok(None)
+}
+
+/// User-confirmed escape hatch for opening a newer exact index with the
+/// current binary. Only Tauri-owned derived storage is removed. Raw JSONL,
+/// Codex state databases, settings, quota history, and radar data are outside
+/// these paths and are never touched here.
+pub(super) fn rebuild_derived_storage_for_current_version(codex_home: &Path) -> Result<(), String> {
+    let _operation = AppOperationGuard::acquire(codex_home)?;
+    let path = database_path(codex_home)?;
+    let Some(_) = index_upgrade_required(codex_home)? else {
+        return Err("当前精确 token 索引不需要高版本兼容重建，已拒绝删除".into());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "无法创建精确 token 重建锁目录 {}：{error}",
+                parent.display()
+            )
+        })?;
+    }
+    let operation_lock_path = sqlite_sidecar_path(&path, ".operation.lock");
+    let _cross_process = CrossProcessFileLock::acquire_wait(
+        &operation_lock_path,
+        "精确 token 索引重建",
+        StdDuration::from_secs(30),
+    )?;
+    remove_index_storage(&path)?;
+    remove_staging_directory(&path)?;
+    remove_regular_file_if_present(&integrity_receipt_path(&path), "精确 token 完整性收据")?;
+    Ok(())
 }
 
 /// Read-only identity used to validate a persisted numeric startup envelope.
@@ -10531,6 +10609,21 @@ fn remove_index_storage(path: &Path) -> Result<(), String> {
         })?;
     }
     Ok(())
+}
+
+fn remove_regular_file_if_present(path: &Path, label: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(format!("拒绝删除符号链接形式的{label}：{}", path.display()))
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            Err(format!("{label}路径不是普通文件：{}", path.display()))
+        }
+        Ok(_) => fs::remove_file(path)
+            .map_err(|error| format!("无法删除{label} {}：{error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法检查{label} {}：{error}", path.display())),
+    }
 }
 
 fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {

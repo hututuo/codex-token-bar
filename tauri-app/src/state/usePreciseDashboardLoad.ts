@@ -16,6 +16,11 @@ import {
   initialPreciseDashboardDeadlineMs,
   preciseDashboardStartDelayMs,
 } from "./preciseDashboardSchedule";
+import {
+  classifyPreciseIndexUpgradeRequired,
+  PreciseIndexUpgradeRequiredError,
+  type PreciseIndexUpgradeRequired,
+} from "../api/preciseIndexCompatibility";
 
 const PRECISE_DASHBOARD_UI_WAIT_MS = 30_000;
 
@@ -37,6 +42,7 @@ interface PreciseDashboardLoadOptions {
   >;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
   onPreciseDashboardFailure?: () => void;
+  onPreciseIndexUpgradeRequired?: (upgrade: PreciseIndexUpgradeRequired) => void;
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized?: () => void;
   onUsageCacheStatus?: (status: UsageCacheStatus) => void;
@@ -68,6 +74,7 @@ export function usePreciseDashboardLoad({
   source,
   onPreciseDashboard,
   onPreciseDashboardFailure,
+  onPreciseIndexUpgradeRequired,
   onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
@@ -123,6 +130,7 @@ export function usePreciseDashboardLoad({
       let effectiveForce = forcePreciseRefresh;
       let publishedGeneration: string | undefined;
       let failureReported = false;
+      let upgradeReported = false;
       let settlementBoundToNativeFlight = false;
       const reportFailure = () => {
         if (!cancelled && !failureReported) {
@@ -130,6 +138,20 @@ export function usePreciseDashboardLoad({
           onPreciseDashboardStale?.();
           onPreciseDashboardFailure?.();
         }
+      };
+      const reportError = (error: unknown) => {
+        const upgrade = error instanceof PreciseIndexUpgradeRequiredError
+          ? error.details
+          : classifyPreciseIndexUpgradeRequired(error);
+        if (upgrade !== null) {
+          if (!cancelled && !upgradeReported) {
+            upgradeReported = true;
+            onPreciseIndexUpgradeRequired?.(upgrade);
+          }
+          return true;
+        }
+        reportFailure();
+        return false;
       };
       try {
         const cacheStatus = await source.readUsageCacheStatus();
@@ -208,20 +230,22 @@ export function usePreciseDashboardLoad({
               reportFailure();
             }
           },
-          reportFailure,
+          reportError,
         );
         // The native owner keeps running after this soft UI budget. Ending the
         // visible refresh state does not release the single-flight entry or
         // enqueue another Rust scan; a late current result still publishes.
         await preciseFlight.waitForUiBudget(PRECISE_DASHBOARD_UI_WAIT_MS);
-      } catch {
+      } catch (error) {
+        if (reportError(error)) {
+          return;
+        }
         if (forcePreciseRefresh && sourceToken !== null && canDeferDirtyMark) {
           // A coalescible force request that failed before single-flight was
           // reached still needs a dirty marker so the next retry cannot reuse
           // the previous settled snapshot.
           markPreciseDashboardSourceDirty(sourceToken);
         }
-        reportFailure();
       } finally {
         if (!settlementBoundToNativeFlight) {
           onPreciseRequestSettled?.();
@@ -265,6 +289,7 @@ export function usePreciseDashboardLoad({
     onLoadStart,
     onPreciseDashboard,
     onPreciseDashboardFailure,
+    onPreciseIndexUpgradeRequired,
     onPreciseDashboardStale,
     onPreciseRequestSettled,
     onUsageCacheInitialized,

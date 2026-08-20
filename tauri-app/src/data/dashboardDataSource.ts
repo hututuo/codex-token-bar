@@ -11,6 +11,7 @@ import {
   readPreciseDashboardSnapshot,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
+  rebuildPreciseIndexForCurrentVersion,
   readUsageSummarySnapshot,
   readUsageCacheStatus,
   scanProviderRepair,
@@ -57,6 +58,9 @@ export interface DashboardDataSource {
   readPreciseDashboardSourceProbe: (
     sourceToken: CodexHomeSourceToken,
   ) => Promise<PreciseDashboardSourceProbe | null>;
+  rebuildPreciseIndexForCurrentVersion?: (
+    sourceToken: CodexHomeSourceToken,
+  ) => Promise<void>;
   /** Lightweight native summary owner used by quota/attribution ticks. */
   readUsageSummarySnapshot?: (
     sourceToken: CodexHomeSourceToken,
@@ -89,6 +93,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPreciseDashboardSnapshot,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
+  rebuildPreciseIndexForCurrentVersion,
   readUsageSummarySnapshot,
   readUsageCacheStatus,
   readAccountQuota,

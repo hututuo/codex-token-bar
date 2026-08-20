@@ -1,4 +1,5 @@
 use super::cache_lifecycle;
+use crate::core::app_operation_lock::AppOperationGuard;
 use crate::core::app_paths;
 use crate::core::startup_trace;
 use crate::models::PreciseDashboardProgress;
@@ -36,6 +37,7 @@ mod tests;
 
 #[cfg(test)]
 use aggregates::{activity_days_at, stats_at};
+pub(crate) use exact_usage_index::ExactIndexUpgradeRequired;
 use exact_usage_index::ExactUsageIndex;
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
@@ -2353,6 +2355,115 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String
         .wait()
         .full
         .unwrap_or_else(|| Err("精确 token full refresh 未发布结果".into()))
+}
+
+pub(crate) fn precise_index_upgrade_required(
+    codex_home: &Path,
+) -> Result<Option<exact_usage_index::ExactIndexUpgradeRequired>, String> {
+    exact_usage_index::index_upgrade_required(codex_home)
+}
+
+/// Removes only the Tauri-derived exact index and caches after an explicit UI
+/// confirmation. The outer process-local lease keeps a summary/full owner from
+/// publishing a replacement while the bound in-memory and persistent caches
+/// are cleared.
+pub(crate) fn rebuild_precise_index_for_current_version(codex_home: &Path) -> Result<(), String> {
+    let canonical_home = precise_refresh_home(codex_home)?;
+    let _operation = AppOperationGuard::acquire(&canonical_home)?;
+    exact_usage_index::rebuild_derived_storage_for_current_version(&canonical_home)?;
+    clear_dashboard_caches_for_home(&canonical_home)?;
+    Ok(())
+}
+
+fn clear_dashboard_caches_for_home(canonical_home: &Path) -> Result<(), String> {
+    let belongs_to_home = |path: &Path| {
+        precise_refresh_home(path)
+            .is_ok_and(|candidate| candidate == canonical_home)
+    };
+
+    if let Ok(mut guard) = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
+        .lock()
+    {
+        if guard
+            .aggregate
+            .as_ref()
+            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home))
+        {
+            guard.aggregate = None;
+            guard.persistent_loaded = false;
+        }
+    }
+    if let Ok(mut guard) = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        if guard
+            .as_ref()
+            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home))
+        {
+            *guard = None;
+        }
+    }
+
+    if let Some(path) = app_paths::token_aggregate_cache_path() {
+        let remove = load_persistent_dashboard_aggregate()
+            .ok()
+            .flatten()
+            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home));
+        if remove {
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(format!(
+                        "拒绝删除符号链接形式的精确 token numeric cache：{}",
+                        path.display()
+                    ));
+                }
+                Ok(metadata) if !metadata.is_file() => {
+                    return Err(format!(
+                        "精确 token numeric cache 路径不是普通文件：{}",
+                        path.display()
+                    ));
+                }
+                Ok(_) => fs::remove_file(&path).map_err(|error| {
+                    format!(
+                        "无法删除当前 Home 绑定的精确 token numeric cache {}：{error}",
+                        path.display()
+                    )
+                })?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "无法检查当前 Home 绑定的精确 token numeric cache {}：{error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Ok(mut coordinators) = PRECISE_REFRESH_COORDINATORS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        coordinators.retain(|key, _| key.canonical_home != canonical_home);
+    }
+    if let Ok(mut progress) = PRECISE_INDEX_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        progress.retain(|key, _| key.canonical_home != canonical_home);
+    }
+    if let Ok(mut watchers) = ATTRIBUTION_MUTATION_WATCHERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        watchers.remove(canonical_home);
+    }
+    if let Ok(mut failures) = ATTRIBUTION_WATCHER_FAILURES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        failures.remove(canonical_home);
+    }
+    Ok(())
 }
 
 fn build_full_dashboard_after_precise_sync(

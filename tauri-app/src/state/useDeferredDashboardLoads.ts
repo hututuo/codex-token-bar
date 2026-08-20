@@ -10,12 +10,14 @@ import type {
   UsageCacheStatus,
 } from "../types/dashboard";
 import type { ResetCreditBundle } from "../types/quota";
+import type { PreciseIndexUpgradeRequired } from "../api/preciseIndexCompatibility";
 import { useDeferredQuotaLoad } from "./useDeferredQuotaLoad";
 import { useLiveThreadOptionsLoad } from "./useLiveThreadOptionsLoad";
 import { usePreciseDashboardLoad } from "./usePreciseDashboardLoad";
 
 interface DeferredDashboardLoadsOptions {
   active: boolean;
+  preciseActive?: boolean;
   dashboardReady: boolean;
   startupUnavailable?: boolean;
   loading: boolean;
@@ -40,6 +42,7 @@ interface DeferredDashboardLoadsOptions {
   >;
   onPreciseDashboard: (snapshot: DashboardSnapshot) => void;
   onPreciseDashboardFailure?: () => void;
+  onPreciseIndexUpgradeRequired?: (upgrade: PreciseIndexUpgradeRequired) => void;
   onPreciseDashboardStale?: () => void;
   onUsageCacheInitialized: () => void;
   onUsageCacheStatus: (status: UsageCacheStatus) => void;
@@ -62,6 +65,7 @@ interface DeferredDashboardLoadsOptions {
 
 export function useDeferredDashboardLoads({
   active,
+  preciseActive = active,
   dashboardReady,
   startupUnavailable = false,
   loading,
@@ -77,6 +81,7 @@ export function useDeferredDashboardLoads({
   source,
   onPreciseDashboard,
   onPreciseDashboardFailure,
+  onPreciseIndexUpgradeRequired,
   onPreciseDashboardStale,
   onUsageCacheInitialized,
   onUsageCacheStatus,
@@ -90,7 +95,7 @@ export function useDeferredDashboardLoads({
   onRefreshTaskStart,
 }: DeferredDashboardLoadsOptions) {
   usePreciseDashboardLoad({
-    active,
+    active: preciseActive,
     dashboardReady,
     startupUnavailable,
     generation,
@@ -102,6 +107,7 @@ export function useDeferredDashboardLoads({
     loading,
     onPreciseDashboard,
     onPreciseDashboardFailure,
+    onPreciseIndexUpgradeRequired,
     onPreciseDashboardStale,
     onUsageCacheInitialized,
     onUsageCacheStatus,

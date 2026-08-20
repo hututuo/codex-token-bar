@@ -14,11 +14,14 @@ export {
   readPreciseDashboardSnapshot,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
+  rebuildPreciseIndexForCurrentVersion,
   readUsageCacheStatus,
   readUsageSummarySnapshot,
   resetCodexHome,
   setCodexHome,
 } from "./dashboardClient";
+
+export type { PreciseIndexUpgradeRequired } from "./dashboardClient";
 
 export {
   readFloatingPanelSnapshot,

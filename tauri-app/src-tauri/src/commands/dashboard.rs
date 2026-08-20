@@ -24,6 +24,7 @@ pub(crate) const CODEX_HOME_SOURCE_CHANGED_EVENT: &str = "codex-home-source-chan
 static CODEX_HOME_TRANSITION_STATE: OnceLock<Mutex<CodexHomeTransitionState>> = OnceLock::new();
 static PINNED_SQLITE_VIEW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PRECISE_DASHBOARD_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const PRECISE_INDEX_UPGRADE_ERROR_PREFIX: &str = "codex-token-bar:index-upgrade-required:";
 #[cfg(unix)]
 static PINNED_SQLITE_DESCRIPTOR_VIEW: OnceLock<Mutex<Option<PinnedSqliteDescriptorView>>> =
     OnceLock::new();
@@ -108,6 +109,59 @@ pub struct CodexHomeSourceEnvelope {
     pub canonical_home_key: String,
     pub physical_home_key: String,
     pub transition_generation: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreciseIndexUpgradePayload {
+    component: String,
+    stored: String,
+    supported: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase", tag = "code")]
+pub enum PreciseDashboardCommandError {
+    IndexUpgradeRequired {
+        component: String,
+        stored: String,
+        supported: String,
+        message: String,
+    },
+    OperationFailed {
+        message: String,
+    },
+}
+
+fn encode_precise_index_upgrade_required(
+    upgrade: token_count_jsonl::ExactIndexUpgradeRequired,
+) -> String {
+    let payload = PreciseIndexUpgradePayload {
+        component: upgrade.component,
+        stored: upgrade.stored,
+        supported: upgrade.supported,
+    };
+    format!(
+        "{PRECISE_INDEX_UPGRADE_ERROR_PREFIX}{}",
+        serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into())
+    )
+}
+
+fn precise_dashboard_command_error(error: String) -> PreciseDashboardCommandError {
+    if let Some(payload) = error.strip_prefix(PRECISE_INDEX_UPGRADE_ERROR_PREFIX) {
+        if let Ok(payload) = serde_json::from_str::<PreciseIndexUpgradePayload>(payload) {
+            return PreciseDashboardCommandError::IndexUpgradeRequired {
+                message: format!(
+                    "精确统计索引由较新版本创建（{}：{}，当前支持 {}），需要升级软件或确认重建当前版本索引。",
+                    payload.component, payload.stored, payload.supported
+                ),
+                component: payload.component,
+                stored: payload.stored,
+                supported: payload.supported,
+            };
+        }
+    }
+    PreciseDashboardCommandError::OperationFailed { message: error }
 }
 
 #[derive(Debug)]
@@ -1502,8 +1556,9 @@ pub async fn read_precise_dashboard_snapshot(
     app: AppHandle,
     source_token: CodexHomeSourceToken,
     request_reason: Option<String>,
-) -> Result<DashboardSnapshot, String> {
-    require_window_label(&window, "read_precise_dashboard_snapshot")?;
+) -> Result<DashboardSnapshot, PreciseDashboardCommandError> {
+    require_window_label(&window, "read_precise_dashboard_snapshot")
+        .map_err(precise_dashboard_command_error)?;
     let request_id = PRECISE_DASHBOARD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let request_reason = precise_dashboard_request_reason(request_reason.as_deref());
     let source_generation = source_token.transition_generation;
@@ -1514,6 +1569,11 @@ pub async fn read_precise_dashboard_snapshot(
         &app,
         source_token,
         |codex_home| {
+            if let Some(upgrade) =
+                token_count_jsonl::precise_index_upgrade_required(&codex_home)?
+            {
+                return Err(encode_precise_index_upgrade_required(upgrade));
+            }
             crate::core::dashboard::LocalCodexDataSource::new(codex_home)
                 .read_precise_dashboard_snapshot()
         },
@@ -1536,7 +1596,24 @@ pub async fn read_precise_dashboard_snapshot(
         started.elapsed().as_millis(),
         result_status(&result)
     ));
-    result
+    result.map_err(precise_dashboard_command_error)
+}
+
+#[tauri::command]
+pub async fn rebuild_precise_index_for_current_version(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    confirmation: String,
+) -> Result<(), String> {
+    require_window_label(&window, "rebuild_precise_index_for_current_version")?;
+    if confirmation != "REBUILD_TAURI_DERIVED_USAGE_INDEX" {
+        return Err("精确 token 索引重建确认无效，已拒绝删除".into());
+    }
+    run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        token_count_jsonl::rebuild_precise_index_for_current_version(&codex_home)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1867,6 +1944,34 @@ mod tests {
     use tauri::async_runtime;
 
     static SOURCE_TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn precise_upgrade_error_is_structured_by_stable_code() {
+        let encoded = encode_precise_index_upgrade_required(
+            token_count_jsonl::ExactIndexUpgradeRequired {
+                component: "schema".into(),
+                stored: "12".into(),
+                supported: "9".into(),
+            },
+        );
+        let error = precise_dashboard_command_error(encoded);
+        let value = serde_json::to_value(error).expect("serialize typed command error");
+
+        assert_eq!(value["code"], "indexUpgradeRequired");
+        assert_eq!(value["component"], "schema");
+        assert_eq!(value["stored"], "12");
+        assert_eq!(value["supported"], "9");
+    }
+
+    #[test]
+    fn ordinary_precise_error_is_not_misclassified_by_localized_prose() {
+        let error = precise_dashboard_command_error(
+            "索引版本太高，需要升级软件，但没有稳定错误码".into(),
+        );
+        let value = serde_json::to_value(error).expect("serialize ordinary command error");
+
+        assert_eq!(value["code"], "operationFailed");
+    }
 
     #[test]
     fn codex_home_transition_publishes_canonical_envelope_after_durable_save() {

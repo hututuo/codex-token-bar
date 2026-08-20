@@ -3709,6 +3709,74 @@ fn exact_index_refuses_unknown_future_schema_without_overwriting_it() {
 }
 
 #[test]
+fn confirmed_future_index_rebuild_removes_only_tauri_derived_storage() {
+    let root = temp_root();
+    let aggregate_cache = root.join("tauri-derived").join("dashboard-aggregate.json");
+    let _test_state = app_paths::app_path_test_env_guard(&[(
+        "CODEX_TOKEN_BAR_AGGREGATE_CACHE_PATH",
+        aggregate_cache.clone(),
+    )]);
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let raw_jsonl = session_dir.join("rollout-rebuild-boundary.jsonl");
+    write_lines(
+        &raw_jsonl,
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
+    );
+    let state_db = root.join("state_5.sqlite");
+    let settings = root.join("settings.json");
+    let quota = root.join("quota-history.sqlite");
+    let radar = root.join("radar-cache.json");
+    for path in [&state_db, &settings, &quota, &radar] {
+        fs::write(path, b"must-survive").unwrap();
+    }
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '999' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut staging_name = index_path.as_os_str().to_os_string();
+    staging_name.push(".staging");
+    let staging = PathBuf::from(staging_name);
+    fs::create_dir_all(&staging).unwrap();
+    fs::write(staging.join("ready.sqlite3"), b"derived").unwrap();
+    let receipt = integrity_receipt_path_for_testing(&root).unwrap();
+    fs::write(&receipt, b"derived receipt").unwrap();
+
+    let upgrade = precise_index_upgrade_required(&root)
+        .expect("read-only assessment")
+        .expect("future schema should require upgrade");
+    assert_eq!(upgrade.stored, "999");
+    rebuild_precise_index_for_current_version(&root).unwrap();
+
+    assert!(!index_path.exists());
+    assert!(!staging.exists());
+    assert!(!receipt.exists());
+    assert!(!aggregate_cache.exists(), "bound numeric cache is derived");
+    for path in [&raw_jsonl, &state_db, &settings, &quota, &radar] {
+        assert!(
+            path.exists(),
+            "source/user data must survive: {}",
+            path.display()
+        );
+    }
+    assert_eq!(fs::read(&raw_jsonl).unwrap().is_empty(), false);
+    for path in [&state_db, &settings, &quota, &radar] {
+        assert_eq!(fs::read(path).unwrap(), b"must-survive");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_refuses_unknown_event_enrichment_revision_before_migration_writes() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

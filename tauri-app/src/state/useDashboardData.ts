@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { readAppSettings, recordStartupEvent, subscribeCommandDiagnostics } from "../api/client";
+import type { PreciseIndexUpgradeRequired } from "../api/preciseIndexCompatibility";
 import { recordPerformanceEvent } from "../api/startupClient";
 import { dashboardDataSource, type DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
@@ -96,6 +97,10 @@ interface PreciseDashboardRequestIntent {
   dedupeKey?: string;
 }
 
+export interface PreciseIndexUpgradeState extends PreciseIndexUpgradeRequired {
+  deferred: boolean;
+}
+
 function mergePreciseRequestIntent(
   previous: PreciseDashboardRequestIntent | null,
   incoming: PreciseDashboardRequestIntent,
@@ -171,6 +176,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   const [dashboardVisible, setDashboardVisible] = useState(dashboardIsVisible);
   const [refreshTaskCount, setRefreshTaskCount] = useState(0);
   const [preciseProgress, setPreciseProgress] = useState<PreciseDashboardProgress | null>(null);
+  const [preciseIndexUpgradeRequired, setPreciseIndexUpgradeRequired] = useState<PreciseIndexUpgradeState | null>(null);
+  const preciseIndexUpgradeBlockedRef = useRef(false);
   const [preciseRequestInFlight, setPreciseRequestInFlight] = useState(false);
   const [usageCacheInitializing, setUsageCacheInitializing] = useState(false);
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
@@ -208,6 +215,9 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     dedupeDomain?: PreciseDashboardDedupeDomain,
     dedupeKey?: string,
   ) => {
+    if (preciseIndexUpgradeBlockedRef.current) {
+      return;
+    }
     const requestId = preciseRequestSequenceRef.current + 1;
     preciseRequestSequenceRef.current = requestId;
     void recordPerformanceEvent(
@@ -314,11 +324,13 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setFastSnapshotLoaded(false);
     setPreciseRequestInFlight(false);
     setStartupDashboardUnavailable(false);
+    setUsageCacheInitializing(false);
     setStartupRetrySequence(0);
     setSelectedLiveThreadId("");
     setForceNextQuotaLoad(false);
     setRefreshTaskCount(0);
-    setUsageCacheInitializing(false);
+    preciseIndexUpgradeBlockedRef.current = false;
+    setPreciseIndexUpgradeRequired(null);
 
     if (result.sourceChanged) {
       quotaComparisonObservationRef.current = null;
@@ -399,6 +411,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     }
     const wasStartupUnavailable = startupDashboardUnavailable;
     setStartupDashboardUnavailable(false);
+    preciseIndexUpgradeBlockedRef.current = false;
+    setPreciseIndexUpgradeRequired(null);
     markRenderCommit("frontend precise dashboard");
     startTransition(() => {
       setState((current) => {
@@ -454,6 +468,41 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
       setStartupRetrySequence((current) => current + 1);
     }
   }, [isSourceTokenCurrent, sourceToken, startupDashboardUnavailable]);
+
+  const markPreciseIndexUpgradeRequired = useCallback((upgrade: PreciseIndexUpgradeRequired) => {
+    if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) return;
+    retryPreciseRefreshRef.current = false;
+    preciseIndexUpgradeBlockedRef.current = true;
+    pendingForcedPreciseRefreshRef.current = false;
+    pendingPreciseRequestRef.current = null;
+    setStartupDashboardUnavailable(false);
+    setUsageCacheInitializing(false);
+    setPreciseProgress(null);
+    setPreciseIndexUpgradeRequired({ ...upgrade, deferred: false });
+    setState((current) => isSourceTokenCurrent(sourceToken)
+      ? { ...markPreciseRecentUsageStale(current), loading: false }
+      : current);
+  }, [isSourceTokenCurrent, sourceToken]);
+
+  const deferPreciseIndexUpgrade = useCallback(() => {
+    setPreciseIndexUpgradeRequired((current) => current === null
+      ? null
+      : { ...current, deferred: true });
+  }, []);
+
+  const rebuildPreciseIndex = useCallback(async () => {
+    if (sourceToken === null
+      || !isSourceTokenCurrent(sourceToken)
+      || !source.rebuildPreciseIndexForCurrentVersion) {
+      throw new Error("当前数据源无法执行精确索引重建");
+    }
+    await source.rebuildPreciseIndexForCurrentVersion(sourceToken);
+    if (!isSourceTokenCurrent(sourceToken)) return;
+    preciseIndexUpgradeBlockedRef.current = false;
+    setPreciseIndexUpgradeRequired(null);
+    setUsageCacheInitializing(true);
+    requestPreciseRefresh(true, "manual", `index-rebuild-${sourceToken.transitionGeneration}`);
+  }, [isSourceTokenCurrent, requestPreciseRefresh, source, sourceToken]);
 
   const mergeQuotaSnapshot = useCallback((quota: AccountQuotaBundle) => {
     if (!isSourceTokenCurrent(sourceToken) || sourceToken === null) {
@@ -882,6 +931,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
   const refreshUsageSummary = useCallback(async (force = false) => {
     if (sourceToken === null
+      || preciseIndexUpgradeRequired !== null
       || !isSourceTokenCurrent(sourceToken)
       || !source.readUsageSummarySnapshot) return;
     try {
@@ -906,6 +956,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     isSourceTokenCurrent,
     source,
     sourceToken,
+    preciseIndexUpgradeRequired,
     usageRefreshSettings.usageLightRefreshIntervalSeconds,
   ]);
 
@@ -1105,6 +1156,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
 
   useDeferredDashboardLoads({
     active: fastSnapshotLoaded,
+    preciseActive: fastSnapshotLoaded && preciseIndexUpgradeRequired === null,
     dashboardReady,
     startupUnavailable: startupDashboardUnavailable,
     loading: state.loading,
@@ -1141,6 +1193,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     source,
     onPreciseDashboard: mergePreciseSnapshot,
     onPreciseDashboardFailure: markPreciseSnapshotFailure,
+    onPreciseIndexUpgradeRequired: markPreciseIndexUpgradeRequired,
     onPreciseDashboardStale: markPreciseSnapshotStale,
     onUsageCacheInitialized: markUsageCacheInitialized,
     onUsageCacheStatus: updateUsageCacheStatus,
@@ -1217,6 +1270,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     readyState,
     refreshing: state.loading || refreshTaskCount > 0,
     preciseProgress,
+    preciseIndexUpgradeRequired,
     usageCacheInitializing,
     radarRefreshGeneration,
     reloadAll,
@@ -1234,6 +1288,8 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     runningThreads,
     selectedLiveThreadId,
     setSelectedLiveThreadId,
+    deferPreciseIndexUpgrade,
+    rebuildPreciseIndex,
   };
 }
 

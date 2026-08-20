@@ -3,6 +3,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "reset_codex_home",
     "read_dashboard_snapshot",
     "read_precise_dashboard_snapshot",
+    "rebuild_precise_index_for_current_version",
     "read_precise_dashboard_progress",
     "read_precise_dashboard_source_probe",
     "acknowledge_attribution_safety",

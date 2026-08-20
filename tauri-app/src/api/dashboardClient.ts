@@ -14,7 +14,17 @@ import type { ResetCreditBundle } from "../types/quota";
 import {
   fallbackPlatformCapabilities,
 } from "./fallback";
-import { callCommand, callCommandOptional, callCommandStrict } from "./command";
+import {
+  callCommand,
+  callCommandOptional,
+  callCommandStrict,
+  clearCommandDiagnostic,
+} from "./command";
+import {
+  classifyPreciseIndexUpgradeRequired,
+  PreciseIndexUpgradeRequiredError,
+} from "./preciseIndexCompatibility";
+export type { PreciseIndexUpgradeRequired } from "./preciseIndexCompatibility";
 
 export function getCodexHome(): Promise<CodexHomeSourceEnvelope | null> {
   return callCommandOptional("get_codex_home");
@@ -67,7 +77,27 @@ export function readPreciseDashboardSnapshot(
   if (requestReason !== undefined) {
     args.requestReason = requestReason;
   }
-  return callCommandOptional("read_precise_dashboard_snapshot", args, null);
+  return callCommandStrict<DashboardSnapshot>(
+    "read_precise_dashboard_snapshot",
+    args,
+    null,
+  ).catch((error) => {
+    const upgrade = classifyPreciseIndexUpgradeRequired(error);
+    if (upgrade !== null) {
+      clearCommandDiagnostic("read_precise_dashboard_snapshot");
+      throw new PreciseIndexUpgradeRequiredError(upgrade);
+    }
+    throw error;
+  });
+}
+
+export function rebuildPreciseIndexForCurrentVersion(
+  sourceToken: CodexHomeSourceToken,
+): Promise<void> {
+  return callCommandStrict<void>("rebuild_precise_index_for_current_version", {
+    confirmation: "REBUILD_TAURI_DERIVED_USAGE_INDEX",
+    sourceToken,
+  }, null);
 }
 
 export function readPreciseDashboardProgress(

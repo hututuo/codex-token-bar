@@ -87,6 +87,93 @@ test("a render during the cold-start grace period cannot permanently skip the pr
   }
 });
 
+test("upgrade-required pauses the precise lane without clearing last-good or reporting a retryable failure", async () => {
+  const dom = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(dom);
+  const timers = installManualWindowTimers(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { usePreciseDashboardLoad } = await load("/src/state/usePreciseDashboardLoad.ts");
+      const sourceToken = {
+        canonicalHomeKey: "canonical-future-home",
+        physicalHomeKey: "physical-future-home",
+        transitionGeneration: 3,
+      };
+      let preciseReads = 0;
+      let precisePublishes = 0;
+      let failures = 0;
+      let staleMarks = 0;
+      let observedUpgrade = null;
+      const source = {
+        async readUsageCacheStatus() { return {}; },
+        async readPreciseDashboardSnapshot() {
+          preciseReads += 1;
+          throw new Error(JSON.stringify({
+            code: "indexUpgradeRequired",
+            component: "schema",
+            stored: "12",
+            supported: "9",
+            message: "需要升级软件",
+          }));
+        },
+      };
+      const container = dom.document.createElement("div");
+      dom.document.body.append(container);
+      const root = createRoot(container);
+
+      function Probe({ generation }) {
+        const [blocked, setBlocked] = React.useState(false);
+        usePreciseDashboardLoad({
+          active: !blocked,
+          dashboardReady: true,
+          generation,
+          loading: false,
+          source,
+          sourceToken,
+          onPreciseDashboard() { precisePublishes += 1; },
+          onPreciseDashboardFailure() { failures += 1; },
+          onPreciseDashboardStale() { staleMarks += 1; },
+          onPreciseIndexUpgradeRequired(upgrade) {
+            observedUpgrade = upgrade;
+            setBlocked(true);
+          },
+        });
+        return null;
+      }
+
+      try {
+        await React.act(async () => root.render(React.createElement(Probe, { generation: 1 })));
+        await React.act(async () => {
+          timers.runNext();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        assert.equal(preciseReads, 1);
+        assert.equal(precisePublishes, 0, "the last-good dashboard is not replaced");
+        assert.equal(failures, 0, "upgrade-required is not a retryable I/O failure");
+        assert.equal(staleMarks, 0, "the dedicated compatibility state owns presentation");
+        assert.equal(observedUpgrade?.stored, "12");
+
+        await React.act(async () => root.render(React.createElement(Probe, { generation: 2 })));
+        assert.equal(timers.pendingCount(), 0, "blocked Home does not schedule another precise owner");
+        assert.equal(preciseReads, 1);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    timers.restore();
+    restoreGlobals();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    dom.close();
+  }
+});
+
 test("periodic precise loads probe the source before reusing cache and fail safe", async () => {
   const dom = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(dom);

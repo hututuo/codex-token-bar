@@ -37,6 +37,7 @@ import { buildLocalCommandNoticeLines } from "../state/localCommandNotice";
 import { desktopPlatform } from "../platform/desktop";
 import type { SharedAccountAttributionResult } from "../components/sharedAccountAttribution/model";
 import { floatingSnapshotForDashboardPreview } from "../surfaces/compactPanelSnapshotModel";
+import type { PreciseIndexUpgradeState } from "../state/useDashboardData";
 
 const SessionManagementWorkspace = lazy(async () => {
   const module = await import("./SessionManagementWorkspace");
@@ -77,6 +78,8 @@ interface DashboardPageProps {
   onCodexHomeReset: () => Promise<void>;
   onCustomAccountDisplayNameChange: (displayName: string) => Promise<void>;
   onCheckForUpdate: () => Promise<void>;
+  onDeferPreciseIndexUpgrade: () => void;
+  onRebuildPreciseIndex: () => Promise<void>;
   onFloatingOpacityChange: (opacity: number) => void;
   onFloatingScaleChange: (scale: number) => void;
   onTokenRateFullScaleChange: (fullScale: number) => void;
@@ -124,6 +127,7 @@ interface DashboardPageProps {
   radarRefreshGeneration: number;
   refreshing: boolean;
   preciseProgress: PreciseDashboardProgress | null;
+  preciseIndexUpgradeRequired: PreciseIndexUpgradeState | null;
   appUpdateState: AppUpdateViewState;
   liveRateEnabled: boolean;
   selectedLiveThreadId: string;
@@ -159,6 +163,8 @@ export function DashboardPage({
   onCodexHomeReset,
   onCustomAccountDisplayNameChange,
   onCheckForUpdate,
+  onDeferPreciseIndexUpgrade,
+  onRebuildPreciseIndex,
   onFloatingOpacityChange,
   onFloatingScaleChange,
   onTokenRateFullScaleChange,
@@ -202,6 +208,7 @@ export function DashboardPage({
   radarRefreshGeneration,
   refreshing,
   preciseProgress,
+  preciseIndexUpgradeRequired,
   appUpdateState,
   liveRateEnabled,
   selectedLiveThreadId,
@@ -215,6 +222,7 @@ export function DashboardPage({
     initialSettingsRequest ?? "general",
   );
   const [sessionManagementOpen, setSessionManagementOpen] = useState(false);
+  const [indexRebuildError, setIndexRebuildError] = useState<string | null>(null);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const openSettings = useCallback((category: AppSettingsCategory = "general") => {
     setSettingsCategory(category);
@@ -277,6 +285,48 @@ export function DashboardPage({
           threadDeleteBridgeStatus={threadDeleteBridgeStatus}
           runningThreads={runningThreads}
         />
+
+        {preciseIndexUpgradeRequired ? (
+          <section aria-live="assertive" className="index-upgrade-warning" role="alert">
+            <span aria-hidden="true" className="index-upgrade-warning__icon">!</span>
+            <div className="index-upgrade-warning__content">
+              <strong>精确统计索引需要更高版本的软件</strong>
+              <span>
+                {preciseIndexUpgradeRequired.message} 当前已停止此目录的精确统计自动重试；上次可信数据继续保留，额度、雷达和设置不受影响。
+              </span>
+              {preciseIndexUpgradeRequired.deferred ? (
+                <small>已选择稍后处理。本次运行期间不会再尝试写入这个索引。</small>
+              ) : null}
+              {indexRebuildError ? <small className="is-error">{indexRebuildError}</small> : null}
+            </div>
+            <div className="index-upgrade-warning__actions">
+              <button onClick={() => { void onCheckForUpdate(); }} type="button">升级软件</button>
+              <button
+                disabled={preciseIndexUpgradeRequired.deferred}
+                onClick={onDeferPreciseIndexUpgrade}
+                type="button"
+              >
+                {preciseIndexUpgradeRequired.deferred ? "已暂停" : "稍后处理"}
+              </button>
+              <button
+                className="is-destructive"
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    "确定为当前版本重建精确统计索引吗？\n\n只会删除跨平台版的派生索引和绑定缓存；不会删除 Codex 会话 JSONL、state_5.sqlite、设置、额度历史或雷达数据。重建期间会暂时占用 CPU 和磁盘。",
+                  );
+                  if (!confirmed) return;
+                  setIndexRebuildError(null);
+                  void onRebuildPreciseIndex().catch((error) => {
+                    setIndexRebuildError(error instanceof Error ? error.message : String(error));
+                  });
+                }}
+                type="button"
+              >
+                为当前版本重建索引
+              </button>
+            </div>
+          </section>
+        ) : null}
 
         {usageCacheInitializing ? <UsageCacheInitializationNotice /> : null}
 

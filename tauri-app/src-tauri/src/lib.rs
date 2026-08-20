@@ -128,6 +128,7 @@ pub fn run() {
             commands::dashboard::read_account_reset_credits,
             commands::dashboard::read_dashboard_snapshot,
             commands::dashboard::read_precise_dashboard_snapshot,
+            commands::dashboard::rebuild_precise_index_for_current_version,
             commands::dashboard::read_precise_dashboard_progress,
             commands::dashboard::read_precise_dashboard_source_probe,
             commands::dashboard::acknowledge_attribution_safety,
