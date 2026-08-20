@@ -81,3 +81,44 @@ test("usage, quota, reset credits, and attribution safety IPC calls forward the 
     }
   }
 });
+
+test("usage summary waits for the native single-flight result without a false JavaScript timeout", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let timeoutScheduled = false;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      __TAURI_INTERNALS__: {
+        invoke(command) {
+          assert.equal(command, "read_usage_summary_snapshot");
+          return Promise.resolve(null);
+        },
+      },
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setTimeout() {
+        timeoutScheduled = true;
+        throw new Error("usage summary must not install a JavaScript timeout");
+      },
+    },
+    writable: true,
+  });
+
+  try {
+    await withSsrModules(async (load) => {
+      const { readUsageSummarySnapshot } = await load("/src/api/dashboardClient.ts");
+      const sourceToken = {
+        canonicalHomeKey: "/same/.codex",
+        physicalHomeKey: "unix:1:2",
+        transitionGeneration: 7,
+      };
+      assert.equal(await readUsageSummarySnapshot(sourceToken), null);
+      assert.equal(timeoutScheduled, false);
+    });
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, "window", previousWindow);
+    } else {
+      delete globalThis.window;
+    }
+  }
+});

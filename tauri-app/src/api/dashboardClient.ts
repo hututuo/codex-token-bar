@@ -123,7 +123,12 @@ export function readUsageSummarySnapshot(
   return callCommandStrict<UsageSummarySnapshot | null>(
     "read_usage_summary_snapshot",
     args,
-    8_000,
+    // This command joins the native single-flight summary owner. On a cold
+    // start that owner can legitimately spend longer than a UI budget syncing
+    // an append-only index. A JavaScript timeout cannot cancel the native
+    // work; it only creates a false error that clears when the same invocation
+    // eventually succeeds. Let the native result remain authoritative.
+    null,
   );
 }
 
