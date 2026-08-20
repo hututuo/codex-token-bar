@@ -3210,6 +3210,77 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
 }
 
 #[test]
+fn exact_index_enrichment_publishes_an_appended_tail_in_the_same_snapshot() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    let index_path = root
+        .join(".codex-token-bar-test-cache")
+        .join("exact-token-index.sqlite3");
+    fs::create_dir_all(&session_dir).unwrap();
+    let file = session_dir.join("rollout-019eenrichment-tail-0000-0000-0000-exact.jsonl");
+    write_lines(
+        &file,
+        &[
+            r#"{"timestamp":"2026-07-20T00:59:59Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"reasoning_output_tokens":7,"total_tokens":120}}}}"#,
+        ],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
+
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN model", [])
+        .unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute("DELETE FROM event_enrichment_sources", [])
+        .unwrap();
+    drop(connection);
+    let published_prefix_size = fs::metadata(&file).unwrap().len();
+
+    let appended = r#"{"timestamp":"2026-07-20T01:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}"#;
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle, "{appended}").unwrap();
+    drop(handle);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let refreshed = dashboard_snapshot(&root).unwrap();
+    assert_eq!(refreshed.stats.total_tokens, 170);
+    let (full_scan_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(
+        full_scan_bytes,
+        published_prefix_size,
+        "enrichment must read the old published prefix once"
+    );
+    assert!(append_scan_bytes > 0, "the same owner must publish the appended tail");
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 170);
+    assert_eq!(
+        ExactUsageIndex::scan_bytes_for_testing(),
+        (0, 0),
+        "the next dashboard refresh must not reread the published body"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -8734,6 +8805,37 @@ fn precise_dashboard_source_probe_reports_metadata_only_changes() {
     assert_eq!(changed.state, "changed");
     assert_eq!(changed.published_generation, unchanged.published_generation);
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn compatible_exact_index_reopen_skips_migration_ddl_and_write_transactions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019ecompatible-reopen-0000-0000-fast.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    ExactUsageIndex::reset_open_work_counters_for_testing();
+    ExactUsageIndex::reset_receipt_write_count_for_testing();
+    let probe = precise_dashboard_source_probe(&root).unwrap();
+    assert_eq!(probe.state, "unchanged");
+    drop(ExactUsageIndex::open(&root).unwrap());
+    assert_eq!(
+        ExactUsageIndex::open_work_counters_for_testing(),
+        (0, 0, 0),
+        "a compatible reopen must skip migration, DDL, and write transactions"
+    );
+    assert_eq!(
+        ExactUsageIndex::receipt_write_count_for_testing(),
+        0,
+        "a compatible reopen must not rewrite its integrity receipt"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }

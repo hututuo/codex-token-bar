@@ -2319,20 +2319,18 @@ pub fn precise_dashboard_source_probe(
     codex_home: &Path,
 ) -> Result<PreciseDashboardSourceProbe, String> {
     let canonical_home = precise_refresh_home(codex_home)?;
-    let mut index = ExactUsageIndex::open(&canonical_home)?;
-    let published_generation = index.published_generation()?;
-    let mut warnings = Vec::new();
-    let changed = index.sources_changed(&canonical_home, &mut warnings)?;
-    let state = if !warnings.is_empty() {
-        "unknown"
-    } else if changed {
-        "changed"
-    } else {
-        "unchanged"
+    let probe = exact_usage_index::read_only_source_probe(
+        &canonical_home,
+        StdDuration::from_millis(250),
+    )?;
+    let state = match probe.changed {
+        None => "unknown",
+        Some(true) => "changed",
+        Some(false) => "unchanged",
     };
     Ok(PreciseDashboardSourceProbe {
         state: state.into(),
-        published_generation: published_generation.to_string(),
+        published_generation: probe.published_generation.to_string(),
     })
 }
 

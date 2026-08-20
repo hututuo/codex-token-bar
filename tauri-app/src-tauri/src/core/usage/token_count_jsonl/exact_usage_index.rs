@@ -509,6 +509,149 @@ impl PreciseScanDiscovery {
     }
 }
 
+/// Read-only source-change result for the dashboard cadence. `changed = None`
+/// means that discovery could not prove a complete source view; callers must
+/// treat that state as unknown and schedule the authoritative precise owner.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ReadOnlySourceProbe {
+    pub(super) published_generation: u64,
+    pub(super) changed: Option<bool>,
+}
+
+/// Probes the published generation and file checkpoints without opening the
+/// writable exact index. The filesystem side only reads directory entries and
+/// file metadata through the existing discovery candidate seam; it never reads
+/// JSONL bodies or creates temporary SQLite tables.
+pub(super) fn read_only_source_probe(
+    codex_home: &Path,
+    timeout: StdDuration,
+) -> Result<ReadOnlySourceProbe, String> {
+    let path = database_path(codex_home)?;
+    if !existing_regular_index(&path)? {
+        return Ok(ReadOnlySourceProbe {
+            published_generation: 0,
+            changed: Some(true),
+        });
+    }
+    let connection = sqlite::open_read_only(&path, timeout).map_err(|error| {
+        format!(
+            "无法只读打开精确 token 索引源探针 {}：{error}",
+            path.display()
+        )
+    })?;
+    let metadata_table_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法只读检查精确 token 源探针元数据表：{error}"))?;
+    if !metadata_table_exists {
+        return Ok(ReadOnlySourceProbe {
+            published_generation: 0,
+            changed: Some(true),
+        });
+    }
+    let published_generation = match metadata_text(&connection, "published_generation")? {
+        Some(value) => value.parse::<u64>().map_err(|_| {
+            format!(
+                "精确 token 源探针已发布代次无效：{value:?}，已拒绝按缺失值覆盖"
+            )
+        })?,
+        None => 0,
+    };
+    let building_generation = metadata_text(&connection, "building_generation")?;
+    let enrichment_complete = metadata_text(&connection, EVENT_ENRICHMENT_REVISION_KEY)?
+        .as_deref()
+        == Some(EVENT_ENRICHMENT_REVISION);
+    let published_view_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = 'published_files')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法只读检查精确 token 已发布文件视图：{error}"))?;
+    if !published_view_exists {
+        return Ok(ReadOnlySourceProbe {
+            published_generation,
+            changed: Some(true),
+        });
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT path, size, modified_ns, device_id, file_id, changed_ns FROM published_files",
+        )
+        .map_err(|error| format!("无法准备精确 token 源探针文件检查点：{error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (
+                    nonnegative_u64(row.get::<_, i64>(1)?),
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ),
+            ))
+        })
+        .map_err(|error| format!("无法读取精确 token 源探针文件检查点：{error}"))?;
+    let mut published_files = HashMap::new();
+    for row in rows {
+        let (path, signature) =
+            row.map_err(|error| format!("无法解码精确 token 源探针文件检查点：{error}"))?;
+        published_files.insert(path, signature);
+    }
+    drop(statement);
+
+    let discovery = match estimate_precise_scan_total_with_source_revision(
+        codex_home,
+        timeout,
+        0,
+    ) {
+        Ok(discovery) => discovery,
+        Err(_) => {
+            return Ok(ReadOnlySourceProbe {
+                published_generation,
+                changed: None,
+            })
+        }
+    };
+    if !discovery.boundary_warnings.is_empty() {
+        return Ok(ReadOnlySourceProbe {
+            published_generation,
+            changed: None,
+        });
+    }
+
+    let mut seen = HashSet::with_capacity(discovery.candidates.len());
+    let mut changed = building_generation.is_some() || !enrichment_complete;
+    for candidate in discovery.candidates {
+        let path = candidate.canonical_path.to_string_lossy().into_owned();
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let unchanged = published_files.get(&path).is_some_and(
+            |(size, modified_ns, device_id, file_id, changed_ns)| {
+                candidate.signature.matches_stored(
+                    *size,
+                    modified_ns,
+                    device_id,
+                    file_id,
+                    changed_ns,
+                )
+            },
+        );
+        changed |= !unchanged;
+    }
+    changed |= published_files.keys().any(|path| !seen.contains(path));
+    Ok(ReadOnlySourceProbe {
+        published_generation,
+        changed: Some(changed),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IndexStorageSignature {
     database: FileSignature,
@@ -778,6 +921,12 @@ static FAIL_NEXT_QUICK_CHECK_QUERY: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static RECEIPT_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
+static OPEN_MIGRATION_WORK_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static OPEN_DDL_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static OPEN_WRITE_TRANSACTION_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
 static QUICK_CHECK_BARRIER: OnceLock<Mutex<Option<(Arc<Barrier>, HashSet<PathBuf>)>>> =
     OnceLock::new();
 static INDEX_INTEGRITY_STATES: OnceLock<Mutex<HashMap<PathBuf, IndexIntegrityState>>> =
@@ -926,6 +1075,12 @@ fn assess_index_migration(
     let mut stages = Vec::new();
     if schema != INDEX_SCHEMA_VERSION {
         stages.push("schema");
+    } else if !column_exists_checked(connection, "files", "current_model")?
+        || !column_exists_checked(connection, "files", "is_explicit_subagent_fork")?
+        || !column_exists_checked(connection, "events", "model")?
+        || !column_exists_checked(connection, "events", "reasoning_output_tokens")?
+    {
+        stages.push("schema");
     }
     if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
         != Some(FORK_REPLAY_BOUNDARY_REVISION)
@@ -941,6 +1096,13 @@ fn assess_index_migration(
         != Some(EVENT_ENRICHMENT_REVISION)
     {
         stages.push("eventEnrichment");
+    }
+    if metadata_text(connection, ATTRIBUTION_PROVENANCE_EPOCH_KEY)?
+        .is_none_or(|value| value.trim().is_empty())
+        || metadata_text(connection, ATTRIBUTION_LEDGER_EPOCH_KEY)?.is_none_or(|value| value.trim().is_empty())
+        || metadata_text(connection, ATTRIBUTION_LEDGER_INTEGRITY_KEY)?.is_none_or(|value| value.trim().is_empty())
+    {
+        stages.push("attribution");
     }
     let session_catalog_supported = SESSION_CATALOG_SCHEMA_VERSION.to_string();
     if metadata_text(connection, "session_catalog_schema_version")?.as_deref()
@@ -997,7 +1159,7 @@ impl ExactUsageIndex {
             },
         )?;
         let existed_before = existing_regular_index(&path)?;
-        if existed_before {
+        let (migration_assessment, metadata_table_exists) = if existed_before {
             let read_only =
                 sqlite::open_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
                     format!(
@@ -1005,16 +1167,39 @@ impl ExactUsageIndex {
                         path.display()
                     )
                 })?;
+            let metadata_table_exists = read_only
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| format!("无法只读检查精确 token 元数据表：{error}"))?;
             let assessment = assess_index_migration(&read_only, true)?;
             if let Some(error) = assessment.blocking_error() {
                 return Err(error);
             }
-        }
+            (assessment, metadata_table_exists)
+        } else {
+            (MigrationAssessment::Compatible, false)
+        };
+        let needs_migration_work = matches!(
+            &migration_assessment,
+            MigrationAssessment::KnownMigrationRequired(_)
+        );
         let (mut connection, recovered_corrupt_index) =
-            open_index_connection_with_recovery(&path, existed_before)?;
+            open_index_connection_with_recovery(
+                &path,
+                existed_before,
+                !existed_before || !metadata_table_exists,
+            )?;
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
         let mut has_schema_version = raw_schema_version.is_some();
         let mut schema_version = raw_schema_version.and_then(|value| value.parse::<i64>().ok());
+        let needs_schema_initialization = !existed_before
+            || recovered_corrupt_index
+            || !metadata_table_exists
+            || schema_version.is_none()
+            || needs_migration_work;
         // A future session-catalog revision must be rejected before any index
         // migration or schema DDL runs.  In particular, do not let the
         // legacy initializer below DROP a table owned by a newer build.
@@ -1128,10 +1313,19 @@ impl ExactUsageIndex {
                 // 9-field fingerprint blobs that would break deduplication.
                 drop(connection);
                 remove_index_storage(&path)?;
-                connection = managed_index_connection(&path, open_index_connection(&path, true)?)?;
+                connection = managed_index_connection(
+                    &path,
+                    open_index_connection(&path, true, true)?,
+                )?;
                 schema_version = None;
                 has_schema_version = false;
-            } else if schema_version.is_some() {
+            } else if schema_version.is_some() && needs_migration_work {
+                #[cfg(test)]
+                OPEN_MIGRATION_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
+                #[cfg(test)]
+                OPEN_DDL_COUNT.fetch_add(1, Ordering::SeqCst);
+                #[cfg(test)]
+                OPEN_WRITE_TRANSACTION_COUNT.fetch_add(1, Ordering::SeqCst);
                 if should_report_migration {
                     super::update_precise_dashboard_progress(
                         codex_home,
@@ -1151,6 +1345,10 @@ impl ExactUsageIndex {
                         Some(MIGRATION_STAGE_TOTAL),
                     );
                 }
+                #[cfg(test)]
+                OPEN_MIGRATION_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
+                #[cfg(test)]
+                OPEN_WRITE_TRANSACTION_COUNT.fetch_add(1, Ordering::SeqCst);
                 replay_migration_complete = repair_explicit_subagent_replay_boundary(&connection)?;
                 if should_report_migration {
                     super::update_precise_dashboard_progress(
@@ -1167,30 +1365,57 @@ impl ExactUsageIndex {
                 }
             }
         }
-        initialize_index_schema(&connection)?;
-        // Existing databases can contain child rows written while an older
-        // connection had foreign_keys=OFF. quick_check validates page/index
-        // structure, but it does not report those logical orphans.
-        if should_report_migration {
-            super::update_precise_dashboard_progress(
-                codex_home,
-                "migrating",
-                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（孤儿行）",
-                3,
-                Some(MIGRATION_STAGE_TOTAL),
-            );
+        if needs_schema_initialization {
+            #[cfg(test)]
+            OPEN_MIGRATION_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            OPEN_DDL_COUNT.fetch_add(1, Ordering::SeqCst);
+            initialize_index_schema(&connection)?;
+            // Existing databases can contain child rows written while an older
+            // connection had foreign_keys=OFF. quick_check validates page/index
+            // structure, but it does not report those logical orphans.
+            if should_report_migration {
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "migrating",
+                    "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（孤儿行）",
+                    3,
+                    Some(MIGRATION_STAGE_TOTAL),
+                );
+            }
+            #[cfg(test)]
+            OPEN_MIGRATION_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            OPEN_WRITE_TRANSACTION_COUNT.fetch_add(1, Ordering::SeqCst);
+            repair_orphaned_index_rows(&mut connection)?;
+            if should_report_migration {
+                super::update_precise_dashboard_progress(
+                    codex_home,
+                    "migrating",
+                    "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（会话目录）",
+                    4,
+                    Some(MIGRATION_STAGE_TOTAL),
+                );
+            }
+            #[cfg(test)]
+            OPEN_MIGRATION_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            OPEN_DDL_COUNT.fetch_add(1, Ordering::SeqCst);
+            #[cfg(test)]
+            OPEN_WRITE_TRANSACTION_COUNT.fetch_add(1, Ordering::SeqCst);
+            initialize_session_catalog_schema(&connection)?;
+            if schema_version.is_none()
+                && metadata_text(&connection, "fork_replay_boundary_revision")?.as_deref()
+                    != Some(FORK_REPLAY_BOUNDARY_REVISION)
+            {
+                #[cfg(test)]
+                OPEN_MIGRATION_WORK_COUNT.fetch_add(1, Ordering::SeqCst);
+                #[cfg(test)]
+                OPEN_WRITE_TRANSACTION_COUNT.fetch_add(1, Ordering::SeqCst);
+                replay_migration_complete =
+                    repair_explicit_subagent_replay_boundary(&connection)?;
+            }
         }
-        repair_orphaned_index_rows(&mut connection)?;
-        if should_report_migration {
-            super::update_precise_dashboard_progress(
-                codex_home,
-                "migrating",
-                "正在升级索引；首次可能短暂占用 CPU 和磁盘，原始数据不会丢失（会话目录）",
-                4,
-                Some(MIGRATION_STAGE_TOTAL),
-            );
-        }
-        initialize_session_catalog_schema(&connection)?;
         if (!should_report_migration || replay_migration_complete)
             && !event_enrichment_requires_sync
             && schema_version != Some(INDEX_SCHEMA_VERSION)
@@ -1651,6 +1876,22 @@ impl ExactUsageIndex {
     }
 
     #[cfg(test)]
+    pub(super) fn reset_open_work_counters_for_testing() {
+        OPEN_MIGRATION_WORK_COUNT.store(0, Ordering::SeqCst);
+        OPEN_DDL_COUNT.store(0, Ordering::SeqCst);
+        OPEN_WRITE_TRANSACTION_COUNT.store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_work_counters_for_testing() -> (u64, u64, u64) {
+        (
+            OPEN_MIGRATION_WORK_COUNT.load(Ordering::SeqCst),
+            OPEN_DDL_COUNT.load(Ordering::SeqCst),
+            OPEN_WRITE_TRANSACTION_COUNT.load(Ordering::SeqCst),
+        )
+    }
+
+    #[cfg(test)]
     pub(super) fn mark_receipt_dirty_for_testing(&mut self) {
         self.connection.mark_receipt_dirty();
     }
@@ -1728,12 +1969,23 @@ impl ExactUsageIndex {
         let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
 
         // Historical model/reasoning enrichment is a one-time, serial owner.
-        // It finishes the old published watermarks first and deliberately
-        // returns before the normal incremental owner can consume new tails.
+        // It finishes the old published watermarks first. Once that repair has
+        // published, keep this same owner and discovery plan in the ordinary
+        // checkpoint path so appended tails already visible to discovery are
+        // published in the same dashboard refresh.
         if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
             != Some(EVENT_ENRICHMENT_REVISION)
         {
-            return self.synchronize_event_enrichment(codex_home, &index_path, warnings);
+            let enrichment_revision =
+                self.synchronize_event_enrichment(codex_home, &index_path, warnings)?;
+            if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+                != Some(EVENT_ENRICHMENT_REVISION)
+            {
+                return Ok(enrichment_revision);
+            }
+            if !self.migration_pending {
+                self.connection.mark_receipt_eligible();
+            }
         }
 
         // A steady-state refresh is common: the source files and state
@@ -2297,7 +2549,6 @@ impl ExactUsageIndex {
         if !self.migration_pending {
             self.connection.mark_receipt_eligible();
         }
-        self.ensure_dashboard_aggregates(codex_home)?;
         Ok(revision)
     }
 
@@ -8825,6 +9076,7 @@ fn existing_regular_index(path: &Path) -> Result<bool, String> {
 fn open_index_connection_with_recovery(
     path: &Path,
     existed_before_hint: bool,
+    initialize_metadata: bool,
 ) -> Result<(ManagedIndexConnection, bool), String> {
     let gate = index_integrity_gate(path);
     let _gate_guard = gate.enter(path);
@@ -8834,7 +9086,7 @@ fn open_index_connection_with_recovery(
     let existed_before = existing_regular_index(path)?;
     let _ = existed_before_hint;
     if !existed_before {
-        let connection = open_index_connection(path, true)?;
+        let connection = open_index_connection(path, true, true)?;
         return managed_index_connection(path, connection).map(|connection| (connection, false));
     }
 
@@ -8853,7 +9105,7 @@ fn open_index_connection_with_recovery(
             .filter(|receipt| receipt_storage_matches(receipt, path, signature))
     });
 
-    match open_index_connection(path, false) {
+    match open_index_connection(path, false, initialize_metadata) {
         Ok(connection) if state_has_active_connection => {
             return managed_index_connection(path, connection)
                 .map(|connection| (connection, false));
@@ -9244,7 +9496,11 @@ fn invalidate_index_integrity_signature(path: &Path) {
     states.remove(path);
 }
 
-fn open_index_connection(path: &Path, create_if_missing: bool) -> Result<Connection, String> {
+fn open_index_connection(
+    path: &Path,
+    create_if_missing: bool,
+    initialize_metadata: bool,
+) -> Result<Connection, String> {
     let mut flags = OpenFlags::default();
     if !create_if_missing {
         flags.remove(OpenFlags::SQLITE_OPEN_CREATE);
@@ -9254,22 +9510,31 @@ fn open_index_connection(path: &Path, create_if_missing: bool) -> Result<Connect
     connection
         .busy_timeout(StdDuration::from_secs(30))
         .map_err(|error| format!("无法设置精确 token 索引等待时间：{error}"))?;
+    let pragmas = if create_if_missing || initialize_metadata {
+        "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA temp_store = FILE;\nPRAGMA cache_size = -16384;\nPRAGMA foreign_keys = ON;"
+    } else {
+        // A compatible reopen must not ask SQLite to change persistent
+        // journal state. The database was configured for WAL when it was
+        // created; these remaining pragmas are connection-local.
+        "PRAGMA synchronous = NORMAL;\nPRAGMA temp_store = FILE;\nPRAGMA cache_size = -16384;\nPRAGMA foreign_keys = ON;"
+    };
     connection
-        .execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA temp_store = FILE;
-            PRAGMA cache_size = -16384;
-            PRAGMA foreign_keys = ON;
-
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            ) WITHOUT ROWID;
-            "#,
-        )
+        .execute_batch(pragmas)
         .map_err(|error| format!("无法初始化精确 token 索引连接：{error}"))?;
+    if create_if_missing || initialize_metadata {
+        #[cfg(test)]
+        OPEN_DDL_COUNT.fetch_add(1, Ordering::SeqCst);
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                ) WITHOUT ROWID;
+                "#,
+            )
+            .map_err(|error| format!("无法初始化精确 token 索引元数据表：{error}"))?;
+    }
     let foreign_keys_enabled = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
         .map_err(|error| format!("无法确认精确 token 索引外键约束：{error}"))?;
@@ -9419,14 +9684,14 @@ pub(super) fn repair_orphaned_index_rows_for_testing(
 
 #[cfg(test)]
 pub(super) fn open_index_for_testing(path: &Path) -> Result<Connection, String> {
-    let connection = open_index_connection(path, true)?;
+    let connection = open_index_connection(path, true, true)?;
     initialize_index_schema(&connection)?;
     Ok(connection)
 }
 
 #[cfg(test)]
 pub(super) fn open_existing_index_for_testing(path: &Path) -> Result<Connection, String> {
-    open_index_connection(path, false)
+    open_index_connection(path, false, false)
 }
 
 fn delete_file_version_rows(
