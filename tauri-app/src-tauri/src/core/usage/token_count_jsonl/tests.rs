@@ -7187,6 +7187,62 @@ fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
 }
 
 #[test]
+fn lightweight_summary_reuses_unchanged_file_contributions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let changed = session_dir.join("rollout-019e-summary-delta-changed.jsonl");
+    let unchanged = session_dir.join("rollout-019e-summary-delta-unchanged.jsonl");
+    write_lines(
+        &changed,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    write_lines(
+        &unchanged,
+        &[r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+    );
+    dashboard_snapshot(&root).unwrap();
+
+    let now = OffsetDateTime::parse("2026-06-18T12:00:00Z", &Rfc3339).unwrap();
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let (before, mut contributions) = index
+        .summary_with_file_contributions(now, None)
+        .unwrap();
+    assert_eq!(before.total_tokens, 150);
+    let unchanged_path = fs::canonicalize(&unchanged).unwrap().to_string_lossy().into_owned();
+    let unchanged_generation = contributions
+        .get(&unchanged_path)
+        .map(|contribution| contribution.generation)
+        .unwrap();
+
+    let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
+    writeln!(
+        append,
+        r#"{{"timestamp":"2026-06-18T01:04:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+    )
+    .unwrap();
+    let mut warnings = Vec::new();
+    index
+        .sync_with_scan_plan_mode(&root, &mut warnings, None, None, ExactSyncMode::Summary)
+        .unwrap();
+    let (after, updated) = index
+        .summary_with_file_contributions(now, Some(&contributions))
+        .unwrap();
+    contributions = updated;
+
+    assert_eq!(after.total_tokens, 200);
+    assert_eq!(
+        contributions
+            .get(&unchanged_path)
+            .map(|contribution| contribution.generation),
+        Some(unchanged_generation)
+    );
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -9246,6 +9302,8 @@ fn refreshed_usage_summary_snapshot_waits_for_the_lightweight_publication() {
         .unwrap()
         .expect("the completed lightweight owner must be returned immediately");
     assert_eq!(summary.total_tokens, 120);
+    assert!(!summary.checked_at.is_empty());
+    assert!(summary.data_updated_at.is_some());
     assert_eq!(dashboard_aggregate_build_count_for_testing(&root), 0);
     wait_for_usage_summary_refreshes_for_testing();
     assert_eq!(

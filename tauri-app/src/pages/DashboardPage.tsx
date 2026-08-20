@@ -264,6 +264,8 @@ export function DashboardPage({
             ?? dashboard.preciseRecentUsageCoveredAt
             ?? null}
           usageSummaryUpdatedAt={dashboard.usageSummaryUpdatedAt ?? dashboard.generatedAt}
+          usageSummaryCheckedAt={dashboard.usageSummaryCheckedAt ?? null}
+          usageSummaryDataUpdatedAt={dashboard.usageSummaryDataUpdatedAt ?? null}
           usageSummaryFresh={dashboard.usageSummaryFresh === true}
           preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
           onCodexHomeChange={onCodexHomeChange}

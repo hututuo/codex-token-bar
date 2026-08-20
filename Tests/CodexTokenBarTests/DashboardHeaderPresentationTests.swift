@@ -97,6 +97,39 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertFalse(current.needsAttention)
     }
 
+    func testHeaderFreshnessSeparatesCheckAndDataUpdateTimes() {
+        let dataUpdatedAt = Date(timeIntervalSince1970: 1_720_000_000)
+        let checkedAt = dataUpdatedAt.addingTimeInterval(90)
+
+        let current = DashboardHeaderFreshnessPresentation(
+            status: "读取完成",
+            isRefreshing: false,
+            generatedAt: checkedAt,
+            lastCheckedAt: checkedAt,
+            dataUpdatedAt: dataUpdatedAt,
+            aggregateCoveredAt: dataUpdatedAt
+        )
+
+        XCTAssertTrue(current.text.contains("检查于"))
+        XCTAssertTrue(current.text.contains("数据更新于"))
+        XCTAssertTrue(current.text.contains("图表至"))
+        XCTAssertFalse(current.needsAttention)
+    }
+
+    func testHeaderFreshnessDoesNotCallMetadataCheckADataUpdate() {
+        let checkedAt = Date(timeIntervalSince1970: 1_720_000_000)
+        let metadataOnly = DashboardHeaderFreshnessPresentation(
+            status: "读取完成",
+            isRefreshing: false,
+            generatedAt: checkedAt,
+            lastCheckedAt: checkedAt,
+            dataUpdatedAt: nil
+        )
+
+        XCTAssertTrue(metadataOnly.text.hasPrefix("检查于 "))
+        XCTAssertFalse(metadataOnly.text.contains("数据更新于"))
+    }
+
     func testPreciseProgressPresentationKeepsBackendFactsAndSeparatesStages() {
         let migration = DashboardHeaderProgressPresentation(
             progress: PreciseIndexProgress(

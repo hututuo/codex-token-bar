@@ -165,6 +165,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let todayCalls: Int
         let todayModelBreakdowns: [ModelTokenBreakdown]
         let generatedAt: Date
+        let lastCheckedAt: Date
+        let dataUpdatedAt: Date?
         let homeIdentity: String?
         let coverageKind: DashboardSnapshotCoverageKind
         let observedThrough: Date?
@@ -178,6 +180,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             todayCalls: Int,
             todayModelBreakdowns: [ModelTokenBreakdown] = [],
             generatedAt: Date,
+            lastCheckedAt: Date? = nil,
+            dataUpdatedAt: Date? = nil,
             homeIdentity: String? = nil,
             coverageKind: DashboardSnapshotCoverageKind = .summary,
             observedThrough: Date? = nil,
@@ -190,6 +194,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             self.todayCalls = todayCalls
             self.todayModelBreakdowns = todayModelBreakdowns
             self.generatedAt = generatedAt
+            self.lastCheckedAt = lastCheckedAt ?? generatedAt
+            self.dataUpdatedAt = dataUpdatedAt
             self.homeIdentity = homeIdentity
             self.coverageKind = coverageKind
             self.observedThrough = observedThrough
@@ -268,6 +274,11 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 at: Date()
             )
             let summaryGeneratedAt = Date()
+            let dataUpdatedAt = sessionFiles
+                .compactMap { file in
+                    (try? FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate]) as? Date
+                }
+                .max()
             let synchronizedSignature = sessionTreeSignature(
                 for: sessionFiles,
                 attributionProvenanceEpoch: synchronization.provenanceEpoch,
@@ -279,6 +290,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 todayCalls: totals.todayCalls,
                 todayModelBreakdowns: normalizedTodayModelBreakdowns,
                 generatedAt: summaryGeneratedAt,
+                lastCheckedAt: summaryGeneratedAt,
+                dataUpdatedAt: dataUpdatedAt,
                 homeIdentity: dataSource.stableIdentityKey,
                 coverageKind: .summary,
                 observedThrough: summaryGeneratedAt,
@@ -426,6 +439,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 usagePrecision: phase.snapshot.usagePrecision,
                 preciseTimeSeriesGeneratedAt: phase.preciseCoverageAt,
                 generatedAt: Date(),
+                lastCheckedAt: Date(),
+                dataUpdatedAt: phase.snapshot.dataUpdatedAt ?? phase.sourceDataUpdatedAt,
                 homeIdentity: dataSource.stableIdentityKey,
                 coverageKind: .full,
                 observedThrough: phase.snapshot.observedThrough,
@@ -472,6 +487,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let historyIndex: CodexUsageHistoryIndex
         let signature: SessionTreeSignature
         let preciseCoverageAt: Date
+        let sourceDataUpdatedAt: Date?
     }
 
     private enum PreparedPreciseLoad {
@@ -555,6 +571,12 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 attributionProvenanceEpoch: initialAttributionState.provenanceEpoch,
                 attributionGeneration: initialAttributionState.generation
             )
+        // `preciseCoverageAt` is the time this owner observed/published the
+        // index, not the time the source data changed. Keep the two concepts
+        // separate so a successful check cannot masquerade as new usage.
+        let sourceDataUpdatedAt = signature.files
+            .map { Date(timeIntervalSince1970: $0.modifiedAt) }
+            .max()
         trace?.mark("signature.end", metadata: [
             "files": String(signature.files.count),
             "hasStateDB": signature.stateDatabase == nil ? "0" : "1",
@@ -602,6 +624,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 usagePrecision: .precise,
                 preciseTimeSeriesGeneratedAt: preciseCoverageAt,
                 generatedAt: Date(),
+                lastCheckedAt: Date(),
+                dataUpdatedAt: cached.dataUpdatedAt ?? sourceDataUpdatedAt,
                 homeIdentity: dataSource.stableIdentityKey,
                 coverageKind: .full,
                 observedThrough: preciseCoverageAt,
@@ -848,6 +872,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             usagePrecision: .precise,
             preciseTimeSeriesGeneratedAt: settledThrough,
             generatedAt: Date(),
+            lastCheckedAt: Date(),
+            dataUpdatedAt: sourceDataUpdatedAt,
             homeIdentity: dataSource.stableIdentityKey,
             coverageKind: .settled,
             observedThrough: preciseCoverageAt,
@@ -885,7 +911,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             cacheUsage: aggregatedCacheUsage,
             historyIndex: historyIndex,
             signature: synchronizedSignature,
-            preciseCoverageAt: settledThrough
+            preciseCoverageAt: settledThrough,
+            sourceDataUpdatedAt: sourceDataUpdatedAt
         ))
     }
 }

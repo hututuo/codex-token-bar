@@ -78,6 +78,11 @@ final class CodexUsageStore: ObservableObject {
     }
 
     @Published private(set) var snapshot: DashboardSnapshot = .empty
+    /// Process-local freshness facts. These are intentionally not restored as
+    /// an active check after relaunch: a new process must perform a check
+    /// before it can claim a current `lastCheckedAt`.
+    @Published private(set) var lastCheckedAt: Date?
+    @Published private(set) var dataUpdatedAt: Date?
     /// Latest lightweight/full "today" totals. Kept outside `dailyUsage` so a
     /// compact sync cannot partially rewrite the heatmap before aggregation.
     @Published private(set) var todayUsageSummary: DayUsage?
@@ -483,6 +488,8 @@ final class CodexUsageStore: ObservableObject {
         todayModelBreakdownsFresh = false
         todayModelBreakdownsDay = nil
         todayUsageSummary = nil
+        lastCheckedAt = nil
+        dataUpdatedAt = nil
         guard identityChanged else { return true }
 
         sourceIdentityGeneration += 1
@@ -632,6 +639,8 @@ final class CodexUsageStore: ObservableObject {
             todayModelBreakdownsFresh = false
             todayModelBreakdownsDay = nil
             snapshotSourceID = nil
+            lastCheckedAt = nil
+            dataUpdatedAt = nil
             preciseTimeSeriesFresh = false
             status = "未找到本地 Codex 数据目录"
             isInitialLoading = false
@@ -669,6 +678,8 @@ final class CodexUsageStore: ObservableObject {
             todayModelBreakdownsFresh = false
             todayModelBreakdownsDay = nil
             self.snapshotSourceID = nil
+            lastCheckedAt = nil
+            dataUpdatedAt = nil
             preciseTimeSeriesFresh = false
             isCompactSummaryPending = false
         }
@@ -1013,6 +1024,7 @@ final class CodexUsageStore: ObservableObject {
                     }
                 }
                 completedWithoutError = true
+                self.lastCheckedAt = Date()
                 trace?.end("ok")
             } catch {
                 guard self.isCurrentRefresh(
@@ -1499,6 +1511,8 @@ final class CodexUsageStore: ObservableObject {
                 details.preciseTimeSeriesGeneratedAt
             ),
             generatedAt: headline.generatedAt,
+            lastCheckedAt: maxOptional(headline.lastCheckedAt, details.lastCheckedAt),
+            dataUpdatedAt: maxOptional(headline.dataUpdatedAt, details.dataUpdatedAt),
             homeIdentity: headline.homeIdentity ?? details.homeIdentity,
             coverageKind: maxCoverage(headline.coverageKind, details.coverageKind),
             observedThrough: maxOptional(headline.observedThrough, details.observedThrough),
@@ -1531,6 +1545,8 @@ final class CodexUsageStore: ObservableObject {
                 older.preciseTimeSeriesGeneratedAt
             ),
             generatedAt: headline.generatedAt,
+            lastCheckedAt: maxOptional(headline.lastCheckedAt, older.lastCheckedAt),
+            dataUpdatedAt: maxOptional(headline.dataUpdatedAt, older.dataUpdatedAt),
             homeIdentity: headline.homeIdentity ?? older.homeIdentity,
             coverageKind: maxCoverage(headline.coverageKind, older.coverageKind),
             observedThrough: maxOptional(headline.observedThrough, older.observedThrough),
@@ -1562,6 +1578,9 @@ final class CodexUsageStore: ObservableObject {
     ) {
         let previousSnapshot = self.snapshot
         let shouldReplaceEmpty = !hasDisplayableSnapshot(previousSnapshot)
+        if let incomingDataUpdatedAt = snapshot.dataUpdatedAt {
+            dataUpdatedAt = Self.maxOptional(dataUpdatedAt, incomingDataUpdatedAt)
+        }
         if !shouldReplaceEmpty,
            let incomingGeneration = snapshot.exactGeneration,
            incomingGeneration == previousSnapshot.exactGeneration,
@@ -2050,6 +2069,8 @@ final class CodexUsageStore: ObservableObject {
             usagePrecision: previous.usagePrecision,
             preciseTimeSeriesGeneratedAt: previous.preciseTimeSeriesGeneratedAt,
             generatedAt: summary.generatedAt,
+            lastCheckedAt: summary.lastCheckedAt,
+            dataUpdatedAt: summary.dataUpdatedAt ?? previous.dataUpdatedAt,
             homeIdentity: summary.homeIdentity ?? previous.homeIdentity,
             coverageKind: summary.coverageKind,
             observedThrough: summary.observedThrough ?? summary.generatedAt,

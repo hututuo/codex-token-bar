@@ -15,6 +15,8 @@ export function emptyDashboardSnapshot(): DashboardSnapshot {
     dashboardRevision: null,
     aggregateBoundaryUnix: null,
     usageSummaryUpdatedAt: null,
+    usageSummaryCheckedAt: null,
+    usageSummaryDataUpdatedAt: null,
     usageSummary: null,
     usageSummaryFresh: false,
     preciseRecentUsageCoveredAt: null,

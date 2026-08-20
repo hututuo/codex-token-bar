@@ -103,6 +103,23 @@ test("DashboardHeader renders the Chinese updated timestamp and refresh progress
   });
 });
 
+test("DashboardHeader distinguishes a successful check from source data time", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const html = renderComponent(DashboardHeader, headerProps({
+      usageSummaryCheckedAt: "2026-07-06T02:31:00.000Z",
+      usageSummaryDataUpdatedAt: "2026-07-06T02:27:00.000Z",
+      usageSummaryFresh: true,
+      preciseDataFresh: true,
+      aggregateCoveredAt: "2026-07-06T02:25:00.000Z",
+    }));
+
+    assert.match(html, /检查于/);
+    assert.match(html, /数据更新于/);
+    assert.match(html, /图表至/);
+  });
+});
+
 test("DashboardHeader cannot look complete before the full model and chart snapshot is current", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");

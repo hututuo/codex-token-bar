@@ -1688,13 +1688,41 @@ fn summary_after_precise_sync(
         flight.set_trace_status("summary_empty");
         return Err(no_token_events_error(warnings));
     }
-    let summary = match index.summary_with_system_timezone(OffsetDateTime::now_utc()) {
-        Ok(summary) => summary,
+    let previous_contributions = USAGE_SUMMARY_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cached| {
+            cached
+                .as_ref()
+                .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
+                .filter(|cached| {
+                    cached.physical_home_identity.as_deref()
+                        == Some(physical_home_identity.as_str())
+                })
+                .and_then(|cached| cached.file_contributions.clone())
+        });
+    let (summary, file_contributions) = match index.summary_with_file_contributions(
+        OffsetDateTime::now_utc(),
+        previous_contributions.as_ref(),
+    ) {
+        Ok(value) => value,
         Err(error) => {
             flight.set_trace_status("summary_error");
             return Err(error);
         }
     };
+    let data_updated_at = index
+        .latest_published_source_modified_at()
+        .ok()
+        .flatten();
+    store_usage_summary_cache_with_contributions(
+        signature.clone(),
+        summary.clone(),
+        Some(physical_home_identity),
+        data_updated_at,
+        Some(file_contributions),
+    );
     store_usage_summary(signature.clone(), summary.clone());
     Ok(summary)
 }
@@ -2314,6 +2342,20 @@ pub struct TokenUsageSummary {
     pub today_model_breakdowns: Vec<ModelTokenBreakdown>,
 }
 
+/// Process-local contribution for the lightweight summary lane.  It is not
+/// persisted in the exact index or the numeric startup cache: after a process
+/// restart the first summary simply rebuilds this small map from SQLite once.
+/// Subsequent light refreshes replace only files whose published generation
+/// changed, so the unchanged history is not re-aggregated on every cadence.
+#[derive(Clone, Debug, Default)]
+pub(super) struct SummaryFileContribution {
+    pub(super) generation: i64,
+    pub(super) total_tokens: u64,
+    pub(super) today_tokens: u64,
+    pub(super) today_requests: u32,
+    pub(super) today_model_breakdowns: Vec<ModelTokenBreakdown>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageSummarySnapshot {
@@ -2322,6 +2364,12 @@ pub struct TokenUsageSummarySnapshot {
     pub dashboard_revision: u64,
     pub aggregate_boundary_unix: i64,
     pub generated_at: String,
+    /// Process-local check/publication time. Old native payloads omit the
+    /// optional data timestamp and remain readable by the frontend.
+    #[serde(default)]
+    pub checked_at: String,
+    #[serde(default)]
+    pub data_updated_at: Option<String>,
 }
 
 impl std::ops::Deref for TokenUsageSummarySnapshot {
@@ -3077,6 +3125,11 @@ struct CachedUsageSummary {
     signature: DashboardScanSignature,
     summary: TokenUsageSummary,
     generated_at: String,
+    /// Process-local binding for the contribution map. It deliberately does
+    /// not alter the persisted dashboard signature/cache compatibility.
+    physical_home_identity: Option<String>,
+    data_updated_at: Option<String>,
+    file_contributions: Option<HashMap<String, SummaryFileContribution>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3127,12 +3180,14 @@ fn cached_dashboard_usage_summary_at(
 ) -> Result<Option<TokenUsageSummary>, String> {
     hydrate_dashboard_aggregate_cache_once()?;
     let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
+    let physical_home_identity = attribution_watch_root_physical_identity(codex_home).ok();
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(summary) = summary_cache
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
         .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .filter(|cached| cached.physical_home_identity == physical_home_identity)
         .map(|cached| cached.summary)
     {
         return Ok(Some(summary));
@@ -3169,18 +3224,22 @@ fn cached_dashboard_usage_summary_snapshot_at(
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
     hydrate_dashboard_aggregate_cache_once()?;
     let expected_scope = dashboard_usage_scope_at(codex_home, now_utc, local_offset);
+    let physical_home_identity = attribution_watch_root_physical_identity(codex_home).ok();
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Some(cached) = summary_cache
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
         .filter(|cached| cached.signature.usage_scope() == expected_scope)
+        .filter(|cached| cached.physical_home_identity == physical_home_identity)
     {
         return Ok(Some(TokenUsageSummarySnapshot {
             summary: cached.summary,
             dashboard_revision: cached.signature.index_revision,
             aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
-            generated_at: cached.generated_at,
+            generated_at: cached.generated_at.clone(),
+            checked_at: cached.generated_at,
+            data_updated_at: cached.data_updated_at,
         }));
     }
     let cache = DASHBOARD_AGGREGATE_CACHE
@@ -3211,7 +3270,9 @@ fn cached_dashboard_usage_summary_snapshot_at(
                 summary: cached.summary,
                 dashboard_revision: cached.signature.index_revision,
                 aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
-                generated_at,
+                generated_at: generated_at.clone(),
+                checked_at: generated_at,
+                data_updated_at: None,
             })
         }))
 }
@@ -3687,6 +3748,46 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
 }
 
 fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUsageSummary) {
+    let physical_home_identity =
+        attribution_watch_root_physical_identity(&signature.codex_home).ok();
+    let existing_contributions = USAGE_SUMMARY_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cached| {
+            cached
+                .as_ref()
+                .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
+                .filter(|cached| cached.physical_home_identity == physical_home_identity)
+                .and_then(|cached| cached.file_contributions.clone())
+        });
+    let existing_data_updated_at = USAGE_SUMMARY_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cached| {
+            cached
+                .as_ref()
+                .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
+                .filter(|cached| cached.physical_home_identity == physical_home_identity)
+                .and_then(|cached| cached.data_updated_at.clone())
+        });
+    store_usage_summary_cache_with_contributions(
+        signature,
+        summary,
+        physical_home_identity,
+        existing_data_updated_at,
+        existing_contributions,
+    );
+}
+
+fn store_usage_summary_cache_with_contributions(
+    signature: DashboardScanSignature,
+    summary: TokenUsageSummary,
+    physical_home_identity: Option<String>,
+    data_updated_at: Option<String>,
+    file_contributions: Option<HashMap<String, SummaryFileContribution>>,
+) {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
         *guard = Some(CachedUsageSummary {
@@ -3695,6 +3796,9 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
             generated_at: OffsetDateTime::now_utc()
                 .format(&Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),
+            physical_home_identity,
+            data_updated_at,
+            file_contributions,
         });
     }
 }

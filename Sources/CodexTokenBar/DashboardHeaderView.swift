@@ -220,6 +220,8 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
         status: String,
         isRefreshing: Bool,
         generatedAt: Date,
+        lastCheckedAt: Date? = nil,
+        dataUpdatedAt: Date? = nil,
         aggregateCoveredAt: Date? = nil,
         progress: PreciseIndexProgress = .idle
     ) {
@@ -248,10 +250,29 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
             return
         }
 
-        if let aggregateCoveredAt {
-            text = "摘要 \(DateFormatter.statusString(from: generatedAt)) · 图表至 \(DateFormatter.hourMinute.string(from: aggregateCoveredAt))"
+        let summaryTime: String
+        if let checkDate = lastCheckedAt, let dataDate = dataUpdatedAt {
+            if abs(checkDate.timeIntervalSince(dataDate)) >= 1 {
+                summaryTime = "检查于 \(DateFormatter.statusString(from: checkDate)) · 数据更新于 \(DateFormatter.statusString(from: dataDate))"
+            } else {
+                summaryTime = "更新于 \(DateFormatter.statusString(from: dataDate))"
+            }
+        } else if let checkDate = lastCheckedAt {
+            // A metadata/state-DB check can succeed without proving that
+            // token data changed. Never label that check as a data update.
+            summaryTime = "检查于 \(DateFormatter.statusString(from: checkDate))"
+        } else if let dataDate = dataUpdatedAt {
+            summaryTime = "数据更新于 \(DateFormatter.statusString(from: dataDate))"
         } else {
-            text = "更新于 \(DateFormatter.statusString(from: generatedAt))"
+            // Legacy callers only provide generatedAt. Preserve their old
+            // wording while new coordinator-backed callers use the explicit
+            // check/data labels above.
+            summaryTime = "更新于 \(DateFormatter.statusString(from: generatedAt))"
+        }
+        if let aggregateCoveredAt {
+            text = "\(summaryTime) · 图表至 \(DateFormatter.hourMinute.string(from: aggregateCoveredAt))"
+        } else {
+            text = summaryTime
         }
         needsAttention = false
         showsProgress = false
@@ -310,6 +331,8 @@ struct HeaderView: View {
     let dataSourceLabel: String
     let dataSourceOrigin: String
     let isRefreshing: Bool
+    let lastCheckedAt: Date?
+    let dataUpdatedAt: Date?
     let preciseIndexProgress: PreciseIndexProgress
     let unreadThreadCount: Int
     let runningThreadSummary: RunningThreadSummary
@@ -376,6 +399,8 @@ struct HeaderView: View {
             status: status,
             isRefreshing: isRefreshing,
             generatedAt: snapshot.generatedAt,
+            lastCheckedAt: lastCheckedAt ?? snapshot.lastCheckedAt,
+            dataUpdatedAt: dataUpdatedAt ?? snapshot.dataUpdatedAt,
             aggregateCoveredAt: snapshot.preciseTimeSeriesGeneratedAt,
             progress: preciseIndexProgress
         )

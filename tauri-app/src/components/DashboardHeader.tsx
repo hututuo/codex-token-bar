@@ -26,6 +26,8 @@ interface DashboardHeaderProps {
   customAccountDisplayName: string;
   generatedAt: string;
   usageSummaryUpdatedAt?: string | null;
+  usageSummaryCheckedAt?: string | null;
+  usageSummaryDataUpdatedAt?: string | null;
   /** Light-summary publication is independent from five-minute chart progress. */
   usageSummaryFresh?: boolean;
   /** Full five-minute/model snapshot freshness; required before the header may look complete. */
@@ -70,6 +72,8 @@ export function DashboardHeader({
   customAccountDisplayName,
   generatedAt,
   usageSummaryUpdatedAt = null,
+  usageSummaryCheckedAt = null,
+  usageSummaryDataUpdatedAt = null,
   usageSummaryFresh,
   preciseDataFresh,
   aggregateCoveredAt = null,
@@ -130,6 +134,22 @@ export function DashboardHeader({
     second: "2-digit",
   });
   const timeLabel = timeFormatter.format(new Date(usageSummaryUpdatedAt ?? generatedAt));
+  const checkedDate = usageSummaryCheckedAt ? new Date(usageSummaryCheckedAt) : null;
+  const dataDate = usageSummaryDataUpdatedAt ? new Date(usageSummaryDataUpdatedAt) : null;
+  const hasFreshnessTimes = checkedDate !== null
+    && !Number.isNaN(checkedDate.getTime());
+  const hasDataTime = dataDate !== null && !Number.isNaN(dataDate.getTime());
+  const explicitSummaryTime = hasFreshnessTimes
+    ? hasDataTime
+      ? Math.abs(checkedDate!.getTime() - dataDate!.getTime()) >= 1_000
+        ? `检查于 ${timeFormatter.format(checkedDate!)} · 数据更新于 ${timeFormatter.format(dataDate!)}`
+        : `更新于 ${timeFormatter.format(dataDate!)}`
+      : `检查于 ${timeFormatter.format(checkedDate!)}`
+    : hasDataTime
+      ? `数据更新于 ${timeFormatter.format(dataDate!)}`
+      : null;
+  const summaryProgressTime = explicitSummaryTime ?? `摘要 ${timeLabel}`;
+  const summaryCompleteTime = explicitSummaryTime ?? `更新于 ${timeLabel}`;
   const aggregateTimeLabel = aggregateCoveredAt === null
     ? null
     : new Intl.DateTimeFormat("zh-CN", {
@@ -243,12 +263,12 @@ export function DashboardHeader({
               {activeProgress
                 ? activeProgress.text
                 : fullPrecisionPending
-                  ? `摘要 ${timeLabel} · 模型与图表同步中`
+                  ? `${summaryProgressTime} · 模型与图表同步中`
                   : lightSummarySyncing
-                    ? `摘要 ${timeLabel} · 同步中`
+                    ? `${summaryProgressTime} · 同步中`
                   : aggregateTimeLabel === null
-                    ? `更新于 ${timeLabel}`
-                    : `摘要 ${timeLabel} · 图表至 ${aggregateTimeLabel}`}
+                    ? summaryCompleteTime
+                    : `${summaryCompleteTime} · 图表至 ${aggregateTimeLabel}`}
               {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
             </strong>
             {activeProgress?.showsReassurance ? (

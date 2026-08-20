@@ -596,6 +596,11 @@ struct DashboardSnapshot: Codable {
     let usagePrecision: DashboardUsagePrecision
     let preciseTimeSeriesGeneratedAt: Date?
     let generatedAt: Date
+    /// Successful source check time; unlike `generatedAt`, this is not a
+    /// claim that token data changed during the check.
+    let lastCheckedAt: Date?
+    /// Newest source-data modification represented by this snapshot.
+    let dataUpdatedAt: Date?
     /// Stable Codex Home identity. Optional keeps snapshots written before
     /// lineage was introduced readable and prevents an unknown legacy value
     /// from being treated as a cross-Home match.
@@ -619,6 +624,8 @@ struct DashboardSnapshot: Codable {
         usagePrecision: DashboardUsagePrecision = .precise,
         preciseTimeSeriesGeneratedAt: Date? = nil,
         generatedAt: Date,
+        lastCheckedAt: Date? = nil,
+        dataUpdatedAt: Date? = nil,
         homeIdentity: String? = nil,
         coverageKind: DashboardSnapshotCoverageKind = .full,
         observedThrough: Date? = nil,
@@ -634,6 +641,8 @@ struct DashboardSnapshot: Codable {
         self.usagePrecision = usagePrecision
         self.preciseTimeSeriesGeneratedAt = preciseTimeSeriesGeneratedAt
         self.generatedAt = generatedAt
+        self.lastCheckedAt = lastCheckedAt
+        self.dataUpdatedAt = dataUpdatedAt
         self.homeIdentity = homeIdentity
         self.coverageKind = coverageKind
         self.observedThrough = observedThrough
@@ -651,6 +660,8 @@ struct DashboardSnapshot: Codable {
         case usagePrecision
         case preciseTimeSeriesGeneratedAt
         case generatedAt
+        case lastCheckedAt
+        case dataUpdatedAt
         case homeIdentity
         case coverageKind
         case observedThrough
@@ -669,6 +680,8 @@ struct DashboardSnapshot: Codable {
         usagePrecision = try container.decodeIfPresent(DashboardUsagePrecision.self, forKey: .usagePrecision) ?? .precise
         preciseTimeSeriesGeneratedAt = try container.decodeIfPresent(Date.self, forKey: .preciseTimeSeriesGeneratedAt)
         generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        lastCheckedAt = try container.decodeIfPresent(Date.self, forKey: .lastCheckedAt)
+        dataUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .dataUpdatedAt)
         homeIdentity = try container.decodeIfPresent(String.self, forKey: .homeIdentity)
         coverageKind = try container.decodeIfPresent(
             DashboardSnapshotCoverageKind.self,
@@ -690,6 +703,8 @@ struct DashboardSnapshot: Codable {
         try container.encode(usagePrecision, forKey: .usagePrecision)
         try container.encodeIfPresent(preciseTimeSeriesGeneratedAt, forKey: .preciseTimeSeriesGeneratedAt)
         try container.encode(generatedAt, forKey: .generatedAt)
+        try container.encodeIfPresent(lastCheckedAt, forKey: .lastCheckedAt)
+        try container.encodeIfPresent(dataUpdatedAt, forKey: .dataUpdatedAt)
         try container.encodeIfPresent(homeIdentity, forKey: .homeIdentity)
         try container.encode(coverageKind, forKey: .coverageKind)
         try container.encodeIfPresent(observedThrough, forKey: .observedThrough)

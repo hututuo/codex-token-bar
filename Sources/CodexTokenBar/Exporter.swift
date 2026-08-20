@@ -242,6 +242,8 @@ struct ExportSnapshotView: View {
                     dataSourceLabel: "本地数据",
                     dataSourceOrigin: "导出",
                     isRefreshing: false,
+                    lastCheckedAt: nil,
+                    dataUpdatedAt: snapshot.dataUpdatedAt,
                     preciseIndexProgress: .idle,
                     unreadThreadCount: 0,
                     runningThreadSummary: .unavailable,

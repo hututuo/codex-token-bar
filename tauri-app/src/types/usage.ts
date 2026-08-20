@@ -152,6 +152,10 @@ export interface DashboardSnapshot extends DashboardPayloadLineage {
   aggregateBoundaryUnix?: DashboardLineageScalar;
   /** Frontend publication time of the latest lightweight numeric summary. */
   usageSummaryUpdatedAt?: string | null;
+  /** Process-local successful check time for the lightweight summary lane. */
+  usageSummaryCheckedAt?: string | null;
+  /** Newest source-file modification represented by the lightweight summary. */
+  usageSummaryDataUpdatedAt?: string | null;
   /** Latest lightweight totals; deliberately separate from chart buckets. */
   usageSummary?: UsageSummarySnapshot | null;
   /**
@@ -239,4 +243,6 @@ export interface UsageSummarySnapshot {
   dashboardRevision?: DashboardLineageScalar;
   aggregateBoundaryUnix?: DashboardLineageScalar;
   generatedAt?: string;
+  checkedAt?: string | null;
+  dataUpdatedAt?: string | null;
 }

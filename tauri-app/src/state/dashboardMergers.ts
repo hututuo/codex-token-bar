@@ -419,6 +419,14 @@ export function mergePreciseDashboard(
     ?? precise.usageSummaryUpdatedAt
     ?? (nextLightSummary === null ? precise.generatedAt : nextLightSummary.generatedAt)
     ?? null;
+  const summaryCheckedAt = nextLightSummary?.checkedAt
+    ?? (retainedLightSummary !== null ? previous?.usageSummaryCheckedAt : null)
+    ?? precise.usageSummaryCheckedAt
+    ?? null;
+  const summaryDataUpdatedAt = nextLightSummary?.dataUpdatedAt
+    ?? (retainedLightSummary !== null ? previous?.usageSummaryDataUpdatedAt : null)
+    ?? precise.usageSummaryDataUpdatedAt
+    ?? null;
   return {
     ...state,
     dashboard:
@@ -441,6 +449,8 @@ export function mergePreciseDashboard(
               ?? null,
             usageSummary: nextLightSummary,
             usageSummaryUpdatedAt: summaryUpdatedAt,
+            usageSummaryCheckedAt: summaryCheckedAt,
+            usageSummaryDataUpdatedAt: summaryDataUpdatedAt,
             usageSummaryFresh: retainedLightSummary !== null
               ? previous.usageSummaryFresh !== false
               : incomingLightSummary !== null
@@ -523,6 +533,8 @@ export function mergeUsageSummary(
   const incomingSummary = publicationAt === null || summary.generatedAt === publicationAt
     ? summary
     : { ...summary, generatedAt: publicationAt };
+  const incomingCheckedAt = nonEmptyText(incomingSummary.checkedAt);
+  const incomingDataUpdatedAt = nonEmptyText(incomingSummary.dataUpdatedAt);
   const incomingLineage = normalizeSummaryLineage(dashboard, incomingSummary);
   const previousSummary = dashboard.usageSummary;
   if (previousSummary !== null && previousSummary !== undefined) {
@@ -534,13 +546,26 @@ export function mergeUsageSummary(
       // Keep the existing object (and generatedAt) stable during a quiet
       // cadence tick; only clear a prior stale flag if this check succeeded.
       if (dashboard.usageSummaryFresh !== false) {
-        return state;
+        if (dashboard.usageSummaryCheckedAt === incomingCheckedAt
+          && dashboard.usageSummaryDataUpdatedAt === incomingDataUpdatedAt) {
+          return state;
+        }
+        return {
+          ...state,
+          dashboard: {
+            ...dashboard,
+            usageSummaryCheckedAt: incomingCheckedAt,
+            usageSummaryDataUpdatedAt: incomingDataUpdatedAt,
+          },
+        };
       }
       return {
         ...state,
         dashboard: {
           ...dashboard,
           usageSummaryFresh: true,
+          usageSummaryCheckedAt: incomingCheckedAt,
+          usageSummaryDataUpdatedAt: incomingDataUpdatedAt,
         },
       };
     }
@@ -578,6 +603,10 @@ export function mergeUsageSummary(
     dashboard: {
       ...dashboard,
       usageSummaryUpdatedAt: publicationAt ?? dashboard.usageSummaryUpdatedAt ?? null,
+      usageSummaryCheckedAt: incomingCheckedAt ?? dashboard.usageSummaryCheckedAt ?? null,
+      usageSummaryDataUpdatedAt: incomingDataUpdatedAt
+        ?? dashboard.usageSummaryDataUpdatedAt
+        ?? null,
       usageSummary: {
         ...incomingSummary,
       },

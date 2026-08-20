@@ -154,6 +154,11 @@ extension CodexUsageAnalyzer {
             cacheUsage: .empty,
             usagePrecision: usagePrecision,
             generatedAt: Date(),
+            lastCheckedAt: Date(),
+            // state_5.sqlite is only a metadata fallback here. It does not
+            // prove that token data changed, so do not manufacture a data
+            // timestamp from the check time.
+            dataUpdatedAt: nil,
             homeIdentity: dataSource.stableIdentityKey,
             coverageKind: .summary,
             observedThrough: Date()

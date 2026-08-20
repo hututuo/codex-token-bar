@@ -7,7 +7,8 @@ use super::session_parser::{
 };
 use super::{
     attribution_watch_root_physical_identity, IndexedSessionCatalogEntry,
-    IndexedSessionCatalogSnapshot, IndexedSessionMetadata, TokenUsageSummary,
+    IndexedSessionCatalogSnapshot, IndexedSessionMetadata, SummaryFileContribution,
+    TokenUsageSummary,
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
@@ -2961,6 +2962,226 @@ impl ExactUsageIndex {
         })
     }
 
+    /// Builds the lightweight total/today/model projection from per-file
+    /// contributions.  A missing previous map performs one grouped SQLite
+    /// read and seeds the map; later Summary owners only re-read files whose
+    /// published generation changed.  This deliberately does not touch
+    /// dashboard time-series, heatmap, ranking, or aggregate publication
+    /// tables.
+    pub(super) fn summary_with_file_contributions(
+        &self,
+        now_utc: OffsetDateTime,
+        previous: Option<&HashMap<String, SummaryFileContribution>>,
+    ) -> Result<
+        (
+            TokenUsageSummary,
+            HashMap<String, SummaryFileContribution>,
+        ),
+        String,
+    > {
+        let today = LocalDayMode::System.date_at(now_utc.unix_timestamp());
+        let (start, end) = LocalDayMode::System.day_bounds(today)?;
+        let current_files = self.published_file_generations()?;
+        let (contributions, recomputed_files, mode) = match previous {
+            None => (
+                self.summary_file_contributions_full(start, end)?,
+                current_files.len(),
+                "seed",
+            ),
+            Some(previous) => {
+                let mut current = HashMap::with_capacity(current_files.len());
+                let mut recomputed = 0_usize;
+                for (path, generation) in current_files {
+                    let reusable = previous
+                        .get(&path)
+                        .filter(|contribution| contribution.generation == generation)
+                        .cloned();
+                    let contribution = if let Some(reusable) = reusable {
+                        reusable
+                    } else {
+                        recomputed = recomputed.saturating_add(1);
+                        self.summary_file_contribution(&path, generation, start, end)?
+                    };
+                    current.insert(path, contribution);
+                }
+                (current, recomputed, "incremental")
+            }
+        };
+        startup_trace::mark_performance(format!(
+            "summary_projection mode={mode} visible_files={} recomputed_files={recomputed_files}",
+            contributions.len()
+        ));
+        Ok((summary_from_file_contributions(&contributions), contributions))
+    }
+
+    fn published_file_generations(&self) -> Result<HashMap<String, i64>, String> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT path, generation FROM published_files")
+            .map_err(|error| format!("无法准备轻量摘要文件代次：{error}"))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(|error| format!("无法读取轻量摘要文件代次：{error}"))?;
+        rows.map(|row| row.map_err(|error| format!("无法解码轻量摘要文件代次：{error}")))
+            .collect()
+    }
+
+    pub(super) fn latest_published_source_modified_at(&self) -> Result<Option<String>, String> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT modified_ns FROM published_files")
+            .map_err(|error| format!("无法准备轻量摘要源更新时间：{error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("无法读取轻量摘要源更新时间：{error}"))?;
+        let latest = rows
+            .filter_map(|row| row.ok())
+            .filter_map(|value| value.parse::<u128>().ok())
+            .max();
+        Ok(latest.and_then(format_rfc3339_nanos))
+    }
+
+    fn summary_file_contributions_full(
+        &self,
+        start: i64,
+        end: i64,
+    ) -> Result<HashMap<String, SummaryFileContribution>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    e.file_path,
+                    e.file_generation,
+                    e.model,
+                    COALESCE(SUM(e.tokens), 0),
+                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.input_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN MIN(e.cached_input_tokens, e.input_tokens) ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.output_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN 1 ELSE 0 END), 0)
+                FROM events e
+                JOIN published_files f
+                  ON f.generation = e.file_generation
+                 AND f.path = e.file_path
+                GROUP BY e.file_path, e.file_generation, e.model
+                "#,
+            )
+            .map_err(|error| format!("无法准备轻量摘要全量种子：{error}"))?;
+        let rows = statement
+            .query_map(params![start, end], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(|error| format!("无法读取轻量摘要全量种子：{error}"))?;
+        let mut contributions = HashMap::<String, SummaryFileContribution>::new();
+        for row in rows {
+            let (path, generation, model, total, today, input, cached, output, calls) = row
+                .map_err(|error| format!("无法解码轻量摘要全量种子：{error}"))?;
+            add_summary_file_row(
+                &mut contributions,
+                path,
+                generation,
+                model,
+                total,
+                today,
+                input,
+                cached,
+                output,
+                calls,
+            );
+        }
+        Ok(contributions)
+    }
+
+    fn summary_file_contribution(
+        &self,
+        path: &str,
+        generation: i64,
+        start: i64,
+        end: i64,
+    ) -> Result<SummaryFileContribution, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"
+                SELECT
+                    model,
+                    COALESCE(SUM(tokens), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN input_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN MIN(cached_input_tokens, input_tokens) ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN output_tokens ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN timestamp >= ?1 AND timestamp < ?2 THEN 1 ELSE 0 END), 0)
+                FROM events
+                WHERE file_generation = ?3 AND file_path = ?4
+                GROUP BY model
+                "#,
+            )
+            .map_err(|error| format!("无法准备轻量摘要文件增量：{error}"))?;
+        let rows = statement
+            .query_map(params![start, end, generation, path], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(|error| format!("无法读取轻量摘要文件增量：{error}"))?;
+        let mut contribution = SummaryFileContribution {
+            generation,
+            ..SummaryFileContribution::default()
+        };
+        let mut model_breakdowns = Vec::new();
+        for row in rows {
+            let (model, total, today, input, cached, output, calls) = row
+                .map_err(|error| format!("无法解码轻量摘要文件增量：{error}"))?;
+            contribution.total_tokens = contribution
+                .total_tokens
+                .saturating_add(nonnegative_u64(total));
+            contribution.today_tokens = contribution
+                .today_tokens
+                .saturating_add(nonnegative_u64(today));
+            contribution.today_requests = contribution
+                .today_requests
+                .saturating_add(saturating_u32(calls));
+            if calls > 0 {
+                model_breakdowns.push(ModelTokenBreakdown {
+                    model,
+                    breakdown: TokenCacheBreakdown {
+                        input_tokens: nonnegative_u64(input),
+                        cached_input_tokens: nonnegative_u64(cached),
+                        output_tokens: nonnegative_u64(output),
+                        total_tokens: nonnegative_u64(today),
+                        calls: saturating_u32(calls),
+                    },
+                });
+            }
+        }
+        model_breakdowns.sort_by(|left, right| {
+            right
+                .breakdown
+                .total_tokens
+                .cmp(&left.breakdown.total_tokens)
+                .then_with(|| left.model.cmp(&right.model))
+        });
+        contribution.today_model_breakdowns = model_breakdowns;
+        Ok(contribution)
+    }
+
     fn model_breakdowns_between(
         &self,
         start: i64,
@@ -4234,6 +4455,95 @@ pub(super) fn peek_startup_identity(
         published_generation,
         attribution_safety,
     }))
+}
+
+fn add_summary_file_row(
+    contributions: &mut HashMap<String, SummaryFileContribution>,
+    path: String,
+    generation: i64,
+    model: Option<String>,
+    total: i64,
+    today: i64,
+    input: i64,
+    cached: i64,
+    output: i64,
+    calls: i64,
+) {
+    let contribution = contributions
+        .entry(path)
+        .or_insert_with(|| SummaryFileContribution {
+            generation,
+            ..SummaryFileContribution::default()
+        });
+    contribution.total_tokens = contribution
+        .total_tokens
+        .saturating_add(nonnegative_u64(total));
+    contribution.today_tokens = contribution
+        .today_tokens
+        .saturating_add(nonnegative_u64(today));
+    contribution.today_requests = contribution
+        .today_requests
+        .saturating_add(saturating_u32(calls));
+    if calls > 0 {
+        contribution.today_model_breakdowns.push(ModelTokenBreakdown {
+            model,
+            breakdown: TokenCacheBreakdown {
+                input_tokens: nonnegative_u64(input),
+                cached_input_tokens: nonnegative_u64(cached),
+                output_tokens: nonnegative_u64(output),
+                total_tokens: nonnegative_u64(today),
+                calls: saturating_u32(calls),
+            },
+        });
+    }
+}
+
+fn summary_from_file_contributions(
+    contributions: &HashMap<String, SummaryFileContribution>,
+) -> TokenUsageSummary {
+    let mut summary = TokenUsageSummary::default();
+    let mut model_breakdowns = HashMap::<Option<String>, TokenCacheBreakdown>::new();
+    for contribution in contributions.values() {
+        summary.total_tokens = summary
+            .total_tokens
+            .saturating_add(contribution.total_tokens);
+        summary.today_tokens = summary
+            .today_tokens
+            .saturating_add(contribution.today_tokens);
+        summary.today_requests = summary
+            .today_requests
+            .saturating_add(contribution.today_requests);
+        for model in &contribution.today_model_breakdowns {
+            let aggregate = model_breakdowns
+                .entry(model.model.clone())
+                .or_default();
+            aggregate.input_tokens = aggregate
+                .input_tokens
+                .saturating_add(model.breakdown.input_tokens);
+            aggregate.cached_input_tokens = aggregate
+                .cached_input_tokens
+                .saturating_add(model.breakdown.cached_input_tokens);
+            aggregate.output_tokens = aggregate
+                .output_tokens
+                .saturating_add(model.breakdown.output_tokens);
+            aggregate.total_tokens = aggregate
+                .total_tokens
+                .saturating_add(model.breakdown.total_tokens);
+            aggregate.calls = aggregate.calls.saturating_add(model.breakdown.calls);
+        }
+    }
+    summary.today_model_breakdowns = model_breakdowns
+        .into_iter()
+        .map(|(model, breakdown)| ModelTokenBreakdown { model, breakdown })
+        .collect();
+    summary.today_model_breakdowns.sort_by(|left, right| {
+        right
+            .breakdown
+            .total_tokens
+            .cmp(&left.breakdown.total_tokens)
+            .then_with(|| left.model.cmp(&right.model))
+    });
+    summary
 }
 
 fn startup_attribution_safety_state(
@@ -12119,6 +12429,16 @@ fn format_date(date: Date) -> String {
 
 fn format_rfc3339_unix(timestamp: i64) -> Option<String> {
     OffsetDateTime::from_unix_timestamp(timestamp)
+        .ok()
+        .and_then(|value| value.format(&Rfc3339).ok())
+}
+
+fn format_rfc3339_nanos(timestamp: u128) -> Option<String> {
+    let seconds = i64::try_from(timestamp / 1_000_000_000).ok()?;
+    let nanosecond = u32::try_from(timestamp % 1_000_000_000).ok()?;
+    OffsetDateTime::from_unix_timestamp(seconds)
+        .ok()?
+        .replace_nanosecond(nanosecond)
         .ok()
         .and_then(|value| value.format(&Rfc3339).ok())
 }

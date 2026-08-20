@@ -251,6 +251,10 @@ extension CodexUsageAnalyzer {
             let observedThrough: Date?
             let settledThrough: Date?
             let exactGeneration: Int64?
+            /// The newest source-data modification represented by this
+            /// last-good projection. This is a derived-cache hint, not an
+            /// exact-index fact; old payloads legitimately omit it.
+            let dataUpdatedAt: Date?
 
             init(
                 snapshot: DashboardSnapshot,
@@ -281,6 +285,7 @@ extension CodexUsageAnalyzer {
                 observedThrough = snapshot.observedThrough
                 settledThrough = snapshot.settledThrough
                 exactGeneration = snapshot.exactGeneration
+                dataUpdatedAt = snapshot.dataUpdatedAt
             }
 
             func restoredSnapshot(
@@ -321,6 +326,11 @@ extension CodexUsageAnalyzer {
                     usagePrecision: .precise,
                     preciseTimeSeriesGeneratedAt: preciseTimeSeriesGeneratedAt,
                     generatedAt: generatedAt,
+                    // A process restart has not performed a source check
+                    // yet. Keep that field nil; the stored data timestamp is
+                    // still useful for distinguishing last-good data from a
+                    // new check in the header.
+                    dataUpdatedAt: dataUpdatedAt,
                     homeIdentity: homeIdentityKey,
                     coverageKind: coverageKind ?? .full,
                     observedThrough: observedThrough,
