@@ -1,8 +1,8 @@
 use super::exact_usage_index::{
     estimate_precise_scan_total_with_source_revision, integrity_receipt_path_for_testing,
     open_existing_index_for_testing, open_index_for_testing,
-    repair_orphaned_index_rows_for_testing, ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY,
-    STAGED_FULL_REBUILD_PARSER_REVISION,
+    repair_orphaned_index_rows_for_testing, staging_batch_shape_for_testing,
+    ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY, STAGED_FULL_REBUILD_PARSER_REVISION,
 };
 use super::session_files::session_id_from_file;
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
@@ -21,6 +21,76 @@ use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn staging_budget_batches_cap_workers_artifacts_and_ready_bytes() {
+    const MIB: u64 = 1024 * 1024;
+    let batches = staging_batch_shape_for_testing(&[
+        100 * MIB,
+        100 * MIB,
+        100 * MIB,
+        100 * MIB,
+        100 * MIB,
+        513 * MIB,
+        100 * MIB,
+    ]);
+    assert!(batches.iter().all(|batch| batch.len() <= 4));
+    assert!(batches
+        .iter()
+        .all(|batch| { batch.len() == 1 || batch.iter().copied().sum::<u64>() <= 512 * MIB }));
+    assert!(batches.iter().any(|batch| batch.as_slice() == [513 * MIB]));
+}
+
+#[test]
+fn future_revision_is_rejected_before_quick_check_or_schema_writes() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-future-revision.jsonl"),
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":1}}}}"#,
+        ],
+    );
+    dashboard_snapshot(&root).unwrap();
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&index_path).unwrap();
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES ('fork_replay_boundary_revision', 'future-replay-v99')",
+            [],
+        )
+        .unwrap();
+    let schema_before = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    drop(connection);
+
+    ExactUsageIndex::reset_quick_check_count_for_testing();
+    let error = match ExactUsageIndex::open(&root) {
+        Ok(_) => panic!("future revision must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.contains("需要升级软件"));
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
+    let connection = Connection::open(index_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        schema_before
+    );
+    fs::remove_dir_all(root).unwrap();
+}
 
 struct PreciseRefreshGate {
     permits: Mutex<usize>,
@@ -1433,7 +1503,9 @@ fn missing_session_roots_keep_the_previous_published_generation() {
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019emissing-root-safe.jsonl"),
-        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100}}}}"#],
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":100}}}}"#,
+        ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
     let connection = Connection::open(&index_path).unwrap();
@@ -1465,9 +1537,11 @@ fn missing_session_roots_keep_the_previous_published_generation() {
     );
     assert_eq!(
         connection
-            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         100
     );
@@ -1527,9 +1601,11 @@ fn unreadable_primary_session_root_keeps_the_previous_published_generation() {
     );
     assert_eq!(
         connection
-            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         100
     );
@@ -1586,7 +1662,10 @@ fn codex_home_replacement_during_precise_scan_blocks_generation_publish() {
 
     let error = dashboard_snapshot(&root).unwrap_err();
     set_precise_refresh_sync_hook_for_testing(None);
-    assert!(error.contains("已保留上一份可信索引并停止本轮发布"), "{error}");
+    assert!(
+        error.contains("已保留上一份可信索引并停止本轮发布"),
+        "{error}"
+    );
 
     let retired_index = retired_root
         .join(".codex-token-bar-test-cache")
@@ -2386,7 +2465,7 @@ fn exact_index_parallel_stages_large_cold_files() {
 }
 
 #[test]
-fn exact_index_parallel_stage_publishes_scan_start_prefix_then_catches_active_append() {
+fn exact_index_parallel_stage_uses_worker_open_boundary_without_second_owner() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let root = temp_root();
@@ -2470,20 +2549,23 @@ fn exact_index_parallel_stage_publishes_scan_start_prefix_then_catches_active_ap
     ExactUsageIndex::reset_stage_concurrency_for_testing(75);
 
     let first = dashboard_snapshot(&root).unwrap();
-    assert_eq!(first.stats.total_tokens, 150);
-    assert_eq!(first.stats.total_calls, 2);
+    assert_eq!(first.stats.total_tokens, 200);
+    assert_eq!(first.stats.total_calls, 3);
     assert_eq!(first.stats.total_threads, 2);
     assert!(
         ExactUsageIndex::stage_peak_concurrency_for_testing() >= 2,
         "the active and stable large files must overlap in staging workers"
     );
     let (full_bytes, append_scan_bytes) = ExactUsageIndex::scan_bytes_for_testing();
-    assert_eq!(full_bytes, active_start_size + stable_start_size);
+    assert_eq!(
+        full_bytes,
+        active_start_size + appended_bytes + stable_start_size
+    );
     assert_eq!(append_scan_bytes, 0);
     let mut first_index = ExactUsageIndex::open(&root).unwrap();
     assert!(
-        first_index.sources_changed(&root, &mut Vec::new()).unwrap(),
-        "the appended suffix must remain pending after the frozen-prefix generation"
+        !first_index.sources_changed(&root, &mut Vec::new()).unwrap(),
+        "the worker-open formal boundary must include bytes appended before the file is opened"
     );
     drop(first_index);
 
@@ -2494,17 +2576,10 @@ fn exact_index_parallel_stage_publishes_scan_start_prefix_then_catches_active_ap
     assert_eq!(second.stats.total_calls, 3);
     assert_eq!(second.stats.total_threads, 2);
     let (full_bytes, append_bytes) = ExactUsageIndex::scan_bytes_for_testing();
+    assert_eq!(full_bytes, 0, "the no-op follow-up must not rebuild files");
     assert_eq!(
-        full_bytes, 0,
-        "the follow-up must not rebuild the large file"
-    );
-    assert!(
-        append_bytes >= appended_bytes,
-        "the follow-up must consume the appended JSONL record"
-    );
-    assert!(
-        append_bytes <= EXACT_INDEX_CHUNK_SIZE + appended_bytes,
-        "the follow-up may re-read at most one tail chunk plus the new suffix"
+        append_bytes, 0,
+        "the no-op follow-up must not reread JSONL tails"
     );
     let mut second_index = ExactUsageIndex::open(&root).unwrap();
     assert!(
@@ -2970,7 +3045,9 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
             .unwrap()
             > 0;
         if model_column_exists {
-            connection.execute("UPDATE events SET model = NULL", []).unwrap();
+            connection
+                .execute("UPDATE events SET model = NULL", [])
+                .unwrap();
         }
         drop(connection);
 
@@ -3011,7 +3088,10 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
                 .query_row(
                     "SELECT model, reasoning_output_tokens FROM published_events",
                     [],
-                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<i64>>(1)?)),
+                    |row| Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<i64>>(1)?
+                    )),
                 )
                 .unwrap(),
             (None, None),
@@ -3053,7 +3133,10 @@ fn exact_index_migrates_github_v6_and_v7_with_one_enrichment_pass() {
             (before.0, before.1, before.2, before.3),
             "v{legacy_version} migration changed published event/file identity"
         );
-        assert!(after.4 > before.4, "enrichment must publish one new generation");
+        assert!(
+            after.4 > before.4,
+            "enrichment must publish one new generation"
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -3193,9 +3276,11 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
     );
     assert_eq!(
         interrupted_database
-            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         120
     );
@@ -3263,15 +3348,23 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 100);
 
     let connection = Connection::open(&index_path).unwrap();
-    connection.execute("ALTER TABLE events DROP COLUMN model", []).unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN model", [])
+        .unwrap();
     connection
         .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
         .unwrap();
     connection
-        .execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'", [])
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
         .unwrap();
     connection
-        .execute("DELETE FROM metadata WHERE key = 'event_enrichment_revision'", [])
+        .execute(
+            "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
+            [],
+        )
         .unwrap();
     connection
         .execute("DELETE FROM event_enrichment_sources", [])
@@ -3315,9 +3408,11 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
     );
     assert_eq!(
         interrupted_database
-            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         100,
         "the previous complete generation must stay readable until resume publishes"
@@ -3397,15 +3492,23 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
 
     let connection = Connection::open(&index_path).unwrap();
-    connection.execute("ALTER TABLE events DROP COLUMN model", []).unwrap();
+    connection
+        .execute("ALTER TABLE events DROP COLUMN model", [])
+        .unwrap();
     connection
         .execute("ALTER TABLE events DROP COLUMN reasoning_output_tokens", [])
         .unwrap();
     connection
-        .execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'", [])
+        .execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )
         .unwrap();
     connection
-        .execute("DELETE FROM metadata WHERE key = 'event_enrichment_revision'", [])
+        .execute(
+            "DELETE FROM metadata WHERE key = 'event_enrichment_revision'",
+            [],
+        )
         .unwrap();
     connection
         .execute("DELETE FROM event_enrichment_sources", [])
@@ -3445,9 +3548,11 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
     );
     assert_eq!(
         interrupted
-            .query_row("SELECT COALESCE(SUM(tokens), 0) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(tokens), 0) FROM published_events",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         150,
         "readers must keep the complete previous generation"
@@ -3614,7 +3719,9 @@ fn exact_index_refuses_unknown_event_enrichment_revision_before_migration_writes
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019efuture-enrichment.jsonl"),
-        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
@@ -3675,7 +3782,9 @@ fn exact_index_restores_a_missing_marker_for_the_known_session_catalog_shape() {
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019eknown-unmarked-catalog.jsonl"),
-        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
@@ -3731,7 +3840,9 @@ fn exact_index_refuses_unmarked_unknown_session_catalog_shape_without_dropping_i
     fs::create_dir_all(&session_dir).unwrap();
     write_lines(
         &session_dir.join("rollout-019eunmarked-future-catalog.jsonl"),
-        &[r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+        &[
+            r#"{"timestamp":"2026-07-20T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#,
+        ],
     );
     assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 120);
 
@@ -6553,13 +6664,17 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(&database).unwrap();
     let event_count_before = connection
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+        .query_row("SELECT COUNT(*) FROM events", [], |row| {
+            row.get::<_, i64>(0)
+        })
         .unwrap();
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM dashboard_turn_candidates", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM dashboard_turn_candidates",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         2
     );
@@ -6597,15 +6712,18 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
     let connection = Connection::open(database).unwrap();
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
             .unwrap(),
         event_count_before
     );
     assert_eq!(
         connection
-            .query_row("SELECT COUNT(*) FROM dashboard_turn_candidates", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM dashboard_turn_candidates",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .unwrap(),
         2
     );
@@ -7614,7 +7732,12 @@ fn public_v16_schema6_keeps_startup_last_good_then_enriches_once() {
     assert_eq!(rebuilt.stats.total_tokens, 120);
     assert_eq!(
         ExactUsageIndex::scan_bytes_for_testing(),
-        (fs::metadata(session_dir.join("rollout-019epublic-v16-upgrade.jsonl")).unwrap().len(), 0)
+        (
+            fs::metadata(session_dir.join("rollout-019epublic-v16-upgrade.jsonl"))
+                .unwrap()
+                .len(),
+            0
+        )
     );
     let upgraded: serde_json::Value =
         serde_json::from_slice(&fs::read(&cache_path).unwrap()).unwrap();
@@ -8931,14 +9054,8 @@ fn refreshed_usage_summary_snapshot_waits_for_the_lightweight_publication() {
 
 #[test]
 fn promoted_full_owner_releases_summary_waiters_before_full_completion() {
-    let flight = PreciseRefreshFlight::new(
-        PreciseRefreshIntent::Summary,
-        false,
-        None,
-        None,
-        0,
-        None,
-    );
+    let flight =
+        PreciseRefreshFlight::new(PreciseRefreshIntent::Summary, false, None, None, 0, None);
     assert!(flight.request_full());
     let waiter = Arc::clone(&flight);
     let (tx, rx) = std::sync::mpsc::channel();

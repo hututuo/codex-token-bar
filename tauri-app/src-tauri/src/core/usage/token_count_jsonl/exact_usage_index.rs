@@ -11,6 +11,7 @@ use super::{
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
+use crate::core::localtime;
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
@@ -18,12 +19,12 @@ use crate::core::{
     app_operation_lock::AppOperationGuard, atomic_file, cross_process_lock::CrossProcessFileLock,
     sqlite, startup_trace,
 };
-use crate::core::localtime;
 use crate::models::{
     ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning, ModelTokenBreakdown,
     RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage, TokenCacheBreakdown,
     TokenCacheUsage, TurnCacheUsage,
 };
+use fs2::available_space;
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -116,6 +117,11 @@ const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
 const PARALLEL_STAGING_MIN_BYTES: u64 = EXACT_INDEX_CHUNK_SIZE;
 const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const STAGING_MAX_WORKERS: usize = 4;
+const STAGING_MAX_READY_ARTIFACTS: usize = 8;
+const STAGING_MAX_READY_BYTES: u64 = 512 * 1024 * 1024;
+const STAGING_MIN_FREE_RESERVE_BYTES: u64 = 64 * 1024 * 1024;
+const STAGING_MANIFEST_INTEGRITY: &str = "sqlite-quick-check-v1";
 const MIGRATION_STAGE_TOTAL: u64 = 6;
 
 pub(super) struct ExactUsageIndex {
@@ -139,6 +145,42 @@ pub(super) struct AttributionSafetyState {
     pub(super) unsafe_id: Option<String>,
     pub(super) current_scan_unsafe_cause_detected: bool,
     pub(super) current_scan_incomplete: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MigrationAssessment {
+    Compatible,
+    KnownMigrationRequired(Vec<&'static str>),
+    UpgradeRequired {
+        component: &'static str,
+        stored: String,
+        supported: String,
+    },
+    Corrupt {
+        component: &'static str,
+        raw_value: String,
+    },
+}
+
+impl MigrationAssessment {
+    fn blocking_error(&self) -> Option<String> {
+        match self {
+            Self::UpgradeRequired {
+                component,
+                stored,
+                supported,
+            } => Some(format!(
+                "精确 token {component} 版本 {stored} 高于或不同于当前支持版本 {supported}，需要升级软件，已拒绝写入或删除索引"
+            )),
+            Self::Corrupt {
+                component,
+                raw_value,
+            } => Some(format!(
+                "精确 token {component} 标记已损坏（{raw_value:?}），已拒绝把损坏值当作缺失后覆盖"
+            )),
+            Self::Compatible | Self::KnownMigrationRequired(_) => None,
+        }
+    }
 }
 
 /// Read-only identity used to validate a persisted numeric startup envelope.
@@ -475,7 +517,10 @@ struct EventEnrichmentCandidate {
 #[derive(Clone, Debug)]
 struct StagedFullRebuild {
     job: FullRebuildJob,
+    committed_signature: FileSignature,
     database_path: PathBuf,
+    artifact_id: String,
+    actual_bytes: u64,
     prefix_sha256: [u8; 32],
     resume_offset: u64,
     parser_state: ExactSessionParserState,
@@ -660,6 +705,184 @@ static QUICK_CHECK_BARRIER: OnceLock<Mutex<Option<(Arc<Barrier>, HashSet<PathBuf
 static INDEX_INTEGRITY_STATES: OnceLock<Mutex<HashMap<PathBuf, IndexIntegrityState>>> =
     OnceLock::new();
 
+fn assess_index_migration(
+    connection: &Connection,
+    existed_before: bool,
+) -> Result<MigrationAssessment, String> {
+    if !existed_before {
+        return Ok(MigrationAssessment::Compatible);
+    }
+    let metadata_exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法只读检查精确 token 元数据表：{error}"))?;
+    if !metadata_exists {
+        let has_user_tables = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| format!("无法只读检查精确 token 旧表：{error}"))?;
+        return Ok(if has_user_tables {
+            MigrationAssessment::Corrupt {
+                component: "schema_version",
+                raw_value: "missing metadata table".into(),
+            }
+        } else {
+            MigrationAssessment::Compatible
+        });
+    }
+
+    let raw_schema = metadata_text(connection, "schema_version")?;
+    let Some(raw_schema) = raw_schema else {
+        let has_other_tables = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'metadata')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| format!("无法只读检查无版本精确 token 索引：{error}"))?;
+        return Ok(if has_other_tables {
+            MigrationAssessment::Corrupt {
+                component: "schema_version",
+                raw_value: "missing".into(),
+            }
+        } else {
+            MigrationAssessment::Compatible
+        });
+    };
+    let schema = match raw_schema.parse::<i64>() {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(MigrationAssessment::Corrupt {
+                component: "schema_version",
+                raw_value: raw_schema,
+            })
+        }
+    };
+    if schema > INDEX_SCHEMA_VERSION {
+        return Ok(MigrationAssessment::UpgradeRequired {
+            component: "schema",
+            stored: schema.to_string(),
+            supported: INDEX_SCHEMA_VERSION.to_string(),
+        });
+    }
+
+    for (key, supported, component) in [
+        (
+            "fork_replay_boundary_revision",
+            FORK_REPLAY_BOUNDARY_REVISION,
+            "fork replay",
+        ),
+        (
+            ORPHAN_REPAIR_REVISION_KEY,
+            ORPHAN_REPAIR_REVISION,
+            "orphan repair",
+        ),
+        (
+            EVENT_ENRICHMENT_REVISION_KEY,
+            EVENT_ENRICHMENT_REVISION,
+            "event enrichment",
+        ),
+    ] {
+        if let Some(stored) = metadata_text(connection, key)? {
+            if stored != supported {
+                return Ok(MigrationAssessment::UpgradeRequired {
+                    component,
+                    stored,
+                    supported: supported.into(),
+                });
+            }
+        }
+    }
+    if let Some(raw) = metadata_text(connection, "session_catalog_schema_version")? {
+        let stored = match raw.parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(MigrationAssessment::Corrupt {
+                    component: "session catalog schema",
+                    raw_value: raw,
+                })
+            }
+        };
+        if stored > SESSION_CATALOG_SCHEMA_VERSION {
+            return Ok(MigrationAssessment::UpgradeRequired {
+                component: "session catalog schema",
+                stored: stored.to_string(),
+                supported: SESSION_CATALOG_SCHEMA_VERSION.to_string(),
+            });
+        }
+    }
+    if let Some(raw) = metadata_text(connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)? {
+        let stored = match raw.parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(MigrationAssessment::Corrupt {
+                    component: "aggregate schema",
+                    raw_value: raw,
+                })
+            }
+        };
+        if stored > DASHBOARD_AGGREGATE_SCHEMA_VERSION {
+            return Ok(MigrationAssessment::UpgradeRequired {
+                component: "aggregate schema",
+                stored: stored.to_string(),
+                supported: DASHBOARD_AGGREGATE_SCHEMA_VERSION.to_string(),
+            });
+        }
+    }
+    if let Some(stored) = metadata_text(connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)? {
+        if !is_known_dashboard_pricing_revision(&stored) {
+            return Ok(MigrationAssessment::UpgradeRequired {
+                component: "aggregate pricing",
+                stored,
+                supported: DASHBOARD_AGGREGATE_PRICING_REVISION.into(),
+            });
+        }
+    }
+
+    let mut stages = Vec::new();
+    if schema != INDEX_SCHEMA_VERSION {
+        stages.push("schema");
+    }
+    if metadata_text(connection, "fork_replay_boundary_revision")?.as_deref()
+        != Some(FORK_REPLAY_BOUNDARY_REVISION)
+    {
+        stages.push("forkReplay");
+    }
+    if metadata_text(connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
+        != Some(ORPHAN_REPAIR_REVISION)
+    {
+        stages.push("orphanRepair");
+    }
+    if metadata_text(connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
+        != Some(EVENT_ENRICHMENT_REVISION)
+    {
+        stages.push("eventEnrichment");
+    }
+    let session_catalog_supported = SESSION_CATALOG_SCHEMA_VERSION.to_string();
+    if metadata_text(connection, "session_catalog_schema_version")?.as_deref()
+        != Some(session_catalog_supported.as_str())
+    {
+        stages.push("sessionCatalog");
+    }
+    let aggregate_supported = DASHBOARD_AGGREGATE_SCHEMA_VERSION.to_string();
+    if metadata_text(connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?.as_deref()
+        != Some(aggregate_supported.as_str())
+    {
+        stages.push("aggregate");
+    }
+    Ok(if stages.is_empty() {
+        MigrationAssessment::Compatible
+    } else {
+        MigrationAssessment::KnownMigrationRequired(stages)
+    })
+}
+
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
         let operation_lock = AppOperationGuard::acquire(codex_home)?;
@@ -696,6 +919,19 @@ impl ExactUsageIndex {
             },
         )?;
         let existed_before = existing_regular_index(&path)?;
+        if existed_before {
+            let read_only =
+                sqlite::open_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
+                    format!(
+                        "无法在完整性检查前只读探测精确 token 索引 {}：{error}",
+                        path.display()
+                    )
+                })?;
+            let assessment = assess_index_migration(&read_only, true)?;
+            if let Some(error) = assessment.blocking_error() {
+                return Err(error);
+            }
+        }
         let (mut connection, recovered_corrupt_index) =
             open_index_connection_with_recovery(&path, existed_before)?;
         let raw_schema_version = metadata_text(&connection, "schema_version")?;
@@ -705,6 +941,42 @@ impl ExactUsageIndex {
         // migration or schema DDL runs.  In particular, do not let the
         // legacy initializer below DROP a table owned by a newer build.
         validate_session_catalog_schema_version(&connection)?;
+        for (key, supported, component) in [
+            (
+                "fork_replay_boundary_revision",
+                FORK_REPLAY_BOUNDARY_REVISION,
+                "fork replay",
+            ),
+            (
+                ORPHAN_REPAIR_REVISION_KEY,
+                ORPHAN_REPAIR_REVISION,
+                "orphan repair",
+            ),
+        ] {
+            if let Some(revision) = metadata_text(&connection, key)? {
+                if revision != supported {
+                    return Err(format!(
+                        "精确 token {component} revision {revision} 高于或不同于当前支持版本 {supported}，需要升级软件，已拒绝覆盖"
+                    ));
+                }
+            }
+        }
+        if let Some(version) = metadata_i64(&connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)? {
+            if version > DASHBOARD_AGGREGATE_SCHEMA_VERSION {
+                return Err(format!(
+                    "精确 token aggregate schema {version} 高于当前支持版本 {DASHBOARD_AGGREGATE_SCHEMA_VERSION}，需要升级软件，已拒绝覆盖"
+                ));
+            }
+        }
+        if let Some(revision) =
+            metadata_text(&connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)?
+        {
+            if !is_known_dashboard_pricing_revision(&revision) {
+                return Err(format!(
+                    "精确 token aggregate pricing revision {revision} 未知，需要升级软件，已拒绝覆盖"
+                ));
+            }
+        }
         let stored_event_enrichment_revision =
             metadata_text(&connection, EVENT_ENRICHMENT_REVISION_KEY)?;
         if stored_event_enrichment_revision
@@ -713,7 +985,9 @@ impl ExactUsageIndex {
         {
             return Err(format!(
                 "精确 token 历史字段补全版本 {} 高于或不同于当前支持版本 {}，已拒绝覆盖",
-                stored_event_enrichment_revision.as_deref().unwrap_or_default(),
+                stored_event_enrichment_revision
+                    .as_deref()
+                    .unwrap_or_default(),
                 EVENT_ENRICHMENT_REVISION
             ));
         }
@@ -887,8 +1161,7 @@ impl ExactUsageIndex {
             .is_some_and(|stored| stored != physical_identity);
         if stored_identity.is_none() && event_enrichment_source_count(&connection)? > 0 {
             return Err(
-                "精确 token 旧索引缺少 Codex Home 身份，已拒绝在来源不明时覆盖现有数据"
-                    .into(),
+                "精确 token 旧索引缺少 Codex Home 身份，已拒绝在来源不明时覆盖现有数据".into(),
             );
         }
         if logical_identity_mismatch || physical_identity_mismatch {
@@ -1374,6 +1647,7 @@ impl ExactUsageIndex {
         )?;
         let integrity_gate = index_integrity_gate(&index_path);
         let _sync_gate_guard = integrity_gate.enter_silent(&index_path);
+        let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
 
         // Historical model/reasoning enrichment is a one-time, serial owner.
         // It finishes the old published watermarks first and deliberately
@@ -1381,11 +1655,7 @@ impl ExactUsageIndex {
         if metadata_text(&self.connection, EVENT_ENRICHMENT_REVISION_KEY)?.as_deref()
             != Some(EVENT_ENRICHMENT_REVISION)
         {
-            return self.synchronize_event_enrichment(
-                codex_home,
-                &index_path,
-                warnings,
-            );
+            return self.synchronize_event_enrichment(codex_home, &index_path, warnings);
         }
 
         // A steady-state refresh is common: the source files and state
@@ -1397,7 +1667,11 @@ impl ExactUsageIndex {
         if !self.migration_pending
             && metadata_i64(&self.connection, "building_generation")?.is_none()
         {
-            let sources_changed = self.sources_changed(codex_home, warnings)?;
+            let sources_changed = if let Some(plan) = reusable_discovery.as_ref() {
+                self.sources_changed_from_discovery(plan)?
+            } else {
+                self.sources_changed(codex_home, warnings)?
+            };
             if !sources_changed {
                 let previous = (
                     metadata_text(&self.connection, "state_size")?,
@@ -1446,7 +1720,6 @@ impl ExactUsageIndex {
             0,
             scan_total,
         );
-        let reusable_discovery = discovery.filter(|plan| plan.is_usable(codex_home));
         if let Some(plan) = reusable_discovery {
             for message in plan.boundary_warnings {
                 scan_completeness.mark_incomplete();
@@ -1504,32 +1777,38 @@ impl ExactUsageIndex {
             0,
             Some(1),
         );
-        let staged = stage_full_rebuilds(
-            &full_rebuild_jobs,
-            &index_path,
-            codex_home,
-            warnings,
-            &mut scan_completeness,
-            None,
-        )?;
         diagnostics.scanned_files = scanned_files;
         diagnostics.full_rebuild_files = diagnostics
             .full_rebuild_files
             .saturating_add(full_rebuild_jobs.len() as u64);
-        let staged_full_body_bytes = staged.iter().fold(0_u64, |total, item| {
-            total.saturating_add(item.job.signature.size)
-        });
-        diagnostics.full_body_bytes = diagnostics
-            .full_body_bytes
-            .saturating_add(staged_full_body_bytes);
-        #[cfg(test)]
-        if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
-            return Err("injected interruption after durable exact token staging".into());
-        }
-        for staged_file in staged {
-            import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
-            remove_index_storage(&staged_file.database_path)?;
-            run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
+        for batch in staging_job_batches(&full_rebuild_jobs) {
+            let estimated_bytes = batch
+                .iter()
+                .fold(0_u64, |total, job| total.saturating_add(job.signature.size));
+            ensure_staging_capacity(&index_path, estimated_bytes)?;
+            let staged = stage_full_rebuilds(
+                &batch,
+                &index_path,
+                generation,
+                codex_home,
+                warnings,
+                &mut scan_completeness,
+                None,
+            )?;
+            diagnostics.full_body_bytes = diagnostics.full_body_bytes.saturating_add(
+                staged.iter().fold(0_u64, |total, item| {
+                    total.saturating_add(item.committed_signature.size)
+                }),
+            );
+            #[cfg(test)]
+            if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
+                return Err("injected interruption after durable exact token staging".into());
+            }
+            for staged_file in staged {
+                import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
+                remove_index_storage(&staged_file.database_path)?;
+                run_after_file_commit_hook_for_testing(&staged_file.job.file)?;
+            }
         }
         let scan_home_identity_stable = match attribution_watch_root_physical_identity(codex_home) {
             Ok(identity) if scan_start_home_identity.as_ref() == Some(&identity) => true,
@@ -1558,9 +1837,7 @@ impl ExactUsageIndex {
         }
         if scan_completeness.block_generation_publish {
             self.connection.mark_receipt_dirty();
-            return Err(
-                "会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into(),
-            );
+            return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
         }
         let revision = finalize_generation(
             &mut self.connection,
@@ -1770,7 +2047,8 @@ impl ExactUsageIndex {
                 }
             };
             drop(handle);
-            let stable_published_prefix = current_signature.identity == candidate.signature.identity
+            let stable_published_prefix = current_signature.identity
+                == candidate.signature.identity
                 && current_signature.size >= candidate.signature.size;
             if !stable_published_prefix {
                 set_metadata(
@@ -1794,84 +2072,90 @@ impl ExactUsageIndex {
             });
         }
 
-        let progress_home = codex_home.to_path_buf();
-        let completed_before_staging = completed;
-        let progress_callback: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |staged_count| {
-            super::update_precise_dashboard_progress(
-                &progress_home,
-                "backfillingModel",
-                "正在补全历史模型与 reasoning 信息；首次升级可能需要几分钟，原始数据不会丢失",
-                completed_before_staging.saturating_add(staged_count),
-                Some(total),
-            );
-        });
-        let staged = stage_full_rebuilds(
-            &jobs,
-            index_path,
-            codex_home,
-            warnings,
-            &mut scan_completeness,
-            Some(progress_callback),
-        )?;
-        if staged.len() != jobs.len() {
-            scan_completeness.mark_incomplete();
-        }
-        #[cfg(test)]
-        if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
-            return Err("injected interruption after durable exact token staging".into());
-        }
-
-        for mut staged_file in staged {
-            let prefix_matches = staged_file
-                .job
-                .expected_published_prefix_sha256
-                .is_none_or(|expected| expected == staged_file.prefix_sha256);
-            let events_match = prefix_matches
-                && staged_enrichment_matches_published_events(
-                    &self.connection,
-                    &staged_file,
-                )?;
-            if !prefix_matches {
-                set_metadata(
-                    &self.connection,
-                    BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
-                    "1",
-                )?;
-                let current_signature = file_signature(&staged_file.job.file)?;
-                let replacement_job = FullRebuildJob {
-                    signature: current_signature,
-                    expected_published_prefix_sha256: None,
-                    ..staged_file.job.clone()
-                };
-                let mut local_warnings = Vec::new();
-                staged_file = match stage_or_reuse_full_rebuild(
-                    &replacement_job,
-                    index_path,
-                    codex_home,
-                    &mut local_warnings,
-                ) {
-                    Ok(staged) => staged,
-                    Err(StagedFullRebuildError::IncompleteSource(error)) => {
-                        scan_completeness.mark_incomplete();
-                        warnings.push(scan_warning(error));
-                        continue;
-                    }
-                    Err(StagedFullRebuildError::Fatal(error)) => return Err(error),
-                };
-                warnings.append(&mut local_warnings);
-            } else if !events_match {
-                // The current parser disagrees with the old event identity or
-                // numeric payload.  Keep the scope to this source and publish
-                // the staged current-parser result as its reconciliation.
-                set_metadata(
-                    &self.connection,
-                    BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
-                    "1",
-                )?;
+        for batch in staging_job_batches(&jobs) {
+            let estimated_bytes = batch
+                .iter()
+                .fold(0_u64, |sum, job| sum.saturating_add(job.signature.size));
+            ensure_staging_capacity(index_path, estimated_bytes)?;
+            let progress_home = codex_home.to_path_buf();
+            let completed_before_batch = completed;
+            let progress_callback: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |staged_count| {
+                super::update_precise_dashboard_progress(
+                    &progress_home,
+                    "backfillingModel",
+                    "正在补全历史模型与 reasoning 信息；首次升级可能需要几分钟，原始数据不会丢失",
+                    completed_before_batch.saturating_add(staged_count),
+                    Some(total),
+                );
+            });
+            let staged = stage_full_rebuilds(
+                &batch,
+                index_path,
+                generation,
+                codex_home,
+                warnings,
+                &mut scan_completeness,
+                Some(progress_callback),
+            )?;
+            if staged.len() != batch.len() {
+                scan_completeness.mark_incomplete();
             }
-            import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
-            remove_index_storage(&staged_file.database_path)?;
-            completed = completed.saturating_add(1).min(total);
+            #[cfg(test)]
+            if FAIL_AFTER_STAGING.swap(false, Ordering::SeqCst) {
+                return Err("injected interruption after durable exact token staging".into());
+            }
+
+            for mut staged_file in staged {
+                let prefix_matches = staged_file
+                    .job
+                    .expected_published_prefix_sha256
+                    .is_none_or(|expected| expected == staged_file.prefix_sha256);
+                let events_match = prefix_matches
+                    && staged_enrichment_matches_published_events(&self.connection, &staged_file)?;
+                if !prefix_matches {
+                    set_metadata(
+                        &self.connection,
+                        BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+                        "1",
+                    )?;
+                    let current_signature = file_signature(&staged_file.job.file)?;
+                    ensure_staging_capacity(index_path, current_signature.size)?;
+                    let replacement_job = FullRebuildJob {
+                        signature: current_signature,
+                        expected_published_prefix_sha256: None,
+                        ..staged_file.job.clone()
+                    };
+                    let mut local_warnings = Vec::new();
+                    staged_file = match stage_or_reuse_full_rebuild(
+                        &replacement_job,
+                        index_path,
+                        generation,
+                        codex_home,
+                        &mut local_warnings,
+                    ) {
+                        Ok(staged) => staged,
+                        Err(StagedFullRebuildError::IncompleteSource(error)) => {
+                            scan_completeness.mark_incomplete();
+                            warnings.push(scan_warning(error));
+                            continue;
+                        }
+                        Err(StagedFullRebuildError::Fatal(error)) => return Err(error),
+                    };
+                    warnings.append(&mut local_warnings);
+                } else if !events_match {
+                    // The current parser disagrees with the old event identity or
+                    // numeric payload.  Keep the scope to this source and publish
+                    // the staged current-parser result as its reconciliation.
+                    set_metadata(
+                        &self.connection,
+                        BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY,
+                        "1",
+                    )?;
+                }
+                import_staged_full_rebuild(&mut self.connection, generation, &staged_file)?;
+                remove_index_storage(&staged_file.database_path)?;
+                completed = completed.saturating_add(1).min(total);
+            }
         }
 
         let pending_before_publish = event_enrichment_pending_candidates(&self.connection)?;
@@ -2056,6 +2340,43 @@ impl ExactUsageIndex {
             .keys()
             .any(|path| !seen_files.contains(path));
         Ok(changed || deleted || ignored_scan_completeness.incomplete_source_scan)
+    }
+
+    fn sources_changed_from_discovery(
+        &mut self,
+        discovery: &PreciseScanDiscovery,
+    ) -> Result<bool, String> {
+        if metadata_i64(&self.connection, "building_generation")?.is_some() {
+            return Ok(true);
+        }
+        if !discovery.boundary_warnings.is_empty() {
+            return Ok(true);
+        }
+        prepare_scan_temp_tables(&self.connection)?;
+        self.prepare_source_change_snapshot()?;
+        let published_files = self.source_change_snapshot_signatures()?;
+        let mut seen = HashSet::with_capacity(discovery.candidates.len());
+        let mut changed = false;
+        for candidate in &discovery.candidates {
+            let path = candidate.canonical_path.to_string_lossy().into_owned();
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let unchanged = published_files.get(&path).is_some_and(
+                |(size, modified_ns, device_id, file_id, changed_ns)| {
+                    candidate.signature.matches_stored(
+                        *size,
+                        modified_ns,
+                        device_id,
+                        file_id,
+                        changed_ns,
+                    )
+                },
+            );
+            changed |= !unchanged;
+        }
+        let deleted = published_files.keys().any(|path| !seen.contains(path));
+        Ok(changed || deleted)
     }
 
     fn prepare_source_change_snapshot(&self) -> Result<(), String> {
@@ -2809,7 +3130,7 @@ impl ExactUsageIndex {
             total_calls: saturating_u32(row.1),
             total_threads: saturating_u32(row.2),
             total_input_tokens: nonnegative_u64(row.3),
-                total_cached_input_tokens: nonnegative_u64(row.4),
+            total_cached_input_tokens: nonnegative_u64(row.4),
             total_output_tokens: nonnegative_u64(row.5),
             model_breakdowns,
             first_usage_at: row.6.and_then(format_rfc3339_unix),
@@ -3134,7 +3455,11 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法准备会话缓存候选：{error}"))?;
         let rows = statement
             .query_map(
-                params![latest_first, CACHE_USAGE_MIN_INPUT_TOKENS, CACHE_USAGE_CANDIDATE_LIMIT],
+                params![
+                    latest_first,
+                    CACHE_USAGE_MIN_INPUT_TOKENS,
+                    CACHE_USAGE_CANDIDATE_LIMIT
+                ],
                 |row| {
                     Ok(SessionCacheUsage {
                         id: row.get(0)?,
@@ -3300,7 +3625,11 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法准备轮次缓存候选：{error}"))?;
         let rows = statement
             .query_map(
-                params![latest_first, CACHE_USAGE_MIN_INPUT_TOKENS, CACHE_USAGE_CANDIDATE_LIMIT],
+                params![
+                    latest_first,
+                    CACHE_USAGE_MIN_INPUT_TOKENS,
+                    CACHE_USAGE_CANDIDATE_LIMIT
+                ],
                 |row| {
                     let event_id = row.get::<_, i64>(0)?;
                     let timestamp = row.get::<_, i64>(3)?;
@@ -3880,7 +4209,12 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
 struct StageManifest {
     path: String,
     session_id: String,
+    migration_revision: String,
     parser_revision: String,
+    target_building_generation: i64,
+    artifact_id: String,
+    actual_bytes: i64,
+    integrity: String,
     size: i64,
     modified_ns: String,
     device_id: String,
@@ -3950,6 +4284,7 @@ fn encode_fingerprint(
 fn stage_full_rebuilds(
     jobs: &[FullRebuildJob],
     index_path: &Path,
+    target_generation: i64,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
     scan_completeness: &mut ExactScanCompleteness,
@@ -3974,6 +4309,7 @@ fn stage_full_rebuilds(
             0,
             &ordered_jobs[0],
             index_path,
+            target_generation,
             codex_home,
             &completed,
             on_completed.as_deref(),
@@ -3995,6 +4331,7 @@ fn stage_full_rebuilds(
                             order,
                             job,
                             index_path,
+                            target_generation,
                             codex_home,
                             &completed,
                             on_completed.as_deref(),
@@ -4023,6 +4360,7 @@ fn stage_full_rebuilds(
                         order,
                         job,
                         index_path,
+                        target_generation,
                         codex_home,
                         &completed,
                         on_completed.as_deref(),
@@ -4070,12 +4408,19 @@ fn stage_full_rebuild_result(
     order: usize,
     job: &FullRebuildJob,
     index_path: &Path,
+    target_generation: i64,
     codex_home: &Path,
     completed: &AtomicU64,
     on_completed: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> StagedFullRebuildResult {
     let mut warnings = Vec::new();
-    let result = stage_or_reuse_full_rebuild(job, index_path, codex_home, &mut warnings);
+    let result = stage_or_reuse_full_rebuild(
+        job,
+        index_path,
+        target_generation,
+        codex_home,
+        &mut warnings,
+    );
     if result.is_ok() {
         let value = completed.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         if let Some(on_completed) = on_completed {
@@ -4107,25 +4452,111 @@ fn cold_build_worker_count(job_count: usize) -> usize {
     } else {
         2
     };
-    job_count.min(resource_cap)
+    job_count.min(resource_cap).min(STAGING_MAX_WORKERS)
+}
+
+fn staging_job_batches(jobs: &[FullRebuildJob]) -> Vec<Vec<FullRebuildJob>> {
+    let mut ordered = jobs.to_vec();
+    ordered.sort_by(|left, right| {
+        right
+            .signature
+            .size
+            .cmp(&left.signature.size)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let artifact_limit = STAGING_MAX_WORKERS.min(STAGING_MAX_READY_ARTIFACTS);
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0_u64;
+    for job in ordered {
+        let oversized = job.signature.size > STAGING_MAX_READY_BYTES;
+        let would_overflow = !current.is_empty()
+            && current_bytes.saturating_add(job.signature.size) > STAGING_MAX_READY_BYTES;
+        if oversized || current.len() >= artifact_limit || would_overflow {
+            if !current.is_empty() {
+                batches.push(std::mem::take(&mut current));
+                current_bytes = 0;
+            }
+            if oversized {
+                batches.push(vec![job]);
+                continue;
+            }
+        }
+        current_bytes = current_bytes.saturating_add(job.signature.size);
+        current.push(job);
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+#[cfg(test)]
+pub(super) fn staging_batch_shape_for_testing(sizes: &[u64]) -> Vec<Vec<u64>> {
+    let jobs = sizes
+        .iter()
+        .enumerate()
+        .map(|(index, size)| FullRebuildJob {
+            file: PathBuf::from(format!("/tmp/staging-batch-{index}.jsonl")),
+            path: format!("/tmp/staging-batch-{index}.jsonl"),
+            session_id: format!("staging-batch-{index}"),
+            signature: FileSignature {
+                size: *size,
+                modified_ns: 0,
+                identity: FileIdentity {
+                    device_id: 1,
+                    file_id: index as u64 + 1,
+                },
+                changed_ns: 0,
+            },
+            event_enrichment: false,
+            expected_published_prefix_sha256: None,
+        })
+        .collect::<Vec<_>>();
+    staging_job_batches(&jobs)
+        .into_iter()
+        .map(|batch| batch.into_iter().map(|job| job.signature.size).collect())
+        .collect()
+}
+
+fn ensure_staging_capacity(index_path: &Path, estimated_bytes: u64) -> Result<(), String> {
+    let probe = staging_directory(index_path);
+    let probe = probe.parent().unwrap_or_else(|| Path::new("."));
+    let free = available_space(probe).map_err(|error| {
+        format!(
+            "无法检查精确 token 暂存可用空间 {}：{error}",
+            probe.display()
+        )
+    })?;
+    let required = estimated_bytes.saturating_add(STAGING_MIN_FREE_RESERVE_BYTES);
+    if free < required {
+        return Err(format!(
+            "精确 token 索引暂存磁盘空间不足：至少需要约 {} MiB，可用约 {} MiB；已保留上一份已发布统计，下次启动可继续",
+            required.div_ceil(1024 * 1024),
+            free / (1024 * 1024)
+        ));
+    }
+    Ok(())
 }
 
 fn stage_or_reuse_full_rebuild(
     job: &FullRebuildJob,
     index_path: &Path,
+    target_generation: i64,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<StagedFullRebuild, StagedFullRebuildError> {
     let database_path = staging_database_path(index_path, &job.path);
-    if let Some(staged) = reusable_staged_full_rebuild(&database_path, job)? {
+    if let Some(staged) = reusable_staged_full_rebuild(&database_path, job, target_generation)? {
         return Ok(staged);
     }
-    build_staged_full_rebuild(job, database_path, codex_home, warnings)
+    build_staged_full_rebuild(job, database_path, target_generation, codex_home, warnings)
 }
 
 fn build_staged_full_rebuild(
     job: &FullRebuildJob,
     database_path: PathBuf,
+    target_generation: i64,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<StagedFullRebuild, StagedFullRebuildError> {
@@ -4149,15 +4580,23 @@ fn build_staged_full_rebuild(
             relative_display_path(codex_home, &job.file)
         )));
     }
-    // Freeze the discovery-time prefix. A normal active-session append changes
-    // size/mtime/ctime before the worker opens the file, but must not invalidate
-    // the generation: the post-scan identity + prefix hash validation below
-    // proves that the frozen bytes are still the same. The next sync consumes
-    // only the appended suffix from this checkpoint, matching the Swift index.
-    let committed_signature = if current_signature.size == job.signature.size {
-        current_signature
+    // The handle opened by this worker defines the formal scan boundary.  A
+    // discovery signature is only a candidate hint and must never cap normal
+    // source processing.  Historical enrichment is the one exception: when
+    // it is reconciling an already-published prefix, keep that exact prefix so
+    // the receipt can be compared to the old event set; the appended tail is
+    // consumed by the following ordinary incremental cadence.
+    let committed_signature =
+        if job.event_enrichment && job.expected_published_prefix_sha256.is_some() {
+            job.signature
+        } else {
+            current_signature
+        };
+    let artifact_id = Uuid::new_v4().to_string();
+    let migration_revision = if job.event_enrichment {
+        EVENT_ENRICHMENT_REVISION
     } else {
-        job.signature
+        "exact-source-rebuild-v1"
     };
 
     let mut stage = open_staging_connection(&database_path)?;
@@ -4172,7 +4611,7 @@ fn build_staged_full_rebuild(
     let parsed = stream_session_file_exact(
         &job.file,
         &mut handle,
-        job.signature.size,
+        committed_signature.size,
         &job.session_id,
         &mut sink,
         warnings,
@@ -4181,23 +4620,28 @@ fn build_staged_full_rebuild(
     let event_count = sink.ordinal;
     drop(sink);
     #[cfg(test)]
-    FULL_SCAN_BYTES.fetch_add(job.signature.size, Ordering::SeqCst);
+    FULL_SCAN_BYTES.fetch_add(committed_signature.size, Ordering::SeqCst);
     run_after_prefix_scan_hook_for_testing(&job.file);
 
-    if parsed.bytes_read != job.signature.size {
+    if parsed.bytes_read != committed_signature.size {
         return Err(StagedFullRebuildError::IncompleteSource(format!(
             "会话文件固定前缀未完整扫描，将在下一次刷新重试：{}",
             relative_display_path(codex_home, &job.file)
         )));
     }
-    validate_same_file_prefix(&job.file, &mut handle, job.signature, parsed.prefix_sha256)
-        .map_err(|reason| {
-            StagedFullRebuildError::IncompleteSource(format!(
-                "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
-                relative_display_path(codex_home, &job.file),
-                reason
-            ))
-        })?;
+    validate_same_file_prefix(
+        &job.file,
+        &mut handle,
+        committed_signature,
+        parsed.prefix_sha256,
+    )
+    .map_err(|reason| {
+        StagedFullRebuildError::IncompleteSource(format!(
+            "会话文件在精确扫描期间发生非追加变化，将在下一次刷新重试：{}（{}）",
+            relative_display_path(codex_home, &job.file),
+            reason
+        ))
+    })?;
 
     {
         let mut insert_chunk = transaction
@@ -4231,7 +4675,12 @@ fn build_staged_full_rebuild(
                 complete,
                 path,
                 session_id,
+                migration_revision,
                 parser_revision,
+                target_building_generation,
+                artifact_id,
+                actual_bytes,
+                integrity,
                 size,
                 modified_ns,
                 device_id,
@@ -4252,12 +4701,15 @@ fn build_staged_full_rebuild(
                 event_count,
                 fingerprint_count,
                 chunk_count
-            ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+            ) VALUES (0, ?1, ?2, ?3, ?4, ?5, ?6, 0, '', ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
             "#,
             params![
                 &job.path,
                 &job.session_id,
+                migration_revision,
                 STAGED_FULL_REBUILD_PARSER_REVISION,
+                target_generation,
+                &artifact_id,
                 checked_i64(committed_signature.size, "暂存会话文件大小")?,
                 committed_signature.modified_ns.to_string(),
                 committed_signature.identity.device_id.to_string(),
@@ -4298,12 +4750,53 @@ fn build_staged_full_rebuild(
         .map_err(|error| format!("无法耐久提交精确 token 单文件暂存：{error}"))?;
     quick_check_index(&stage, None)?;
 
+    let mut actual_bytes = fs::metadata(&database_path)
+        .map_err(|error| format!("无法读取精确 token 暂存大小：{error}"))?
+        .len();
+    stage
+        .execute(
+            r#"
+            UPDATE manifest
+            SET complete = 1,
+                actual_bytes = ?1,
+                integrity = ?2
+            WHERE complete = 0 AND artifact_id = ?3
+            "#,
+            params![
+                checked_i64(actual_bytes, "暂存实际大小")?,
+                STAGING_MANIFEST_INTEGRITY,
+                &artifact_id,
+            ],
+        )
+        .map_err(|error| format!("无法发布精确 token 暂存清单：{error}"))?;
+    let final_bytes = fs::metadata(&database_path)
+        .map_err(|error| format!("无法复核精确 token 暂存大小：{error}"))?
+        .len();
+    if final_bytes != actual_bytes {
+        actual_bytes = final_bytes;
+        stage
+            .execute(
+                "UPDATE manifest SET actual_bytes = ?1 WHERE complete = 1 AND artifact_id = ?2",
+                params![checked_i64(actual_bytes, "暂存实际大小")?, &artifact_id],
+            )
+            .map_err(|error| format!("无法校准精确 token 暂存大小：{error}"))?;
+    }
+    drop(stage);
+    fs::OpenOptions::new()
+        .read(true)
+        .open(&database_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("无法同步精确 token 暂存文件：{error}"))?;
+
     Ok(StagedFullRebuild {
         job: FullRebuildJob {
             signature: committed_signature,
             ..job.clone()
         },
+        committed_signature,
         database_path,
+        artifact_id,
+        actual_bytes,
         prefix_sha256: parsed.prefix_sha256,
         resume_offset: parsed.resume_offset,
         parser_state: parsed.state,
@@ -4340,10 +4833,15 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
         .execute_batch(
             r#"
             CREATE TABLE manifest (
-                complete INTEGER PRIMARY KEY CHECK(complete = 1),
+                complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
                 path TEXT NOT NULL,
                 session_id TEXT NOT NULL,
+                migration_revision TEXT NOT NULL,
                 parser_revision TEXT NOT NULL,
+                target_building_generation INTEGER NOT NULL,
+                artifact_id TEXT NOT NULL,
+                actual_bytes INTEGER NOT NULL,
+                integrity TEXT NOT NULL,
                 size INTEGER NOT NULL,
                 modified_ns TEXT NOT NULL,
                 device_id TEXT NOT NULL,
@@ -4398,6 +4896,7 @@ fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
 fn reusable_staged_full_rebuild(
     database_path: &Path,
     job: &FullRebuildJob,
+    target_generation: i64,
 ) -> Result<Option<StagedFullRebuild>, String> {
     if !existing_regular_index(database_path)? {
         return Ok(None);
@@ -4405,7 +4904,7 @@ fn reusable_staged_full_rebuild(
     let reusable = (|| {
         let stage = sqlite::open_read_only(database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开精确 token 单文件暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, database_path, job)
+        validated_staged_full_rebuild(&stage, database_path, job, target_generation)
     })();
     match reusable {
         Ok(Some(staged)) => Ok(Some(staged)),
@@ -4420,6 +4919,7 @@ fn validated_staged_full_rebuild(
     connection: &Connection,
     database_path: &Path,
     job: &FullRebuildJob,
+    target_generation: i64,
 ) -> Result<Option<StagedFullRebuild>, String> {
     quick_check_index(connection, None)?;
     let manifest = connection
@@ -4428,7 +4928,12 @@ fn validated_staged_full_rebuild(
             SELECT
                 path,
                 session_id,
+                migration_revision,
                 parser_revision,
+                target_building_generation,
+                artifact_id,
+                actual_bytes,
+                integrity,
                 size,
                 modified_ns,
                 device_id,
@@ -4458,27 +4963,32 @@ fn validated_staged_full_rebuild(
                 Ok(StageManifest {
                     path: row.get(0)?,
                     session_id: row.get(1)?,
-                    parser_revision: row.get(2)?,
-                    size: row.get(3)?,
-                    modified_ns: row.get(4)?,
-                    device_id: row.get(5)?,
-                    file_id: row.get(6)?,
-                    changed_ns: row.get(7)?,
-                    prefix_sha256: row.get(8)?,
-                    resume_offset: row.get(9)?,
-                    previous_total_tokens: row.get(10)?,
-                    fork_replay_started_ns: row.get(11)?,
-                    fork_replay_active: row.get(12)?,
-                    is_explicit_subagent_fork: row.get(13)?,
-                    last_skipped_fork_replay_token_ns: row.get(14)?,
-                    current_model: row.get(15)?,
-                    current_user_prompt_start: row.get(16)?,
-                    current_user_prompt_end: row.get(17)?,
-                    assistant_response_start: row.get(18)?,
-                    assistant_response_end: row.get(19)?,
-                    event_count: row.get(20)?,
-                    fingerprint_count: row.get(21)?,
-                    chunk_count: row.get(22)?,
+                    migration_revision: row.get(2)?,
+                    parser_revision: row.get(3)?,
+                    target_building_generation: row.get(4)?,
+                    artifact_id: row.get(5)?,
+                    actual_bytes: row.get(6)?,
+                    integrity: row.get(7)?,
+                    size: row.get(8)?,
+                    modified_ns: row.get(9)?,
+                    device_id: row.get(10)?,
+                    file_id: row.get(11)?,
+                    changed_ns: row.get(12)?,
+                    prefix_sha256: row.get(13)?,
+                    resume_offset: row.get(14)?,
+                    previous_total_tokens: row.get(15)?,
+                    fork_replay_started_ns: row.get(16)?,
+                    fork_replay_active: row.get(17)?,
+                    is_explicit_subagent_fork: row.get(18)?,
+                    last_skipped_fork_replay_token_ns: row.get(19)?,
+                    current_model: row.get(20)?,
+                    current_user_prompt_start: row.get(21)?,
+                    current_user_prompt_end: row.get(22)?,
+                    assistant_response_start: row.get(23)?,
+                    assistant_response_end: row.get(24)?,
+                    event_count: row.get(25)?,
+                    fingerprint_count: row.get(26)?,
+                    chunk_count: row.get(27)?,
                 })
             },
         )
@@ -4487,19 +4997,46 @@ fn validated_staged_full_rebuild(
     let Some(manifest) = manifest else {
         return Ok(None);
     };
+    let expected_migration_revision = if job.event_enrichment {
+        EVENT_ENRICHMENT_REVISION
+    } else {
+        "exact-source-rebuild-v1"
+    };
+    let manifest_signature = match (
+        u64::try_from(manifest.size),
+        manifest.modified_ns.parse::<u128>(),
+        manifest.device_id.parse::<u64>(),
+        manifest.file_id.parse::<u64>(),
+        manifest.changed_ns.parse::<i128>(),
+    ) {
+        (Ok(size), Ok(modified_ns), Ok(device_id), Ok(file_id), Ok(changed_ns)) => FileSignature {
+            size,
+            modified_ns,
+            identity: FileIdentity { device_id, file_id },
+            changed_ns,
+        },
+        _ => return Ok(None),
+    };
+    let artifact_bytes = fs::metadata(database_path)
+        .map_err(|error| format!("无法复核精确 token 暂存文件大小：{error}"))?
+        .len();
     if manifest.path != job.path
         || manifest.session_id != job.session_id
+        || manifest.migration_revision != expected_migration_revision
         || manifest.parser_revision != STAGED_FULL_REBUILD_PARSER_REVISION
-        || !job.signature.matches_stored(
-            nonnegative_u64(manifest.size),
-            &manifest.modified_ns,
-            &manifest.device_id,
-            &manifest.file_id,
-            &manifest.changed_ns,
-        )
+        || manifest.target_building_generation != target_generation
+        || manifest.artifact_id.trim().is_empty()
+        || manifest.integrity != STAGING_MANIFEST_INTEGRITY
+        || manifest.actual_bytes < 0
+        || nonnegative_u64(manifest.actual_bytes) != artifact_bytes
+        || manifest_signature.identity != job.signature.identity
+        || manifest_signature.size < job.signature.size
+        || (job.event_enrichment
+            && job.expected_published_prefix_sha256.is_some()
+            && manifest_signature != job.signature)
         || manifest.size < 0
         || manifest.resume_offset < 0
-        || nonnegative_u64(manifest.resume_offset) > job.signature.size
+        || nonnegative_u64(manifest.resume_offset) > manifest_signature.size
         || manifest.event_count < 0
         || manifest.fingerprint_count < 0
         || manifest.chunk_count < 0
@@ -4510,6 +5047,20 @@ fn validated_staged_full_rebuild(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
+    let mut source_handle = match fs::File::open(&job.file) {
+        Ok(handle) => handle,
+        Err(_) => return Ok(None),
+    };
+    if validate_same_file_prefix(
+        &job.file,
+        &mut source_handle,
+        manifest_signature,
+        prefix_sha256,
+    )
+    .is_err()
+    {
+        return Ok(None);
+    }
     let event_count = connection
         .query_row("SELECT COUNT(*) FROM events", [], |row| {
             row.get::<_, i64>(0)
@@ -4536,8 +5087,7 @@ fn validated_staged_full_rebuild(
             |row| Ok(row.get::<_, bool>(0)? || row.get::<_, bool>(1)?),
         )
         .map_err(|error| format!("无法验证精确 token 暂存哈希形状：{error}"))?;
-    let expected_chunks = job
-        .signature
+    let expected_chunks = manifest_signature
         .size
         .checked_sub(1)
         .map_or(0, |offset| offset / EXACT_INDEX_CHUNK_SIZE + 1);
@@ -4560,8 +5110,14 @@ fn validated_staged_full_rebuild(
     }
 
     Ok(Some(StagedFullRebuild {
-        job: job.clone(),
+        job: FullRebuildJob {
+            signature: manifest_signature,
+            ..job.clone()
+        },
+        committed_signature: manifest_signature,
         database_path: database_path.to_path_buf(),
+        artifact_id: manifest.artifact_id,
+        actual_bytes: artifact_bytes,
         prefix_sha256,
         resume_offset: nonnegative_u64(manifest.resume_offset),
         parser_state: ExactSessionParserState {
@@ -4592,9 +5148,13 @@ fn import_staged_full_rebuild(
     let validated = {
         let stage = sqlite::open_read_only(&staged.database_path, StdDuration::from_secs(1))
             .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job)?
+        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation)?
             .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?
     };
+    if validated.artifact_id != staged.artifact_id || validated.actual_bytes != staged.actual_bytes
+    {
+        return Err("精确 token 单文件暂存清单在导入前发生变化".into());
+    }
     let stage_path = staged.database_path.to_str().ok_or_else(|| {
         format!(
             "精确 token 暂存路径不是有效 UTF-8：{}",
@@ -4736,12 +5296,18 @@ fn import_staged_full_rebuild(
                     INSERT INTO event_enrichment_sources(
                         path,
                         revision,
+                        parser_revision,
+                        device_id,
+                        file_id,
                         file_generation,
                         completed_size,
                         completed_prefix_sha256
-                    ) VALUES (?1, ?2, ?3, ?4, ?5)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                     ON CONFLICT(path) DO UPDATE SET
                         revision = excluded.revision,
+                        parser_revision = excluded.parser_revision,
+                        device_id = excluded.device_id,
+                        file_id = excluded.file_id,
                         file_generation = excluded.file_generation,
                         completed_size = excluded.completed_size,
                         completed_prefix_sha256 = excluded.completed_prefix_sha256
@@ -4749,8 +5315,11 @@ fn import_staged_full_rebuild(
                     params![
                         &validated.job.path,
                         EVENT_ENRICHMENT_REVISION,
+                        STAGED_FULL_REBUILD_PARSER_REVISION,
+                        validated.committed_signature.identity.device_id.to_string(),
+                        validated.committed_signature.identity.file_id.to_string(),
                         generation,
-                        checked_i64(validated.job.signature.size, "历史字段补全来源大小")?,
+                        checked_i64(validated.committed_signature.size, "历史字段补全来源大小")?,
                         validated.prefix_sha256.as_slice(),
                     ],
                 )
@@ -8834,6 +9403,21 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
         // observed zero; the current parser writes an explicit zero when the
         // source reports no reasoning output.
         ("events", "reasoning_output_tokens", "INTEGER"),
+        (
+            "event_enrichment_sources",
+            "parser_revision",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "event_enrichment_sources",
+            "device_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "event_enrichment_sources",
+            "file_id",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
     ] {
         let table_exists = transaction
             .query_row(
@@ -8856,6 +9440,41 @@ fn migrate_github_base_index_schema(connection: &Connection) -> Result<(), Strin
                     format!("无法原位迁移精确 token 字段 {table}.{column}：{error}")
                 })?;
         }
+    }
+    let receipt_table_exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_enrichment_sources')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法检查历史字段补全 receipt 表：{error}"))?;
+    if receipt_table_exists {
+        transaction
+            .execute(
+                r#"
+                UPDATE event_enrichment_sources
+                SET parser_revision = ?1,
+                    device_id = COALESCE((
+                        SELECT files.device_id
+                        FROM files
+                        WHERE files.generation = event_enrichment_sources.file_generation
+                          AND files.path = event_enrichment_sources.path
+                    ), device_id),
+                    file_id = COALESCE((
+                        SELECT files.file_id
+                        FROM files
+                        WHERE files.generation = event_enrichment_sources.file_generation
+                          AND files.path = event_enrichment_sources.path
+                    ), file_id)
+                WHERE revision = ?2
+                  AND (parser_revision = '' OR device_id = '' OR file_id = '')
+                "#,
+                params![
+                    STAGED_FULL_REBUILD_PARSER_REVISION,
+                    EVENT_ENRICHMENT_REVISION
+                ],
+            )
+            .map_err(|error| format!("无法补全历史字段 receipt 身份：{error}"))?;
     }
     transaction
         .commit()
@@ -9028,6 +9647,9 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
             CREATE TABLE IF NOT EXISTS event_enrichment_sources (
                 path TEXT PRIMARY KEY,
                 revision TEXT NOT NULL,
+                parser_revision TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
                 file_generation INTEGER NOT NULL,
                 completed_size INTEGER NOT NULL,
                 completed_prefix_sha256 BLOB NOT NULL,
@@ -10307,7 +10929,12 @@ fn metadata_text(connection: &Connection, key: &str) -> Result<Option<String>, S
 }
 
 fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, String> {
-    Ok(metadata_text(connection, key)?.and_then(|value| value.parse().ok()))
+    let Some(value) = metadata_text(connection, key)? else {
+        return Ok(None);
+    };
+    value.parse::<i64>().map(Some).map_err(|_| {
+        format!("精确 token 索引元数据 {key} 已损坏：无法解析整数值 {value:?}，已拒绝按缺失值覆盖")
+    })
 }
 
 fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String> {
@@ -10351,8 +10978,11 @@ fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String>
 fn event_enrichment_receipt_count(connection: &Connection) -> Result<u64, String> {
     connection
         .query_row(
-            "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = ?1",
-            params![EVENT_ENRICHMENT_REVISION],
+            "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = ?1 AND parser_revision = ?2",
+            params![
+                EVENT_ENRICHMENT_REVISION,
+                STAGED_FULL_REBUILD_PARSER_REVISION,
+            ],
             |row| row.get::<_, i64>(0),
         )
         .map(nonnegative_u64)
@@ -10393,12 +11023,18 @@ fn record_missing_event_enrichment_source(
             INSERT INTO event_enrichment_sources(
                 path,
                 revision,
+                parser_revision,
+                device_id,
+                file_id,
                 file_generation,
                 completed_size,
                 completed_prefix_sha256
-            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ON CONFLICT(path) DO UPDATE SET
                 revision = excluded.revision,
+                parser_revision = excluded.parser_revision,
+                device_id = excluded.device_id,
+                file_id = excluded.file_id,
                 file_generation = excluded.file_generation,
                 completed_size = excluded.completed_size,
                 completed_prefix_sha256 = excluded.completed_prefix_sha256
@@ -10406,6 +11042,9 @@ fn record_missing_event_enrichment_source(
             params![
                 &candidate.path,
                 EVENT_ENRICHMENT_REVISION,
+                STAGED_FULL_REBUILD_PARSER_REVISION,
+                candidate.signature.identity.device_id.to_string(),
+                candidate.signature.identity.file_id.to_string(),
                 generation,
                 checked_i64(candidate.signature.size, "已删除历史字段补全来源大小")?,
                 candidate.prefix_sha256.as_slice(),
@@ -10437,50 +11076,49 @@ fn event_enrichment_pending_candidates(
             LEFT JOIN event_enrichment_sources receipt
               ON receipt.path = f.path
              AND receipt.revision = ?1
+             AND receipt.parser_revision = ?2
+             AND receipt.device_id = f.device_id
+             AND receipt.file_id = f.file_id
+             AND receipt.completed_size = f.size
+             AND receipt.completed_prefix_sha256 = f.prefix_sha256
             WHERE receipt.path IS NULL
             ORDER BY f.path
             "#,
         )
         .map_err(|error| format!("无法准备历史 model/reasoning 补全来源：{error}"))?;
     let rows = statement
-        .query_map(params![EVENT_ENRICHMENT_REVISION], |row| {
-            let size = nonnegative_u64(row.get::<_, i64>(2)?);
-            let modified_ns = row
-                .get::<_, String>(3)?
-                .parse::<u128>()
-                .unwrap_or_default();
-            let device_id = row
-                .get::<_, String>(4)?
-                .parse::<u64>()
-                .unwrap_or_default();
-            let file_id = row
-                .get::<_, String>(5)?
-                .parse::<u64>()
-                .unwrap_or_default();
-            let changed_ns = row
-                .get::<_, String>(6)?
-                .parse::<i128>()
-                .unwrap_or_default();
-            let raw_prefix = row.get::<_, Vec<u8>>(7)?;
-            let prefix_sha256: [u8; 32] = raw_prefix.try_into().map_err(|_| {
-                rusqlite::Error::InvalidColumnType(
-                    7,
-                    "prefix_sha256".into(),
-                    rusqlite::types::Type::Blob,
-                )
-            })?;
-            Ok(EventEnrichmentCandidate {
-                path: row.get(0)?,
-                session_id: row.get(1)?,
-                signature: FileSignature {
-                    size,
-                    modified_ns,
-                    identity: FileIdentity { device_id, file_id },
-                    changed_ns,
-                },
-                prefix_sha256,
-            })
-        })
+        .query_map(
+            params![
+                EVENT_ENRICHMENT_REVISION,
+                STAGED_FULL_REBUILD_PARSER_REVISION,
+            ],
+            |row| {
+                let size = nonnegative_u64(row.get::<_, i64>(2)?);
+                let modified_ns = row.get::<_, String>(3)?.parse::<u128>().unwrap_or_default();
+                let device_id = row.get::<_, String>(4)?.parse::<u64>().unwrap_or_default();
+                let file_id = row.get::<_, String>(5)?.parse::<u64>().unwrap_or_default();
+                let changed_ns = row.get::<_, String>(6)?.parse::<i128>().unwrap_or_default();
+                let raw_prefix = row.get::<_, Vec<u8>>(7)?;
+                let prefix_sha256: [u8; 32] = raw_prefix.try_into().map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        7,
+                        "prefix_sha256".into(),
+                        rusqlite::types::Type::Blob,
+                    )
+                })?;
+                Ok(EventEnrichmentCandidate {
+                    path: row.get(0)?,
+                    session_id: row.get(1)?,
+                    signature: FileSignature {
+                        size,
+                        modified_ns,
+                        identity: FileIdentity { device_id, file_id },
+                        changed_ns,
+                    },
+                    prefix_sha256,
+                })
+            },
+        )
         .map_err(|error| format!("无法读取历史 model/reasoning 补全来源：{error}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("无法解码历史 model/reasoning 补全来源：{error}"))
@@ -10610,7 +11248,6 @@ fn fixed_local_day_bounds(date: Date, offset: UtcOffset) -> Result<(i64, i64), S
         .unix_timestamp();
     Ok((start, end))
 }
-
 
 fn format_date(date: Date) -> String {
     date.format(format_description!("[year]-[month]-[day]"))
