@@ -189,7 +189,8 @@ extension CodexUsageAnalyzer {
             startingAt: request.parsingStartOffset,
             endingAt: request.endOffset,
             chunkHashingFrom: request.hashingStartOffset,
-            validationBoundary: request.validationBoundary
+            validationBoundary: request.validationBoundary,
+            readHandle: request.readHandle
         ) { lineOffset, lineString in
             if Task.isCancelled {
                 throw CancellationError()
@@ -966,6 +967,7 @@ extension CodexUsageAnalyzer {
         endingAt endOffset: UInt64? = nil,
         chunkHashingFrom hashingStartOffset: UInt64? = nil,
         validationBoundary: UInt64? = nil,
+        readHandle suppliedHandle: FileHandle? = nil,
         handleLine: (UInt64, String) throws -> Void
     ) throws -> SessionLineStreamResult {
         let hashingOffset = hashingStartOffset ?? offset
@@ -978,11 +980,18 @@ extension CodexUsageAnalyzer {
             || endOffset.map({ validationBoundary > $0 }) == true {
             throw CocoaError(.fileReadCorruptFile)
         }
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-        if hashingOffset > 0 {
-            try handle.seek(toOffset: hashingOffset)
+        let handle = try suppliedHandle ?? FileHandle(forReadingFrom: file)
+        let ownsHandle = suppliedHandle == nil
+        defer {
+            if ownsHandle {
+                try? handle.close()
+            }
         }
+        // A caller-supplied handle may already have been used for fstat or a
+        // content probe. Always establish the parser's fixed starting point;
+        // relying on the handle's incidental cursor skips the first bytes of
+        // the file and makes the fixed formal boundary appear truncated.
+        try handle.seek(toOffset: hashingOffset)
 
         var hasher = SHA256()
         var chunkHasher = hashingStartOffset.map {

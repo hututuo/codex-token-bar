@@ -30,6 +30,16 @@ struct CodexUsageSourceChangedError: LocalizedError {
     }
 }
 
+struct CodexUsageIndexUpgradeRequiredError: LocalizedError, Equatable {
+    let component: String
+    let stored: String
+    let supported: String
+
+    var errorDescription: String? {
+        "精确索引的\(component)版本为 \(stored)，属于当前软件无法识别的更新或未知版本（newer or unknown；当前仅支持 \(supported)）。需要升级软件；已停止写入和自动清理，原始 JSONL 不受影响。"
+    }
+}
+
 extension CodexUsageAnalyzer {
     struct IndexedTokenEvent {
         let event: TokenEvent
@@ -83,20 +93,33 @@ extension CodexUsageAnalyzer {
         let endOffset: UInt64
         let validationBoundary: UInt64?
         let initialState: IndexedSessionParserState
+        /// Process-local pinned source handle. It is never persisted; the
+        /// caller owns and closes it after the synchronous parser returns.
+        let readHandle: FileHandle?
 
-        static func full(endOffset: UInt64) -> IndexedSessionParseRequest {
+        static func full(
+            endOffset: UInt64,
+            readHandle: FileHandle? = nil
+        ) -> IndexedSessionParseRequest {
             IndexedSessionParseRequest(
                 hashingStartOffset: 0,
                 parsingStartOffset: 0,
                 endOffset: endOffset,
                 validationBoundary: nil,
-                initialState: .empty
+                initialState: .empty,
+                readHandle: readHandle
             )
         }
     }
 }
 
 final class CodexUsageHistoryIndex: @unchecked Sendable {
+    enum MigrationAssessment: Equatable {
+        case compatible
+        case knownMigrationRequired(stages: [String])
+        case upgradeRequired(component: String, stored: String, supported: String)
+        case corrupt(component: String, rawValue: String)
+    }
     struct StoredEvent {
         let stableID: String
         let event: TokenEvent
@@ -259,6 +282,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let job: FullRebuildJob
         let databaseURL: URL
         let committedSignature: SourceSignature
+        let artifactID: String
+        let actualBytes: UInt64
         let eventCount: Int
         let resumeOffset: UInt64
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
@@ -363,6 +388,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private static let sessionCatalogSchemaVersion = "1"
     private static let chunkSize: UInt64 = 4 * 1_024 * 1_024
+    private static let stagingMaxWorkers = 4
+    private static let stagingMaxReadyArtifacts = 8
+    private static let stagingMaxReadyBytes: UInt64 = 512 * 1_024 * 1_024
+    private static let stagingMinimumFreeReserveBytes: Int64 = 64 * 1_024 * 1_024
+    /// Leave headroom for SQLite pages, indexes, and the ready manifest so a
+    /// normal multi-file batch stays below the hard ready-artifact byte cap.
+    private static let stagingPlannedReadyBytes: UInt64 = 448 * 1_024 * 1_024
+    private static let stagingManifestIntegrity = "sqlite-quick-check-v1"
+    private static let stagingParserRevision = "token-event-v2-\(forkReplayBoundaryRevision)"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
@@ -412,6 +446,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         try withExclusiveAccess {
+            switch try Self.assessMigration(
+                databaseURL: databaseURL,
+                fileManager: fileManager
+            ) {
+            case .compatible, .knownMigrationRequired:
+                break
+            case let .upgradeRequired(component, stored, supported):
+                throw CodexUsageIndexUpgradeRequiredError(
+                    component: component,
+                    stored: stored,
+                    supported: supported
+                )
+            case let .corrupt(component, rawValue):
+                throw SQLiteDatabaseError(
+                    operation: "Assess exact usage index compatibility",
+                    code: SQLITE_CORRUPT,
+                    message: "\(component) marker is corrupt: \(rawValue)",
+                    path: databaseURL.path
+                )
+            }
             // Normal schema reads already make SQLite validate every page they
             // touch. Running PRAGMA quick_check over the entire hundreds-of-MiB
             // history database at every Swift process launch delayed cached data and
@@ -420,6 +474,136 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // recovery can inspect the original bytes instead of silently
             // deleting the user's only published index.
             try prepareSchema(onProgress: onProgress)
+        }
+    }
+
+    private static func assessMigration(
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws -> MigrationAssessment {
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return .compatible
+        }
+        let readOnly = SQLiteDatabaseDriver(
+            url: databaseURL,
+            readOnly: true,
+            busyTimeoutMilliseconds: 1_000,
+            fileManager: fileManager
+        )
+        return try readOnly.withConnection { connection in
+            let schemaMetaExists = try connection.readRows(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta');"
+            ) { ($0.int(0) ?? 0) != 0 }.first ?? false
+            if !schemaMetaExists {
+                let hasUserTables = try connection.readRows(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%');"
+                ) { ($0.int(0) ?? 0) != 0 }.first ?? false
+                return hasUserTables
+                    ? .corrupt(component: "schema_version", rawValue: "missing schema_meta")
+                    : .compatible
+            }
+            func meta(_ key: String) throws -> String? {
+                try connection.readRows(
+                    "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                    bindings: [.text(key)]
+                ) { $0.text(0) }.first ?? nil
+            }
+            let rawSchema = try meta("schema_version")
+            if let rawSchema, Int(rawSchema) == nil {
+                return .corrupt(component: "schema_version", rawValue: rawSchema)
+            }
+            if let rawSchema,
+               let stored = Int(rawSchema),
+               let supported = Int(schemaVersion),
+               stored > supported {
+                return .upgradeRequired(
+                    component: "主 schema",
+                    stored: rawSchema,
+                    supported: schemaVersion
+                )
+            }
+            if let replay = try meta("fork_replay_boundary_revision"),
+               replay != forkReplayBoundaryRevision {
+                return .upgradeRequired(
+                    component: "fork replay",
+                    stored: replay,
+                    supported: forkReplayBoundaryRevision
+                )
+            }
+            if let provenance = try meta("provenance_revision"),
+               provenance != attributionProvenanceRevision,
+               !knownLegacyAttributionProvenanceRevisions.contains(provenance) {
+                return .upgradeRequired(
+                    component: "归因 provenance",
+                    stored: provenance,
+                    supported: attributionProvenanceRevision
+                )
+            }
+            if let enrichment = try meta(eventEnrichmentRevisionKey),
+               enrichment != eventEnrichmentRevision {
+                return .upgradeRequired(
+                    component: "模型补全",
+                    stored: enrichment,
+                    supported: eventEnrichmentRevision
+                )
+            }
+            if let aggregate = try meta("dashboard_aggregate_schema_version") {
+                guard let stored = Int(aggregate) else {
+                    return .corrupt(
+                        component: "aggregate schema",
+                        rawValue: aggregate
+                    )
+                }
+                if stored > Int(dashboardAggregateSchemaVersion)! {
+                    return .upgradeRequired(
+                        component: "aggregate schema",
+                        stored: aggregate,
+                        supported: dashboardAggregateSchemaVersion
+                    )
+                }
+            }
+            if let pricing = try meta("dashboard_aggregate_pricing_revision"),
+               !knownDashboardAggregatePricingRevisions.contains(pricing) {
+                return .upgradeRequired(
+                    component: "aggregate pricing",
+                    stored: pricing,
+                    supported: dashboardAggregatePricingRevision
+                )
+            }
+            let sessionCatalogMetaExists = try connection.readRows(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_catalog_meta');"
+            ) { ($0.int(0) ?? 0) != 0 }.first ?? false
+            if sessionCatalogMetaExists {
+                let catalog = try connection.readRows(
+                    "SELECT value FROM session_catalog_meta WHERE key = 'schema_version' LIMIT 1;"
+                ) { $0.text(0) }.first ?? nil
+                if let catalog, catalog != sessionCatalogSchemaVersion {
+                    return .upgradeRequired(
+                        component: "session catalog schema（会话目录）",
+                        stored: catalog,
+                        supported: sessionCatalogSchemaVersion
+                    )
+                }
+            }
+            var stages: [String] = []
+            if rawSchema != schemaVersion { stages.append("schema") }
+            if try meta("fork_replay_boundary_revision") != forkReplayBoundaryRevision {
+                stages.append("forkReplay")
+            }
+            if try meta("provenance_revision") != attributionProvenanceRevision {
+                stages.append("attributionLedger")
+            }
+            if try meta(eventEnrichmentRevisionKey) != eventEnrichmentRevision {
+                stages.append("eventEnrichment")
+            }
+            if !sessionCatalogMetaExists { stages.append("sessionCatalog") }
+            if try meta("dashboard_aggregate_schema_version")
+                != dashboardAggregateSchemaVersion {
+                stages.append("aggregate")
+            }
+            return stages.isEmpty
+                ? .compatible
+                : .knownMigrationRequired(stages: stages)
         }
     }
 
@@ -974,7 +1158,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                        let appended = try appendSource(
                            file: file,
                            sessionID: parsedSessionID,
-                           observedSignature: observed,
                            existing: existing,
                            generation: generation,
                            connection: connection,
@@ -1017,94 +1200,138 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         } else {
             onProgress?(canonicalFiles.count, canonicalFiles.count, .publishing)
         }
-        let stagedRebuilds = try stageFullRebuilds(
-            fullRebuildJobs,
-            parser: parser,
-            eventEnrichmentTotal: eventEnrichmentTotal
-        ) { completed, total in
-            onProgress?(completed, total, .backfillingModel)
-        }
-        if Self.stagingTestState.consumeFailure() {
-            throw SQLiteDatabaseError(
-                operation: "Injected exact usage staging interruption",
-                code: SQLITE_ABORT,
-                message: "Testing interruption after durable staging",
-                path: driver.url.path
-            )
-        }
         var lineageReplacements: [String: LineageReplacement] = [:]
         var lineagesRequiringMaximumMerge = Set<String>()
         var provenanceRotated = false
+        let stagingBatches = stagingBatches(for: fullRebuildJobs)
         let finalSynchronization = try driver.withConnection { connection in
             try configure(connection)
-            for staged in stagedRebuilds where staged.job.reason == .eventEnrichment {
-                guard let source = try indexedSource(
-                    path: staged.job.file.path,
-                    connection: connection
-                ) else {
-                    rewrittenFiles += 1
-                    continue
+            let preRotationAttributionState = try currentAttributionState(
+                connection: connection
+            )
+            var completedEventEnrichmentJobs = 0
+
+            // Never leave every source staged at once. A bounded batch is
+            // parsed, validated, imported into the building generation, and
+            // deleted before the next batch is dispatched. The formal
+            // published generation remains unchanged until the final commit,
+            // so a crash retains the previous readable snapshot while ready
+            // manifests make the interrupted batch resumable.
+            for batch in stagingBatches {
+                try ensureStagingCapacity(for: batch)
+                let completedBeforeBatch = completedEventEnrichmentJobs
+                let stagedRebuilds = try stageFullRebuilds(
+                    batch,
+                    generation: generation,
+                    parser: parser,
+                    eventEnrichmentTotal: eventEnrichmentTotal
+                ) { completed, total in
+                    onProgress?(
+                        min(completedBeforeBatch + completed, total),
+                        total,
+                        .backfillingModel
+                    )
                 }
-                let matches = try stagedEventsMatchPublishedSource(
-                    staged,
-                    sourceID: source.id,
-                    connection: connection
-                )
-                if !matches {
-                    // The current parser disagrees with the old published
-                    // event identity or numeric payload. Treat this as the
-                    // planned single-file reconciliation, never as a reason
-                    // to rebuild unrelated sources.
-                    rewrittenFiles += 1
+                if Self.stagingTestState.consumeFailure() {
+                    throw SQLiteDatabaseError(
+                        operation: "Injected exact usage staging interruption",
+                        code: SQLITE_ABORT,
+                        message: "Testing interruption after durable staging",
+                        path: driver.url.path
+                    )
+                }
+                completedEventEnrichmentJobs += stagedRebuilds.filter {
+                    $0.job.reason == .eventEnrichment
+                }.count
+
+                for staged in stagedRebuilds where staged.job.reason == .eventEnrichment {
+                    guard let source = try indexedSource(
+                        path: staged.job.file.path,
+                        connection: connection
+                    ) else {
+                        rewrittenFiles += 1
+                        continue
+                    }
+                    let matches = try stagedEventsMatchPublishedSource(
+                        staged,
+                        sourceID: source.id,
+                        connection: connection
+                    )
+                    if !matches {
+                        // The current parser disagrees with the old published
+                        // event identity or numeric payload. Treat this as the
+                        // planned single-file reconciliation, never as a reason
+                        // to rebuild unrelated sources.
+                        rewrittenFiles += 1
+                    }
+                }
+                for staged in stagedRebuilds {
+                    let resolution = try lineageReplacement(
+                        for: staged,
+                        observedPaths: observedPaths,
+                        connection: connection
+                    )
+                    if let replacement = resolution.replacement {
+                        lineageReplacements[staged.job.file.path] = replacement
+                    }
+                    if resolution.preserveExistingLedger {
+                        lineagesRequiringMaximumMerge.insert(staged.job.file.path)
+                    }
+                    lineageAmbiguityDetected = lineageAmbiguityDetected
+                        || resolution.ambiguous
+                }
+
+                // Rotate before the first unsafe replacement becomes visible.
+                // A later batch can discover an additional ambiguity; copying
+                // the ledger at that point still preserves all earlier imports
+                // conservatively in the new epoch.
+                let currentBatchUnsafeCause = rewrittenFiles > 0
+                    || lineageAmbiguityDetected
+                if currentBatchUnsafeCause {
+                    let attributionState = try currentAttributionState(
+                        connection: connection
+                    )
+                    if !attributionState.requiresSyntheticCutover {
+                        provenanceRotated = true
+                        _ = try rotateAttributionProvenance(
+                            markUnsafe: true,
+                            connection: connection
+                        )
+                    }
+                }
+
+                for staged in stagedRebuilds {
+                    try importStagedFullRebuild(
+                        staged,
+                        generation: generation,
+                        replacementSourceID: lineageReplacements[staged.job.file.path]?.sourceID,
+                        preserveExistingAttributionLedger:
+                            lineagesRequiringMaximumMerge.contains(staged.job.file.path),
+                        connection: connection
+                    )
+                    changedFiles += 1
+                    indexedEvents += staged.eventCount
+                    sourceMutationDetected = true
+                    removeStagingDatabase(at: staged.databaseURL)
                 }
             }
-            for staged in stagedRebuilds {
-                let resolution = try lineageReplacement(
-                    for: staged,
-                    observedPaths: observedPaths,
-                    connection: connection
-                )
-                if let replacement = resolution.replacement {
-                    lineageReplacements[staged.job.file.path] = replacement
-                }
-                if resolution.preserveExistingLedger {
-                    lineagesRequiringMaximumMerge.insert(staged.job.file.path)
-                }
-                lineageAmbiguityDetected = lineageAmbiguityDetected
-                    || resolution.ambiguous
-            }
+
             // Publish a new provenance epoch before any non-append replacement
             // or unprovable lineage replacement becomes visible. The rotation
             // transaction first copies the durable ledger, so interruption can
             // overestimate local usage but cannot silently reconcile ambiguity.
             let currentScanUnsafeCauseDetected = rewrittenFiles > 0
                 || lineageAmbiguityDetected
-            let preRotationAttributionState = try currentAttributionState(
-                connection: connection
-            )
             let unsafeEpisodeBegan = currentScanUnsafeCauseDetected
                 && !preRotationAttributionState.currentScanUnsafeCauseDetected
             if currentScanUnsafeCauseDetected
+                && !provenanceRotated
                 && !preRotationAttributionState.requiresSyntheticCutover {
                 provenanceRotated = true
                 _ = try rotateAttributionProvenance(
                     markUnsafe: true,
                     connection: connection
                 )
-            }
-            for staged in stagedRebuilds {
-                try importStagedFullRebuild(
-                    staged,
-                    generation: generation,
-                    replacementSourceID: lineageReplacements[staged.job.file.path]?.sourceID,
-                    preserveExistingAttributionLedger:
-                        lineagesRequiringMaximumMerge.contains(staged.job.file.path),
-                    connection: connection
-                )
-                changedFiles += 1
-                indexedEvents += staged.eventCount
-                sourceMutationDetected = true
-                removeStagingDatabase(at: staged.databaseURL)
             }
             return try connection.transaction { transaction in
                 let currentScanUnsafeCauseBeforePublish =
@@ -2053,6 +2280,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 CREATE TABLE IF NOT EXISTS event_enrichment_sources (
                     source_id INTEGER PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
                     revision TEXT NOT NULL,
+                    canonical_path TEXT NOT NULL,
+                    parser_revision TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    inode TEXT NOT NULL,
+                    imported_generation TEXT NOT NULL,
                     completed_size INTEGER NOT NULL,
                     completed_probe TEXT NOT NULL
                 );
@@ -2212,6 +2444,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         bindings: [.text(migratedEpoch)]
                     )
                     try backfillAttributionLedger(connection: transaction)
+                    try transaction.execute(
+                        """
+                        INSERT INTO schema_meta(key, value)
+                        VALUES ('provenance_revision', ?)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """,
+                        bindings: [.text(Self.attributionProvenanceRevision)]
+                    )
                     let generation = try bumpAttributionGeneration(connection: transaction)
                     let sourceCount = try transaction.readRows(
                         "SELECT COUNT(*) FROM sources;"
@@ -2237,6 +2477,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             try migrateV2SourcesForAppend(connection)
             try migrateKnownEventColumns(connection)
+            try migrateEventEnrichmentReceiptColumns(connection)
             try connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS source_fingerprints (
@@ -2439,11 +2680,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         guard requiredColumns.allSatisfy(columns.contains),
               normalizedSQL.contains(expectedPrimaryKey) else {
             let legacyName = "attribution_source_buckets_legacy_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
-            try connection.execute(
-                "ALTER TABLE attribution_source_buckets RENAME TO \(legacyName);"
-            )
-            try createAttributionLedgerSchema(connection: connection)
-
             let expressions = requiredColumns.map { column -> String in
                 guard columns.contains(column) else {
                     switch column {
@@ -2453,16 +2689,36 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 return column
             }
-            try connection.execute(
-                """
-                INSERT OR REPLACE INTO attribution_source_buckets(
-                    \(requiredColumns.joined(separator: ", "))
+            try connection.transaction { transaction in
+                try transaction.execute(
+                    "ALTER TABLE attribution_source_buckets RENAME TO \(legacyName);"
                 )
-                SELECT \(expressions.joined(separator: ", "))
-                FROM \(legacyName);
-                """
-            )
-            try connection.execute("DROP TABLE \(legacyName);")
+                try createAttributionLedgerSchema(connection: transaction)
+                let legacyRows = try transaction.readRows(
+                    "SELECT COUNT(*) FROM \(legacyName);"
+                ) { $0.int(0) ?? 0 }.first ?? 0
+                try transaction.execute(
+                    """
+                    INSERT OR REPLACE INTO attribution_source_buckets(
+                        \(requiredColumns.joined(separator: ", "))
+                    )
+                    SELECT \(expressions.joined(separator: ", "))
+                    FROM \(legacyName);
+                    """
+                )
+                let migratedRows = try transaction.readRows(
+                    "SELECT COUNT(*) FROM attribution_source_buckets;"
+                ) { $0.int(0) ?? 0 }.first ?? 0
+                guard migratedRows == legacyRows else {
+                    throw SQLiteDatabaseError(
+                        operation: "Migrate exact usage attribution ledger shape",
+                        code: SQLITE_CORRUPT,
+                        message: "Attribution ledger row count changed from \(legacyRows) to \(migratedRows)",
+                        path: driver.url.path
+                    )
+                }
+                try transaction.execute("DROP TABLE \(legacyName);")
+            }
             return
         }
         try connection.execute(
@@ -3245,6 +3501,64 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    private func migrateEventEnrichmentReceiptColumns(
+        _ connection: SQLiteDatabaseConnection
+    ) throws {
+        let tableExists = try connection.readRows(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'event_enrichment_sources';
+            """
+        ) { ($0.int(0) ?? 0) > 0 }.first ?? false
+        guard tableExists else { return }
+        var columns = Set(
+            try connection.readRows("PRAGMA table_info(event_enrichment_sources);") {
+                $0.text(1) ?? ""
+            }
+        )
+        for (column, definition) in [
+            ("canonical_path", "TEXT NOT NULL DEFAULT ''"),
+            ("parser_revision", "TEXT NOT NULL DEFAULT ''"),
+            ("device_id", "TEXT NOT NULL DEFAULT ''"),
+            ("inode", "TEXT NOT NULL DEFAULT ''"),
+            ("imported_generation", "TEXT NOT NULL DEFAULT ''"),
+        ] where !columns.contains(column) {
+            try connection.execute(
+                "ALTER TABLE event_enrichment_sources ADD COLUMN \(column) \(definition);"
+            )
+            columns.insert(column)
+        }
+        try connection.execute(
+            """
+            UPDATE event_enrichment_sources
+            SET canonical_path = COALESCE((
+                    SELECT sources.path FROM sources
+                    WHERE sources.source_id = event_enrichment_sources.source_id
+                ), canonical_path),
+                parser_revision = CASE
+                    WHEN revision = ? THEN ? ELSE parser_revision END,
+                device_id = COALESCE((
+                    SELECT sources.device_id FROM sources
+                    WHERE sources.source_id = event_enrichment_sources.source_id
+                ), device_id),
+                inode = COALESCE((
+                    SELECT sources.inode FROM sources
+                    WHERE sources.source_id = event_enrichment_sources.source_id
+                ), inode),
+                imported_generation = COALESCE((
+                    SELECT sources.last_seen_generation FROM sources
+                    WHERE sources.source_id = event_enrichment_sources.source_id
+                ), imported_generation)
+            WHERE canonical_path = '' OR parser_revision = ''
+               OR device_id = '' OR inode = '' OR imported_generation = '';
+            """,
+            bindings: [
+                .text(Self.eventEnrichmentRevision),
+                .text(Self.stagingParserRevision),
+            ]
+        )
+    }
+
     /// Marks only active replay sources whose first line proves an explicit
     /// subagent fork for an atomic single-file replacement on the next normal
     /// synchronization. The currently published rows remain readable until
@@ -3572,31 +3886,55 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             LEFT JOIN event_enrichment_sources e
               ON e.source_id = s.source_id
              AND e.revision = ?
+             AND e.canonical_path = s.path
+             AND e.parser_revision = ?
+             AND e.device_id = s.device_id
+             AND e.inode = s.inode
+             AND e.imported_generation = s.last_seen_generation
+             AND e.completed_size = s.size_bytes
+             AND e.completed_probe = s.content_probe
             WHERE e.source_id IS NULL
             ORDER BY s.source_id;
             """,
-            bindings: [.text(Self.eventEnrichmentRevision)]
+            bindings: [
+                .text(Self.eventEnrichmentRevision),
+                .text(Self.stagingParserRevision),
+            ]
         ) { $0.int64(0) }.compactMap { $0 })
     }
 
     private func markEventEnrichmentComplete(
         sourceID: Int64,
+        canonicalPath: String,
+        generation: String,
         signature: SourceSignature,
         connection: SQLiteDatabaseConnection
     ) throws {
         try connection.execute(
             """
             INSERT INTO event_enrichment_sources(
-                source_id, revision, completed_size, completed_probe
-            ) VALUES (?, ?, ?, ?)
+                source_id, revision, canonical_path, parser_revision,
+                device_id, inode, imported_generation,
+                completed_size, completed_probe
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id) DO UPDATE SET
                 revision = excluded.revision,
+                canonical_path = excluded.canonical_path,
+                parser_revision = excluded.parser_revision,
+                device_id = excluded.device_id,
+                inode = excluded.inode,
+                imported_generation = excluded.imported_generation,
                 completed_size = excluded.completed_size,
                 completed_probe = excluded.completed_probe;
             """,
             bindings: [
                 .int64(sourceID),
                 .text(Self.eventEnrichmentRevision),
+                .text(canonicalPath),
+                .text(Self.stagingParserRevision),
+                .text(String(signature.deviceID)),
+                .text(String(signature.inode)),
+                .text(generation),
                 .int64(try sqliteInt64(signature.size)),
                 .text(signature.contentProbe),
             ]
@@ -3655,7 +3993,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func appendSource(
         file: URL,
         sessionID: String,
-        observedSignature: SourceSignature,
         existing: IndexedSource,
         generation: String,
         connection: SQLiteDatabaseConnection,
@@ -3668,6 +4005,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                   checkpoint: checkpoint,
                   connection: connection
               ) else {
+            return nil
+        }
+        let readHandle = try FileHandle(forReadingFrom: file)
+        defer { try? readHandle.close() }
+        let formalSignature = try sourceSignature(
+            forOpenHandle: readHandle,
+            file: file
+        )
+        guard formalSignature.deviceID == existing.signature.deviceID,
+              formalSignature.inode == existing.signature.inode,
+              formalSignature.size > existing.signature.size else {
             return nil
         }
 
@@ -3733,9 +4081,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     CodexUsageAnalyzer.IndexedSessionParseRequest(
                         hashingStartOffset: hashingStartOffset,
                         parsingStartOffset: checkpoint.resumeOffset,
-                        endOffset: observedSignature.size,
+                        endOffset: formalSignature.size,
                         validationBoundary: existing.signature.size,
-                        initialState: checkpoint.parserState
+                        initialState: checkpoint.parserState,
+                        readHandle: readHandle
                     ),
                     { fingerprint in
                         let key = fingerprint.databaseKey
@@ -3781,7 +4130,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     }
                 )
 
-                guard result.lastOffset == observedSignature.size else {
+                guard result.lastOffset == formalSignature.size else {
                     throw CodexUsageSourceChangedError(path: file.path)
                 }
                 if existing.signature.size > 0,
@@ -3790,7 +4139,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 try validateAppendScan(
                     file: file,
-                    observedSignature: observedSignature,
+                    readHandle: readHandle,
+                    observedSignature: formalSignature,
                     chunkHashes: result.chunkHashes
                 )
                 try replaceSourceChunks(
@@ -3806,7 +4156,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try saveSourceCheckpoint(
                     sourceID: existing.id,
                     sessionID: sessionID,
-                    signature: observedSignature,
+                    signature: formalSignature,
                     generation: generation,
                     parseResult: result,
                     auditChunkIndex: nextAuditChunk,
@@ -3814,7 +4164,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
                 try markEventEnrichmentComplete(
                     sourceID: existing.id,
-                    signature: observedSignature,
+                    canonicalPath: file.path,
+                    generation: generation,
+                    signature: formalSignature,
                     connection: transaction
                 )
                 if let firstAffectedAttributionBucket,
@@ -3908,17 +4260,31 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         index: UInt64,
         byteCount: UInt64
     ) throws -> CodexUsageAnalyzer.IndexedChunkHash {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        return try hashSourceChunk(
+            file: file,
+            readHandle: handle,
+            index: index,
+            byteCount: byteCount
+        )
+    }
+
+    private func hashSourceChunk(
+        file: URL,
+        readHandle: FileHandle,
+        index: UInt64,
+        byteCount: UInt64
+    ) throws -> CodexUsageAnalyzer.IndexedChunkHash {
         let (offset, overflow) = index.multipliedReportingOverflow(by: Self.chunkSize)
         guard !overflow else {
             throw CodexUsageSourceChangedError(path: file.path)
         }
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-        try handle.seek(toOffset: offset)
+        try readHandle.seek(toOffset: offset)
         var remaining = byteCount
         var hasher = SHA256()
         while remaining > 0 {
-            let data = handle.readData(ofLength: Int(min(remaining, 1_048_576)))
+            let data = readHandle.readData(ofLength: Int(min(remaining, 1_048_576)))
             guard !data.isEmpty else {
                 throw CodexUsageSourceChangedError(path: file.path)
             }
@@ -3936,14 +4302,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func validateAppendScan(
         file: URL,
+        readHandle: FileHandle,
         observedSignature: SourceSignature,
         chunkHashes: [CodexUsageAnalyzer.IndexedChunkHash]
     ) throws {
-        let finalSignature = try sourceSignature(for: file)
-        guard finalSignature != observedSignature else { return }
-        guard finalSignature.deviceID == observedSignature.deviceID,
-              finalSignature.inode == observedSignature.inode,
-              finalSignature.size >= observedSignature.size else {
+        let handleSignature = try sourceSignature(
+            forOpenHandle: readHandle,
+            file: file
+        )
+        let pathSignature = try sourceSignature(for: file)
+        guard handleSignature != observedSignature
+                || pathSignature != observedSignature else { return }
+        guard handleSignature.deviceID == observedSignature.deviceID,
+              handleSignature.inode == observedSignature.inode,
+              handleSignature.size >= observedSignature.size,
+              pathSignature.deviceID == observedSignature.deviceID,
+              pathSignature.inode == observedSignature.inode,
+              pathSignature.size >= observedSignature.size else {
             throw CodexUsageSourceChangedError(path: file.path)
         }
         guard observedSignature.size > 0 else { return }
@@ -3952,10 +4327,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         guard let scannedTail = chunkHashes.first(where: { $0.index == tailIndex }),
               try hashSourceChunk(
                   file: file,
+                  readHandle: readHandle,
                   index: tailIndex,
                   byteCount: byteCount
               ) == scannedTail,
-              finalSignature.size > observedSignature.size else {
+              try hashSourceChunk(
+                  file: file,
+                  index: tailIndex,
+                  byteCount: byteCount
+              ) == scannedTail,
+              handleSignature.size > observedSignature.size
+                || pathSignature.size > observedSignature.size else {
             throw CodexUsageSourceChangedError(path: file.path)
         }
     }
@@ -4107,8 +4489,97 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    private func stagingBatches(for jobs: [FullRebuildJob]) -> [[FullRebuildJob]] {
+        guard !jobs.isEmpty else { return [] }
+        let sorted = jobs.sorted {
+            if $0.observedSignature.size == $1.observedSignature.size {
+                return $0.file.path < $1.file.path
+            }
+            return $0.observedSignature.size > $1.observedSignature.size
+        }
+        let artifactLimit = min(
+            Self.stagingMaxWorkers,
+            Self.stagingMaxReadyArtifacts
+        )
+        var heavy = sorted.filter {
+            $0.observedSignature.size >= coldBuildHeavyFileThreshold
+        }
+        var light = sorted.filter {
+            $0.observedSignature.size < coldBuildHeavyFileThreshold
+        }
+        var batches: [[FullRebuildJob]] = []
+
+        func fillBatch(startingWith first: FullRebuildJob?) -> [FullRebuildJob] {
+            var batch = first.map { [$0] } ?? []
+            var bytes = first?.observedSignature.size ?? 0
+            while batch.count < artifactLimit, let candidate = light.first {
+                let candidateBytes = candidate.observedSignature.size
+                let remaining = Self.stagingPlannedReadyBytes > bytes
+                    ? Self.stagingPlannedReadyBytes - bytes
+                    : 0
+                guard batch.isEmpty || candidateBytes <= remaining else { break }
+                batch.append(light.removeFirst())
+                bytes &+= candidateBytes
+            }
+            return batch
+        }
+
+        // Heavy files get a dedicated serial lane, but a light file may share
+        // the batch so the heavy worker cannot starve all light work. Files
+        // above the hard ready-byte cap are always exclusive.
+        while !heavy.isEmpty {
+            let job = heavy.removeFirst()
+            if job.observedSignature.size > Self.stagingMaxReadyBytes {
+                batches.append([job])
+            } else {
+                batches.append(fillBatch(startingWith: job))
+            }
+        }
+        while !light.isEmpty {
+            batches.append(fillBatch(startingWith: nil))
+        }
+        return batches
+    }
+
+    private func ensureStagingCapacity(for jobs: [FullRebuildJob]) throws {
+        guard !jobs.isEmpty else { return }
+        let requestedBytes = jobs.reduce(UInt64(0)) { partial, job in
+            let (sum, overflow) = partial.addingReportingOverflow(
+                job.observedSignature.size
+            )
+            return overflow ? UInt64.max : sum
+        }
+        let stagingRoot = driver.url.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: stagingRoot,
+            withIntermediateDirectories: true
+        )
+        let values = try stagingRoot.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey
+        ])
+        guard let rawAvailable = values.volumeAvailableCapacityForImportantUsage,
+              rawAvailable >= 0 else {
+            return
+        }
+        let available = UInt64(rawAvailable)
+        let reserve = UInt64(max(0, Self.stagingMinimumFreeReserveBytes))
+        let (required, overflow) = requestedBytes.addingReportingOverflow(reserve)
+        guard !overflow, available >= required else {
+            throw NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSFileWriteOutOfSpaceError,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "精确索引 staging 磁盘空间不足；已停止派发新任务并保留上一份可用结果。",
+                    NSFilePathErrorKey: stagingRoot.path,
+                ]
+            )
+        }
+    }
+
     private func stageFullRebuilds(
         _ jobs: [FullRebuildJob],
+        generation: String,
         parser: @escaping SessionParser,
         eventEnrichmentTotal: Int,
         onEventEnrichmentProgress: @escaping (Int, Int) -> Void
@@ -4147,7 +4618,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 autoreleasepool {
                     do {
                         let completed = collector.append(
-                            try stageFullRebuild(job, parser: parserBox.parser)
+                            try stageFullRebuild(
+                                job,
+                                generation: generation,
+                                parser: parserBox.parser
+                            )
                         )
                         if let completed, eventEnrichmentTotal > 0 {
                             progressBox.callback(
@@ -4189,6 +4664,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func stageFullRebuild(
         _ job: FullRebuildJob,
+        generation: String,
         parser: SessionParser
     ) throws -> StagedFullRebuild {
         let databaseURL = stagingDatabaseURL(for: job.file)
@@ -4199,6 +4675,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return reusable
         }
         removeStagingDatabase(at: databaseURL)
+        let readHandle = try FileHandle(forReadingFrom: job.file)
+        defer { try? readHandle.close() }
+        let formalSignature = try sourceSignature(
+            forOpenHandle: readHandle,
+            file: job.file
+        )
+        guard formalSignature.deviceID == job.observedSignature.deviceID,
+              formalSignature.inode == job.observedSignature.inode,
+              formalSignature.size >= job.observedSignature.size else {
+            throw CodexUsageSourceChangedError(path: job.file.path)
+        }
+        let committedSignature = job.reason == .eventEnrichment
+            ? job.observedSignature
+            : formalSignature
+        let artifactID = UUID().uuidString
+        let migrationRevision = job.reason == .eventEnrichment
+            ? Self.eventEnrichmentRevision
+            : "exact-source-rebuild-v1"
         let stage = SQLiteDatabaseDriver(
             url: databaseURL,
             busyTimeoutMilliseconds: 30_000,
@@ -4213,8 +4707,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 PRAGMA cache_size=-4096;
 
                 CREATE TABLE manifest (
-                    complete INTEGER PRIMARY KEY,
+                    complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
+                    canonical_path TEXT NOT NULL,
                     session_id TEXT NOT NULL,
+                    migration_revision TEXT NOT NULL,
+                    parser_revision TEXT NOT NULL,
+                    target_generation TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    actual_bytes INTEGER NOT NULL,
+                    integrity TEXT NOT NULL,
+                    prefix_sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     modified_at REAL NOT NULL,
                     content_probe TEXT NOT NULL,
@@ -4258,7 +4760,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 ) WITHOUT ROWID;
                 """
             )
-            return try connection.transaction { transaction in
+            var staged = try connection.transaction { transaction in
                 let fingerprintStatement = try transaction.prepare(
                     "INSERT OR IGNORE INTO fingerprints(value) VALUES (?);"
                 )
@@ -4281,7 +4783,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 let result = try parser(
                     job.file,
                     job.sessionID,
-                    .full(endOffset: job.observedSignature.size),
+                    .full(
+                        endOffset: committedSignature.size,
+                        readHandle: readHandle
+                    ),
                     { fingerprint in
                         try fingerprintStatement.execute([
                             .text(fingerprint.databaseKey)
@@ -4315,24 +4820,29 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         ])
                     }
                 )
-                guard result.lastOffset == job.observedSignature.size else {
+                guard result.lastOffset == committedSignature.size else {
                     throw CodexUsageSourceChangedError(path: job.file.path)
                 }
-                let finalSignature = try sourceSignature(for: job.file)
-                let committedSignature: SourceSignature
-                if finalSignature == job.observedSignature {
-                    committedSignature = finalSignature
-                } else if finalSignature.deviceID == job.observedSignature.deviceID,
-                          finalSignature.inode == job.observedSignature.inode,
-                          finalSignature.size >= job.observedSignature.size,
-                          try contentHash(
-                              for: job.file,
-                              length: job.observedSignature.size
-                          ) == result.contentHash {
-                    committedSignature = finalSignature.size == job.observedSignature.size
-                        ? finalSignature
-                        : job.observedSignature
-                } else {
+                let handleSignature = try sourceSignature(
+                    forOpenHandle: readHandle,
+                    file: job.file
+                )
+                let pathSignature = try sourceSignature(for: job.file)
+                guard handleSignature.deviceID == committedSignature.deviceID,
+                      handleSignature.inode == committedSignature.inode,
+                      handleSignature.size >= committedSignature.size,
+                      pathSignature.deviceID == committedSignature.deviceID,
+                      pathSignature.inode == committedSignature.inode,
+                      pathSignature.size >= committedSignature.size,
+                      try contentHash(
+                          forOpenHandle: readHandle,
+                          length: committedSignature.size,
+                          file: job.file
+                      ) == result.contentHash,
+                      try contentHash(
+                          for: job.file,
+                          length: committedSignature.size
+                      ) == result.contentHash else {
                     throw CodexUsageSourceChangedError(path: job.file.path)
                 }
 
@@ -4354,7 +4864,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     """
                     INSERT INTO manifest(
                         complete,
+                        canonical_path,
                         session_id,
+                        migration_revision,
+                        parser_revision,
+                        target_generation,
+                        artifact_id,
+                        actual_bytes,
+                        integrity,
+                        prefix_sha256,
                         size_bytes,
                         modified_at,
                         content_probe,
@@ -4372,10 +4890,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         current_user_prompt_offset,
                         assistant_start_offset,
                         current_model
-                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    ) VALUES (0, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     bindings: [
+                        .text(job.file.path),
                         .text(job.sessionID),
+                        .text(migrationRevision),
+                        .text(Self.stagingParserRevision),
+                        .text(generation),
+                        .text(artifactID),
+                        .text(result.contentHash),
                         .int64(try sqliteInt64(committedSignature.size)),
                         .double(committedSignature.modifiedAt),
                         .text(committedSignature.contentProbe),
@@ -4396,14 +4920,72 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ]
                 )
                 return StagedFullRebuild(
-                    job: job,
+                    job: FullRebuildJob(
+                        file: job.file,
+                        sessionID: job.sessionID,
+                        observedSignature: committedSignature,
+                        reason: job.reason
+                    ),
                     databaseURL: databaseURL,
                     committedSignature: committedSignature,
+                    artifactID: artifactID,
+                    actualBytes: 0,
                     eventCount: result.eventCount,
                     resumeOffset: result.resumeOffset,
                     parserState: result.state
                 )
             }
+            let quickCheck = try connection.readRows("PRAGMA quick_check;") {
+                $0.text(0) ?? ""
+            }
+            guard quickCheck == ["ok"] else {
+                throw SQLiteDatabaseError(
+                    operation: "Validate exact usage staging",
+                    code: SQLITE_CORRUPT,
+                    message: quickCheck.joined(separator: "; "),
+                    path: databaseURL.path
+                )
+            }
+            let attributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
+            var actualBytes = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            try connection.execute(
+                """
+                UPDATE manifest
+                SET complete = 1, actual_bytes = ?, integrity = ?
+                WHERE complete = 0 AND artifact_id = ?;
+                """,
+                bindings: [
+                    .int64(try sqliteInt64(actualBytes)),
+                    .text(Self.stagingManifestIntegrity),
+                    .text(artifactID)
+                ]
+            )
+            let publishedAttributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
+            let publishedBytes = (publishedAttributes[.size] as? NSNumber)?.uint64Value ?? 0
+            if publishedBytes != actualBytes {
+                actualBytes = publishedBytes
+                try connection.execute(
+                    "UPDATE manifest SET actual_bytes = ? WHERE complete = 1 AND artifact_id = ?;",
+                    bindings: [
+                        .int64(try sqliteInt64(actualBytes)),
+                        .text(artifactID)
+                    ]
+                )
+            }
+            let syncHandle = try FileHandle(forReadingFrom: databaseURL)
+            try syncHandle.synchronize()
+            try syncHandle.close()
+            staged = StagedFullRebuild(
+                job: staged.job,
+                databaseURL: staged.databaseURL,
+                committedSignature: staged.committedSignature,
+                artifactID: staged.artifactID,
+                actualBytes: actualBytes,
+                eventCount: staged.eventCount,
+                resumeOffset: staged.resumeOffset,
+                parserState: staged.parserState
+            )
+            return staged
         }
     }
 
@@ -4431,7 +5013,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let rows: [StagedFullRebuild?] = try stage.readRows(
                 """
                 SELECT
+                    canonical_path,
                     session_id,
+                    migration_revision,
+                    parser_revision,
+                    target_generation,
+                    artifact_id,
+                    actual_bytes,
+                    integrity,
+                    prefix_sha256,
                     size_bytes,
                     modified_at,
                     content_probe,
@@ -4454,17 +5044,31 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 LIMIT 1;
                 """
             ) { row in
-                guard row.text(0) == job.sessionID,
-                      let rawSize = row.int64(1),
+                let expectedMigrationRevision = job.reason == .eventEnrichment
+                    ? Self.eventEnrichmentRevision
+                    : "exact-source-rebuild-v1"
+                guard row.text(0) == job.file.path,
+                      row.text(1) == job.sessionID,
+                      row.text(2) == expectedMigrationRevision,
+                      row.text(3) == Self.stagingParserRevision,
+                      let stagedGeneration = row.text(4),
+                      !stagedGeneration.isEmpty,
+                      let artifactID = row.text(5),
+                      !artifactID.isEmpty,
+                      let rawActualBytes = row.int64(6),
+                      rawActualBytes >= 0,
+                      row.text(7) == Self.stagingManifestIntegrity,
+                      let prefixSHA256 = row.text(8),
+                      let rawSize = row.int64(9),
                       rawSize >= 0,
-                      let modifiedAt = row.double(2),
-                      let contentProbe = row.text(3),
-                      let deviceID = row.text(4).flatMap(UInt64.init),
-                      let inode = row.text(5).flatMap(UInt64.init),
-                      let changedSeconds = row.int64(6),
-                      let changedNanoseconds = row.int64(7),
-                      let eventCount = row.int(8),
-                      let rawResumeOffset = row.int64(9),
+                      let modifiedAt = row.double(10),
+                      let contentProbe = row.text(11),
+                      let deviceID = row.text(12).flatMap(UInt64.init),
+                      let inode = row.text(13).flatMap(UInt64.init),
+                      let changedSeconds = row.int64(14),
+                      let changedNanoseconds = row.int64(15),
+                      let eventCount = row.int(16),
+                      let rawResumeOffset = row.int64(17),
                       rawResumeOffset >= 0 else {
                     return nil
                 }
@@ -4477,32 +5081,47 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     statusChangedSeconds: changedSeconds,
                     statusChangedNanoseconds: changedNanoseconds
                 )
-                guard signature == job.observedSignature else {
+                let actualBytes = UInt64(rawActualBytes)
+                let databaseAttributes = try? self.fileManager.attributesOfItem(
+                    atPath: databaseURL.path
+                )
+                let databaseSize = (databaseAttributes?[.size] as? NSNumber)?.uint64Value
+                guard databaseSize == actualBytes,
+                      signature.deviceID == job.observedSignature.deviceID,
+                      signature.inode == job.observedSignature.inode,
+                      signature.size <= job.observedSignature.size,
+                      rawResumeOffset <= rawSize,
+                      (try? self.contentHash(
+                          for: job.file,
+                          length: signature.size
+                      )) == prefixSHA256 else {
                     return nil
                 }
                 return StagedFullRebuild(
                     job: job,
                     databaseURL: databaseURL,
                     committedSignature: signature,
+                    artifactID: artifactID,
+                    actualBytes: actualBytes,
                     eventCount: eventCount,
                     resumeOffset: UInt64(rawResumeOffset),
                     parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                        previousTotalTokens: row.int(10),
-                        forkReplayStartedAt: row.double(11).map {
+                        previousTotalTokens: row.int(18),
+                        forkReplayStartedAt: row.double(19).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        isSkippingForkReplay: row.int(12) == 1,
-                        isExplicitSubagentFork: row.int(13) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(14).map {
+                        isSkippingForkReplay: row.int(20) == 1,
+                        isExplicitSubagentFork: row.int(21) == 1,
+                        lastSkippedForkReplayTokenAt: row.double(22).map {
                             Date(timeIntervalSince1970: $0)
                         },
-                        currentUserPromptOffset: row.int64(15).flatMap {
+                        currentUserPromptOffset: row.int64(23).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        assistantStartOffset: row.int64(16).flatMap {
+                        assistantStartOffset: row.int64(24).flatMap {
                             $0 >= 0 ? UInt64($0) : nil
                         },
-                        currentModel: row.text(17)
+                        currentModel: row.text(25)
                     )
                 )
             }
@@ -4713,6 +5332,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         preserveExistingAttributionLedger: Bool,
         connection: SQLiteDatabaseConnection
     ) throws {
+        guard let validated = try reusableStage(
+            at: staged.databaseURL,
+            for: staged.job
+        ),
+        validated.artifactID == staged.artifactID,
+        validated.actualBytes == staged.actualBytes else {
+            throw SQLiteDatabaseError(
+                operation: "Validate exact usage staging before import",
+                code: SQLITE_CORRUPT,
+                message: "Staging manifest changed before import",
+                path: staged.databaseURL.path
+            )
+        }
         let stage = SQLiteDatabaseDriver(
             url: staged.databaseURL,
             readOnly: true,
@@ -4935,6 +5567,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
             try markEventEnrichmentComplete(
                 sourceID: source.id,
+                canonicalPath: staged.job.file.path,
+                generation: generation,
                 signature: staged.committedSignature,
                 connection: transaction
             )
@@ -5005,21 +5639,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func sourceSignatureMetadata(for file: URL) throws -> SourceSignature {
         var fileStatus = Darwin.stat()
-        guard lstat(file.path, &fileStatus) == 0 else {
+        guard lstat(file.path, &fileStatus) == 0,
+              (fileStatus.st_mode & S_IFMT) == S_IFREG,
+              fileStatus.st_size >= 0 else {
             throw CocoaError(.fileReadUnknown)
         }
-        let values = try file.resourceValues(forKeys: [
-            .fileSizeKey,
-            .contentModificationDateKey,
-            .isRegularFileKey
-        ])
-        guard values.isRegularFile == true, let fileSize = values.fileSize, fileSize >= 0 else {
-            throw CocoaError(.fileReadUnknown)
-        }
-        let size = UInt64(fileSize)
+        // Use the same stat representation as the worker-open fstat boundary.
+        // Mixing URLResourceValues' rounded timestamp with nanosecond fstat
+        // makes an unchanged file look rewritten on the very next cadence.
+        let size = UInt64(fileStatus.st_size)
         return SourceSignature(
             size: size,
-            modifiedAt: values.contentModificationDate?.timeIntervalSince1970 ?? 0,
+            modifiedAt: TimeInterval(fileStatus.st_mtimespec.tv_sec)
+                + TimeInterval(fileStatus.st_mtimespec.tv_nsec) / 1_000_000_000,
             contentProbe: "",
             deviceID: UInt64(fileStatus.st_dev),
             inode: UInt64(fileStatus.st_ino),
@@ -5047,6 +5679,28 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try sourceSignature(metadata: sourceSignatureMetadata(for: file), for: file)
     }
 
+    private func sourceSignature(
+        forOpenHandle handle: FileHandle,
+        file: URL
+    ) throws -> SourceSignature {
+        var status = Darwin.stat()
+        guard fstat(handle.fileDescriptor, &status) == 0,
+              status.st_size >= 0 else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let size = UInt64(status.st_size)
+        return SourceSignature(
+            size: size,
+            modifiedAt: TimeInterval(status.st_mtimespec.tv_sec)
+                + TimeInterval(status.st_mtimespec.tv_nsec) / 1_000_000_000,
+            contentProbe: try contentProbe(forOpenHandle: handle, size: size),
+            deviceID: UInt64(status.st_dev),
+            inode: UInt64(status.st_ino),
+            statusChangedSeconds: Int64(status.st_ctimespec.tv_sec),
+            statusChangedNanoseconds: Int64(status.st_ctimespec.tv_nsec)
+        )
+    }
+
     private func sourceMetadataMatches(
         _ stored: SourceSignature,
         _ observed: SourceSignature
@@ -5069,6 +5723,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
 
+        return try contentHash(forOpenHandle: handle, length: length, file: file)
+    }
+
+    private func contentHash(
+        forOpenHandle handle: FileHandle,
+        length: UInt64,
+        file: URL
+    ) throws -> String {
+        try handle.seek(toOffset: 0)
+
         var remaining = length
         var hasher = SHA256()
         while remaining > 0 {
@@ -5086,9 +5750,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func contentProbe(for file: URL, size: UInt64) throws -> String {
-        Self.sourceProbeTestState.record()
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
+
+        return try contentProbe(forOpenHandle: handle, size: size)
+    }
+
+    private func contentProbe(
+        forOpenHandle handle: FileHandle,
+        size: UInt64
+    ) throws -> String {
+        Self.sourceProbeTestState.record()
+        try handle.seek(toOffset: 0)
 
         let probeLength = 4_096
         var data = Data("\(size):".utf8)
