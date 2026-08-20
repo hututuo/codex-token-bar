@@ -2,7 +2,8 @@ use super::exact_usage_index::{
     estimate_precise_scan_total_with_source_revision, integrity_receipt_path_for_testing,
     open_existing_index_for_testing, open_index_for_testing,
     repair_orphaned_index_rows_for_testing, staging_batch_shape_for_testing,
-    ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY, STAGED_FULL_REBUILD_PARSER_REVISION,
+    ExactSyncMode, ORPHAN_REPAIR_REVISION, ORPHAN_REPAIR_REVISION_KEY,
+    STAGED_FULL_REBUILD_PARSER_REVISION,
 };
 use super::session_files::session_id_from_file;
 use super::session_parser::{parse_session_file_full_result, EXACT_INDEX_CHUNK_SIZE};
@@ -7132,6 +7133,56 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
         1
     );
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let changed = session_dir.join("rollout-019e-summary-aggregate-changed.jsonl");
+    let unchanged = session_dir.join("rollout-019e-summary-aggregate-unchanged.jsonl");
+    write_lines(
+        &changed,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    write_lines(
+        &unchanged,
+        &[r#"{"timestamp":"2026-06-18T01:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+
+    {
+        let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
+        writeln!(
+            append,
+            r#"{{"timestamp":"2026-06-18T01:04:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index
+        .sync_with_scan_plan_mode(&root, &mut warnings, None, None, ExactSyncMode::Summary)
+        .unwrap();
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    let data = index
+        .dashboard_data_with_system_timezone(&root, OffsetDateTime::now_utc(), &mut warnings)
+        .unwrap();
+
+    assert_eq!(data.stats.total_tokens, 200);
+    assert_eq!(
+        data.stats
+            .model_breakdowns
+            .iter()
+            .map(|row| row.breakdown.total_tokens)
+            .sum::<u64>(),
+        200
+    );
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     fs::remove_dir_all(root).unwrap();
 }
 

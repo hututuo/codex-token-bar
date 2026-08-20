@@ -3093,7 +3093,20 @@ impl ExactUsageIndex {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("无法开始仪表盘聚合升级事务：{error}"))?;
-        rebuild_published_dashboard_aggregates(&transaction)?;
+        let can_repair_incrementally = stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
+            && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
+            && aggregate_generation.is_some_and(|generation| {
+                generation >= 0 && generation <= published_generation
+            });
+        if can_repair_incrementally {
+            incremental_rebuild_published_dashboard_aggregates(
+                &transaction,
+                aggregate_generation.unwrap_or(published_generation),
+                published_generation,
+            )?;
+        } else {
+            rebuild_published_dashboard_aggregates(&transaction)?;
+        }
         set_metadata(
             &transaction,
             DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
@@ -6148,6 +6161,234 @@ fn ensure_active_build_generation(
     }
 }
 
+/// Carries the already-published dashboard layer across an exact generation
+/// that was advanced by a Summary owner, then repairs only files and sessions
+/// touched by that generation. The expensive event-wide rebuild remains
+/// reserved for the first aggregate migration, an unknown aggregate lineage,
+/// or a pricing/schema change.
+fn incremental_rebuild_published_dashboard_aggregates(
+    transaction: &Transaction<'_>,
+    previous_generation: i64,
+    generation: i64,
+) -> Result<(), String> {
+    if previous_generation == generation {
+        return Ok(());
+    }
+
+    let affected_bounds = transaction
+        .query_row(
+            r#"
+            WITH touched AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation > ?2 AND generation <= ?1
+                GROUP BY path
+            )
+            SELECT MIN(bucket_start), MAX(bucket_start)
+            FROM (
+                SELECT b.bucket_start
+                FROM dashboard_file_5m b
+                JOIN touched t ON t.path = b.file_path
+                WHERE b.file_generation = (
+                    SELECT MAX(previous.generation)
+                    FROM files previous
+                    WHERE previous.path = b.file_path
+                      AND previous.generation <= ?2
+                      AND previous.deleted = 0
+                )
+                UNION ALL
+                SELECT e.timestamp - (e.timestamp % 300)
+                FROM events e
+                JOIN files current
+                  ON current.generation = e.file_generation
+                 AND current.path = e.file_path
+                 AND current.deleted = 0
+                JOIN touched t
+                  ON t.path = e.file_path
+                 AND t.generation = e.file_generation
+            )
+            "#,
+            params![generation, previous_generation],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .map(|(start, end)| start.zip(end))
+        .map_err(|error| format!("无法读取增量聚合受影响桶范围：{error}"))?;
+
+    transaction
+        .execute(
+            "DELETE FROM dashboard_5m WHERE file_generation = ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理增量仪表盘五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_5m(
+                file_generation, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                ?1, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            FROM dashboard_5m
+            WHERE file_generation = ?2
+            "#,
+            params![generation, previous_generation],
+        )
+        .map_err(|error| format!("无法复制已发布增量五分钟聚合：{error}"))?;
+
+    transaction
+        .execute(
+            "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation = ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理增量轮次候选聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_turn_candidates(
+                aggregate_generation, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            )
+            SELECT
+                ?1, event_id, source_file_generation,
+                file_path, ordinal, timestamp, session_id,
+                total_tokens, input_tokens, cached_input_tokens, output_tokens,
+                user_prompt_start, user_prompt_end,
+                assistant_response_start, assistant_response_end,
+                turn_index, session_calls
+            FROM dashboard_turn_candidates
+            WHERE aggregate_generation = ?2
+            "#,
+            params![generation, previous_generation],
+        )
+        .map_err(|error| format!("无法复制已发布增量轮次候选聚合：{error}"))?;
+
+    transaction
+        .execute(
+            r#"
+            WITH touched AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation > ?2 AND generation <= ?1
+                GROUP BY path
+            )
+            DELETE FROM dashboard_file_totals
+            WHERE file_generation IN (SELECT generation FROM touched)
+            "#,
+            params![generation, previous_generation],
+        )
+        .map_err(|error| format!("无法清理增量单文件总量聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            WITH touched AS (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation > ?2 AND generation <= ?1
+                GROUP BY path
+            )
+            DELETE FROM dashboard_file_5m
+            WHERE file_generation IN (SELECT generation FROM touched)
+            "#,
+            params![generation, previous_generation],
+        )
+        .map_err(|error| format!("无法清理增量单文件五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_totals(
+                file_generation, file_path, session_id, total_tokens, calls,
+                input_tokens, cached_input_tokens, output_tokens,
+                first_timestamp, last_timestamp
+            )
+            SELECT
+                e.file_generation,
+                e.file_path,
+                MAX(e.session_id),
+                SUM(e.tokens),
+                COUNT(*),
+                SUM(e.input_tokens),
+                SUM(MIN(e.cached_input_tokens, e.input_tokens)),
+                SUM(e.output_tokens),
+                MIN(e.timestamp),
+                MAX(e.timestamp)
+            FROM events e
+            JOIN (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation > ?2 AND generation <= ?1 AND deleted = 0
+                GROUP BY path
+            ) touched
+              ON touched.generation = e.file_generation
+             AND touched.path = e.file_path
+            GROUP BY e.file_generation, e.file_path
+            "#,
+            params![generation, previous_generation],
+        )
+        .map_err(|error| format!("无法写入增量单文件总量聚合：{error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO dashboard_file_5m(
+                file_generation, file_path, bucket_start, model_key, model,
+                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
+            )
+            SELECT
+                e.file_generation,
+                e.file_path,
+                e.timestamp - (e.timestamp % 300),
+                COALESCE(e.model, ''),
+                e.model,
+                SUM(e.tokens),
+                COUNT(*),
+                SUM(e.input_tokens),
+                SUM(MIN(e.cached_input_tokens, e.input_tokens)),
+                SUM(e.output_tokens)
+            FROM events e
+            JOIN (
+                SELECT path, MAX(generation) AS generation
+                FROM files
+                WHERE generation > ?2 AND generation <= ?1 AND deleted = 0
+                GROUP BY path
+            ) touched
+              ON touched.generation = e.file_generation
+             AND touched.path = e.file_path
+            GROUP BY e.file_generation, e.file_path,
+                e.timestamp - (e.timestamp % 300), COALESCE(e.model, '')
+            "#,
+            params![generation, previous_generation],
+        )
+        .map_err(|error| format!("无法写入增量单文件五分钟聚合：{error}"))?;
+
+    if let Some((start, end)) = affected_bounds {
+        refresh_dashboard_5m_range(transaction, generation, start, end)?;
+    }
+    refresh_dashboard_turn_candidates_for_changed_generations(
+        transaction,
+        generation,
+        previous_generation,
+    )?;
+
+    transaction
+        .execute(
+            "DELETE FROM dashboard_5m WHERE file_generation <> ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理旧版增量五分钟聚合：{error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM dashboard_turn_candidates WHERE aggregate_generation <> ?1",
+            params![generation],
+        )
+        .map_err(|error| format!("无法清理旧版增量轮次候选聚合：{error}"))?;
+    Ok(())
+}
+
 fn mark_dashboard_changed(transaction: &Transaction<'_>) -> Result<(), String> {
     set_metadata(transaction, "building_changed", "1")?;
     set_metadata(transaction, BUILDING_DASHBOARD_CHANGED_KEY, "1")
@@ -6396,9 +6637,10 @@ fn refresh_dashboard_file_aggregates(
     Ok(())
 }
 
-fn refresh_dashboard_turn_candidates_for_touched_sessions(
+fn refresh_dashboard_turn_candidates_for_changed_generations(
     transaction: &Transaction<'_>,
     generation: i64,
+    previous_generation: i64,
 ) -> Result<(), String> {
     transaction
         .execute(
@@ -6406,19 +6648,30 @@ fn refresh_dashboard_turn_candidates_for_touched_sessions(
             WITH touched_paths AS (
                 SELECT DISTINCT path
                 FROM files
-                WHERE generation = ?1
+                WHERE generation > ?2 AND generation <= ?1
             ),
             dirty_sessions AS (
                 SELECT DISTINCT session_id
-                FROM files
-                WHERE session_id <> ''
-                  AND path IN (SELECT path FROM touched_paths)
+                FROM files touched_files
+                WHERE touched_files.session_id <> ''
+                  AND touched_files.path IN (SELECT path FROM touched_paths)
+                  AND touched_files.generation = (
+                      SELECT MAX(latest.generation)
+                      FROM files latest
+                      WHERE latest.path = touched_files.path
+                        AND latest.generation <= ?1
+                  )
+                UNION
+                SELECT DISTINCT session_id
+                FROM dashboard_turn_candidates
+                WHERE aggregate_generation = ?1
+                  AND file_path IN (SELECT path FROM touched_paths)
             )
             DELETE FROM dashboard_turn_candidates
             WHERE aggregate_generation = ?1
               AND session_id IN (SELECT session_id FROM dirty_sessions)
             "#,
-            params![generation],
+            params![generation, previous_generation],
         )
         .map_err(|error| format!("无法清理受影响会话的轮次候选聚合：{error}"))?;
     transaction
@@ -6427,13 +6680,24 @@ fn refresh_dashboard_turn_candidates_for_touched_sessions(
             WITH touched_paths AS (
                 SELECT DISTINCT path
                 FROM files
-                WHERE generation = ?1
+                WHERE generation > ?2 AND generation <= ?1
             ),
             dirty_sessions AS (
                 SELECT DISTINCT session_id
-                FROM files
-                WHERE session_id <> ''
-                  AND path IN (SELECT path FROM touched_paths)
+                FROM files touched_files
+                WHERE touched_files.session_id <> ''
+                  AND touched_files.path IN (SELECT path FROM touched_paths)
+                  AND touched_files.generation = (
+                      SELECT MAX(latest.generation)
+                      FROM files latest
+                      WHERE latest.path = touched_files.path
+                        AND latest.generation <= ?1
+                  )
+                UNION
+                SELECT DISTINCT session_id
+                FROM dashboard_turn_candidates
+                WHERE aggregate_generation = ?1
+                  AND file_path IN (SELECT path FROM touched_paths)
             ),
             latest_files AS (
                 SELECT path, MAX(generation) AS generation
@@ -6493,7 +6757,7 @@ fn refresh_dashboard_turn_candidates_for_touched_sessions(
                 turn_index, session_calls
             FROM ranked
             "#,
-            params![generation],
+            params![generation, previous_generation],
         )
         .map(|_| ())
         .map_err(|error| format!("无法更新受影响会话的轮次候选聚合：{error}"))
@@ -7011,7 +7275,11 @@ fn finalize_generation(
         && metadata_i64(&transaction, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?
             == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
     {
-        refresh_dashboard_turn_candidates_for_touched_sessions(&transaction, generation)?;
+        refresh_dashboard_turn_candidates_for_changed_generations(
+            &transaction,
+            generation,
+            generation.saturating_sub(1),
+        )?;
     }
     let _current_scan_unsafe_cause_detected = if mode.builds_dashboard_derived_data()
         || run_migrations
