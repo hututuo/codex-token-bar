@@ -27,6 +27,140 @@ final class TaskCompletionMonitorTests: XCTestCase {
         monitor.start(dataSource: nil)
     }
 
+    func testSetActiveSuspendsPollingPreservesTrustedStateAndReactivates() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskPollLifecycle-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let source = CodexDataSource(codexHome: home, origin: .userSelected)
+        let loader = SuspendedTaskCompletionPollLoader()
+        let monitor = TaskCompletionMonitor(
+            defaults: isolatedDefaults(),
+            pollLoader: loader,
+            pollInterval: 0.01,
+            pollTimeout: 0.05
+        )
+
+        monitor.start(dataSource: source)
+        await waitUntil("initial lifecycle poll") {
+            await loader.hasPendingRequest(at: home)
+        }
+        let trustedSummary = RunningThreadSummary(
+            main: 2,
+            subagents: 1,
+            updatedAt: Date(timeIntervalSince1970: 123),
+            freshness: .fresh
+        )
+        monitor.applyForTesting(
+            result: nil,
+            unreadThreadRead: .available(["trusted-thread"]),
+            runningThreadResult: RunningThreadScanResult(states: [:], summary: trustedSummary)
+        )
+        let trustedStatus = monitor.statusText
+        let trustedDetail = monitor.detailText
+
+        monitor.setActive(false)
+        XCTAssertFalse(monitor.isActive)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.statusText, trustedStatus)
+        XCTAssertEqual(monitor.detailText, trustedDetail)
+        XCTAssertEqual(monitor.runningThreadSummary, trustedSummary)
+
+        // A cancelled loader may still return a late value.  It must not
+        // overwrite the trusted state or cause another poll while inactive.
+        await loader.completeRequest(
+            at: home,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["stale-thread"])
+            )
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let inactiveRequestCount = await loader.requestCount()
+        XCTAssertEqual(inactiveRequestCount, 1)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        XCTAssertEqual(monitor.statusText, trustedStatus)
+        XCTAssertEqual(monitor.detailText, trustedDetail)
+        XCTAssertEqual(monitor.runningThreadSummary, trustedSummary)
+
+        monitor.setActive(true)
+        XCTAssertTrue(monitor.isActive)
+        await waitUntil("reactivated lifecycle poll") {
+            await loader.hasPendingRequest(at: home)
+        }
+        let reactivatedRequestCount = await loader.requestCount()
+        XCTAssertEqual(reactivatedRequestCount, 2)
+
+        await loader.completeRequest(
+            at: home,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["reactivated-thread", "second-thread"])
+            )
+        )
+        await waitUntil("reactivated lifecycle result") {
+            monitor.unreadThreadCount == 2
+        }
+        monitor.stop()
+    }
+
+    func testStopPreservesStateAndStartReactivatesSameSource() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TaskPollStopStart-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let source = CodexDataSource(codexHome: home, origin: .userSelected)
+        let loader = SuspendedTaskCompletionPollLoader()
+        let monitor = TaskCompletionMonitor(
+            defaults: isolatedDefaults(),
+            pollLoader: loader,
+            pollInterval: 0.01,
+            pollTimeout: 0.05
+        )
+
+        monitor.start(dataSource: source)
+        await waitUntil("stop lifecycle poll") {
+            await loader.hasPendingRequest(at: home)
+        }
+        monitor.applyForTesting(result: nil, unreadThreadRead: .available(["trusted-thread"]))
+        monitor.stop()
+
+        XCTAssertFalse(monitor.isActive)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        await loader.completeRequest(
+            at: home,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["late-thread"])
+            )
+        )
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let stoppedRequestCount = await loader.requestCount()
+        XCTAssertEqual(stoppedRequestCount, 1)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+
+        // The same source binding is intentionally retained by stop().
+        // Calling start with it must reactivate polling without clearing UI state.
+        monitor.start(dataSource: source)
+        XCTAssertTrue(monitor.isActive)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        await waitUntil("start reactivation poll") {
+            await loader.hasPendingRequest(at: home)
+        }
+        let restartedRequestCount = await loader.requestCount()
+        XCTAssertEqual(restartedRequestCount, 2)
+        await loader.completeRequest(
+            at: home,
+            output: TaskCompletionPollOutput(
+                result: nil,
+                unreadThreadRead: .available(["fresh-thread"])
+            )
+        )
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(monitor.unreadThreadCount, 1)
+        monitor.stop()
+    }
+
     func testSameIdentityPathRebindCancelsOldPollAndStartsOneNewPathPoll() async throws {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("TaskPathRebind-\(UUID().uuidString)", isDirectory: true)

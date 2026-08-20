@@ -192,6 +192,7 @@ final class TaskCompletionMonitor: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var pollTimeoutTask: Task<Void, Never>?
     private var pollGeneration = 0
+    private(set) var isActive = true
     private(set) var sourceIdentityGeneration = 0
     private(set) var sourceBindingGeneration = 0
     private var seeded = false
@@ -226,6 +227,25 @@ final class TaskCompletionMonitor: ObservableObject {
         unreadThreadCountAvailable ? unreadThreadCount : nil
     }
 
+    /// Enables or suspends background polling without discarding the last
+    /// trusted values published to the UI.  Re-activation starts a fresh poll
+    /// for the currently bound source.
+    func setActive(_ active: Bool) {
+        if active {
+            guard !isActive else { return }
+            isActive = true
+            configureTimer()
+            return
+        }
+
+        isActive = false
+        cancelScheduledWork()
+    }
+
+    func stop() {
+        setActive(false)
+    }
+
     func start(dataSource: CodexDataSource?) {
         let oldSourceIdentity = self.dataSource?.stableIdentityKey
         let newSourceIdentity = dataSource?.stableIdentityKey
@@ -233,8 +253,16 @@ final class TaskCompletionMonitor: ObservableObject {
         let newPath = dataSource?.codexHome.standardizedFileURL.path
         let identityChanged = oldSourceIdentity != newSourceIdentity
         let bindingChanged = oldPath != newPath
-        guard identityChanged || bindingChanged else { return }
+        guard identityChanged || bindingChanged else {
+            if !isActive {
+                setActive(true)
+            }
+            return
+        }
 
+        // `start` is the source-binding entry point and therefore also
+        // reactivates a previously stopped monitor when a new binding arrives.
+        isActive = true
         self.dataSource = dataSource
         sourceBindingGeneration += 1
         pollGeneration += 1
@@ -312,7 +340,7 @@ final class TaskCompletionMonitor: ObservableObject {
         timer?.invalidate()
         timer = nil
 
-        guard dataSource != nil else { return }
+        guard isActive, dataSource != nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.poll()
@@ -322,7 +350,7 @@ final class TaskCompletionMonitor: ObservableObject {
     }
 
     private func poll() {
-        guard pollTask == nil, let dataSource else {
+        guard isActive, pollTask == nil, let dataSource else {
             return
         }
 
@@ -338,7 +366,8 @@ final class TaskCompletionMonitor: ObservableObject {
 
             await MainActor.run {
                 guard let self else { return }
-                guard !Task.isCancelled,
+                guard self.isActive,
+                      !Task.isCancelled,
                       self.pollGeneration == generation,
                       self.sourceIdentityGeneration == identityGeneration,
                       self.sourceBindingGeneration == bindingGeneration else { return }
@@ -362,6 +391,7 @@ final class TaskCompletionMonitor: ObservableObject {
                 return
             }
             guard let self,
+                  self.isActive,
                   self.pollGeneration == generation,
                   self.sourceIdentityGeneration == identityGeneration,
                   self.sourceBindingGeneration == bindingGeneration else { return }
@@ -371,6 +401,16 @@ final class TaskCompletionMonitor: ObservableObject {
             self.pollTimeoutTask = nil
             self.markRunningThreadSummaryStale()
         }
+    }
+
+    private func cancelScheduledWork() {
+        timer?.invalidate()
+        timer = nil
+        pollGeneration += 1
+        pollTask?.cancel()
+        pollTask = nil
+        pollTimeoutTask?.cancel()
+        pollTimeoutTask = nil
     }
 
     private func makePollRequest(dataSource: CodexDataSource) -> TaskCompletionPollRequest {
