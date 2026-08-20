@@ -42,6 +42,21 @@ export interface QuotaComparisonObservationResult {
 }
 
 /**
+ * The first quota observation is only a baseline. If an exact owner is
+ * already running for the same source, that owner will establish coverage and
+ * the post-publication catch-up check can decide whether anything newer is
+ * needed. Starting a second React generation here would unsubscribe the only
+ * publisher from the active native flight.
+ */
+export function quotaComparisonNeedsPreciseRequest(
+  result: QuotaComparisonObservationResult,
+  preciseFlightInProgress: boolean,
+): boolean {
+  return result.shouldRefreshPreciseUsage
+    && !(result.reason === "initial" && preciseFlightInProgress);
+}
+
+/**
  * Converts frequent quota polls into a substantive comparison watermark.
  * A new poll timestamp alone never schedules an exact usage read.
  */

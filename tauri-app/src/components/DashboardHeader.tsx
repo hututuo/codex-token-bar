@@ -243,9 +243,9 @@ export function DashboardHeader({
               {activeProgress
                 ? activeProgress.text
                 : fullPrecisionPending
-                  ? "模型与图表同步中"
+                  ? `摘要 ${timeLabel} · 模型与图表同步中`
                   : lightSummarySyncing
-                    ? "摘要同步中"
+                    ? `摘要 ${timeLabel} · 同步中`
                   : aggregateTimeLabel === null
                     ? `更新于 ${timeLabel}`
                     : `摘要 ${timeLabel} · 图表至 ${aggregateTimeLabel}`}

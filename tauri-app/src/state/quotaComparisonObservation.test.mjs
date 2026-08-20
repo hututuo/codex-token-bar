@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   advanceQuotaComparisonObservation,
   alignQuotaComparisonObservation,
+  quotaComparisonNeedsPreciseRequest,
 } from "./quotaComparisonObservation.ts";
 
 const RESET = 2_000_700_000;
@@ -146,4 +147,14 @@ test("a proven pending-bucket alignment is retained across later same-percent po
   }));
   assert.equal(nextPoll.shouldRefreshPreciseUsage, false);
   assert.equal(nextPoll.state.comparisonUpdatedAt, "2033-05-18T03:40:00.000Z");
+});
+
+test("the initial quota baseline joins an active precise owner without replacing its publisher", () => {
+  const initial = advanceQuotaComparisonObservation(null, observation());
+  assert.equal(initial.reason, "initial");
+  assert.equal(quotaComparisonNeedsPreciseRequest(initial, true), false);
+  assert.equal(quotaComparisonNeedsPreciseRequest(initial, false), true);
+
+  const reset = { ...initial, reason: "reset" };
+  assert.equal(quotaComparisonNeedsPreciseRequest(reset, true), true);
 });

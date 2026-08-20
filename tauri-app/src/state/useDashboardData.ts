@@ -62,8 +62,10 @@ import { makeQuotaAutoRefreshPlan } from "./quotaAutoRefreshModel";
 import {
   advanceQuotaComparisonObservation,
   alignQuotaComparisonObservation,
+  quotaComparisonNeedsPreciseRequest,
   type QuotaComparisonObservationState,
 } from "./quotaComparisonObservation";
+import { preciseDashboardFlightInProgress } from "./preciseDashboardSingleFlight";
 import { loadInitialDashboardState } from "./loadInitialDashboardState";
 import { canonicalAttributionBoundaryKey } from "./attributionBoundary";
 import { planPreciseUsageCatchUp } from "./preciseUsageCatchUp";
@@ -478,7 +480,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     });
     // Poll timestamps alone are not a comparison boundary. Exact usage catches
     // up only after a substantive account/reset/used-percent transition.
-    if (comparison.shouldRefreshPreciseUsage) {
+    if (quotaComparisonNeedsPreciseRequest(
+      comparison,
+      preciseDashboardFlightInProgress(sourceToken),
+    )) {
       const comparisonUpdatedAt = comparison.state?.comparisonUpdatedAt ?? quota.updatedAt;
       const comparisonBoundaryKey = canonicalAttributionBoundaryKey(comparisonUpdatedAt);
       attributionPreciseRefreshRef.current = comparisonBoundaryKey ?? null;
@@ -492,6 +497,10 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
         comparisonUpdatedAt,
         "attribution-boundary",
         comparisonBoundaryKey,
+      );
+    } else if (comparison.shouldRefreshPreciseUsage && comparison.reason === "initial") {
+      void recordPerformanceEvent(
+        "frontend initial quota boundary joined active precise owner",
       );
     }
   }, [isSourceTokenCurrent, markRenderCommit, requestPreciseRefresh, sourceToken]);
