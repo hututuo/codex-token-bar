@@ -44,6 +44,41 @@ final class RunningThreadScannerTests: XCTestCase {
         XCTAssertEqual(result.summary.freshness, .fresh)
     }
 
+    func testFreshnessSeparatesSuccessfulCheckFromSourceDataUpdate() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let file = fixture.sessions.appendingPathComponent("freshness.jsonl")
+        try writeSession(
+            to: file,
+            id: "freshness-thread",
+            metadata: "\"thread_source\":\"user\",\"source\":\"vscode\"",
+            events: [event("task_started", turnID: "freshness-turn")]
+        )
+        let dataUpdatedAt = fixture.now.addingTimeInterval(-30)
+        try FileManager.default.setAttributes(
+            [.modificationDate: dataUpdatedAt],
+            ofItemAtPath: file.path
+        )
+
+        let first = try XCTUnwrap(scan(fixture))
+        XCTAssertEqual(first.summary.lastCheckedAt, fixture.now)
+        XCTAssertEqual(first.summary.dataUpdatedAt, dataUpdatedAt)
+        XCTAssertNotEqual(first.summary.dataUpdatedAt, first.summary.lastCheckedAt)
+        XCTAssertNotEqual(first.summary.summaryRevision, 0)
+
+        let laterCheck = fixture.now.addingTimeInterval(10)
+        let second = try XCTUnwrap(
+            RunningThreadScanner.scan(
+                dataSource: fixture.source,
+                previousStates: first.states,
+                now: laterCheck
+            )
+        )
+        XCTAssertEqual(second.summary.lastCheckedAt, laterCheck)
+        XCTAssertEqual(second.summary.dataUpdatedAt, dataUpdatedAt)
+        XCTAssertEqual(second.summary.summaryRevision, first.summary.summaryRevision)
+    }
+
     func testLatestLifecycleWinsAcrossForkCopiedStarts() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }

@@ -102,7 +102,9 @@ enum RunningThreadScanner {
                     summary: RunningThreadSummary(
                         main: 0,
                         subagents: 0,
-                        updatedAt: now,
+                        lastCheckedAt: now,
+                        dataUpdatedAt: nil,
+                        summaryRevision: 0,
                         freshness: .fresh
                     )
                 )
@@ -988,9 +990,39 @@ enum RunningThreadScanner {
         return RunningThreadSummary(
             main: main,
             subagents: subagents,
-            updatedAt: now,
+            lastCheckedAt: now,
+            dataUpdatedAt: states.values
+                .filter { $0.modifiedAt >= cutoff }
+                .map(\.modifiedAt)
+                .max(),
+            summaryRevision: summaryRevision(preferredBySessionID: preferredBySessionID),
             freshness: .fresh
         )
+    }
+
+    private static func summaryRevision(
+        preferredBySessionID: [String: RunningThreadFileState]
+    ) -> UInt64 {
+        let active = preferredBySessionID.values
+            .filter { $0.lifecycle == .running && !$0.sessionID.isEmpty }
+            .sorted { lhs, rhs in
+                if lhs.sessionID != rhs.sessionID {
+                    return lhs.sessionID < rhs.sessionID
+                }
+                return lhs.isSubagent && !rhs.isSubagent
+            }
+        guard !active.isEmpty else { return 0 }
+
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for state in active {
+            for byte in state.sessionID.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+            hash ^= state.isSubagent ? 1 : 0
+            hash &*= 1_099_511_628_211
+        }
+        return hash
     }
 
     private static func stateIsNewer(

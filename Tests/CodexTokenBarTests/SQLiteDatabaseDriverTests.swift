@@ -648,6 +648,31 @@ final class SQLiteDatabaseDriverTests: XCTestCase {
         XCTAssertEqual(observedDelays, [0.01, 0.02])
     }
 
+    func testReadRecoveryRetriesNotADBAsTransient() throws {
+        var attempts = 0
+        var observedDelays: [TimeInterval] = []
+
+        let value: String = try SQLiteReadRecovery.run(
+            retryDelays: [0.01],
+            sleep: { observedDelays.append($0) }
+        ) {
+            attempts += 1
+            if attempts == 1 {
+                throw SQLiteDatabaseError(
+                    operation: "Step SQLite query",
+                    code: SQLITE_NOTADB,
+                    message: "file is not a database",
+                    path: "/tmp/state_5.sqlite"
+                )
+            }
+            return "recovered"
+        }
+
+        XCTAssertEqual(value, "recovered")
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(observedDelays, [0.01])
+    }
+
     func testReadRecoveryDoesNotRetryPermanentSQLiteFailure() {
         var attempts = 0
 

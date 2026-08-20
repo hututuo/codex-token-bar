@@ -10,7 +10,14 @@ enum RunningThreadFreshness: String, Equatable, Sendable {
 struct RunningThreadSummary: Equatable, Sendable {
     let main: Int
     let subagents: Int
-    let updatedAt: Date?
+    /// The time at which the source was successfully checked. This is not a
+    /// claim that the underlying session data changed at this time.
+    let lastCheckedAt: Date?
+    /// The newest source-file modification represented by this summary.
+    let dataUpdatedAt: Date?
+    /// A stable process-independent fingerprint of the business summary. It
+    /// remains unchanged when a check observes the same running sessions.
+    let summaryRevision: UInt64
     let freshness: RunningThreadFreshness
 
     init(
@@ -19,10 +26,36 @@ struct RunningThreadSummary: Equatable, Sendable {
         updatedAt: Date?,
         freshness: RunningThreadFreshness
     ) {
+        self.init(
+            main: main,
+            subagents: subagents,
+            lastCheckedAt: updatedAt,
+            dataUpdatedAt: updatedAt,
+            summaryRevision: 0,
+            freshness: freshness
+        )
+    }
+
+    init(
+        main: Int,
+        subagents: Int,
+        lastCheckedAt: Date? = nil,
+        dataUpdatedAt: Date? = nil,
+        summaryRevision: UInt64 = 0,
+        freshness: RunningThreadFreshness
+    ) {
         self.main = max(0, main)
         self.subagents = max(0, subagents)
-        self.updatedAt = updatedAt
+        self.lastCheckedAt = lastCheckedAt
+        self.dataUpdatedAt = dataUpdatedAt
+        self.summaryRevision = summaryRevision
         self.freshness = freshness
+    }
+
+    /// Compatibility alias for older callers. New code must use
+    /// `dataUpdatedAt` when it needs the source-data timestamp.
+    var updatedAt: Date? {
+        dataUpdatedAt
     }
 
     var total: Int {
@@ -50,7 +83,9 @@ struct RunningThreadSummary: Equatable, Sendable {
         return RunningThreadSummary(
             main: main,
             subagents: subagents,
-            updatedAt: updatedAt,
+            lastCheckedAt: lastCheckedAt,
+            dataUpdatedAt: dataUpdatedAt,
+            summaryRevision: summaryRevision,
             freshness: .stale
         )
     }

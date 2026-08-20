@@ -98,7 +98,7 @@ struct SQLiteDatabaseError: LocalizedError, SQLiteTransientReadFailureReporting 
 
     var isTransientReadFailure: Bool {
         switch primaryCode {
-        case SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL, SQLITE_SCHEMA:
+        case SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL, SQLITE_SCHEMA, SQLITE_NOTADB:
             return true
         case SQLITE_IOERR:
             return code != Self.ioErrorData && code != Self.ioErrorCorruptFileSystem

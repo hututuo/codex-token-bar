@@ -462,6 +462,9 @@ final class TaskCompletionMonitor: ObservableObject {
         runningThreadStates = result.states
         let businessStateChanged = runningThreadSummary.main != result.summary.main
             || runningThreadSummary.subagents != result.summary.subagents
+            || runningThreadSummary.lastCheckedAt != result.summary.lastCheckedAt
+            || runningThreadSummary.dataUpdatedAt != result.summary.dataUpdatedAt
+            || runningThreadSummary.summaryRevision != result.summary.summaryRevision
             || runningThreadSummary.freshness != result.summary.freshness
         guard businessStateChanged else { return }
         runningThreadSummary = result.summary
