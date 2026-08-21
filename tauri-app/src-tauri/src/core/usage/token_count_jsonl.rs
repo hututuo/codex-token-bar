@@ -2612,6 +2612,34 @@ fn clear_dashboard_caches_for_home(canonical_home: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn invalidate_dashboard_memory_caches_for_home(canonical_home: &Path) {
+    let belongs_to_home = |path: &Path| {
+        precise_refresh_home(path)
+            .is_ok_and(|candidate| candidate == canonical_home)
+    };
+
+    if let Ok(mut guard) = DASHBOARD_AGGREGATE_CACHE
+        .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
+        .lock()
+    {
+        if guard
+            .aggregate
+            .as_ref()
+            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home))
+        {
+            guard.aggregate = None;
+        }
+    }
+    if let Ok(mut guard) = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        if guard
+            .as_ref()
+            .is_some_and(|cached| belongs_to_home(&cached.signature.codex_home))
+        {
+            *guard = None;
+        }
+    }
+}
+
 fn build_full_dashboard_after_precise_sync(
     flight: &PreciseRefreshFlight,
     index: &mut ExactUsageIndex,
@@ -2857,8 +2885,15 @@ pub fn acknowledge_attribution_safety(
     unsafe_id: &str,
     through_generation: u64,
 ) -> Result<bool, String> {
-    let mut index = ExactUsageIndex::open(codex_home)?;
-    index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)
+    let acknowledged = {
+        let mut index = ExactUsageIndex::open(codex_home)?;
+        index.acknowledge_attribution_safety(provenance_epoch, unsafe_id, through_generation)?
+    };
+    if acknowledged {
+        let canonical_home = precise_refresh_home(codex_home)?;
+        invalidate_dashboard_memory_caches_for_home(&canonical_home);
+    }
+    Ok(acknowledged)
 }
 
 pub fn usage_summary_snapshot(
