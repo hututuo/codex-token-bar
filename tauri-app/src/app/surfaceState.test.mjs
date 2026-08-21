@@ -60,19 +60,44 @@ test("local usage cadence settings are saved atomically and broadcast as one sna
   assert.equal(rustAllowlist.includes('"save_usage_refresh_settings"'), true);
 });
 
-test("dashboard owns quota polling while compact surfaces consume shared quota events", async () => {
+test("dashboard owns quota polling while compact surfaces read quota directly", async () => {
   const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
   const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
   const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
   const desktopEvents = await readFile(new URL("../platform/desktopEvents.ts", import.meta.url), "utf8");
+  const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
 
   assert.match(dashboardData, /publishAccountQuotaChanged/);
   assert.match(dashboardData, /publishAccountResetCreditsChanged/);
   assert.match(compactData, /followDashboardUpdates: quotaSource === "dashboard"/);
+  assert.match(floatingWindow, /quotaSource: "direct"/);
+  assert.match(statusPanel, /quotaSource: "direct"/);
   assert.match(compactQuota, /onAccountQuotaChanged/);
   assert.match(compactQuota, /onAccountResetCreditsChanged/);
   assert.match(desktopEvents, /ACCOUNT_QUOTA_CHANGED_EVENT = "account-quota-changed"/);
   assert.match(desktopEvents, /ACCOUNT_RESET_CREDITS_CHANGED_EVENT = "account-reset-credits-changed"/);
+});
+
+test("compact running-thread polling uses the shared three-second default", async () => {
+  const runningThreadSummary = await readFile(
+    new URL("../state/useRunningThreadSummary.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(runningThreadSummary, /const DEFAULT_INTERVAL_MS = 3_000/);
+});
+
+test("compact surfaces keep the configured background aggregate owner alive", async () => {
+  const compactData = await readFile(new URL("../surfaces/useCompactPanelData.ts", import.meta.url), "utf8");
+  const aggregateOwner = await readFile(new URL("../surfaces/useCompactPanelAggregate.ts", import.meta.url), "utf8");
+  const floatingWindow = await readFile(new URL("../floating/FloatingWindowApp.tsx", import.meta.url), "utf8");
+  const statusPanel = await readFile(new URL("../status/StatusPanelApp.tsx", import.meta.url), "utf8");
+
+  assert.match(compactData, /backgroundAggregateEnabled/);
+  assert.match(aggregateOwner, /schedulePreciseDashboardAggregate/);
+  assert.match(aggregateOwner, /usageBackgroundAggregateIntervalMinutes/);
+  assert.match(floatingWindow, /backgroundAggregateEnabled: true/);
+  assert.match(statusPanel, /backgroundAggregateEnabled: true/);
 });
 
 test("floating appearance changes target both live compact surfaces immediately", async () => {

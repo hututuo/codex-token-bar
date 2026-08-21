@@ -91,6 +91,25 @@ export function readPreciseDashboardSnapshot(
   });
 }
 
+export function schedulePreciseDashboardAggregate(
+  sourceToken: CodexHomeSourceToken,
+  requestReason: PreciseDashboardRefreshReason = "cadence",
+): Promise<void> {
+  const args: Record<string, unknown> = { sourceToken, requestReason };
+  return callCommandStrict<void>(
+    "schedule_precise_dashboard_aggregate",
+    args,
+    null,
+  ).catch((error) => {
+    const upgrade = classifyPreciseIndexUpgradeRequired(error);
+    if (upgrade !== null) {
+      clearCommandDiagnostic("schedule_precise_dashboard_aggregate");
+      throw new PreciseIndexUpgradeRequiredError(upgrade);
+    }
+    throw error;
+  });
+}
+
 export function rebuildPreciseIndexForCurrentVersion(
   sourceToken: CodexHomeSourceToken,
 ): Promise<void> {

@@ -56,7 +56,7 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         ))
     }
 
-    func testPresentedStatusSummaryUsesFullSurfaceCadence() {
+    func testPresentedStatusSummaryRemainsCompactSurface() {
         let compactOnly = DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
             dashboardVisible: false,
             floatingPanelEnabled: false,
@@ -71,8 +71,8 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
         )
 
         XCTAssertTrue(compactOnly)
-        XCTAssertFalse(iconOnlySummary)
-        XCTAssertFalse(DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
+        XCTAssertTrue(iconOnlySummary)
+        XCTAssertTrue(DashboardBackgroundOwnerActivity.onlyCompactSurfaceVisible(
             dashboardVisible: false,
             floatingPanelEnabled: true,
             statusBarPanelEnabled: false,
@@ -84,7 +84,7 @@ final class DashboardRuntimeCompositionTests: XCTestCase {
                 mainDashboardVisible: !iconOnlySummary,
                 settings: UsageRefreshCadenceSettings()
             ),
-            5 * 60
+            30 * 60
         )
     }
 

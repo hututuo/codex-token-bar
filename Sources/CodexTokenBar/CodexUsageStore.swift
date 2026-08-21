@@ -149,7 +149,11 @@ final class CodexUsageStore: ObservableObject {
     private var mainDashboardVisible = false
     private var didFinishInitialLoad = false
     private var didRunPreciseScan = false
-    private var backgroundActivityEnabled = true
+    // DashboardRuntime starts the store only after it has reported which
+    // surfaces are actually visible. Keeping this false until then prevents
+    // the default runtime construction from launching an unconditional full
+    // precise/aggregate refresh before compact-vs-dashboard context exists.
+    private var backgroundActivityEnabled = false
     private var onlyCompactSurfaceVisible = false
     private var activeRefreshCompactOnly = false
     private var pendingFullRefresh = false
@@ -226,6 +230,7 @@ final class CodexUsageStore: ObservableObject {
         }
         updateDataSourceLabels()
         if autoStart {
+            backgroundActivityEnabled = true
             sessionMutationMonitoringActive = true
             configureSessionMutationMonitor()
             refreshInitialSnapshot()
@@ -2238,7 +2243,17 @@ final class CodexUsageStore: ObservableObject {
             configureSessionMutationMonitor()
             scheduleTimer()
             scheduleAggregateTimer(requestImmediateIfBehind: mainDashboardVisible)
-            refresh()
+            // Acquiring a compact-only owner must not synchronously promote
+            // it into the expensive full snapshot path. The lightweight
+            // summary is enough for the floating/status surfaces; the
+            // wall-clock aggregate owner will catch up at its configured
+            // background cadence, or the visible dashboard will request the
+            // full path when it is actually opened.
+            if mainDashboardVisible {
+                refresh()
+            } else {
+                refreshLightSummary()
+            }
         } else {
             sessionMutationMonitoringActive = false
             sessionMutationMonitor.stop()

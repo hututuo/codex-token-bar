@@ -1269,6 +1269,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     state,
     readyState,
     refreshing: state.loading || refreshTaskCount > 0,
+    preciseRequestInFlight,
     preciseProgress,
     preciseIndexUpgradeRequired,
     usageCacheInitializing,

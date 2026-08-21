@@ -9,6 +9,7 @@ import {
   acknowledgeUnreadSummary,
   readPlatformCapabilities,
   readPreciseDashboardSnapshot,
+  schedulePreciseDashboardAggregate,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
   rebuildPreciseIndexForCurrentVersion,
@@ -52,6 +53,10 @@ export interface DashboardDataSource {
     sourceToken: CodexHomeSourceToken,
     requestReason?: PreciseDashboardRefreshReason,
   ) => Promise<DashboardSnapshot | null>;
+  schedulePreciseDashboardAggregate: (
+    sourceToken: CodexHomeSourceToken,
+    requestReason?: PreciseDashboardRefreshReason,
+  ) => Promise<void>;
   readPreciseDashboardProgress?: (
     sourceToken: CodexHomeSourceToken,
   ) => Promise<PreciseDashboardProgress | null>;
@@ -91,6 +96,7 @@ export const dashboardDataSource: DashboardDataSource = {
   readPlatformCapabilities,
   readDashboardSnapshot,
   readPreciseDashboardSnapshot,
+  schedulePreciseDashboardAggregate,
   readPreciseDashboardProgress,
   readPreciseDashboardSourceProbe,
   rebuildPreciseIndexForCurrentVersion,

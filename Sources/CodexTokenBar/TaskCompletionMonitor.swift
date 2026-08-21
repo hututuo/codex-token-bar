@@ -205,13 +205,13 @@ final class TaskCompletionMonitor: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         pollLoader: any TaskCompletionPollLoading = LiveTaskCompletionPollLoader(),
-        pollInterval: TimeInterval = 2.0,
+        pollInterval: TimeInterval = 3.0,
         pollTimeout: TimeInterval = 30.0,
         now: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
         self.pollLoader = pollLoader
-        self.pollInterval = pollInterval.isFinite && pollInterval > 0 ? pollInterval : 2.0
+        self.pollInterval = pollInterval.isFinite && pollInterval > 0 ? pollInterval : 3.0
         self.pollTimeout = pollTimeout.isFinite && pollTimeout > 0 ? pollTimeout : 30.0
         self.now = now
         fallbackSeedCutoff = now().addingTimeInterval(-liveSeedWindow)

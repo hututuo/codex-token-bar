@@ -21,7 +21,7 @@ test("local usage cadence exposes the requested supported values and defaults", 
     [5, 10, 15, 30],
   );
   assert.equal(DEFAULT_USAGE_LIGHT_REFRESH_INTERVAL_SECONDS, 150);
-  assert.equal(DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES, 5);
+  assert.equal(DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES, 10);
   assert.equal(DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES, 30);
   assert.equal(usageLightRefreshIntervalLabel(150), "2.5 分钟");
 });
@@ -29,7 +29,7 @@ test("local usage cadence exposes the requested supported values and defaults", 
 test("local usage cadence sanitizes missing and invalid values independently", () => {
   assert.deepEqual(sanitizeUsageRefreshSettings(undefined), {
     usageLightRefreshIntervalSeconds: 150,
-    usageVisibleAggregateIntervalMinutes: 5,
+    usageVisibleAggregateIntervalMinutes: 10,
     usageBackgroundAggregateIntervalMinutes: 30,
   });
   assert.deepEqual(sanitizeUsageRefreshSettings({
@@ -38,7 +38,7 @@ test("local usage cadence sanitizes missing and invalid values independently", (
     usageBackgroundAggregateIntervalMinutes: "30",
   }), {
     usageLightRefreshIntervalSeconds: 150,
-    usageVisibleAggregateIntervalMinutes: 5,
+    usageVisibleAggregateIntervalMinutes: 10,
     usageBackgroundAggregateIntervalMinutes: 30,
   });
   assert.equal(sanitizeUsageBackgroundAggregateIntervalMinutes(null), 30);

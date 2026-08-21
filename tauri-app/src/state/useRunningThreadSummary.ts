@@ -21,7 +21,7 @@ interface UseRunningThreadSummaryOptions {
   sourceToken: CodexHomeSourceToken | null;
 }
 
-const DEFAULT_INTERVAL_MS = 1_000;
+const DEFAULT_INTERVAL_MS = 3_000;
 
 export function useRunningThreadSummary({
   active = true,

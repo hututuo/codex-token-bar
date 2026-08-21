@@ -13,6 +13,7 @@ import {
 } from "./compactPanelLabels";
 import { useCompactPanelQuota } from "./useCompactPanelQuota";
 import { useCompactPanelSnapshot } from "./useCompactPanelSnapshot";
+import { useCompactPanelAggregate } from "./useCompactPanelAggregate";
 import { useRunningThreadSummary } from "../state/useRunningThreadSummary";
 
 interface CompactPanelDataOptions {
@@ -23,6 +24,7 @@ interface CompactPanelDataOptions {
   quotaInitialDelayMs?: number;
   quotaIntervalMs?: number;
   quotaSource?: "dashboard" | "direct";
+  backgroundAggregateEnabled?: boolean;
   runningEnabled?: boolean;
   snapshotEnabled?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
@@ -54,6 +56,11 @@ export function useCompactPanelData(options: CompactPanelDataOptions = {}): Comp
   const snapshotEnabled = options.snapshotEnabled ?? true;
   const sourceToken = options.sourceToken ?? null;
   const sourceActive = active && sourceToken !== null;
+
+  useCompactPanelAggregate({
+    active: sourceActive && (options.backgroundAggregateEnabled ?? false),
+    sourceToken,
+  });
 
   const rawSnapshot = useCompactPanelSnapshot({
     active: sourceActive && snapshotEnabled,

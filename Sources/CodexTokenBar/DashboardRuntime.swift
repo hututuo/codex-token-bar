@@ -179,9 +179,11 @@ enum DashboardBackgroundOwnerActivity {
         statusBarPanelEnabled: Bool,
         statusSummaryPresented: Bool
     ) -> Bool {
+        // The status-bar summary is still a compact surface. Presenting its
+        // popover must not promote the usage store to the dashboard's full
+        // chart owner; it only adds a temporary compact consumer.
         !dashboardVisible
-            && !statusSummaryPresented
-            && (floatingPanelEnabled || statusBarPanelEnabled)
+            && (statusSummaryPresented || floatingPanelEnabled || statusBarPanelEnabled)
     }
 }
 
@@ -268,6 +270,7 @@ final class DashboardRuntime: ObservableObject {
 
     init(
         usageStore: CodexUsageStore = CodexUsageStore(
+            autoStart: false,
             continuitySafetyDatabase: .shared
         ),
         quotaStore: AccountQuotaStore = AccountQuotaStore(

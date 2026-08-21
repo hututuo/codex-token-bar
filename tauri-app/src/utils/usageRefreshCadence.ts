@@ -8,6 +8,11 @@
  * refresh.
  */
 
+import {
+  DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES,
+  DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES,
+} from "../settings/usageRefreshCadence";
+
 export const USAGE_AGGREGATE_BUCKET_SECONDS = 5 * 60;
 export const USAGE_AGGREGATE_BUCKET_MS = USAGE_AGGREGATE_BUCKET_SECONDS * 1_000;
 export const USAGE_AGGREGATE_SETTLE_SECONDS = 15;
@@ -169,7 +174,9 @@ export function aggregateInterval({
   const minutes = mainDashboardVisible
     ? Number(settings.usageVisibleAggregateIntervalMinutes)
     : Number(settings.usageBackgroundAggregateIntervalMinutes);
-  const fallback = mainDashboardVisible ? 5 : 30;
+  const fallback = mainDashboardVisible
+    ? DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES
+    : DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES;
   const normalized = USAGE_AGGREGATE_INTERVAL_MINUTES.includes(
     minutes as (typeof USAGE_AGGREGATE_INTERVAL_MINUTES)[number],
   ) ? minutes : fallback;

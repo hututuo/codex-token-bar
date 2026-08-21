@@ -2642,7 +2642,7 @@ fn sanitize_usage_light_refresh_interval_seconds(value: u64) -> u64 {
 fn sanitize_usage_aggregate_interval_minutes(value: u32) -> u32 {
     match value {
         5 | 10 | 15 | 30 => value,
-        _ => 5,
+        _ => 10,
     }
 }
 
@@ -3377,7 +3377,7 @@ mod tests {
     fn local_usage_refresh_settings_use_independent_defaults_and_supported_values() {
         let defaults: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
         assert_eq!(defaults.usage_light_refresh_interval_seconds, 150);
-        assert_eq!(defaults.usage_visible_aggregate_interval_minutes, 5);
+        assert_eq!(defaults.usage_visible_aggregate_interval_minutes, 10);
         assert_eq!(defaults.usage_background_aggregate_interval_minutes, 30);
 
         let invalid: AppSettingsSnapshot = serde_json::from_str(
@@ -3390,7 +3390,7 @@ mod tests {
         .unwrap();
         let sanitized = sanitize_app_settings(invalid);
         assert_eq!(sanitized.usage_light_refresh_interval_seconds, 150);
-        assert_eq!(sanitized.usage_visible_aggregate_interval_minutes, 5);
+        assert_eq!(sanitized.usage_visible_aggregate_interval_minutes, 10);
         assert_eq!(sanitized.usage_background_aggregate_interval_minutes, 30);
         assert_eq!(
             sanitize_app_settings(AppSettingsSnapshot {

@@ -18,7 +18,11 @@ struct UsageRefreshCadenceSettings: Equatable {
     static let aggregateIntervalOptions = [5, 10, 15, 30]
 
     static let defaultLightRefreshIntervalSeconds = 150
-    static let defaultVisibleAggregateIntervalMinutes = 5
+    // Keep the chart cadence aligned with the cross-platform default.  The
+    // five-minute bucket itself remains the smallest aggregation unit; this
+    // setting controls how often the visible dashboard asks the aggregate
+    // owner to publish new derived data.
+    static let defaultVisibleAggregateIntervalMinutes = 10
     static let defaultBackgroundAggregateIntervalMinutes = 30
 
     let usageLightRefreshIntervalSeconds: Int

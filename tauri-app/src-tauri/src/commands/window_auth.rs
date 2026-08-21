@@ -74,6 +74,7 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_account_reset_credits",
     "read_codex_crowd_radar_payload",
     "read_usage_summary_snapshot",
+    "schedule_precise_dashboard_aggregate",
     "read_live_rate_snapshot",
     "claim_live_rate_owner_session",
     "start_live_rate_stream",

@@ -9,7 +9,7 @@ final class UsageRefreshCadenceSettingsTests: XCTestCase {
         let settings = UsageRefreshCadenceSettings.load(defaults: defaults)
 
         XCTAssertEqual(settings.usageLightRefreshIntervalSeconds, 150)
-        XCTAssertEqual(settings.usageVisibleAggregateIntervalMinutes, 5)
+        XCTAssertEqual(settings.usageVisibleAggregateIntervalMinutes, 10)
         XCTAssertEqual(settings.usageBackgroundAggregateIntervalMinutes, 30)
     }
 
@@ -23,7 +23,7 @@ final class UsageRefreshCadenceSettingsTests: XCTestCase {
         let settings = UsageRefreshCadenceSettings.load(defaults: defaults)
 
         XCTAssertEqual(settings.usageLightRefreshIntervalSeconds, 150)
-        XCTAssertEqual(settings.usageVisibleAggregateIntervalMinutes, 5)
+        XCTAssertEqual(settings.usageVisibleAggregateIntervalMinutes, 10)
         XCTAssertEqual(settings.usageBackgroundAggregateIntervalMinutes, 30)
         XCTAssertEqual(
             defaults.string(forKey: AccountQuotaRefreshCadence.storageKey),
@@ -57,7 +57,7 @@ final class UsageRefreshCadenceSettingsTests: XCTestCase {
         )
 
         XCTAssertEqual(settings.usageLightRefreshIntervalSeconds, 150)
-        XCTAssertEqual(settings.usageVisibleAggregateIntervalMinutes, 5)
+        XCTAssertEqual(settings.usageVisibleAggregateIntervalMinutes, 10)
         XCTAssertEqual(settings.usageBackgroundAggregateIntervalMinutes, 30)
     }
 

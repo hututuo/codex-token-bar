@@ -99,7 +99,7 @@ fn default_usage_light_refresh_interval_seconds() -> u64 {
 }
 
 fn default_usage_visible_aggregate_interval_minutes() -> u32 {
-    5
+    10
 }
 
 fn default_usage_background_aggregate_interval_minutes() -> u32 {

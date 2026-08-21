@@ -40,6 +40,7 @@ export function DashboardApp() {
     state,
     readyState,
     refreshing,
+    preciseRequestInFlight,
     preciseProgress,
     preciseIndexUpgradeRequired,
     usageCacheInitializing,
@@ -155,6 +156,7 @@ export function DashboardApp() {
         onToggleAutostart={shellSettings.toggleAutostart}
         onReconnectThreadDelete={threadDeleteBridge.activate}
         refreshing={refreshing}
+        preciseRequestInFlight={preciseRequestInFlight}
         appUpdateState={appUpdateState}
         threadDeleteBridgeStatus={threadDeleteBridge.status}
         liveRateEnabled={shellSettings.displaySurfaces.liveRateEnabled}

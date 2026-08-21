@@ -1599,6 +1599,45 @@ pub async fn read_precise_dashboard_snapshot(
     result.map_err(precise_dashboard_command_error)
 }
 
+/// Runs the existing serialized precise/aggregate owner for a background
+/// surface without transferring the full dashboard payload over IPC.  The
+/// native exact-refresh coordinator and its cache remain the single owner;
+/// this command only gives a compact-only window a way to keep the configured
+/// background aggregate cadence alive when the main dashboard WebView is not
+/// mounted.
+#[tauri::command]
+pub async fn schedule_precise_dashboard_aggregate(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    request_reason: Option<String>,
+) -> Result<(), PreciseDashboardCommandError> {
+    require_window_label(&window, "schedule_precise_dashboard_aggregate")
+        .map_err(precise_dashboard_command_error)?;
+    let request_id = PRECISE_DASHBOARD_REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let request_reason = precise_dashboard_request_reason(request_reason.as_deref());
+    let source_generation = source_token.transition_generation;
+    let started = Instant::now();
+    let result = run_source_bound_dashboard_read(&app, source_token, |codex_home| {
+        if let Some(upgrade) = token_count_jsonl::precise_index_upgrade_required(&codex_home)? {
+            return Err(encode_precise_index_upgrade_required(upgrade));
+        }
+        crate::core::dashboard::LocalCodexDataSource::new(codex_home)
+            .read_precise_dashboard_snapshot()
+            .map(|_| ())
+    })
+    .await;
+    startup_trace::mark_performance(format!(
+        "aggregate_request id={} reason={} source_generation={} total_ms={} status={}",
+        request_id,
+        request_reason,
+        source_generation,
+        started.elapsed().as_millis(),
+        result_status(&result),
+    ));
+    result.map_err(precise_dashboard_command_error)
+}
+
 #[tauri::command]
 pub async fn rebuild_precise_index_for_current_version(
     window: tauri::WebviewWindow,

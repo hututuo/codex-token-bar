@@ -401,7 +401,7 @@ final class CodexUsageStoreTests: XCTestCase {
                 mainDashboardVisible: true,
                 settings: settings
             ),
-            5 * 60,
+            10 * 60,
             accuracy: 0.001
         )
         XCTAssertEqual(
