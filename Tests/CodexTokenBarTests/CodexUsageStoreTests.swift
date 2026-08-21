@@ -273,7 +273,7 @@ final class CodexUsageStoreTests: XCTestCase {
         let initialObservationSessionID = store.preciseObservationSessionID
 
         // As non-owner this begins a fast-only read and remains in flight.
-        store.refresh()
+        store.setBackgroundActivityEnabled(true)
         await waitUntil("non-owner fast read in flight") {
             await loader.fastLoadCount == 1 && store.isRefreshing
         }
@@ -597,7 +597,7 @@ final class CodexUsageStoreTests: XCTestCase {
             transientDatabaseRecoveryDelay: 0.05
         )
 
-        store.refresh()
+        store.setBackgroundActivityEnabled(true)
         await waitUntil("automatic transient SQLite recovery") {
             store.snapshot.stats.totalTokens == 98_765 && !store.isRefreshing
         }
@@ -631,7 +631,7 @@ final class CodexUsageStoreTests: XCTestCase {
             transientDatabaseRecoveryDelay: 0.05
         )
 
-        store.refresh()
+        store.setBackgroundActivityEnabled(true)
         await waitUntil("bounded transient SQLite recovery episode", timeout: 3) {
             await loader.preciseRequestCount() == 6 && !store.isRefreshing
         }
@@ -1007,7 +1007,7 @@ final class CodexUsageStoreTests: XCTestCase {
             autoStart: false
         )
 
-        store.refresh()
+        store.setBackgroundActivityEnabled(true)
         await loader.waitUntilRequestCount(1)
         await loader.yield(current, request: 0)
         await loader.finish(request: 0)
@@ -1748,11 +1748,18 @@ final class CodexUsageStoreTests: XCTestCase {
         let coverageAt = Date(timeIntervalSince1970: 3_300)
         let loader = SequentialDashboardSnapshotLoader(
             fastResults: [],
-            preciseResults: [.success(makeSnapshot(
-                totalTokens: 900,
-                dayTokens: 90,
-                preciseTimeSeriesGeneratedAt: coverageAt
-            ))]
+            preciseResults: [
+                .success(makeSnapshot(
+                    totalTokens: 900,
+                    dayTokens: 90,
+                    preciseTimeSeriesGeneratedAt: coverageAt
+                )),
+                .success(makeSnapshot(
+                    totalTokens: 900,
+                    dayTokens: 90,
+                    preciseTimeSeriesGeneratedAt: coverageAt
+                )),
+            ]
         )
         let source = CodexDataSource(codexHome: home, origin: .defaultHome)
         let store = CodexUsageStore(
@@ -1764,6 +1771,10 @@ final class CodexUsageStoreTests: XCTestCase {
         )
         XCTAssertEqual(store.sharedAccountSafetyRecoveryState, .required)
 
+        store.setBackgroundActivityEnabled(true)
+        await waitUntil("initial safety recovery owner refresh") {
+            !store.isRefreshing
+        }
         let recoveryStarted = await store.rebuildSharedAccountSafetyBaseline()
         XCTAssertTrue(recoveryStarted)
         await waitUntil("fresh precise scan after safety recovery") {
@@ -2155,7 +2166,7 @@ final class CodexUsageStoreTests: XCTestCase {
         )
 
         // 首轮全量建立精确快照。
-        store.refresh()
+        store.setBackgroundActivityEnabled(true)
         await waitUntil("initial precise load") {
             store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
         }
@@ -2448,7 +2459,7 @@ final class CodexUsageStoreTests: XCTestCase {
             autoStart: false
         )
 
-        store.refresh()
+        store.setBackgroundActivityEnabled(true)
         await waitUntil("initial precise load before compact race") {
             store.snapshot.stats.totalTokens == 1_000 && !store.isRefreshing
         }
