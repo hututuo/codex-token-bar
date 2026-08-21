@@ -1423,6 +1423,8 @@ fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_ackn
     assert!(post_ack_clean.precise_attribution_unsafe_id.is_none());
 
     write_lines(&file, &[event(400)]);
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     let second_unsafe = dashboard_snapshot(&root).unwrap();
     assert!(second_unsafe.precise_attribution_current_scan_unsafe);
     assert_ne!(
@@ -1434,6 +1436,7 @@ fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_ackn
     );
     let second_unsafe_id = second_unsafe.precise_attribution_unsafe_id.clone().unwrap();
     assert_ne!(second_unsafe_id, unsafe_id);
+    reset_dashboard_aggregate_build_count_for_testing();
     let second_clean = dashboard_snapshot(&root).unwrap();
     assert!(!second_clean.precise_attribution_current_scan_unsafe);
     assert_eq!(
@@ -5133,6 +5136,7 @@ fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
 #[test]
 fn exact_index_quick_check_rejects_corrupt_database_without_deleting_it() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     let index_path = root
@@ -5158,6 +5162,7 @@ fn exact_index_quick_check_rejects_corrupt_database_without_deleting_it() {
     drop(index_file);
     assert_eq!(fs::metadata(&index_path).unwrap().len(), index_size);
 
+    reset_dashboard_aggregate_build_count_for_testing();
     let error = dashboard_snapshot(&root).unwrap_err();
     assert!(error.contains("已保留原索引并拒绝自动重建"), "{error}");
     let preserved_metadata = fs::metadata(&index_path).unwrap();
@@ -7398,6 +7403,7 @@ fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
         .unwrap();
     }
 
+    reset_dashboard_aggregate_build_count_for_testing();
     let updated = dashboard_snapshot(&root).unwrap();
     assert_eq!(updated.stats.total_tokens, 200);
     assert_eq!(
