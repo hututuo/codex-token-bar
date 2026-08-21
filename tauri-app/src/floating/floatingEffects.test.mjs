@@ -47,7 +47,8 @@ test("crowd radar compares three compact results without a visual title or lower
   assert.doesNotMatch(crowdRow, /IQ .*model\.scoreSamples.*判/);
   assert.doesNotMatch(crowdRow, /IQ .*model\.graded.*判/);
   assert.doesNotMatch(crowdRow, /snapshot\.taskCount|snapshot\.cellCount|snapshot\.contributorCount|pendingGrades|通过/);
-  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
+  assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(48px, 0\.12fr\) minmax\(0, 1\.88fr\);/);
+  assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(stylesSource, /\.floating-crowd-radar-trailing,\s*\.floating-radar-iq\s*{[\s\S]*?padding-left: calc\(6px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar \+ \.floating-crowd-radar\s*{[\s\S]*?margin-top: calc\(-2px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-content\s*{[\s\S]*?gap: calc\(4px \* var\(--floating-scale\)\);/);
@@ -257,18 +258,23 @@ test("floating pace text keeps the Swift-style status and card count in one line
   assert.doesNotMatch(stylesSource, /\.floating-status-text em\s*{[^}]*text-overflow: ellipsis;/);
 });
 
-test("floating radar shows multiple sorted model IQ scores", () => {
+test("floating radar shows four ordinary model IQ scores without stale probability text", () => {
   assert.match(previewSource, /secondaryModelRows/);
-  assert.match(previewSource, /uniqueFloatingRadarRows\(secondaryModelRows\(snapshot\.modelIq\), 2\)/);
+  assert.match(previewSource, /const modelLimit = isSpeedWindow \? 2 : 3/);
+  assert.match(previewSource, /floatingRadarSecondaryIQText\(snapshot, modelLimit\)/);
+  assert.match(previewSource, /uniqueFloatingRadarRows\(secondaryModelRows\(snapshot\.modelIq\), modelLimit\)/);
   assert.match(previewSource, /className="floating-radar-models"/);
   assert.match(previewSource, /compactRadarModelName\(primary\.label\)/);
   assert.match(previewSource, /compactRadarModelName\(row\.label\).*displayRadarNumber\(row\.point\.score, 1\)/s);
+  assert.doesNotMatch(previewSource, /probability24H|probability48H|24h \{percentText/);
   assert.doesNotMatch(previewSource, /function floatingRadar(?:Primary|Short)ModelLabel/);
   assert.match(stylesSource, /\.floating-radar-models\s*{[\s\S]*?display: block;[\s\S]*?text-overflow: clip;/);
-  assert.match(stylesSource, /\.floating-radar,\s*\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
+  assert.match(stylesSource, /\.floating-radar\s*{[\s\S]*?grid-template-columns: minmax\(48px, 0\.12fr\) minmax\(0, 1\.88fr\);/);
+  assert.match(stylesSource, /\.floating-radar--speed-window\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.42fr\) minmax\(0, 1\.58fr\);/);
+  assert.match(stylesSource, /\.floating-crowd-radar\s*{[\s\S]*?grid-template-columns: minmax\(104px, 0\.7fr\) minmax\(0, 1\.3fr\);/);
   assert.match(previewSource, /className="floating-radar-dot"/);
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: calc\(4px \* var\(--floating-scale\)\) max-content minmax\(0, 1fr\);/);
-  assert.match(stylesSource, /\.floating-radar-action > span\s*{[\s\S]*?color: var\(--floating-primary\);/);
+  assert.match(stylesSource, /\.floating-radar-action > span\s*{[\s\S]*?color: var\(--radar-action-color\);[\s\S]*?font-size: calc\(11\.8px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar-iq strong > span\s*{[\s\S]*?color: var\(--floating-primary\);/);
   assert.match(stylesSource, /\.floating-radar strong\s*{[\s\S]*?font-size: calc\(11\.8px \* var\(--floating-scale\)\);/);
   assert.match(stylesSource, /\.floating-radar strong em\s*{[\s\S]*?font-size: calc\(8\.4px \* var\(--floating-scale\)\);/);

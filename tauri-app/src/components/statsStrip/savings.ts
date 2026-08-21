@@ -307,7 +307,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
   if (!estimate) {
     return {
       valueText: "待读取",
-      labelText: "累计薅到（估）",
+      labelText: "累计净薅到（估）",
       helpText: "等待精确 token、首次使用时间和套餐信息。",
     };
   }
@@ -329,7 +329,7 @@ export function savingsPresentation(estimate: LifetimeSavingsEstimate | null): L
   if (estimate.netSavingsUSD !== null && estimate.subscriptionCostUSD !== null && estimate.monthlyPlanUSD !== null) {
     return {
       valueText: compactMoney(estimate.netSavingsUSD),
-      labelText: "累计薅到（估）",
+      labelText: "累计净薅到（估）",
       helpText: `${priceBasis}${excludedNote}：API 等值 ${fullMoney(estimate.apiEquivalentUSD)} − ${estimate.normalizedPlanName} ${estimate.billingMonths} 个月套餐成本 ${fullMoney(estimate.subscriptionCostUSD)}（${fullMoney(estimate.monthlyPlanUSD)}/月）= ${fullMoney(estimate.netSavingsUSD)}。历史套餐或模型变化未计入。`,
     };
   }

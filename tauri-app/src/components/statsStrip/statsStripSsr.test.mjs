@@ -62,7 +62,7 @@ test("StatsStrip renders six historical metrics with an explainable savings esti
 
     assert.equal((html.match(/class="stats-cell/g) ?? []).length, 6);
     assert.match(html, /累计 Token 数/);
-    assert.match(html, /累计薅到（估）/);
+    assert.match(html, /累计净薅到（估）/);
     assert.doesNotMatch(html, /金额统计范围/);
     assert.match(html, /本7d/);
     assert.match(html, /累计/);

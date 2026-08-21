@@ -97,7 +97,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertFalse(current.needsAttention)
     }
 
-    func testHeaderFreshnessSeparatesCheckAndDataUpdateTimes() {
+    func testHeaderFreshnessKeepsDataAndChartTimesWithoutCheckTimestamp() {
         let dataUpdatedAt = Date(timeIntervalSince1970: 1_720_000_000)
         let checkedAt = dataUpdatedAt.addingTimeInterval(90)
 
@@ -110,9 +110,9 @@ final class DashboardHeaderPresentationTests: XCTestCase {
             aggregateCoveredAt: dataUpdatedAt
         )
 
-        XCTAssertTrue(current.text.contains("检查于"))
         XCTAssertTrue(current.text.contains("数据更新于"))
         XCTAssertTrue(current.text.contains("图表至"))
+        XCTAssertFalse(current.text.contains("检查于"))
         XCTAssertFalse(current.needsAttention)
     }
 
@@ -126,7 +126,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
             dataUpdatedAt: nil
         )
 
-        XCTAssertTrue(metadataOnly.text.hasPrefix("检查于 "))
+        XCTAssertTrue(metadataOnly.text.hasPrefix("摘要于 "))
         XCTAssertFalse(metadataOnly.text.contains("数据更新于"))
     }
 

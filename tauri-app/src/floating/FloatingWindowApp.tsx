@@ -12,10 +12,12 @@ import {
 } from "../surfaces/surfaceLifecycle";
 import { useCompactPanelData } from "../surfaces/useCompactPanelData";
 import { useCompactPanelSource } from "../surfaces/useCompactPanelSource";
-import { firstPagedFloatingRowCenterY, floatingContentHeight, layoutFloatingContentRows } from "./floatingContent";
+import { pagedFloatingRowCenterYs, floatingContentHeight, layoutFloatingContentRows, usageStatusFloatingRowCenterY } from "./floatingContent";
 import {
   CURRENT_FLOATING_PAGING_GUIDE_REVISION,
   FLOATING_BASE_WIDTH,
+  FLOATING_PAGING_GUIDE_HEIGHT,
+  FLOATING_PAGING_GUIDE_WIDTH,
   DEFAULT_FLOATING_SETTINGS,
   floatingSettingsCompletingPagingGuide,
   sanitizeFloatingSettings,
@@ -40,8 +42,10 @@ export function FloatingWindowApp() {
     active: surfaceLifecycle.active && sourceReady,
     liveRateEnabled,
     liveRateOwnerToken: "floating-live-rate",
+    backgroundAggregateEnabled: true,
     quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
+    quotaSource: "direct",
     sourceToken,
   });
   const [settings, setSettings] = useState<FloatingWindowSettings>(DEFAULT_FLOATING_SETTINGS);
@@ -234,10 +238,12 @@ export function FloatingWindowApp() {
   useEffect(() => {
     const height = floatingContentHeight(presentedSettings.contentVisibility);
     void desktopPlatform.resizeFloatingWindow(
-      FLOATING_BASE_WIDTH * presentedSettings.scale,
-      height * presentedSettings.scale,
+      Math.max(FLOATING_BASE_WIDTH, pagingGuidePresented ? FLOATING_PAGING_GUIDE_WIDTH : 0)
+        * presentedSettings.scale,
+      Math.max(height, pagingGuidePresented ? FLOATING_PAGING_GUIDE_HEIGHT : 0)
+        * presentedSettings.scale,
     );
-  }, [presentedSettings.contentVisibility, presentedSettings.scale]);
+  }, [pagingGuidePresented, presentedSettings.contentVisibility, presentedSettings.scale]);
 
   function closeFloatingWindow() {
     void desktopPlatform.hideFloatingWindow().then((visible) => {
@@ -302,9 +308,36 @@ export function FloatingWindowApp() {
   const shellStyle = {
     ...appearanceStyle,
   } as CSSProperties;
+  const guideScale = presentedSettings.scale;
+  const pagingGuideTargetYs = pagedFloatingRowCenterYs(presentedSettings.contentVisibility)
+    .slice(0, 2)
+    .map((value) => value * guideScale);
+  const safePagingGuideTargetYs = pagingGuideTargetYs.length > 0 ? pagingGuideTargetYs : [60 * guideScale];
+  const pagingGuideTargetY = safePagingGuideTargetYs[0];
+  const pagingGuidePointerY = pagingGuideTargetY + 5 * guideScale;
+  const pagingGuidePointerYs = safePagingGuideTargetYs.map((value) => value + 5 * guideScale);
+  const pagingGuideCalloutY = Math.max(
+    6 * guideScale,
+    (usageStatusFloatingRowCenterY(presentedSettings.contentVisibility) ?? 60) * guideScale - 5 * guideScale,
+  );
+  const calloutImageWidth = Math.max(0, (220 - 14) * guideScale);
+  const calloutCardHeight = calloutImageWidth * (2 / 3) + 16 * guideScale;
+  const calloutSafeInset = 6 * guideScale;
+  const calloutCardMinimumY = calloutCardHeight / 2 + calloutSafeInset;
+  const calloutCardMaximumY = Math.max(
+    calloutCardMinimumY,
+    FLOATING_PAGING_GUIDE_HEIGHT * guideScale - calloutCardHeight / 2 - calloutSafeInset,
+  );
+  const pagingGuideCalloutCardY = Math.min(
+    Math.max(pagingGuideCalloutY, calloutCardMinimumY),
+    calloutCardMaximumY,
+  );
 
   return (
-    <main className="floating-window-shell" style={shellStyle}>
+    <main
+      className={`floating-window-shell${pagingGuidePresented ? " floating-window-shell--guide" : ""}`}
+      style={shellStyle}
+    >
       <FloatingPanelSurface
         settings={presentedSettings}
         snapshot={snapshot}
@@ -316,16 +349,20 @@ export function FloatingWindowApp() {
         onClose={closeFloatingWindow}
         onDragStart={startWindowDrag}
         onOpenDashboard={openDashboardWindow}
-        onPageNavigation={() => {
-          void completePagingGuide();
-        }}
+        guideMode={pagingGuidePresented}
         overlay={pagingGuidePresented ? (
           <FloatingPagingGuide
             error={pagingGuideError}
             saving={pagingGuideSaving}
             showsArrowGlyphs={pagingGuideShowsArrowGlyphs}
-            targetX={(FLOATING_BASE_WIDTH / 2 - 24) * presentedSettings.scale}
-            targetY={(firstPagedFloatingRowCenterY(presentedSettings.contentVisibility) ?? 60) * presentedSettings.scale}
+            targetX={(FLOATING_BASE_WIDTH / 2 - 24) * guideScale}
+            targetY={pagingGuideTargetY}
+            pointerY={pagingGuidePointerY}
+            targetYs={safePagingGuideTargetYs}
+            pointerYs={pagingGuidePointerYs}
+            calloutY={pagingGuideCalloutY}
+            calloutCardY={pagingGuideCalloutCardY}
+            showDemoModelUsage={snapshot.todayModelBreakdowns.length === 0}
             onArrowVisibilityChange={setPagingGuideShowsArrowGlyphs}
             onComplete={() => {
               void completePagingGuide();

@@ -176,16 +176,19 @@ struct TokenDisplayRunningThreadsRow: View {
 
 private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
     let dividerColor: Color
+    let leadingFraction: CGFloat?
     let leading: Leading
     let trailing: Trailing
     @Environment(\.tokenDisplayScale) private var displayScale
 
     init(
         dividerColor: Color,
+        leadingFraction: CGFloat? = nil,
         @ViewBuilder leading: () -> Leading,
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.dividerColor = dividerColor
+        self.leadingFraction = leadingFraction
         self.leading = leading()
         self.trailing = trailing()
     }
@@ -194,7 +197,7 @@ private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
         GeometryReader { proxy in
             let spacing = 7.scaled(by: displayScale)
             let contentWidth = max(0, proxy.size.width - spacing * 2 - 1)
-            let leadingWidth = contentWidth * 0.37
+            let leadingWidth = leadingFraction.map { contentWidth * $0 }
             HStack(spacing: spacing) {
                 leading
                     .frame(width: leadingWidth, alignment: .leading)
@@ -202,7 +205,8 @@ private struct TokenDisplayRadarColumns<Leading: View, Trailing: View>: View {
                     .fill(dividerColor)
                     .frame(width: 1, height: 19.scaled(by: displayScale))
                 trailing
-                    .frame(width: contentWidth - leadingWidth, alignment: .leading)
+                    .frame(width: leadingWidth.map { max(0, contentWidth - $0) }, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .leading)
         }
@@ -222,20 +226,26 @@ struct TokenDisplayRadarStrip: View {
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
         let actionAccent = AppTheme.radarActionColor(snapshot?.recommendedAction)
+        let actionText = CodexRadarPresentationText.action(snapshot?.recommendedAction)
+        let isSpeedWindow = actionText == "速登窗口"
+        let modelLimit = isSpeedWindow ? 2 : 3
         let actionPrimaryColor = AppTheme.radarActionRole(snapshot?.recommendedAction) == .red
             ? actionAccent
             : actionPalette.primaryColor
         let primaryAccent = primary.map {
             AppTheme.radarScoreColor(passed: $0.passed, tasks: $0.tasks, score: $0.score)
         } ?? AppTheme.accentBlue
-        TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor) {
+        TokenDisplayRadarColumns(
+            dividerColor: textPalette.dividerColor,
+            leadingFraction: isSpeedWindow ? 0.42 : nil
+        ) {
             VStack(alignment: .leading, spacing: 2.scaled(by: displayScale)) {
                 HStack(alignment: .firstTextBaseline, spacing: 3.scaled(by: displayScale)) {
                     Circle()
                         .fill(actionAccent)
                         .frame(width: 4.scaled(by: displayScale), height: 4.scaled(by: displayScale))
-                    Text("动作 \(CodexRadarPresentationText.action(snapshot?.recommendedAction))")
-                        .font(.system(size: 9.3.scaled(by: displayScale), weight: .bold))
+                    Text(actionText)
+                        .font(.system(size: 11.2.scaled(by: displayScale), weight: .bold))
                         .foregroundStyle(actionPrimaryColor)
                     if let marker = presentation.compactMarkerText {
                         Text(marker)
@@ -249,9 +259,6 @@ struct TokenDisplayRadarStrip: View {
                             )
                     }
                 }
-                Text("24h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))")
-                    .font(.system(size: 8.4.scaled(by: displayScale), weight: .semibold))
-                    .foregroundStyle(actionPalette.secondaryColor)
             }
             .lineLimit(1)
             .minimumScaleFactor(0.74)
@@ -271,7 +278,7 @@ struct TokenDisplayRadarStrip: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                 }
-                Text(tokenDisplayRadarSecondaryIQText(snapshot))
+                Text(tokenDisplayRadarSecondaryIQText(snapshot, limit: modelLimit))
                     .font(.system(size: 8.1.scaled(by: displayScale), weight: .semibold))
                     .foregroundStyle(modelPalette.secondaryColor)
                     .monospacedDigit()
@@ -291,10 +298,8 @@ struct TokenDisplayRadarStrip: View {
         guard let snapshot = presentation.snapshot else {
             return presentation.compactAccessibilityText ?? "等待读取"
         }
-        let probability24h = tokenDisplayRadarProbabilityText(snapshot.prediction.probability24hPercent)
-        let probability48h = tokenDisplayRadarProbabilityText(snapshot.prediction.probability48hPercent)
         let score = snapshot.modelIQ.primaryModelPoint?.scoreDisplayText ?? "IQ --"
-        let base = "建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))，24 小时概率 \(probability24h)，48 小时概率 \(probability48h)，\(score)"
+        let base = "建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))，\(score)"
         guard let compactAccessibility = presentation.compactAccessibilityText else {
             return base
         }
@@ -313,7 +318,7 @@ struct TokenDisplayCrowdRadarRow: View {
         if let crowd = presentation.crowdSnapshot, !crowd.rankedModels.isEmpty {
             let start = max(0, pageIndex) * 3
             let leaders = crowd.rankedModels(page: pageIndex)
-            TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor) {
+            TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor, leadingFraction: 0.37) {
                 resultView(leaders.first, position: start + 1)
             } trailing: {
                 HStack(spacing: 4.scaled(by: displayScale)) {
@@ -369,13 +374,8 @@ struct TokenDisplayCrowdRadarRow: View {
     }
 }
 
-private func tokenDisplayRadarProbabilityText(_ percent: Int?) -> String {
-    guard let percent else { return "--" }
-    return "\(percent)%"
-}
-
-private func tokenDisplayRadarSecondaryIQText(_ snapshot: CodexRadarSnapshot?) -> String {
-    let rows = snapshot?.modelIQ.secondaryModelRows.prefix(2) ?? []
+private func tokenDisplayRadarSecondaryIQText(_ snapshot: CodexRadarSnapshot?, limit: Int = 3) -> String {
+    let rows = snapshot?.modelIQ.secondaryModelRows.prefix(limit) ?? []
     guard !rows.isEmpty else { return "其他模型 --" }
     return rows.map { row in
         "\(tokenDisplayRadarShortModelLabel(row.label)) \(CodexRadarModelIQPoint.display(row.point.score))"

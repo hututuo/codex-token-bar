@@ -251,18 +251,13 @@ struct DashboardHeaderFreshnessPresentation: Equatable {
         }
 
         let summaryTime: String
-        if let checkDate = lastCheckedAt, let dataDate = dataUpdatedAt {
-            if abs(checkDate.timeIntervalSince(dataDate)) >= 1 {
-                summaryTime = "检查于 \(DateFormatter.statusString(from: checkDate)) · 数据更新于 \(DateFormatter.statusString(from: dataDate))"
-            } else {
-                summaryTime = "更新于 \(DateFormatter.statusString(from: dataDate))"
-            }
-        } else if let checkDate = lastCheckedAt {
-            // A metadata/state-DB check can succeed without proving that
-            // token data changed. Never label that check as a data update.
-            summaryTime = "检查于 \(DateFormatter.statusString(from: checkDate))"
-        } else if let dataDate = dataUpdatedAt {
+        if let dataDate = dataUpdatedAt {
+            // Keep the header focused on actual data publication. The check
+            // timestamp is process health metadata and is intentionally not
+            // rendered beside the data and chart timestamps.
             summaryTime = "数据更新于 \(DateFormatter.statusString(from: dataDate))"
+        } else if let checkDate = lastCheckedAt {
+            summaryTime = "摘要于 \(DateFormatter.statusString(from: checkDate))"
         } else {
             // Legacy callers only provide generatedAt. Preserve their old
             // wording while new coordinator-backed callers use the explicit

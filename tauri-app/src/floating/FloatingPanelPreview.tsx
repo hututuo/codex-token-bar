@@ -3,7 +3,6 @@ import {
   codexRadarDiagnosticLabel,
   compactRadarModelName,
   displayRadarNumber,
-  percentText,
   primaryModelMeasurementRow,
   radarActionDisplayText,
   secondaryModelRows,
@@ -42,6 +41,7 @@ import {
   floatingModelUsagePageCount,
   floatingModelUsagePageItems,
   floatingModelUsageValue,
+  FLOATING_GUIDE_DEMO_MODEL_BREAKDOWNS,
   floatingTodayModelUsageItems,
   type FloatingModelUsagePage,
 } from "./floatingModelUsage";
@@ -61,6 +61,7 @@ interface FloatingPanelSurfaceProps {
   selectedPreviewRowId?: string | null;
   onPreviewRowSelect?: (rowId: string) => void;
   onPageNavigation?: () => void;
+  guideMode?: boolean;
   overlay?: ReactNode;
 }
 
@@ -225,6 +226,7 @@ export function FloatingPanelSurface({
   selectedPreviewRowId = null,
   onPreviewRowSelect,
   onPageNavigation,
+  guideMode = false,
   overlay,
 }: FloatingPanelSurfaceProps) {
   const presentationSettings = useMemo(
@@ -256,6 +258,7 @@ export function FloatingPanelSurface({
   return (
     <aside
       className={`floating-panel-surface${previewMode ? " floating-panel-surface--preview" : ""}`}
+      data-guide-mode={guideMode ? "true" : undefined}
       aria-label={`悬浮窗，${snapshot.unreadSummary.label}`}
       onMouseDown={previewMode ? undefined : onDragStart}
       onDoubleClick={previewMode ? undefined : onOpenDashboard}
@@ -289,6 +292,7 @@ export function FloatingPanelSurface({
             runningThreads={runningThreads}
             settings={presentationSettings}
             snapshot={snapshot}
+            guideMode={guideMode}
             total={rows.length}
             previewMode={previewMode}
             selectedPreviewRowId={selectedPreviewRowId}
@@ -315,6 +319,7 @@ interface FloatingContentRowProps {
   snapshot: FloatingPanelSnapshot;
   total: number;
   modelPageIndex?: number;
+  guideMode?: boolean;
 }
 
 interface FloatingPagedContentRowProps extends Omit<FloatingContentRowProps, "group"> {
@@ -338,6 +343,7 @@ function FloatingPagedContentRow({
     props.snapshot,
     props.priceModel,
     props.settings.contentVisibility.crowdRadarPageCount,
+    props.guideMode ?? false,
   );
   const [selectedIndex, setSelectedIndex] = useState(() => (
     initialFloatingPageIndex(pages.map((page) => page.group))
@@ -418,6 +424,7 @@ function floatingPagedContentDescriptors(
   snapshot: FloatingPanelSnapshot,
   priceModel: OfficialAPIPriceModel,
   crowdRadarPageCount: number,
+  guideMode: boolean,
 ): Array<{ group: FloatingContentGroup; modelPageIndex: number }> {
   return row.groups.flatMap((group): Array<{ group: FloatingContentGroup; modelPageIndex: number }> => {
     if (group === "crowdRadar") {
@@ -429,8 +436,11 @@ function floatingPagedContentDescriptors(
     if (group !== "todayModelCost") {
       return [{ group, modelPageIndex: 0 }];
     }
+    const modelRows = guideMode && snapshot.todayModelBreakdowns.length === 0
+      ? FLOATING_GUIDE_DEMO_MODEL_BREAKDOWNS
+      : snapshot.todayModelBreakdowns;
     const items = floatingTodayModelUsageItems(
-      snapshot.todayModelBreakdowns,
+      modelRows,
       priceModel,
       { showPlaceholders: todayModelUsageReady(snapshot) },
     );
@@ -455,7 +465,12 @@ function FloatingContentRow({
   snapshot,
   total,
   modelPageIndex = 0,
+  guideMode = false,
 }: FloatingContentRowProps) {
+  const isGuideModelDemo = guideMode && snapshot.todayModelBreakdowns.length === 0;
+  const modelRows = isGuideModelDemo
+    ? FLOATING_GUIDE_DEMO_MODEL_BREAKDOWNS
+    : snapshot.todayModelBreakdowns;
   const palette = floatingTextPaletteForGroup(settings, group, index, total);
   const style = {
     "--floating-primary": palette.primary,
@@ -534,7 +549,8 @@ function FloatingContentRow({
         <FloatingTodayModelUsageRow
           page="share"
           priceModel={priceModel}
-          rows={snapshot.todayModelBreakdowns}
+          rows={modelRows}
+          demo={isGuideModelDemo}
           showPlaceholders={todayModelUsageReady(snapshot)}
           style={style}
         />
@@ -545,7 +561,8 @@ function FloatingContentRow({
           page="cost"
           pageIndex={modelPageIndex}
           priceModel={priceModel}
-          rows={snapshot.todayModelBreakdowns}
+          rows={modelRows}
+          demo={isGuideModelDemo}
           showPlaceholders={todayModelUsageReady(snapshot)}
           style={style}
         />
@@ -597,6 +614,7 @@ function FloatingTodayModelUsageRow({
   pageIndex = 0,
   priceModel,
   rows,
+  demo = false,
   showPlaceholders,
   style,
 }: {
@@ -604,6 +622,7 @@ function FloatingTodayModelUsageRow({
   pageIndex?: number;
   priceModel: OfficialAPIPriceModel;
   rows: FloatingPanelSnapshot["todayModelBreakdowns"];
+  demo?: boolean;
   showPlaceholders: boolean;
   style: CSSProperties;
 }) {
@@ -612,7 +631,7 @@ function FloatingTodayModelUsageRow({
   const overflowText = page === "share" ? floatingModelUsageOverflowText(allItems) : null;
   return (
     <div
-      aria-label={floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}
+      aria-label={`${floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders })}${demo ? "（示例，仅用于引导展示）" : ""}`}
       className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : " floating-model-usage--cost"}`}
       style={style}
     >
@@ -620,6 +639,7 @@ function FloatingTodayModelUsageRow({
         <span className="floating-model-usage-empty">今日模型待读取</span>
       ) : (
         <span className="floating-model-usage-items">
+          {demo ? <small className="floating-model-usage-demo-label">示例</small> : null}
           {items.slice(0, FLOATING_MODEL_USAGE_VISIBLE_LIMIT).map((item) => (
             <span className="floating-model-usage-item" key={item.key}>
               <i aria-hidden="true" style={{ background: item.color }} />
@@ -677,33 +697,28 @@ export function floatingEmbeddedRunningThreadLabels(summary: RunningThreadSummar
 }
 
 export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
-  if (!snapshot) {
-    return (
-      <div className="floating-row floating-radar" style={style}>
-        <span>Radar 待读取</span>
-        <strong>--</strong>
-      </div>
-    );
-  }
-
-  const primary = primaryModelMeasurementRow(snapshot.modelIq);
-  const secondaryText = floatingRadarSecondaryIQText(snapshot);
-  const diagnosticLabel = codexRadarDiagnosticLabel(snapshot);
-  const probability = snapshot.prediction.probability24H ?? snapshot.prediction.probability24h;
-  const probability48 = snapshot.prediction.probability48H ?? snapshot.prediction.probability48h;
-  const secondaryAccentPoint = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2)[0]?.point ?? primary?.point;
+  const primary = snapshot ? primaryModelMeasurementRow(snapshot.modelIq) : undefined;
+  const diagnosticLabel = snapshot ? codexRadarDiagnosticLabel(snapshot) : null;
+  const actionText = radarActionDisplayText(snapshot?.recommendedAction);
+  const isSpeedWindow = actionText === "速登窗口";
+  const modelLimit = isSpeedWindow ? 2 : 3;
+  const secondaryText = snapshot
+    ? floatingRadarSecondaryIQText(snapshot, modelLimit)
+    : "等待模型数据";
+  const secondaryAccentPoint = snapshot
+    ? uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), modelLimit)[0]?.point ?? primary?.point
+    : undefined;
   const radarStyle = {
     ...style,
-    "--radar-action-color": radarActionAccent(snapshot.recommendedAction),
+    "--radar-action-color": radarActionAccent(snapshot?.recommendedAction),
     "--radar-score-color": primary ? radarScoreAccent(primary.point) : semanticMetricColor(70),
     "--radar-secondary-color": secondaryAccentPoint ? radarScoreAccent(secondaryAccentPoint) : semanticMetricColor(70),
   } as CSSProperties;
 
   return (
-    <div className="floating-row floating-radar" style={radarStyle}>
+    <div className={`floating-row floating-radar${isSpeedWindow ? " floating-radar--speed-window" : ""}`} style={radarStyle}>
       <div className="floating-radar-action">
-          <span><i className="floating-radar-dot" aria-hidden="true" />{diagnosticLabel ? `${diagnosticLabel} · ` : ""}动作 {radarActionDisplayText(snapshot.recommendedAction)}</span>
-          <em>24h {percentText(probability)} · 48h {percentText(probability48)}</em>
+          <span><i className="floating-radar-dot" aria-hidden="true" />{diagnosticLabel ? `${diagnosticLabel} · ` : ""}{actionText}</span>
       </div>
       <div className="floating-radar-iq">
           <strong>
@@ -740,8 +755,8 @@ function FloatingCrowdRadarResult({ index, model }: { index: number; model?: Ret
   );
 }
 
-function floatingRadarSecondaryIQText(snapshot: CodexRadarSnapshot): string {
-  const rows = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), 2);
+function floatingRadarSecondaryIQText(snapshot: CodexRadarSnapshot, limit = 3): string {
+  const rows = uniqueFloatingRadarRows(secondaryModelRows(snapshot.modelIq), limit);
   if (rows.length === 0) {
     const primary = primaryModelMeasurementRow(snapshot.modelIq);
     if (!primary) {

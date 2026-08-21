@@ -34,6 +34,10 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.apiEquivalentUSD, 35.5, accuracy: 0.0001)
         XCTAssertEqual(estimate.subscriptionCostUSD, 1_400)
         XCTAssertEqual(estimate.netSavingsUSD, -1_364.5)
+        XCTAssertEqual(
+            SubscriptionSavingsPresentation(estimate: estimate).labelText,
+            "累计净薅到（估）"
+        )
     }
 
     func testEstimateAutomaticallyPricesEachRecordedModelAndUsesFallbackOnlyForUnknownRows() throws {

@@ -4,7 +4,7 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
-test("production compact surfaces follow dashboard quota events without issuing their own reads", async () => {
+test("dashboard-following compact quota mode consumes events without issuing its own reads", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;

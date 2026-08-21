@@ -131,6 +131,10 @@ if [[ -f "$ROOT_DIR/Assets/ResetCreditIcon.png" ]]; then
   cp "$ROOT_DIR/Assets/ResetCreditIcon.png" "$RESOURCES_DIR/ResetCreditIcon.png"
 fi
 
+if [[ -f "$ROOT_DIR/Assets/FloatingQuotaPaceGuide.png" ]]; then
+  cp "$ROOT_DIR/Assets/FloatingQuotaPaceGuide.png" "$RESOURCES_DIR/FloatingQuotaPaceGuide.png"
+fi
+
 cp "$ROOT_DIR/Resources/CodexThreadDeleteInjection.js" "$RESOURCES_DIR/CodexThreadDeleteInjection.js"
 cp "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js" "$RESOURCES_DIR/CodexSessionEnhancementsInjection.js"
 mkdir -p "$RESOURCES_DIR/OpenSourceLicenses"

@@ -8297,6 +8297,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   background: transparent;
 }
 
+.floating-window-shell--guide {
+  place-items: start start;
+}
+
 .floating-panel-surface {
   --floating-primary: rgba(18, 25, 35, 0.96);
   --floating-secondary: rgba(47, 58, 72, 0.84);
@@ -8314,6 +8318,10 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   overflow: hidden;
   user-select: none;
   -webkit-app-region: drag;
+}
+
+.floating-panel-surface[data-guide-mode="true"] {
+  overflow: visible;
 }
 
 .floating-panel-surface::before {
@@ -8486,7 +8494,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   z-index: 7 !important;
   display: grid;
   place-items: center;
-  overflow: hidden;
+  overflow: visible;
   border-radius: inherit;
   pointer-events: none;
 }
@@ -8542,7 +8550,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 .floating-paging-guide-card {
-  position: relative;
+  position: absolute;
+  top: calc(100% + calc(8px * var(--floating-scale)));
+  left: 50%;
   z-index: 2;
   display: grid;
   width: calc(180px * var(--floating-scale));
@@ -8559,6 +8569,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   color: var(--floating-paging-guide-primary);
   pointer-events: auto;
   text-align: center;
+  transform: translateX(-50%);
   -webkit-app-region: no-drag;
 }
 
@@ -8574,6 +8585,75 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   font-size: calc(8.8px * var(--floating-scale));
   font-weight: var(--weight-semibold);
   line-height: 1.1;
+}
+
+.floating-paging-guide-demo {
+  display: block;
+  overflow: hidden;
+  color: var(--floating-paging-guide-secondary);
+  font-size: calc(7.2px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+  line-height: 1.05;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-paging-guide-quota-graphic {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: calc(8px * var(--floating-scale));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.floating-paging-guide-callout {
+  position: absolute;
+  left: calc(100% + calc(18px * var(--floating-scale)));
+  z-index: 5;
+  width: calc(220px * var(--floating-scale));
+  box-sizing: border-box;
+  padding: calc(7px * var(--floating-scale));
+  border: 1px solid rgba(35, 102, 181, 0.64);
+  border-radius: calc(11px * var(--floating-scale));
+  background: rgba(225, 236, 250, 0.97);
+  box-shadow:
+    0 calc(4px * var(--floating-scale)) calc(15px * var(--floating-scale)) rgba(16, 43, 77, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.58);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.floating-paging-guide-callout-arrow {
+  position: absolute;
+  top: 50%;
+  left: calc(100% - calc(95px * var(--floating-scale)));
+  z-index: 7;
+  width: calc(115px * var(--floating-scale));
+  height: calc(2px * var(--floating-scale));
+  border-radius: 999px;
+  background: var(--floating-paging-guide-accent);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.floating-paging-guide-callout-arrow::after {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: calc(7px * var(--floating-scale));
+  height: calc(7px * var(--floating-scale));
+  border-bottom: calc(2px * var(--floating-scale)) solid var(--floating-paging-guide-accent);
+  border-left: calc(2px * var(--floating-scale)) solid var(--floating-paging-guide-accent);
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.floating-paging-guide-explanation {
+  color: var(--floating-paging-guide-primary) !important;
+  font-size: calc(8.4px * var(--floating-scale)) !important;
+  font-weight: var(--weight-semibold) !important;
+  line-height: 1.25 !important;
 }
 
 .floating-paging-guide-actions {
@@ -8923,6 +9003,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   white-space: nowrap;
 }
 
+.floating-model-usage-demo-label {
+  align-self: center;
+  color: var(--floating-muted);
+  font-size: calc(7.2px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
 .floating-model-usage-item {
   display: inline-flex;
   align-items: center;
@@ -9023,18 +9111,23 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 .floating-radar,
 .floating-crowd-radar {
   display: grid;
-  grid-template-columns: minmax(104px, 0.7fr) minmax(0, 1.3fr);
   gap: calc(6px * var(--floating-scale));
 }
 
 .floating-radar {
+  grid-template-columns: minmax(48px, 0.12fr) minmax(0, 1.88fr);
   align-items: stretch;
   min-height: calc(24px * var(--floating-scale));
   color: var(--floating-secondary);
   font-size: calc(10.8px * var(--floating-scale));
 }
 
+.floating-radar--speed-window {
+  grid-template-columns: minmax(104px, 0.42fr) minmax(0, 1.58fr);
+}
+
 .floating-crowd-radar {
+  grid-template-columns: minmax(104px, 0.7fr) minmax(0, 1.3fr);
   align-items: center;
   min-width: 0;
   min-height: calc(24px * var(--floating-scale));
@@ -9100,6 +9193,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   align-items: center;
   gap: calc(4px * var(--floating-scale));
   color: var(--radar-action-color);
+  font-size: calc(11.8px * var(--floating-scale));
+  font-weight: var(--weight-semibold);
+  line-height: 1;
 }
 
 .floating-radar-dot {

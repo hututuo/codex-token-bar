@@ -103,7 +103,7 @@ test("DashboardHeader renders the Chinese updated timestamp and refresh progress
   });
 });
 
-test("DashboardHeader distinguishes a successful check from source data time", async () => {
+test("DashboardHeader keeps data and chart times without rendering check time", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
     const html = renderComponent(DashboardHeader, headerProps({
@@ -114,9 +114,9 @@ test("DashboardHeader distinguishes a successful check from source data time", a
       aggregateCoveredAt: "2026-07-06T02:25:00.000Z",
     }));
 
-    assert.match(html, /检查于/);
     assert.match(html, /数据更新于/);
     assert.match(html, /图表至/);
+    assert.doesNotMatch(html, /检查于/);
   });
 });
 
@@ -140,8 +140,45 @@ test("DashboardHeader cannot look complete before the full model and chart snaps
 
     assert.match(html, /class="dash-head__freshness is-waiting"/);
     assert.match(html, /等待精确统计/);
-    assert.match(html, /摘要 \d{2}:\d{2}:\d{2} · 模型与图表同步中/);
+    assert.match(html, /摘要 \d{2}:\d{2}:\d{2} · 等待精确统计/);
     assert.doesNotMatch(html, /摘要 \d{2}:\d{2}:\d{2} · 图表至/);
+  });
+});
+
+test("DashboardHeader only says chart syncing when a Full request has comparable leading generations", async () => {
+  await withSsrModules(async (load) => {
+    const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
+    const common = {
+      refreshing: true,
+      preciseRequestInFlight: true,
+      usageSummaryFresh: true,
+      preciseDataFresh: true,
+      aggregateCoveredAt: "2026-07-06T02:25:00.000Z",
+    };
+    const leading = renderComponent(DashboardHeader, headerProps({
+      ...common,
+      exactGeneration: "12",
+      aggregateExactGeneration: "11",
+      aggregatePublishedGeneration: "11",
+    }));
+    const equal = renderComponent(DashboardHeader, headerProps({
+      ...common,
+      exactGeneration: "11",
+      aggregateExactGeneration: "11",
+      aggregatePublishedGeneration: "11",
+    }));
+    const missing = renderComponent(DashboardHeader, headerProps({
+      ...common,
+      exactGeneration: null,
+      aggregateExactGeneration: null,
+      aggregatePublishedGeneration: null,
+    }));
+
+    assert.match(leading, /模型与图表同步中/);
+    assert.doesNotMatch(equal, /模型与图表同步中/);
+    assert.match(equal, /图表至/);
+    assert.doesNotMatch(missing, /模型与图表同步中/);
+    assert.match(missing, /图表至/);
   });
 });
 

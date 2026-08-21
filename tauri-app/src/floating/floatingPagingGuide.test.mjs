@@ -37,6 +37,8 @@ test("floating paging guide lets card background drag while controls stay intera
           showsArrowGlyphs: false,
           targetX: 120,
           targetY: 60,
+          pointerY: 65,
+          showDemoModelUsage: true,
           onArrowVisibilityChange: (visible) => {
             arrowChanges += visible ? 1 : -1;
           },
@@ -48,6 +50,7 @@ test("floating paging guide lets card background drag while controls stay intera
         assert.match(container.textContent, /点两侧即可翻页/);
         assert.match(container.textContent, /点击阴影边缘试一下/);
         assert.match(container.textContent, /显示翻页箭头/);
+        assert.match(container.textContent, /悬浮窗数据为示例/);
         const card = container.querySelector(".floating-paging-guide-card");
         const checkbox = container.querySelector('input[type="checkbox"]');
         const button = container.querySelector("button");
@@ -82,6 +85,8 @@ test("floating paging guide lets card background drag while controls stay intera
           showsArrowGlyphs: true,
           targetX: 120,
           targetY: 60,
+          pointerY: 65,
+          showDemoModelUsage: false,
           onArrowVisibilityChange: (visible) => {
             arrowChanges += visible ? 1 : -1;
           },
@@ -115,12 +120,14 @@ test("floating paging guide lets card background drag while controls stay intera
 });
 
 test("floating paging guide is versioned, persists narrowly, and keeps hidden edge controls alive", async () => {
-  const [windowSource, settingsClient, desktopEvents, styles, asset, provenance] = await Promise.all([
+  const [windowSource, guideSource, settingsClient, desktopEvents, styles, asset, quotaGuideAsset, provenance] = await Promise.all([
     readFile(new URL("./FloatingWindowApp.tsx", import.meta.url), "utf8"),
+    readFile(new URL("./FloatingPagingGuide.tsx", import.meta.url), "utf8"),
     readFile(new URL("../api/settingsClient.ts", import.meta.url), "utf8"),
     readFile(new URL("../platform/desktopEvents.ts", import.meta.url), "utf8"),
     readFile(new URL("../styles/global.css", import.meta.url), "utf8"),
     stat(new URL("../../public/floating-paging-touch.png", import.meta.url)),
+    stat(new URL("../../public/floating-quota-pace-guide.png", import.meta.url)),
     readFile(new URL("../../../OPEN_SOURCE_NOTICES.md", import.meta.url), "utf8"),
   ]);
 
@@ -138,7 +145,9 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(windowSource, /const pagingGuidePresented = shouldPresentFloatingPagingGuide\(/);
   assert.match(windowSource, /setPagingGuideDismissed\(true\);/);
   assert.match(windowSource, /setPagingGuideDismissed\(false\);/);
-  assert.match(windowSource, /onPageNavigation=\{\(\) => \{/);
+  // Paging can be tried while the guide is open; only the explicit guide
+  // completion button may dismiss it.
+  assert.doesNotMatch(windowSource, /onPageNavigation=\{\(\) => \{/);
   assert.match(settingsClient, /complete_floating_paging_guide/);
   assert.match(settingsClient, /pagingGuideRevision/);
   assert.match(desktopEvents, /floating-paging-guide-completed/);
@@ -149,6 +158,9 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(styles, /calc\(-50% - var\(--floating-paging-guide-target-x\)\)/);
   assert.match(styles, /--floating-paging-guide-surface: rgba\(225, 236, 250, 0\.97\);/);
   assert.match(styles, /--floating-paging-guide-primary: #102b4d;/);
+  assert.match(guideSource, /floating-quota-pace-guide\.png/);
+  assert.match(guideSource, /实际剩余比按均速应剩多出来的部分，就是余量领先/);
+  assert.match(styles, /\.floating-paging-guide-quota-graphic\s*\{/);
   assert.match(styles, /\.floating-paging-guide-card\s*{[\s\S]*?background: var\(--floating-paging-guide-surface\);[\s\S]*?color: var\(--floating-paging-guide-primary\);/);
   assert.match(styles, /\.floating-paging-guide-edge\s*{[\s\S]*?width: calc\(24px \* var\(--floating-scale\)\);[\s\S]*?background: rgba\(60, 65, 72, 0\.24\);/);
   assert.match(styles, /\.floating-paging-guide-edge--left\s*{[\s\S]*?box-shadow: calc\(4px \* var\(--floating-scale\)\) 0 calc\(6px \* var\(--floating-scale\)\) rgba\(38, 42, 48, 0\.38\);/);
@@ -163,6 +175,7 @@ test("floating paging guide is versioned, persists narrowly, and keeps hidden ed
   assert.match(styles, /\.floating-model-usage\s*{[\s\S]*?font-size: calc\(9\.7px \* var\(--floating-scale\)\);/);
   assert.match(styles, /\.floating-quota-bar\s*{[\s\S]*?font-size: calc\(10\.9px \* var\(--floating-scale\)\);/);
   assert.ok(asset.size > 0);
+  assert.ok(quotaGuideAsset.size > 0);
   assert.match(provenance, /Google Material Design Icons/);
   assert.match(provenance, /Apache License 2\.0/);
 });

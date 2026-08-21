@@ -126,6 +126,7 @@ interface DashboardPageProps {
   runningThreads: RunningThreadSummary;
   radarRefreshGeneration: number;
   refreshing: boolean;
+  preciseRequestInFlight: boolean;
   preciseProgress: PreciseDashboardProgress | null;
   preciseIndexUpgradeRequired: PreciseIndexUpgradeState | null;
   appUpdateState: AppUpdateViewState;
@@ -207,6 +208,7 @@ export function DashboardPage({
   runningThreads,
   radarRefreshGeneration,
   refreshing,
+  preciseRequestInFlight,
   preciseProgress,
   preciseIndexUpgradeRequired,
   appUpdateState,
@@ -268,6 +270,10 @@ export function DashboardPage({
           usageSummaryDataUpdatedAt={dashboard.usageSummaryDataUpdatedAt ?? null}
           usageSummaryFresh={dashboard.usageSummaryFresh === true}
           preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
+          preciseRequestInFlight={preciseRequestInFlight}
+          exactGeneration={dashboard.exactGeneration ?? null}
+          aggregateExactGeneration={dashboard.aggregateExactGeneration ?? null}
+          aggregatePublishedGeneration={dashboard.aggregatePublishedGeneration ?? null}
           onCodexHomeChange={onCodexHomeChange}
           onCodexHomeReset={onCodexHomeReset}
           onCustomAccountDisplayNameChange={onCustomAccountDisplayNameChange}

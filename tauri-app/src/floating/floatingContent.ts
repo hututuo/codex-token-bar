@@ -383,6 +383,29 @@ export function floatingContentHeight(visibility: FloatingContentVisibility): nu
 }
 
 export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibility): number | null {
+  return pagedFloatingRowCenterYs(visibility)[0] ?? null;
+}
+
+export function pagedFloatingRowCenterYs(visibility: FloatingContentVisibility): number[] {
+  const rows = layoutFloatingContentRows(visibility);
+  const centers: number[] = [];
+  let cursor = 6;
+  for (const [index, row] of rows.entries()) {
+    if (index > 0) {
+      cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
+    }
+    const height = floatingContentRowHeight(row);
+    // Model share/cost pairs and multi-page crowd radar both have edge
+    // controls. Keep both rows available to the guide animation.
+    if (row.groups.length > 1 || row.groups.includes("crowdRadar")) {
+      centers.push(cursor + height / 2);
+    }
+    cursor += height;
+  }
+  return centers;
+}
+
+export function usageStatusFloatingRowCenterY(visibility: FloatingContentVisibility): number | null {
   const rows = layoutFloatingContentRows(visibility);
   let cursor = 6;
   for (const [index, row] of rows.entries()) {
@@ -390,7 +413,10 @@ export function firstPagedFloatingRowCenterY(visibility: FloatingContentVisibili
       cursor += floatingContentGap(rows[index - 1].primaryGroup, row.primaryGroup);
     }
     const height = floatingContentRowHeight(row);
-    if (row.groups.length > 1) {
+    if (
+      row.groups.includes("usageStatus")
+      || (row.groups.includes("rateAndBar") && embedsUsageStatusInRateRow(visibility))
+    ) {
       return cursor + height / 2;
     }
     cursor += height;

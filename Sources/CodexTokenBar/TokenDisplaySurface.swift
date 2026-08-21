@@ -313,6 +313,7 @@ struct TokenDisplayCard: View {
     var selectedPreviewRowID: String? = nil
     var onPreviewRowSelect: ((String) -> Void)? = nil
     var onPageNavigation: (() -> Void)? = nil
+    var guideMode = false
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)
     private var fallbackPriceModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var selectedPageIndexByRowID: [String: Int] = [:]
@@ -416,6 +417,16 @@ struct TokenDisplayCard: View {
 
     private var fallbackPriceModel: OfficialAPIPriceModel {
         OfficialAPIPriceModel.storedValue(for: fallbackPriceModelRaw)
+    }
+
+    private var displayModelBreakdowns: [ModelTokenBreakdown] {
+        guideMode && snapshot.todayModelBreakdowns.isEmpty
+            ? FloatingTodayModelUsagePresentation.guideDemoRows
+            : snapshot.todayModelBreakdowns
+    }
+
+    private var isGuideModelDemo: Bool {
+        guideMode && snapshot.todayModelBreakdowns.isEmpty
     }
 
     private var resolvedRadarPresentation: CodexRadarPresentationState {
@@ -522,16 +533,18 @@ struct TokenDisplayCard: View {
         case .todayModelShare:
             FloatingTodayModelUsageRow(
                 page: .share,
-                rows: snapshot.todayModelBreakdowns,
+                rows: displayModelBreakdowns,
                 fallbackModel: fallbackPriceModel,
-                showPlaceholders: snapshot.hasPreciseTokenUsage
+                showPlaceholders: snapshot.hasPreciseTokenUsage,
+                isGuideDemo: isGuideModelDemo
             )
         case .todayModelCost:
             FloatingTodayModelUsageRow(
                 page: .cost,
-                rows: snapshot.todayModelBreakdowns,
+                rows: displayModelBreakdowns,
                 fallbackModel: fallbackPriceModel,
                 showPlaceholders: snapshot.hasPreciseTokenUsage,
+                isGuideDemo: isGuideModelDemo,
                 pageIndex: modelPageIndex
             )
         case .quota:
@@ -560,7 +573,7 @@ struct TokenDisplayCard: View {
             }
 
             let items = FloatingTodayModelUsagePresentation.items(
-                from: snapshot.todayModelBreakdowns,
+                from: displayModelBreakdowns,
                 fallbackModel: fallbackPriceModel,
                 showPlaceholders: snapshot.hasPreciseTokenUsage
             )

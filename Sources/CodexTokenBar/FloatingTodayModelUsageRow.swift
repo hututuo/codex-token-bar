@@ -61,6 +61,45 @@ enum FloatingTodayModelUsagePresentation {
         "gpt-5.6-luna",
     ]
 
+    /// UI-only values used while the first precise model read is still pending
+    /// during the paging guide. They never enter a snapshot, index, or cost
+    /// calculation and disappear as soon as the guide is completed.
+    static let guideDemoRows: [ModelTokenBreakdown] = [
+        ModelTokenBreakdown(
+            model: "gpt-5.6-sol",
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 4_400_000,
+                cachedInputTokens: 2_300_000,
+                outputTokens: 800_000,
+                reasoningOutputTokens: 0,
+                totalTokens: 5_200_000,
+                calls: 18
+            )
+        ),
+        ModelTokenBreakdown(
+            model: "gpt-5.6-luna",
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 2_800_000,
+                cachedInputTokens: 1_200_000,
+                outputTokens: 500_000,
+                reasoningOutputTokens: 0,
+                totalTokens: 3_300_000,
+                calls: 11
+            )
+        ),
+        ModelTokenBreakdown(
+            model: "gpt-5.6-terra",
+            breakdown: TokenCacheBreakdown(
+                inputTokens: 1_200_000,
+                cachedInputTokens: 600_000,
+                outputTokens: 300_000,
+                reasoningOutputTokens: 0,
+                totalTokens: 1_500_000,
+                calls: 6
+            )
+        ),
+    ]
+
     static func items(
         from rows: [ModelTokenBreakdown],
         fallbackModel: OfficialAPIPriceModel,
@@ -269,14 +308,19 @@ struct FloatingTodayModelUsageRow: View {
     let rows: [ModelTokenBreakdown]
     let fallbackModel: OfficialAPIPriceModel
     let showPlaceholders: Bool
+    var isGuideDemo = false
     var pageIndex = 0
 
     @Environment(\.tokenDisplayScale) private var displayScale
     @Environment(\.tokenDisplayTextPalette) private var textPalette
 
     var body: some View {
+        let usesGuideDemo = isGuideDemo
+        let displayRows = usesGuideDemo
+            ? FloatingTodayModelUsagePresentation.guideDemoRows
+            : rows
         let allItems = FloatingTodayModelUsagePresentation.items(
-            from: rows,
+            from: displayRows,
             fallbackModel: fallbackModel,
             showPlaceholders: showPlaceholders
         )
@@ -299,6 +343,12 @@ struct FloatingTodayModelUsageRow: View {
                     .foregroundStyle(textPalette.secondaryColor)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
+                if usesGuideDemo {
+                    Text("示例")
+                        .font(.system(size: 7.2.scaled(by: displayScale), weight: .semibold))
+                        .foregroundStyle(textPalette.secondaryColor.opacity(0.86))
+                        .help("仅用于引导展示，不会写入真实统计")
+                }
                 let visibleItems = Array(items.prefix(visibleLimit))
                 let hasOverflow = page == .share && allItems.count > visibleLimit
 
@@ -329,10 +379,10 @@ struct FloatingTodayModelUsageRow: View {
         .accessibilityLabel(
             FloatingTodayModelUsagePresentation.accessibilityText(
                 page: page,
-                rows: rows,
+                rows: displayRows,
                 fallbackModel: fallbackModel,
                 showPlaceholders: showPlaceholders
-            )
+            ) + (usesGuideDemo ? "（示例，仅用于引导展示）" : "")
         )
     }
 

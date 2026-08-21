@@ -58,6 +58,7 @@ test("lifetime savings subtracts monthly Pro cost from cache-aware GPT-5.6 Sol A
   assert.equal(estimate.subscriptionCostUSD, 1_400);
   assert.equal(estimate.netSavingsUSD, -1_364.5);
   assert.equal(savingsPresentation(estimate).valueText, "−$1.36k");
+  assert.equal(savingsPresentation(estimate).labelText, "累计净薅到（估）");
 });
 
 test("calendar month count is inclusive and public plan mapping is conservative", () => {

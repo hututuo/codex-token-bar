@@ -90,11 +90,13 @@ export function StatusPanelApp() {
   const [publishRetryNonce, setPublishRetryNonce] = useState(0);
   const { quota, runningThreads, snapshot } = useCompactPanelData({
     active: active && sourceReady,
+    backgroundAggregateEnabled: true,
     liveRateEnabled: dataInterests.liveRate,
     liveRateOwnerToken: "status-live-rate",
     quotaEnabled: dataInterests.quota,
     quotaInitialDelayMs: 0,
     quotaIntervalMs: quotaRefreshIntervalMs,
+    quotaSource: "direct",
     runningEnabled: dataInterests.running,
     snapshotEnabled: dataInterests.snapshot,
     sourceToken,

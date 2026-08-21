@@ -42,7 +42,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     }
 
     func testPagingGuideAppearsOnceAfterSetupWhenPagedRowsExist() {
-        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 3)
+        XCTAssertEqual(FloatingPanelContentVisibility.currentPagingGuideRevision, 4)
         XCTAssertFalse(FloatingPanelPagingGuideState.shouldPresent(
             setupGuideCompleted: false,
             completedRevision: 0,
@@ -78,18 +78,18 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
     func testPagingGuideSessionCompletionPublishesTheChosenArrowStateImmediately() {
         let state = FloatingPanelPagingGuideSessionState()
 
-        XCTAssertNil(state.completion(for: 3))
+        XCTAssertNil(state.completion(for: 4))
 
-        state.complete(revision: 3, showsArrowGlyphs: true)
+        state.complete(revision: 4, showsArrowGlyphs: true)
 
         XCTAssertEqual(
-            state.completion(for: 3),
+            state.completion(for: 4),
             FloatingPanelPagingGuideSessionState.Completion(
-                revision: 3,
+                revision: 4,
                 showsArrowGlyphs: true
             )
         )
-        XCTAssertNil(state.completion(for: 4))
+        XCTAssertNil(state.completion(for: 5))
     }
 
     func testPageNavigationArrowsCanBeHiddenWithoutChangingPagePairs() {
@@ -1271,28 +1271,32 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
         XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(presentation: radarPresentation)"))
         XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
-        XCTAssertTrue(componentsSource.contains("动作 \\(CodexRadarPresentationText.action(snapshot?.recommendedAction))"))
-        XCTAssertTrue(componentsSource.contains("24h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent))  48h \\(tokenDisplayRadarProbabilityText(snapshot?.prediction.probability48hPercent))"))
+        XCTAssertTrue(componentsSource.contains("CodexRadarPresentationText.action(snapshot?.recommendedAction)"))
+        XCTAssertFalse(componentsSource.contains("tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent)"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 2.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 1.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("primary?.scoreDisplayText"))
-        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarSecondaryIQText(snapshot)"))
+        XCTAssertTrue(componentsSource.contains("tokenDisplayRadarSecondaryIQText(snapshot, limit: modelLimit)"))
         XCTAssertTrue(componentsSource.contains("private func tokenDisplayRadarSecondaryIQText"))
 
         let radarStrip = try XCTUnwrap(sourceBlock(
             named: "TokenDisplayRadarStrip",
             in: componentsSource,
-            endingBefore: "private func tokenDisplayRadarProbabilityText"
+            endingBefore: "private func tokenDisplayRadarSecondaryIQText"
         ))
-        XCTAssertTrue(radarStrip.contains("Text(\"动作 \\(CodexRadarPresentationText.action(snapshot?.recommendedAction))\")"))
+        XCTAssertTrue(radarStrip.contains("Text(actionText)"))
         XCTAssertTrue(radarStrip.contains("presentation.compactMarkerText"))
         XCTAssertTrue(radarStrip.contains("presentation.compactAccessibilityText"))
         XCTAssertTrue(radarStrip.contains("let actionPrimaryColor = AppTheme.radarActionRole"))
+        XCTAssertTrue(radarStrip.contains("size: 11.2.scaled(by: displayScale)"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(actionPrimaryColor)"))
         XCTAssertTrue(radarStrip.contains("let primary = snapshot?.modelIQ.primaryModelPoint"))
         XCTAssertTrue(radarStrip.contains("Text(primary?.scoreDisplayText ?? \"IQ --\")"))
-        XCTAssertTrue(radarStrip.contains("tokenDisplayRadarSecondaryIQText(snapshot)"))
-        XCTAssertTrue(componentsSource.contains("snapshot?.modelIQ.secondaryModelRows.prefix(2)"))
+        XCTAssertTrue(radarStrip.contains("tokenDisplayRadarSecondaryIQText(snapshot, limit: modelLimit)"))
+        XCTAssertTrue(componentsSource.contains("snapshot?.modelIQ.secondaryModelRows.prefix(limit)"))
+        XCTAssertTrue(radarStrip.contains("let modelLimit = isSpeedWindow ? 2 : 3"))
+        XCTAssertTrue(radarStrip.contains("leadingFraction: isSpeedWindow ? 0.42 : nil"))
+        XCTAssertTrue(radarStrip.contains("tokenDisplayRadarSecondaryIQText(snapshot, limit: modelLimit)"))
         XCTAssertTrue(radarStrip.contains(".foregroundStyle(modelPalette.primaryColor)"))
         XCTAssertFalse(radarStrip.contains("alignment: .trailing"))
     }
@@ -1307,16 +1311,18 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let crowdRow = try XCTUnwrap(sourceBlock(
             named: "TokenDisplayCrowdRadarRow",
             in: componentsSource,
-            endingBefore: "private func tokenDisplayRadarProbabilityText"
+            endingBefore: "private func tokenDisplayRadarSecondaryIQText"
         ))
 
         XCTAssertTrue(crowdRow.contains("let start = max(0, pageIndex) * 3"))
         XCTAssertTrue(crowdRow.contains("let leaders = crowd.rankedModels(page: pageIndex)"))
         XCTAssertEqual(
-            componentsSource.components(separatedBy: "TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor)").count - 1,
+            componentsSource.components(separatedBy: "TokenDisplayRadarColumns(").count - 1,
             2
         )
-        XCTAssertTrue(componentsSource.contains("let leadingWidth = contentWidth * 0.37"))
+        XCTAssertTrue(componentsSource.contains("leadingFraction: CGFloat? = nil"))
+        XCTAssertTrue(componentsSource.contains("TokenDisplayRadarColumns(dividerColor: textPalette.dividerColor, leadingFraction: 0.37)"))
+        XCTAssertTrue(crowdRow.contains("leadingFraction: 0.37"))
         XCTAssertFalse(crowdRow.contains("Text(\"众测\")"))
         XCTAssertFalse(crowdRow.contains("Label(\"众测雷达\", systemImage:"))
         XCTAssertTrue(crowdRow.contains("resultView(leaders.first, position: start + 1)"))
@@ -1473,7 +1479,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         let radarStrip = try XCTUnwrap(sourceBlock(
             named: "TokenDisplayRadarStrip",
             in: componentsSource,
-            endingBefore: "private func tokenDisplayRadarProbabilityText"
+            endingBefore: "private func tokenDisplayRadarSecondaryIQText"
         ))
 
         XCTAssertTrue(radarStrip.contains("size: 11.8.scaled(by: displayScale)"))
@@ -1580,6 +1586,8 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(source.contains(".opacity(showsGlyph ? 1 : 0)"))
         XCTAssertTrue(source.contains("onPageNavigation?()"))
         XCTAssertTrue(guide.contains("点两侧即可翻页"))
+        XCTAssertTrue(guide.contains("FloatingQuotaPaceGuide"))
+        XCTAssertTrue(guide.contains("quotaPaceCallout(in: proxy.size)"))
         XCTAssertTrue(guide.contains("Text(\"显示翻页箭头\")"))
         XCTAssertTrue(guide.contains("minWidth: 88.scaled(by: scale)"))
         XCTAssertTrue(guide.contains("minHeight: 24.scaled(by: scale)"))
@@ -1606,15 +1614,15 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertTrue(guide.contains("Button(action: completeImmediately)"))
         XCTAssertTrue(guide.contains("completionTriggered = true\n        onComplete()"))
         XCTAssertFalse(guide.contains("FloatingPanelInteractionBridge"))
-        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: true)"))
-        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: false)"))
+        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: true, targetY: rowY)"))
+        XCTAssertTrue(guide.contains("edgeArrowCue(in: proxy.size, isLeading: false, targetY: rowY)"))
         XCTAssertTrue(guide.contains("refreshArrowCueEmphasis"))
         XCTAssertTrue(guide.contains("private let guideSurface = Color(red: 0.882, green: 0.925, blue: 0.980)"))
         XCTAssertTrue(guide.contains("private let guidePrimaryText = Color(red: 0.063, green: 0.169, blue: 0.302)"))
         XCTAssertFalse(guide.contains(".background(.ultraThinMaterial"))
         XCTAssertTrue(guide.contains("TimelineView"))
-        XCTAssertTrue(guide.contains("edgeShadow(isLeading: true)"))
-        XCTAssertTrue(guide.contains("edgeShadow(isLeading: false)"))
+        XCTAssertTrue(guide.contains("edgeShadow(in: proxy.size, isLeading: true)"))
+        XCTAssertTrue(guide.contains("edgeShadow(in: proxy.size, isLeading: false)"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.24)"))
         XCTAssertTrue(guide.contains("guideEdgeShade.opacity(0.38)"))
         XCTAssertFalse(guide.contains("LinearGradient("))

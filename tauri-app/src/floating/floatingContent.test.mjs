@@ -181,13 +181,13 @@ test("crowd radar defaults to two pages and clamps settings to one through three
   assert.equal(sanitizeFloatingContentVisibility({ crowdRadarPageCount: 9 }).crowdRadarPageCount, 3);
 });
 
-test("paging guide pointer targets the first real paged row", () => {
+test("paging guide pointer targets the first real paged row, including crowd radar", () => {
   assert.equal(firstPagedFloatingRowCenterY(DEFAULT_FLOATING_CONTENT_VISIBILITY), 58.5);
   assert.equal(firstPagedFloatingRowCenterY(sanitizeFloatingContentVisibility({
     showTodayModelShare: false,
     showTodayModelCost: false,
     pagePairs: [],
-  })), null);
+  })), 89);
 });
 
 test("paged radar rows reserve the taller page when switching to crowd radar", () => {

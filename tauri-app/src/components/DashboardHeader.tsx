@@ -18,6 +18,7 @@ import {
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
+import type { DashboardLineageScalar } from "../types/usage";
 
 interface DashboardHeaderProps {
   account: AccountInfo;
@@ -32,6 +33,12 @@ interface DashboardHeaderProps {
   usageSummaryFresh?: boolean;
   /** Full five-minute/model snapshot freshness; required before the header may look complete. */
   preciseDataFresh?: boolean;
+  /** True while the native precise owner (Summary or Full) is in flight. */
+  preciseRequestInFlight?: boolean;
+  /** Source generation and the two existing aggregate generation receipts. */
+  exactGeneration?: DashboardLineageScalar;
+  aggregateExactGeneration?: DashboardLineageScalar;
+  aggregatePublishedGeneration?: DashboardLineageScalar;
   aggregateCoveredAt?: string | null;
   onCodexHomeChange: (path: string) => Promise<void>;
   onCodexHomeReset: () => Promise<void>;
@@ -65,6 +72,35 @@ const PENDING_HEADER_RUNNING_THREADS: RunningThreadSummary = {
   livenessLeaseHours: 24,
 };
 
+function lineageNumber(value: DashboardLineageScalar): bigint | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return null;
+  try {
+    return BigInt(value.trim());
+  } catch {
+    return null;
+  }
+}
+
+function generationIsAhead(
+  source: DashboardLineageScalar,
+  aggregateExact: DashboardLineageScalar,
+  aggregatePublished: DashboardLineageScalar,
+): boolean {
+  const sourceValue = lineageNumber(source);
+  if (sourceValue === null) return false;
+  const exactValue = lineageNumber(aggregateExact);
+  const publishedValue = lineageNumber(aggregatePublished);
+  // A missing aggregate lineage is not evidence that a chart job is running.
+  // It is an old/stale cache (or an incomplete snapshot) and must not be
+  // presented as “图表同步中”. Only comparable, valid generations can prove
+  // that a Full request is catching up.
+  if (exactValue === null || publishedValue === null) return false;
+  return sourceValue > exactValue || sourceValue > publishedValue;
+}
+
 export function DashboardHeader({
   account,
   autostartStatus,
@@ -76,6 +112,10 @@ export function DashboardHeader({
   usageSummaryDataUpdatedAt = null,
   usageSummaryFresh,
   preciseDataFresh,
+  preciseRequestInFlight = false,
+  exactGeneration = null,
+  aggregateExactGeneration = null,
+  aggregatePublishedGeneration = null,
   aggregateCoveredAt = null,
   onCodexHomeChange,
   onCodexHomeReset,
@@ -139,14 +179,14 @@ export function DashboardHeader({
   const hasFreshnessTimes = checkedDate !== null
     && !Number.isNaN(checkedDate.getTime());
   const hasDataTime = dataDate !== null && !Number.isNaN(dataDate.getTime());
-  const explicitSummaryTime = hasFreshnessTimes
-    ? hasDataTime
-      ? Math.abs(checkedDate!.getTime() - dataDate!.getTime()) >= 1_000
-        ? `检查于 ${timeFormatter.format(checkedDate!)} · 数据更新于 ${timeFormatter.format(dataDate!)}`
-        : `更新于 ${timeFormatter.format(dataDate!)}`
-      : `检查于 ${timeFormatter.format(checkedDate!)}`
-    : hasDataTime
-      ? `数据更新于 ${timeFormatter.format(dataDate!)}`
+  // Keep the status strip focused on two user-facing freshness facts:
+  // actual summary data publication and chart coverage. A successful check
+  // without changed data is an internal coordinator event, not a second
+  // timestamp to squeeze into the same narrow cell.
+  const explicitSummaryTime = hasDataTime
+    ? `数据更新于 ${timeFormatter.format(dataDate!)}`
+    : hasFreshnessTimes
+      ? `摘要于 ${timeFormatter.format(checkedDate!)}`
       : null;
   const summaryProgressTime = explicitSummaryTime ?? `摘要 ${timeLabel}`;
   const summaryCompleteTime = explicitSummaryTime ?? `更新于 ${timeLabel}`;
@@ -167,8 +207,29 @@ export function DashboardHeader({
   // light-summary state may replace the published summary timestamp.
   const lightSummarySyncing = usageSummaryFresh === false
     || (usageSummaryFresh === undefined && refreshing);
-  const fullPrecisionPending = preciseDataFresh === false
-    || (preciseDataFresh === true && aggregateCoveredAt === null);
+  // A light summary may legitimately advance the source generation while the
+  // next chart cadence is still waiting. Only an active Full/progress owner
+  // should turn that lag into “图表同步中”; otherwise keep the honest
+  // settled-through label instead of implying a chart job is running. After
+  // the light part of a Full request has published, the progress endpoint can
+  // briefly be quiet while the native precise owner is still running, so use
+  // its explicit in-flight signal rather than the broader UI refresh flag
+  // (which also covers quota and radar refreshes).
+  const fullAggregateRequestActive = preciseRequestInFlight || activeProgress !== null;
+  const aggregateSourceLeading = fullAggregateRequestActive && generationIsAhead(
+    exactGeneration,
+    aggregateExactGeneration,
+    aggregatePublishedGeneration,
+  );
+  const aggregateLineageMissing = preciseDataFresh === true
+    && (exactGeneration === null
+      || aggregateExactGeneration === null
+      || aggregatePublishedGeneration === null);
+  const preciseStatisticsPending = preciseDataFresh === false;
+  const aggregateWaitingWithoutLineage = aggregateLineageMissing && aggregateTimeLabel === null;
+  const fullPrecisionPending = preciseStatisticsPending
+    || aggregateSourceLeading
+    || aggregateWaitingWithoutLineage;
   const freshnessStage = activeProgress?.stage ?? (fullPrecisionPending ? "waiting" : null);
   const sourceLabel = codexHome.source === "manual" ? "手动目录" : codexHome.exists ? "自动发现" : "等待选择";
   const updateBusy = appUpdateState.kind === "checking" || appUpdateState.kind === "installing";
@@ -262,8 +323,12 @@ export function DashboardHeader({
               <i aria-hidden="true" className="precise-progress-dot" />
               {activeProgress
                 ? activeProgress.text
-                : fullPrecisionPending
+                : aggregateSourceLeading
                   ? `${summaryProgressTime} · 模型与图表同步中`
+                  : preciseStatisticsPending
+                    ? `${summaryProgressTime} · 等待精确统计`
+                  : aggregateWaitingWithoutLineage
+                    ? `${summaryProgressTime} · 等待图表聚合`
                   : lightSummarySyncing
                     ? `${summaryProgressTime} · 同步中`
                   : aggregateTimeLabel === null

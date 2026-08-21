@@ -28,6 +28,14 @@ enum FloatingTokenPanelMetrics {
     static let metricRequestsNudge: CGFloat = 8
     static let metricRequestsReferenceDigits = 3
     static let metricRequestsDigitCompensation: CGFloat = 2.8
+    // The paging guide temporarily expands the panel so its quota-pace
+    // explainer remains readable instead of being clipped by the normal
+    // compact floating surface.
+    static let pagingGuideCalloutWidth: CGFloat = 220
+    static let pagingGuideWindowWidth: CGFloat = 620
+    // The guide card now sits below the normal panel. Keep only enough extra
+    // height for that card instead of stretching the whole panel vertically.
+    static let pagingGuideHeight: CGFloat = 240
     static let defaultScale = 1.0
     static let scaleRange = 0.75...2.0
 
@@ -58,12 +66,27 @@ enum FloatingTokenPanelMetrics {
         size(scale: scale, visibility: .default)
     }
 
-    static func size(scale: Double, visibility: FloatingPanelContentVisibility) -> NSSize {
-        size(effectiveScale: clampedScale(scale), visibility: visibility)
+    static func size(
+        scale: Double,
+        visibility: FloatingPanelContentVisibility,
+        pagingGuidePresented: Bool = false
+    ) -> NSSize {
+        size(
+            effectiveScale: clampedScale(scale),
+            visibility: visibility,
+            pagingGuidePresented: pagingGuidePresented
+        )
     }
 
-    fileprivate static func size(effectiveScale: CGFloat, visibility: FloatingPanelContentVisibility) -> NSSize {
-        let unscaled = unscaledSize(visibility: visibility)
+    static func size(
+        effectiveScale: CGFloat,
+        visibility: FloatingPanelContentVisibility,
+        pagingGuidePresented: Bool = false
+    ) -> NSSize {
+        let unscaled = unscaledSize(
+            visibility: visibility,
+            pagingGuidePresented: pagingGuidePresented
+        )
         return NSSize(
             width: ceil(unscaled.width * effectiveScale),
             height: ceil(unscaled.height * effectiveScale)
@@ -87,8 +110,51 @@ enum FloatingTokenPanelMetrics {
         panelHeight: CGFloat,
         scale: CGFloat
     ) -> CGFloat? {
+        pagedRowCenterYs(
+            visibility: visibility,
+            panelHeight: panelHeight,
+            scale: scale
+        ).first
+    }
+
+    static func pagedRowCenterYs(
+        visibility: FloatingPanelContentVisibility,
+        panelHeight: CGFloat,
+        scale: CGFloat
+    ) -> [CGFloat] {
         let rows = visibility.layoutRows
-        guard rows.contains(where: \.isPaged), scale > 0 else { return nil }
+        guard rows.contains(where: { $0.isPaged || $0.groups.contains(.crowdRadar) }), scale > 0 else { return [] }
+
+        let unscaledPanelHeight = panelHeight / scale
+        let contentAreaHeight = max(0, unscaledPanelHeight - verticalPadding * 2)
+        let topInset = visibility.needsTopControlInset ? singleElementTopInset : 0
+        let centeredInset = max(0, contentAreaHeight - topInset - contentHeight(visibility: visibility)) / 2
+        var cursor = verticalPadding + topInset + centeredInset
+
+        var centers: [CGFloat] = []
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                cursor += spacing(between: rows[index - 1].primaryGroup, and: row.primaryGroup)
+            }
+            let height = row.groups.map(rowHeight(for:)).max() ?? 0
+            if row.isPaged || row.groups.contains(.crowdRadar) {
+                centers.append((cursor + height / 2) * scale)
+            }
+            cursor += height
+        }
+        return centers
+    }
+
+    static func usageStatusRowCenterY(
+        visibility: FloatingPanelContentVisibility,
+        panelHeight: CGFloat,
+        scale: CGFloat
+    ) -> CGFloat? {
+        let rows = visibility.layoutRows
+        guard rows.contains(where: {
+            $0.groups.contains(.usageStatus)
+                || ($0.groups.contains(.rateAndBar) && visibility.embedsUsageStatusInRateRow)
+        }), scale > 0 else { return nil }
 
         let unscaledPanelHeight = panelHeight / scale
         let contentAreaHeight = max(0, unscaledPanelHeight - verticalPadding * 2)
@@ -101,7 +167,8 @@ enum FloatingTokenPanelMetrics {
                 cursor += spacing(between: rows[index - 1].primaryGroup, and: row.primaryGroup)
             }
             let height = row.groups.map(rowHeight(for:)).max() ?? 0
-            if row.isPaged {
+            if row.groups.contains(.usageStatus)
+                || (row.groups.contains(.rateAndBar) && visibility.embedsUsageStatusInRateRow) {
                 return (cursor + height / 2) * scale
             }
             cursor += height
@@ -152,15 +219,24 @@ enum FloatingTokenPanelMetrics {
         }
     }
 
-    private static func unscaledSize(visibility: FloatingPanelContentVisibility) -> NSSize {
+    private static func unscaledSize(
+        visibility: FloatingPanelContentVisibility,
+        pagingGuidePresented: Bool = false
+    ) -> NSSize {
         let rows = visibility.layoutRows
         guard !rows.isEmpty else { return minimumControlSize }
 
         let contentWidth = rows.flatMap(\.groups).map(rowWidth(for:)).max() ?? 0
-        let width = max(minimumControlSize.width, horizontalPadding * 2 + contentWidth)
+        let width = max(
+            max(minimumControlSize.width, horizontalPadding * 2 + contentWidth),
+            pagingGuidePresented ? pagingGuideWindowWidth : 0
+        )
         let topInset = visibility.needsTopControlInset ? singleElementTopInset : 0
         let computedHeight = max(minimumControlSize.height, verticalPadding * 2 + topInset + contentHeight(visibility: visibility))
-        let height = visibility == .default ? baseSize.height : computedHeight
+        let height = max(
+            visibility == .default ? baseSize.height : computedHeight,
+            pagingGuidePresented ? pagingGuideHeight : 0
+        )
         return NSSize(width: width, height: height)
     }
 
@@ -182,11 +258,16 @@ struct FloatingTokenPanelLayout: Equatable {
     let size: NSSize
     let cornerRadius: CGFloat
 
-    init(scale: FloatingTokenPanelScale, visibility: FloatingPanelContentVisibility) {
+    init(
+        scale: FloatingTokenPanelScale,
+        visibility: FloatingPanelContentVisibility,
+        pagingGuidePresented: Bool = false
+    ) {
         effectiveScale = scale.value
         size = FloatingTokenPanelMetrics.size(
             effectiveScale: scale.value,
-            visibility: visibility
+            visibility: visibility,
+            pagingGuidePresented: pagingGuidePresented
         )
         cornerRadius = FloatingTokenPanelMetrics.baseCornerRadius * scale.value
     }

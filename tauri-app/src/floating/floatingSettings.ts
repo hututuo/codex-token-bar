@@ -14,7 +14,12 @@ export const FLOATING_SETTINGS_EVENT = "floating-settings-changed";
 export const FLOATING_BASE_WIDTH = 308;
 export const FLOATING_MIN_HEIGHT = 88;
 export const FLOATING_DEFAULT_HEIGHT = 140;
-export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 3;
+// The first-run guide includes the quota-pace explainer graphic. Keep the
+// temporary window wide/tall enough for the external callout, then shrink it
+// back to the normal floating surface when the guide is dismissed.
+export const FLOATING_PAGING_GUIDE_WIDTH = 620;
+export const FLOATING_PAGING_GUIDE_HEIGHT = 284;
+export const CURRENT_FLOATING_PAGING_GUIDE_REVISION = 4;
 
 export const DEFAULT_FLOATING_SETTINGS: FloatingWindowSettings = {
   opacity: 0.92,

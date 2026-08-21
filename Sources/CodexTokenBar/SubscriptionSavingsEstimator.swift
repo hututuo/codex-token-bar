@@ -108,7 +108,7 @@ struct SubscriptionSavingsPresentation: Equatable {
     init(estimate: SubscriptionSavingsEstimate?) {
         guard let estimate else {
             valueText = "待读取"
-            labelText = "累计薅到（估）"
+            labelText = "累计净薅到（估）"
             helpText = "等待精确 token、首次使用时间和套餐信息。"
             return
         }
@@ -117,7 +117,7 @@ struct SubscriptionSavingsPresentation: Equatable {
            let subscriptionCostUSD = estimate.subscriptionCostUSD,
            let monthlyPlanUSD = estimate.monthlyPlanUSD {
             valueText = Self.compactMoney(netSavingsUSD)
-            labelText = "累计薅到（估）"
+            labelText = "累计净薅到（估）"
             helpText = "\(Self.pricingDescription(estimate))：API 等值 \(Self.fullMoney(estimate.apiEquivalentUSD)) − \(estimate.normalizedPlanName) \(estimate.billingMonths) 个月套餐成本 \(Self.fullMoney(subscriptionCostUSD))（\(Self.fullMoney(monthlyPlanUSD))/月）= \(Self.fullMoney(netSavingsUSD))。历史套餐变化未计入。"
         } else {
             valueText = Self.compactMoney(estimate.apiEquivalentUSD)

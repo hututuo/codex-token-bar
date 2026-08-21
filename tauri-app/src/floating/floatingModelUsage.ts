@@ -12,6 +12,7 @@ import {
   type OfficialAPIPriceModel,
 } from "../settings/quotaPriceModel.ts";
 import { formatTokens } from "../utils/format.ts";
+import type { ModelTokenBreakdown } from "../types/usage.ts";
 
 export type FloatingModelUsagePage = "share" | "cost";
 
@@ -53,6 +54,40 @@ export const FLOATING_DEFAULT_MODEL_KEYS = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
 ] as const;
+
+/** UI-only values for the first-run paging guide while precise model rows load. */
+export const FLOATING_GUIDE_DEMO_MODEL_BREAKDOWNS: ModelTokenBreakdown[] = [
+  {
+    model: "gpt-5.6-sol",
+    breakdown: {
+      inputTokens: 4_400_000,
+      cachedInputTokens: 2_300_000,
+      outputTokens: 800_000,
+      totalTokens: 5_200_000,
+      calls: 18,
+    },
+  },
+  {
+    model: "gpt-5.6-luna",
+    breakdown: {
+      inputTokens: 2_800_000,
+      cachedInputTokens: 1_200_000,
+      outputTokens: 500_000,
+      totalTokens: 3_300_000,
+      calls: 11,
+    },
+  },
+  {
+    model: "gpt-5.6-terra",
+    breakdown: {
+      inputTokens: 1_200_000,
+      cachedInputTokens: 600_000,
+      outputTokens: 300_000,
+      totalTokens: 1_500_000,
+      calls: 6,
+    },
+  },
+];
 
 const FLOATING_DEFAULT_MODEL_ORDER: ReadonlyMap<string, number> = new Map(
   FLOATING_DEFAULT_MODEL_KEYS.map((key, index) => [key, index]),

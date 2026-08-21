@@ -136,6 +136,9 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
     private var onToggleLock: (() -> Void)?
     private var onOpenDashboard: (() -> Void)?
     private let pagingGuideSessionState = FloatingPanelPagingGuideSessionState()
+    private var lastPanelScale: FloatingTokenPanelScale?
+    private var lastPanelVisibility: FloatingPanelContentVisibility?
+    private var lastPagingGuidePresented = false
     var lastExternalActivePID: pid_t?
     var lastExternalClickLocation: NSPoint?
     var lastExternalClickAt: Date?
@@ -320,8 +323,15 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
         self.onClose = onClose
         self.onToggleLock = onToggleLock
         self.onOpenDashboard = onOpenDashboard
-        let layout = FloatingTokenPanelLayout(scale: scale, visibility: visibility)
         let pagingGuidePresented = shouldPresentPagingGuide(visibility: visibility)
+        let layout = FloatingTokenPanelLayout(
+            scale: scale,
+            visibility: visibility,
+            pagingGuidePresented: pagingGuidePresented
+        )
+        lastPanelScale = scale
+        lastPanelVisibility = visibility
+        lastPagingGuidePresented = pagingGuidePresented
 
         if panel == nil {
             let hostingController = NSHostingController(
@@ -440,6 +450,17 @@ final class FloatingTokenPanelController: NSObject, ObservableObject, NSWindowDe
 
     private func setPagingGuidePresented(_ presented: Bool) {
         (panel as? FloatingTokenPanelWindow)?.suppressesBackgroundMouseActions = presented
+        guard presented != lastPagingGuidePresented,
+              let lastPanelScale,
+              let lastPanelVisibility else { return }
+        lastPagingGuidePresented = presented
+        updateSize(
+            layout: FloatingTokenPanelLayout(
+                scale: lastPanelScale,
+                visibility: lastPanelVisibility,
+                pagingGuidePresented: presented
+            )
+        )
     }
 
     func updateSize(layout: FloatingTokenPanelLayout) {
@@ -529,8 +550,6 @@ struct FloatingTokenPanelView: View {
             && floatingPanelUnreadPreviewUntil > Date.timeIntervalSinceReferenceDate
         let shouldShowUnreadEffect = unreadEffect != .off && (unreadCount > 0 || isPreviewingUnreadEffect)
         let scale = layout.effectiveScale
-        let size = layout.size
-        let cornerRadius = layout.cornerRadius
         let appearance = FloatingPanelAppearance(
             startHex: floatingPanelGradientStartHex,
             endHex: floatingPanelGradientEndHex,
@@ -550,7 +569,11 @@ struct FloatingTokenPanelView: View {
         )
         let textTone = FloatingPanelTextTonePreference.mode(for: floatingPanelTextWhiteOverride)
         let automaticTextPalettes = appearance.textPalettes(
-            panelSize: size,
+            panelSize: FloatingTokenPanelMetrics.size(
+                effectiveScale: scale,
+                visibility: visibility,
+                pagingGuidePresented: false
+            ),
             scale: scale,
             opacity: floatingPanelOpacity,
             automaticStrength: textTone.automaticStrength,
@@ -579,6 +602,17 @@ struct FloatingTokenPanelView: View {
                 completedRevision: pagingGuideRevision,
                 hasPagedRows: visibility.layoutRows.contains(where: \.isPaged)
             )
+        let size = FloatingTokenPanelMetrics.size(
+            effectiveScale: scale,
+            visibility: visibility,
+            pagingGuidePresented: pagingGuidePresented
+        )
+        let surfaceSize = FloatingTokenPanelMetrics.size(
+            effectiveScale: scale,
+            visibility: visibility,
+            pagingGuidePresented: false
+        )
+        let cornerRadius = FloatingTokenPanelMetrics.baseCornerRadius * scale
         let immediatelyAppliedArrowGlyphs = pagingGuideRevision < currentPagingGuideRevision
             ? immediatePagingGuideCompletion?.showsArrowGlyphs
             : nil
@@ -586,53 +620,89 @@ struct FloatingTokenPanelView: View {
         presentedVisibility.showPageNavigationArrows = pagingGuidePresented
             ? pagingGuideShowsArrowGlyphs
             : (immediatelyAppliedArrowGlyphs ?? persistedPageNavigationArrows)
-        let pagingGuideTargetY = FloatingTokenPanelMetrics.firstPagedRowCenterY(
+        let pagingGuideTargetYs = Array(FloatingTokenPanelMetrics.pagedRowCenterYs(
             visibility: visibility,
-            panelHeight: size.height,
+            panelHeight: surfaceSize.height,
             scale: scale
-        ) ?? size.height / 2
-        let pageNavigationAction: (() -> Void)? = pagingGuidePresented
-            ? { completePagingGuide() }
-            : nil
+        ).prefix(2))
+        let safePagingGuideTargetYs = pagingGuideTargetYs.isEmpty
+            ? [surfaceSize.height / 2]
+            : pagingGuideTargetYs
+        let pagingGuideTargetY = safePagingGuideTargetYs[0]
+        let pagingGuideCalloutY = max(
+            6.scaled(by: scale),
+            (FloatingTokenPanelMetrics.usageStatusRowCenterY(
+                visibility: visibility,
+                panelHeight: surfaceSize.height,
+                scale: scale
+            ) ?? surfaceSize.height / 2) - 5.scaled(by: scale)
+        )
+        // Keep the instructional card outside the live panel, below it, so
+        // the user can try either edge without obscuring any metric row.
+        let pagingGuideCardY = surfaceSize.height + 8.scaled(by: scale) + 37.scaled(by: scale)
+        // Trying either paging edge must not dismiss the guide. Completion is
+        // reserved for the explicit guide button.
+        let pageNavigationAction: (() -> Void)? = nil
 
-        return ZStack {
-            TokenGlassBackground(
-                opacity: floatingPanelOpacity,
-                cornerRadius: cornerRadius,
-                appearance: appearance
-            )
-            if shouldShowUnreadEffect {
-                FloatingUnreadEffectOverlay(
-                    effect: unreadEffect,
-                    color: appearance.unreadIndicatorColor,
+        return ZStack(alignment: .topLeading) {
+            ZStack {
+                TokenGlassBackground(
+                    opacity: floatingPanelOpacity,
                     cornerRadius: cornerRadius,
-                    scale: scale
+                    appearance: appearance
                 )
-                .allowsHitTesting(false)
-                .transition(.opacity)
+                if shouldShowUnreadEffect {
+                    FloatingUnreadEffectOverlay(
+                        effect: unreadEffect,
+                        color: appearance.unreadIndicatorColor,
+                        cornerRadius: cornerRadius,
+                        scale: scale
+                    )
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
+                TokenDisplayCard(
+                    snapshot: displaySnapshot,
+                    radarSnapshot: radar.snapshot,
+                    radarPresentation: CodexRadarPresentationState(
+                        snapshot: radar.snapshot,
+                        status: radar.status,
+                        diagnostics: radar.diagnostics,
+                        staleDataDisplayed: radar.staleDataDisplayed,
+                        feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
+                        crowdSnapshot: radar.crowdSnapshot
+                    ),
+                    visibility: presentedVisibility,
+                    onClose: nil,
+                    lockState: nil,
+                    lockTargetDescription: nil,
+                    onToggleLock: nil,
+                    onPageNavigation: pageNavigationAction,
+                    guideMode: pagingGuidePresented
+                )
+                    .environment(\.tokenDisplayScale, scale)
+                    .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .zIndex(2)
+
+                FloatingPanelLockButton(
+                    state: isLocked ? .locked : .unlocked,
+                    targetDescription: lockTargetDescription,
+                    scale: scale,
+                    action: onToggleLock
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .zIndex(8)
+
+                FloatingPanelCloseButton(
+                    scale: scale,
+                    action: onClose
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .zIndex(8)
             }
-            TokenDisplayCard(
-                snapshot: displaySnapshot,
-                radarSnapshot: radar.snapshot,
-                radarPresentation: CodexRadarPresentationState(
-                    snapshot: radar.snapshot,
-                    status: radar.status,
-                    diagnostics: radar.diagnostics,
-                    staleDataDisplayed: radar.staleDataDisplayed,
-                    feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
-                    crowdSnapshot: radar.crowdSnapshot
-                ),
-                visibility: presentedVisibility,
-                onClose: nil,
-                lockState: nil,
-                lockTargetDescription: nil,
-                onToggleLock: nil,
-                onPageNavigation: pageNavigationAction
-            )
-                .environment(\.tokenDisplayScale, scale)
-                .padding(.vertical, FloatingTokenPanelMetrics.verticalPadding * scale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .zIndex(2)
+            .frame(width: surfaceSize.width, height: surfaceSize.height, alignment: .topLeading)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
 
             if pagingGuidePresented {
                 FloatingPanelPagingGuide(
@@ -644,27 +714,17 @@ struct FloatingTokenPanelView: View {
                         }
                     ),
                     scale: scale,
+                    surfaceWidth: surfaceSize.width,
+                    surfaceHeight: surfaceSize.height,
                     targetY: pagingGuideTargetY,
+                    targetYs: safePagingGuideTargetYs,
+                    calloutTargetY: pagingGuideCalloutY,
+                    cardY: pagingGuideCardY,
+                    showsDemoModelUsage: displaySnapshot.todayModelBreakdowns.isEmpty,
                     onComplete: completePagingGuide
                 )
                 .zIndex(6)
             }
-
-            FloatingPanelLockButton(
-                state: isLocked ? .locked : .unlocked,
-                targetDescription: lockTargetDescription,
-                scale: scale,
-                action: onToggleLock
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .zIndex(8)
-
-            FloatingPanelCloseButton(
-                scale: scale,
-                action: onClose
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .zIndex(8)
         }
         .onAppear {
             onPagingGuidePresentationChanged(pagingGuidePresented)
@@ -681,9 +741,8 @@ struct FloatingTokenPanelView: View {
         .environment(\.tokenDisplayRadarActionTextPalette, radarActionTextPalette)
         .environment(\.tokenDisplayRadarModelTextPalette, radarModelTextPalette)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .contentShape(Rectangle())
         .animation(.easeInOut(duration: 0.18), value: unreadCount > 0)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
     private func completePagingGuide() {
