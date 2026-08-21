@@ -1,5 +1,9 @@
 $ErrorActionPreference = "Stop"
 
+# Keep the self-test deterministic on hosts where PowerShell module
+# auto-loading is disabled for non-interactive sessions.
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+
 $BuildScript = Join-Path $PSScriptRoot "build_tauri_windows_release.ps1"
 $FixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-token-bar-windows-selftest-{0}" -f [Guid]::NewGuid().ToString("N"))
 $global:ReleaseSelfTestRoot = $FixtureRoot

@@ -8,6 +8,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Some Windows build hosts disable PowerShell module auto-loading for non-
+# interactive sessions.  The release gate uses Get-FileHash for source and
+# installer integrity, so load the built-in utility module explicitly.
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+
 if ($Arch -ne "both") {
     throw "Windows release builds require both x64 and arm64 installers."
 }
