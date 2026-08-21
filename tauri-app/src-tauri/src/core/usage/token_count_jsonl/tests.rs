@@ -90,6 +90,7 @@ fn future_revision_is_rejected_before_quick_check_or_schema_writes() {
             .unwrap(),
         schema_before
     );
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2150,6 +2151,7 @@ fn precise_scan_plan_defers_files_created_after_discovery_until_next_plan() {
         300,
         "the next discovery must pick up the file created after the prior plan"
     );
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -3404,6 +3406,7 @@ fn exact_index_event_enrichment_resumes_private_staging_without_reread() {
             .unwrap(),
         Some(9)
     );
+    drop(completed);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -3975,6 +3978,7 @@ fn exact_index_restores_a_missing_marker_for_the_known_session_catalog_shape() {
             .unwrap(),
         "known-thread"
     );
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4034,6 +4038,7 @@ fn exact_index_refuses_unmarked_unknown_session_catalog_shape_without_dropping_i
             .unwrap(),
         1
     );
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4299,6 +4304,7 @@ fn exact_index_migration_marks_only_explicit_replay_for_targeted_replacement() {
         .unwrap();
     assert_eq!(unrelated_checkpoint_after, unrelated_checkpoint_before);
     drop(connection);
+    drop(migrated);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4411,6 +4417,8 @@ fn exact_index_retries_unresolved_replay_candidate_without_persisting_marker() {
         "explicit-subagent-delayed-context-v3"
     );
     drop(connection);
+    drop(retried);
+    drop(unresolved);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4445,6 +4453,7 @@ fn snapshots_differing_only_in_reasoning_tokens_are_distinct_events() {
         .unwrap();
     assert_eq!(reasoning, vec![Some(0), Some(7)]);
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -4727,6 +4736,7 @@ fn exact_index_installs_the_published_summary_covering_index() {
         "the status summary must stay on a semantics-preserving covering index"
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -5173,6 +5183,7 @@ fn exact_index_transient_quick_check_failure_preserves_published_database() {
             .unwrap(),
         1
     );
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -5988,6 +5999,7 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     );
     assert_zero_points(&data.recent_usage_30d, &[six_hour_06, six_hour_12]);
 
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7073,6 +7085,7 @@ fn negative_dashboard_revision_is_rejected_instead_of_clamped() {
     let error = index.dashboard_revision().unwrap_err();
     assert!(error.contains("dashboard_revision") || error.contains("无效"));
 
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7258,6 +7271,7 @@ fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
         200
     );
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7297,6 +7311,7 @@ fn lightweight_summary_reuses_unchanged_file_contributions() {
         r#"{{"timestamp":"2026-06-18T01:04:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
     )
     .unwrap();
+    drop(append);
     let mut warnings = Vec::new();
     index
         .sync_with_scan_plan_mode(&root, &mut warnings, None, None, ExactSyncMode::Summary)
@@ -7314,6 +7329,7 @@ fn lightweight_summary_reuses_unchanged_file_contributions() {
         Some(unchanged_generation)
     );
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    drop(index);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7434,6 +7450,7 @@ fn future_dashboard_aggregate_version_fails_closed_without_rewriting_rows() {
         "99"
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7476,6 +7493,7 @@ fn unknown_dashboard_pricing_revision_fails_closed_without_rewriting_rows() {
         rows_before
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -8083,6 +8101,7 @@ fn public_v16_schema6_keeps_startup_last_good_then_enriches_once() {
             .unwrap(),
         "9"
     );
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
