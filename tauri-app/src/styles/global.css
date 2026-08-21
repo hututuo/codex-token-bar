@@ -846,7 +846,7 @@ button {
   /* Reclaim roughly one quarter of the previous status width and give it to
      the path/thread pair in a 1:2 split.  The status track stays flexible,
      while long paths are ellipsized instead of stretching the whole band. */
-  grid-template-columns: minmax(130px, 180px) minmax(190px, 320px) minmax(110px, 230px) minmax(220px, 1fr);
+  grid-template-columns: minmax(130px, 180px) minmax(190px, 320px) minmax(105px, 210px) minmax(250px, 1fr);
   align-items: stretch;
   background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
 }
@@ -944,6 +944,13 @@ button {
   white-space: nowrap;
 }
 
+/* Keep the status cell readable when the source path grows. The cell owns
+   the reclaimed width; its labels may shrink, but the state text remains a
+   single ellipsized line instead of being clipped by the neighbouring cell. */
+.dash-head__freshness {
+  font-size: 9.5px;
+}
+
 .dash-head__threads small,
 .dash-head__freshness small {
   color: var(--muted);
@@ -951,11 +958,19 @@ button {
   font-weight: var(--weight-medium);
 }
 
+.dash-head__freshness small {
+  font-size: 8px;
+}
+
 .dash-head__threads strong,
 .dash-head__freshness strong {
   overflow: hidden;
   font-weight: var(--weight-semibold);
   text-overflow: ellipsis;
+}
+
+.dash-head__freshness strong {
+  font-size: 9.5px;
 }
 
 .precise-progress-dot {
