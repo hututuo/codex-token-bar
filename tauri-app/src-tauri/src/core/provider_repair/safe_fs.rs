@@ -1007,10 +1007,27 @@ impl PinnedHome {
         let (file_name, parents) = components
             .split_last()
             .ok_or_else(|| format!("Provider 相对路径为空：{}", relative.display()))?;
-        let mut current = self
-            .root
-            .try_clone()
-            .map_err(|error| format!("复制 Codex Home 目录句柄失败：{error}"))?;
+        let mut current = if mutation && (create || parents.is_empty()) {
+            // The pinned root is intentionally opened read-only so a
+            // diagnostics-only Home remains usable. Creating a fresh child
+            // or syncing a direct child needs a writable root handle; reopen
+            // the canonical path and compare its identity before using it.
+            let writable_root = open_windows_absolute_directory_with_access(
+                &self.canonical_path,
+                windows_directory_mutation_access(),
+            )?;
+            if windows_file_identity(&writable_root)? != self.root_identity {
+                return Err(format!(
+                    "固定 Codex Home 的规范路径已指向不同目录，已拒绝写入：{}",
+                    self.canonical_path.display()
+                ));
+            }
+            writable_root
+        } else {
+            self.root
+                .try_clone()
+                .map_err(|error| format!("复制 Codex Home 目录句柄失败：{error}"))?
+        };
         let mut relative_parent = PathBuf::new();
         for component in parents {
             let next = match windows_open_directory_relative(&current, component, mutation) {
@@ -1531,6 +1548,14 @@ fn windows_directory_mutation_access() -> u32 {
 
 #[cfg(windows)]
 fn open_windows_absolute_directory_without_following(path: &Path) -> Result<File, String> {
+    open_windows_absolute_directory_with_access(path, windows_directory_read_access())
+}
+
+#[cfg(windows)]
+fn open_windows_absolute_directory_with_access(
+    path: &Path,
+    final_access: u32,
+) -> Result<File, String> {
     let (drive, components) = windows_local_drive_components(path)?;
     if components.is_empty() {
         return Err(format!(
@@ -1539,12 +1564,16 @@ fn open_windows_absolute_directory_without_following(path: &Path) -> Result<File
         ));
     }
     let mut current = windows_open_drive_root(drive)?;
-    for component in components.iter() {
-        let desired_access = windows_directory_read_access();
+    for (index, component) in components.iter().enumerate() {
+        let is_final_component = index + 1 == components.len();
         current = windows_nt_open_relative(
             &current,
             component,
-            desired_access,
+            if is_final_component {
+                final_access
+            } else {
+                windows_directory_read_access()
+            },
             windows_sys::Wdk::Storage::FileSystem::FILE_OPEN,
             windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
                 | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
@@ -1755,8 +1784,7 @@ fn windows_create_directory_relative(parent: &File, name: &OsStr) -> std::io::Re
         windows_sys::Wdk::Storage::FileSystem::FILE_CREATE,
         windows_sys::Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE
             | windows_sys::Wdk::Storage::FileSystem::FILE_OPEN_REPARSE_POINT
-            | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT
-            | windows_sys::Wdk::Storage::FileSystem::FILE_WRITE_THROUGH,
+            | windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
         windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY,
     )?;
     windows_require_directory_without_reparse(&directory, Path::new(name))

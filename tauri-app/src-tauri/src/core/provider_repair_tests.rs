@@ -4322,6 +4322,50 @@ fn windows_handle_relative_mutation_is_enabled() {
 
 #[cfg(windows)]
 #[test]
+fn windows_fresh_nested_parent_creation_uses_pinned_handles() {
+    let root = temp_root("provider-windows-fresh-parent-chain");
+    fs::create_dir_all(&root).unwrap();
+    let pinned_home = PinnedHome::open(&root).unwrap();
+
+    pinned_home
+        .ensure_parent_directories(Path::new("fresh/nested/provider.lock"))
+        .unwrap();
+
+    assert!(root.join("fresh/nested").is_dir());
+    drop(pinned_home);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_fresh_parent_creation_rejects_intermediate_junction() {
+    let fixture = temp_root("provider-windows-fresh-parent-junction");
+    let home = fixture.join("home");
+    let outside = fixture.join("outside");
+    let nested = home.join("nested");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("sentinel.txt"), "outside-sentinel").unwrap();
+    create_windows_junction(&nested, &outside);
+    let pinned_home = PinnedHome::open(&home).unwrap();
+
+    let error = pinned_home
+        .ensure_parent_directories(Path::new("nested/child/provider.lock"))
+        .unwrap_err();
+
+    assert!(error.contains("重解析") || error.contains("父目录"), "{error}");
+    assert!(!outside.join("child").exists());
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel.txt")).unwrap(),
+        "outside-sentinel"
+    );
+    drop(pinned_home);
+    remove_windows_junction(&nested);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_disposable_home_backup_sync_rollback_roundtrip() {
     let fixture = temp_root("provider-windows-roundtrip");
     let home = fixture.join("home");
