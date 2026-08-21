@@ -5546,6 +5546,7 @@ fn build_staged_full_rebuild(
         "exact-source-rebuild-v1"
     };
 
+    let staging_sync = prepare_staging_database_sync(&database_path)?;
     let mut stage = open_staging_connection(&database_path)?;
     initialize_staging_schema(&stage)?;
     let transaction = stage
@@ -5729,11 +5730,7 @@ fn build_staged_full_rebuild(
             .map_err(|error| format!("无法校准精确 token 暂存大小：{error}"))?;
     }
     drop(stage);
-    fs::OpenOptions::new()
-        .read(true)
-        .open(&database_path)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| format!("无法同步精确 token 暂存文件：{error}"))?;
+    sync_staging_database(&database_path, &staging_sync)?;
 
     Ok(StagedFullRebuild {
         job: FullRebuildJob {
@@ -5749,6 +5746,75 @@ fn build_staged_full_rebuild(
         parser_state: parsed.state,
         event_count,
     })
+}
+
+#[cfg(windows)]
+struct StagingDatabaseSyncHandle {
+    file: fs::File,
+}
+
+#[cfg(not(windows))]
+struct StagingDatabaseSyncHandle;
+
+fn prepare_staging_database_sync(path: &Path) -> Result<StagingDatabaseSyncHandle, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+
+        // Open the handle before SQLite starts using the database and retain it
+        // until the final durability barrier. SQLite's Windows handle may use
+        // a narrower share contract, so opening a second writable handle only
+        // after commit can fail with ERROR_SHARING_VIOLATION.
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(path)
+            .map(|file| StagingDatabaseSyncHandle { file })
+            .map_err(|error| format!("无法打开精确 token 暂存耐久句柄 {}：{error}", path.display()))
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(StagingDatabaseSyncHandle)
+    }
+}
+
+fn sync_staging_database(
+    path: &Path,
+    handle: &StagingDatabaseSyncHandle,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::FlushFileBuffers;
+
+        let flushed = unsafe { FlushFileBuffers(handle.file.as_raw_handle() as _) };
+        if flushed == 0 {
+            return Err(format!(
+                "无法同步精确 token 暂存文件：{}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = handle;
+        fs::OpenOptions::new()
+            .read(true)
+            .open(path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("无法同步精确 token 暂存文件：{error}"))
+    }
 }
 
 fn open_staging_connection(path: &Path) -> Result<Connection, String> {

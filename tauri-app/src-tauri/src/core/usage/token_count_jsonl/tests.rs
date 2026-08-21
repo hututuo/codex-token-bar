@@ -3544,6 +3544,7 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
             .unwrap(),
         "model-reasoning-v1"
     );
+    drop(completed);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -3680,6 +3681,7 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
             .unwrap(),
         "model-reasoning-v1"
     );
+    drop(completed);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -6885,6 +6887,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
         "4"
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7168,6 +7171,7 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
         1
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -7376,6 +7380,7 @@ fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
         200
     );
 
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -8653,6 +8658,7 @@ fn active_rollout_fork_replay_aggregate_reuse_invalidates_after_append() {
                 0,
                 "compact summary refresh must not rebuild the full dashboard aggregate"
             );
+            wait_for_usage_summary_refreshes_for_testing();
             fs::remove_dir_all(root).unwrap();
             return;
         }
