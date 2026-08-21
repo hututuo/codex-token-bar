@@ -246,6 +246,7 @@ fn live_rate_ticks_leave_precise_summary_rebuild_to_usage_refresh() {
             assert_eq!(summary.today_tokens, 40);
             assert_eq!(summary.today_requests, 1);
             assert_eq!(summary.total_tokens, 1_040);
+            crate::core::usage::token_count_jsonl::wait_for_usage_summary_refreshes_for_testing();
             fs::remove_dir_all(root).unwrap();
             return;
         }

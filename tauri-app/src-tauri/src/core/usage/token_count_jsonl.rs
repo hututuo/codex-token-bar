@@ -4491,7 +4491,7 @@ pub(crate) fn reset_precise_refresh_recency_for_testing() {
 }
 
 #[cfg(test)]
-fn wait_for_usage_summary_refreshes_for_testing() {
+pub(crate) fn wait_for_usage_summary_refreshes_for_testing() {
     for _ in 0..250 {
         let coordinators = PRECISE_REFRESH_COORDINATORS
             .get_or_init(|| Mutex::new(HashMap::new()))

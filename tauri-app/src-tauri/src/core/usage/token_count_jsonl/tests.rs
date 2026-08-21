@@ -1667,6 +1667,30 @@ fn codex_home_replacement_during_precise_scan_blocks_generation_publish() {
 
     let error = dashboard_snapshot(&root).unwrap_err();
     set_precise_refresh_sync_hook_for_testing(None);
+
+    #[cfg(windows)]
+    if error.contains("拒绝访问") || error.contains("os error 5") {
+        // Windows SQLite handles do not permit renaming their containing
+        // Home while the precise owner is still open. The attempted swap is
+        // therefore rejected before the replacement hook can complete; the
+        // important invariant is still that the scan fails closed and never
+        // publishes the replacement source.
+        let original_index = super::exact_usage_index::database_path(&root).unwrap();
+        let connection = Connection::open(original_index).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+            "a rejected Windows Home replacement must not publish staged events"
+        );
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
+        return;
+    }
+
     assert!(
         error.contains("已保留上一份可信索引并停止本轮发布"),
         "{error}"
