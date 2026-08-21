@@ -915,6 +915,7 @@ fn exact_index_parses_a_valid_jsonl_line_larger_than_the_old_16_mib_limit() {
 #[test]
 fn exact_index_rebuilds_changed_files_and_removes_deleted_files() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1313,6 +1314,7 @@ fn orphan_repair_marker_miss_fails_closed_when_writer_upgrade_is_busy() {
 #[test]
 fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_acknowledged() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -1445,6 +1447,7 @@ fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_ackn
 #[test]
 fn persistent_duplicate_session_lineage_does_not_rotate_until_it_becomes_clean() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     let first_dir = session_dir.join("first");
@@ -2251,6 +2254,7 @@ fn exact_index_append_scan_reads_only_the_tail_chunk_and_new_suffix() {
 #[test]
 fn exact_index_append_reuses_checkpoint_when_open_line_crosses_chunk_boundary() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -2359,6 +2363,7 @@ fn exact_index_append_at_chunk_boundary_keeps_previous_tail_validation_local() {
 #[test]
 fn exact_index_rolling_audit_falls_back_to_full_rebuild_after_middle_rewrite_and_append() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -5080,6 +5085,7 @@ fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
 #[test]
 fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -5096,6 +5102,8 @@ fn exact_index_detects_an_equal_length_rewrite_after_mtime_is_restored() {
         .unwrap();
     let original_modified = fs::metadata(&file).unwrap().modified().unwrap();
 
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     write_lines(&file, &[rewritten]);
     fs::File::options()
         .write(true)
@@ -7360,6 +7368,7 @@ fn lightweight_summary_reuses_unchanged_file_contributions() {
 #[test]
 fn dashboard_global_bucket_append_retains_unchanged_file_contributions() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();

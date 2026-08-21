@@ -354,6 +354,21 @@ fn read_thread_options_works_with_minimal_thread_schema() {
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "最近会话", 300);
     insert_state_thread(&root, "thread-b", "稍早会话", 200);
+    {
+        let connection = Connection::open(root.join("state_5.sqlite")).unwrap();
+        connection
+            .execute(
+                "UPDATE threads SET updated_at = 2_000_000_000, updated_at_ms = 2_000_000_000_000 WHERE id = 'thread-a';",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE threads SET updated_at = 1_000_000_000, updated_at_ms = 1_000_000_000_000 WHERE id = 'thread-b';",
+                [],
+            )
+            .unwrap();
+    }
 
     let options = try_read_thread_options(&root).unwrap();
     assert_eq!(options.len(), 2);
