@@ -53,9 +53,9 @@ Codex Token Bar 是一个本地优先的 Codex 用量仪表盘。它读取本机
 
 | 平台 | 实现 | 发布资产 | 说明 |
 |---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.8.3-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.8.3-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11，带 Tauri 自动更新。 |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.8.3-windows-arm64-setup.exe` | 面向 Windows on ARM，带 Tauri 自动更新；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
+| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.0-macos-arm64.dmg` | 当前 macOS 稳定线，带 Sparkle 更新检查。 |
+| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.0-windows-x64-setup.exe` | 面向 Intel / AMD Windows 10/11，带 Tauri 自动更新。 |
+| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.0-windows-arm64-setup.exe` | 面向 Windows on ARM，带 Tauri 自动更新；安装器进程可能经模拟运行，但 App 二进制是 ARM64。 |
 
 ## 为什么
 
@@ -79,12 +79,12 @@ Codex Token Bar 会读取 Codex 自己使用的本地账号接口，把“重置
 
 ### macOS
 
-1. 下载 `CodexTokenBar-v0.8.3-macos-arm64.dmg` 和 `SHA256SUMS-v0.8.3.txt`。
+1. 下载 `CodexTokenBar-v0.9.0-macos-arm64.dmg` 和 `SHA256SUMS-v0.9.0.txt`。
 2. 可选校验：
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.8.3-macos-arm64.dmg
-cat SHA256SUMS-v0.8.3.txt
+shasum -a 256 CodexTokenBar-v0.9.0-macos-arm64.dmg
+cat SHA256SUMS-v0.9.0.txt
 ```
 
 3. 打开 DMG，把 `Codex Token Bar.app` 拖到 Applications。
@@ -99,13 +99,13 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/instal
 
 ### Windows
 
-1. Windows x64 下载 `CodexTokenBar-v0.8.3-windows-x64-setup.exe`。
-2. Windows ARM64 下载 `CodexTokenBar-v0.8.3-windows-arm64-setup.exe`。
+1. Windows x64 下载 `CodexTokenBar-v0.9.0-windows-x64-setup.exe`。
+2. Windows ARM64 下载 `CodexTokenBar-v0.9.0-windows-arm64-setup.exe`。
 3. 可选校验：
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.8.3-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.8.3.txt
+Get-FileHash .\CodexTokenBar-v0.9.0-windows-x64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS-v0.9.0.txt
 ```
 
 Windows 构建暂未使用商业代码签名证书。首次下载运行时，Microsoft Defender SmartScreen 可能提示未知发布者；请只从本仓库官方 Release 下载，并在运行前核对 SHA256。
@@ -178,26 +178,26 @@ macOS Swift 发布包：
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.8.3
+  scripts/build_release.sh v0.9.0
 ```
 
 Windows Tauri 发布包：
 
 ```powershell
-.\scripts\build_tauri_windows_release.ps1 -Version 0.8.3 -Arch both
+.\scripts\build_tauri_windows_release.ps1 -Version 0.9.0 -Arch both
 ```
 
-Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `dist/release/v0.8.3/windows-build/build-manifest.json`，不需要 updater 私钥；如果 `windows-build` 已存在会直接失败。把完整 `windows-build` 目录传回 Mac 后，签名到一个尚不存在的发布目录：
+Windows 脚本只生成 x64 / ARM64 NSIS 安装器和 `dist/release/v0.9.0/windows-build/build-manifest.json`，不需要 updater 私钥；如果 `windows-build` 已存在会直接失败。把完整 `windows-build` 目录传回 Mac 后，签名到一个尚不存在的发布目录：
 
 ```bash
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
-scripts/sign_tauri_windows_release.sh --version 0.8.3 --repo hututuo/codex-token-bar \
-  --build-dir dist/release/v0.8.3/windows-build \
-  --release-dir dist/release/v0.8.3/windows \
+scripts/sign_tauri_windows_release.sh --version 0.9.0 --repo hututuo/codex-token-bar \
+  --build-dir dist/release/v0.9.0/windows-build \
+  --release-dir dist/release/v0.9.0/windows \
   --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
 ```
 
-当前本地 updater key 使用显式空密码；签名器会区分“变量未设置”和“变量已设置为空”。如果以后改用非空密码，只通过 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量传入，不要把密码写到命令参数或日志里。Mac 脚本生成对应 `.sig`、`latest-windows.json` 和 `SHA256SUMS-v0.8.3-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
+当前本地 updater key 使用显式空密码；签名器会区分“变量未设置”和“变量已设置为空”。如果以后改用非空密码，只通过 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量传入，不要把密码写到命令参数或日志里。Mac 脚本生成对应 `.sig`、`latest-windows.json` 和 `SHA256SUMS-v0.9.0-windows.txt`。Windows 安装器当前未使用商业代码签名证书；`.sig` 只用于 Tauri 自动更新校验。
 
 ## License
 
@@ -248,9 +248,9 @@ There are now two official implementation lines:
 
 | Platform | Implementation | Release asset | Notes |
 |---|---|---|---|
-| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.8.3-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
-| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.8.3-windows-x64-setup.exe` | For Intel / AMD Windows 10/11, with Tauri auto-update. |
-| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.8.3-windows-arm64-setup.exe` | For Windows on ARM, with Tauri auto-update. The installer process may run under emulation, while the app binary is ARM64. |
+| macOS Apple Silicon | Swift / SwiftUI | `CodexTokenBar-v0.9.0-macos-arm64.dmg` | Current stable macOS line with Sparkle update checking. |
+| Windows x64 | Tauri + React + Rust | `CodexTokenBar-v0.9.0-windows-x64-setup.exe` | For Intel / AMD Windows 10/11, with Tauri auto-update. |
+| Windows ARM64 | Tauri + React + Rust | `CodexTokenBar-v0.9.0-windows-arm64-setup.exe` | For Windows on ARM, with Tauri auto-update. The installer process may run under emulation, while the app binary is ARM64. |
 
 ## Why
 
@@ -274,12 +274,12 @@ Download the correct installer from [GitHub Releases](https://github.com/hututuo
 
 ### macOS
 
-1. Download `CodexTokenBar-v0.8.3-macos-arm64.dmg` and `SHA256SUMS-v0.8.3.txt`.
+1. Download `CodexTokenBar-v0.9.0-macos-arm64.dmg` and `SHA256SUMS-v0.9.0.txt`.
 2. Optionally verify:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.8.3-macos-arm64.dmg
-cat SHA256SUMS-v0.8.3.txt
+shasum -a 256 CodexTokenBar-v0.9.0-macos-arm64.dmg
+cat SHA256SUMS-v0.9.0.txt
 ```
 
 3. Open the DMG and drag `Codex Token Bar.app` to Applications.
@@ -294,13 +294,13 @@ curl -fsSL https://raw.githubusercontent.com/hututuo/codex-token-bar/main/instal
 
 ### Windows
 
-1. Download `CodexTokenBar-v0.8.3-windows-x64-setup.exe` for Windows x64.
-2. Download `CodexTokenBar-v0.8.3-windows-arm64-setup.exe` for Windows ARM64.
+1. Download `CodexTokenBar-v0.9.0-windows-x64-setup.exe` for Windows x64.
+2. Download `CodexTokenBar-v0.9.0-windows-arm64-setup.exe` for Windows ARM64.
 3. Optionally verify:
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.8.3-windows-x64-setup.exe -Algorithm SHA256
-Get-Content .\SHA256SUMS-v0.8.3.txt
+Get-FileHash .\CodexTokenBar-v0.9.0-windows-x64-setup.exe -Algorithm SHA256
+Get-Content .\SHA256SUMS-v0.9.0.txt
 ```
 
 The Windows build is currently unsigned with a commercial code-signing certificate. Microsoft Defender SmartScreen may warn about an unknown publisher on first launch. Download only from the official release page and verify the SHA256 checksum before running.
@@ -371,26 +371,26 @@ macOS Swift release assets:
 
 ```bash
 SPARKLE_PRIVATE_KEY_FILE="$HOME/.config/codex-token-bar/sparkle-ed25519-private.key" \
-  scripts/build_release.sh v0.8.3
+  scripts/build_release.sh v0.9.0
 ```
 
 Windows Tauri release assets:
 
 ```powershell
-.\scripts\build_tauri_windows_release.ps1 -Version 0.8.3 -Arch both
+.\scripts\build_tauri_windows_release.ps1 -Version 0.9.0 -Arch both
 ```
 
-The Windows script produces only x64 / ARM64 NSIS installers and `dist/release/v0.8.3/windows-build/build-manifest.json`; it does not need the updater private key and fails if `windows-build` already exists. After transferring the complete `windows-build` directory back to the Mac, sign it into a release directory that does not yet exist:
+The Windows script produces only x64 / ARM64 NSIS installers and `dist/release/v0.9.0/windows-build/build-manifest.json`; it does not need the updater private key and fails if `windows-build` already exists. After transferring the complete `windows-build` directory back to the Mac, sign it into a release directory that does not yet exist:
 
 ```bash
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
-scripts/sign_tauri_windows_release.sh --version 0.8.3 --repo hututuo/codex-token-bar \
-  --build-dir dist/release/v0.8.3/windows-build \
-  --release-dir dist/release/v0.8.3/windows \
+scripts/sign_tauri_windows_release.sh --version 0.9.0 --repo hututuo/codex-token-bar \
+  --build-dir dist/release/v0.9.0/windows-build \
+  --release-dir dist/release/v0.9.0/windows \
   --key-path "$HOME/.config/codex-token-bar/tauri-updater.key"
 ```
 
-The current local updater key uses an explicitly empty password, and the signer distinguishes an unset variable from a variable set to an empty value. If a future key uses a non-empty password, provide it only through `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; never place it in command arguments or logs. The Mac script produces matching `.sig` files, `latest-windows.json`, and `SHA256SUMS-v0.8.3-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
+The current local updater key uses an explicitly empty password, and the signer distinguishes an unset variable from a variable set to an empty value. If a future key uses a non-empty password, provide it only through `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; never place it in command arguments or logs. The Mac script produces matching `.sig` files, `latest-windows.json`, and `SHA256SUMS-v0.9.0-windows.txt`. Windows installers are currently not signed with a commercial code-signing certificate; `.sig` is for Tauri updater verification.
 
 ## License
 

@@ -23,7 +23,11 @@ const test = (name, fn) =>
       ? false
       : "requires the macOS signing host and Darwin rename semantics",
   }, fn);
-const macSigningRuntimeTest = process.platform === "darwin" ? test : test.skip;
+const macSigningRuntimeTest = process.platform === "darwin"
+  ? test
+  : (name, fn) => nodeTest(name, {
+    skip: "requires the macOS signing host and Darwin rename semantics",
+  }, fn);
 
 function sha256(data) {
   return createHash("sha256").update(data).digest("hex");

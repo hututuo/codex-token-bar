@@ -3,6 +3,57 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.0</title>
+            <pubDate>Fri, 21 Aug 2026 23:55:58 +0800</pubDate>
+            <sparkle:version>900</sparkle:version>
+            <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.0
+
+v0.9.0 继续收敛 Swift 原生版与跨平台版的精确索引、增量刷新和聚合发布链路，重点是让旧版用户升级后继续复用索引，同时减少无变化刷新带来的等待和资源占用。
+
+## 更新亮点
+
+- **双端索引升级兼容**：从 v0.8.3 升级时保留原始会话和已发布事件，按受支持的迁移阶段补齐模型与推理字段；未知或更高版本索引会停止写入，避免覆盖未来数据。
+- **增量扫描与恢复**：未变化文件继续复用字节级 checkpoint，追加文件只读取新增尾部；截断、替换和前缀变化只定向处理受影响文件，异常中断后可从已提交水位继续。
+- **轻量摘要与图表聚合分离**：悬浮窗、状态栏和今日摘要使用轻量同步；24 小时、7 天、30 天图表、热力图和排行榜由独立聚合周期更新，并使用代数和 settled-through 保护缓存新旧关系。
+- **更可靠的发布状态**：双端区分检查时间、摘要数据时间和图表覆盖时间，旧快照可以作为明确标记的 last-good 保留，不把未完成的模型统计伪装成默认模型。
+- **跨平台顶部状态栏优化**：收敛目录、运行线程和状态指示器的布局，长路径和状态文案在有限宽度内保持可读。
+- **兼容性与安全边界保持不变**：索引仍是可重建缓存，不保存会话正文，不上传本地用量；额度、Radar 和设置数据不因索引升级被删除。
+
+## 更新说明
+
+- 精确索引升级首次可能短暂占用 CPU 和磁盘；升级期间会显示进度，原始 Codex 会话不会被修改。
+- macOS 构建采用 ad-hoc 签名且未经过 Apple notarization；Windows 安装器未使用商业代码签名证书，首次安装可能出现系统安全提示。
+- 正式发布后请只从官方 GitHub Release 下载，并使用随包提供的 `SHA256SUMS-v0.9.0.txt` 核对文件。
+
+---
+
+## English
+
+# Codex Token Bar v0.9.0
+
+v0.9.0 continues converging the exact-index, incremental-refresh, and aggregate-publication paths across the native Swift and cross-platform editions. The focus is safe reuse for v0.8.3 users and lower cost for unchanged refreshes.
+
+## Highlights
+
+- **Compatible dual-platform index upgrades**: upgrading from v0.8.3 preserves original sessions and published events, then fills model and reasoning fields through supported migration stages. Unknown or newer index revisions fail closed instead of being overwritten.
+- **Incremental scanning and recovery**: unchanged files reuse byte-level checkpoints and append-only files read only their new tails. Truncation, replacement, and prefix changes are handled per file, and interrupted work resumes from the last committed watermark.
+- **Separate light summaries from chart aggregation**: the floating panel, status bar, and today summary use the lightweight lane. 24-hour, 7-day, 30-day charts, heatmaps, and rankings use an independent aggregate cadence with generation and settled-through cache guards.
+- **More truthful publication status**: both editions distinguish check time, summary data time, and chart coverage time. A prior snapshot can remain visible as an explicitly stale last-good result instead of being replaced by a fabricated default model.
+- **Refined cross-platform header**: the directory, running-thread, and status-indicator cells now share the available width while keeping long paths and status text readable.
+- **Unchanged compatibility and privacy boundaries**: the index remains rebuildable cache data, does not store conversation text, and does not upload local usage. Quota, Radar, and settings data are not deleted by index upgrades.
+
+## Update Notes
+
+- The first exact-index upgrade may briefly use CPU and disk; progress is shown and original Codex sessions are never modified.
+- The macOS build is ad-hoc signed and not Apple-notarized. Windows installers do not use a commercial code-signing certificate, so the operating system may show a first-install warning.
+- After publication, download only from the official GitHub Release and verify the bundled `SHA256SUMS-v0.9.0.txt`.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.0/CodexTokenBar-v0.9.0-macos-arm64.app.zip" length="11588614" type="application/octet-stream" sparkle:edSignature="pRHHmq6FESKcGExMTMqu59Iu02tkiQNHasQVH3p1vFfMPrKUl1gumlQHc4N6Zi2WNnyX7HZMKvN+tali/X3TBQ==" />
+        </item>
+        <item>
             <title>0.8.3</title>
             <pubDate>Thu, 30 Jul 2026 11:19:51 +0800</pubDate>
             <sparkle:version>803</sparkle:version>
@@ -259,65 +310,6 @@ v0.7.3 is a broad correctness, performance, accessibility, and interface update 
 - The complete engineering report is available at `audits/v0.7.3/reports/optimization-report.md`.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.3/CodexTokenBar-v0.7.3-macos-arm64.app.zip" length="6618673" type="application/octet-stream" sparkle:edSignature="r4kEEP1T20fJzm5GqCEgVNnFJpfIKOcRcZ+e+QBF2ZDmRClqAosnyczIUm4GznKykQTtYP9a5AHSv8aXFC25DQ==" />
-        </item>
-        <item>
-            <title>0.7.2</title>
-            <pubDate>Fri, 10 Jul 2026 10:12:49 +0800</pubDate>
-            <sparkle:version>702</sparkle:version>
-            <sparkle:shortVersionString>0.7.2</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># Codex Token Bar v0.7.2
-
-这次是 Mac Swift 版的稳定性更新，重点修正本地统计口径、实时速率、雷达详情刷新、曲线图浏览和额度刷新设置。Windows / Tauri 版本继续走自己的更新路线，不共用 Mac appcast。
-
-## 更新亮点
-
-- 修复 fork 会话重复统计：分支会话开头复制出来的历史 token 不再被重复算进总量，fork 后新的真实调用仍会正常计入。
-- 稳定 `总 / 今 / 次` 指标：准备精确 token 缓存或只能读取元数据时，不再用临时数据冒充精确统计，也不会清掉上一份可信结果。
-- 曲线图支持横向浏览历史：24h、7d、30d 都可以保持原来的显示区域，通过滚动和左右按钮查看更久之前的数据；30d 可用更细颗粒度浏览。
-- 新增额度刷新频率设置：可在 30 秒、1 分钟、3 分钟、5 分钟、10 分钟之间选择，主界面和悬浮窗共用同一个设置。
-- 雷达接入公开摘要和详情刷新：基础/悬浮显示继续使用公开 `current.json`，详情数据按本地 08:00 / 18:00 定时刷新，并避免失败后同一时段反复自动重试。
-- 实时速率继续修正：切换 Codex Home 时会重置来源状态，坏日志或无效时间戳不会制造虚假尖峰，显示保持一位小数。
-- 增加未读会话一键已读：状态栏和相关入口可以更方便地处理未读会话提醒。
-- 强化 Provider 同步和额度历史的过期回写保护，减少后台任务慢完成时覆盖新状态的风险。
-- 兼容新版 ChatGPT 内置 Codex CLI：额度读取会依次尝试显式路径、LaunchServices、系统/用户 Applications、PATH 与 Homebrew，不再依赖固定 App 名称或单一安装位置。
-- 收紧 Codex App 身份校验：自动发现只接受正确的 `com.openai.codex` App，避免误用其他软件附带的同名可执行文件；Provider 同步也能识别改名后的 ChatGPT/Codex 进程。
-
-## 更新说明
-
-- Mac 版仍使用原生 Swift App、DMG 安装包和 Sparkle appcast；Windows 版请使用 Windows 对应资产。
-- 实时速率仍然只是工作强度估计，不代表精确真实吞吐。
-- 本地 token、缓存命中、会话统计、额度历史、重置卡和雷达信息不会上传到第三方。
-- 当前构建仍是 ad-hoc 签名，尚未 Apple notarize。如果 macOS 提示“未知开发者”，请从官方 Release 下载并校验 SHA256 后再打开。
-
----
-
-## English
-
-This is a stability update for the native Mac Swift build. It focuses on local usage accounting, live-rate behavior, Radar detail refresh, chart browsing, and quota refresh cadence. The Windows / Tauri build continues to use its own update lane and must not use the Mac appcast.
-
-## Highlights
-
-- Fixes duplicated fork-session usage: replayed history at the beginning of a forked session is no longer counted again, while real calls after the fork still count normally.
-- Stabilizes total / today / current-call metrics: precise-cache preparation and metadata-only states no longer masquerade as trusted totals or clear the last trusted result.
-- Adds horizontally scrollable history charts: 24h, 7d, and 30d charts keep the original viewport size while scroll buttons and trackpad scrolling reveal older history; 30d can be viewed with finer granularity.
-- Adds quota refresh cadence settings: choose 30 seconds, 1 minute, 3 minutes, 5 minutes, or 10 minutes. Dashboard and floating panel share the same setting.
-- Improves Codex Radar loading: compact/basic surfaces keep using the public `current.json`, while full detail refreshes on the local 08:00 / 18:00 schedule and avoids repeated automatic retries for the same failed slot.
-- Refines live-rate behavior: switching Codex Home resets source-local live-rate state, malformed timestamps no longer create fake spikes, and displayed values keep one decimal.
-- Adds one-click mark-read support for unread session reminders.
-- Hardens Provider sync and quota-history state publishing so slower background work is less likely to overwrite newer state.
-- Supports the Codex CLI bundled with the renamed ChatGPT app: quota reading now checks an explicit override, LaunchServices, system/user Applications, PATH, and Homebrew instead of relying on a fixed app name or install location.
-- Tightens Codex app identity checks: automatic discovery accepts only the expected `com.openai.codex` app, avoiding unrelated bundled executables with the same filename, while Provider sync recognizes the renamed ChatGPT/Codex process.
-
-## Notes
-
-- The Mac build still uses the native Swift app, DMG installer, and Sparkle appcast updates. Use the Windows assets for Windows.
-- Live rate remains a work-intensity estimate, not exact throughput.
-- Local token usage, cache hit rates, session statistics, quota history, reset-credit data, and Radar data are not uploaded to third parties.
-- The app remains ad-hoc signed and is not Apple notarized. Verify the SHA256 checksum before opening if macOS warns about an unidentified developer.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.7.2/CodexTokenBar-v0.7.2-macos-arm64.app.zip" length="6255944" type="application/octet-stream" sparkle:edSignature="ZjjYHSpykG8grslO6H+VvRfE+RFl+mblUkIaCi44fEP+WsOBFzSmgegnNwSGY0CjWqZVrEVI9k2vQiD70t6KAw==" />
         </item>
     </channel>
 </rss>
