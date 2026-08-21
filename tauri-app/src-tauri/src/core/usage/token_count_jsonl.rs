@@ -38,7 +38,7 @@ mod tests;
 #[cfg(test)]
 use aggregates::{activity_days_at, stats_at};
 pub(crate) use exact_usage_index::ExactIndexUpgradeRequired;
-use exact_usage_index::ExactUsageIndex;
+use exact_usage_index::{DashboardAggregateIdentity, ExactUsageIndex};
 
 static DASHBOARD_AGGREGATE_CACHE: OnceLock<Mutex<DashboardAggregateCacheState>> = OnceLock::new();
 static SESSION_CATALOG_BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1507,13 +1507,35 @@ fn run_precise_refresh_inner(
             }
         }
     };
-    if flight.full_requested() {
+    let aggregate_identity_before_full = if flight.full_requested() {
+        let lagging = match index.dashboard_aggregate_is_lagging() {
+            Ok(value) => value,
+            Err(error) => {
+                flight.set_trace_status("aggregate_lineage_error");
+                trace_precise_failure("aggregate_lineage", &error);
+                return PreciseRefreshResult::failure(error);
+            }
+        };
+        startup_trace::mark_performance(format!(
+            "precise_aggregate_lagging_before_full={}",
+            if lagging { 1 } else { 0 }
+        ));
         if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
             flight.set_trace_status("aggregate_upgrade_error");
             trace_precise_failure("aggregate_upgrade", &error);
             return PreciseRefreshResult::failure(error);
         }
-    }
+        match index.dashboard_aggregate_identity() {
+            Ok(identity) => Some(identity),
+            Err(error) => {
+                flight.set_trace_status("aggregate_lineage_error");
+                trace_precise_failure("aggregate_lineage", &error);
+                return PreciseRefreshResult::failure(error);
+            }
+        }
+    } else {
+        None
+    };
     // Capture the durable exact-index migration state after the scan and any
     // disposable aggregate backfill. `ensure_dashboard_aggregates` may leave
     // the shared progress phase as `migrating`, but that is only a derived
@@ -1576,11 +1598,36 @@ fn run_precise_refresh_inner(
         };
     }
 
+    let aggregate_identity_before_full = match aggregate_identity_before_full {
+        Some(identity) => identity,
+        None => {
+            // A full request may arrive while the summary owner is parsing.
+            // Promote that same owner; do not start a second source scan, but
+            // still run the existing aggregate gate before deciding whether a
+            // complete cache can be reused.
+            if flight.full_requested() {
+                if let Err(error) = index.ensure_dashboard_aggregates(canonical_home) {
+                    flight.set_trace_status("aggregate_upgrade_error");
+                    trace_precise_failure("aggregate_upgrade", &error);
+                    return PreciseRefreshResult::failure(error);
+                }
+            }
+            match index.dashboard_aggregate_identity() {
+                Ok(identity) => identity,
+                Err(error) => {
+                    flight.set_trace_status("aggregate_lineage_error");
+                    trace_precise_failure("aggregate_lineage", &error);
+                    return PreciseRefreshResult::failure(error);
+                }
+            }
+        }
+    };
     match build_full_dashboard_after_precise_sync(
         flight,
         &mut index,
         canonical_home,
         dashboard_revision,
+        aggregate_identity_before_full,
         precise_coverage_at,
         &mut warnings,
     ) {
@@ -1669,6 +1716,7 @@ fn summary_after_precise_sync(
                     signature,
                     &physical_home_identity,
                     &attribution_safety,
+                    None,
                 )
             })
         })
@@ -1716,12 +1764,20 @@ fn summary_after_precise_sync(
         .latest_published_source_modified_at()
         .ok()
         .flatten();
+    let published_generation = index.published_generation()?;
+    // Summary is intentionally independent from chart aggregate health. A
+    // malformed/old aggregate marker should make Full refuse the cache, not
+    // make the lightweight totals disappear; omit the optional lineage here
+    // and let the next Full request report the aggregate error explicitly.
+    let aggregate_identity = index.dashboard_aggregate_identity().ok();
     store_usage_summary_cache_with_contributions(
         signature.clone(),
         summary.clone(),
         Some(physical_home_identity),
         data_updated_at,
         Some(file_contributions),
+        Some(published_generation),
+        aggregate_identity,
     );
     store_usage_summary(signature.clone(), summary.clone());
     Ok(summary)
@@ -2363,6 +2419,20 @@ pub struct TokenUsageSummarySnapshot {
     pub summary: TokenUsageSummary,
     pub dashboard_revision: u64,
     pub aggregate_boundary_unix: i64,
+    /// Exact source generation represented by this summary. This is distinct
+    /// from dashboard_revision, which is a source-lineage change counter.
+    #[serde(default)]
+    pub exact_generation: Option<u64>,
+    /// Existing aggregate metadata used by the frontend to distinguish a
+    /// summary that is newer than the chart aggregate from a complete cache.
+    #[serde(default)]
+    pub aggregate_schema_version: Option<String>,
+    #[serde(default)]
+    pub aggregate_pricing_revision: Option<String>,
+    #[serde(default)]
+    pub aggregate_exact_generation: Option<u64>,
+    #[serde(default)]
+    pub aggregate_published_generation: Option<u64>,
     pub generated_at: String,
     /// Process-local check/publication time. Old native payloads omit the
     /// optional data timestamp and remain readable by the frontend.
@@ -2547,6 +2617,7 @@ fn build_full_dashboard_after_precise_sync(
     index: &mut ExactUsageIndex,
     codex_home: &Path,
     revision: u64,
+    aggregate_identity_before_full: DashboardAggregateIdentity,
     precise_coverage_at: OffsetDateTime,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<(DashboardSnapshot, TokenUsageSummary), String> {
@@ -2582,7 +2653,12 @@ fn build_full_dashboard_after_precise_sync(
     let cached_snapshot = {
         let _stage =
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::FullCacheDecision);
-        cached_dashboard_snapshot_for_current(&signature, codex_home, &attribution_safety)
+        cached_dashboard_snapshot_for_current(
+            &signature,
+            codex_home,
+            &attribution_safety,
+            &aggregate_identity_before_full,
+        )
     };
     if let Some(snapshot) = cached_snapshot {
         let summary = match cached_dashboard_aggregate(&signature).map(|cached| cached.summary) {
@@ -2647,6 +2723,7 @@ fn build_full_dashboard_after_precise_sync(
         flight.set_trace_status("aggregate_publish_error");
         return Err(error);
     }
+    let aggregate_identity = index.dashboard_aggregate_identity()?;
     let generated_at = now_utc
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into());
@@ -2679,6 +2756,12 @@ fn build_full_dashboard_after_precise_sync(
         precise_attribution_unsafe_id: attribution_safety.unsafe_id.clone(),
         precise_attribution_current_scan_unsafe: attribution_safety
             .current_scan_unsafe_cause_detected,
+        exact_generation: aggregate_identity.exact_generation,
+        dashboard_revision: Some(revision),
+        aggregate_schema_version: aggregate_identity.schema_version.clone(),
+        aggregate_pricing_revision: aggregate_identity.pricing_revision.clone(),
+        aggregate_exact_generation: aggregate_identity.exact_generation,
+        aggregate_published_generation: aggregate_identity.published_generation,
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
@@ -2698,7 +2781,12 @@ fn build_full_dashboard_after_precise_sync(
     let persistent_binding = {
         let _stage =
             PreciseRefreshTraceStageGuard::new(flight, PreciseRefreshTraceStage::PersistentBinding);
-        match persistent_numeric_cache_binding(codex_home, signature.clone(), &attribution_safety) {
+        match persistent_numeric_cache_binding(
+            codex_home,
+            signature.clone(),
+            &attribution_safety,
+            aggregate_identity,
+        ) {
             Ok(binding) => Some(binding),
             Err(error) => {
                 flight.set_trace_status("full_binding_warning");
@@ -3051,6 +3139,11 @@ struct PersistentNumericCacheBinding {
     canonical_home: PathBuf,
     physical_home_identity: String,
     signature: DashboardScanSignature,
+    /// Existing durable aggregate metadata captured when the complete cache
+    /// was published. Optional keeps older V20 envelopes readable as
+    /// last-good data, but they cannot satisfy a current full-cache match.
+    #[serde(default)]
+    aggregate_identity: Option<DashboardAggregateIdentity>,
     precise_attribution_provenance_epoch: String,
     precise_attribution_generation: u64,
     precise_attribution_unsafe_since_generation: Option<u64>,
@@ -3130,6 +3223,8 @@ struct CachedUsageSummary {
     physical_home_identity: Option<String>,
     data_updated_at: Option<String>,
     file_contributions: Option<HashMap<String, SummaryFileContribution>>,
+    published_generation: Option<u64>,
+    aggregate_identity: Option<DashboardAggregateIdentity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3237,6 +3332,23 @@ fn cached_dashboard_usage_summary_snapshot_at(
             summary: cached.summary,
             dashboard_revision: cached.signature.index_revision,
             aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
+            exact_generation: cached.published_generation,
+            aggregate_schema_version: cached
+                .aggregate_identity
+                .as_ref()
+                .and_then(|identity| identity.schema_version.clone()),
+            aggregate_pricing_revision: cached
+                .aggregate_identity
+                .as_ref()
+                .and_then(|identity| identity.pricing_revision.clone()),
+            aggregate_exact_generation: cached
+                .aggregate_identity
+                .as_ref()
+                .and_then(|identity| identity.exact_generation),
+            aggregate_published_generation: cached
+                .aggregate_identity
+                .as_ref()
+                .and_then(|identity| identity.published_generation),
             generated_at: cached.generated_at.clone(),
             checked_at: cached.generated_at,
             data_updated_at: cached.data_updated_at,
@@ -3270,6 +3382,31 @@ fn cached_dashboard_usage_summary_snapshot_at(
                 summary: cached.summary,
                 dashboard_revision: cached.signature.index_revision,
                 aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
+                exact_generation: cached
+                    .persistent_binding
+                    .as_ref()
+                    .and_then(|binding| binding.aggregate_identity.as_ref())
+                    .and_then(|identity| identity.exact_generation),
+                aggregate_schema_version: cached
+                    .persistent_binding
+                    .as_ref()
+                    .and_then(|binding| binding.aggregate_identity.as_ref())
+                    .and_then(|identity| identity.schema_version.clone()),
+                aggregate_pricing_revision: cached
+                    .persistent_binding
+                    .as_ref()
+                    .and_then(|binding| binding.aggregate_identity.as_ref())
+                    .and_then(|identity| identity.pricing_revision.clone()),
+                aggregate_exact_generation: cached
+                    .persistent_binding
+                    .as_ref()
+                    .and_then(|binding| binding.aggregate_identity.as_ref())
+                    .and_then(|identity| identity.exact_generation),
+                aggregate_published_generation: cached
+                    .persistent_binding
+                    .as_ref()
+                    .and_then(|binding| binding.aggregate_identity.as_ref())
+                    .and_then(|identity| identity.published_generation),
                 generated_at: generated_at.clone(),
                 checked_at: generated_at,
                 data_updated_at: None,
@@ -3291,6 +3428,7 @@ fn persistent_numeric_cache_binding(
     canonical_home: &Path,
     signature: DashboardScanSignature,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
+    aggregate_identity: DashboardAggregateIdentity,
 ) -> Result<PersistentNumericCacheBinding, String> {
     let canonical_home = precise_refresh_home(canonical_home)?;
     let physical_home_identity = attribution_watch_root_physical_identity(&canonical_home)?;
@@ -3298,6 +3436,7 @@ fn persistent_numeric_cache_binding(
         canonical_home: canonical_home.clone(),
         physical_home_identity,
         signature,
+        aggregate_identity: Some(aggregate_identity),
         precise_attribution_provenance_epoch: attribution_safety.provenance_epoch.clone(),
         precise_attribution_generation: attribution_safety.generation,
         precise_attribution_unsafe_since_generation: attribution_safety.unsafe_since_generation,
@@ -3342,10 +3481,14 @@ fn persistent_numeric_cache_binding_matches_current(
     signature: &DashboardScanSignature,
     physical_home_identity: &str,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
+    aggregate_identity: Option<&DashboardAggregateIdentity>,
 ) -> bool {
     binding.canonical_home == canonical_home
         && binding.physical_home_identity == physical_home_identity
         && binding.signature == *signature
+        && aggregate_identity.is_none_or(|current| {
+            binding.aggregate_identity.as_ref() == Some(current)
+        })
         && binding.precise_attribution_provenance_epoch == attribution_safety.provenance_epoch
         && binding.precise_attribution_generation == attribution_safety.generation
         && binding.precise_attribution_unsafe_since_generation
@@ -3409,6 +3552,32 @@ fn startup_snapshot_from_persistent_numeric(
         precise_attribution_unsafe_since_generation: None,
         precise_attribution_unsafe_id: None,
         precise_attribution_current_scan_unsafe: false,
+        exact_generation: cache
+            .binding
+            .aggregate_identity
+            .as_ref()
+            .and_then(|identity| identity.exact_generation),
+        dashboard_revision: Some(cache.binding.signature.index_revision),
+        aggregate_schema_version: cache
+            .binding
+            .aggregate_identity
+            .as_ref()
+            .and_then(|identity| identity.schema_version.clone()),
+        aggregate_pricing_revision: cache
+            .binding
+            .aggregate_identity
+            .as_ref()
+            .and_then(|identity| identity.pricing_revision.clone()),
+        aggregate_exact_generation: cache
+            .binding
+            .aggregate_identity
+            .as_ref()
+            .and_then(|identity| identity.exact_generation),
+        aggregate_published_generation: cache
+            .binding
+            .aggregate_identity
+            .as_ref()
+            .and_then(|identity| identity.published_generation),
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
@@ -3462,6 +3631,7 @@ fn cached_dashboard_snapshot_for_current(
     signature: &DashboardScanSignature,
     canonical_home: &Path,
     attribution_safety: &exact_usage_index::AttributionSafetyState,
+    aggregate_identity: &DashboardAggregateIdentity,
 ) -> Option<DashboardSnapshot> {
     let physical_home_identity = attribution_watch_root_physical_identity(canonical_home).ok()?;
     cached_dashboard_aggregate(signature)
@@ -3474,6 +3644,7 @@ fn cached_dashboard_snapshot_for_current(
                     signature,
                     &physical_home_identity,
                     attribution_safety,
+                    Some(aggregate_identity),
                 )
             })
         })
@@ -3660,6 +3831,7 @@ fn persistent_numeric_test_binding(
         canonical_home,
         physical_home_identity,
         signature: canonical_signature,
+        aggregate_identity: None,
         precise_attribution_provenance_epoch: Uuid::nil().to_string(),
         precise_attribution_generation: 0,
         precise_attribution_unsafe_since_generation: None,
@@ -3686,6 +3858,12 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
         precise_attribution_unsafe_since_generation: None,
         precise_attribution_unsafe_id: None,
         precise_attribution_current_scan_unsafe: false,
+        exact_generation: None,
+        dashboard_revision: None,
+        aggregate_schema_version: None,
+        aggregate_pricing_revision: None,
+        aggregate_exact_generation: None,
+        aggregate_published_generation: None,
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),
@@ -3772,12 +3950,36 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
                 .filter(|cached| cached.physical_home_identity == physical_home_identity)
                 .and_then(|cached| cached.data_updated_at.clone())
         });
+    let existing_published_generation = USAGE_SUMMARY_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cached| {
+            cached
+                .as_ref()
+                .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
+                .filter(|cached| cached.physical_home_identity == physical_home_identity)
+                .and_then(|cached| cached.published_generation)
+        });
+    let existing_aggregate_identity = USAGE_SUMMARY_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cached| {
+            cached
+                .as_ref()
+                .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
+                .filter(|cached| cached.physical_home_identity == physical_home_identity)
+                .and_then(|cached| cached.aggregate_identity.clone())
+        });
     store_usage_summary_cache_with_contributions(
         signature,
         summary,
         physical_home_identity,
         existing_data_updated_at,
         existing_contributions,
+        existing_published_generation,
+        existing_aggregate_identity,
     );
 }
 
@@ -3787,6 +3989,8 @@ fn store_usage_summary_cache_with_contributions(
     physical_home_identity: Option<String>,
     data_updated_at: Option<String>,
     file_contributions: Option<HashMap<String, SummaryFileContribution>>,
+    published_generation: Option<u64>,
+    aggregate_identity: Option<DashboardAggregateIdentity>,
 ) {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
@@ -3799,6 +4003,8 @@ fn store_usage_summary_cache_with_contributions(
             physical_home_identity,
             data_updated_at,
             file_contributions,
+            published_generation,
+            aggregate_identity,
         });
     }
 }

@@ -926,6 +926,28 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let legacyExact = try analyzer.loadFastSnapshotResult()
         XCTAssertEqual(legacyExact.freshness, .current)
         XCTAssertEqual(legacyExact.snapshot.stats.totalTokens, 500)
+
+        // A pre-lineage cache may not contain the aggregate identity. It is
+        // still a valid last-good fast surface, but it must not be treated as
+        // a current complete cache until the next exact/aggregate refresh.
+        var missingAggregateObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: validData) as? [String: Any]
+        )
+        var missingAggregateSignature = try XCTUnwrap(
+            missingAggregateObject["signature"] as? [String: Any]
+        )
+        missingAggregateSignature.removeValue(forKey: "aggregateIdentity")
+        missingAggregateObject["signature"] = missingAggregateSignature
+        try JSONSerialization.data(
+            withJSONObject: missingAggregateObject,
+            options: [.sortedKeys]
+        ).write(to: snapshotURL, options: [.atomic])
+        CodexUsageAnalyzer.clearInMemoryUsageSnapshotsForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        let missingAggregate = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(missingAggregate.freshness, .staleCompatible)
+        XCTAssertEqual(missingAggregate.snapshot.stats.totalTokens, 500)
+
         try validData.write(to: snapshotURL, options: [.atomic])
 
         var wrongVersionObject = try XCTUnwrap(

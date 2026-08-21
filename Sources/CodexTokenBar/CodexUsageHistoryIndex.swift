@@ -187,6 +187,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    /// Existing durable derived-aggregate metadata used to validate complete
+    /// numeric cache hits. This is a read-only view; it does not add index
+    /// columns or a second aggregation state machine.
+    struct DashboardAggregateIdentity: Codable, Equatable, Sendable {
+        let schemaVersion: String?
+        let pricingRevision: String?
+        let exactGeneration: Int64?
+        let publishedGeneration: Int64?
+        let settledThrough: Int64?
+    }
+
     struct SessionCatalogCandidate: Equatable {
         let file: URL
         let archived: Bool
@@ -757,6 +768,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try driver.withConnection { connection in
             try configure(connection)
             return try currentAttributionState(connection: connection)
+        }
+    }
+
+    func dashboardAggregateIdentity() throws -> DashboardAggregateIdentity {
+        try driver.withConnection { connection in
+            try configure(connection)
+            func meta(_ key: String) throws -> String? {
+                try connection.readRows(
+                    "SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                    bindings: [.text(key)]
+                ) { $0.text(0) }.first ?? nil
+            }
+            func generation(_ key: String) throws -> Int64? {
+                guard let raw = try meta(key) else { return nil }
+                guard let value = Int64(raw), value >= 0 else {
+                    throw SQLiteDatabaseError(
+                        operation: "Read dashboard aggregate lineage",
+                        code: SQLITE_MISMATCH,
+                        message: "Dashboard aggregate metadata \(key) is invalid: \(raw)",
+                        path: driver.url.path
+                    )
+                }
+                return value
+            }
+            func integer(_ key: String) throws -> Int64? {
+                guard let raw = try meta(key) else { return nil }
+                guard let value = Int64(raw) else {
+                    throw SQLiteDatabaseError(
+                        operation: "Read dashboard aggregate lineage",
+                        code: SQLITE_MISMATCH,
+                        message: "Dashboard aggregate metadata \(key) is invalid: \(raw)",
+                        path: driver.url.path
+                    )
+                }
+                return value
+            }
+            return DashboardAggregateIdentity(
+                schemaVersion: try meta("dashboard_aggregate_schema_version"),
+                pricingRevision: try meta("dashboard_aggregate_pricing_revision"),
+                exactGeneration: try generation("dashboard_aggregate_exact_generation"),
+                publishedGeneration: try generation("dashboard_aggregate_published_generation"),
+                settledThrough: try integer("dashboard_aggregate_settled_through")
+            )
         }
     }
 

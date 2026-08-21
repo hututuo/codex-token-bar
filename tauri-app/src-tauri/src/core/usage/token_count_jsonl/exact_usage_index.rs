@@ -315,6 +315,20 @@ pub(super) struct StartupIndexIdentity {
     pub(super) attribution_safety: AttributionSafetyState,
 }
 
+/// Durable derived-aggregate lineage. These values already live in the exact
+/// index metadata; this DTO only lets cache and UI code compare the existing
+/// facts without introducing a second pending/owner state machine.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DashboardAggregateIdentity {
+    pub(super) schema_version: Option<String>,
+    pub(super) pricing_revision: Option<String>,
+    pub(super) exact_generation: Option<u64>,
+    pub(super) published_generation: Option<u64>,
+    #[serde(default)]
+    pub(super) settled_through: Option<i64>,
+}
+
 #[derive(Default)]
 struct ExactScanCompleteness {
     incomplete_source_scan: bool,
@@ -2764,11 +2778,54 @@ impl ExactUsageIndex {
 
     pub(super) fn dashboard_revision(&self) -> Result<u64, String> {
         let revision = self.revision()?;
-        Ok(u64::try_from(
-            metadata_i64(&self.connection, DASHBOARD_REVISION_KEY)?
-                .unwrap_or_else(|| i64::try_from(revision).unwrap_or(i64::MAX)),
-        )
-        .unwrap_or(0))
+        Ok(optional_startup_metadata_u64(&self.connection, DASHBOARD_REVISION_KEY)?
+            .unwrap_or(revision))
+    }
+
+    pub(super) fn dashboard_aggregate_identity(
+        &self,
+    ) -> Result<DashboardAggregateIdentity, String> {
+        Ok(DashboardAggregateIdentity {
+            schema_version: metadata_text(
+                &self.connection,
+                DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
+            )?,
+            pricing_revision: metadata_text(
+                &self.connection,
+                DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
+            )?,
+            exact_generation: optional_startup_metadata_u64(
+                &self.connection,
+                DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
+            )?,
+            published_generation: optional_startup_metadata_u64(
+                &self.connection,
+                DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY,
+            )?,
+            settled_through: metadata_i64(
+                &self.connection,
+                DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY,
+            )?,
+        })
+    }
+
+    /// Computes aggregate lag from the existing durable metadata for one Full
+    /// request. This is intentionally transient; no pending flag is persisted
+    /// or kept in the coordinator.
+    pub(super) fn dashboard_aggregate_is_lagging(&self) -> Result<bool, String> {
+        let identity = self.dashboard_aggregate_identity()?;
+        let published_generation = self.published_generation()?;
+        let schema_matches = identity
+            .schema_version
+            .as_deref()
+            .and_then(|value| value.parse::<i64>().ok())
+            == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION);
+        Ok(!schema_matches
+            || identity.pricing_revision.as_deref()
+                != Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
+            || identity.exact_generation != Some(published_generation)
+            || identity.published_generation != Some(published_generation)
+            || identity.settled_through.is_none())
     }
 
     pub(super) fn published_generation(&self) -> Result<u64, String> {
@@ -3380,10 +3437,20 @@ impl ExactUsageIndex {
             metadata_i64(&self.connection, "published_generation")?.unwrap_or(0);
         let aggregate_generation =
             metadata_i64(&self.connection, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?;
+        let aggregate_published_generation = metadata_i64(
+            &self.connection,
+            DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY,
+        )?;
+        let aggregate_settled_through = metadata_i64(
+            &self.connection,
+            DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY,
+        )?;
         let pricing_revision =
             metadata_text(&self.connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)?;
         if stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
             && aggregate_generation == Some(published_generation)
+            && aggregate_published_generation == Some(published_generation)
+            && aggregate_settled_through.is_some()
             && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
         {
             return Ok(());
@@ -3638,6 +3705,7 @@ impl ExactUsageIndex {
                 r#"
                 DROP TABLE IF EXISTS temp.dashboard_session_rows;
                 DROP VIEW IF EXISTS temp.published_dashboard_5m;
+                DROP VIEW IF EXISTS temp.published_dashboard_file_5m;
                 DROP VIEW IF EXISTS temp.published_dashboard_file_totals;
                 DROP VIEW IF EXISTS temp.published_events;
                 DROP TABLE IF EXISTS temp.published_files;
@@ -3678,6 +3746,17 @@ impl ExactUsageIndex {
                     ),
                     0
                 );
+
+                -- `dashboard_5m` is the rolling chart projection. Lifetime
+                -- model totals must use the per-file projection, which keeps
+                -- all historical buckets and is filtered through the current
+                -- published file generation selector.
+                CREATE TEMP VIEW published_dashboard_file_5m AS
+                SELECT b.*
+                FROM main.dashboard_file_5m b
+                JOIN published_files f
+                  ON f.generation = b.file_generation
+                 AND f.path = b.file_path;
 
                 -- Events are physically ordered by file generation/path. Fold
                 -- them to one small row per file first, then join the published
@@ -3870,14 +3949,14 @@ impl ExactUsageIndex {
             .prepare(
                 r#"
                 SELECT
-                    model,
+                    COALESCE(MAX(model), model_key),
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(cached_input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_tokens), 0),
                     COALESCE(SUM(calls), 0)
-                FROM published_dashboard_5m
-                GROUP BY model
+                FROM published_dashboard_file_5m
+                GROUP BY model_key
                 "#,
             )
             .map_err(|error| format!("无法准备逐模型精确 token 总览：{error}"))?;
@@ -4537,8 +4616,7 @@ pub(super) fn peek_startup_identity(
     }
 
     let revision = required_startup_metadata_u64(&connection, "revision")?;
-    let dashboard_revision = metadata_i64(&connection, DASHBOARD_REVISION_KEY)?
-        .map(nonnegative_u64)
+    let dashboard_revision = optional_startup_metadata_u64(&connection, DASHBOARD_REVISION_KEY)?
         .unwrap_or(revision);
     let published_generation = required_startup_metadata_u64(&connection, "published_generation")?;
     let attribution_safety = startup_attribution_safety_state(&connection, published_generation)?;

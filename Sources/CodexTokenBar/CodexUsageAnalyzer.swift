@@ -338,10 +338,13 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         }
         let historyIndex = try CodexUsageHistoryIndex(codexHome: dataSource.codexHome)
         let attributionState = try historyIndex.attributionState()
-        let signature = sessionTreeSignature(
+        let sourceSignature = sessionTreeSignature(
             for: sessionFiles,
             attributionProvenanceEpoch: attributionState.provenanceEpoch,
             attributionGeneration: attributionState.generation
+        )
+        let signature = sourceSignature.withAggregateIdentity(
+            try historyIndex.dashboardAggregateIdentity()
         )
         if let inMemory = Self.sessionEventCache.snapshot(
             for: dataSource.codexHome.path,
@@ -567,13 +570,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             ? requestedReceipt?.observedAt ?? Date()
             : Date()
         trace?.mark("signature.begin")
-        let signature = receiptMatchesPublishedIndex
+        let sourceSignature = receiptMatchesPublishedIndex
             ? requestedReceipt!.signature
             : sessionTreeSignature(
                 for: sessionFiles,
                 attributionProvenanceEpoch: initialAttributionState.provenanceEpoch,
                 attributionGeneration: initialAttributionState.generation
             )
+        let signature = sourceSignature.withAggregateIdentity(
+            try historyIndex.dashboardAggregateIdentity()
+        )
         // `preciseCoverageAt` is the time this owner observed/published the
         // index, not the time the source data changed. Keep the two concepts
         // separate so a successful check cannot masquerade as new usage.
@@ -897,13 +903,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // Event-level attribution/detail readiness remains represented by
             // `attributionEventsComplete` and is intentionally independent.
         )
-        let synchronizedSignature = signature.withAttributionState(
+        let synchronizedSourceSignature = signature.withAttributionState(
             provenanceEpoch: synchronization.provenanceEpoch,
             generation: synchronization.attributionGeneration
         )
         try historyIndex.markDashboardAggregatePublished(
             exactGeneration: synchronization.attributionGeneration,
             settledThrough: settledThrough
+        )
+        let synchronizedSignature = synchronizedSourceSignature.withAggregateIdentity(
+            try historyIndex.dashboardAggregateIdentity()
         )
         trace?.mark("numericPhase.persist.begin")
         Self.sessionEventCache.storeNumericSnapshot(

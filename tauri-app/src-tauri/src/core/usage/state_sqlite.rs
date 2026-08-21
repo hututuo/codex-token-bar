@@ -47,6 +47,12 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         precise_attribution_unsafe_since_generation: None,
         precise_attribution_unsafe_id: None,
         precise_attribution_current_scan_unsafe: false,
+        exact_generation: None,
+        dashboard_revision: None,
+        aggregate_schema_version: None,
+        aggregate_pricing_revision: None,
+        aggregate_exact_generation: None,
+        aggregate_published_generation: None,
         account: AccountInfo {
             display_name: "账户待读取".into(),
             plan_label: "计划待读取".into(),

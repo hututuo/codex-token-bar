@@ -7046,6 +7046,34 @@ fn dashboard_revision_backfills_without_rebuilding_a_legacy_index() {
 }
 
 #[test]
+fn negative_dashboard_revision_is_rejected_instead_of_clamped() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019e-dashboard-revision-negative.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":120}}}}"#],
+    );
+    let _ = dashboard_snapshot(&root).unwrap();
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "UPDATE metadata SET value = '-1' WHERE key = 'dashboard_revision'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let index = ExactUsageIndex::open(&root).unwrap();
+    let error = index.dashboard_revision().unwrap_err();
+    assert!(error.contains("dashboard_revision") || error.contains("无效"));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_reads() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
@@ -7139,6 +7167,42 @@ fn dashboard_aggregate_v1_upgrade_keeps_older_file_generations_without_jsonl_rea
             .unwrap(),
         1
     );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lifetime_model_breakdown_reads_all_published_file_generations() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019e-lifetime-model-sol.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#,
+        ],
+    );
+    write_lines(
+        &session_dir.join("rollout-019e-lifetime-model-luna.jsonl"),
+        &[
+            r#"{"timestamp":"2026-06-18T01:02:00Z","type":"turn_context","payload":{"model":"gpt-5.6-luna"}}"#,
+            r#"{"timestamp":"2026-06-18T01:02:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    let mut by_model = snapshot
+        .stats
+        .model_breakdowns
+        .iter()
+        .filter_map(|row| row.model.as_ref().map(|model| (model.as_str(), row.breakdown.total_tokens)))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(snapshot.stats.total_tokens, 150);
+    assert_eq!(by_model.remove("gpt-5.6-sol"), Some(100));
+    assert_eq!(by_model.remove("gpt-5.6-luna"), Some(50));
+    assert_eq!(snapshot.stats.model_breakdowns.iter().map(|row| row.breakdown.total_tokens).sum::<u64>(), 150);
 
     fs::remove_dir_all(root).unwrap();
 }

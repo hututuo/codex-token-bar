@@ -31,6 +31,10 @@ type LineagePayload = {
   settledThrough?: DashboardLineageScalar;
   exactGeneration?: DashboardLineageScalar;
   dashboardRevision?: DashboardLineageScalar;
+  aggregateSchemaVersion?: string | null;
+  aggregatePricingRevision?: string | null;
+  aggregateExactGeneration?: DashboardLineageScalar;
+  aggregatePublishedGeneration?: DashboardLineageScalar;
   aggregateBoundaryUnix?: DashboardLineageScalar;
   generatedAt?: string | null;
   preciseRecentUsageCoveredAt?: string | null;
@@ -427,6 +431,28 @@ export function mergePreciseDashboard(
     ?? (retainedLightSummary !== null ? previous?.usageSummaryDataUpdatedAt : null)
     ?? precise.usageSummaryDataUpdatedAt
     ?? null;
+  const preciseAggregateSchemaVersion = precise.aggregateSchemaVersion
+    ?? previous?.aggregateSchemaVersion;
+  const preciseAggregatePricingRevision = precise.aggregatePricingRevision
+    ?? previous?.aggregatePricingRevision;
+  const preciseAggregateExactGeneration = precise.aggregateExactGeneration
+    ?? previous?.aggregateExactGeneration;
+  const preciseAggregatePublishedGeneration = precise.aggregatePublishedGeneration
+    ?? previous?.aggregatePublishedGeneration;
+  const preciseLineageFields = {
+    ...(preciseAggregateSchemaVersion !== undefined
+      ? { aggregateSchemaVersion: preciseAggregateSchemaVersion }
+      : {}),
+    ...(preciseAggregatePricingRevision !== undefined
+      ? { aggregatePricingRevision: preciseAggregatePricingRevision }
+      : {}),
+    ...(preciseAggregateExactGeneration !== undefined
+      ? { aggregateExactGeneration: preciseAggregateExactGeneration }
+      : {}),
+    ...(preciseAggregatePublishedGeneration !== undefined
+      ? { aggregatePublishedGeneration: preciseAggregatePublishedGeneration }
+      : {}),
+  };
   return {
     ...state,
     dashboard:
@@ -444,6 +470,7 @@ export function mergePreciseDashboard(
               ?? null,
             exactGeneration: precise.exactGeneration ?? previous.exactGeneration ?? null,
             dashboardRevision: precise.dashboardRevision ?? previous.dashboardRevision ?? null,
+            ...preciseLineageFields,
             aggregateBoundaryUnix: precise.aggregateBoundaryUnix
               ?? previous.aggregateBoundaryUnix
               ?? null,
@@ -546,8 +573,8 @@ export function mergeUsageSummary(
       // Keep the existing object (and generatedAt) stable during a quiet
       // cadence tick; only clear a prior stale flag if this check succeeded.
       if (dashboard.usageSummaryFresh !== false) {
-        if (dashboard.usageSummaryCheckedAt === incomingCheckedAt
-          && dashboard.usageSummaryDataUpdatedAt === incomingDataUpdatedAt) {
+        if ((dashboard.usageSummaryCheckedAt ?? null) === incomingCheckedAt
+          && (dashboard.usageSummaryDataUpdatedAt ?? null) === incomingDataUpdatedAt) {
           return state;
         }
         return {
@@ -598,6 +625,37 @@ export function mergeUsageSummary(
 
   }
 
+  const nextExactGeneration = incomingSummary.exactGeneration ?? dashboard.exactGeneration;
+  const nextDashboardRevision = incomingSummary.dashboardRevision ?? dashboard.dashboardRevision;
+  // Summary is the light lane. It may observe aggregate metadata from an
+  // older cache while a Full owner is publishing the chart; never let that
+  // observation roll a newer chart lineage backwards. If the dashboard has
+  // no aggregate lineage yet, retaining the incoming values is still useful
+  // for the first status render.
+  const nextAggregateSchemaVersion = dashboard.aggregateSchemaVersion
+    ?? incomingSummary.aggregateSchemaVersion;
+  const nextAggregatePricingRevision = dashboard.aggregatePricingRevision
+    ?? incomingSummary.aggregatePricingRevision;
+  const nextAggregateExactGeneration = dashboard.aggregateExactGeneration
+    ?? incomingSummary.aggregateExactGeneration;
+  const nextAggregatePublishedGeneration = dashboard.aggregatePublishedGeneration
+    ?? incomingSummary.aggregatePublishedGeneration;
+  const summaryLineageFields = {
+    ...(nextExactGeneration !== undefined ? { exactGeneration: nextExactGeneration } : {}),
+    ...(nextDashboardRevision !== undefined ? { dashboardRevision: nextDashboardRevision } : {}),
+    ...(nextAggregateSchemaVersion !== undefined
+      ? { aggregateSchemaVersion: nextAggregateSchemaVersion }
+      : {}),
+    ...(nextAggregatePricingRevision !== undefined
+      ? { aggregatePricingRevision: nextAggregatePricingRevision }
+      : {}),
+    ...(nextAggregateExactGeneration !== undefined
+      ? { aggregateExactGeneration: nextAggregateExactGeneration }
+      : {}),
+    ...(nextAggregatePublishedGeneration !== undefined
+      ? { aggregatePublishedGeneration: nextAggregatePublishedGeneration }
+      : {}),
+  };
   return {
     ...state,
     dashboard: {
@@ -611,6 +669,7 @@ export function mergeUsageSummary(
         ...incomingSummary,
       },
       usageSummaryFresh: true,
+      ...summaryLineageFields,
       stats: {
         ...dashboard.stats,
         totalTokens: Math.max(0, incomingSummary.totalTokens),

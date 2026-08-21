@@ -44,6 +44,13 @@ export interface DashboardPayloadLineage {
   observedThrough?: string | null;
   settledThrough?: string | null;
   exactGeneration?: DashboardLineageScalar;
+  /** Source-lineage change counter; never used as an aggregate trigger. */
+  dashboardRevision?: DashboardLineageScalar;
+  /** Existing aggregate facts used for full-cache validation and UI status. */
+  aggregateSchemaVersion?: string | null;
+  aggregatePricingRevision?: string | null;
+  aggregateExactGeneration?: DashboardLineageScalar;
+  aggregatePublishedGeneration?: DashboardLineageScalar;
 }
 
 export interface DashboardStats {
@@ -235,12 +242,16 @@ export interface UsageSummarySnapshot {
   observedThrough?: string | null;
   settledThrough?: string | null;
   exactGeneration?: DashboardLineageScalar;
+  dashboardRevision?: DashboardLineageScalar;
+  aggregateSchemaVersion?: string | null;
+  aggregatePricingRevision?: string | null;
+  aggregateExactGeneration?: DashboardLineageScalar;
+  aggregatePublishedGeneration?: DashboardLineageScalar;
   totalTokens: number;
   todayTokens: number;
   todayRequests: number;
   todayModelBreakdowns?: ModelTokenBreakdown[];
-  /** V19 summary names retained for old Rust payloads. */
-  dashboardRevision?: DashboardLineageScalar;
+  /** V19 summary name retained for old Rust payloads. */
   aggregateBoundaryUnix?: DashboardLineageScalar;
   generatedAt?: string;
   checkedAt?: string | null;

@@ -85,6 +85,30 @@ extension CodexUsageAnalyzer {
         /// Latest UTC five-minute boundary that has passed the settle delay.
         /// Optional keeps pre-aggregate cache payloads decodable as stale data.
         let aggregateBoundary: Int64?
+        /// Existing durable aggregate schema/pricing/generation identity.
+        /// Optional keeps older persisted snapshots readable as last-good,
+        /// while preventing them from being treated as a current full cache.
+        var aggregateIdentity: CodexUsageHistoryIndex.DashboardAggregateIdentity?
+
+        init(
+            localDate: String,
+            utcOffsetSeconds: Int,
+            files: [SessionCacheKey],
+            stateDatabase: SessionCacheKey?,
+            attributionProvenanceEpoch: String,
+            attributionGeneration: Int64,
+            aggregateBoundary: Int64?,
+            aggregateIdentity: CodexUsageHistoryIndex.DashboardAggregateIdentity? = nil
+        ) {
+            self.localDate = localDate
+            self.utcOffsetSeconds = utcOffsetSeconds
+            self.files = files
+            self.stateDatabase = stateDatabase
+            self.attributionProvenanceEpoch = attributionProvenanceEpoch
+            self.attributionGeneration = attributionGeneration
+            self.aggregateBoundary = aggregateBoundary
+            self.aggregateIdentity = aggregateIdentity
+        }
 
         func withAttributionState(
             provenanceEpoch: String,
@@ -97,7 +121,23 @@ extension CodexUsageAnalyzer {
                 stateDatabase: stateDatabase,
                 attributionProvenanceEpoch: provenanceEpoch,
                 attributionGeneration: generation,
-                aggregateBoundary: aggregateBoundary
+                aggregateBoundary: aggregateBoundary,
+                aggregateIdentity: aggregateIdentity
+            )
+        }
+
+        func withAggregateIdentity(
+            _ identity: CodexUsageHistoryIndex.DashboardAggregateIdentity
+        ) -> SessionTreeSignature {
+            SessionTreeSignature(
+                localDate: localDate,
+                utcOffsetSeconds: utcOffsetSeconds,
+                files: files,
+                stateDatabase: stateDatabase,
+                attributionProvenanceEpoch: attributionProvenanceEpoch,
+                attributionGeneration: attributionGeneration,
+                aggregateBoundary: aggregateBoundary,
+                aggregateIdentity: identity
             )
         }
     }
@@ -369,6 +409,12 @@ extension CodexUsageAnalyzer {
                         == currentSignature.attributionProvenanceEpoch,
                       signature.attributionGeneration
                         <= currentSignature.attributionGeneration,
+                      // Pre-lineage snapshots have no aggregate identity.
+                      // They remain readable as stale last-good data, but
+                      // cannot match the current cache because the exact
+                      // signature equality check above already failed.
+                      (signature.aggregateIdentity == nil
+                        || signature.aggregateIdentity == currentSignature.aggregateIdentity),
                       attributionState.provenanceEpoch
                         == currentSignature.attributionProvenanceEpoch,
                       !attributionState.currentScanUnsafeCauseDetected,

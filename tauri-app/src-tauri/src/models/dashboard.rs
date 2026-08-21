@@ -53,6 +53,21 @@ pub struct DashboardSnapshot {
     /// session lineage, or ledger-integrity loss. No baseline may advance.
     #[serde(default)]
     pub precise_attribution_current_scan_unsafe: bool,
+    /// Source and derived-aggregate lineage used to keep the header and
+    /// complete-cache decision separate. These are existing metadata facts,
+    /// not coordinator state.
+    #[serde(default)]
+    pub exact_generation: Option<u64>,
+    #[serde(default)]
+    pub dashboard_revision: Option<u64>,
+    #[serde(default)]
+    pub aggregate_schema_version: Option<String>,
+    #[serde(default)]
+    pub aggregate_pricing_revision: Option<String>,
+    #[serde(default)]
+    pub aggregate_exact_generation: Option<u64>,
+    #[serde(default)]
+    pub aggregate_published_generation: Option<u64>,
     pub account: AccountInfo,
     pub stats: DashboardStats,
     pub quota: QuotaSnapshot,

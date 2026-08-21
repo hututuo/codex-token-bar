@@ -183,6 +183,41 @@ test("lightweight summary updates summary fields without rewriting chart buckets
   });
 });
 
+test("lightweight summary cannot roll aggregate lineage back while Full publishes", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({
+      aggregateSchemaVersion: "4",
+      aggregatePricingRevision: "raw-token-v1",
+      aggregateExactGeneration: 20,
+      aggregatePublishedGeneration: 20,
+      usageSummary: {
+        totalTokens: 500,
+        todayTokens: 250,
+        todayRequests: 3,
+        generatedAt: "2026-08-18T01:01:00Z",
+      },
+      stats: { ...dashboardFixture().stats, totalTokens: 500 },
+    });
+
+    const next = mergeUsageSummary(state, {
+      exactGeneration: 21,
+      aggregateSchemaVersion: "4",
+      aggregatePricingRevision: "raw-token-v1",
+      aggregateExactGeneration: 19,
+      aggregatePublishedGeneration: 19,
+      totalTokens: 600,
+      todayTokens: 350,
+      todayRequests: 4,
+      generatedAt: "2026-08-18T01:02:00Z",
+    });
+
+    assert.equal(next.dashboard.exactGeneration, 21);
+    assert.equal(next.dashboard.aggregateExactGeneration, 20);
+    assert.equal(next.dashboard.aggregatePublishedGeneration, 20);
+  });
+});
+
 test("unchanged lightweight summary keeps state and publication time stable across a boundary tick", async () => {
   return withSsrModules(async (load) => {
     const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
