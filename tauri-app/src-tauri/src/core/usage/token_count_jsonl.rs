@@ -4490,6 +4490,11 @@ fn run_precise_refresh_after_cutoff_hook_for_testing() -> Result<(), String> {
 #[cfg(test)]
 pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     wait_for_usage_summary_refreshes_for_testing();
+    set_precise_refresh_sync_hook_for_testing(None);
+    set_precise_refresh_after_cutoff_hook_for_testing(None);
+    set_precise_refresh_promotion_hook_for_testing(None);
+    set_precise_refresh_finish_hook_for_testing(None);
+    FAIL_NEXT_PRECISE_REFRESH_SPAWN.store(false, Ordering::SeqCst);
     let counts = DASHBOARD_AGGREGATE_BUILD_COUNT.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut counts) = counts.lock() {
         counts.clear();
@@ -4502,6 +4507,24 @@ pub(crate) fn reset_dashboard_aggregate_build_count_for_testing() {
     let summary_cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = summary_cache.lock() {
         *guard = None;
+    }
+    if let Ok(mut watchers) = ATTRIBUTION_MUTATION_WATCHERS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        watchers.clear();
+    }
+    if let Ok(mut failures) = ATTRIBUTION_WATCHER_FAILURES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        failures.clear();
+    }
+    if let Ok(mut progress) = PRECISE_INDEX_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        progress.clear();
     }
     let coordinators = PRECISE_REFRESH_COORDINATORS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut coordinators) = coordinators.lock() {
