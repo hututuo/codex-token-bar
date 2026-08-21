@@ -6175,6 +6175,7 @@ fn counts_new_call_after_fork_replay_user_message() {
 #[test]
 fn counts_explicit_subagent_after_child_turn_context_and_preserves_model() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
