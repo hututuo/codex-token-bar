@@ -1,6 +1,6 @@
 use crate::models::{AppSettingsSnapshot, AutostartStatus, CodexHomeStatus};
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tauri_plugin_autostart::ManagerExt;
 
 const CODEX_HOME_FILE_MARKERS: &[&str] = &[
@@ -27,6 +27,10 @@ mod provider_app;
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+mod windows_process;
+#[cfg(target_os = "windows")]
+mod windows_autostart;
 mod settings;
 mod startup;
 mod surfaces;
@@ -109,6 +113,13 @@ pub fn start_instance_activation_listener(app: tauri::AppHandle) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn start_instance_activation_listener(_app: tauri::AppHandle) {}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn repair_windows_autostart_registration(
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    windows_autostart::repair_current_registration(app)
+}
 
 pub fn default_codex_home_status() -> CodexHomeStatus {
     let snapshot = settings::read_app_settings_or_default();
@@ -217,7 +228,7 @@ pub fn set_autostart_enabled(
     })
 }
 
-#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn read_autostart_status_impl(app: &tauri::AppHandle) -> Result<AutostartStatus, String> {
     let enabled = app.autolaunch().is_enabled().map_err(|error| error.to_string())?;
     Ok(AutostartStatus {
@@ -232,7 +243,12 @@ fn read_autostart_status_impl(app: &tauri::AppHandle) -> Result<AutostartStatus,
     })
 }
 
-#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn read_autostart_status_impl(app: &tauri::AppHandle) -> Result<AutostartStatus, String> {
+    windows_autostart::read(app)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn read_autostart_status_impl(_app: &tauri::AppHandle) -> Result<AutostartStatus, String> {
     Ok(AutostartStatus {
         available: false,
@@ -242,7 +258,7 @@ fn read_autostart_status_impl(_app: &tauri::AppHandle) -> Result<AutostartStatus
     })
 }
 
-#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn set_autostart_enabled_impl(
     app: &tauri::AppHandle,
     enabled: bool,
@@ -255,7 +271,15 @@ fn set_autostart_enabled_impl(
     read_autostart_status_impl(app)
 }
 
-#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn set_autostart_enabled_impl(
+    app: &tauri::AppHandle,
+    enabled: bool,
+) -> Result<AutostartStatus, String> {
+    windows_autostart::set(app, enabled)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn set_autostart_enabled_impl(
     _app: &tauri::AppHandle,
     _enabled: bool,

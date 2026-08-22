@@ -47,6 +47,12 @@ pub fn run() {
             // Start listening before any WebView or filesystem initialization. A second launch
             // can now distinguish a responsive primary from one stuck during startup.
             platform::start_instance_activation_listener(app.handle().clone());
+            #[cfg(target_os = "windows")]
+            if let Err(error) = platform::repair_windows_autostart_registration(app.handle()) {
+                core::startup_trace::mark(&format!(
+                    "windows autostart repair skipped: {error}"
+                ));
+            }
 
             let recovery_state = app
                 .state::<core::provider_repair::ProviderRecoveryState>()

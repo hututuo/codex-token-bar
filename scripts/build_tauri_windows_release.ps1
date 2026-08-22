@@ -45,6 +45,98 @@ function Assert-Command {
     }
 }
 
+function Find-FirstCommand {
+    param([string[]]$Names)
+    foreach ($Name in $Names) {
+        $Command = Get-Command $Name -ErrorAction SilentlyContinue
+        if ($null -ne $Command) {
+            return $Command.Source
+        }
+    }
+    return $null
+}
+
+function Assert-WindowsNativeToolchain {
+    $Compiler = Find-FirstCommand @("cl.exe", "clang-cl.exe")
+    $Linker = Find-FirstCommand @("link.exe", "lld-link.exe")
+    $VsWhereCandidates = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+        (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $VsWhere = $VsWhereCandidates | Select-Object -First 1
+    $WindowsSdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    $WindowsSdk = if (Test-Path -LiteralPath $WindowsSdkRoot) {
+        Get-ChildItem -LiteralPath $WindowsSdkRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName "x64\link.exe") } |
+            Select-Object -First 1
+    }
+
+    if (-not $Compiler -and -not $VsWhere) {
+        throw "Missing MSVC/LLVM compiler or Visual Studio installation discovery (cl.exe, clang-cl.exe, or vswhere.exe)."
+    }
+    if (-not $Linker -and -not $WindowsSdk) {
+        throw "Missing Windows linker/SDK (link.exe, lld-link.exe, or Windows Kits 10)."
+    }
+
+    $CompilerLabel = if ($Compiler) { $Compiler } else { "Visual Studio discovery" }
+    $LinkerLabel = if ($Linker) { $Linker } else { "Windows SDK discovery" }
+    Write-Host "Windows native toolchain preflight: compiler=$CompilerLabel, linker=$LinkerLabel"
+}
+
+function Assert-RustTargetsPreflight {
+    $Installed = @(rustup target list --installed)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to enumerate installed Rust targets."
+    }
+    foreach ($Target in @("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc")) {
+        if ($Installed -contains $Target) {
+            Write-Host "Rust target available: $Target"
+        } else {
+            Write-Host "Rust target missing (Build-Target will install it): $Target"
+        }
+    }
+}
+
+function Assert-NsisPreflight {
+    $Nsis = Find-FirstCommand @("makensis.exe", "makensis")
+    if (-not $Nsis) {
+        $Candidates = @(
+            (Join-Path $env:LOCALAPPDATA "tauri\NSIS\Bin\makensis.exe"),
+            (Join-Path $env:LOCALAPPDATA "tauri\NSIS\makensis.exe")
+        ) | Where-Object { Test-Path -LiteralPath $_ }
+        $Nsis = $Candidates | Select-Object -First 1
+    }
+    if (-not $Nsis) {
+        throw "Missing NSIS compiler (makensis.exe or the Tauri NSIS cache)."
+    }
+    Write-Host "NSIS compiler available: $Nsis"
+}
+
+function Write-WebView2PreflightNotice {
+    $Roots = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients",
+        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients"
+    )
+    $Installed = @()
+    foreach ($Root in $Roots) {
+        if (Test-Path -LiteralPath $Root) {
+            Get-ChildItem -LiteralPath $Root -ErrorAction SilentlyContinue | ForEach-Object {
+                $Properties = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+                $DisplayName = @($Properties.name, $Properties.displayName) -join " "
+                if ($DisplayName -match "WebView2") {
+                    $Installed += $_.PSPath
+                }
+            }
+        }
+    }
+    $Installed = $Installed | Select-Object -First 1
+    if ($Installed) {
+        Write-Host "WebView2 runtime registry entry detected: $Installed"
+    } else {
+        Write-Warning "WebView2 runtime was not detected in the standard registry locations; offline/first-run runtime validation is required on the target Windows machine."
+    }
+}
+
 function Invoke-Checked {
     param(
         [string]$Label,
@@ -163,6 +255,10 @@ Assert-Command "npm"
 Assert-Command "rustc"
 Assert-Command "rustup"
 Assert-Command "cargo"
+Assert-WindowsNativeToolchain
+Assert-RustTargetsPreflight
+Assert-NsisPreflight
+Write-WebView2PreflightNotice
 
 New-Item -ItemType Directory -Force -Path $VersionDir | Out-Null
 $TauriConfigHashBefore = (Get-FileHash -Algorithm SHA256 $TauriConfigPath).Hash

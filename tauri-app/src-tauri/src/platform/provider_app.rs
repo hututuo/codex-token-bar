@@ -167,9 +167,9 @@ fn platform_debug_listener_process_ids(port: u16) -> Result<Vec<u32>, String> {
 
 #[cfg(windows)]
 fn platform_managed_process_codex_home_environment(
-    _pid: u32,
+    pid: u32,
 ) -> Result<ProcessCodexHomeEnvironment, String> {
-    Ok(ProcessCodexHomeEnvironment::Unavailable)
+    super::windows_process::read_codex_home(pid).map(ProcessCodexHomeEnvironment::Readable)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
