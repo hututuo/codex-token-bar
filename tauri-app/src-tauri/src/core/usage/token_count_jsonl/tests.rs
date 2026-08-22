@@ -2304,6 +2304,8 @@ fn exact_index_append_reuses_checkpoint_when_open_line_crosses_chunk_boundary() 
     handle.flush().unwrap();
     drop(handle);
 
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let refreshed = dashboard_snapshot(&root).unwrap();
     assert_eq!(refreshed.stats.total_tokens, 150);
