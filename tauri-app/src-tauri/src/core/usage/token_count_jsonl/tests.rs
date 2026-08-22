@@ -1496,6 +1496,7 @@ fn persistent_duplicate_session_lineage_does_not_rotate_until_it_becomes_clean()
     );
 
     fs::remove_file(&second).unwrap();
+    reset_dashboard_aggregate_build_count_for_testing();
     let clean = dashboard_snapshot(&root).unwrap();
     assert!(!clean.precise_attribution_current_scan_unsafe);
     assert_eq!(
