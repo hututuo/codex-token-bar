@@ -1988,6 +1988,7 @@ fn exact_index_scans_more_than_20_000_session_files_without_truncation() {
 #[test]
 fn exact_index_retries_an_incomplete_tail_after_the_jsonl_line_is_completed() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -2021,6 +2022,8 @@ fn exact_index_retries_an_incomplete_tail_after_the_jsonl_line_is_completed() {
         )
         .unwrap();
     }
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     let completed = dashboard_snapshot(&root).unwrap();
     assert_eq!(completed.stats.total_tokens, 170);
     assert_eq!(completed.stats.total_calls, 2);
@@ -5040,6 +5043,7 @@ fn exact_index_interrupted_refresh_keeps_the_previous_complete_revision_and_aggr
 #[test]
 fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
@@ -5052,6 +5056,8 @@ fn exact_index_rolls_back_when_the_scanned_prefix_is_rewritten() {
     let before_revision = ExactUsageIndex::open(&root).unwrap().revision().unwrap();
 
     write_lines(&file, &[original, appended]);
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     let prefix_hook: Box<dyn FnOnce(&Path) + Send> = Box::new(|scanned_file| {
         let before = fs::read_to_string(scanned_file).unwrap();
         let after = before.replacen("\"total_tokens\":30", "\"total_tokens\":31", 1);
