@@ -1345,6 +1345,8 @@ fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_ackn
         .is_none());
 
     write_lines(&file, &[event(200)]);
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     let first_unsafe = dashboard_snapshot(&root).unwrap();
     assert!(first_unsafe.precise_attribution_current_scan_unsafe);
     let unsafe_epoch = first_unsafe
@@ -1357,6 +1359,8 @@ fn persistent_rewrite_stays_one_unsafe_incident_until_a_clean_generation_is_ackn
     let unsafe_id = first_unsafe.precise_attribution_unsafe_id.clone().unwrap();
 
     write_lines(&file, &[event(300)]);
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     let still_unsafe = dashboard_snapshot(&root).unwrap();
     assert!(still_unsafe.precise_attribution_current_scan_unsafe);
     assert_eq!(
@@ -5555,6 +5559,7 @@ fn exact_index_rejects_an_absolute_state_rollout_outside_selected_codex_home() {
 #[test]
 fn parses_token_count_totals_as_deltas() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions").join("2026").join("06").join("18");
     fs::create_dir_all(&session_dir).unwrap();
@@ -5695,6 +5700,7 @@ fn interleaved_cumulative_streams_use_unique_last_usage_snapshots() {
 #[test]
 fn recent_usage_24h_series_keeps_thirty_days_of_five_minute_history() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
