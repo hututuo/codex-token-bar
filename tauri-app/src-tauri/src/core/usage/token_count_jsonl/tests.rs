@@ -2321,6 +2321,7 @@ fn exact_index_append_reuses_checkpoint_when_open_line_crosses_chunk_boundary() 
 #[test]
 fn exact_index_append_at_chunk_boundary_keeps_previous_tail_validation_local() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    reset_dashboard_aggregate_build_count_for_testing();
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let root = temp_root();
     let session_dir = root.join("sessions");
@@ -2360,6 +2361,8 @@ fn exact_index_append_at_chunk_boundary_keeps_previous_tail_validation_local() {
     handle.flush().unwrap();
     drop(handle);
 
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(25));
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let refreshed = dashboard_snapshot(&root).unwrap();
     assert_eq!(refreshed.stats.total_tokens, 150);
