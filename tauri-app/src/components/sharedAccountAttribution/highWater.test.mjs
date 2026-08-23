@@ -10,7 +10,9 @@ import {
   writeAttributionHighWater,
 } from "./highWater.ts";
 
-const START = 2_000_000_000;
+// Keep the default fixture on an exact five-minute boundary. Dedicated
+// unaligned-boundary coverage below exercises the one-minute safety margin.
+const START = 2_000_000_100;
 
 function identity(overrides = {}) {
   return {
@@ -272,19 +274,39 @@ test("an open partial bucket persists raw and enters money only after comparison
   assert.equal(covered.usedHistoricalHighWater, true);
 });
 
-test("an unaligned seven-day cycle start includes its straddling 5m bucket conservatively", () => {
+test("an unaligned seven-day cycle drops both mixed edge buckets", () => {
   const alignedBucketStart = Math.floor(START / 300) * 300;
   const unalignedCycleStart = alignedBucketStart + 120;
+  const resetAtUnix = unalignedCycleStart + 7 * 24 * 60 * 60;
+  const finalMixedBucketStart = Math.floor(resetAtUnix / 300) * 300;
+  const safeInteriorStart = alignedBucketStart + 300;
   const result = merge(null, [point(alignedBucketStart, [contribution("source-a", 250)])], {
     segmentStartUnix: unalignedCycleStart,
-    resetAtUnix: unalignedCycleStart + 7 * 24 * 60 * 60,
-    persistenceCutoffUnix: alignedBucketStart + 600,
-    comparisonEndUnix: alignedBucketStart + 600,
+    resetAtUnix,
+    persistenceCutoffUnix: resetAtUnix,
+    comparisonEndUnix: resetAtUnix,
   });
   assert.equal(result.ambiguityDetected, false);
-  assert.equal(result.effectiveBuckets.length, 1);
-  assert.equal(result.effectiveBuckets[0].startUnix, alignedBucketStart);
-  assert.equal(result.effectiveBuckets[0].inputTokens, 250);
+  assert.equal(result.effectiveBuckets.length, 0);
+  assert.deepEqual(result.boundaryBuckets.map((bucket) => bucket.startUnix), [alignedBucketStart]);
+
+  const interior = merge(null, [
+    point(alignedBucketStart, [contribution("source-edge-start", 250)]),
+    point(safeInteriorStart, [contribution("source-interior", 500)]),
+    point(finalMixedBucketStart, [contribution("source-edge-end", 750)]),
+  ], {
+    segmentStartUnix: unalignedCycleStart,
+    resetAtUnix,
+    persistenceCutoffUnix: resetAtUnix,
+    comparisonEndUnix: resetAtUnix,
+  });
+  assert.deepEqual(interior.effectiveBuckets.map((bucket) => bucket.startUnix), [safeInteriorStart]);
+  assert.equal(interior.effectiveBuckets[0].inputTokens, 500);
+  assert.deepEqual(
+    interior.boundaryBuckets.map((bucket) => bucket.startUnix),
+    [alignedBucketStart, finalMixedBucketStart],
+  );
+  assert.equal(interior.boundaryBuckets.reduce((total, bucket) => total + bucket.inputTokens, 0), 1_000);
 });
 
 test("stale-to-fresh and later same-value polls update metadata without token changes", () => {

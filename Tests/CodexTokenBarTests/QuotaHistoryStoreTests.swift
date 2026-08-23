@@ -579,6 +579,39 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
+    func testPeerMergeCollapsesSameQuotaObservationAcrossRuntimeSources() throws {
+        let localURL = try makeDatabaseURL()
+        let peerURL = try makeDatabaseURL()
+        try createPeerQuotaSnapshotsTable(at: peerURL, includeStableIdentity: true)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let quota = identifiedSnapshot(
+            usedPercent: 42,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/cross-runtime-merge",
+            stableAccountKey: "sub:cross-runtime-merge",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Cross Runtime Merge",
+            at: now
+        )
+        let database = QuotaHistoryDatabase(databaseURL: localURL, peerDatabaseURL: peerURL)
+
+        XCTAssertTrue(try database.record(quota, createdAt: now))
+        try insertStableIdentitySnapshot(
+            databaseURL: peerURL,
+            quota: quota,
+            source: "tauri",
+            createdAt: now
+        )
+
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(for: quota, now: now),
+            [42],
+            "the same quota observation must not be counted once per runtime"
+        )
+    }
+
     func testUnavailableOrLegacyPeerFallsBackToLocalHistory() throws {
         let localURL = try makeDatabaseURL()
         let peerURL = try makeDatabaseURL()
@@ -738,6 +771,45 @@ final class QuotaHistoryStoreTests: XCTestCase {
 
         XCTAssertEqual(values.count, 513, "one stable row plus at most 512 legacy rows")
         XCTAssertFalse(values.contains(99), "legacy rows older than 45 days must not bridge")
+    }
+
+    func testStableQuotaHistoryIsRetainedBeyondFormerFortyFiveDayWindow() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oldDate = now.addingTimeInterval(-60 * 24 * 60 * 60)
+        let oldQuota = identifiedSnapshot(
+            usedPercent: 11,
+            reset: oldDate.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/permanent-retention",
+            stableAccountKey: "sub:permanent-retention",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Permanent Retention",
+            at: oldDate
+        )
+        let currentQuota = identifiedSnapshot(
+            usedPercent: 22,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/permanent-retention",
+            stableAccountKey: "sub:permanent-retention",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Permanent Retention",
+            at: now
+        )
+
+        XCTAssertTrue(try database.record(oldQuota, createdAt: oldDate))
+        XCTAssertTrue(try database.record(currentQuota, createdAt: now))
+
+        XCTAssertEqual(
+            try database.recordedFiveHourUsedPercents(
+                for: currentQuota,
+                now: now,
+                age: 90 * 24 * 60 * 60
+            ),
+            [11, 22]
+        )
     }
 
     func testLegacyBridgeClaimSkipsNoOpWritesUntilHeartbeatIsDue() throws {
@@ -1407,6 +1479,54 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
 
         XCTAssertEqual(loaded.hourlyBins.last?.sevenDayRemainingPercent, 44)
+    }
+
+    func testInitialHistoryLoadIncludesTwoMonthsForWarmRangeBuffer() throws {
+        let url = try makeDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let database = QuotaHistoryDatabase(databaseURL: url)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oldDate = now.addingTimeInterval(-45 * 24 * 60 * 60)
+        let oldQuota = identifiedSnapshot(
+            usedPercent: 11,
+            reset: oldDate.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/two-month-window",
+            stableAccountKey: "sub:two-month-window",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Two Month Window",
+            at: oldDate
+        )
+        let currentQuota = identifiedSnapshot(
+            usedPercent: 22,
+            reset: now.addingTimeInterval(3 * 60 * 60),
+            homeIdentity: "/fixture/two-month-window",
+            stableAccountKey: "sub:two-month-window",
+            planType: "Pro",
+            limitID: "codex",
+            accountName: "Two Month Window",
+            at: now
+        )
+        try database.migrate()
+        try insertStableIdentitySnapshot(
+            databaseURL: url,
+            quota: oldQuota,
+            source: "swift",
+            createdAt: oldDate
+        )
+        try insertStableIdentitySnapshot(
+            databaseURL: url,
+            quota: currentQuota,
+            source: "swift",
+            createdAt: now
+        )
+
+        let loaded = try database.loadSnapshot(for: currentQuota, now: now)
+
+        XCTAssertTrue(
+            loaded.hourlyBins.contains { $0.fiveHourRemainingPercent == 89 },
+            "the initial load should include a quota sample from 45 days ago"
+        )
     }
 
     func testLargeStableHistoryLoadsWithoutQuadraticSpikeScan() throws {

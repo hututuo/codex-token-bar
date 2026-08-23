@@ -14,7 +14,7 @@ test("DashboardHeader CSS keeps a compact top band and a wrapping status strip",
   assert.match(css, /\.dash-head__action-group \+ \.dash-head__action-group\s*\{[^}]*border-left:\s*1px solid var\(--line-strong\)/s);
   assert.match(css, /\.dash-head__mark\s*\{[^}]*width:\s*30px[^}]*height:\s*30px/s);
   assert.match(css, /\.dash-head__strip\s*\{[^}]*display:\s*grid/s);
-  assert.match(css, /\.dash-head__strip\s*\{[^}]*grid-template-columns:[^}]*minmax\(130px, 180px\)[^}]*minmax\(190px, 320px\)[^}]*minmax\(110px, 230px\)[^}]*minmax\(220px, 1fr\)/s);
+  assert.match(css, /\.dash-head__strip\s*\{[^}]*grid-template-columns:[^}]*minmax\(130px, 180px\)[^}]*minmax\(190px, 320px\)[^}]*minmax\(105px, 210px\)[^}]*minmax\(250px, 1fr\)/s);
   assert.match(css, /\.dash-head__threads,\s*\.dash-head__freshness\s*\{[^}]*justify-content:\s*space-between[^}]*gap:\s*8px/s);
   assert.match(css, /@media \(max-width: 820px\)[\s\S]*?\.dash-head__strip\s*\{[^}]*grid-template-columns:\s*minmax\(120px, 0\.8fr\) minmax\(220px, 1\.4fr\)/s);
   assert.match(css, /@media \(max-width: 420px\)[\s\S]*?\.dash-head__strip\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);

@@ -11,7 +11,7 @@
 import {
   DEFAULT_USAGE_BACKGROUND_AGGREGATE_INTERVAL_MINUTES,
   DEFAULT_USAGE_VISIBLE_AGGREGATE_INTERVAL_MINUTES,
-} from "../settings/usageRefreshCadence";
+} from "../settings/usageRefreshCadence.ts";
 
 export const USAGE_AGGREGATE_BUCKET_SECONDS = 5 * 60;
 export const USAGE_AGGREGATE_BUCKET_MS = USAGE_AGGREGATE_BUCKET_SECONDS * 1_000;

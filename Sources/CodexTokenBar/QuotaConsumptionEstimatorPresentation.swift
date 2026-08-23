@@ -34,8 +34,8 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
         switch estimate.confidence {
         case .measured:
             if estimate.comparisonUsesConservativeBuckets {
-                detail = "≈\(estimate.quotaEstimatorBudgetText) · 边界暂算降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
-                accessibilityText = "额度观测位于聚合桶边界，本机用量按首尾整桶保守计入，暂算总额度 \(estimate.quotaEstimatorBudgetText)，暂算下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
+                detail = "≈\(estimate.quotaEstimatorBudgetText) · 边界暂算降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)\(Self.boundaryText(estimate))"
+                accessibilityText = "额度观测落在聚合桶内部，本机按边界完整桶计算，首尾保留一分钟余量，边缘桶独立统计\(Self.boundaryAccessibilityText(estimate))，暂算总额度 \(estimate.quotaEstimatorBudgetText)，暂算下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
             } else if estimate.quotaDropEstimated {
                 detail = "≈\(estimate.quotaEstimatorBudgetText) · 暂算降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
                 accessibilityText = "根据沿用或插值额度暂算总额度 \(estimate.quotaEstimatorBudgetText)，暂算下降 \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)"
@@ -51,9 +51,9 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
             } else {
                 "降"
             }
-            detail = "\(prefix) \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent) · 不反推"
+            detail = "\(prefix) \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent) · 不反推\(Self.boundaryText(estimate))"
             let dropDescription = if estimate.comparisonUsesConservativeBuckets {
-                "额度观测位于聚合桶边界，本机用量按首尾整桶保守计入，暂算下降"
+                "额度观测落在聚合桶内部，本机按边界完整桶计算，首尾保留一分钟余量，边缘桶独立统计\(Self.boundaryAccessibilityText(estimate))，暂算下降"
             } else if estimate.quotaDropEstimated {
                 "根据沿用或插值额度暂算下降"
             } else {
@@ -73,6 +73,16 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
         default: "\(title) "
         }
     }
+
+    private static func boundaryText(_ estimate: QuotaConsumptionEstimate) -> String {
+        guard estimate.boundaryBreakdown.hasUsage else { return "" }
+        return " · 边缘另计 \(estimate.boundaryBreakdown.totalTokens.abbreviatedTokens)"
+    }
+
+    private static func boundaryAccessibilityText(_ estimate: QuotaConsumptionEstimate) -> String {
+        guard estimate.boundaryBreakdown.hasUsage else { return "" }
+        return "，边缘 Token \(estimate.boundaryBreakdown.totalTokens.abbreviatedTokens)"
+    }
 }
 
 struct QuotaConsumptionComparisonCoveragePresentation: Equatable {
@@ -86,8 +96,8 @@ struct QuotaConsumptionComparisonCoveragePresentation: Equatable {
         switch basis {
         case .observed:
             if usesConservativeBuckets {
-                sectionTitle = "7d 保守整桶归因统计"
-                sourceTitle = "保守整桶计入范围"
+                sectionTitle = "7d 边缘独立归因统计"
+                sourceTitle = "中间完整桶计入，边缘桶另计"
             } else {
                 sectionTitle = "7d 观测覆盖内归因统计"
                 sourceTitle = "额度观测覆盖"

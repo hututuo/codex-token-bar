@@ -41,7 +41,7 @@ export function emptyAccountQuotaBundle(): AccountQuotaBundle {
     fiveHourRemainingPercent: null,
     sevenDayRemainingPercent: null,
   }));
-  const emptyQuotaHistory7d = emptyRecentUsage(now, 60 * 60 * 1_000, 7 * 24).map((point) => ({
+  const emptyQuotaHistory7d = emptyRecentUsage(now, 60 * 60 * 1_000, 30 * 24).map((point) => ({
     label: point.label,
     startUnix: point.startUnix,
     fiveHourRemainingPercent: null,

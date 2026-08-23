@@ -4,6 +4,218 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RecentChartSelectionInteractionTests: XCTestCase {
+    func testUnifiedScaleMapUsesExplicitPerSeriesVisualRanges() {
+        let scaleMap = RecentChartScaleMap(
+            tokenValues: [50, 100],
+            callValues: [5, 10],
+            costs: [5, 17.5, 30, 0]
+        )
+
+        XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .tokens), 0.8, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 10, series: .calls), 1, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 1, series: .cacheHitRate), 1, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .quota), 1, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 0.45, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 0.7, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 0.95, accuracy: 0.000_001)
+    }
+
+    func testOnlyTokenScaleDomainFollowsTheVisibleWindow() {
+        let fixed = RecentChartFixedScaleMap(
+            callValues: [1, 2, 4, 8],
+            costs: [1, 2, 4, 8]
+        )
+        let firstWindow = RecentChartScaleMap(
+            tokenValues: [50, 100],
+            fixed: fixed
+        )
+        let secondWindow = RecentChartScaleMap(
+            tokenValues: [200, 400],
+            fixed: fixed
+        )
+
+        XCTAssertEqual(firstWindow.heightFraction(for: 100, series: .tokens), 0.8, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 400, series: .tokens), 0.8, accuracy: 0.000_001)
+        XCTAssertEqual(firstWindow.heightFraction(for: 8, series: .calls), 1, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 8, series: .calls), 1, accuracy: 0.000_001)
+        XCTAssertEqual(firstWindow.heightFraction(for: 1, series: .cost), 0.45, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 1, series: .cost), 0.45, accuracy: 0.000_001)
+        XCTAssertEqual(firstWindow.heightFraction(for: 8, series: .cost), 0.95, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 8, series: .cost), 0.95, accuracy: 0.000_001)
+    }
+
+    @MainActor
+    func testPlotDataBuildsOnlyTheRequestedRenderWindowWithGlobalCoordinates() throws {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let bins = (0..<100).map { index in
+            BinUsage(
+                start: start.addingTimeInterval(Double(index) * 5 * 60),
+                tokens: index + 1,
+                calls: index % 7
+            )
+        }
+        let prepared = RecentUsageChart.prepare(
+            range: .twentyFourHours,
+            recentBins: bins,
+            hourlyBins: [],
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+        let plot = CGRect(x: 0, y: 27, width: 990, height: 215)
+        let step = plot.width / CGFloat(bins.count - 1)
+        let fixed = RecentChartFixedScaleMap(
+            callValues: bins.map(\.calls),
+            costs: Array(repeating: 0, count: bins.count)
+        )
+        let plotData = RecentChartPlotData(
+            bins: bins,
+            prepared: prepared,
+            plot: plot,
+            step: step,
+            bucketCostsUSD: Array(repeating: 0, count: bins.count),
+            fixedScales: fixed,
+            renderRange: 18...32,
+            scaleRange: 20...30
+        )
+
+        XCTAssertEqual(plotData.renderStartIndex, 18)
+        XCTAssertEqual(plotData.renderEndIndex, 32)
+        XCTAssertEqual(plotData.tokenPoints.count, 15)
+        XCTAssertEqual(plotData.callPoints.count, 15)
+        XCTAssertEqual(try XCTUnwrap(plotData.tokenPoints.first).x, 18 * step, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(plotData.tokenPoints.last).x, 32 * step, accuracy: 0.000_001)
+        XCTAssertNotNil(plotData.tokenPoint(at: 20))
+        XCTAssertNil(plotData.tokenPoint(at: 17))
+        XCTAssertNil(plotData.tokenPoint(at: 33))
+    }
+
+    @MainActor
+    func testHeadlineTotalsUseTheSelectedWindowInsteadOfRetainedHistory() throws {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let recentBins = (0..<(30 * 24 * 12)).map { index in
+            BinUsage(
+                start: base.addingTimeInterval(Double(index) * RecentChartRange.twentyFourHours.bucketInterval),
+                tokens: index + 1,
+                calls: 1
+            )
+        }
+        let hourlyBins = (0..<(365 * 24)).map { index in
+            BinUsage(
+                start: base.addingTimeInterval(Double(index) * RecentChartRange.sevenDays.bucketInterval),
+                tokens: 10_000 + index,
+                calls: 2
+            )
+        }
+
+        func prepared(_ range: RecentChartRange) -> RecentChartPreparedData {
+            RecentUsageChart.prepare(
+                range: range,
+                recentBins: recentBins,
+                hourlyBins: hourlyBins,
+                cacheRecentBins: [],
+                cacheHourlyBins: [],
+                quotaRecentBins: [],
+                quotaHourlyBins: []
+            )
+        }
+
+        let twentyFourHourData = prepared(.twentyFourHours)
+        let twentyFourHourSummary = twentyFourHourData.visibleWindowSummary(for: nil)
+        XCTAssertEqual(twentyFourHourData.bins.count, 30 * 24 * 12)
+        XCTAssertEqual(twentyFourHourSummary.endIndex, twentyFourHourData.bins.count - 1)
+        XCTAssertEqual(twentyFourHourSummary.endIndex - twentyFourHourSummary.startIndex + 1, 24 * 12)
+        XCTAssertEqual(
+            twentyFourHourSummary.tokenTotal,
+            recentBins.suffix(24 * 12).reduce(0) { $0 + $1.tokens }
+        )
+        XCTAssertEqual(twentyFourHourSummary.callTotal, 24 * 12)
+        let middlePresentation = RecentChartScrollPresentation(
+            contentOffset: 10 * 980,
+            viewportWidth: 980,
+            contentWidth: RecentChartScrollMetrics.contentWidth(
+                range: .twentyFourHours,
+                bins: twentyFourHourData.bins,
+                bucketInterval: twentyFourHourData.bucketInterval,
+                viewportWidth: 980
+            ),
+            windowCount: RecentChartScrollMetrics.windowCount(
+                range: .twentyFourHours,
+                bins: twentyFourHourData.bins,
+                bucketInterval: twentyFourHourData.bucketInterval
+            )
+        )
+        let middleSummary = twentyFourHourData.visibleWindowSummary(for: middlePresentation)
+        XCTAssertEqual(middleSummary.endIndex - middleSummary.startIndex + 1, 24 * 12)
+        XCTAssertLessThan(middleSummary.endIndex, twentyFourHourSummary.startIndex)
+
+        let sevenDayData = prepared(.sevenDays)
+        let sevenDaySummary = sevenDayData.visibleWindowSummary(for: nil)
+        XCTAssertEqual(sevenDayData.bins.count, 30 * 24)
+        XCTAssertEqual(sevenDaySummary.endIndex - sevenDaySummary.startIndex + 1, 7 * 24)
+        XCTAssertEqual(
+            sevenDaySummary.tokenTotal,
+            hourlyBins.suffix(7 * 24).reduce(0) { $0 + $1.tokens }
+        )
+        XCTAssertEqual(sevenDaySummary.callTotal, 7 * 24 * 2)
+
+        let thirtyDayData = prepared(.thirtyDays)
+        let thirtyDaySummary = thirtyDayData.visibleWindowSummary(for: nil)
+        XCTAssertEqual(thirtyDayData.bins.count, 30 * 4)
+        XCTAssertEqual(thirtyDaySummary.endIndex - thirtyDaySummary.startIndex + 1, 30 * 4)
+        XCTAssertTrue(thirtyDayData.bins.allSatisfy {
+            Int64($0.start.timeIntervalSince1970.rounded()) % Int64(6 * 60 * 60) == 0
+        })
+        let thirtyDayStart = try XCTUnwrap(thirtyDayData.bins.first?.start)
+        let thirtyDayEnd = try XCTUnwrap(thirtyDayData.bins.last?.start)
+            .addingTimeInterval(RecentChartRange.thirtyDays.bucketInterval)
+        let expectedThirtyDayHourlyBins = hourlyBins.filter {
+            $0.start >= thirtyDayStart && $0.start < thirtyDayEnd
+        }
+        XCTAssertEqual(
+            thirtyDaySummary.tokenTotal,
+            expectedThirtyDayHourlyBins.reduce(0) { $0 + $1.tokens }
+        )
+        XCTAssertEqual(
+            thirtyDaySummary.callTotal,
+            expectedThirtyDayHourlyBins.reduce(0) { $0 + $1.calls }
+        )
+    }
+
+    @MainActor
+    func testThirtyDayBucketsUseStableEpochAlignedSixHourBoundaries() {
+        let oneHour = TimeInterval(60 * 60)
+        let base = Date(timeIntervalSince1970: oneHour)
+        let hourlyBins = (0..<(30 * 24)).map { index in
+            BinUsage(
+                start: base.addingTimeInterval(Double(index) * oneHour),
+                tokens: index + 1,
+                calls: 1
+            )
+        }
+
+        let prepared = RecentUsageChart.prepare(
+            range: .thirtyDays,
+            recentBins: [],
+            hourlyBins: hourlyBins,
+            cacheRecentBins: [],
+            cacheHourlyBins: [],
+            quotaRecentBins: [],
+            quotaHourlyBins: []
+        )
+
+        XCTAssertEqual(prepared.bins.count, 30 * 4)
+        XCTAssertTrue(prepared.bins.allSatisfy {
+            Int64($0.start.timeIntervalSince1970.rounded()) % Int64(6 * 60 * 60) == 0
+        })
+        XCTAssertTrue(zip(prepared.bins, prepared.bins.dropFirst()).allSatisfy { pair in
+            pair.1.start.timeIntervalSince(pair.0.start) == 6 * 60 * 60
+        })
+        XCTAssertEqual(prepared.bins.last?.start.timeIntervalSince1970, 30 * 24 * oneHour)
+        XCTAssertEqual(prepared.bins.last?.tokens, hourlyBins.last?.tokens)
+    }
+
     func testHoverBubbleClearsThePlotByAnExtraVerticalGutter() {
         XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 74)
     }

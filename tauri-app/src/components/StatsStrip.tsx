@@ -124,6 +124,17 @@ function StatsStripView({
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
     .join(" · ");
+  const boundaryTokenSummary = modelCostScope === "sevenDay"
+    && recent7dModelCost
+    && (recent7dModelCost.boundaryBreakdown.leading.totalTokens > 0
+      || recent7dModelCost.boundaryBreakdown.trailing.totalTokens > 0)
+    ? `边缘桶另计 ${formatTokens(
+      recent7dModelCost.boundaryBreakdown.leading.inputTokens
+      + recent7dModelCost.boundaryBreakdown.leading.outputTokens
+      + recent7dModelCost.boundaryBreakdown.trailing.inputTokens
+      + recent7dModelCost.boundaryBreakdown.trailing.outputTokens,
+    )} Token`
+    : "";
   const primaryModelCostItems = dashboardPrimaryModelUsageItems(modelCostItems);
   const secondaryModelCostItems = dashboardSecondaryModelUsageItems(modelCostItems);
 
@@ -201,6 +212,11 @@ function StatsStripView({
                 {independentReferenceSummary ? (
                   <small className="stats-model-cost-reference">
                     {independentReferenceSummary}
+                  </small>
+                ) : null}
+                {boundaryTokenSummary ? (
+                  <small className="stats-model-cost-reference">
+                    {boundaryTokenSummary}
                   </small>
                 ) : null}
               </span>

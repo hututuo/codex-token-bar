@@ -23,10 +23,12 @@ function DashboardAnalyticsSectionView({ dashboard, sharedAccountAttribution }: 
       />
       <RecentUsageChart
         fiveHourQuotaPresent={dashboard.quota.fiveHour.availability !== "absent"}
+        fiveHourResetAtUnix={dashboard.quota.fiveHour.resetsAtUnix ?? null}
         recentUsage24h={dashboard.recentUsage24h}
         recentUsage7d={dashboard.recentUsage7d}
         recentUsage30d={dashboard.recentUsage30d}
         sevenDayQuotaPresent={dashboard.quota.sevenDay.availability !== "absent"}
+        sevenDayResetAtUnix={dashboard.quota.sevenDay.resetsAtUnix ?? null}
         sharedAccountAttribution={sharedAccountAttribution}
       />
       <CacheHitRanking cacheUsage={dashboard.cacheUsage} legacyItems={dashboard.cacheHitRanking} />

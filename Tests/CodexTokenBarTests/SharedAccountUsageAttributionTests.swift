@@ -170,20 +170,26 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
     }
 
-    func testUnalignedQuotaCycleIncludesTheStraddlingLocalBucketConservatively() throws {
+    func testUnalignedQuotaCycleDropsTheStraddlingLocalBucketWithOneMinuteMargin() throws {
         let alignedReset = floor(resetAt.timeIntervalSince1970 / 300) * 300
         let unalignedReset = Date(timeIntervalSince1970: alignedReset + 120)
         let unalignedCycleStart = unalignedReset.addingTimeInterval(-7 * 24 * 60 * 60)
         let straddlingBucket = Date(
             timeIntervalSince1970: floor(unalignedCycleStart.timeIntervalSince1970 / 300) * 300
         )
+        let firstSafeBucket = Date(
+            timeIntervalSince1970: ceil(
+                (unalignedCycleStart.timeIntervalSince1970 + 60) / 300
+            ) * 300
+        )
         let result = SharedAccountUsageAttributionEstimator.estimate(
             enabled: true,
             preciseUsageReady: true,
             recentBins: [
                 bucket(at: straddlingBucket, input: 2_000_000, cached: 0, output: 0),
+                bucket(at: firstSafeBucket, input: 1_000_000, cached: 0, output: 0),
             ],
-            sevenDayQuota: quota(used: 10, resetAt: unalignedReset),
+            sevenDayQuota: quota(used: 5, resetAt: unalignedReset),
             quotaUpdatedAt: now,
             historyIdentity: identity(),
             radar: try radar(
@@ -198,9 +204,12 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         )
 
         XCTAssertEqual(result.localSegmentStart, unalignedCycleStart)
-        XCTAssertEqual(result.breakdown.inputTokens, 2_000_000)
-        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 10, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 10, accuracy: 0.0001)
+        XCTAssertEqual(result.breakdown.inputTokens, 1_000_000)
+        XCTAssertEqual(result.boundaryBreakdown.leading.inputTokens, 2_000_000)
+        XCTAssertEqual(result.boundaryBreakdown.trailing.inputTokens, 0)
+        XCTAssertEqual(result.boundaryBreakdown.totalTokens, 2_000_000)
+        XCTAssertEqual(try XCTUnwrap(result.localComparableCostUSD), 5, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 5, accuracy: 0.0001)
         XCTAssertEqual(result.state, .withinTolerance)
     }
 

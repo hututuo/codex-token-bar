@@ -881,6 +881,56 @@ fn record_unknown_plan_does_not_write_fake_pro() {
 }
 
 #[test]
+fn stable_history_is_retained_beyond_former_forty_five_day_window() {
+    let path = temp_db_path("permanent-retention");
+    let database = QuotaHistoryDatabase { path: path.clone() };
+    let now = now_unix();
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/permanent-retention"),
+        Some("sub:permanent-retention"),
+        "Pro",
+        "codex",
+    )
+    .unwrap();
+    let current = bundle(
+        "Permanent Retention",
+        0.22,
+        (now + 3_600.0) as i64,
+        0.33,
+        (now + 500_000.0) as i64,
+    );
+    let connection = database.open().unwrap();
+    ensure_schema(&connection).unwrap();
+    insert_stable_history_row(
+        &connection,
+        &stable_history_row(
+            &identity,
+            now - 60.0 * 24.0 * 60.0 * 60.0,
+            11,
+            "tauri",
+        ),
+    );
+    drop(connection);
+
+    assert!(database
+        .record_for_identity(Some(&identity), &current)
+        .unwrap());
+    let used = database
+        .rows_for_identity(
+            Some(&identity),
+            &current,
+            90.0 * 24.0 * 60.0 * 60.0,
+        )
+        .unwrap()
+        .into_iter()
+        .filter_map(|row| row.five_hour_used_percent)
+        .collect::<Vec<_>>();
+    assert_eq!(used, vec![11, 22]);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn blank_stable_limit_cannot_write_or_read_codex_history() {
     let path = temp_db_path("blank-stable-limit");
     let database = QuotaHistoryDatabase { path: path.clone() };
@@ -1796,7 +1846,7 @@ fn history_bundle_builds_all_axes_from_one_read() {
         history.recent_24h.len(),
         LONG_RECENT_POINT_COUNT as usize
     );
-    assert_eq!(history.recent_7d.len(), 7 * 24);
+    assert_eq!(history.recent_7d.len(), 30 * 24);
     assert_eq!(history.recent_30d.len(), 30 * 4);
     assert!(history.daily.iter().any(|point| {
         point.five_hour_remaining_percent == Some(0.80)

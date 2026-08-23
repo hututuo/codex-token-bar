@@ -91,6 +91,8 @@ export interface SharedAccountAttributionResult {
   quotaUpdatedAtUnix: number | null;
   tokens: SharedAccountTokenBreakdown;
   scannedTokens: SharedAccountTokenBreakdown;
+  boundaryTokens: SharedAccountTokenBreakdown;
+  scannedBoundaryTokens: SharedAccountTokenBreakdown;
 }
 
 export interface SharedAccountAttributionInput {
@@ -103,6 +105,8 @@ export interface SharedAccountAttributionInput {
   preciseDataCoveredAtUnix: number | null;
   buckets: AttributionTokenBucket[];
   scannedBuckets: AttributionTokenBucket[];
+  boundaryBuckets: AttributionTokenBucket[];
+  scannedBoundaryBuckets: AttributionTokenBucket[];
   usagePendingQuotaRefresh: boolean;
   historyChangedLowConfidence: boolean;
   localHistoryAmbiguous: boolean;
@@ -128,6 +132,8 @@ export function estimateSharedAccountAttribution({
   preciseDataCoveredAtUnix,
   buckets,
   scannedBuckets,
+  boundaryBuckets = [],
+  scannedBoundaryBuckets = [],
   usagePendingQuotaRefresh,
   historyChangedLowConfidence,
   localHistoryAmbiguous,
@@ -228,6 +234,8 @@ export function estimateSharedAccountAttribution({
 
   const tokens = aggregateAttributionBuckets(buckets);
   const scannedTokens = aggregateAttributionBuckets(scannedBuckets);
+  const boundaryTokens = aggregateAttributionBuckets(boundaryBuckets);
+  const scannedBoundaryTokens = aggregateAttributionBuckets(scannedBoundaryBuckets);
   const localRadarEstimate = costForBreakdown(tokens, buckets, priceModel, "radar20260730");
   const localCurrentEstimate = costForBreakdown(tokens, buckets, priceModel, "current");
   const scannedLocalRadarEstimate = costForBreakdown(
@@ -302,6 +310,8 @@ export function estimateSharedAccountAttribution({
     quotaUpdatedAtUnix,
     tokens,
     scannedTokens,
+    boundaryTokens,
+    scannedBoundaryTokens,
   };
 }
 
@@ -497,6 +507,8 @@ function emptyResult(
     quotaUpdatedAtUnix: null,
     tokens: emptyTokenBreakdown(),
     scannedTokens: emptyTokenBreakdown(),
+    boundaryTokens: emptyTokenBreakdown(),
+    scannedBoundaryTokens: emptyTokenBreakdown(),
   };
 }
 

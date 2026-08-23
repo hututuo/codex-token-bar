@@ -155,14 +155,26 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
         XCTAssertEqual(selection.breakdown.inputTokens, 600, "full selected token total stays intact")
         XCTAssertEqual(
             selection.sevenDay.comparisonBreakdown.inputTokens,
-            600,
-            "partial first and last observation buckets are conservatively included"
+            200,
+            "partial first and last observation buckets are excluded"
+        )
+        XCTAssertEqual(selection.sevenDay.boundaryBreakdown.leading.inputTokens, 100)
+        XCTAssertEqual(selection.sevenDay.boundaryBreakdown.trailing.inputTokens, 300)
+        XCTAssertEqual(selection.sevenDay.boundaryBreakdown.totalTokens, 400)
+        XCTAssertEqual(selection.sevenDay.boundaryBreakdown.leadingStart, start)
+        XCTAssertEqual(
+            selection.sevenDay.boundaryBreakdown.trailingStart,
+            start.addingTimeInterval(600)
+        )
+        XCTAssertTrue(
+            QuotaConsumptionEstimatePresentation(title: "7d", estimate: selection.sevenDay)
+                .detail.contains("边缘另计")
         )
         XCTAssertEqual(selection.sevenDay.quotaDropBasis, .observed)
         XCTAssertTrue(selection.sevenDay.comparisonUsesConservativeBuckets)
         XCTAssertEqual(selection.sevenDay.quotaDropPercent, 10)
-        XCTAssertEqual(selection.sevenDay.comparisonStartDate, start)
-        XCTAssertEqual(selection.sevenDay.comparisonEndDate, start.addingTimeInterval(900))
+        XCTAssertEqual(selection.sevenDay.comparisonStartDate, start.addingTimeInterval(300))
+        XCTAssertEqual(selection.sevenDay.comparisonEndDate, start.addingTimeInterval(600))
     }
 
     @MainActor
@@ -274,7 +286,7 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
         let reset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let prepared = preparedData(
             start: start,
-            sevenDayValues: [90, 85, 80],
+            sevenDayValues: [90, 85, 83, 81, 80],
             sevenDayObservations: [
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(60),
@@ -288,8 +300,18 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
                 ),
                 QuotaHistoryObservation(
                     observedAt: start.addingTimeInterval(660),
-                    remainingPercent: 80,
+                    remainingPercent: 83,
+                    resetsAt: reset.addingTimeInterval(150)
+                ),
+                QuotaHistoryObservation(
+                    observedAt: start.addingTimeInterval(960),
+                    remainingPercent: 81,
                     resetsAt: reset.addingTimeInterval(180)
+                ),
+                QuotaHistoryObservation(
+                    observedAt: start.addingTimeInterval(1260),
+                    remainingPercent: 80,
+                    resetsAt: reset.addingTimeInterval(210)
                 ),
             ]
         )
@@ -297,7 +319,7 @@ final class QuotaConsumptionObservationBoundaryTests: XCTestCase {
         let selection = try XCTUnwrap(
             prepared.quotaConsumptionSelection(
                 startIndex: 0,
-                endIndex: 2,
+                endIndex: 4,
                 priceCard: .officialAPI(.gpt56Sol)
             )
         )

@@ -601,6 +601,47 @@ function point(startUnix, fiveHourRemainingPercent, sevenDayRemainingPercent) {
   };
 }
 
+test("all range tabs render the 278px SVG canvas", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      const points = [point(0, 0.8, 0.9), point(300, 0.78, 0.88)];
+
+      try {
+        await React.act(async () => root.render(React.createElement(RecentUsageChart, {
+          recentUsage24h: points,
+          recentUsage7d: points,
+          recentUsage30d: points,
+        })));
+
+        const buttons = [...container.querySelectorAll(".recent-range-tabs button")];
+        for (const [index, range] of ["24h", "7d", "30d"].entries()) {
+          if (index > 0) {
+            await React.act(async () => buttons[index].click());
+          }
+          const chart = container.querySelector("svg.usage-chart");
+          assert.ok(chart, range);
+          assert.equal(chart.getAttribute("viewBox"), "0 0 980 278", range);
+        }
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 test("24h hover and fixed selection preview expose model shares without persistent point clutter", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
@@ -626,6 +667,9 @@ test("24h hover and fixed selection preview expose model shares without persiste
         const chart = container.querySelector("svg.usage-chart");
         assert.ok(chart);
         assert.equal(chart.querySelectorAll(".chart-model-points circle").length, 0);
+        const costPoints = chart.querySelectorAll(".chart-observation-point--cost");
+        assert.equal(costPoints.length, 2);
+        assert.equal(costPoints[0].getAttribute("r"), "1.6");
         chart.getBoundingClientRect = () => ({
           bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
           toJSON: () => ({}),
@@ -637,7 +681,7 @@ test("24h hover and fixed selection preview expose model shares without persiste
         const hover = container.querySelector(".chart-hover-bubble");
         assert.match(hover?.textContent ?? "", /Sol 75%/);
         assert.match(hover?.textContent ?? "", /Luna 25%/);
-        assert.equal(hover?.querySelectorAll(":scope > .chart-hover-row").length, 4);
+        assert.equal(hover?.querySelectorAll(":scope > .chart-hover-row").length, 5);
         assert.equal(hover?.querySelector(".chart-hover-row--cache")?.textContent?.trim(), "缓存命中 0% · 命中 0");
 
         await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {

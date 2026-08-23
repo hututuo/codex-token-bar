@@ -16,16 +16,20 @@ import {
   percentText,
   plotChartPoints,
   prepareRecentChartData,
+  recentChartBucketCosts,
+  recentChartScaleMap,
   quotaConsumptionSelection,
   quotaComparisonScopeText,
   quotaSelectionAttribution,
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
+  recentChartGeometry,
   recentChartScrollLayout,
   recentChartScrollPresentation,
   recentChartScrollTarget,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
+  recentChartVisibleWindowSummary,
   smoothPath,
   shouldReopenPreviewOnHoverMove,
   tokenAreaPath,
@@ -34,6 +38,7 @@ import {
   type QuotaConsumptionSelection,
   type QuotaSelectionAttributionResult,
   type QuotaSelectionState,
+  type Point,
   type RecentChartScrollDirection,
   type RecentChartRange,
   type SeriesVisibility,
@@ -46,14 +51,13 @@ interface RecentUsageChartProps {
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
   fiveHourQuotaPresent?: boolean;
+  fiveHourResetAtUnix?: number | null;
   sevenDayQuotaPresent?: boolean;
+  sevenDayResetAtUnix?: number | null;
   sharedAccountAttribution?: SharedAccountAttributionResult | null;
 }
 
 const CHART_WIDTH = 980;
-const CHART_HEIGHT = 185;
-const PLOT_TOP = 18;
-const PLOT_HEIGHT = 143;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
@@ -62,7 +66,9 @@ export function RecentUsageChart({
   recentUsage7d,
   recentUsage30d,
   fiveHourQuotaPresent = true,
+  fiveHourResetAtUnix = null,
   sevenDayQuotaPresent = true,
+  sevenDayResetAtUnix = null,
   sharedAccountAttribution = null,
 }: RecentUsageChartProps) {
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
@@ -73,24 +79,96 @@ export function RecentUsageChart({
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollFrameRef = useRef<number | null>(null);
+  const pendingScrollMetricsRef = useRef({ scrollLeft: 0, viewportWidth: CHART_WIDTH });
   const [chartScrollLeft, setChartScrollLeft] = useState(0);
   const [chartViewportWidth, setChartViewportWidth] = useState(CHART_WIDTH);
   const data = useMemo(
     () => prepareRecentChartData(range, { recentUsage24h, recentUsage7d, recentUsage30d }),
     [range, recentUsage24h, recentUsage7d, recentUsage30d],
   );
+  const chartGeometry = recentChartGeometry(data.range);
+  const { canvasHeight, plotTop, plotHeight, timeMarkerGap } = chartGeometry;
   const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth);
   const chartWidth = scrollLayout.contentWidth;
   const scrollPresentation = recentChartScrollPresentation(scrollLayout, chartScrollLeft);
   const scrollContentStyle = {
     "--recent-chart-content-width": `${chartWidth}px`,
-    "--recent-chart-aspect-ratio": `${chartWidth} / ${CHART_HEIGHT}`,
+    "--recent-chart-aspect-ratio": `${chartWidth} / ${canvasHeight}`,
   } as CSSProperties;
   const visibleWindowLabel = recentChartVisibleWindowLabel(data, chartWidth, chartScrollLeft, chartViewportWidth);
-  const plotData = useMemo(() => plotChartPoints(data, chartWidth, PLOT_HEIGHT), [data, chartWidth]);
+  const visibleWindowSummary = useMemo(
+    () => recentChartVisibleWindowSummary(data, chartWidth, chartScrollLeft, chartViewportWidth),
+    [data, chartWidth, chartScrollLeft, chartViewportWidth],
+  );
+  const bucketCostsUSD = useMemo(
+    () => recentChartBucketCosts(data.points, quotaModel),
+    [data.points, quotaModel],
+  );
+  const fixedScaleMap = useMemo(
+    () => recentChartScaleMap({
+      tokenValues: [1],
+      callValues: data.points.map((point) => point.calls),
+      costs: bucketCostsUSD,
+    }),
+    [data.points, bucketCostsUSD],
+  );
+  const renderWindow = data.points.length === 0 || visibleWindowSummary.endIndex < visibleWindowSummary.startIndex
+    ? null
+    : {
+      startIndex: Math.max(visibleWindowSummary.startIndex - 2, 0),
+      endIndex: Math.min(visibleWindowSummary.endIndex + 2, data.points.length - 1),
+    };
+  const plotData = useMemo(
+    () => plotChartPoints(data, chartWidth, plotHeight, quotaModel, {
+      bucketCostsUSD,
+      fixedScaleMap,
+      renderWindow,
+      scaleWindow: visibleWindowSummary.endIndex >= visibleWindowSummary.startIndex
+        ? {
+          startIndex: visibleWindowSummary.startIndex,
+          endIndex: visibleWindowSummary.endIndex,
+        }
+        : null,
+    }),
+    [
+      data,
+      chartWidth,
+      plotHeight,
+      quotaModel,
+      bucketCostsUSD,
+      fixedScaleMap,
+      renderWindow?.startIndex,
+      renderWindow?.endIndex,
+      visibleWindowSummary.startIndex,
+      visibleWindowSummary.endIndex,
+    ],
+  );
+  const renderedPaths = useMemo(() => ({
+    tokenArea: offsetPath(
+      tokenAreaPath(
+        plotData.tokenPoints,
+        plotData.tokenPoints.at(-1)?.x ?? 0,
+        plotHeight,
+      ),
+      plotTop,
+    ),
+    tokens: offsetPath(smoothPath(plotData.tokenPoints), plotTop),
+    calls: offsetPath(smoothPath(plotData.callPoints), plotTop),
+    fiveHour: offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints), plotTop),
+    sevenDay: offsetPath(optionalSmoothPath(plotData.sevenDayQuotaPoints), plotTop),
+  }), [plotData, plotHeight, plotTop]);
+  const pointStep = chartWidth / Math.max(data.points.length - 1, 1);
+  const renderLeft = plotData.renderStartIndex * pointStep;
+  const renderRight = data.points.length === 0
+    ? chartWidth
+    : Math.max(plotData.renderEndIndex, plotData.renderStartIndex) * pointStep;
+  const renderWidth = Math.max(renderRight - renderLeft, pointStep, 1);
   const activeIndex = hoveredIndex !== null && data.points[hoveredIndex] ? hoveredIndex : null;
   const activePoint = activeIndex !== null ? data.points[activeIndex] : null;
-  const activeTokenPoint = activeIndex !== null ? plotData.tokenPoints[activeIndex] : null;
+  const activeTokenPoint = activeIndex !== null
+    ? visiblePlotPoint(plotData.tokenPoints, plotData.renderStartIndex, activeIndex)
+    : null;
   const fixedSelectionEndIndex = quotaSelectionState.fixedEndIndex !== null && data.points[quotaSelectionState.fixedEndIndex]
     ? quotaSelectionState.fixedEndIndex
     : null;
@@ -100,7 +178,10 @@ export function RecentUsageChart({
     Math.max(data.points.length - 1, 0),
   );
   const consumptionSelection = quotaSelectionState.startIndex !== null && quotaEndIndex !== null
-    ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel)
+    ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
+      fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
+      sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
+    })
     : null;
   const selectionAttribution = fixedSelectionEndIndex !== null
     && consumptionSelection !== null
@@ -113,10 +194,20 @@ export function RecentUsageChart({
     if (!scrollElement) {
       return;
     }
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+      pendingScrollFrameRef.current = null;
+    }
     scrollElement.scrollLeft = scrollLayout.latestScrollLeft;
     setChartScrollLeft(scrollElement.scrollLeft);
     setChartViewportWidth(scrollElement.clientWidth || CHART_WIDTH);
   }, [scrollLayout.latestScrollLeft, data.range, data.points.length]);
+
+  useEffect(() => () => {
+    if (pendingScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(pendingScrollFrameRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const onPriceModel = (event: Event) => {
@@ -150,8 +241,8 @@ export function RecentUsageChart({
       return;
     }
     const x = ((event.clientX - rect.left) / rect.width) * chartWidth;
-    const y = ((event.clientY - rect.top) / rect.height) * CHART_HEIGHT;
-    if (y < PLOT_TOP || y > PLOT_TOP + PLOT_HEIGHT) {
+    const y = ((event.clientY - rect.top) / rect.height) * canvasHeight;
+    if (y < plotTop || y > plotTop + plotHeight) {
       setHoveredIndex(null);
       return;
     }
@@ -168,8 +259,8 @@ export function RecentUsageChart({
       return;
     }
     const x = ((event.clientX - rect.left) / rect.width) * chartWidth;
-    const y = ((event.clientY - rect.top) / rect.height) * CHART_HEIGHT;
-    if (y < PLOT_TOP || y > PLOT_TOP + PLOT_HEIGHT) {
+    const y = ((event.clientY - rect.top) / rect.height) * canvasHeight;
+    if (y < plotTop || y > plotTop + plotHeight) {
       return;
     }
     const clickedIndex = hoverIndexForX(x, chartWidth, data.points.length);
@@ -191,6 +282,31 @@ export function RecentUsageChart({
       return;
     }
     scrollElement.scrollTo({ left: target, behavior: "smooth" });
+  }
+
+  function scheduleScrollState(scrollLeft: number, viewportWidth: number) {
+    pendingScrollMetricsRef.current = { scrollLeft, viewportWidth };
+    if (pendingScrollFrameRef.current !== null) {
+      return;
+    }
+    pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pendingScrollFrameRef.current = null;
+      const pending = pendingScrollMetricsRef.current;
+      const maximum = Math.max(chartWidth - pending.viewportWidth, 0);
+      const clamped = Math.min(Math.max(pending.scrollLeft, 0), maximum);
+      const step = chartWidth / Math.max(data.points.length - 1, 1);
+      const aligned = clamped <= 0.5
+        ? 0
+        : maximum - clamped <= 0.5
+          ? maximum
+          : step > 0
+            ? Math.min(Math.max(Math.round(clamped / step) * step, 0), maximum)
+            : clamped;
+      setChartScrollLeft((current) => Math.abs(current - aligned) < 0.25 ? current : aligned);
+      setChartViewportWidth((current) => Math.abs(current - pending.viewportWidth) < 0.25
+        ? current
+        : pending.viewportWidth);
+    });
   }
 
   return (
@@ -216,11 +332,12 @@ export function RecentUsageChart({
         </div>
         <div className="recent-chart-controls">
           <div className="chart-legend">
-            <LegendDot className="legend-dot--token" label="Token" value={formatTokens(data.tokenTotal)} />
-            <LegendDot className="legend-dot--calls" label="调用" value={`${data.callTotal}`} />
-            <LegendDot className="legend-dot--hit" label="命中率" value={percentText(data.cacheHitRate)} />
-            {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(data.latestFiveHourRemaining)} /> : null}
-            {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(data.latestSevenDayRemaining)} /> : null}
+            <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
+            <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
+            <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
+            <LegendDot className="legend-dot--cost" label="金额" value="每桶" />
+            {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
+            {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
           <div className="chart-line-toggles" aria-label="曲线显示">
             <LineToggle active={visibility.tokens} className="toggle-token" label="Token" onClick={() => updateVisibility("tokens")} />
@@ -243,8 +360,10 @@ export function RecentUsageChart({
           ref={scrollRef}
           aria-label={scrollLayout.isHorizontal ? `${data.title}图表可左右滚动` : undefined}
           onScroll={(event) => {
-            setChartScrollLeft(event.currentTarget.scrollLeft);
-            setChartViewportWidth(event.currentTarget.clientWidth || CHART_WIDTH);
+            scheduleScrollState(
+              event.currentTarget.scrollLeft,
+              event.currentTarget.clientWidth || CHART_WIDTH,
+            );
           }}
           tabIndex={scrollLayout.isHorizontal ? 0 : undefined}
         >
@@ -256,23 +375,31 @@ export function RecentUsageChart({
               onPointerLeave={() => setHoveredIndex(null)}
               onPointerMove={handlePointerMove}
               role="img"
-              viewBox={`0 0 ${chartWidth} ${CHART_HEIGHT}`}
+              viewBox={`0 0 ${chartWidth} ${canvasHeight}`}
             >
-              <title>{chartAccessibility(data, visibility, fiveHourQuotaPresent, sevenDayQuotaPresent)}</title>
-              <rect className="chart-plot-bg" x="0" y={PLOT_TOP} width={chartWidth} height={PLOT_HEIGHT} rx="8" />
-              {consumptionSelection ? <SelectionRange chartWidth={chartWidth} pointCount={data.points.length} selection={consumptionSelection} /> : null}
+              <title>{chartAccessibility(data, visibleWindowSummary, visibility, fiveHourQuotaPresent, sevenDayQuotaPresent)}</title>
+              <rect className="chart-plot-bg" x={renderLeft} y={plotTop} width={renderWidth} height={plotHeight} rx="8" />
+              {consumptionSelection ? (
+                <SelectionRange
+                  chartWidth={chartWidth}
+                  plotHeight={plotHeight}
+                  plotTop={plotTop}
+                  pointCount={data.points.length}
+                  selection={consumptionSelection}
+                />
+              ) : null}
               {[0, 1, 2, 3].map((line) => {
-                const y = PLOT_TOP + (line * PLOT_HEIGHT) / 3;
-                return <line className="chart-grid-line" key={line} x1="0" x2={chartWidth} y1={y} y2={y} />;
+                const y = plotTop + (line * plotHeight) / 3;
+                return <line className="chart-grid-line" key={line} x1={renderLeft} x2={renderRight} y1={y} y2={y} />;
               })}
               {visibility.tokens ? (
                 <>
-                  <path className="chart-area" d={offsetPath(tokenAreaPath(plotData.tokenPoints, chartWidth, PLOT_HEIGHT))} />
-                  <path className="chart-line chart-line--token" d={offsetPath(smoothPath(plotData.tokenPoints))} />
+                  <path className="chart-area" d={renderedPaths.tokenArea} />
+                  <path className="chart-line chart-line--token" d={renderedPaths.tokens} />
                 </>
               ) : null}
               {visibility.calls ? (
-                <path className="chart-line chart-line--calls" d={offsetPath(smoothPath(plotData.callPoints))} />
+                <path className="chart-line chart-line--calls" d={renderedPaths.calls} />
               ) : null}
               {visibility.cacheHitRate && data.hasCacheCalls ? (
                 <g className="chart-observation-points chart-observation-points--hit">
@@ -280,30 +407,51 @@ export function RecentUsageChart({
                     <circle
                       className="chart-observation-point chart-observation-point--hit"
                       cx={point.x}
-                      cy={point.y + PLOT_TOP}
-                      key={index}
+                      cy={point.y + plotTop}
+                      key={plotData.renderStartIndex + index}
                       r="1.6"
                     />
                   ) : null)}
                 </g>
               ) : null}
+              <g className="chart-observation-points chart-observation-points--cost">
+                {plotData.costPoints.map((point, index) => point ? (
+                  <circle
+                    className="chart-observation-point chart-observation-point--cost"
+                    cx={point.x}
+                    cy={point.y + plotTop}
+                    key={plotData.renderStartIndex + index}
+                    r="1.6"
+                  />
+                ) : null)}
+              </g>
               {fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? (
-                <path className="chart-line chart-line--five" d={offsetPath(optionalSmoothPath(plotData.fiveHourQuotaPoints))} />
+                <path className="chart-line chart-line--five" d={renderedPaths.fiveHour} />
               ) : null}
               {sevenDayQuotaPresent && visibility.sevenDayQuota && data.hasSevenDayQuota ? (
-                <path className="chart-line chart-line--seven" d={offsetPath(optionalSmoothPath(plotData.sevenDayQuotaPoints))} />
+                <path className="chart-line chart-line--seven" d={renderedPaths.sevenDay} />
               ) : null}
               {activeIndex !== null && activeTokenPoint ? (
                 <HoverGuides
                   data={data}
                   fiveHourQuotaPresent={fiveHourQuotaPresent}
                   index={activeIndex}
+                  plotHeight={plotHeight}
+                  plotTop={plotTop}
                   plotData={plotData}
                   sevenDayQuotaPresent={sevenDayQuotaPresent}
                   visibility={visibility}
                 />
               ) : null}
-              <TimeMarkers chartWidth={chartWidth} data={data} />
+              <TimeMarkers
+                chartWidth={chartWidth}
+                data={data}
+                endIndex={plotData.renderEndIndex}
+                plotHeight={plotHeight}
+                plotTop={plotTop}
+                startIndex={plotData.renderStartIndex}
+                timeMarkerGap={timeMarkerGap}
+              />
             </svg>
           </div>
         </div>
@@ -316,12 +464,17 @@ export function RecentUsageChart({
               onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
               viewportWidth={chartViewportWidth}
-              x={(plotData.tokenPoints[fixedSelectionEndIndex]?.x ?? 0) - chartScrollLeft}
+              x={(visiblePlotPoint(
+                plotData.tokenPoints,
+                plotData.renderStartIndex,
+                fixedSelectionEndIndex,
+              )?.x ?? fixedSelectionEndIndex * pointStep) - chartScrollLeft}
             />
           ) : !previewDismissed && activePoint && activeTokenPoint ? (
             <HoverBubble
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
+              costUSD={activeIndex === null ? 0 : plotData.bucketCostsUSD[activeIndex] ?? 0}
               fiveHourRemaining={fiveHourQuotaPresent ? activePoint.fiveHourRemainingPercent : null}
               onClose={() => setPreviewDismissed(true)}
               point={activePoint}
@@ -369,7 +522,19 @@ export function RecentUsageChart({
   );
 }
 
-function SelectionRange({ chartWidth, pointCount, selection }: { chartWidth: number; pointCount: number; selection: QuotaConsumptionSelection }) {
+function SelectionRange({
+  chartWidth,
+  plotHeight,
+  plotTop,
+  pointCount,
+  selection,
+}: {
+  chartWidth: number;
+  plotHeight: number;
+  plotTop: number;
+  pointCount: number;
+  selection: QuotaConsumptionSelection;
+}) {
   const actualStep = chartWidth / Math.max(pointCount - 1, 1);
   const startX = selection.startIndex * actualStep;
   const endX = selection.endIndex * actualStep;
@@ -378,9 +543,9 @@ function SelectionRange({ chartWidth, pointCount, selection }: { chartWidth: num
 
   return (
     <g className="chart-selection-layer">
-      <rect className="chart-selection-range" x={x} y={PLOT_TOP} width={width} height={PLOT_HEIGHT} />
-      <line className="chart-selection-line" x1={startX} x2={startX} y1={PLOT_TOP} y2={PLOT_TOP + PLOT_HEIGHT} />
-      <line className="chart-selection-line" x1={endX} x2={endX} y1={PLOT_TOP} y2={PLOT_TOP + PLOT_HEIGHT} />
+      <rect className="chart-selection-range" x={x} y={plotTop} width={width} height={plotHeight} />
+      <line className="chart-selection-line" x1={startX} x2={startX} y1={plotTop} y2={plotTop + plotHeight} />
+      <line className="chart-selection-line" x1={endX} x2={endX} y1={plotTop} y2={plotTop + plotHeight} />
     </g>
   );
 }
@@ -389,6 +554,8 @@ function HoverGuides({
   data,
   fiveHourQuotaPresent,
   index,
+  plotHeight,
+  plotTop,
   plotData,
   sevenDayQuotaPresent,
   visibility,
@@ -396,27 +563,35 @@ function HoverGuides({
   data: ReturnType<typeof prepareRecentChartData>;
   fiveHourQuotaPresent: boolean;
   index: number;
+  plotHeight: number;
+  plotTop: number;
   plotData: ReturnType<typeof plotChartPoints>;
   sevenDayQuotaPresent: boolean;
   visibility: SeriesVisibility;
 }) {
-  const tokenPoint = plotData.tokenPoints[index];
-  const callPoint = plotData.callPoints[index];
-  const cachePoint = plotData.cachePoints[index];
-  const fiveHourPoint = plotData.fiveHourQuotaPoints[index];
-  const sevenDayPoint = plotData.sevenDayQuotaPoints[index];
+  const tokenPoint = visiblePlotPoint(plotData.tokenPoints, plotData.renderStartIndex, index);
+  const callPoint = visiblePlotPoint(plotData.callPoints, plotData.renderStartIndex, index);
+  const cachePoint = visiblePlotPoint(plotData.cachePoints, plotData.renderStartIndex, index);
+  const costPoint = visiblePlotPoint(plotData.costPoints, plotData.renderStartIndex, index);
+  const fiveHourPoint = visiblePlotPoint(plotData.fiveHourQuotaPoints, plotData.renderStartIndex, index);
+  const sevenDayPoint = visiblePlotPoint(plotData.sevenDayQuotaPoints, plotData.renderStartIndex, index);
   const point = data.points[index];
+
+  if (!tokenPoint || !callPoint || !point) {
+    return null;
+  }
 
   return (
     <g className="chart-hover-layer">
-      <line className="chart-hover-line" x1={tokenPoint.x} x2={tokenPoint.x} y1={PLOT_TOP} y2={PLOT_TOP + PLOT_HEIGHT} />
-      {visibility.tokens ? <HoverRing className="hover-token" point={offsetPoint(tokenPoint)} radius={4.5} /> : null}
-      {visibility.calls ? <HoverRing className="hover-calls" point={offsetPoint(callPoint)} radius={4} /> : null}
+      <line className="chart-hover-line" x1={tokenPoint.x} x2={tokenPoint.x} y1={plotTop} y2={plotTop + plotHeight} />
+      {visibility.tokens ? <HoverRing className="hover-token" point={offsetPoint(tokenPoint, plotTop)} radius={4.5} /> : null}
+      {visibility.calls ? <HoverRing className="hover-calls" point={offsetPoint(callPoint, plotTop)} radius={4} /> : null}
       {visibility.cacheHitRate && point.calls > 0 && point.cacheHitRate !== null && cachePoint ? (
-        <HoverRing className="hover-hit" point={offsetPoint(cachePoint)} radius={4} />
+        <HoverRing className="hover-hit" point={offsetPoint(cachePoint, plotTop)} radius={4} />
       ) : null}
-      {fiveHourQuotaPresent && visibility.fiveHourQuota && fiveHourPoint ? <HoverRing className="hover-five" point={offsetPoint(fiveHourPoint)} radius={3.5} /> : null}
-      {sevenDayQuotaPresent && visibility.sevenDayQuota && sevenDayPoint ? <HoverRing className="hover-seven" point={offsetPoint(sevenDayPoint)} radius={3.5} /> : null}
+      {costPoint ? <HoverRing className="hover-cost" point={offsetPoint(costPoint, plotTop)} radius={4.2} /> : null}
+      {fiveHourQuotaPresent && visibility.fiveHourQuota && fiveHourPoint ? <HoverRing className="hover-five" point={offsetPoint(fiveHourPoint, plotTop)} radius={3.5} /> : null}
+      {sevenDayQuotaPresent && visibility.sevenDayQuota && sevenDayPoint ? <HoverRing className="hover-seven" point={offsetPoint(sevenDayPoint, plotTop)} radius={3.5} /> : null}
     </g>
   );
 }
@@ -428,6 +603,7 @@ function HoverRing({ className, point, radius }: { className: string; point: { x
 function HoverBubble({
   bucketSeconds,
   cacheVisible,
+  costUSD,
   fiveHourRemaining,
   onClose,
   point,
@@ -437,6 +613,7 @@ function HoverBubble({
 }: {
   bucketSeconds: number;
   cacheVisible: boolean;
+  costUSD: number;
   fiveHourRemaining: number | null;
   onClose: () => void;
   point: RecentUsagePoint;
@@ -460,6 +637,7 @@ function HoverBubble({
       </div>
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(costUSD)}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
@@ -682,8 +860,25 @@ function QuotaEstimateChip({
   );
 }
 
-function TimeMarkers({ chartWidth, data }: { chartWidth: number; data: ReturnType<typeof prepareRecentChartData> }) {
-  const markers = recentChartTimeMarkers(data, chartWidth);
+function TimeMarkers({
+  chartWidth,
+  data,
+  endIndex,
+  plotHeight,
+  plotTop,
+  startIndex,
+  timeMarkerGap,
+}: {
+  chartWidth: number;
+  data: ReturnType<typeof prepareRecentChartData>;
+  endIndex: number;
+  plotHeight: number;
+  plotTop: number;
+  startIndex: number;
+  timeMarkerGap: number;
+}) {
+  const markers = recentChartTimeMarkers(data, chartWidth)
+    .filter((marker) => marker.index >= startIndex && marker.index <= endIndex);
   return (
     <>
       {markers.map((marker) => {
@@ -694,15 +889,15 @@ function TimeMarkers({ chartWidth, data }: { chartWidth: number; data: ReturnTyp
                 className="chart-day-separator"
                 x1={marker.x}
                 x2={marker.x}
-                y1={PLOT_TOP}
-                y2={PLOT_TOP + PLOT_HEIGHT}
+                y1={plotTop}
+                y2={plotTop + plotHeight}
               />
             ) : null}
             <text
               className={`chart-time-marker chart-time-marker--${marker.kind}`}
               textAnchor={marker.kind === "day" ? "start" : "middle"}
               x={marker.kind === "day" ? marker.x + 6 : marker.x}
-              y={PLOT_TOP + PLOT_HEIGHT + 24}
+              y={plotTop + plotHeight + timeMarkerGap}
             >
               {marker.label}
             </text>
@@ -711,6 +906,14 @@ function TimeMarkers({ chartWidth, data }: { chartWidth: number; data: ReturnTyp
       })}
     </>
   );
+}
+
+function visiblePlotPoint<T extends Point | null>(
+  points: T[],
+  renderStartIndex: number,
+  globalIndex: number,
+): T | null {
+  return points[globalIndex - renderStartIndex] ?? null;
 }
 
 function LegendDot({ className, label, value }: { className: string; label: string; value: string }) {
@@ -742,21 +945,21 @@ function LineToggle({
   );
 }
 
-function offsetPath(path: string): string {
+function offsetPath(path: string, plotTop: number): string {
   if (!path) {
     return "";
   }
   return path.replace(/([A-Z]) ([^A-Z]+)/g, (_match, command: string, coordinates: string) => {
     const values = coordinates.trim().split(/\s+/).map(Number);
     for (let index = 1; index < values.length; index += 2) {
-      values[index] += PLOT_TOP;
+      values[index] += plotTop;
     }
     return `${command} ${values.map((value) => value.toFixed(1).replace(/\.0$/, "")).join(" ")}`;
   });
 }
 
-function offsetPoint(point: { x: number; y: number }) {
-  return { x: point.x, y: point.y + PLOT_TOP };
+function offsetPoint(point: { x: number; y: number }, plotTop: number) {
+  return { x: point.x, y: point.y + plotTop };
 }
 
 function readStoredRange(): RecentChartRange {
@@ -779,6 +982,7 @@ function readStoredQuotaModel(): OfficialAPIPriceModel {
 
 function chartAccessibility(
   data: ReturnType<typeof prepareRecentChartData>,
+  windowSummary: ReturnType<typeof recentChartVisibleWindowSummary>,
   visibility: SeriesVisibility,
   fiveHourQuotaPresent: boolean,
   sevenDayQuotaPresent: boolean,
@@ -786,12 +990,13 @@ function chartAccessibility(
   const visible = [
     visibility.tokens ? "Token" : null,
     visibility.calls ? "调用" : null,
-    visibility.cacheHitRate && data.hasCacheCalls ? "命中率" : null,
+    visibility.cacheHitRate && windowSummary.hasCacheCalls ? "命中率" : null,
+    data.points.length > 0 ? "每桶金额" : null,
     fiveHourQuotaPresent && visibility.fiveHourQuota && data.hasFiveHourQuota ? "5 小时额度" : null,
     sevenDayQuotaPresent && visibility.sevenDayQuota && data.hasSevenDayQuota ? "7 天额度" : null,
   ].filter(Boolean);
 
-  return `${data.title}，${data.points.length} 个时间点，Token 总量 ${formatTokens(data.tokenTotal)}，调用 ${data.callTotal} 次，已显示 ${visible.join("、") || "无曲线"}`;
+  return `${data.title}，${data.points.length} 个时间点，当前窗口 Token 总量 ${formatTokens(windowSummary.tokenTotal)}，当前窗口调用 ${windowSummary.callTotal} 次，已显示 ${visible.join("、") || "无曲线"}`;
 }
 
 function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuotaAvailable: boolean): string {
@@ -800,11 +1005,15 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
   }
 
   const excludedNote = estimate.excludedModels.length > 0 ? " · 独立额度不计入" : "";
+  const boundaryNote = estimate.boundaryBreakdown.leading.totalTokens > 0
+    || estimate.boundaryBreakdown.trailing.totalTokens > 0
+    ? ` · 边缘另计 ${formatTokens(estimate.boundaryBreakdown.leading.totalTokens + estimate.boundaryBreakdown.trailing.totalTokens)}`
+    : "";
   switch (estimate.confidence) {
     case "measured":
-      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${excludedNote}`;
+      return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${boundaryNote}${excludedNote}`;
     case "insufficientQuotaMovement":
-      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${excludedNote}`;
+      return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${boundaryNote}${excludedNote}`;
     case "noTokenUsage":
       return `无 token${excludedNote}`;
   }

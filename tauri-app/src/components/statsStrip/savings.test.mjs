@@ -8,6 +8,10 @@ import {
   lifetimeBreakdownFromStats,
   savingsPresentation,
 } from "./savings.ts";
+import {
+  firstCompleteQuotaBucketStart,
+  lastCompleteQuotaBucketEnd,
+} from "../quotaPeriodBoundary.ts";
 
 function recentPoint(startUnix, overrides = {}) {
   const { model = "gpt-5.6-sol", ...breakdownOverrides } = overrides;
@@ -162,6 +166,31 @@ test("7d API estimate uses the reset boundary and excludes adjacent points", () 
   assert.equal(estimate.pointCount, 2);
   assert.equal(estimate.apiEquivalentUSD, 11.5);
   assert.equal(estimate.modelBreakdowns.length, 2);
+});
+
+test("7d API estimate drops both mixed edge buckets and leaves a one-minute margin", () => {
+  const resetAtUnix = 1_800_000_120;
+  const rawPeriodStartUnix = resetAtUnix - 7 * 24 * 60 * 60;
+  const lowerMixedBucket = Math.floor(rawPeriodStartUnix / 300) * 300;
+  const safeInteriorBucket = firstCompleteQuotaBucketStart(rawPeriodStartUnix);
+  const upperMixedBucket = Math.floor(resetAtUnix / 300) * 300;
+  const estimate = estimateRecent7dAPICost({
+    resetAtUnix,
+    priceModel: "gpt56Luna",
+    points: [
+      recentPoint(lowerMixedBucket),
+      recentPoint(safeInteriorBucket),
+      recentPoint(upperMixedBucket),
+    ],
+  });
+
+  assert.ok(estimate);
+  assert.equal(estimate.periodStartUnix, rawPeriodStartUnix);
+  assert.equal(estimate.pointCount, 1);
+  assert.equal(estimate.modelBreakdowns[0].eventStartUnix, safeInteriorBucket);
+  assert.equal(estimate.boundaryBreakdown.leading.totalTokens, 1_100_000);
+  assert.equal(estimate.boundaryBreakdown.trailing.totalTokens, 1_100_000);
+  assert.equal(lastCompleteQuotaBucketEnd(resetAtUnix), upperMixedBucket);
 });
 
 test("7d API estimate applies the auto-review timestamp rule per five-minute point", () => {

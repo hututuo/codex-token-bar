@@ -457,6 +457,10 @@ struct QuotaConsumptionEstimate: Equatable {
     let quotaDropPercent: Double
     let quotaDropBasis: QuotaConsumptionDropBasis
     let comparisonBreakdown: TokenCacheBreakdown
+    /// Complete aggregate values for the bucket touching each unaligned
+    /// boundary. These are intentionally separate from comparisonBreakdown:
+    /// the aggregate has no event-level split at the reset second.
+    let boundaryBreakdown: QuotaPeriodBoundaryBreakdown
     let comparisonStartDate: Date?
     let comparisonEndDate: Date?
     let comparisonUsesConservativeBuckets: Bool
@@ -479,6 +483,7 @@ struct QuotaConsumptionEstimate: Equatable {
         quotaDropObserved: Bool = true,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
         comparisonBreakdown: TokenCacheBreakdown? = nil,
+        boundaryBreakdown: QuotaPeriodBoundaryBreakdown = .empty,
         comparisonStartDate: Date? = nil,
         comparisonEndDate: Date? = nil,
         comparisonUsesConservativeBuckets: Bool = false,
@@ -504,6 +509,7 @@ struct QuotaConsumptionEstimate: Equatable {
             totalTokens: max(inputTokens, 0) + max(outputTokens, 0),
             calls: calls
         )
+        self.boundaryBreakdown = boundaryBreakdown
         self.comparisonStartDate = comparisonStartDate
         self.comparisonEndDate = comparisonEndDate
         self.comparisonUsesConservativeBuckets = comparisonUsesConservativeBuckets
@@ -545,6 +551,7 @@ enum QuotaConsumptionEstimator {
         comparisonCostUSD: Double? = nil,
         quotaDropBasis: QuotaConsumptionDropBasis? = nil,
         comparisonBreakdown: TokenCacheBreakdown? = nil,
+        boundaryBreakdown: QuotaPeriodBoundaryBreakdown = .empty,
         excludedModels: [String] = [],
         excludedCalls: Int = 0,
         comparisonStartDate: Date? = nil,
@@ -580,6 +587,7 @@ enum QuotaConsumptionEstimator {
             quotaDropPercent: drop,
             quotaDropBasis: resolvedBasis,
             comparisonBreakdown: resolvedComparisonBreakdown,
+            boundaryBreakdown: boundaryBreakdown,
             comparisonStartDate: comparisonStartDate,
             comparisonEndDate: comparisonEndDate,
             comparisonUsesConservativeBuckets: comparisonUsesConservativeBuckets,
@@ -720,6 +728,7 @@ private struct RecentChartQuotaDropResolution {
     let percent: Double?
     let basis: QuotaConsumptionDropBasis
     let comparisonBreakdown: TokenCacheBreakdown
+    let boundaryBreakdown: QuotaPeriodBoundaryBreakdown
     let comparisonStartDate: Date?
     let comparisonEndDate: Date?
     let comparisonUsesConservativeBuckets: Bool
@@ -806,6 +815,7 @@ extension RecentChartPreparedData {
                 comparisonCostUSD: fiveHourPrice.costUSD,
                 quotaDropBasis: fiveHourDrop.basis,
                 comparisonBreakdown: fiveHourDrop.comparisonBreakdown,
+                boundaryBreakdown: fiveHourDrop.boundaryBreakdown,
                 excludedModels: fiveHourPrice.excludedModels,
                 excludedCalls: fiveHourPrice.excludedCalls,
                 comparisonStartDate: fiveHourDrop.comparisonStartDate,
@@ -820,6 +830,7 @@ extension RecentChartPreparedData {
                 comparisonCostUSD: sevenDayPrice.costUSD,
                 quotaDropBasis: sevenDayDrop.basis,
                 comparisonBreakdown: sevenDayDrop.comparisonBreakdown,
+                boundaryBreakdown: sevenDayDrop.boundaryBreakdown,
                 excludedModels: sevenDayPrice.excludedModels,
                 excludedCalls: sevenDayPrice.excludedCalls,
                 comparisonStartDate: sevenDayDrop.comparisonStartDate,
@@ -859,6 +870,7 @@ extension RecentChartPreparedData {
                 percent: nil,
                 basis: .unavailable,
                 comparisonBreakdown: .empty,
+                boundaryBreakdown: .empty,
                 comparisonStartDate: nil,
                 comparisonEndDate: nil,
                 comparisonUsesConservativeBuckets: false
@@ -878,6 +890,7 @@ extension RecentChartPreparedData {
                 percent: nil,
                 basis: .unavailable,
                 comparisonBreakdown: .empty,
+                boundaryBreakdown: .empty,
                 comparisonStartDate: nil,
                 comparisonEndDate: nil,
                 comparisonUsesConservativeBuckets: false
@@ -893,6 +906,7 @@ extension RecentChartPreparedData {
                 percent: nil,
                 basis: .unavailable,
                 comparisonBreakdown: .empty,
+                boundaryBreakdown: .empty,
                 comparisonStartDate: nil,
                 comparisonEndDate: nil,
                 comparisonUsesConservativeBuckets: false
@@ -904,6 +918,7 @@ extension RecentChartPreparedData {
             comparisonBreakdown: (firstCoveredIndex...lastCoveredIndex)
                 .map { cacheBreakdowns[safe: $0] ?? .empty }
                 .combined,
+            boundaryBreakdown: .empty,
             comparisonStartDate: estimatedComparisonStart,
             comparisonEndDate: lastStart.addingTimeInterval(bucketInterval),
             comparisonUsesConservativeBuckets: false
@@ -941,17 +956,19 @@ extension RecentChartPreparedData {
             return nil
         }
 
-        // Both partial boundary buckets are included conservatively. This can
-        // overstate local usage, but it cannot turn local usage into a false
-        // positive "other user" gap. The attribution layer still marks such
-        // ranges provisional because bucket-level data cannot split at seconds.
-        let comparisonStart = quotaBucketBoundary(for: first.observedAt)
+        // Quota observations can land inside a fixed display bucket. The cache
+        // projection has no event-level timestamp, so the two edge buckets
+        // cannot be split faithfully. Leave the edge buckets out and compare
+        // only complete interior buckets; exact bucket-boundary observations
+        // remain usable at the corresponding edge.
+        let firstBoundary = quotaBucketBoundary(for: first.observedAt)
         let lastBoundary = quotaBucketBoundary(for: last.observedAt)
-        let firstIsAligned = abs(first.observedAt.timeIntervalSince(comparisonStart)) < 0.5
+        let firstIsAligned = abs(first.observedAt.timeIntervalSince(firstBoundary)) < 0.5
         let lastIsAligned = abs(last.observedAt.timeIntervalSince(lastBoundary)) < 0.5
-        let comparisonEnd = lastIsAligned
-            ? lastBoundary
-            : lastBoundary.addingTimeInterval(bucketInterval)
+        let comparisonStart = firstIsAligned
+            ? firstBoundary
+            : firstBoundary.addingTimeInterval(bucketInterval)
+        let comparisonEnd = lastBoundary
         guard comparisonEnd > comparisonStart else { return nil }
 
         let comparisonBreakdown = (lower...upper)
@@ -962,18 +979,51 @@ extension RecentChartPreparedData {
                 return cacheBreakdowns[safe: index] ?? .empty
             }
             .combined
+        let leadingEdgeStart = firstIsAligned ? nil : firstBoundary
+        let trailingEdgeStart: Date? = if lastIsAligned || lastBoundary == leadingEdgeStart {
+            nil
+        } else {
+            lastBoundary
+        }
+        let boundaryBreakdown = QuotaPeriodBoundaryBreakdown(
+            leading: bucketBreakdown(
+                at: leadingEdgeStart,
+                lower: lower,
+                upper: upper
+            ),
+            trailing: bucketBreakdown(
+                at: trailingEdgeStart,
+                lower: lower,
+                upper: upper
+            ),
+            leadingStart: leadingEdgeStart,
+            trailingStart: trailingEdgeStart
+        )
         let drop = max(first.remainingPercent - last.remainingPercent, 0)
 
         return RecentChartQuotaDropResolution(
             percent: drop,
             basis: .observed,
             comparisonBreakdown: comparisonBreakdown,
+            boundaryBreakdown: boundaryBreakdown,
             comparisonStartDate: comparisonStart,
             comparisonEndDate: comparisonEnd,
             comparisonUsesConservativeBuckets: bucketInterval > 5 * 60 + 0.5
                 || !firstIsAligned
                 || !lastIsAligned
         )
+    }
+
+    private func bucketBreakdown(
+        at start: Date?,
+        lower: Int,
+        upper: Int
+    ) -> TokenCacheBreakdown {
+        guard let start else { return .empty }
+        guard let index = (lower...upper).first(where: { bins[safe: $0]?.start == start }) else {
+            return .empty
+        }
+        return cacheBreakdowns[safe: index] ?? .empty
     }
 
     private func observationSlice(

@@ -365,13 +365,18 @@ private struct QuotaHistoryWindowObservation {
 }
 
 final class QuotaHistoryDatabase: @unchecked Sendable {
+    private static let initialHistoryWindowDays = 60
     private let fileManager: FileManager
     private let databaseURL: URL?
     private let peerDatabaseURL: URL?
+    // Quota history is intentionally unbounded. The hourly heartbeat and
+    // cross-runtime observation merge keep this percentage-only history small
+    // without deleting older quota state.
     private let heartbeatInterval: TimeInterval = 60 * 60
-    private let retentionDays = 45
     private let recentInterval: TimeInterval = 5 * 60
     private let maxCarryGap: TimeInterval = 90 * 60
+    // Compatibility bridge only: rows written before stable identity existed
+    // are ambiguous after this window, but stable rows are never pruned.
     private let legacyBridgeMaxAge: TimeInterval = 45 * 24 * 60 * 60
     private let legacyBridgeMaxRows = 512
 
@@ -416,7 +421,6 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 return true
             }
             try insert(normalizedRow, database: database)
-            try prune(database: database, now: now)
             return true
         }
     }
@@ -440,18 +444,24 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
 
     func loadSnapshot(for quota: AccountQuotaSnapshot, now: Date = Date()) throws -> QuotaHistorySnapshot {
         guard let row = Self.row(from: quota, createdAt: now) else { return .empty }
+        // Read two months up front so the existing 30-day chart has a warm
+        // buffer for range expansion. A future dynamic loader can widen this
+        // same cutoff without changing the persisted history schema.
+        let cutoff = now.addingTimeInterval(
+            -TimeInterval(Self.initialHistoryWindowDays * 24 * 60 * 60)
+        )
         let localRows = try withDatabase { database in
             try ensureSchema(database)
             return try matchingRows(
                 database: database,
                 row: row,
-                cutoff: now.addingTimeInterval(-31 * 24 * 60 * 60),
+                cutoff: cutoff,
                 now: now
             )
         }
         let peerRows = loadPeerRows(
             for: row,
-            cutoff: now.addingTimeInterval(-31 * 24 * 60 * 60)
+            cutoff: cutoff
         )
         return Self.makeSnapshot(
             rows: mergedRows(localRows + peerRows),
@@ -956,14 +966,14 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         let fiveHourResetsAt: UInt64?
         let sevenDayUsedPercent: Int?
         let sevenDayResetsAt: UInt64?
-        let source: String
     }
 
-    /// Merge the two independently written histories without treating a
-    /// different source or quota cycle as the same observation. Tauri's first
-    /// copy of the old shared database can contain byte-for-byte Swift rows;
-    /// those are removed by this key while genuinely separate observations are
-    /// retained and then sorted for the existing sanitizer/interpolator.
+    /// Merge the two independently written histories by quota identity and
+    /// observation. The runtime source is metadata, not a second quota: Swift
+    /// and Tauri can record the same percentage at the same instant, and that
+    /// cross-platform duplicate should be removed before sanitizing and
+    /// interpolating the series. Genuinely different observations remain
+    /// ordered by timestamp.
     private func mergedRows(_ rows: [QuotaHistoryRow]) -> [QuotaHistoryRow] {
         var unique: [MergeKey: QuotaHistoryRow] = [:]
         for row in rows {
@@ -980,8 +990,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 fiveHourUsedPercent: row.fiveHourUsedPercent,
                 fiveHourResetsAt: row.fiveHourResetsAt?.timeIntervalSince1970.bitPattern,
                 sevenDayUsedPercent: row.sevenDayUsedPercent,
-                sevenDayResetsAt: row.sevenDayResetsAt?.timeIntervalSince1970.bitPattern,
-                source: canonicalSource(row.source)
+                sevenDayResetsAt: row.sevenDayResetsAt?.timeIntervalSince1970.bitPattern
             )
             guard let previous = unique[key] else {
                 unique[key] = row
@@ -1509,12 +1518,6 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 identityLimitID: statement.text(15)
             )
         }
-    }
-
-    private func prune(database: SQLiteDatabaseConnection, now: Date) throws {
-        let cutoff = now.addingTimeInterval(TimeInterval(-retentionDays * 24 * 60 * 60)).timeIntervalSince1970
-        let sql = "DELETE FROM quota_snapshots WHERE created_at < ?;"
-        try database.execute(sql, bindings: [.double(cutoff)])
     }
 
     private func withDatabase<T>(_ work: (SQLiteDatabaseConnection) throws -> T) throws -> T {

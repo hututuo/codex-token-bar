@@ -1556,6 +1556,10 @@ struct SharedAccountUsageAttributionResult: Equatable {
     let quotaUpdatedAt: Date?
     let accountUsedPercent: Double?
     let breakdown: TokenCacheBreakdown
+    /// Complete aggregate values for the two quota-cycle edge buckets. The
+    /// comparable middle range remains separate so an in-bucket reset cannot
+    /// mix the previous and current cycle.
+    let boundaryBreakdown: QuotaPeriodBoundaryBreakdown
     let scannedBreakdown: TokenCacheBreakdown
     let scannedComparableCostUSD: Double?
     let localComparableCostUSD: Double?
@@ -1779,15 +1783,13 @@ enum SharedAccountUsageAttributionEstimator {
             continuityGapID: nil
         )
         let segmentStart = max(cycleStart, min(resolvedSegment.start, resetAt))
-        // Quota windows may begin between Unix-aligned 5-minute buckets. Keep
-        // the straddling local bucket instead of dropping its post-boundary
-        // usage; the extra pre-boundary amount conservatively biases the local
-        // share upward, never toward a false positive residual.
-        let localBucketStart = Date(
-            timeIntervalSince1970: floor(
-                segmentStart.timeIntervalSince1970 / recentBinDuration
-            ) * recentBinDuration
-        )
+        // The cache projection is five-minute granular and has no event-level
+        // timestamp. A bucket straddling a quota boundary cannot be split
+        // faithfully, so leave a one-minute margin for the comparable middle
+        // range and begin at the next complete bucket. The edge bucket totals
+        // are retained separately below. Exact five-minute boundaries remain
+        // inclusive.
+        let localBucketStart = QuotaPeriodBoundaryPolicy.firstCompleteBucketStart(after: segmentStart)
         if let quotaUpdatedAt {
             // A quota snapshot can only be compared with fixed 5-minute local
             // buckets that ended before its timestamp. Coverage therefore only
@@ -1828,6 +1830,7 @@ enum SharedAccountUsageAttributionEstimator {
             }
         }
         let cycleEnd = min(now, resetAt)
+        let safeCycleEnd = QuotaPeriodBoundaryPolicy.lastCompleteBucketEnd(before: cycleEnd)
         let preciseCoverageEnd = min(
             cycleEnd,
             preciseUsageGeneratedAt ?? cycleEnd
@@ -1845,18 +1848,27 @@ enum SharedAccountUsageAttributionEstimator {
         }
         let comparisonEnd = min(
             preciseAlignedEnd,
-            max(localBucketStart, quotaAlignedEnd ?? localBucketStart)
+            min(
+                max(localBucketStart, quotaAlignedEnd ?? localBucketStart),
+                safeCycleEnd
+            )
         )
         let attributionBins = recentAttributionEvents.map(Self.sourceBucketBins)
             ?? recentBins
         let comparisonBins = attributionBins
             .filter { $0.start >= localBucketStart && $0.start < comparisonEnd }
             .sorted { $0.start < $1.start }
+        let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
+            buckets: attributionBins,
+            periodStart: segmentStart,
+            periodEnd: cycleEnd
+        )
         let persistenceBins = attributionBins
             // Raw high-water persistence intentionally includes the currently
-            // open aligned bucket. It is never compared until the quota passes
-            // that bucket's end, but preserving the partial maximum prevents a
-            // session archive before the boundary from erasing known local use.
+            // open bucket after the safe period start. It is never compared
+            // until the quota passes that bucket's end, but preserving the
+            // partial maximum prevents a session archive from erasing known
+            // local use.
             .filter { $0.start >= localBucketStart && $0.start < preciseCoverageEnd }
             .sorted { $0.start < $1.start }
         let persistenceAttributionEvents = recentAttributionEvents?.filter {
@@ -1971,6 +1983,7 @@ enum SharedAccountUsageAttributionEstimator {
                     quotaUpdatedAt: quotaUpdatedAt,
                     accountUsedPercent: nil,
                     breakdown: protectedBreakdown,
+                    boundaryBreakdown: boundaryBreakdown,
                     scannedBreakdown: scannedBreakdown,
                     scannedComparableCostUSD: nil,
                     localComparableCostUSD: pendingComparableCost.costUSD,
@@ -2046,6 +2059,7 @@ enum SharedAccountUsageAttributionEstimator {
                 quotaUpdatedAt: quotaUpdatedAt,
                 accountUsedPercent: accountUsed,
                 breakdown: protectedBreakdown,
+                boundaryBreakdown: boundaryBreakdown,
                 scannedBreakdown: scannedBreakdown,
                 currentOfficialCostUSD: currentOfficialCost,
                 radar: radar,
@@ -2143,6 +2157,7 @@ enum SharedAccountUsageAttributionEstimator {
             quotaUpdatedAt: quotaUpdatedAt,
             accountUsedPercent: accountUsed,
             breakdown: protectedBreakdown,
+            boundaryBreakdown: boundaryBreakdown,
             scannedBreakdown: scannedBreakdown,
             scannedComparableCostUSD: scannedComparableCost,
             localComparableCostUSD: localComparableCost,
@@ -2214,6 +2229,7 @@ enum SharedAccountUsageAttributionEstimator {
         quotaUpdatedAt: Date? = nil,
         accountUsedPercent: Double? = nil,
         breakdown: TokenCacheBreakdown,
+        boundaryBreakdown: QuotaPeriodBoundaryBreakdown = .empty,
         scannedBreakdown: TokenCacheBreakdown? = nil,
         currentOfficialCostUSD: Double? = nil,
         radarTotalUSD: Double? = nil,
@@ -2245,6 +2261,7 @@ enum SharedAccountUsageAttributionEstimator {
             quotaUpdatedAt: quotaUpdatedAt,
             accountUsedPercent: accountUsedPercent,
             breakdown: breakdown,
+            boundaryBreakdown: boundaryBreakdown,
             scannedBreakdown: scannedBreakdown ?? breakdown,
             scannedComparableCostUSD: nil,
             localComparableCostUSD: nil,

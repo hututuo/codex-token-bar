@@ -5,10 +5,58 @@ import {
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
 import type { SharedAccountAttributionResult } from "../sharedAccountAttribution/model.ts";
+import {
+  firstCompleteQuotaBucketStart,
+  lastCompleteQuotaBucketEnd,
+} from "../quotaPeriodBoundary.ts";
+import {
+  isRenderableRecentChartCost,
+  recentChartScaleMap,
+  recentChartTokenScale,
+  recentChartY,
+  type RecentChartScaleMap,
+  type RecentChartScaleSpec,
+} from "./scale.ts";
+
+export {
+  RECENT_CHART_COST_AVERAGE_HEIGHT_RATIO,
+  RECENT_CHART_COST_HIGH_HEIGHT_RATIO,
+  RECENT_CHART_COST_LOW_HEIGHT_RATIO,
+  RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO,
+  recentChartHeightFraction,
+  recentChartScaleMap,
+  recentChartTokenScale,
+  recentChartY,
+} from "./scale.ts";
 
 export type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
 
 export type RecentChartRange = "24h" | "7d" | "30d";
+
+export interface RecentChartGeometry {
+  canvasHeight: number;
+  plotTop: number;
+  plotHeight: number;
+  timeMarkerGap: number;
+}
+
+/**
+ * All selectable ranges use the same 278px canvas. The plot and marker
+ * spacing are scaled with that canvas so pointer hit testing and visual guide
+ * lines stay aligned with the rendered paths.
+ */
+const RECENT_CHART_GEOMETRY: RecentChartGeometry = {
+  canvasHeight: 278,
+  plotTop: 27,
+  plotHeight: 215,
+  timeMarkerGap: 36,
+};
+
+export function recentChartGeometry(_range: RecentChartRange): RecentChartGeometry {
+  return {
+    ...RECENT_CHART_GEOMETRY,
+  };
+}
 
 export interface RecentChartScrollLayout {
   isHorizontal: boolean;
@@ -58,6 +106,18 @@ export interface Point {
   y: number;
 }
 
+export interface RecentChartScaleWindow {
+  startIndex: number;
+  endIndex: number;
+}
+
+export interface RecentChartPlotOptions {
+  bucketCostsUSD?: number[];
+  fixedScaleMap?: RecentChartScaleMap;
+  renderWindow?: RecentChartScaleWindow | null;
+  scaleWindow?: RecentChartScaleWindow | null;
+}
+
 export interface PreparedRecentChartData {
   range: RecentChartRange;
   title: string;
@@ -78,6 +138,17 @@ export interface PreparedRecentChartData {
   markerIndices: number[];
 }
 
+export interface RecentChartWindowSummary {
+  startIndex: number;
+  endIndex: number;
+  tokenTotal: number;
+  callTotal: number;
+  cacheHitRate: number;
+  latestFiveHourRemaining: number | null;
+  latestSevenDayRemaining: number | null;
+  hasCacheCalls: boolean;
+}
+
 export interface QuotaEstimateWindowVisibility {
   fiveHour: boolean;
   sevenDay: boolean;
@@ -92,6 +163,28 @@ export interface RecentChartTimeMarker {
 
 export type QuotaConsumptionConfidence = "measured" | "insufficientQuotaMovement" | "noTokenUsage";
 
+export interface QuotaConsumptionBoundary {
+  resetAtUnix: number | null;
+  periodSeconds: number;
+}
+
+export interface QuotaConsumptionBoundaryBreakdown {
+  leading: TokenBreakdown;
+  trailing: TokenBreakdown;
+  leadingStartUnix: number | null;
+  trailingStartUnix: number | null;
+  excludedStartUnix: number[];
+}
+
+interface TokenBreakdown {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  calls: number;
+  cacheHitRate: number;
+}
+
 export interface QuotaConsumptionEstimate {
   selectedCostUSD: number;
   impliedWindowBudgetUSD: number | null;
@@ -102,7 +195,8 @@ export interface QuotaConsumptionEstimate {
   calls: number;
   cacheHitRate: number;
   quotaDropAvailable: boolean;
-  comparisonBreakdown: ModelTokenCostRow["breakdown"] & { totalTokens: number };
+  comparisonBreakdown: TokenBreakdown;
+  boundaryBreakdown: QuotaConsumptionBoundaryBreakdown;
   comparisonStartUnix: number | null;
   comparisonEndUnix: number | null;
   confidence: QuotaConsumptionConfidence;
@@ -310,26 +404,143 @@ export function quotaEstimateWindowVisibility(
   };
 }
 
-export function plotChartPoints(data: PreparedRecentChartData, width: number, plotHeight: number) {
+export function plotChartPoints(
+  data: PreparedRecentChartData,
+  width: number,
+  plotHeight: number,
+  priceModel: OfficialAPIPriceModel = "gpt56Sol",
+  options: RecentChartPlotOptions = {},
+) {
   const step = width / Math.max(data.points.length - 1, 1);
+  const bucketCostsUSD = options.bucketCostsUSD?.length === data.points.length
+    ? options.bucketCostsUSD
+    : recentChartBucketCosts(data.points, priceModel);
+  const scaleWindow = clampedScaleWindow(options.scaleWindow, data.points.length);
+  const scalePoints = scaleWindow === null
+    ? data.points
+    : data.points.slice(scaleWindow.startIndex, scaleWindow.endIndex + 1);
+  const fixedScaleMap = options.fixedScaleMap ?? recentChartScaleMap({
+    tokenValues: [1],
+    callValues: data.points.map((point) => point.calls),
+    costs: bucketCostsUSD,
+  });
+  const scaleMap: RecentChartScaleMap = {
+    ...fixedScaleMap,
+    tokens: recentChartTokenScale(scalePoints.map((point) => point.tokens)),
+  };
+  const renderWindow = clampedScaleWindow(options.renderWindow, data.points.length);
+  const renderStartIndex = renderWindow?.startIndex ?? 0;
+  const renderEndIndex = renderWindow?.endIndex ?? Math.max(data.points.length - 1, -1);
+  const renderPoints = renderEndIndex >= renderStartIndex
+    ? data.points.slice(renderStartIndex, renderEndIndex + 1)
+    : [];
+  const renderCosts = renderEndIndex >= renderStartIndex
+    ? bucketCostsUSD.slice(renderStartIndex, renderEndIndex + 1)
+    : [];
   return {
-    tokenPoints: data.points.map((point, index) => ({
-      x: index * step,
-      y: plotHeight - (point.tokens / data.maxTokens) * plotHeight,
+    scaleMap,
+    renderStartIndex,
+    renderEndIndex,
+    tokenPoints: renderPoints.map((point, index) => ({
+      x: (renderStartIndex + index) * step,
+      y: recentChartY(point.tokens, scaleMap.tokens, plotHeight),
     })),
-    callPoints: data.points.map((point, index) => ({
-      x: index * step,
-      y: plotHeight - (point.calls / data.maxCalls) * plotHeight,
+    callPoints: renderPoints.map((point, index) => ({
+      x: (renderStartIndex + index) * step,
+      y: recentChartY(point.calls, scaleMap.calls, plotHeight),
     })),
-    cachePoints: data.points.map((_, index) => {
-      const rate = data.observedCacheHitRates[index];
+    cachePoints: renderPoints.map((_, index) => {
+      const globalIndex = renderStartIndex + index;
+      const rate = data.observedCacheHitRates[globalIndex];
       return rate === null || rate === undefined
         ? null
-        : { x: index * step, y: plotHeight - rate * plotHeight };
+        : { x: globalIndex * step, y: recentChartY(rate, scaleMap.cacheHitRate, plotHeight) };
     }),
-    fiveHourQuotaPoints: optionalQuotaPoints(data.points, "fiveHourRemainingPercent", width, plotHeight),
-    sevenDayQuotaPoints: optionalQuotaPoints(data.points, "sevenDayRemainingPercent", width, plotHeight),
+    bucketCostsUSD,
+    costPoints: scaledCostPoints(
+      renderCosts,
+      width,
+      plotHeight,
+      scaleMap.cost,
+      renderStartIndex,
+      data.points.length,
+    ),
+    fiveHourQuotaPoints: optionalQuotaPoints(
+      renderPoints,
+      "fiveHourRemainingPercent",
+      width,
+      plotHeight,
+      scaleMap.quota,
+      renderStartIndex,
+      data.points.length,
+    ),
+    sevenDayQuotaPoints: optionalQuotaPoints(
+      renderPoints,
+      "sevenDayRemainingPercent",
+      width,
+      plotHeight,
+      scaleMap.quota,
+      renderStartIndex,
+      data.points.length,
+    ),
   };
+}
+
+export function recentChartBucketCosts(
+  points: RecentUsagePoint[],
+  priceModel: OfficialAPIPriceModel,
+): number[] {
+  return points.map((point) => {
+    const fallback = {
+      inputTokens: finiteNonnegative(point.inputTokens),
+      cachedInputTokens: Math.min(finiteNonnegative(point.cachedInputTokens), finiteNonnegative(point.inputTokens)),
+      outputTokens: finiteNonnegative(point.outputTokens),
+      calls: finiteNonnegative(point.calls),
+    };
+    const estimate = modelAwareAPICostUSD(
+      modelRowsForPoints([point]),
+      fallback,
+      priceModel,
+    );
+    return Number.isFinite(estimate.costUSD) ? Math.max(estimate.costUSD, 0) : 0;
+  });
+}
+
+export function scaledCostPoints(
+  costs: number[],
+  width: number,
+  plotHeight: number,
+  scale: RecentChartScaleSpec = recentChartScaleMap({ tokenValues: [1], callValues: [1], costs }).cost,
+  startIndex = 0,
+  totalPointCount = costs.length,
+): Array<Point | null> {
+  if (costs.length === 0) {
+    return [];
+  }
+  const safeCosts = costs.map((cost) => Number.isFinite(cost) ? Math.max(cost, 0) : 0);
+  const step = width / Math.max(totalPointCount - 1, 1);
+  return safeCosts.map((cost, index) => {
+    if (!isRenderableRecentChartCost(cost)) {
+      return null;
+    }
+    return {
+      x: (startIndex + index) * step,
+      y: recentChartY(cost, scale, plotHeight),
+    };
+  });
+}
+
+function clampedScaleWindow(
+  scaleWindow: RecentChartScaleWindow | null | undefined,
+  pointCount: number,
+): RecentChartScaleWindow | null {
+  if (scaleWindow === null || scaleWindow === undefined || pointCount <= 0) {
+    return null;
+  }
+  const lastIndex = pointCount - 1;
+  const startIndex = clamp(Math.floor(scaleWindow.startIndex), 0, lastIndex);
+  const endIndex = clamp(Math.floor(scaleWindow.endIndex), startIndex, lastIndex);
+  return { startIndex, endIndex };
 }
 
 export function recentChartTimeMarkers(data: PreparedRecentChartData, chartWidth: number): RecentChartTimeMarker[] {
@@ -392,6 +603,66 @@ export function recentChartVisibleWindowLabel(
   const start = data.points[startIndex].startUnix;
   const end = data.points[endIndex].startUnix + data.bucketSeconds;
   return `${formatLocalMonthDayHour(start)} - ${formatLocalMonthDayHour(end)}`;
+}
+
+export function recentChartVisibleWindowIndices(
+  data: Pick<PreparedRecentChartData, "range" | "points" | "bucketSeconds">,
+  chartWidth: number,
+  scrollLeft: number,
+  viewportWidth: number,
+): { startIndex: number; endIndex: number } | null {
+  if (data.points.length === 0) {
+    return null;
+  }
+
+  const safeChartWidth = Number.isFinite(chartWidth) && chartWidth > 0 ? chartWidth : 980;
+  const safeViewportWidth = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 980;
+  const maxScrollLeft = Math.max(0, safeChartWidth - safeViewportWidth);
+  const safeScrollLeft = Number.isFinite(scrollLeft) ? clamp(scrollLeft, 0, maxScrollLeft) : 0;
+  const lastIndex = data.points.length - 1;
+  const viewportBucketCount = Math.max(
+    1,
+    Math.round(RECENT_CHART_WINDOW_SECONDS[data.range] / data.bucketSeconds),
+  );
+  const startIndex = maxScrollLeft - safeScrollLeft <= 0.5
+    ? Math.max(lastIndex - viewportBucketCount + 1, 0)
+    : safeScrollLeft <= 0.5
+      ? 0
+      : hoverIndexForX(safeScrollLeft, safeChartWidth, data.points.length) ?? 0;
+  const endIndex = clamp(startIndex + viewportBucketCount - 1, startIndex, lastIndex);
+  return { startIndex, endIndex };
+}
+
+export function recentChartVisibleWindowSummary(
+  data: PreparedRecentChartData,
+  chartWidth: number,
+  scrollLeft: number,
+  viewportWidth: number,
+): RecentChartWindowSummary {
+  const indices = recentChartVisibleWindowIndices(data, chartWidth, scrollLeft, viewportWidth);
+  if (indices === null) {
+    return {
+      startIndex: 0,
+      endIndex: -1,
+      tokenTotal: 0,
+      callTotal: 0,
+      cacheHitRate: 0,
+      latestFiveHourRemaining: null,
+      latestSevenDayRemaining: null,
+      hasCacheCalls: false,
+    };
+  }
+
+  const points = data.points.slice(indices.startIndex, indices.endIndex + 1);
+  return {
+    ...indices,
+    tokenTotal: points.reduce((total, point) => total + point.tokens, 0),
+    callTotal: points.reduce((total, point) => total + point.calls, 0),
+    cacheHitRate: weightedCacheHitRate(points),
+    latestFiveHourRemaining: latestPresent(points.map((point) => point.fiveHourRemainingPercent)),
+    latestSevenDayRemaining: latestPresent(points.map((point) => point.sevenDayRemainingPercent)),
+    hasCacheCalls: points.some((point) => point.calls > 0 && point.cacheHitRate !== null),
+  };
 }
 
 export function smoothPath(points: Point[]): string {
@@ -467,20 +738,18 @@ function optionalSegmentPath(points: Point[]): string {
   return `M ${formatNumber(point.x)} ${formatNumber(point.y)} L ${formatNumber(point.x + 0.01)} ${formatNumber(point.y)}`;
 }
 
-export function tokenAreaPath(points: Point[], width: number, plotHeight: number): string {
-  const first = points[0];
-  const last = points[points.length - 1];
-  if (!first || !last) {
-    return "";
-  }
-  return [
-    `M ${formatNumber(first.x)} ${formatNumber(plotHeight)}`,
-    `L ${formatNumber(first.x)} ${formatNumber(first.y)}`,
-    smoothPath(points).replace(/^M [^LCSQTAZ]+ /, ""),
-    `L ${formatNumber(width)} ${formatNumber(plotHeight)}`,
-    `L ${formatNumber(last.x)} ${formatNumber(plotHeight)}`,
-    "Z",
-  ].join(" ");
+export function tokenAreaPath(points: Point[], _width: number, plotHeight: number): string {
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (!first || !last) {
+      return "";
+    }
+    return [
+      smoothPath(points),
+      `L ${formatNumber(last.x)} ${formatNumber(plotHeight)}`,
+      `L ${formatNumber(first.x)} ${formatNumber(plotHeight)}`,
+      "Z",
+    ].join(" ");
 }
 
 export function hoverIndexForX(x: number, width: number, pointCount: number): number | null {
@@ -543,6 +812,10 @@ export function quotaConsumptionSelection(
   startIndex: number,
   endIndex: number,
   priceModel: OfficialAPIPriceModel,
+  boundaries: {
+    fiveHour?: QuotaConsumptionBoundary | null;
+    sevenDay?: QuotaConsumptionBoundary | null;
+  } = {},
 ): QuotaConsumptionSelection | null {
   if (data.points.length === 0) {
     return null;
@@ -562,12 +835,26 @@ export function quotaConsumptionSelection(
   );
   const fiveHourDrop = quotaDropResolution(selectedPoints.map((point) => point.fiveHourRemainingPercent));
   const sevenDayDrop = quotaDropResolution(selectedPoints.map((point) => point.sevenDayRemainingPercent));
-  const fiveHourComparisonPoints = fiveHourDrop.comparisonStartOffset === null
-    ? []
-    : selectedPoints.slice(fiveHourDrop.comparisonStartOffset);
-  const sevenDayComparisonPoints = sevenDayDrop.comparisonStartOffset === null
-    ? []
-    : selectedPoints.slice(sevenDayDrop.comparisonStartOffset);
+  const fiveHourBoundaryBreakdown = quotaBoundaryBreakdown(
+    selectedPoints,
+    boundaries.fiveHour,
+    data.bucketSeconds,
+  );
+  const sevenDayBoundaryBreakdown = quotaBoundaryBreakdown(
+    selectedPoints,
+    boundaries.sevenDay,
+    data.bucketSeconds,
+  );
+  const fiveHourComparisonPoints = comparisonPoints(
+    selectedPoints,
+    fiveHourDrop,
+    fiveHourBoundaryBreakdown,
+  );
+  const sevenDayComparisonPoints = comparisonPoints(
+    selectedPoints,
+    sevenDayDrop,
+    sevenDayBoundaryBreakdown,
+  );
   const fiveHourComparisonBreakdown = combineTokenBreakdown(fiveHourComparisonPoints);
   const sevenDayComparisonBreakdown = combineTokenBreakdown(sevenDayComparisonPoints);
   const fiveHourComparisonEstimate = modelAwareAPICostUSD(
@@ -588,7 +875,8 @@ export function quotaConsumptionSelection(
     fiveHourComparisonEstimate.costUSD,
     fiveHourComparisonBreakdown,
     fiveHourComparisonEstimate,
-    selectedPoints,
+    fiveHourBoundaryBreakdown,
+    fiveHourComparisonPoints,
     data.bucketSeconds,
   );
   const sevenDay = quotaConsumptionEstimate(
@@ -598,7 +886,8 @@ export function quotaConsumptionSelection(
     sevenDayComparisonEstimate.costUSD,
     sevenDayComparisonBreakdown,
     sevenDayComparisonEstimate,
-    selectedPoints,
+    sevenDayBoundaryBreakdown,
+    sevenDayComparisonPoints,
     data.bucketSeconds,
   );
   const ratio = fiveHour.impliedWindowBudgetUSD && sevenDay.impliedWindowBudgetUSD
@@ -712,16 +1001,19 @@ function optionalQuotaPoints(
   key: "fiveHourRemainingPercent" | "sevenDayRemainingPercent",
   width: number,
   plotHeight: number,
+  scale: RecentChartScaleSpec,
+  startIndex = 0,
+  totalPointCount = points.length,
 ): Array<Point | null> {
-  const step = width / Math.max(points.length - 1, 1);
+  const step = width / Math.max(totalPointCount - 1, 1);
   return points.map((point, index) => {
     const value = point[key];
     if (value === null) {
       return null;
     }
     return {
-      x: index * step,
-      y: plotHeight - clamp(value, 0, 1) * plotHeight,
+      x: (startIndex + index) * step,
+      y: recentChartY(value, scale, plotHeight),
     };
   });
 }
@@ -765,6 +1057,85 @@ function combineTokenBreakdown(points: RecentUsagePoint[]) {
   };
 }
 
+function quotaBoundaryBreakdown(
+  points: RecentUsagePoint[],
+  boundary: QuotaConsumptionBoundary | null | undefined,
+  bucketSeconds: number,
+): QuotaConsumptionBoundaryBreakdown {
+  const empty = combineTokenBreakdown([]);
+  if (!boundary
+    || typeof boundary.resetAtUnix !== "number"
+    || !Number.isFinite(boundary.resetAtUnix)
+    || !Number.isFinite(boundary.periodSeconds)
+    || boundary.periodSeconds <= 0
+    || !Number.isFinite(bucketSeconds)
+    || bucketSeconds <= 0) {
+    return {
+      leading: empty,
+      trailing: empty,
+      leadingStartUnix: null,
+      trailingStartUnix: null,
+      excludedStartUnix: [],
+    };
+  }
+
+  const periodStartUnix = boundary.resetAtUnix - boundary.periodSeconds;
+  const rawStartBucket = bucketStart(periodStartUnix, bucketSeconds);
+  const rawEndBucket = bucketStart(boundary.resetAtUnix, bucketSeconds);
+  const safeStartUnix = firstCompleteQuotaBucketStart(periodStartUnix, bucketSeconds);
+  const safeEndUnix = lastCompleteQuotaBucketEnd(boundary.resetAtUnix, bucketSeconds);
+  const rawEndExclusive = isBucketAligned(boundary.resetAtUnix, bucketSeconds)
+    ? boundary.resetAtUnix
+    : rawEndBucket + bucketSeconds;
+  const leadingStarts = !isBucketAligned(periodStartUnix, bucketSeconds)
+    ? points
+      .filter((point) => point.startUnix >= rawStartBucket && point.startUnix < safeStartUnix)
+      .map((point) => point.startUnix)
+    : [];
+  const trailingStarts = !isBucketAligned(boundary.resetAtUnix, bucketSeconds)
+    ? points
+      .filter((point) => point.startUnix >= safeEndUnix && point.startUnix < rawEndExclusive)
+      .map((point) => point.startUnix)
+    : [];
+  const leadingSet = new Set(leadingStarts);
+  const trailingSet = new Set(trailingStarts.filter((startUnix) => !leadingSet.has(startUnix)));
+  const pointAt = (starts: Set<number>): TokenBreakdown => (
+    starts.size === 0
+      ? empty
+      : combineTokenBreakdown(points.filter((point) => starts.has(point.startUnix)))
+  );
+  const excludedStartUnix = [...new Set([...leadingSet, ...trailingSet])].sort((left, right) => left - right);
+  return {
+    leading: pointAt(leadingSet),
+    trailing: pointAt(trailingSet),
+    leadingStartUnix: leadingStarts[0] ?? null,
+    trailingStartUnix: trailingStarts.find((startUnix) => trailingSet.has(startUnix)) ?? null,
+    excludedStartUnix,
+  };
+}
+
+function comparisonPoints(
+  points: RecentUsagePoint[],
+  resolution: QuotaDropResolution,
+  boundary: QuotaConsumptionBoundaryBreakdown,
+): RecentUsagePoint[] {
+  if (resolution.comparisonStartOffset === null) return [];
+  const edgeStarts = new Set(
+    boundary.excludedStartUnix,
+  );
+  return points
+    .slice(resolution.comparisonStartOffset)
+    .filter((point) => !edgeStarts.has(point.startUnix));
+}
+
+function bucketStart(unix: number, bucketSeconds: number): number {
+  return Math.floor(unix / bucketSeconds) * bucketSeconds;
+}
+
+function isBucketAligned(unix: number, bucketSeconds: number): boolean {
+  return Math.abs(unix - bucketStart(unix, bucketSeconds)) <= 1e-6;
+}
+
 function quotaConsumptionEstimate(
   breakdown: ReturnType<typeof combineTokenBreakdown>,
   resolution: QuotaDropResolution,
@@ -772,7 +1143,8 @@ function quotaConsumptionEstimate(
   comparisonCostUSD: number,
   comparisonBreakdown: ReturnType<typeof combineTokenBreakdown>,
   comparisonEstimate: ReturnType<typeof modelAwareAPICostUSD>,
-  selectedPoints: RecentUsagePoint[],
+  boundaryBreakdown: QuotaConsumptionBoundaryBreakdown,
+  comparisonPoints: RecentUsagePoint[],
   bucketSeconds: number,
 ): QuotaConsumptionEstimate {
   const drop = Math.max(resolution.percent ?? 0, 0);
@@ -799,12 +1171,13 @@ function quotaConsumptionEstimate(
     cacheHitRate: breakdown.cacheHitRate,
     quotaDropAvailable: resolution.percent !== null,
     comparisonBreakdown,
-    comparisonStartUnix: resolution.comparisonStartOffset === null
+    boundaryBreakdown,
+    comparisonStartUnix: comparisonPoints.length === 0
       ? null
-      : selectedPoints[resolution.comparisonStartOffset]?.startUnix ?? null,
-    comparisonEndUnix: resolution.comparisonStartOffset === null || selectedPoints.length === 0
+      : comparisonPoints[0]?.startUnix ?? null,
+    comparisonEndUnix: comparisonPoints.length === 0
       ? null
-      : selectedPoints[selectedPoints.length - 1].startUnix + bucketSeconds,
+      : comparisonPoints[comparisonPoints.length - 1].startUnix + bucketSeconds,
     confidence,
     excludedModels: comparisonEstimate.excludedModels,
     excludedCalls: comparisonEstimate.excludedCalls,

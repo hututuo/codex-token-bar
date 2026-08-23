@@ -256,7 +256,7 @@ test("QuotaStrip renders the shared quota refresh cadence control", async () => 
     assert.match(html, /aria-label="刷新频率"/);
     assert.match(html, /<option value="60000">额度刷新 1 分钟<\/option>/);
     assert.match(html, /<option value="30000" selected="">额度刷新 30 秒<\/option>/);
-    assert.doesNotMatch(html, /value="180000"|value="300000"|value="600000"/);
+    assert.match(html, /<option value="600000">额度刷新 10 分钟<\/option>/);
   });
 });
 
@@ -270,7 +270,7 @@ test("QuotaStrip releases cadence space when no save handler is provided", async
   });
 });
 
-test("QuotaStrip keeps the longest production pace copy beside the one-minute maximum", async () => {
+test("QuotaStrip keeps the longest production pace copy beside the ten-minute maximum", async () => {
   await withSsrModules(async (load) => {
     const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
     const html = renderComponent(QuotaStrip, {
@@ -285,7 +285,7 @@ test("QuotaStrip keeps the longest production pace copy beside the one-minute ma
 
     assert.match(html, />用得太快，先省着（低 100%）<\/strong>/);
     assert.match(html, />7d 均速比较<\/span>/);
-    assert.match(html, /<option value="60000" selected="">额度刷新 1 分钟<\/option>/);
+    assert.match(html, /<option value="600000" selected="">额度刷新 10 分钟<\/option>/);
   });
 });
 

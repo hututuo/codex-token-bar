@@ -7405,6 +7405,10 @@ input[type="range"]::-moz-range-thumb {
   background: #03a6c8;
 }
 
+.legend-dot--cost {
+  background: #ec4899;
+}
+
 .legend-dot--five {
   background: var(--purple);
 }
@@ -7564,7 +7568,7 @@ input[type="range"]::-moz-range-thumb {
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: var(--recent-chart-aspect-ratio, 980 / 185);
+  aspect-ratio: var(--recent-chart-aspect-ratio, 980 / 278);
   border-radius: 8px;
   overflow: visible;
   background: transparent;
@@ -7668,6 +7672,10 @@ input[type="range"]::-moz-range-thumb {
   stroke: #03a6c8;
 }
 
+.hover-cost {
+  stroke: #ec4899;
+}
+
 .hover-five {
   stroke: var(--purple);
 }
@@ -7720,6 +7728,12 @@ input[type="range"]::-moz-range-thumb {
 
 .chart-observation-points--hit {
   fill: var(--accent-cyan, #03a6c8);
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+.chart-observation-points--cost {
+  fill: #ec4899;
   opacity: 0.95;
   pointer-events: none;
 }

@@ -225,34 +225,37 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     @MainActor
     func testThirtyDayQuotaAggregationKeepsAnUnknownBucketUnknown() throws {
         let start = Date(timeIntervalSince1970: 1_800)
-        let hourlyBins = (0..<6).map { index in
+        let hourlyBins = (0..<12).map { index in
             BinUsage(
                 start: start.addingTimeInterval(Double(index) * 60 * 60),
                 tokens: 1_000,
                 calls: 1
             )
         }
-        let quotaHourlyBins = [
-            // This mirrors the real Swift gap around the reset: an old 18%
-            // remaining sample followed by two unknown hourly buckets.
-            QuotaHistoryRecentBucket(
-                start: hourlyBins[0].start,
+        let quotaHourlyBins = hourlyBins.enumerated().map { index, bin in
+            if index == 0 {
+                // This mirrors the real Swift gap around a reset: one old
+                // value followed by unknown hours must keep the whole 6h
+                // display bucket unknown.
+                return QuotaHistoryRecentBucket(
+                    start: bin.start,
+                    fiveHourRemainingPercent: nil,
+                    sevenDayRemainingPercent: 18,
+                    sevenDayObservations: [
+                        QuotaHistoryObservation(
+                            observedAt: bin.start,
+                            remainingPercent: 18,
+                            resetsAt: bin.start.addingTimeInterval(7 * 24 * 60 * 60)
+                        )
+                    ]
+                )
+            }
+            return QuotaHistoryRecentBucket(
+                start: bin.start,
                 fiveHourRemainingPercent: nil,
-                sevenDayRemainingPercent: 18,
-                sevenDayObservations: [
-                    QuotaHistoryObservation(
-                        observedAt: hourlyBins[0].start,
-                        remainingPercent: 18,
-                        resetsAt: hourlyBins[0].start.addingTimeInterval(7 * 24 * 60 * 60)
-                    )
-                ]
-            ),
-            QuotaHistoryRecentBucket(start: hourlyBins[1].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil),
-            QuotaHistoryRecentBucket(start: hourlyBins[2].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: nil),
-            QuotaHistoryRecentBucket(start: hourlyBins[3].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 80),
-            QuotaHistoryRecentBucket(start: hourlyBins[4].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 78),
-            QuotaHistoryRecentBucket(start: hourlyBins[5].start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 76),
-        ]
+                sevenDayRemainingPercent: index < 6 ? nil : 78
+            )
+        }
 
         let prepared = RecentUsageChart.prepare(
             range: .thirtyDays,
@@ -264,8 +267,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             quotaHourlyBins: quotaHourlyBins
         )
 
-        XCTAssertNil(prepared.sevenDayRemainingPercents[0])
-        XCTAssertEqual(try XCTUnwrap(prepared.sevenDayRemainingPercents[1]), 78, accuracy: 0.0001)
+        let latestQuotaBuckets = Array(prepared.sevenDayRemainingPercents.suffix(2))
+        XCTAssertNil(latestQuotaBuckets[0])
+        XCTAssertEqual(try XCTUnwrap(latestQuotaBuckets[1]), 78, accuracy: 0.0001)
         XCTAssertFalse(
             prepared.sevenDayQuotaObservations.contains { $0.remainingPercent == 18 },
             "an unknown coarse bucket must not contribute stale attribution observations"
@@ -288,7 +292,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
 
         for range in [RecentChartRange.sevenDays, .thirtyDays] {
-            let hourlyCount = range == .sevenDays ? 4 : 6
+            let hourlyCount = range == .sevenDays ? 4 : 18
             let hourlyBins = (0..<hourlyCount).map { index in
                 BinUsage(
                     start: start.addingTimeInterval(Double(index) * 60 * 60),
@@ -332,10 +336,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 quotaRecentBins: [],
                 quotaHourlyBins: quotaHourlyBins
             )
-            let endIndex = range == .sevenDays ? 2 : 1
+            let startIndex = range == .thirtyDays ? prepared.bins.count - 3 : 0
+            let endIndex = startIndex + 2
             let selection = try XCTUnwrap(
                 prepared.quotaConsumptionSelection(
-                    startIndex: 0,
+                    startIndex: startIndex,
                     endIndex: endIndex,
                     priceCard: .officialAPI(.gpt56Terra),
                     attributionEvents: events
@@ -835,7 +840,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             context: attributionContext(for: partialBuckets, radarTotalUSD: 1_000)
         )
         XCTAssertEqual(conservative.state, .provisional)
-        XCTAssertTrue(conservative.caveats.contains { $0.contains("首尾整桶") })
+        XCTAssertTrue(conservative.caveats.contains { $0.contains("首尾留一分钟余量") })
     }
 
     func testEstimatedQuotaDropStaysProvisionalAndUsesOnlyObservationCoveredTokens() throws {
@@ -1088,7 +1093,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_800)
         let oldReset = start.addingTimeInterval(7 * 24 * 60 * 60)
         let latestReset = oldReset.addingTimeInterval(7 * 24 * 60 * 60)
-        let bins = (0..<4).map { index in
+        let bins = (0..<5).map { index in
             BinUsage(
                 start: start.addingTimeInterval(Double(index) * 300),
                 tokens: index < 2 ? 50_000_000 : 100_000,
@@ -1102,7 +1107,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             QuotaHistoryObservation(observedAt: bins[0].start, remainingPercent: 90, resetsAt: oldReset),
             QuotaHistoryObservation(observedAt: bins[1].start, remainingPercent: 72, resetsAt: oldReset),
             QuotaHistoryObservation(observedAt: bins[2].start.addingTimeInterval(60), remainingPercent: 100, resetsAt: latestReset),
-            QuotaHistoryObservation(observedAt: bins[3].start.addingTimeInterval(60), remainingPercent: 28, resetsAt: latestReset),
+            QuotaHistoryObservation(observedAt: bins[3].start.addingTimeInterval(60), remainingPercent: 72, resetsAt: latestReset),
+            QuotaHistoryObservation(observedAt: bins[4].start.addingTimeInterval(60), remainingPercent: 28, resetsAt: latestReset),
         ]
         let prepared = RecentChartPreparedData(
             range: .twentyFourHours,
@@ -1116,7 +1122,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             cacheBreakdowns: cache,
             observedCacheHitRates: Array(repeating: 0, count: bins.count),
             fiveHourRemainingPercents: Array(repeating: nil, count: bins.count),
-            sevenDayRemainingPercents: [90, 72, 100, 28],
+            sevenDayRemainingPercents: [90, 72, 100, 72, 28],
             sevenDayQuotaObservations: observations,
             quotaObservationProvenanceAvailable: true,
             latestFiveHourRemaining: nil,
@@ -1130,18 +1136,18 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let selection = try XCTUnwrap(
             prepared.quotaConsumptionSelection(
                 startIndex: 0,
-                endIndex: 3,
+                endIndex: 4,
                 priceCard: .officialAPI(.gpt56Sol)
             )
         )
 
-        XCTAssertEqual(selection.breakdown.inputTokens, 100_200_000)
-        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 501, accuracy: 0.0001)
-        XCTAssertEqual(selection.sevenDay.comparisonBreakdown.inputTokens, 200_000)
-        XCTAssertEqual(selection.sevenDay.comparisonStartDate, bins[2].start)
-        XCTAssertEqual(selection.sevenDay.comparisonEndDate, bins[3].start.addingTimeInterval(300))
+        XCTAssertEqual(selection.breakdown.inputTokens, 100_300_000)
+        XCTAssertEqual(selection.sevenDay.selectedCostUSD, 501.5, accuracy: 0.0001)
+        XCTAssertEqual(selection.sevenDay.comparisonBreakdown.inputTokens, 100_000)
+        XCTAssertEqual(selection.sevenDay.comparisonStartDate, bins[3].start)
+        XCTAssertEqual(selection.sevenDay.comparisonEndDate, bins[4].start)
         XCTAssertEqual(selection.sevenDay.quotaDropPercent, 72, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 1.3888889, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(selection.sevenDay.impliedWindowBudgetUSD), 0.6944444, accuracy: 0.0001)
         let presentation = QuotaConsumptionEstimatorOverlayPresentation(
             selection: selection,
             showsFiveHourQuota: false,
@@ -1374,7 +1380,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testThirtyDayRangeUsesThreeHourBucketsAcrossFullScrollableHistory() {
+    func testThirtyDayRangeUsesSixHourBucketsAndClampsSourceHistoryToThirtyDays() {
         let start = Date(timeIntervalSince1970: 1_800)
         let hourlyBins = (0..<(45 * 24)).map { index in
             BinUsage(
@@ -1394,11 +1400,29 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             quotaHourlyBins: []
         )
 
-        XCTAssertEqual(prepared.bucketInterval, 3 * 60 * 60)
-        XCTAssertEqual(prepared.bins.count, 45 * 8)
-        XCTAssertEqual(prepared.bins.first?.start, start)
-        XCTAssertEqual(prepared.bins.last?.start, start.addingTimeInterval(Double(45 * 8 - 1) * 3 * 60 * 60))
-        XCTAssertEqual(prepared.tokenTotal, hourlyBins.reduce(0) { $0 + $1.tokens })
+        XCTAssertEqual(prepared.bucketInterval, 6 * 60 * 60)
+        XCTAssertEqual(prepared.bins.count, 30 * 4)
+        let interval = RecentChartRange.thirtyDays.bucketInterval
+        let expectedLastStartUnix = floor(
+            hourlyBins.last!.start.timeIntervalSince1970 / interval
+        ) * interval
+        let expectedFirstStartUnix = expectedLastStartUnix - Double(30 * 4 - 1) * interval
+        XCTAssertEqual(
+            prepared.bins.first?.start,
+            Date(timeIntervalSince1970: expectedFirstStartUnix)
+        )
+        XCTAssertEqual(
+            prepared.bins.last?.start,
+            Date(timeIntervalSince1970: expectedLastStartUnix)
+        )
+        let expectedHourlyBins = hourlyBins.filter {
+            $0.start.timeIntervalSince1970 >= expectedFirstStartUnix
+                && $0.start.timeIntervalSince1970 < expectedLastStartUnix + interval
+        }
+        XCTAssertEqual(
+            prepared.tokenTotal,
+            expectedHourlyBins.reduce(0) { $0 + $1.tokens }
+        )
     }
 
     func testScrollMetricsKeepSelectedWindowAtNormalWidthAndExpandHistory() {
@@ -1415,11 +1439,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let fourteenDays = (0..<(14 * 24)).map { index in
             BinUsage(start: start.addingTimeInterval(Double(index) * 60 * 60), tokens: 1, calls: 1)
         }
-        let thirtyDays = (0..<(30 * 8)).map { index in
-            BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
+        let thirtyDays = (0..<(30 * 4)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 6 * 60 * 60), tokens: 1, calls: 1)
         }
-        let sixtyDays = (0..<(60 * 8)).map { index in
-            BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
+        let sixtyDays = (0..<(60 * 4)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 6 * 60 * 60), tokens: 1, calls: 1)
         }
 
         XCTAssertEqual(
@@ -1492,8 +1516,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let fortyEightHours = (0..<(2 * 288)).map { index in
             BinUsage(start: start.addingTimeInterval(Double(index) * 5 * 60), tokens: 1, calls: 1)
         }
-        let fortyFiveDays = (0..<(45 * 8)).map { index in
-            BinUsage(start: start.addingTimeInterval(Double(index) * 3 * 60 * 60), tokens: 1, calls: 1)
+        let fortyFiveDays = (0..<(45 * 4)).map { index in
+            BinUsage(start: start.addingTimeInterval(Double(index) * 6 * 60 * 60), tokens: 1, calls: 1)
         }
 
         XCTAssertEqual(
@@ -1865,6 +1889,41 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(state.activeEndIndex(hoveredIndex: 5, fallbackEndIndex: 9), 5)
     }
 
+    func testAllRecentChartRangesUseThe278PointCanvas() {
+        for range in [RecentChartRange.twentyFourHours, .sevenDays, .thirtyDays] {
+            let geometry = range.chartGeometry
+            XCTAssertEqual(geometry.canvasHeight, 278, accuracy: 0.001)
+            XCTAssertEqual(geometry.plotTop, 27, accuracy: 0.001)
+            XCTAssertEqual(geometry.plotHeight, 215, accuracy: 0.001)
+        }
+    }
+
+    func testRecentChartTokenPeakLeavesHeadroomBelowTheTopEdge() {
+        let scaleMap = RecentChartScaleMap(
+            tokenValues: [100],
+            callValues: [10],
+            costs: [5, 17.5, 30, 0]
+        )
+        let y = scaleMap.y(for: 100, series: .tokens, plotHeight: 100)
+        XCTAssertEqual(y, 20, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 10, series: .calls), 1, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 1, series: .cacheHitRate), 1, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .quota), 1, accuracy: 0.0001)
+    }
+
+    func testRecentChartCostPointScaleCentersAverageAtSeventyPercent() {
+        let scaleMap = RecentChartScaleMap(
+            tokenValues: [100],
+            callValues: [10],
+            costs: [5, 17.5, 30, 0]
+        )
+        XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 0.45, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 0.7, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 0.95, accuracy: 0.0001)
+        XCTAssertTrue(RecentChartScaleMap.isRenderableCost(5))
+        XCTAssertFalse(RecentChartScaleMap.isRenderableCost(0))
+    }
+
     func testRecentUsageChartExposesClickToEstimateQuotaUI() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
         let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
@@ -1917,14 +1976,14 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
                 basis: .observed,
                 usesConservativeBuckets: true
             ).sectionTitle,
-            "7d 保守整桶归因统计"
+            "7d 边缘独立归因统计"
         )
         XCTAssertEqual(
             QuotaConsumptionComparisonCoveragePresentation(
                 basis: .observed,
                 usesConservativeBuckets: true
             ).sourceTitle,
-            "保守整桶计入范围"
+            "中间完整桶计入，边缘桶另计"
         )
         XCTAssertEqual(
             QuotaConsumptionComparisonCoveragePresentation(basis: .estimated).sectionTitle,
@@ -2097,7 +2156,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertTrue(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: conservativeBoundary)
-                .accessibilityText.contains("首尾整桶保守计入")
+                .accessibilityText.contains("按边界完整桶计算，首尾保留一分钟余量")
         )
     }
 

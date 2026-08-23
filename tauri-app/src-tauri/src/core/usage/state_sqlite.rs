@@ -31,7 +31,7 @@ pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot> {
         LONG_RECENT_INTERVAL_SECONDS,
         LONG_RECENT_POINT_COUNT,
     );
-    let recent_usage_7d = empty_recent_usage(local_now, 60 * 60, 7 * 24);
+    let recent_usage_7d = empty_recent_usage(local_now, 60 * 60, 30 * 24);
     let recent_usage_30d = empty_recent_usage(local_now, 6 * 60 * 60, 30 * 4);
 
     Ok(DashboardSnapshot {
@@ -253,7 +253,7 @@ mod tests {
             snapshot.recent_usage_24h.last().unwrap().start_unix,
             *expected_recent_starts.last().unwrap()
         );
-        assert_eq!(snapshot.recent_usage_7d.len(), 168);
+        assert_eq!(snapshot.recent_usage_7d.len(), 30 * 24);
         assert_eq!(snapshot.recent_usage_30d.len(), 120);
         assert!(snapshot.recent_usage_24h.iter().all(|point| point.tokens == 0));
         assert!(snapshot.recent_usage_7d.iter().all(|point| point.tokens == 0));

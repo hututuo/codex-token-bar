@@ -7,18 +7,26 @@ import {
   optionalSmoothPath,
   percentText,
   prepareRecentChartData,
+  plotChartPoints,
   quotaComparisonScopeText,
   quotaConsumptionSelection,
   quotaSelectionAttribution,
   quotaSelectionDurationText,
   quotaEstimateWindowVisibility,
+  recentChartGeometry,
+  recentChartHeightFraction,
+  recentChartScaleMap,
   recentChartScrollLayout,
   recentChartScrollPresentation,
   recentChartScrollTarget,
   recentChartTimeMarkers,
   recentChartVisibleWindowLabel,
+  recentChartVisibleWindowIndices,
+  recentChartVisibleWindowSummary,
+  scaledCostPoints,
   smoothPath,
   shouldReopenPreviewOnHoverMove,
+  tokenAreaPath,
 } from "./model.ts";
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 import { LONG_RECENT_POINT_COUNT } from "../../timeSeriesTimeline.ts";
@@ -42,6 +50,131 @@ function point(startUnix, overrides = {}) {
 function localUnix(year, monthIndex, day, hour = 0, minute = 0) {
   return Math.floor(new Date(year, monthIndex, day, hour, minute).getTime() / 1_000);
 }
+
+test("all recent chart ranges use the 278px canvas", () => {
+  const expected = {
+    canvasHeight: 278,
+    plotTop: 27,
+    plotHeight: 215,
+    timeMarkerGap: 36,
+  };
+  for (const range of ["24h", "7d", "30d"]) {
+    assert.deepEqual(recentChartGeometry(range), expected, range);
+  }
+});
+
+test("token peak leaves headroom below the top edge", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { tokens: 50 }),
+      point(300, { tokens: 100 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const plotted = plotChartPoints(data, 100, 100, "gpt56Sol");
+  assert.ok(Math.abs(plotted.tokenPoints[1].y - 20) < 1e-9);
+  assert.equal(plotted.callPoints[1].y, 100);
+  assert.ok(plotted.tokenPoints[0].y > plotted.tokenPoints[1].y);
+});
+
+test("the unified scale map gives each series its explicit visual range", () => {
+  const scaleMap = recentChartScaleMap({
+    tokenValues: [50, 100],
+    callValues: [5, 10],
+    costs: [5, 17.5, 30, 0],
+  });
+  assert.equal(recentChartHeightFraction(100, scaleMap.tokens), 0.8);
+  assert.equal(recentChartHeightFraction(10, scaleMap.calls), 1);
+  assert.equal(recentChartHeightFraction(1, scaleMap.cacheHitRate), 1);
+  assert.equal(recentChartHeightFraction(1, scaleMap.quota), 1);
+  assert.equal(recentChartHeightFraction(5, scaleMap.cost), 0.45);
+  assert.equal(recentChartHeightFraction(17.5, scaleMap.cost), 0.7);
+  assert.equal(recentChartHeightFraction(30, scaleMap.cost), 0.95);
+
+  const costs = scaledCostPoints([5, 17.5, 30, 0], 100, 100, scaleMap.cost);
+  assert.equal(costs.length, 4);
+  const visibleCosts = costs.filter(Boolean);
+  assert.equal(visibleCosts.length, 3);
+  assert.ok(Math.abs(visibleCosts[0].y - 55) < 1e-9);
+  assert.ok(Math.abs(visibleCosts[1].y - 30) < 1e-9);
+  assert.ok(Math.abs(visibleCosts[2].y - 5) < 1e-9);
+  assert.equal(costs[3], null);
+
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { tokens: 1_000_000, calls: 1, inputTokens: 1_000_000 }),
+      point(300, { tokens: 1_000_000, calls: 1, outputTokens: 1_000_000 }),
+      point(600),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const plotted = plotChartPoints(data, 100, 100, "gpt56Sol");
+  assert.deepEqual(plotted.bucketCostsUSD, [5, 30, 0]);
+  assert.equal(plotted.costPoints.length, 3);
+  assert.equal(plotted.costPoints.filter(Boolean).length, 2);
+  assert.equal(plotted.costPoints[2], null);
+});
+
+test("only the token scale adapts to the visible bucket window and fixed scales reuse precomputed costs", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { tokens: 50, calls: 1 }),
+      point(300, { tokens: 100, calls: 2 }),
+      point(600, { tokens: 200, calls: 4 }),
+      point(900, { tokens: 400, calls: 8 }),
+    ],
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const precomputedCosts = [1, 2, 4, 8];
+  const firstWindow = plotChartPoints(data, 100, 100, "gpt56Sol", {
+    bucketCostsUSD: precomputedCosts,
+    scaleWindow: { startIndex: 0, endIndex: 1 },
+  });
+  const secondWindow = plotChartPoints(data, 100, 100, "gpt56Sol", {
+    bucketCostsUSD: precomputedCosts,
+    scaleWindow: { startIndex: 2, endIndex: 3 },
+  });
+
+  assert.equal(firstWindow.scaleMap.tokens.maximum, 100);
+  assert.equal(secondWindow.scaleMap.tokens.maximum, 400);
+  assert.ok(Math.abs(firstWindow.tokenPoints[1].y - 20) < 1e-9);
+  assert.ok(Math.abs(secondWindow.tokenPoints[3].y - 20) < 1e-9);
+  assert.equal(firstWindow.scaleMap.cost.minimum, 1);
+  assert.equal(firstWindow.scaleMap.cost.maximum, 8);
+  assert.equal(secondWindow.scaleMap.cost.minimum, 1);
+  assert.equal(secondWindow.scaleMap.cost.maximum, 8);
+  assert.equal(firstWindow.scaleMap.calls.maximum, 8);
+  assert.equal(secondWindow.scaleMap.calls.maximum, 8);
+  assert.strictEqual(firstWindow.bucketCostsUSD, precomputedCosts);
+  assert.strictEqual(secondWindow.bucketCostsUSD, precomputedCosts);
+});
+
+test("plotChartPoints renders only the requested slice while preserving global x coordinates", () => {
+  const points = Array.from({ length: 100 }, (_, index) => point(index * 300, {
+    tokens: index + 1,
+    calls: index % 7,
+  }));
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: points,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const plotted = plotChartPoints(data, 990, 215, "gpt56Sol", {
+    bucketCostsUSD: Array(100).fill(0),
+    renderWindow: { startIndex: 18, endIndex: 32 },
+    scaleWindow: { startIndex: 20, endIndex: 30 },
+  });
+
+  assert.equal(plotted.renderStartIndex, 18);
+  assert.equal(plotted.renderEndIndex, 32);
+  assert.equal(plotted.tokenPoints.length, 15);
+  assert.equal(plotted.callPoints.length, 15);
+  assert.equal(plotted.tokenPoints[0].x, 180);
+  assert.equal(plotted.tokenPoints.at(-1).x, 320);
+});
 
 test("prepareRecentChartData keeps low-activity cache gaps unknown instead of carrying stale rates", () => {
   const data = prepareRecentChartData("7d", {
@@ -195,6 +328,21 @@ test("smoothPath falls back to a full polyline when x positions are not increasi
   assert.equal(path, "M 0 0 L 10 10 L 10 5 L 20 0");
 });
 
+test("tokenAreaPath stays valid for empty, single, and multi-point series", () => {
+  assert.equal(tokenAreaPath([], 20, 20), "");
+  assert.equal(
+    tokenAreaPath([{ x: 4, y: 6 }], 20, 20),
+    "M 4 6 L 4 20 L 4 20 Z",
+  );
+  const multi = tokenAreaPath([
+    { x: 4, y: 6 },
+    { x: 12, y: 3 },
+    { x: 20, y: 8 },
+  ], 20, 20);
+  assert.match(multi, /^M 4 6 C /);
+  assert.match(multi, / L 20 20 L 4 20 Z$/);
+});
+
 test("hover index rounds to nearest point and percentText formats 0-1 values", () => {
   assert.equal(hoverIndexForX(24, 100, 5), 1);
   assert.equal(hoverIndexForX(99, 100, 5), 4);
@@ -256,6 +404,30 @@ test("quotaConsumptionSelection keeps only the latest quota cycle after a reset"
   });
   assert.equal(attribution?.state, "provisional");
   assert.equal(attribution?.allowsAttributionConclusion, false);
+});
+
+test("quota consumption keeps unaligned edge buckets as separate accounting", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [0, 300, 600].map((startUnix, index) => point(startUnix, {
+      inputTokens: 100,
+      tokens: 100,
+      calls: 1,
+      sevenDayRemainingPercent: 0.9 - index * 0.1,
+    })),
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+
+  const selection = quotaConsumptionSelection(data, 0, 2, "gpt56Sol", {
+    sevenDay: { resetAtUnix: 720, periodSeconds: 600 },
+  });
+
+  assert.ok(selection);
+  assert.equal(selection.sevenDay.boundaryBreakdown.leading.totalTokens, 100);
+  assert.equal(selection.sevenDay.boundaryBreakdown.trailing.totalTokens, 100);
+  assert.equal(selection.sevenDay.comparisonBreakdown.totalTokens, 100);
+  assert.equal(selection.sevenDay.comparisonStartUnix, 300);
+  assert.equal(selection.sevenDay.comparisonEndUnix, 600);
 });
 
 test("latest quota cycle with one remaining point fails closed for the budget inversion", () => {
@@ -682,6 +854,13 @@ function dashboardStateWithRecentUsage(recentUsage24h) {
 
 function dashboardSnapshotWithRecentUsage(recentUsage24h) {
   return {
+    stats: {
+      totalTokens: 0,
+      peakDayTokens: 0,
+      peakThreadTokens: 0,
+      totalCalls: 0,
+      totalThreads: 0,
+    },
     account: {}, quota: {}, activityDays: [], recentUsage24h, recentUsage7d: [], recentUsage30d: [],
     warnings: [], diagnostics: [],
   };
@@ -852,6 +1031,88 @@ test("24h visible window label follows a middle scroll position", () => {
   );
 });
 
+test("headline totals use the selected window instead of the retained history canvas", () => {
+  const recent24hPoints = Array.from({ length: LONG_RECENT_POINT_COUNT }, (_, index) => point(index * 300, {
+    tokens: index + 1,
+    calls: 1,
+    inputTokens: 100,
+    cachedInputTokens: 25,
+    cacheHitRate: 0.25,
+    fiveHourRemainingPercent: index / LONG_RECENT_POINT_COUNT,
+    sevenDayRemainingPercent: 0.5,
+  }));
+  const fourteenDayHourlyPoints = Array.from({ length: 14 * 24 }, (_, index) => point(index * 3600, {
+    tokens: 1_000 + index,
+    calls: 2,
+    inputTokens: 200,
+    cachedInputTokens: 100,
+    cacheHitRate: 0.5,
+    sevenDayRemainingPercent: index / (14 * 24),
+  }));
+  const sixtyDaySixHourPoints = Array.from({ length: 60 * 4 }, (_, index) => point(index * 6 * 3600, {
+    tokens: 10_000 + index,
+    calls: 3,
+    inputTokens: 300,
+    cachedInputTokens: 75,
+    cacheHitRate: 0.25,
+  }));
+
+  const data24h = prepareRecentChartData("24h", {
+    recentUsage24h: recent24hPoints,
+    recentUsage7d: [],
+    recentUsage30d: [],
+  });
+  const layout24h = recentChartScrollLayout("24h", data24h.points.length, data24h.bucketSeconds, 980);
+  const summary24h = recentChartVisibleWindowSummary(
+    data24h,
+    layout24h.contentWidth,
+    layout24h.latestScrollLeft,
+    layout24h.viewportWidth,
+  );
+  assert.deepEqual(recentChartVisibleWindowIndices(
+    data24h,
+    layout24h.contentWidth,
+    layout24h.latestScrollLeft,
+    layout24h.viewportWidth,
+  ), { startIndex: LONG_RECENT_POINT_COUNT - 288, endIndex: LONG_RECENT_POINT_COUNT - 1 });
+  assert.equal(summary24h.tokenTotal, recent24hPoints.slice(-288).reduce((total, value) => total + value.tokens, 0));
+  assert.equal(summary24h.callTotal, 288);
+  assert.equal(summary24h.cacheHitRate, 0.25);
+  assert.equal(summary24h.latestFiveHourRemaining, recent24hPoints.at(-1).fiveHourRemainingPercent);
+  const middleSummary24h = recentChartVisibleWindowSummary(
+    data24h,
+    layout24h.contentWidth,
+    10 * layout24h.viewportWidth,
+    layout24h.viewportWidth,
+  );
+  assert.equal(middleSummary24h.endIndex - middleSummary24h.startIndex + 1, 288);
+  assert.ok(middleSummary24h.endIndex < summary24h.startIndex);
+
+  const data7d = prepareRecentChartData("7d", {
+    recentUsage24h: [],
+    recentUsage7d: fourteenDayHourlyPoints,
+    recentUsage30d: [],
+  });
+  const layout7d = recentChartScrollLayout("7d", data7d.points.length, data7d.bucketSeconds, 980);
+  const summary7d = recentChartVisibleWindowSummary(data7d, layout7d.contentWidth, layout7d.latestScrollLeft, layout7d.viewportWidth);
+  assert.equal(summary7d.startIndex, fourteenDayHourlyPoints.length - 168);
+  assert.equal(summary7d.endIndex, fourteenDayHourlyPoints.length - 1);
+  assert.equal(summary7d.tokenTotal, fourteenDayHourlyPoints.slice(-168).reduce((total, value) => total + value.tokens, 0));
+  assert.equal(summary7d.callTotal, 168 * 2);
+
+  const data30d = prepareRecentChartData("30d", {
+    recentUsage24h: [],
+    recentUsage7d: [],
+    recentUsage30d: sixtyDaySixHourPoints,
+  });
+  const layout30d = recentChartScrollLayout("30d", data30d.points.length, data30d.bucketSeconds, 980);
+  const summary30d = recentChartVisibleWindowSummary(data30d, layout30d.contentWidth, layout30d.latestScrollLeft, layout30d.viewportWidth);
+  assert.equal(summary30d.startIndex, sixtyDaySixHourPoints.length - 120);
+  assert.equal(summary30d.endIndex, sixtyDaySixHourPoints.length - 1);
+  assert.equal(summary30d.tokenTotal, sixtyDaySixHourPoints.slice(-120).reduce((total, value) => total + value.tokens, 0));
+  assert.equal(summary30d.callTotal, 120 * 3);
+});
+
 test("visible window label is only used for the 24h horizontal chart", () => {
   const startUnix = localUnix(2026, 6, 1);
   const sevenDay = prepareRecentChartData("7d", {
@@ -877,7 +1138,7 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-scroll--horizontal\s*{[^}]*overscroll-behavior-x:\s*contain/s);
   assert.match(css, /\.recent-chart-scroll--horizontal \.recent-chart-scroll-content\s*{[^}]*width:\s*var\(--recent-chart-content-width, 980px\)/s);
   assert.match(css, /\.recent-chart-overlay-layer\s*{[^}]*overflow:\s*visible/s);
-  assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 185\)/s);
+  assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 278\)/s);
   assert.match(css, /\.chart-day-separator\s*{[^}]*stroke:/s);
   assert.match(css, /\.recent-chart-visible-window\s*{[^}]*position:\s*absolute/s);
   assert.match(css, /\.recent-chart-page-button\s*{[^}]*pointer-events:\s*auto/s);
@@ -889,13 +1150,17 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.equal(source.includes("aria-label=\"向后翻页\""), true);
   assert.equal(source.includes("recentChartTimeMarkers(data, chartWidth)"), true);
   assert.equal(source.includes("recentChartVisibleWindowLabel(data, chartWidth, chartScrollLeft, chartViewportWidth)"), true);
-  assert.equal(source.includes("\"--recent-chart-aspect-ratio\": `${chartWidth} / ${CHART_HEIGHT}`"), true);
+  assert.equal(source.includes("\"--recent-chart-aspect-ratio\": `${chartWidth} / ${canvasHeight}`"), true);
   assert.equal(source.includes("className=\"recent-chart-overlay-layer\""), true);
   assert.equal(source.indexOf("className=\"recent-chart-visible-window\"") > source.indexOf("className=\"recent-chart-overlay-layer\""), true);
   assert.equal(source.indexOf("className=\"recent-chart-visible-window\"") > source.indexOf("recent-chart-scroll-content"), true);
   assert.equal(source.includes("chart-time-marker--"), true);
   assert.equal(source.includes("chart-day-separator"), true);
   assert.equal(source.includes("x={activeTokenPoint.x - chartScrollLeft}"), true);
+  assert.equal(source.includes("recentChartBucketCosts(data.points, quotaModel)"), true);
+  assert.equal(source.includes("window.requestAnimationFrame"), true);
+  assert.equal(source.includes("visibleWindowSummary.startIndex"), true);
+  assert.equal(source.includes("visibleWindowSummary.endIndex"), true);
 });
 
 test("clickQuotaSelection previews on hover, pins on second click, resets on third click", () => {

@@ -4,6 +4,10 @@ import {
   priceModelTitle,
   type OfficialAPIPriceModel,
 } from "../../settings/quotaPriceModel.ts";
+import {
+  firstCompleteQuotaBucketStart,
+  lastCompleteQuotaBucketEnd,
+} from "../quotaPeriodBoundary.ts";
 
 export {
   isOfficialAPIPriceModel,
@@ -57,6 +61,12 @@ export interface Recent7dSavingsEstimate {
   periodStartUnix: number;
   resetAtUnix: number;
   pointCount: number;
+  boundaryBreakdown: {
+    leading: CostBreakdown;
+    trailing: CostBreakdown;
+    leadingStartUnix: number | null;
+    trailingStartUnix: number | null;
+  };
 }
 
 export function lifetimeBreakdownFromStats(stats: DashboardStats): LifetimeTokenBreakdown {
@@ -138,11 +148,26 @@ export function estimateRecent7dAPICost({
   if (typeof resetAtUnix !== "number" || !Number.isFinite(resetAtUnix)) return null;
 
   const periodStartUnix = resetAtUnix - SEVEN_DAY_SECONDS;
-  const cyclePoints = (points ?? []).filter((point) => (
+  const safePeriodStartUnix = firstCompleteQuotaBucketStart(periodStartUnix);
+  const safePeriodEndUnix = lastCompleteQuotaBucketEnd(resetAtUnix);
+  const rawPeriodStartBucket = Math.floor(periodStartUnix / (5 * 60)) * (5 * 60);
+  const rawPeriodEndBucket = Math.floor(resetAtUnix / (5 * 60)) * (5 * 60);
+  const rawCyclePoints = (points ?? []).filter((point) => (
     Number.isFinite(point.startUnix)
-      && point.startUnix >= periodStartUnix
-      && point.startUnix < resetAtUnix
+      && point.startUnix >= rawPeriodStartBucket
+      && point.startUnix <= rawPeriodEndBucket
   ));
+  const cyclePoints = rawCyclePoints.filter((point) => (
+    Number.isFinite(point.startUnix)
+      && point.startUnix >= safePeriodStartUnix
+      && point.startUnix < safePeriodEndUnix
+  ));
+  const boundaryBreakdown = periodBoundaryBreakdown(
+    rawCyclePoints,
+    periodStartUnix,
+    resetAtUnix,
+    5 * 60,
+  );
   const usagePoints = cyclePoints.filter(hasUsage);
   if (usagePoints.length === 0) return null;
 
@@ -220,6 +245,7 @@ export function estimateRecent7dAPICost({
     periodStartUnix,
     resetAtUnix,
     pointCount: usagePoints.length,
+    boundaryBreakdown,
   };
 }
 
@@ -227,8 +253,41 @@ type CostBreakdown = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  totalTokens: number;
   calls: number;
 };
+
+function periodBoundaryBreakdown(
+  points: RecentUsagePoint[],
+  periodStartUnix: number,
+  periodEndUnix: number,
+  bucketSeconds: number,
+): Recent7dSavingsEstimate["boundaryBreakdown"] {
+  const empty = emptyBreakdown();
+  const leadingBucketStart = Math.floor(periodStartUnix / bucketSeconds) * bucketSeconds;
+  const trailingBucketStart = Math.floor(periodEndUnix / bucketSeconds) * bucketSeconds;
+  const leadingStartUnix = Math.abs(periodStartUnix - leadingBucketStart) <= 1e-6
+    ? null
+    : leadingBucketStart;
+  const trailingStartUnix = Math.abs(periodEndUnix - trailingBucketStart) <= 1e-6
+    || trailingBucketStart === leadingStartUnix
+    ? null
+    : trailingBucketStart;
+  const pointBreakdown = (startUnix: number | null): CostBreakdown => (
+    startUnix === null
+      ? empty
+      : points
+        .filter((point) => point.startUnix === startUnix)
+        .map(safePointBreakdown)
+        .reduce(addBreakdowns, emptyBreakdown())
+  );
+  return {
+    leading: pointBreakdown(leadingStartUnix),
+    trailing: pointBreakdown(trailingStartUnix),
+    leadingStartUnix,
+    trailingStartUnix,
+  };
+}
 
 function hasUsage(point: RecentUsagePoint): boolean {
   const breakdown = safePointBreakdown(point);
@@ -244,6 +303,7 @@ function safePointBreakdown(point: RecentUsagePoint): CostBreakdown {
     inputTokens: point.inputTokens,
     cachedInputTokens: point.cachedInputTokens,
     outputTokens: point.outputTokens,
+    totalTokens: point.tokens,
     calls: point.calls,
   });
 }
@@ -254,12 +314,13 @@ function safeBreakdown(breakdown: Partial<CostBreakdown> | null | undefined): Co
     inputTokens,
     cachedInputTokens: Math.min(finiteNonnegative(breakdown?.cachedInputTokens), inputTokens),
     outputTokens: finiteNonnegative(breakdown?.outputTokens),
+    totalTokens: finiteNonnegative(breakdown?.totalTokens ?? inputTokens + finiteNonnegative(breakdown?.outputTokens)),
     calls: finiteNonnegative(breakdown?.calls),
   };
 }
 
 function emptyBreakdown(): CostBreakdown {
-  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, calls: 0 };
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0, calls: 0 };
 }
 
 function addBreakdowns(total: CostBreakdown, next: CostBreakdown): CostBreakdown {
@@ -267,6 +328,7 @@ function addBreakdowns(total: CostBreakdown, next: CostBreakdown): CostBreakdown
     inputTokens: total.inputTokens + next.inputTokens,
     cachedInputTokens: total.cachedInputTokens + next.cachedInputTokens,
     outputTokens: total.outputTokens + next.outputTokens,
+    totalTokens: total.totalTokens + next.totalTokens,
     calls: total.calls + next.calls,
   };
 }

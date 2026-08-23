@@ -349,14 +349,21 @@ struct SharedAccountUsageAttributionDetailView: View {
 
     private var tokenSection: some View {
         detailSection(title: "本归因段本机 token", systemImage: "number") {
-            HStack(spacing: 0) {
-                compactValue("非缓存输入", result.breakdown.uncachedInputTokens.abbreviatedTokens)
-                Divider().frame(height: 28)
-                compactValue("缓存输入", result.breakdown.cachedInputTokens.abbreviatedTokens)
-                Divider().frame(height: 28)
-                compactValue("输出", result.breakdown.outputTokens.abbreviatedTokens)
-                Divider().frame(height: 28)
-                compactValue("请求", "\(result.breakdown.calls)")
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 0) {
+                    compactValue("非缓存输入", result.breakdown.uncachedInputTokens.abbreviatedTokens)
+                    Divider().frame(height: 28)
+                    compactValue("缓存输入", result.breakdown.cachedInputTokens.abbreviatedTokens)
+                    Divider().frame(height: 28)
+                    compactValue("输出", result.breakdown.outputTokens.abbreviatedTokens)
+                    Divider().frame(height: 28)
+                    compactValue("请求", "\(result.breakdown.calls)")
+                }
+                if result.boundaryBreakdown.hasUsage {
+                    Text("首尾边缘桶独立统计：\(result.boundaryBreakdown.totalTokens.abbreviatedTokens) Token")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

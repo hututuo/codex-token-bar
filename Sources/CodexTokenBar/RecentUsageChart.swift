@@ -27,8 +27,8 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .twentyFourHours: "5 分钟粒度 · 横向滚动查看 30 天内历史"
-        case .sevenDays: "1 小时粒度 · 横向滚动查看历史"
-        case .thirtyDays: "3 小时粒度 · 横向滚动查看历史"
+        case .sevenDays: "1 小时粒度 · 横向滚动查看 30 天内历史"
+        case .thirtyDays: "6 小时粒度"
         }
     }
 
@@ -36,8 +36,26 @@ enum RecentChartRange: String, CaseIterable, Identifiable {
         switch self {
         case .twentyFourHours: 5 * 60
         case .sevenDays: 60 * 60
-        case .thirtyDays: 3 * 60 * 60
+        case .thirtyDays: 6 * 60 * 60
         }
+    }
+}
+
+struct RecentChartGeometry: Equatable {
+    let canvasHeight: CGFloat
+    let plotTop: CGFloat
+    let plotHeight: CGFloat
+    let timeMarkerOffset: CGFloat
+}
+
+extension RecentChartRange {
+    var chartGeometry: RecentChartGeometry {
+        RecentChartGeometry(
+            canvasHeight: 278,
+            plotTop: 27,
+            plotHeight: 215,
+            timeMarkerOffset: 30
+        )
     }
 }
 
@@ -447,44 +465,270 @@ struct RecentChartPreparedData: Equatable {
     )
 }
 
-private struct RecentChartPlotData {
+struct RecentChartWindowSummary: Equatable {
+    let startIndex: Int
+    let endIndex: Int
+    let tokenTotal: Int
+    let callTotal: Int
+    let recentCacheBreakdown: TokenCacheBreakdown
+    let latestFiveHourRemaining: Double?
+    let latestSevenDayRemaining: Double?
+    let hasCacheCalls: Bool
+
+    static let empty = RecentChartWindowSummary(
+        startIndex: 0,
+        endIndex: -1,
+        tokenTotal: 0,
+        callTotal: 0,
+        recentCacheBreakdown: .empty,
+        latestFiveHourRemaining: nil,
+        latestSevenDayRemaining: nil,
+        hasCacheCalls: false
+    )
+}
+
+extension RecentChartPreparedData {
+    /// Summarize only the time window represented by the current chart viewport.
+    /// The prepared bins intentionally retain older history so the plot can be
+    /// paged; that history must not inflate the headline values in the header.
+    func visibleWindowSummary(
+        for presentation: RecentChartScrollPresentation?
+    ) -> RecentChartWindowSummary {
+        guard !bins.isEmpty else { return .empty }
+
+        let windowBucketCount = max(
+            1,
+            Int((RecentChartScrollMetrics.windowDuration(for: range) / bucketInterval).rounded())
+        )
+        let lastIndex = bins.count - 1
+        let startIndex: Int
+        if let presentation {
+            if presentation.isAtLatest {
+                startIndex = max(lastIndex - windowBucketCount + 1, 0)
+            } else if presentation.isAtOldest {
+                startIndex = 0
+            } else {
+                let contentWidth = max(
+                    presentation.maxOffset + presentation.viewportWidth,
+                    presentation.viewportWidth
+                )
+                let step = contentWidth / CGFloat(max(bins.count - 1, 1))
+                startIndex = step > 0
+                    ? Int((presentation.contentOffset / step).rounded())
+                    : max(lastIndex - windowBucketCount + 1, 0)
+            }
+        } else {
+            startIndex = max(lastIndex - windowBucketCount + 1, 0)
+        }
+
+        let clampedStartIndex = min(max(startIndex, 0), lastIndex)
+        let endIndex = min(clampedStartIndex + windowBucketCount - 1, lastIndex)
+        let indices = clampedStartIndex...endIndex
+        let cacheBreakdown = indices
+            .compactMap { cacheBreakdowns[safe: $0] }
+            .combined
+
+        return RecentChartWindowSummary(
+            startIndex: clampedStartIndex,
+            endIndex: endIndex,
+            tokenTotal: indices.reduce(0) { $0 + bins[$1].tokens },
+            callTotal: indices.reduce(0) { $0 + bins[$1].calls },
+            recentCacheBreakdown: cacheBreakdown,
+            latestFiveHourRemaining: indices.reversed().compactMap {
+                fiveHourRemainingPercents[safe: $0] ?? nil
+            }.first,
+            latestSevenDayRemaining: indices.reversed().compactMap {
+                sevenDayRemainingPercents[safe: $0] ?? nil
+            }.first,
+            hasCacheCalls: cacheBreakdown.calls > 0
+        )
+    }
+}
+
+struct RecentChartPlotData: Equatable {
+    let renderStartIndex: Int
+    let renderEndIndex: Int
     let tokenPoints: [CGPoint]
     let callPoints: [CGPoint]
     let cachePoints: [CGPoint?]
+    let costPoints: [CGPoint?]
+    let bucketCostsUSD: [Double]
     let fiveHourQuotaPoints: [CGPoint?]
     let sevenDayQuotaPoints: [CGPoint?]
 
-    init(bins: [BinUsage], prepared: RecentChartPreparedData, plot: CGRect, step: CGFloat) {
-        tokenPoints = bins.indices.map { index in
+    init(
+        bins: [BinUsage],
+        prepared: RecentChartPreparedData,
+        plot: CGRect,
+        step: CGFloat,
+        bucketCostsUSD: [Double],
+        fixedScales: RecentChartFixedScaleMap,
+        renderRange: ClosedRange<Int>?,
+        scaleRange: ClosedRange<Int>?
+    ) {
+        let calculatedBucketCostsUSD = bins.indices.map { index in
+            guard let cost = bucketCostsUSD[safe: index], cost.isFinite else { return 0.0 }
+            return max(cost, 0)
+        }
+        self.bucketCostsUSD = calculatedBucketCostsUSD
+        let scaleIndices: [Int]
+        if let scaleRange, !bins.isEmpty {
+            let lowerBound = min(max(scaleRange.lowerBound, bins.startIndex), bins.index(before: bins.endIndex))
+            let upperBound = min(max(scaleRange.upperBound, lowerBound), bins.index(before: bins.endIndex))
+            scaleIndices = Array(lowerBound...upperBound)
+        } else {
+            scaleIndices = Array(bins.indices)
+        }
+        let scaleMap = RecentChartScaleMap(
+            tokenValues: scaleIndices.map { bins[$0].tokens },
+            fixed: fixedScales
+        )
+        let renderIndices: [Int]
+        if let renderRange, !bins.isEmpty {
+            let lowerBound = min(max(renderRange.lowerBound, bins.startIndex), bins.index(before: bins.endIndex))
+            let upperBound = min(max(renderRange.upperBound, lowerBound), bins.index(before: bins.endIndex))
+            renderIndices = Array(lowerBound...upperBound)
+        } else {
+            renderIndices = Array(bins.indices)
+        }
+        renderStartIndex = renderIndices.first ?? 0
+        renderEndIndex = renderIndices.last ?? -1
+        tokenPoints = renderIndices.map { index in
             let x = plot.minX + CGFloat(index) * step
-            let y = plot.maxY - CGFloat(bins[index].tokens) / CGFloat(prepared.maxTokens) * plot.height
+            let y = plot.minY + scaleMap.y(
+                for: Double(bins[index].tokens),
+                series: .tokens,
+                plotHeight: plot.height
+            )
             return CGPoint(x: x, y: y)
         }
-        callPoints = bins.indices.map { index in
+        callPoints = renderIndices.map { index in
             let x = plot.minX + CGFloat(index) * step
-            let y = plot.maxY - CGFloat(bins[index].calls) / CGFloat(prepared.maxCalls) * plot.height
+            let y = plot.minY + scaleMap.y(
+                for: Double(bins[index].calls),
+                series: .calls,
+                plotHeight: plot.height
+            )
             return CGPoint(x: x, y: y)
         }
-        cachePoints = bins.indices.map { index in
+        cachePoints = renderIndices.map { index in
             let x = plot.minX + CGFloat(index) * step
             guard let rate = prepared.observedCacheHitRates[safe: index] ?? nil else { return nil }
-            let y = plot.maxY - CGFloat(rate) * plot.height
+            let y = plot.minY + scaleMap.y(
+                for: rate,
+                series: .cacheHitRate,
+                plotHeight: plot.height
+            )
             return CGPoint(x: x, y: y)
         }
-        fiveHourQuotaPoints = bins.indices.map { index in
+        costPoints = renderIndices.map { index in
+            guard let cost = calculatedBucketCostsUSD[safe: index],
+                  RecentChartScaleMap.isRenderableCost(cost) else { return nil }
+            return CGPoint(
+                x: plot.minX + CGFloat(index) * step,
+                y: plot.minY + scaleMap.y(
+                    for: cost,
+                    series: .cost,
+                    plotHeight: plot.height
+                )
+            )
+        }
+        fiveHourQuotaPoints = renderIndices.map { index in
             guard let value = prepared.fiveHourRemainingPercents[safe: index],
                   let percent = value else { return nil }
             let x = plot.minX + CGFloat(index) * step
-            let y = plot.maxY - CGFloat(max(0, min(100, percent)) / 100.0) * plot.height
+            let y = plot.minY + scaleMap.y(
+                for: percent,
+                series: .quota,
+                plotHeight: plot.height
+            )
             return CGPoint(x: x, y: y)
         }
-        sevenDayQuotaPoints = bins.indices.map { index in
+        sevenDayQuotaPoints = renderIndices.map { index in
             guard let value = prepared.sevenDayRemainingPercents[safe: index],
                   let percent = value else { return nil }
             let x = plot.minX + CGFloat(index) * step
-            let y = plot.maxY - CGFloat(max(0, min(100, percent)) / 100.0) * plot.height
+            let y = plot.minY + scaleMap.y(
+                for: percent,
+                series: .quota,
+                plotHeight: plot.height
+            )
             return CGPoint(x: x, y: y)
         }
+    }
+
+    func tokenPoint(at globalIndex: Int) -> CGPoint? {
+        localIndex(for: globalIndex).flatMap { tokenPoints[safe: $0] }
+    }
+
+    func callPoint(at globalIndex: Int) -> CGPoint? {
+        localIndex(for: globalIndex).flatMap { callPoints[safe: $0] }
+    }
+
+    func cachePoint(at globalIndex: Int) -> CGPoint? {
+        guard let index = localIndex(for: globalIndex) else { return nil }
+        return cachePoints[safe: index] ?? nil
+    }
+
+    func costPoint(at globalIndex: Int) -> CGPoint? {
+        guard let index = localIndex(for: globalIndex) else { return nil }
+        return costPoints[safe: index] ?? nil
+    }
+
+    func fiveHourQuotaPoint(at globalIndex: Int) -> CGPoint? {
+        guard let index = localIndex(for: globalIndex) else { return nil }
+        return fiveHourQuotaPoints[safe: index] ?? nil
+    }
+
+    func sevenDayQuotaPoint(at globalIndex: Int) -> CGPoint? {
+        guard let index = localIndex(for: globalIndex) else { return nil }
+        return sevenDayQuotaPoints[safe: index] ?? nil
+    }
+
+    private func localIndex(for globalIndex: Int) -> Int? {
+        guard globalIndex >= renderStartIndex, globalIndex <= renderEndIndex else { return nil }
+        return globalIndex - renderStartIndex
+    }
+}
+
+private struct RecentChartRenderCacheKey: Equatable {
+    let generation: Int
+    let width: CGFloat
+    let height: CGFloat
+    let scaleStartIndex: Int
+    let scaleEndIndex: Int
+    let renderStartIndex: Int
+    let renderEndIndex: Int
+}
+
+private struct RecentChartRenderFrame {
+    let plotData: RecentChartPlotData
+    let renderPlot: CGRect
+    let tokenArea: Path
+    let tokenLine: Path
+    let callLine: Path
+    let cachePoints: Path
+    let costPoints: Path
+    let fiveHourQuotaLine: Path
+    let sevenDayQuotaLine: Path
+}
+
+@MainActor
+private final class RecentChartRenderFrameCache {
+    private var key: RecentChartRenderCacheKey?
+    private var frame: RecentChartRenderFrame?
+
+    func value(
+        for key: RecentChartRenderCacheKey,
+        build: () -> RecentChartRenderFrame
+    ) -> RecentChartRenderFrame {
+        if self.key == key, let frame {
+            return frame
+        }
+        let updated = build()
+        self.key = key
+        frame = updated
+        return updated
     }
 }
 
@@ -725,6 +969,10 @@ struct RecentUsageChart: View, Equatable {
     @State private var previewVisibility = RecentChartPreviewVisibilityState()
     @State private var accessibilityCursorState = RecentChartAccessibilityCursorState()
     @State private var scrollPresentation: RecentChartScrollPresentation?
+    @State private var cachedBucketCostsUSD: [Double]
+    @State private var cachedFixedScales: RecentChartFixedScaleMap
+    @State private var renderGeneration: Int
+    @State private var renderFrameCache: RecentChartRenderFrameCache
     @State var preparedData: RecentChartPreparedData
 
     init(
@@ -751,6 +999,10 @@ struct RecentUsageChart: View, Equatable {
         self.currentFiveHourQuotaPresent = currentFiveHourQuotaPresent
         self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
         self.sharedAccountAttributionContext = sharedAccountAttributionContext
+        _cachedBucketCostsUSD = State(initialValue: [])
+        _cachedFixedScales = State(initialValue: .empty)
+        _renderGeneration = State(initialValue: 0)
+        _renderFrameCache = State(initialValue: RecentChartRenderFrameCache())
         _preparedData = State(initialValue: .empty)
     }
 
@@ -793,9 +1045,14 @@ struct RecentUsageChart: View, Equatable {
             get: { selectedRange },
             set: { range in
                 selectedRangeRaw = range.rawValue
+                scrollPresentation = nil
                 clearConsumptionSelection()
             }
         )
+    }
+
+    private var visibleWindowSummary: RecentChartWindowSummary {
+        preparedData.visibleWindowSummary(for: scrollPresentation)
     }
 
     private var preparationInput: RecentChartPreparationInput {
@@ -844,14 +1101,15 @@ struct RecentUsageChart: View, Equatable {
                 }
 
                 HStack(spacing: 14) {
-                    ChartLegend(color: .blue, label: "Token", value: preparedData.tokenTotal.abbreviatedTokens)
-                    ChartLegend(color: .orange, label: "调用", value: "\(preparedData.callTotal)")
-                    ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: preparedData.recentCacheBreakdown.cacheHitRate.percentString)
+                    ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
+                    ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
+                    ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
+                    ChartLegend(color: .pink, label: "金额", value: "每桶")
                     if quotaSeriesVisibility.showsFiveHour {
-                        ChartLegend(color: .purple, label: "5h", value: Self.percentText(preparedData.latestFiveHourRemaining))
+                        ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
                     if quotaSeriesVisibility.showsSevenDay {
-                        ChartLegend(color: .green, label: "7d", value: Self.percentText(preparedData.latestSevenDayRemaining))
+                        ChartLegend(color: .green, label: "7d", value: Self.percentText(visibleWindowSummary.latestSevenDayRemaining))
                     }
                 }
 
@@ -1040,7 +1298,7 @@ struct RecentUsageChart: View, Equatable {
                 }
             }
         }
-        .frame(height: 185)
+        .frame(height: selectedRange.chartGeometry.canvasHeight)
     }
 
     private var chartViewportMask: some View {
@@ -1088,13 +1346,71 @@ struct RecentUsageChart: View, Equatable {
         height: CGFloat,
         consumptionSelection: QuotaConsumptionSelection?
     ) -> some View {
-        let plot = CGRect(x: 0, y: 18, width: width, height: max(height - 42, 1))
+        let geometry = selectedRange.chartGeometry
+        let plot = CGRect(
+            x: 0,
+            y: geometry.plotTop,
+            width: width,
+            height: max(geometry.plotHeight, 1)
+        )
         let chartBins = preparedData.bins
         let step = plot.width / CGFloat(max(chartBins.count - 1, 1))
+        let scaleWindow = visibleWindowSummary
+        let renderRange: ClosedRange<Int>? = scaleWindow.endIndex >= scaleWindow.startIndex
+            ? max(scaleWindow.startIndex - 2, 0)...min(scaleWindow.endIndex + 2, max(chartBins.count - 1, 0))
+            : nil
         let activeIndex = consumptionSelectionState.fixedEndIndex.flatMap {
             chartBins.indices.contains($0) ? $0 : nil
         } ?? hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
-        let plotData = RecentChartPlotData(bins: chartBins, prepared: preparedData, plot: plot, step: step)
+        let renderKey = RecentChartRenderCacheKey(
+            generation: renderGeneration,
+            width: width,
+            height: height,
+            scaleStartIndex: scaleWindow.startIndex,
+            scaleEndIndex: scaleWindow.endIndex,
+            renderStartIndex: renderRange?.lowerBound ?? 0,
+            renderEndIndex: renderRange?.upperBound ?? max(chartBins.count - 1, -1)
+        )
+        let renderFrame = renderFrameCache.value(for: renderKey) {
+            let plotData = RecentChartPlotData(
+                bins: chartBins,
+                prepared: preparedData,
+                plot: plot,
+                step: step,
+                bucketCostsUSD: cachedBucketCostsUSD,
+                fixedScales: cachedFixedScales,
+                renderRange: renderRange,
+                scaleRange: scaleWindow.endIndex >= scaleWindow.startIndex
+                    ? scaleWindow.startIndex...scaleWindow.endIndex
+                    : nil
+            )
+            let renderPlot: CGRect
+            if chartBins.isEmpty {
+                renderPlot = plot
+            } else {
+                let renderLeft = plot.minX + CGFloat(plotData.renderStartIndex) * step
+                let renderRight = plot.minX + CGFloat(max(plotData.renderEndIndex, plotData.renderStartIndex)) * step
+                renderPlot = CGRect(
+                    x: max(plot.minX, renderLeft),
+                    y: plot.minY,
+                    width: max(min(plot.maxX, renderRight) - max(plot.minX, renderLeft), 1),
+                    height: plot.height
+                )
+            }
+            return RecentChartRenderFrame(
+                plotData: plotData,
+                renderPlot: renderPlot,
+                tokenArea: tokenAreaPath(points: plotData.tokenPoints, plot: renderPlot),
+                tokenLine: linePath(points: plotData.tokenPoints),
+                callLine: linePath(points: plotData.callPoints),
+                cachePoints: observedOptionalPointPath(points: plotData.cachePoints),
+                costPoints: observedOptionalPointPath(points: plotData.costPoints),
+                fiveHourQuotaLine: optionalLinePath(points: plotData.fiveHourQuotaPoints),
+                sevenDayQuotaLine: optionalLinePath(points: plotData.sevenDayQuotaPoints)
+            )
+        }
+        let plotData = renderFrame.plotData
+        let renderPlot = renderFrame.renderPlot
 
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1105,9 +1421,8 @@ struct RecentUsageChart: View, Equatable {
                         endPoint: .bottom
                     )
                 )
-                .drawingGroup(opaque: false, colorMode: .nonLinear)
-                .frame(width: plot.width, height: plot.height)
-                .offset(x: plot.minX, y: plot.minY)
+                .frame(width: renderPlot.width, height: renderPlot.height)
+                .offset(x: renderPlot.minX, y: renderPlot.minY)
 
             if let consumptionSelection {
                 let lowerX = plot.minX + CGFloat(consumptionSelection.startIndex) * step
@@ -1130,14 +1445,14 @@ struct RecentUsageChart: View, Equatable {
             ForEach(0..<4, id: \.self) { line in
                 let y = plot.minY + CGFloat(line) * plot.height / 3
                 Path { path in
-                    path.move(to: CGPoint(x: plot.minX, y: y))
-                    path.addLine(to: CGPoint(x: plot.maxX, y: y))
+                    path.move(to: CGPoint(x: renderPlot.minX, y: y))
+                    path.addLine(to: CGPoint(x: renderPlot.maxX, y: y))
                 }
                 .stroke(AppTheme.grid, style: StrokeStyle(lineWidth: 1, dash: [4, 8]))
             }
 
             if showTokens {
-                tokenAreaPath(points: plotData.tokenPoints, plot: plot)
+                renderFrame.tokenArea
                     .fill(
                         LinearGradient(
                             colors: [AppTheme.accentBlue.opacity(0.22), AppTheme.accentBlue.opacity(0.055), Color.clear],
@@ -1145,47 +1460,53 @@ struct RecentUsageChart: View, Equatable {
                             endPoint: .bottom
                         )
                     )
-                    .drawingGroup(opaque: false, colorMode: .nonLinear)
-
-                linePath(points: plotData.tokenPoints)
+                renderFrame.tokenLine
                     .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
 
             }
 
             if showCalls {
-                linePath(points: plotData.callPoints)
+                renderFrame.callLine
                     .stroke(AppTheme.accentOrange, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
             }
 
             if showCacheHitRate && preparedData.hasCacheCalls {
-                observedOptionalPointPath(points: plotData.cachePoints)
+                renderFrame.cachePoints
                     .fill(AppTheme.accentCyan)
             }
 
+            if plotData.costPoints.contains(where: { $0 != nil }) {
+                renderFrame.costPoints
+                .fill(.pink)
+            }
+
             if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
-                optionalLinePath(points: plotData.fiveHourQuotaPoints)
+                renderFrame.fiveHourQuotaLine
                     .stroke(.purple.opacity(0.92), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [3, 6]))
             }
 
             if showSevenDayQuota && quotaSeriesVisibility.drawsSevenDay {
-                optionalLinePath(points: plotData.sevenDayQuotaPoints)
+                renderFrame.sevenDayQuotaLine
                     .stroke(.green.opacity(0.88), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [7, 5]))
             }
 
             if let activeIndex {
-                let tokenPoint = plotData.tokenPoints[safe: activeIndex] ?? .zero
-                let callPoint = plotData.callPoints[safe: activeIndex] ?? .zero
-                let cachePoint = plotData.cachePoints[safe: activeIndex] ?? nil
-                let fiveHourPoint = plotData.fiveHourQuotaPoints[safe: activeIndex] ?? nil
-                let sevenDayPoint = plotData.sevenDayQuotaPoints[safe: activeIndex] ?? nil
+                let tokenPoint = plotData.tokenPoint(at: activeIndex)
+                let callPoint = plotData.callPoint(at: activeIndex)
+                let cachePoint = plotData.cachePoint(at: activeIndex)
+                let costPoint = plotData.costPoint(at: activeIndex)
+                let fiveHourPoint = plotData.fiveHourQuotaPoint(at: activeIndex)
+                let sevenDayPoint = plotData.sevenDayQuotaPoint(at: activeIndex)
 
-                Path { path in
-                    path.move(to: CGPoint(x: tokenPoint.x, y: plot.minY))
-                    path.addLine(to: CGPoint(x: tokenPoint.x, y: plot.maxY))
+                if let tokenPoint {
+                    Path { path in
+                        path.move(to: CGPoint(x: tokenPoint.x, y: plot.minY))
+                        path.addLine(to: CGPoint(x: tokenPoint.x, y: plot.maxY))
+                    }
+                    .stroke(AppTheme.accentBlue.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
                 }
-                .stroke(AppTheme.accentBlue.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
 
-                if showTokens {
+                if showTokens, let tokenPoint {
                     Circle()
                         .fill(AppTheme.pageBackground)
                         .frame(width: 9, height: 9)
@@ -1193,7 +1514,7 @@ struct RecentUsageChart: View, Equatable {
                         .position(tokenPoint)
                 }
 
-                if showCalls {
+                if showCalls, let callPoint {
                     Circle()
                         .fill(AppTheme.pageBackground)
                         .frame(width: 8, height: 8)
@@ -1209,6 +1530,14 @@ struct RecentUsageChart: View, Equatable {
                         .frame(width: 8, height: 8)
                         .overlay(Circle().stroke(AppTheme.accentCyan, lineWidth: Self.hoverRingLineWidth))
                         .position(cachePoint)
+                }
+
+                if let costPoint {
+                    Circle()
+                        .fill(AppTheme.pageBackground)
+                        .frame(width: 8.4, height: 8.4)
+                        .overlay(Circle().stroke(.pink, lineWidth: Self.hoverRingLineWidth))
+                        .position(costPoint)
                 }
 
                 if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour, let fiveHourPoint {
@@ -1256,9 +1585,12 @@ struct RecentUsageChart: View, Equatable {
 
             ChartTimeMarkers(
                 bins: chartBins,
-                markerIndices: preparedData.markerIndices,
+                markerIndices: preparedData.markerIndices.filter {
+                    $0 >= plotData.renderStartIndex && $0 <= plotData.renderEndIndex
+                },
                 range: preparedData.range,
-                plot: plot
+                plot: plot,
+                markerOffset: geometry.timeMarkerOffset
             )
             .allowsHitTesting(false)
         }
@@ -1274,6 +1606,7 @@ struct RecentUsageChart: View, Equatable {
         consumptionSelection: QuotaConsumptionSelection?
     ) -> some View {
         let chartBins = preparedData.bins
+        let geometry = selectedRange.chartGeometry
         let liveHoverIndex = hoveredIndex.flatMap { chartBins.indices.contains($0) ? $0 : nil }
         let fixedEndIndex = consumptionSelectionState.fixedEndIndex.flatMap {
             chartBins.indices.contains($0) ? $0 : nil
@@ -1281,8 +1614,18 @@ struct RecentUsageChart: View, Equatable {
         let activeIndex = fixedEndIndex ?? liveHoverIndex
 
         if previewVisibility.showsTopPreview, let activeIndex {
-            let contentPlot = CGRect(x: 0, y: 18, width: contentWidth, height: max(height - 42, 1))
-            let viewportPlot = CGRect(x: 0, y: 18, width: viewportWidth, height: max(height - 42, 1))
+            let contentPlot = CGRect(
+                x: 0,
+                y: geometry.plotTop,
+                width: contentWidth,
+                height: max(geometry.plotHeight, 1)
+            )
+            let viewportPlot = CGRect(
+                x: 0,
+                y: geometry.plotTop,
+                width: viewportWidth,
+                height: max(geometry.plotHeight, 1)
+            )
             let step = contentPlot.width / CGFloat(max(chartBins.count - 1, 1))
             let viewportTokenX = contentPlot.minX + CGFloat(activeIndex) * step - contentOffset
 
@@ -1297,6 +1640,7 @@ struct RecentUsageChart: View, Equatable {
                         bin: chartBins[activeIndex],
                         cacheBreakdown: preparedData.cacheBreakdowns[safe: activeIndex],
                         modelBreakdowns: preparedData.modelBreakdowns[safe: activeIndex] ?? [],
+                        costUSD: bucketCostUSD(at: activeIndex),
                         fiveHourRemaining: quotaSeriesVisibility.showsFiveHour
                             ? preparedData.fiveHourRemainingPercents[safe: activeIndex] ?? nil
                             : nil,
@@ -1350,8 +1694,21 @@ struct RecentUsageChart: View, Equatable {
         contentWidth: CGFloat,
         windowCount: Int
     ) {
+        let maxOffset = max(contentWidth - viewportWidth, 0)
+        let clampedOffset = min(max(contentOffset, 0), maxOffset)
+        let step = contentWidth / CGFloat(max(preparedData.bins.count - 1, 1))
+        let bucketAlignedOffset: CGFloat
+        if clampedOffset <= 0.5 {
+            bucketAlignedOffset = 0
+        } else if maxOffset - clampedOffset <= 0.5 {
+            bucketAlignedOffset = maxOffset
+        } else if step > 0 {
+            bucketAlignedOffset = min(max((clampedOffset / step).rounded() * step, 0), maxOffset)
+        } else {
+            bucketAlignedOffset = clampedOffset
+        }
         let updated = RecentChartScrollPresentation(
-            contentOffset: contentOffset,
+            contentOffset: bucketAlignedOffset,
             viewportWidth: viewportWidth,
             contentWidth: contentWidth,
             windowCount: windowCount
@@ -1409,28 +1766,33 @@ struct RecentUsageChart: View, Equatable {
             accessibilityCursorState.reset()
             refreshPreparedData()
         }
+        .onChange(of: quotaEstimateModelRaw) { _, _ in
+            refreshBucketCosts()
+        }
     }
 
 
     private var accessibilitySummary: String {
+        let windowSummary = visibleWindowSummary
         var visibleSeries: [String] = []
         if showTokens { visibleSeries.append("Token") }
         if showCalls { visibleSeries.append("调用") }
-        if showCacheHitRate, preparedData.hasCacheCalls { visibleSeries.append("命中率") }
+        if showCacheHitRate, windowSummary.hasCacheCalls { visibleSeries.append("命中率") }
+        if !preparedData.bins.isEmpty { visibleSeries.append("每桶金额") }
         if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour { visibleSeries.append("5 小时额度") }
         if showSevenDayQuota, quotaSeriesVisibility.drawsSevenDay { visibleSeries.append("7 天额度") }
 
         var parts = [
             "\(preparedData.bins.count) 个时间点",
-            "Token 总量 \(preparedData.tokenTotal.abbreviatedTokens)",
-            "调用 \(preparedData.callTotal) 次",
-            "缓存命中率 \(preparedData.recentCacheBreakdown.cacheHitRate.percentString)",
+            "当前窗口 Token 总量 \(windowSummary.tokenTotal.abbreviatedTokens)",
+            "当前窗口调用 \(windowSummary.callTotal) 次",
+            "当前窗口缓存命中率 \(windowSummary.recentCacheBreakdown.cacheHitRate.percentString)",
         ]
         if quotaSeriesVisibility.showsFiveHour {
-            parts.append("5 小时额度 \(Self.percentText(preparedData.latestFiveHourRemaining))")
+            parts.append("5 小时额度 \(Self.percentText(windowSummary.latestFiveHourRemaining))")
         }
         if quotaSeriesVisibility.showsSevenDay {
-            parts.append("7 天额度 \(Self.percentText(preparedData.latestSevenDayRemaining))")
+            parts.append("7 天额度 \(Self.percentText(windowSummary.latestSevenDayRemaining))")
         }
         parts.append("已显示 \(visibleSeries.isEmpty ? "无曲线" : visibleSeries.joined(separator: "、"))")
         return parts.joined(separator: "；")
@@ -1467,14 +1829,93 @@ struct RecentUsageChart: View, Equatable {
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins
         )
-        guard updatedData != preparedData else { return }
+        let updatedBucketCostsUSD = Self.bucketCosts(
+            for: updatedData,
+            priceModel: selectedQuotaEstimateModel
+        )
+        let updatedFixedScales = Self.fixedScales(
+            for: updatedData,
+            bucketCostsUSD: updatedBucketCostsUSD
+        )
+        guard updatedData != preparedData else {
+            var renderInputsChanged = false
+            if updatedBucketCostsUSD != cachedBucketCostsUSD {
+                cachedBucketCostsUSD = updatedBucketCostsUSD
+                renderInputsChanged = true
+            }
+            if updatedFixedScales != cachedFixedScales {
+                cachedFixedScales = updatedFixedScales
+                renderInputsChanged = true
+            }
+            if renderInputsChanged {
+                renderGeneration &+= 1
+            }
+            return
+        }
         preparedData = updatedData
+        cachedBucketCostsUSD = updatedBucketCostsUSD
+        cachedFixedScales = updatedFixedScales
+        renderGeneration &+= 1
         accessibilityCursorState.clamp(validCount: updatedData.bins.count)
         restoreConsumptionSelection(in: updatedData)
     }
 
     private var selectedQuotaEstimateModel: OfficialAPIPriceModel {
         OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw)
+    }
+
+    private func refreshBucketCosts() {
+        let updated = Self.bucketCosts(
+            for: preparedData,
+            priceModel: selectedQuotaEstimateModel
+        )
+        guard updated != cachedBucketCostsUSD else { return }
+        cachedBucketCostsUSD = updated
+        cachedFixedScales = Self.fixedScales(
+            for: preparedData,
+            bucketCostsUSD: updated
+        )
+        renderGeneration &+= 1
+    }
+
+    private static func fixedScales(
+        for prepared: RecentChartPreparedData,
+        bucketCostsUSD: [Double]
+    ) -> RecentChartFixedScaleMap {
+        RecentChartFixedScaleMap(
+            callValues: prepared.bins.map(\.calls),
+            costs: bucketCostsUSD
+        )
+    }
+
+    private static func bucketCosts(
+        for prepared: RecentChartPreparedData,
+        priceModel: OfficialAPIPriceModel
+    ) -> [Double] {
+        prepared.bins.indices.map { index in
+            let fallbackBreakdown = prepared.cacheBreakdowns[safe: index] ?? .empty
+            let estimate = ModelAwareAPIPriceEstimator.estimate(
+                modelBreakdowns: prepared.modelBreakdowns[safe: index] ?? [],
+                fallbackBreakdown: fallbackBreakdown,
+                fallbackModel: priceModel,
+                rates: { $0.currentPriceRates }
+            )
+            return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0
+        }
+    }
+
+    private func bucketCostUSD(at index: Int) -> Double {
+        if let cachedCost = cachedBucketCostsUSD[safe: index] {
+            return cachedCost
+        }
+        let fallbackBreakdown = preparedData.cacheBreakdowns[safe: index] ?? .empty
+        let estimate = ModelAwareAPIPriceEstimator.estimate(
+            modelBreakdowns: preparedData.modelBreakdowns[safe: index] ?? [],
+            fallbackBreakdown: fallbackBreakdown,
+            fallbackModel: selectedQuotaEstimateModel,
+            rates: { $0.currentPriceRates }
+        )
+        return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0
     }
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {

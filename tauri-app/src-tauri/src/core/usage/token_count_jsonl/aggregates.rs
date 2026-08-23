@@ -9,7 +9,7 @@ use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
-const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
+const SEVEN_DAY_POINT_COUNT: i64 = 30 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 

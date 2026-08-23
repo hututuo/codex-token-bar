@@ -47,7 +47,7 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.doesNotMatch(container.textContent, /费用/);
         const moreModels = container.querySelector(".floating-model-usage-more");
         assert.equal(moreModels?.textContent?.trim(), "+1");
-        assert.match(moreModels?.getAttribute("title") ?? "", /5\.4 · 0 tokens · 占比 0%/);
+        assert.match(moreModels?.getAttribute("title") ?? "", /gpt-5\.5 · 1 tokens · 占比 <0\.1%/);
 
         await React.act(async () => next.dispatchEvent(new dom.MouseEvent("mousedown", {
           bubbles: true,
@@ -183,6 +183,7 @@ function floatingSnapshotFixture() {
       },
       {
         model: "codex-auto-review",
+        eventStartUnix: 1_700_000_000,
         breakdown: {
           inputTokens: 1_000,
           cachedInputTokens: 0,

@@ -20,7 +20,7 @@ mod database;
 mod series;
 
 use database::{
-    ensure_schema, insert_row, latest_trusted_row, prune, rows_since_for_read_only_peer,
+    ensure_schema, insert_row, latest_trusted_row, rows_since_for_read_only_peer,
     rows_since_for_row,
 };
 #[cfg(test)]
@@ -31,11 +31,10 @@ use series::DailyQuotaHistory;
 
 #[cfg(test)]
 use series::format_date;
-#[cfg(test)]
-use time::UtcOffset;
-
+// Quota history is intentionally unbounded. The hourly heartbeat and
+// cross-runtime merge keep this percentage-only history small without
+// deleting older quota state.
 const HEARTBEAT_SECONDS: f64 = 60.0 * 60.0;
-const RETENTION_DAYS: i64 = 45;
 const QUOTA_HISTORY_SOURCE: &str = "tauri";
 const RESET_MATCH_GRACE_SECONDS: f64 = 2.0 * 60.0;
 pub(crate) const QUOTA_HISTORY_IDENTITY_VERSION: i64 = 1;
@@ -214,7 +213,6 @@ impl QuotaHistoryDatabase {
             return Ok(true);
         }
         insert_row(&connection, &normalized)?;
-        prune(&connection, now)?;
         Ok(true)
     }
 
@@ -277,7 +275,7 @@ impl QuotaHistoryDatabase {
                 })
                 .collect(),
             recent_24h: make_recent_history(rows.clone(), recent_count.max(1)),
-            recent_7d: make_interval_history(rows.clone(), 7 * 24, 60 * 60),
+            recent_7d: make_interval_history(rows.clone(), 30 * 24, 60 * 60),
             recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
         })
     }
@@ -558,7 +556,7 @@ fn history_bundle_from_rows(
             })
             .collect(),
         recent_24h: make_recent_history(rows.clone(), recent_count.max(1)),
-        recent_7d: make_interval_history(rows.clone(), 7 * 24, 60 * 60),
+        recent_7d: make_interval_history(rows.clone(), 30 * 24, 60 * 60),
         recent_30d: make_interval_history(rows, 30 * 4, 6 * 60 * 60),
     }
 }

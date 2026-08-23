@@ -5622,7 +5622,7 @@ fn parses_token_count_totals_as_deltas() {
         .iter()
         .any(|row| { row.model.as_deref() == Some("gpt-5.6-terra") && row.breakdown.calls == 1 }));
     assert_eq!(snapshot.recent_usage_24h.len(), 30 * 24 * 12);
-    assert_eq!(snapshot.recent_usage_7d.len(), 168);
+    assert_eq!(snapshot.recent_usage_7d.len(), 30 * 24);
     assert_eq!(snapshot.recent_usage_30d.len(), 120);
     assert_eq!(
         snapshot
@@ -7328,6 +7328,136 @@ fn summary_generation_full_aggregate_repair_keeps_unchanged_files() {
     );
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     drop(index);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn current_dashboard_aggregate_truncation_self_repairs_without_jsonl_body_reads() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    write_lines(
+        &session_dir.join("rollout-019e-dashboard-integrity-old.jsonl"),
+        &[r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":20,"output_tokens":20,"total_tokens":100}}}}"#],
+    );
+    write_lines(
+        &session_dir.join("rollout-019e-dashboard-integrity-new.jsonl"),
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}"#],
+    );
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(&database).unwrap();
+    let rows_before = connection
+        .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert!(rows_before >= 2);
+    connection
+        .execute(
+            r#"
+            DELETE FROM dashboard_5m
+            WHERE bucket_start = (SELECT MIN(bucket_start) FROM dashboard_5m)
+            "#,
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing(), (0, 0));
+    let index = ExactUsageIndex::open(&root).unwrap();
+    assert!(index.dashboard_5m_projection_is_complete().unwrap());
+    drop(index);
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM dashboard_5m", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        rows_before
+    );
+
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_newer_event_generation() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let changed = session_dir.join("rollout-019e-summary-gap-changed.jsonl");
+    let unchanged = session_dir.join("rollout-019e-summary-gap-unchanged.jsonl");
+    write_lines(
+        &changed,
+        &[r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":20,"total_tokens":120}}}}"#],
+    );
+    write_lines(
+        &unchanged,
+        &[r#"{"timestamp":"2026-06-17T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":5,"total_tokens":30}}}}"#],
+    );
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 150);
+
+    {
+        let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
+        writeln!(
+            append,
+            r#"{{"timestamp":"2026-06-18T01:04:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":40,"cached_input_tokens":10,"output_tokens":10,"total_tokens":50}}}}}}}}"#
+        )
+        .unwrap();
+    }
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    let mut warnings = Vec::new();
+    index
+        .sync_with_scan_plan_mode(&root, &mut warnings, None, None, ExactSyncMode::Summary)
+        .unwrap();
+    let summary_generation = index.published_generation().unwrap();
+    let aggregate_generation = index
+        .dashboard_aggregate_identity()
+        .unwrap()
+        .exact_generation
+        .unwrap();
+    assert!(summary_generation > aggregate_generation);
+    drop(index);
+
+    {
+        let mut append = fs::OpenOptions::new().append(true).open(&changed).unwrap();
+        writeln!(
+            append,
+            r#"{{"timestamp":"2026-06-18T01:08:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":60,"cached_input_tokens":15,"output_tokens":10,"total_tokens":70}}}}}}}}"#
+        )
+        .unwrap();
+    }
+
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 270);
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COALESCE(SUM(total_tokens), 0) FROM dashboard_5m",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        270
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT MIN(bucket_start) FROM dashboard_5m",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        OffsetDateTime::parse("2026-06-17T01:00:00Z", &Rfc3339)
+            .unwrap()
+            .unix_timestamp()
+    );
+
+    drop(connection);
     fs::remove_dir_all(root).unwrap();
 }
 

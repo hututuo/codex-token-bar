@@ -111,7 +111,7 @@ fn is_known_dashboard_pricing_revision(value: &str) -> bool {
 const FIVE_MINUTE_INTERVAL_SECONDS: i64 = 5 * 60;
 const AGGREGATE_BOUNDARY_GRACE_SECONDS: i64 = 15;
 const HOURLY_INTERVAL_SECONDS: i64 = 60 * 60;
-const SEVEN_DAY_POINT_COUNT: i64 = 7 * 24;
+const SEVEN_DAY_POINT_COUNT: i64 = 30 * 24;
 const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
@@ -3447,11 +3447,19 @@ impl ExactUsageIndex {
         )?;
         let pricing_revision =
             metadata_text(&self.connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)?;
+        let projection_matches = stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
+            && aggregate_generation == Some(published_generation)
+            && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
+            && dashboard_5m_projection_matches_published_files(
+                &self.connection,
+                published_generation,
+            )?;
         if stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
             && aggregate_generation == Some(published_generation)
             && aggregate_published_generation == Some(published_generation)
             && aggregate_settled_through.is_some()
             && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
+            && projection_matches
         {
             return Ok(());
         }
@@ -3477,7 +3485,7 @@ impl ExactUsageIndex {
         let can_repair_incrementally = stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
             && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
             && aggregate_generation.is_some_and(|generation| {
-                generation >= 0 && generation <= published_generation
+                generation >= 0 && generation < published_generation
             });
         if can_repair_incrementally {
             incremental_rebuild_published_dashboard_aggregates(
@@ -3485,8 +3493,20 @@ impl ExactUsageIndex {
                 aggregate_generation.unwrap_or(published_generation),
                 published_generation,
             )?;
-        } else {
+            if !dashboard_5m_projection_matches_published_files(
+                &transaction,
+                published_generation,
+            )? {
+                rebuild_published_dashboard_aggregates(&transaction)?;
+            }
+        } else if !projection_matches {
             rebuild_published_dashboard_aggregates(&transaction)?;
+        }
+        if !dashboard_5m_projection_matches_published_files(
+            &transaction,
+            published_generation,
+        )? {
+            return Err("仪表盘五分钟聚合自检失败，已拒绝发布不完整历史".to_string());
         }
         set_metadata(
             &transaction,
@@ -3535,6 +3555,15 @@ impl ExactUsageIndex {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn dashboard_5m_projection_is_complete(&self) -> Result<bool, String> {
+        let published_generation =
+            metadata_i64(&self.connection, "published_generation")?.unwrap_or(0);
+        dashboard_5m_projection_matches_published_files(
+            &self.connection,
+            published_generation,
+        )
     }
 
     pub(super) fn latest_eligible_aggregate_boundary(now_utc: OffsetDateTime) -> i64 {
@@ -6579,6 +6608,98 @@ fn prune_published_tombstone_versions(connection: &Connection) -> Result<(), Str
     }
 }
 
+type Dashboard5mProjectionSignature = (
+    i64,
+    Option<i64>,
+    Option<i64>,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+);
+
+fn dashboard_5m_projection_matches_published_files(
+    connection: &Connection,
+    published_generation: i64,
+) -> Result<bool, String> {
+    let expected = connection
+        .query_row(
+            r#"
+            WITH expected AS (
+                SELECT
+                    b.bucket_start,
+                    b.model_key,
+                    SUM(b.total_tokens) AS total_tokens,
+                    SUM(b.calls) AS calls,
+                    SUM(b.input_tokens) AS input_tokens,
+                    SUM(b.cached_input_tokens) AS cached_input_tokens,
+                    SUM(b.output_tokens) AS output_tokens
+                FROM dashboard_file_5m b
+                JOIN published_files f
+                  ON f.generation = b.file_generation
+                 AND f.path = b.file_path
+                GROUP BY b.bucket_start, b.model_key
+            )
+            SELECT
+                COUNT(*),
+                MIN(bucket_start),
+                MAX(bucket_start),
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(calls), 0),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(cached_input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0)
+            FROM expected
+            "#,
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("无法计算已发布单文件五分钟聚合签名：{error}"))?;
+    let actual: Dashboard5mProjectionSignature = connection
+        .query_row(
+            r#"
+            SELECT
+                COUNT(*),
+                MIN(bucket_start),
+                MAX(bucket_start),
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(calls), 0),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(cached_input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0)
+            FROM dashboard_5m
+            WHERE file_generation = ?1
+            "#,
+            params![published_generation],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("无法计算全局五分钟聚合签名：{error}"))?;
+    Ok(expected == actual)
+}
+
 fn begin_or_resume_generation(
     connection: &mut Connection,
     mode: ExactSyncMode,
@@ -6587,6 +6708,17 @@ fn begin_or_resume_generation(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始精确 token 同步状态事务：{error}"))?;
     let published = metadata_i64(&transaction, "published_generation")?.unwrap_or(0);
+    let aggregate_source_generation = if metadata_i64(
+        &transaction,
+        DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
+    )? == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
+    {
+        metadata_i64(&transaction, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?
+            .filter(|generation| *generation >= 0 && *generation <= published)
+            .unwrap_or(published)
+    } else {
+        published
+    };
     if let Some(building) = metadata_i64(&transaction, "building_generation")? {
         if building > published {
             // A scan started by an older binary may not have initialized the
@@ -6663,7 +6795,7 @@ fn begin_or_resume_generation(
                 FROM dashboard_5m
                 WHERE file_generation = ?2
                 "#,
-                params![generation, published],
+                params![generation, aggregate_source_generation],
             )
             .map_err(|error| format!("无法复制已发布全局五分钟聚合：{error}"))?;
         transaction
@@ -6687,7 +6819,7 @@ fn begin_or_resume_generation(
                 FROM dashboard_turn_candidates
                 WHERE aggregate_generation = ?2
                 "#,
-                params![generation, published],
+                params![generation, aggregate_source_generation],
             )
             .map_err(|error| format!("无法复制已发布轮次候选聚合：{error}"))?;
     }

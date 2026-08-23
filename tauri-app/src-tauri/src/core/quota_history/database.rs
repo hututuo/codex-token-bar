@@ -1,9 +1,11 @@
 use super::series::sanitized_rows;
-use super::{now_unix, QuotaHistoryIdentity, QuotaHistoryRow, RETENTION_DAYS};
+use super::{now_unix, QuotaHistoryIdentity, QuotaHistoryRow};
 use rusqlite::{params, Connection, Result as SqlResult};
 #[cfg(test)]
 use rusqlite::OptionalExtension;
 
+// Compatibility bridge only: pre-identity rows are ambiguous after this
+// window. Stable identity rows are retained indefinitely.
 const LEGACY_BRIDGE_MAX_AGE_DAYS: i64 = 45;
 const LEGACY_BRIDGE_MAX_ROWS: usize = 512;
 
@@ -647,15 +649,6 @@ fn claim_legacy_bridge(
         && claim.3 == identity.stable_account_key
         && claim.4 == identity.plan_type
         && claim.5 == identity.limit_id)
-}
-
-pub(super) fn prune(connection: &Connection, now: f64) -> SqlResult<()> {
-    let cutoff = now - RETENTION_DAYS as f64 * 24.0 * 60.0 * 60.0;
-    connection.execute(
-        "DELETE FROM quota_snapshots WHERE created_at < ?1;",
-        params![cutoff],
-    )?;
-    Ok(())
 }
 
 struct AccountHistoryFilter {

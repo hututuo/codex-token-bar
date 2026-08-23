@@ -182,6 +182,9 @@ struct SevenDayAPIValueEstimate: Equatable, Sendable {
     let quality: SevenDayAPIValueQuality
     let cycleStart: Date?
     let cycleEnd: Date?
+    /// Complete values for the two buckets touching an unaligned cycle edge.
+    /// They are reported separately from the safe interior period.
+    let boundaryBreakdown: QuotaPeriodBoundaryBreakdown
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackModelCalls: Int
     let excludedModels: [String]
@@ -195,6 +198,7 @@ struct SevenDayAPIValueEstimate: Equatable, Sendable {
             quality: .waiting(reason: reason),
             cycleStart: nil,
             cycleEnd: nil,
+            boundaryBreakdown: .empty,
             detectedModels: [],
             fallbackModelCalls: 0,
             excludedModels: [],
@@ -242,6 +246,9 @@ struct SevenDayAPIValuePresentation: Equatable {
         if let valueUSD = estimate.valueUSD {
             text += "，API 等值 \(SubscriptionSavingsPresentation.fullMoney(valueUSD))"
         }
+        if estimate.boundaryBreakdown.hasUsage {
+            text += "；边缘桶独立统计 \(estimate.boundaryBreakdown.totalTokens.abbreviatedTokens) Token"
+        }
         if !estimate.detectedModels.isEmpty {
             text += "；模型 \(estimate.detectedModels.map(\.quotaEstimateShortTitle).joined(separator: "/"))"
         }
@@ -273,11 +280,18 @@ extension SubscriptionSavingsEstimator {
 
         let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
         let cycleEnd = resetAt
+        let safeCycleStart = QuotaPeriodBoundaryPolicy.firstCompleteBucketStart(after: cycleStart)
+        let safeCycleEnd = QuotaPeriodBoundaryPolicy.lastCompleteBucketEnd(before: cycleEnd)
+        let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
+            events: cacheUsage.attributionEvents,
+            periodStart: cycleStart,
+            periodEnd: cycleEnd
+        )
         let eventIsTrustworthy = cacheUsage.attributionEventsComplete
             && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
             && !cacheUsage.attributionSourceMutationDetected
         let periodEvents = cacheUsage.attributionEvents.filter {
-            $0.start >= cycleStart && $0.start < cycleEnd
+            $0.start >= safeCycleStart && $0.start < safeCycleEnd
         }
 
         if eventIsTrustworthy {
@@ -293,6 +307,7 @@ extension SubscriptionSavingsEstimator {
                 quality: .measured,
                 cycleStart: cycleStart,
                 cycleEnd: cycleEnd,
+                boundaryBreakdown: boundaryBreakdown,
                 detectedModels: price.detectedModels,
                 fallbackModelCalls: price.fallbackCalls,
                 excludedModels: price.excludedModels,
@@ -301,14 +316,14 @@ extension SubscriptionSavingsEstimator {
         }
 
         let fallbackBuckets: ([TokenCacheBucket], String)
-        let recent = periodBuckets(cacheUsage.recentBins, start: cycleStart, end: cycleEnd)
+        let recent = periodBuckets(cacheUsage.recentBins, start: safeCycleStart, end: safeCycleEnd)
         if !recent.isEmpty {
             fallbackBuckets = (recent, "5分钟桶用量缓存")
         } else {
             // Keep a compatibility fallback for very old snapshots that were
             // written before the five-minute canvas existed. New snapshots
             // always prefer the five-minute path above.
-            let hourly = periodBuckets(cacheUsage.hourly, start: cycleStart, end: cycleEnd)
+            let hourly = periodBuckets(cacheUsage.hourly, start: safeCycleStart, end: safeCycleEnd)
             fallbackBuckets = (hourly, "旧版 hourly 用量缓存")
         }
         guard !fallbackBuckets.0.isEmpty else {
@@ -317,6 +332,7 @@ extension SubscriptionSavingsEstimator {
                 quality: .waiting(reason: "7d 额度边界已读取，但同周期用量缓存仍在读取，暂不显示累计金额。"),
                 cycleStart: cycleStart,
                 cycleEnd: cycleEnd,
+                boundaryBreakdown: boundaryBreakdown,
                 detectedModels: [],
                 fallbackModelCalls: 0,
                 excludedModels: [],
@@ -325,6 +341,11 @@ extension SubscriptionSavingsEstimator {
         }
 
         let periodBreakdown = fallbackBuckets.0.map(\.breakdown).combined
+        let fallbackBoundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
+            buckets: fallbackBuckets.0,
+            periodStart: cycleStart,
+            periodEnd: cycleEnd
+        )
         let price = ModelAwareAPIPriceEstimator.estimate(
             // Keep any known independent-quota rows out of the aggregate even
             // when the event stream is incomplete. The remaining uncovered
@@ -341,6 +362,7 @@ extension SubscriptionSavingsEstimator {
             quality: .estimated(source: fallbackBuckets.1),
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,
+            boundaryBreakdown: fallbackBoundaryBreakdown,
             detectedModels: price.detectedModels,
             fallbackModelCalls: price.fallbackCalls,
             excludedModels: price.excludedModels,

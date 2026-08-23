@@ -1,6 +1,10 @@
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel";
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
 import type { ModelTokenBreakdown, RecentUsagePoint, RecentUsageSourceContribution } from "../../types/dashboard";
+import {
+  firstCompleteQuotaBucketStart,
+  lastCompleteQuotaBucketEnd,
+} from "../quotaPeriodBoundary.ts";
 
 export const ATTRIBUTION_BUCKET_SECONDS = 5 * 60;
 const STORAGE_PREFIX = "sharedAccountAttributionBuckets:v4";
@@ -58,6 +62,9 @@ export interface AttributionBucketMergeResult {
   record: StoredAttributionBucketHighWater;
   effectiveBuckets: AttributionTokenBucket[];
   scannedBuckets: AttributionTokenBucket[];
+  /** Buckets touching an unaligned cycle edge; never mixed into comparison. */
+  boundaryBuckets: AttributionTokenBucket[];
+  scannedBoundaryBuckets: AttributionTokenBucket[];
   hasPendingUsage: boolean;
   usedHistoricalHighWater: boolean;
   ambiguityDetected: boolean;
@@ -216,17 +223,19 @@ export function mergeAttributionBucketHighWater(
   now: Date = new Date(),
 ): AttributionBucketMergeResult {
   // A provider reset is not guaranteed to align to our fixed five-minute
-  // buckets. Include the whole bucket that straddles the lower cycle/segment
-  // boundary: assigning the overlap to this machine is deliberately
-  // conservative (never understates local use and therefore never inflates the
-  // inferred "other" share). Synthetic account-switch cutovers are already
-  // rounded upward, so they do not pull pre-switch usage back in.
-  const conservativeStartUnix = Math.floor(
-    options.segmentStartUnix / ATTRIBUTION_BUCKET_SECONDS,
-  ) * ATTRIBUTION_BUCKET_SECONDS;
+  // buckets. The projection has no event-level timestamp, so a straddling
+  // edge bucket cannot be split faithfully. Leave a one-minute margin for
+  // the comparable interior, but retain the two edge buckets separately.
+  const safeStartUnix = firstCompleteQuotaBucketStart(options.segmentStartUnix);
+  const safeEndUnix = lastCompleteQuotaBucketEnd(options.resetAtUnix);
+  const boundaryStarts = quotaBoundaryBucketStarts(
+    options.segmentStartUnix,
+    options.resetAtUnix,
+  );
   const existing = stored?.buckets ?? {};
   const nextBuckets = { ...existing };
   const observedByStart = new Map<number, AttributionTokenBucket>();
+  const observedBoundaryByStart = new Map<number, AttributionTokenBucket>();
   let hasPendingUsage = false;
   let bucketChanged = false;
   let ambiguityDetected = stored?.ambiguityDetected ?? false;
@@ -249,9 +258,25 @@ export function mergeAttributionBucketHighWater(
 
   for (const point of points) {
     const bucket = tokenBucketFromPoint(point);
-    if (!bucket
-      || bucket.startUnix < conservativeStartUnix
-      || bucket.startUnix >= options.resetAtUnix) continue;
+    if (!bucket) continue;
+    if (boundaryStarts.has(bucket.startUnix)) {
+      if (bucket.startUnix >= options.persistenceCutoffUnix) {
+        if (bucketHasUsage(bucket)) hasPendingUsage = true;
+        continue;
+      }
+      observedBoundaryByStart.set(bucket.startUnix, bucket);
+      const key = String(bucket.startUnix);
+      const previous = existing[key] ?? null;
+      if (!bucketHasUsage(bucket) && !previous) continue;
+      const merged = mergeBucketContributions(previous, bucket, provenanceCompatible);
+      ambiguityDetected ||= merged.ambiguityDetected;
+      if (!sameBucket(previous, merged.bucket)) {
+        if (bucketHasUsage(merged.bucket)) nextBuckets[key] = merged.bucket;
+        bucketChanged = true;
+      }
+      continue;
+    }
+    if (bucket.startUnix < safeStartUnix || bucket.startUnix >= safeEndUnix) continue;
     if (bucket.startUnix >= options.persistenceCutoffUnix) {
       if (bucketHasUsage(bucket)) hasPendingUsage = true;
       continue;
@@ -269,9 +294,14 @@ export function mergeAttributionBucketHighWater(
   }
 
   const effectiveBuckets: AttributionTokenBucket[] = [];
+  const boundaryBuckets: AttributionTokenBucket[] = [];
   let usedHistoricalHighWater = false;
   for (const bucket of Object.values(nextBuckets).sort((left, right) => left.startUnix - right.startUnix)) {
-    if (bucket.startUnix < conservativeStartUnix || bucket.startUnix >= options.resetAtUnix) continue;
+    if (boundaryStarts.has(bucket.startUnix)) {
+      if (bucketHasUsage(bucket)) boundaryBuckets.push(bucket);
+      continue;
+    }
+    if (bucket.startUnix < safeStartUnix || bucket.startUnix >= safeEndUnix) continue;
     if (bucket.startUnix >= options.comparisonEndUnix) {
       if (bucketHasUsage(bucket)) hasPendingUsage = true;
       continue;
@@ -321,7 +351,16 @@ export function mergeAttributionBucketHighWater(
     record,
     effectiveBuckets,
     scannedBuckets: [...observedByStart.values()]
-      .filter((bucket) => bucketHasUsage(bucket) && bucket.startUnix < options.comparisonEndUnix)
+      .filter((bucket) => (
+        bucketHasUsage(bucket)
+          && bucket.startUnix >= safeStartUnix
+          && bucket.startUnix < safeEndUnix
+          && bucket.startUnix < options.comparisonEndUnix
+      ))
+      .sort((left, right) => left.startUnix - right.startUnix),
+    boundaryBuckets,
+    scannedBoundaryBuckets: [...observedBoundaryByStart.values()]
+      .filter(bucketHasUsage)
       .sort((left, right) => left.startUnix - right.startUnix),
     hasPendingUsage,
     usedHistoricalHighWater,
@@ -329,6 +368,17 @@ export function mergeAttributionBucketHighWater(
     quotaObservationFresh,
     changed: bucketChanged || metadataChanged,
   };
+}
+
+function quotaBoundaryBucketStarts(segmentStartUnix: number, resetAtUnix: number): Set<number> {
+  const starts = new Set<number>();
+  const startBucket = Math.floor(segmentStartUnix / ATTRIBUTION_BUCKET_SECONDS)
+    * ATTRIBUTION_BUCKET_SECONDS;
+  const endBucket = Math.floor(resetAtUnix / ATTRIBUTION_BUCKET_SECONDS)
+    * ATTRIBUTION_BUCKET_SECONDS;
+  if (Math.abs(segmentStartUnix - startBucket) > 1e-6) starts.add(startBucket);
+  if (Math.abs(resetAtUnix - endBucket) > 1e-6) starts.add(endBucket);
+  return starts;
 }
 
 function tokenBucketFromPoint(point: RecentUsagePoint): AttributionTokenBucket | null {

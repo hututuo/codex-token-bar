@@ -273,7 +273,7 @@ enum QuotaSelectionAttributionEstimator {
             caveats.append("选区 7 天额度下降来自沿用或插值图表值，仅作暂算。")
         }
         if selection.sevenDay.comparisonUsesConservativeBuckets {
-            caveats.append("额度观测落在聚合桶边界内，本机归因按首尾整桶保守计入，仅作暂算。")
+            caveats.append("额度观测落在聚合桶内部，本机归因只计入边界完整桶并首尾留一分钟余量，仅作暂算。")
         }
         if let cycleStart = context.cycleStart,
            selection.startDate < cycleStart {

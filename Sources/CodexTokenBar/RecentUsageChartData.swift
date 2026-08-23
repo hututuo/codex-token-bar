@@ -88,31 +88,35 @@ extension RecentUsageChart {
         case .twentyFourHours:
             return recentBins
         case .sevenDays:
-            return hourlyBins
+            return Array(hourlyBins.suffix(30 * 24))
         case .thirtyDays:
-            return aggregateUsage(hourlyBins, groupSize: 3)
+            return aggregateUsage(
+                hourlyBins,
+                interval: RecentChartRange.thirtyDays.bucketInterval,
+                pointCount: 30 * 4
+            )
         }
     }
 
-    private static func aggregateUsage(_ bins: [BinUsage], groupSize: Int) -> [BinUsage] {
-        guard groupSize > 1 else { return bins }
-        var result: [BinUsage] = []
-        var index = 0
-        while index < bins.count {
-            let end = min(index + groupSize, bins.count)
-            let group = bins[index..<end]
-            if let start = group.first?.start {
-                result.append(
-                    BinUsage(
-                        start: start,
-                        tokens: group.reduce(0) { $0 + $1.tokens },
-                        calls: group.reduce(0) { $0 + $1.calls }
-                    )
-                )
-            }
-            index = end
+    private static func aggregateUsage(
+        _ bins: [BinUsage],
+        interval: TimeInterval,
+        pointCount: Int
+    ) -> [BinUsage] {
+        guard interval > 0, pointCount > 0, !bins.isEmpty else { return [] }
+        let grouped = Dictionary(grouping: bins) {
+            timeBinKey($0.start, interval: interval)
         }
-        return result
+        guard let endKey = grouped.keys.max() else { return [] }
+        let startKey = endKey - pointCount + 1
+        return (startKey...endKey).map { key in
+            let group = grouped[key] ?? []
+            return BinUsage(
+                start: Date(timeIntervalSince1970: Double(key) * interval),
+                tokens: group.reduce(0) { $0 + $1.tokens },
+                calls: group.reduce(0) { $0 + $1.calls }
+            )
+        }
     }
 
     private static func cacheBreakdowns(
@@ -131,7 +135,7 @@ extension RecentUsageChart {
         case .thirtyDays:
             let cacheByHour = cacheMap(cacheHourlyBins, interval: 60 * 60)
             return bins.map { bin in
-                (0..<3).map { offset in
+                (0..<6).map { offset in
                     let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
                     return cacheByHour[timeBinKey(date, interval: 60 * 60)] ?? .empty
                 }.combined
@@ -166,14 +170,14 @@ extension RecentUsageChart {
         case .thirtyDays:
             let quotaByHour = quotaMap(quotaHourlyBins, interval: 60 * 60)
             return bins.map { bin in
-                let buckets = (0..<3).compactMap { offset in
+                let buckets = (0..<6).compactMap { offset in
                     let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)
                     return quotaByHour[timeBinKey(date, interval: 60 * 60)]
                 }
                 return averagedQuotaBucket(
                     start: bin.start,
                     buckets: buckets,
-                    expectedBucketCount: 3
+                    expectedBucketCount: 6
                 )
             }
         }
@@ -192,7 +196,7 @@ extension RecentUsageChart {
     ) -> QuotaHistoryRecentBucket? {
         let fiveHourValues = buckets.compactMap(\.fiveHourRemainingPercent)
         let sevenDayValues = buckets.compactMap(\.sevenDayRemainingPercent)
-        // A 30d point represents three hourly buckets. If one of those
+        // A 30d point represents six hourly buckets. If one of those
         // buckets is unknown (for example, the poller was asleep across a
         // quota reset), averaging the remaining values would turn one stale
         // carried sample into a false plateau. Keep the metric unknown until

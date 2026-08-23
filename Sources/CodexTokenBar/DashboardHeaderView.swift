@@ -1053,6 +1053,7 @@ struct StatStrip: View, @preconcurrency Equatable {
                     todayTokens: todayTokens,
                     lifetimeTokens: snapshot.stats.totalTokens,
                     sevenDayTokens: sevenDayModelData.tokens,
+                    sevenDayBoundaryTokens: sevenDayModelData.boundaryTokens,
                     fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
                     dataAvailable: snapshot.hasPreciseTokenUsage,
                     todayModelDisplayState: todayModelDisplayState,
@@ -1107,6 +1108,7 @@ enum ModelAttributionDisplayState: Equatable {
 struct DashboardSevenDayModelData: Equatable {
     let rows: [ModelTokenBreakdown]
     let tokens: Int
+    let boundaryTokens: Int
     let dataAvailable: Bool
     let displayState: ModelAttributionDisplayState
     let isEstimated: Bool
@@ -1124,6 +1126,7 @@ struct DashboardSevenDayModelData: Equatable {
               resetAt > now else {
             rows = []
             tokens = 0
+            boundaryTokens = 0
             self.dataAvailable = false
             displayState = .pending
             isEstimated = false
@@ -1132,14 +1135,22 @@ struct DashboardSevenDayModelData: Equatable {
         }
 
         let start = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let safeStart = QuotaPeriodBoundaryPolicy.firstCompleteBucketStart(after: start)
+        let safeEnd = QuotaPeriodBoundaryPolicy.lastCompleteBucketEnd(before: resetAt)
         let eventsAreUsable = cacheUsage.attributionModelBucketsComplete
             && !cacheUsage.attributionCurrentScanUnsafeCauseDetected
         if eventsAreUsable {
+            let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
+                events: cacheUsage.attributionEvents,
+                periodStart: start,
+                periodEnd: resetAt
+            )
             let events = cacheUsage.attributionEvents.filter {
-                $0.start >= start && $0.start < resetAt
+                $0.start >= safeStart && $0.start < safeEnd
             }
             rows = ModelUsagePresentation.rows(from: events)
             tokens = events.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
+            boundaryTokens = boundaryBreakdown.totalTokens
             self.dataAvailable = true
             displayState = .current
             isEstimated = false
@@ -1153,12 +1164,18 @@ struct DashboardSevenDayModelData: Equatable {
         // fabricated Sol/Terra/Luna attribution.
         if cacheUsage.attributionEventsComplete,
            !cacheUsage.attributionCurrentScanUnsafeCauseDetected {
+            let boundaryBreakdown = QuotaPeriodBoundaryPolicy.boundaryBreakdown(
+                events: cacheUsage.attributionEvents,
+                periodStart: start,
+                periodEnd: resetAt
+            )
             let trustedEvents = cacheUsage.attributionEvents.filter {
-                $0.start >= start && $0.start < resetAt
+                $0.start >= safeStart && $0.start < safeEnd
             }
             if !trustedEvents.isEmpty {
                 rows = ModelUsagePresentation.rows(from: trustedEvents)
                 tokens = trustedEvents.reduce(0) { $0 + max($1.breakdown.totalTokens, 0) }
+                boundaryTokens = boundaryBreakdown.totalTokens
                 self.dataAvailable = true
                 displayState = .stale
                 isEstimated = true
@@ -1173,6 +1190,7 @@ struct DashboardSevenDayModelData: Equatable {
         // are available.
         rows = []
         tokens = 0
+        boundaryTokens = 0
         self.dataAvailable = false
         displayState = .pending
         isEstimated = true
@@ -1188,6 +1206,7 @@ struct DashboardModelCostRow: View {
     let todayTokens: Int
     let lifetimeTokens: Int
     let sevenDayTokens: Int
+    let sevenDayBoundaryTokens: Int
     let fallbackModel: OfficialAPIPriceModel
     let dataAvailable: Bool
     let todayModelDisplayState: ModelAttributionDisplayState
@@ -1311,6 +1330,13 @@ struct DashboardModelCostRow: View {
                             .fixedSize()
                         if let visibleReferenceCostSummary {
                             Text(visibleReferenceCostSummary)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                                .fixedSize()
+                        }
+                        if scope == .sevenDay, sevenDayBoundaryTokens > 0 {
+                            Text("边缘另计 \(sevenDayBoundaryTokens.abbreviatedTokens) Token")
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .monospacedDigit()

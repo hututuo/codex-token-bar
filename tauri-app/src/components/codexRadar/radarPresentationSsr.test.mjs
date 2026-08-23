@@ -89,7 +89,7 @@ test("floating Radar row preserves stale snapshot and shows a restrained marker"
       radarSnapshot,
     });
 
-    assert.match(html, /雷达旧数据 · 动作 等待/);
+    assert.match(html, /雷达旧数据 · 等待/);
     assert.match(html, /IQ 100/);
     assert.match(html, /--radar-action-color:rgb\(204 139 38\)/);
     assert.match(html, /--radar-score-color:rgb\(100 150 72\)/);
@@ -117,7 +117,7 @@ test("floating Radar keeps healthy partial data without inventing IQ zero", asyn
     assert.match(html, /IQ --/);
     assert.match(html, /等待模型数据/);
     assert.doesNotMatch(html, /IQ 0(?:\.0)?/);
-    assert.match(html, /24h 21%/);
+    assert.match(html, />等待</);
   });
 });
 
@@ -276,10 +276,14 @@ test("Codex Radar summary carries accent color through labels and right-side val
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
 
   assert.match(component, /accentColor=\{semanticMetricColor\(86\)\} icon="\$" title="预估额度"/);
-  for (const title of ["速登窗口", "官方雷达", "众测雷达", "预估额度"]) {
+  assert.match(component, /title=\{windowBlockTitle\}/);
+  for (const title of ["官方雷达", "众测雷达", "预估额度"]) {
     assert.match(component, new RegExp(`title="${title}"`));
   }
-  const summaryTitles = ["速登窗口", "官方雷达", "众测雷达", "预估额度"].map((title) => component.indexOf(`title="${title}"`));
+  const summaryTitles = [
+    component.indexOf("title={windowBlockTitle}"),
+    ...["官方雷达", "众测雷达", "预估额度"].map((title) => component.indexOf(`title="${title}"`)),
+  ];
   assert.ok(summaryTitles.every((offset) => offset >= 0));
   assert.deepEqual(summaryTitles, [...summaryTitles].sort((left, right) => left - right));
   assert.doesNotMatch(component, /title="环境压力"/);

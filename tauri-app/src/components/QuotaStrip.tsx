@@ -322,6 +322,15 @@ function SharedAccountAttributionDetail({
                   {" · "}缓存 {formatTokens(attribution.tokens.cachedInputTokens)} · 输出 {formatTokens(attribution.tokens.outputTokens)}
                 </dd>
               </div>
+              {attribution.boundaryTokens.totalTokens > 0 ? (
+                <div>
+                  <dt>边缘桶（独立）</dt>
+                  <dd>
+                    {formatTokens(attribution.boundaryTokens.totalTokens)} Token · 输入 {formatTokens(attribution.boundaryTokens.inputTokens)}
+                    {" · "}输出 {formatTokens(attribution.boundaryTokens.outputTokens)}；不混入中间完整桶比较
+                  </dd>
+                </div>
+              ) : null}
               <div>
                 <dt>账号段基线</dt>
                 <dd>
@@ -1151,6 +1160,8 @@ function QuotaStripView({
     preciseDataCoveredAtUnix,
     buckets: bucketMerge.effectiveBuckets,
     scannedBuckets: bucketMerge.scannedBuckets,
+    boundaryBuckets: bucketMerge.boundaryBuckets,
+    scannedBoundaryBuckets: bucketMerge.scannedBoundaryBuckets,
     usagePendingQuotaRefresh: bucketMerge.hasPendingUsage,
     historyChangedLowConfidence: bucketMerge.usedHistoricalHighWater,
     localHistoryAmbiguous: bucketMerge.ambiguityDetected,
@@ -1176,6 +1187,8 @@ function QuotaStripView({
     bucketMerge.effectiveBuckets,
     bucketMerge.hasPendingUsage,
     bucketMerge.scannedBuckets,
+    bucketMerge.boundaryBuckets,
+    bucketMerge.scannedBoundaryBuckets,
     bucketMerge.usedHistoricalHighWater,
     nowUnix,
     nativeSafetyMetadataHealthy,
@@ -1920,6 +1933,8 @@ function emptyBucketMergeResult(): AttributionBucketMergeResult {
     },
     effectiveBuckets: [],
     scannedBuckets: [],
+    boundaryBuckets: [],
+    scannedBoundaryBuckets: [],
     hasPendingUsage: false,
     usedHistoricalHighWater: false,
     ambiguityDetected: false,

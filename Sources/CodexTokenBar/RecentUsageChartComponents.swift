@@ -882,6 +882,7 @@ struct ChartHoverBubble: View {
     let bin: BinUsage
     let cacheBreakdown: TokenCacheBreakdown?
     let modelBreakdowns: [ModelTokenBreakdown]
+    let costUSD: Double
     let fiveHourRemaining: Double?
     let sevenDayRemaining: Double?
     let bucketInterval: TimeInterval
@@ -892,6 +893,7 @@ struct ChartHoverBubble: View {
         bin: BinUsage,
         cacheBreakdown: TokenCacheBreakdown?,
         modelBreakdowns: [ModelTokenBreakdown] = [],
+        costUSD: Double = 0,
         fiveHourRemaining: Double?,
         sevenDayRemaining: Double?,
         bucketInterval: TimeInterval,
@@ -901,6 +903,7 @@ struct ChartHoverBubble: View {
         self.bin = bin
         self.cacheBreakdown = cacheBreakdown
         self.modelBreakdowns = modelBreakdowns
+        self.costUSD = costUSD
         self.fiveHourRemaining = fiveHourRemaining
         self.sevenDayRemaining = sevenDayRemaining
         self.bucketInterval = bucketInterval
@@ -937,6 +940,9 @@ struct ChartHoverBubble: View {
             Text("请求 \(bin.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+            Text("金额 \(costUSD.quotaEstimatorMoneyText)")
+                .font(.system(size: 10))
+                .foregroundStyle(.pink)
             if let cacheBreakdown, cacheBreakdown.calls > 0 {
                 Text("缓存命中 \(cacheBreakdown.cacheHitRate.percentString) · 命中 \(cacheBreakdown.cachedInputTokens.abbreviatedTokens)")
                     .font(.system(size: 10))
@@ -984,7 +990,8 @@ struct ChartHoverBubble: View {
             timeRange,
             "\(bin.tokens.abbreviatedTokens) token",
             "\(bin.calls) 次请求",
-            "平均 \(average.abbreviatedTokens)"
+            "平均 \(average.abbreviatedTokens)",
+            "金额 \(costUSD.quotaEstimatorMoneyText)"
         ]
         if let cacheBreakdown, cacheBreakdown.calls > 0 {
             parts.append("缓存命中率 \(cacheBreakdown.cacheHitRate.percentString)")
@@ -1128,6 +1135,7 @@ struct ChartTimeMarkers: View {
     let markerIndices: [Int]
     let range: RecentChartRange
     let plot: CGRect
+    let markerOffset: CGFloat
 
     var body: some View {
         ForEach(markerIndices, id: \.self) { index in
@@ -1136,7 +1144,7 @@ struct ChartTimeMarkers: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: true, vertical: false)
-                    .position(x: xPosition(for: index), y: plot.maxY + 20)
+                    .position(x: xPosition(for: index), y: plot.maxY + markerOffset)
             }
         }
     }

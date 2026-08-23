@@ -3,7 +3,7 @@ import XCTest
 @testable import CodexTokenBar
 
 final class SevenDaySavingsEstimatorTests: XCTestCase {
-    private let now = Date(timeIntervalSince1970: 2_000_000_000)
+    private let now = Date(timeIntervalSince1970: 2_000_000_100)
 
     private func breakdown(input: Int, output: Int = 0, calls: Int = 1) -> TokenCacheBreakdown {
         TokenCacheBreakdown(
@@ -94,6 +94,63 @@ final class SevenDaySavingsEstimatorTests: XCTestCase {
             OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown(input: 1_000_000)),
             accuracy: 0.000001
         )
+    }
+
+    func testUnalignedSevenDayDropsBothMixedEdgeBucketsWithOneMinuteMargin() {
+        let resetAt = now.addingTimeInterval(24 * 60 * 60 + 120)
+        let cycleStart = resetAt.addingTimeInterval(-7 * 24 * 60 * 60)
+        let lowerMixedBucket = Date(
+            timeIntervalSince1970: floor(cycleStart.timeIntervalSince1970 / 300) * 300
+        )
+        let firstSafeBucket = Date(
+            timeIntervalSince1970: ceil(
+                (cycleStart.timeIntervalSince1970 + 60) / 300
+            ) * 300
+        )
+        let upperMixedBucket = Date(
+            timeIntervalSince1970: floor(resetAt.timeIntervalSince1970 / 300) * 300
+        )
+        let events = [
+            TokenCacheAttributionEvent(
+                id: "mixed-start",
+                start: lowerMixedBucket,
+                model: "gpt-5.6-sol",
+                breakdown: breakdown(input: 9_000_000)
+            ),
+            TokenCacheAttributionEvent(
+                id: "interior",
+                start: firstSafeBucket,
+                model: "gpt-5.6-sol",
+                breakdown: breakdown(input: 1_000_000)
+            ),
+            TokenCacheAttributionEvent(
+                id: "mixed-end",
+                start: upperMixedBucket,
+                model: "gpt-5.6-sol",
+                breakdown: breakdown(input: 8_000_000)
+            ),
+        ]
+
+        let estimate = SubscriptionSavingsEstimator.sevenDayAPIValue(
+            cacheUsage: usage(events: events, complete: true),
+            quotaSnapshot: quota(resetAt: resetAt),
+            fallbackModel: .gpt56Terra,
+            now: now
+        )
+
+        guard case .measured = estimate.quality else {
+            return XCTFail("expected complete event stream to be measured")
+        }
+        XCTAssertEqual(estimate.detectedModels, [.gpt56Sol])
+        XCTAssertEqual(estimate.excludedModels, [])
+        XCTAssertEqual(
+            try XCTUnwrap(estimate.valueUSD),
+            OfficialAPIPriceModel.gpt56Sol.currentPriceRates.costUSD(for: breakdown(input: 1_000_000)),
+            accuracy: 0.000001
+        )
+        XCTAssertEqual(estimate.boundaryBreakdown.leading.totalTokens, 9_000_000)
+        XCTAssertEqual(estimate.boundaryBreakdown.trailing.totalTokens, 8_000_000)
+        XCTAssertEqual(estimate.boundaryBreakdown.totalTokens, 17_000_000)
     }
 
     func testIncompleteEventsUseCurrentPeriodFiveMinuteFallbackAndMarkEstimate() {
