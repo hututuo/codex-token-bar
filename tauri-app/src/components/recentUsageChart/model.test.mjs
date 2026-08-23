@@ -17,6 +17,8 @@ import {
   recentChartHeightFraction,
   recentChartScaleMap,
   recentChartScrollLayout,
+  recentChartScrollbarThumb,
+  recentChartScrollLeftForThumb,
   recentChartScrollPresentation,
   recentChartScrollTarget,
   recentChartTimeMarkers,
@@ -61,6 +63,27 @@ test("all recent chart ranges use the 278px canvas", () => {
   for (const range of ["24h", "7d", "30d"]) {
     assert.deepEqual(recentChartGeometry(range), expected, range);
   }
+});
+
+test("persistent scrollbar thumb represents and controls the visible chart window", () => {
+  const layout = {
+    viewportWidth: 1_000,
+    contentWidth: 4_000,
+  };
+  assert.deepEqual(recentChartScrollbarThumb(layout, 0, 1_000), {
+    left: 0,
+    width: 250,
+    maxScrollLeft: 3_000,
+  });
+  assert.deepEqual(recentChartScrollbarThumb(layout, 1_500, 1_000), {
+    left: 375,
+    width: 250,
+    maxScrollLeft: 3_000,
+  });
+  const latest = recentChartScrollbarThumb(layout, 3_000, 1_000);
+  assert.equal(latest.left, 750);
+  assert.equal(recentChartScrollLeftForThumb(375, latest, 1_000), 1_500);
+  assert.equal(recentChartScrollLeftForThumb(10_000, latest, 1_000), 3_000);
 });
 
 test("token peak leaves headroom below the top edge", () => {
@@ -1138,6 +1161,9 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
 
   assert.match(css, /\.recent-chart-scroll--horizontal\s*{[^}]*overflow-x:\s*auto/s);
   assert.match(css, /\.recent-chart-scroll--horizontal\s*{[^}]*overscroll-behavior-x:\s*contain/s);
+  assert.match(css, /\.recent-chart-scroll--horizontal\s*{[^}]*scrollbar-width:\s*none/s);
+  assert.match(css, /\.recent-chart-persistent-scrollbar\s*{[^}]*height:\s*12px/s);
+  assert.match(css, /\.recent-chart-persistent-scrollbar__thumb\s*{[^}]*position:\s*absolute/s);
   assert.match(css, /\.recent-chart-scroll--horizontal \.recent-chart-scroll-content\s*{[^}]*width:\s*var\(--recent-chart-content-width, 980px\)/s);
   assert.match(css, /\.recent-chart-overlay-layer\s*{[^}]*overflow:\s*visible/s);
   assert.match(css, /\.usage-chart\s*{[^}]*aspect-ratio:\s*var\(--recent-chart-aspect-ratio,\s*980 \/ 278\)/s);
@@ -1147,6 +1173,8 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.match(css, /\.recent-chart-page-button\s*{[^}]*width:\s*30px/s);
   assert.equal(source.includes("recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth)"), true);
   assert.equal(source.includes("recentChartScrollTarget(scrollLayout, scrollElement.scrollLeft, direction)"), true);
+  assert.equal(source.includes("className=\"recent-chart-persistent-scrollbar\""), true);
+  assert.equal(source.includes("role=\"scrollbar\""), true);
   assert.equal(source.includes("className=\"recent-chart-page-controls\""), true);
   assert.equal(source.includes("aria-label=\"向前翻页\""), true);
   assert.equal(source.includes("aria-label=\"向后翻页\""), true);

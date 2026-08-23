@@ -742,6 +742,14 @@ test("quota estimate card follows the chart at the lower left like the Swift lay
   assert.match(cardRule.groups.body, /margin-top:\s*18px;/);
   assert.doesNotMatch(cardRule.groups.body, /(?:^|\n)\s*top:/);
   assert.doesNotMatch(cardRule.groups.body, /(?:^|\n)\s*left:/);
+
+  const scopeRule = css.match(/\.quota-estimate-scope-note\s*\{(?<body>[\s\S]*?)\n\}/);
+  assert.ok(scopeRule?.groups?.body);
+  assert.match(scopeRule.groups.body, /white-space:\s*normal;/);
+  assert.match(scopeRule.groups.body, /overflow-wrap:\s*anywhere;/);
+
+  const source = await readFile(new URL("../RecentUsageChart.tsx", import.meta.url), "utf8");
+  assert.equal(source.includes("className=\"quota-estimate-scope-note\""), true);
 })
 
 test("cost observations use one amber-gold color across the chart controls", async () => {

@@ -280,11 +280,15 @@ struct RecentChartQuotaEstimateOverlay: View {
                         if showsSevenDayQuota {
                             QuotaEstimateChip(presentation: presentation.sevenDayChip, color: .green)
                         }
-                        if let comparisonScopeText = presentation.comparisonScopeText {
-                            Text(comparisonScopeText)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
+                    }
+
+                    if let comparisonScopeText = presentation.comparisonScopeText {
+                        Text(comparisonScopeText)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
                     if presentation.showsBudgetRatio {

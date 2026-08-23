@@ -1763,6 +1763,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
 
         let scrollView = try XCTUnwrap(firstScrollView(in: hostingView))
         XCTAssertTrue(scrollView.contentView.postsBoundsChangedNotifications)
+        XCTAssertTrue(scrollView.hasHorizontalScroller)
+        XCTAssertFalse(scrollView.autohidesScrollers)
+        XCTAssertEqual(scrollView.scrollerStyle, .legacy)
 
         callbacks.removeAll()
         var gestureBounds = scrollView.contentView.bounds
@@ -2389,7 +2392,9 @@ private struct HostedRecentChartScrollReaderHarness: View {
                     .frame(width: contentWidth, height: 40)
 
                 if isReaderEnabled {
-                    RecentChartScrollOffsetReader { offset in
+                    RecentChartScrollOffsetReader(
+                        showsPersistentHorizontalScroller: contentWidth > viewportWidth + 1
+                    ) { offset in
                         onOffsetChange(
                             HostedScrollCallback(
                                 offset: offset,

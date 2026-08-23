@@ -7476,8 +7476,45 @@ input[type="range"]::-moz-range-thumb {
 .recent-chart-scroll--horizontal {
   overflow-x: auto;
   overflow-y: visible;
-  padding-bottom: 4px;
+  padding-bottom: 0;
   overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.recent-chart-scroll--horizontal::-webkit-scrollbar {
+  display: none;
+}
+
+.recent-chart-persistent-scrollbar {
+  position: relative;
+  z-index: 6;
+  width: 100%;
+  height: 12px;
+  margin-top: 5px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--line) 42%, transparent);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.recent-chart-persistent-scrollbar:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 2px;
+}
+
+.recent-chart-persistent-scrollbar__thumb {
+  position: absolute;
+  top: 2px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 48%, var(--line-strong));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--panel-solid) 42%, transparent);
+  cursor: grab;
+}
+
+.recent-chart-persistent-scrollbar__thumb:active {
+  cursor: grabbing;
 }
 
 .recent-chart-scroll--horizontal:focus-visible {
@@ -7858,6 +7895,15 @@ input[type="range"]::-moz-range-thumb {
 
 .quota-estimate-row b {
   color: #0398b6;
+}
+
+.quota-estimate-scope-note {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .quota-estimate-row .is-warning {

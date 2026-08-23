@@ -80,6 +80,12 @@ export interface RecentChartScrollPresentation {
   isAtLatest: boolean;
 }
 
+export interface RecentChartScrollbarThumb {
+  left: number;
+  width: number;
+  maxScrollLeft: number;
+}
+
 export interface RecentUsageChartSeries {
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
@@ -338,6 +344,43 @@ export function recentChartScrollPresentation(
     isAtOldest: safeOffset <= safeEpsilon,
     isAtLatest: maxOffset - safeOffset <= safeEpsilon,
   };
+}
+
+export function recentChartScrollbarThumb(
+  layout: Pick<RecentChartScrollLayout, "contentWidth" | "viewportWidth">,
+  scrollLeft: number,
+  trackWidth = layout.viewportWidth,
+  minimumThumbWidth = 36,
+): RecentChartScrollbarThumb {
+  const safeTrackWidth = Math.max(0, Number.isFinite(trackWidth) ? trackWidth : 0);
+  const safeViewportWidth = Math.max(0, Number.isFinite(layout.viewportWidth) ? layout.viewportWidth : 0);
+  const safeContentWidth = Math.max(safeViewportWidth, Number.isFinite(layout.contentWidth) ? layout.contentWidth : 0);
+  const maxScrollLeft = Math.max(safeContentWidth - safeViewportWidth, 0);
+  const proportionalWidth = safeContentWidth > 0
+    ? safeTrackWidth * safeViewportWidth / safeContentWidth
+    : safeTrackWidth;
+  const width = Math.min(
+    safeTrackWidth,
+    Math.max(Math.min(Math.max(minimumThumbWidth, 0), safeTrackWidth), proportionalWidth),
+  );
+  const availableTravel = Math.max(safeTrackWidth - width, 0);
+  const clampedScrollLeft = Math.min(Math.max(Number.isFinite(scrollLeft) ? scrollLeft : 0, 0), maxScrollLeft);
+  const left = maxScrollLeft > 0
+    ? availableTravel * clampedScrollLeft / maxScrollLeft
+    : 0;
+  return { left, width, maxScrollLeft };
+}
+
+export function recentChartScrollLeftForThumb(
+  thumbLeft: number,
+  thumb: Pick<RecentChartScrollbarThumb, "width" | "maxScrollLeft">,
+  trackWidth: number,
+): number {
+  const safeTrackWidth = Math.max(0, Number.isFinite(trackWidth) ? trackWidth : 0);
+  const availableTravel = Math.max(safeTrackWidth - thumb.width, 0);
+  if (availableTravel <= 0 || thumb.maxScrollLeft <= 0) return 0;
+  const clampedLeft = Math.min(Math.max(Number.isFinite(thumbLeft) ? thumbLeft : 0, 0), availableTravel);
+  return thumb.maxScrollLeft * clampedLeft / availableTravel;
 }
 
 export function recentChartScrollTarget(

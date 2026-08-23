@@ -125,6 +125,13 @@ enum RecentChartScrollMetrics {
     }
 }
 
+@MainActor
+enum RecentChartPersistentScrollerMetrics {
+    static let reservedHeight = ceil(
+        NSScroller.scrollerWidth(for: .small, scrollerStyle: .legacy)
+    )
+}
+
 enum RecentChartAutoScrollPolicy {
     static func shouldFollowLatest(
         previousBins: [BinUsage],
@@ -204,7 +211,11 @@ final class RecentChartScrollOffsetObserver: NSObject {
     private(set) weak var scrollView: NSScrollView?
     var onOffsetChange: ((CGFloat) -> Void)?
 
-    func attach(to scrollView: NSScrollView) {
+    func attach(to scrollView: NSScrollView, showsPersistentHorizontalScroller: Bool) {
+        configureHorizontalScroller(
+            scrollView,
+            showsPersistentHorizontalScroller: showsPersistentHorizontalScroller
+        )
         // SwiftUI calls updateNSView while evaluating the view graph. Reporting the same
         // scroll view synchronously from that callback mutates @State during the update and
         // can create an endless redraw loop on a large dashboard snapshot.
@@ -227,6 +238,20 @@ final class RecentChartScrollOffsetObserver: NSObject {
         }
     }
 
+    private func configureHorizontalScroller(
+        _ scrollView: NSScrollView,
+        showsPersistentHorizontalScroller: Bool
+    ) {
+        scrollView.hasHorizontalScroller = showsPersistentHorizontalScroller
+        scrollView.autohidesScrollers = !showsPersistentHorizontalScroller
+        if showsPersistentHorizontalScroller {
+            // SwiftUI otherwise follows the macOS automatic-overlay preference, which
+            // makes the only horizontal position affordance disappear while idle.
+            scrollView.scrollerStyle = .legacy
+            scrollView.horizontalScroller?.controlSize = .small
+        }
+    }
+
     func detach() {
         if let observation {
             NotificationCenter.default.removeObserver(observation)
@@ -242,15 +267,18 @@ final class RecentChartScrollOffsetObserver: NSObject {
 }
 
 struct RecentChartScrollOffsetReader: NSViewRepresentable {
+    let showsPersistentHorizontalScroller: Bool
     let onOffsetChange: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> ObservationView {
         let view = ObservationView()
+        view.showsPersistentHorizontalScroller = showsPersistentHorizontalScroller
         view.observer.onOffsetChange = onOffsetChange
         return view
     }
 
     func updateNSView(_ nsView: ObservationView, context: Context) {
+        nsView.showsPersistentHorizontalScroller = showsPersistentHorizontalScroller
         nsView.observer.onOffsetChange = onOffsetChange
         nsView.attachToEnclosingScrollView()
     }
@@ -261,6 +289,7 @@ struct RecentChartScrollOffsetReader: NSViewRepresentable {
 
     final class ObservationView: NSView {
         let observer = RecentChartScrollOffsetObserver()
+        var showsPersistentHorizontalScroller = false
 
         override func viewDidMoveToSuperview() {
             super.viewDidMoveToSuperview()
@@ -274,7 +303,10 @@ struct RecentChartScrollOffsetReader: NSViewRepresentable {
 
         func attachToEnclosingScrollView() {
             guard let enclosingScrollView else { return }
-            observer.attach(to: enclosingScrollView)
+            observer.attach(
+                to: enclosingScrollView,
+                showsPersistentHorizontalScroller: showsPersistentHorizontalScroller
+            )
         }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1144,6 +1176,8 @@ struct RecentUsageChart: View, Equatable {
     ) -> some View {
         GeometryReader { proxy in
             let buttonWidth: CGFloat = 28
+            let canvasHeight = selectedRange.chartGeometry.canvasHeight
+            let scrollContainerHeight = canvasHeight + RecentChartPersistentScrollerMetrics.reservedHeight
             let viewportWidth = max(proxy.size.width, 1)
             let contentWidth = RecentChartScrollMetrics.contentWidth(
                 range: selectedRange,
@@ -1171,12 +1205,14 @@ struct RecentUsageChart: View, Equatable {
                                 ZStack(alignment: .topLeading) {
                                     chartPlotCanvas(
                                         width: contentWidth,
-                                        height: proxy.size.height,
+                                        height: canvasHeight,
                                         consumptionSelection: consumptionSelection
                                     )
-                                        .frame(width: contentWidth, height: proxy.size.height)
+                                        .frame(width: contentWidth, height: canvasHeight)
 
-                                    RecentChartScrollOffsetReader { contentOffset in
+                                    RecentChartScrollOffsetReader(
+                                        showsPersistentHorizontalScroller: contentWidth > viewportWidth + 1
+                                    ) { contentOffset in
                                         updateScrollPresentation(
                                             contentOffset: contentOffset,
                                             viewportWidth: viewportWidth,
@@ -1192,7 +1228,7 @@ struct RecentUsageChart: View, Equatable {
                                         contentWidth: contentWidth
                                     )
                                 }
-                                .frame(width: contentWidth, height: proxy.size.height)
+                                .frame(width: contentWidth, height: canvasHeight)
 
                                 Color.clear
                                     .frame(width: 1, height: 1)
@@ -1204,7 +1240,7 @@ struct RecentUsageChart: View, Equatable {
                         .overlay(alignment: .topLeading) {
                             chartHoverBubbleOverlay(
                                 viewportWidth: viewportWidth,
-                                height: proxy.size.height,
+                                height: canvasHeight,
                                 contentWidth: contentWidth,
                                 contentOffset: presentation.contentOffset,
                                 consumptionSelection: consumptionSelection
@@ -1258,7 +1294,7 @@ struct RecentUsageChart: View, Equatable {
                             state: presentation.edgeFadeState
                         )
                     }
-                    .frame(width: viewportWidth, height: proxy.size.height)
+                    .frame(width: viewportWidth, height: scrollContainerHeight)
 
                     HStack {
                         RecentChartScrollButton(
@@ -1272,7 +1308,7 @@ struct RecentUsageChart: View, Equatable {
                                 )
                             }
                         )
-                        .frame(width: buttonWidth, height: proxy.size.height)
+                        .frame(width: buttonWidth, height: canvasHeight)
                         .offset(x: -buttonWidth - 6)
 
                         Spacer(minLength: 0)
@@ -1288,7 +1324,7 @@ struct RecentUsageChart: View, Equatable {
                                 )
                             }
                         )
-                        .frame(width: buttonWidth, height: proxy.size.height)
+                        .frame(width: buttonWidth, height: canvasHeight)
                         .offset(x: buttonWidth + 6)
                     }
 
@@ -1309,7 +1345,10 @@ struct RecentUsageChart: View, Equatable {
                 }
             }
         }
-        .frame(height: selectedRange.chartGeometry.canvasHeight)
+        .frame(
+            height: selectedRange.chartGeometry.canvasHeight
+                + RecentChartPersistentScrollerMetrics.reservedHeight
+        )
     }
 
     private var chartViewportMask: some View {

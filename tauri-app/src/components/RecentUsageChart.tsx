@@ -1,4 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { RecentUsagePoint } from "../types/dashboard";
 import { formatTokens } from "../utils/format";
 import {
@@ -25,6 +33,8 @@ import {
   quotaEstimateWindowVisibility,
   recentChartGeometry,
   recentChartScrollLayout,
+  recentChartScrollbarThumb,
+  recentChartScrollLeftForThumb,
   recentChartScrollPresentation,
   recentChartScrollTarget,
   recentChartTimeMarkers,
@@ -81,6 +91,7 @@ export function RecentUsageChart({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingScrollFrameRef = useRef<number | null>(null);
   const pendingScrollMetricsRef = useRef({ scrollLeft: 0, viewportWidth: CHART_WIDTH });
+  const scrollbarDragRef = useRef<{ pointerId: number; grabOffset: number } | null>(null);
   const [chartScrollLeft, setChartScrollLeft] = useState(0);
   const [chartViewportWidth, setChartViewportWidth] = useState(CHART_WIDTH);
   const data = useMemo(
@@ -92,6 +103,7 @@ export function RecentUsageChart({
   const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth);
   const chartWidth = scrollLayout.contentWidth;
   const scrollPresentation = recentChartScrollPresentation(scrollLayout, chartScrollLeft);
+  const scrollbarThumb = recentChartScrollbarThumb(scrollLayout, chartScrollLeft, chartViewportWidth);
   const scrollContentStyle = {
     "--recent-chart-content-width": `${chartWidth}px`,
     "--recent-chart-aspect-ratio": `${chartWidth} / ${canvasHeight}`,
@@ -286,6 +298,29 @@ export function RecentUsageChart({
     scrollElement.scrollTo({ left: target, behavior: "smooth" });
   }
 
+  function updateScrollbarDrag(clientX: number, track: HTMLDivElement) {
+    const drag = scrollbarDragRef.current;
+    const scrollElement = scrollRef.current;
+    if (!drag || !scrollElement) return;
+    const bounds = track.getBoundingClientRect();
+    const thumb = recentChartScrollbarThumb(scrollLayout, scrollElement.scrollLeft, bounds.width);
+    const thumbLeft = clientX - bounds.left - drag.grabOffset;
+    scrollElement.scrollLeft = recentChartScrollLeftForThumb(thumbLeft, thumb, bounds.width);
+  }
+
+  function handleScrollbarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!scrollLayout.isHorizontal) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const thumb = recentChartScrollbarThumb(scrollLayout, chartScrollLeft, bounds.width);
+    const clickedThumb = (event.target as HTMLElement).classList.contains("recent-chart-persistent-scrollbar__thumb");
+    scrollbarDragRef.current = {
+      pointerId: event.pointerId,
+      grabOffset: clickedThumb ? event.clientX - bounds.left - thumb.left : thumb.width / 2,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateScrollbarDrag(event.clientX, event.currentTarget);
+  }
+
   function scheduleScrollState(scrollLeft: number, viewportWidth: number) {
     pendingScrollMetricsRef.current = { scrollLeft, viewportWidth };
     if (pendingScrollFrameRef.current !== null) {
@@ -458,6 +493,46 @@ export function RecentUsageChart({
             </svg>
           </div>
         </div>
+        {scrollLayout.isHorizontal ? (
+          <div
+            aria-label="曲线水平滚动位置"
+            aria-valuemax={Math.round(scrollbarThumb.maxScrollLeft)}
+            aria-valuemin={0}
+            aria-valuenow={Math.round(chartScrollLeft)}
+            className="recent-chart-persistent-scrollbar"
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const scrollElement = scrollRef.current;
+              if (!scrollElement) return;
+              const delta = Math.max(chartViewportWidth / 10, 1) * (event.key === "ArrowLeft" ? -1 : 1);
+              scrollElement.scrollLeft = Math.min(
+                Math.max(scrollElement.scrollLeft + delta, 0),
+                scrollbarThumb.maxScrollLeft,
+              );
+            }}
+            onPointerCancel={() => { scrollbarDragRef.current = null; }}
+            onPointerDown={handleScrollbarPointerDown}
+            onPointerMove={(event) => {
+              if (scrollbarDragRef.current?.pointerId === event.pointerId) {
+                updateScrollbarDrag(event.clientX, event.currentTarget);
+              }
+            }}
+            onPointerUp={(event) => {
+              if (scrollbarDragRef.current?.pointerId === event.pointerId) {
+                scrollbarDragRef.current = null;
+                event.currentTarget.releasePointerCapture(event.pointerId);
+              }
+            }}
+            role="scrollbar"
+            tabIndex={0}
+          >
+            <div
+              className="recent-chart-persistent-scrollbar__thumb"
+              style={{ left: scrollbarThumb.left, width: scrollbarThumb.width }}
+            />
+          </div>
+        ) : null}
         <div className="recent-chart-overlay-layer">
           {visibleWindowLabel ? (
             <div className="recent-chart-visible-window">当前窗口：{visibleWindowLabel}</div>
@@ -796,8 +871,10 @@ function RecentChartQuotaEstimateOverlay({
               title="7d"
             />
           ) : null}
-          {comparisonScopeText ? <em>{comparisonScopeText}</em> : null}
         </div>
+        {comparisonScopeText ? (
+          <div className="quota-estimate-scope-note">{comparisonScopeText}</div>
+        ) : null}
         {showsBudgetRatio ? (
           <div className="quota-estimate-row">
             <span>倍率</span>
