@@ -168,6 +168,8 @@ final class SessionManagementPresentationTests: XCTestCase {
     }
 
     func testForksAndSubagentsRemainSeparateCollections() {
+        var source = makeSessionManagementThread(id: "root", fileBytes: 10)
+        source.forkChildCount = 1
         let fork = makeSessionManagementThread(
             id: "fork",
             forkedFromID: "root"
@@ -178,7 +180,7 @@ final class SessionManagementPresentationTests: XCTestCase {
             isSubagent: true
         )
         let catalog = SessionManagementCatalog(
-            threads: [fork, subagent],
+            threads: [source, fork, subagent],
             generatedAt: Date(),
             codexHome: "/tmp/codex",
             totalBytes: nil,
@@ -982,6 +984,7 @@ final class FoundationSessionManagementBackendTests: XCTestCase {
     func testCatalogSupplementsMissingDatabaseRowFromReadOnlyRolloutScan() async throws {
         let fixture = try makeFixture(messageCount: 1)
         let scannedID = UUID().uuidString.lowercased()
+        let historyBaseID = UUID().uuidString.lowercased()
         let scannedURL = fixture.rolloutURL
             .deletingLastPathComponent()
             .appendingPathComponent("rollout-\(scannedID).jsonl")
@@ -992,6 +995,7 @@ final class FoundationSessionManagementBackendTests: XCTestCase {
                 "id": scannedID,
                 "cwd": fixture.project.path,
                 "session_id": "session-\(scannedID)",
+                "history_base": ["thread_id": historyBaseID],
                 "source": "cli",
             ],
         ])
@@ -1008,6 +1012,7 @@ final class FoundationSessionManagementBackendTests: XCTestCase {
 
         XCTAssertEqual(scanned.rolloutPath, scannedURL.path)
         XCTAssertEqual(scanned.cwd, fixture.project.path)
+        XCTAssertEqual(scanned.forkedFromID, historyBaseID)
         XCTAssertEqual(scanned.status, .unknown)
         XCTAssertTrue(scanned.rolloutIdentityVerified)
         XCTAssertFalse(scanned.canDelete)
@@ -1366,32 +1371,67 @@ final class FoundationSessionManagementBackendTests: XCTestCase {
         XCTAssertEqual(deleteCalls, 0)
     }
 
-    func testExternalWriterBlocksBeforeStatusProbeAndOfficialDelete() async throws {
-        let fixture = try makeFixture(messageCount: 1)
+    func testDeletionUsesTargetRolloutGateInsteadOfGlobalCodexProcessGate() async throws {
+        let fixture = try makeFixture(messageCount: 1, archived: true)
         let appServer = SessionManagementAppServerMock(
             threads: [fixture.appServerThread(status: .notLoaded)],
             status: .notLoaded
         )
         let delete = SessionManagementOfficialDeleteMock()
+        let probedPaths = SessionManagementProbedPaths()
         let backend = makeBackend(
             appServer: appServer,
             officialDelete: delete,
+            externalWriterDetector: { ["Codex (PID 88)"] },
+            openFileHoldersDetector: { path in
+                probedPaths.append(path)
+                return []
+            }
+        )
+
+        let confirmation = try await backend.prepareDeletionConfirmation(
+            selectedThreadIDs: [fixture.threadID],
+            dataSource: fixture.dataSource
+        )
+
+        let statusReads = await appServer.statusReadCount()
+        let deleteCalls = await delete.callCount()
+        XCTAssertGreaterThan(statusReads, 0)
+        XCTAssertEqual(deleteCalls, 0)
+        XCTAssertEqual(confirmation.impact.affected.map(\.id), [fixture.threadID])
+        XCTAssertEqual(Set(probedPaths.values), [fixture.rolloutURL.path])
+    }
+
+    func testLiveDeletionRequiresEveryAffectedThreadToBeArchived() async throws {
+        let fixture = try makeFixture(messageCount: 1)
+        let appServer = SessionManagementAppServerMock(
+            threads: [fixture.appServerThread(status: .notLoaded)],
+            status: .notLoaded
+        )
+        let backend = makeBackend(
+            appServer: appServer,
             externalWriterDetector: { ["Codex (PID 88)"] }
         )
 
+        let catalog = try await backend.loadCatalog(dataSource: fixture.dataSource)
+        let thread = try XCTUnwrap(catalog.threads.first)
+        XCTAssertTrue(thread.canArchive)
+        XCTAssertFalse(thread.canDelete)
+        XCTAssertTrue(
+            thread.protectionReasons.contains("Codex 运行中需先官方归档再删除")
+        )
         do {
-            _ = try await performBoundDelete(fixture, using: backend)
-            XCTFail("external writer must block deletion")
+            _ = try await backend.prepareDeletionConfirmation(
+                selectedThreadIDs: [thread.id],
+                dataSource: fixture.dataSource
+            )
+            XCTFail("an unarchived live thread must not reach delete preparation")
         } catch let error as SessionManagementBackendError {
-            guard case .externalWriterDetected(let writers) = error else {
-                return XCTFail("Unexpected error: \(error)")
-            }
-            XCTAssertEqual(writers, ["Codex (PID 88)"])
+            XCTAssertEqual(
+                error,
+                .liveDeletionRequiresArchive([thread.id])
+            )
         }
-        let statusReads = await appServer.statusReadCount()
-        let deleteCalls = await delete.callCount()
-        XCTAssertEqual(statusReads, 0)
-        XCTAssertEqual(deleteCalls, 0)
     }
 
     func testOpenRolloutHandleBlocksAfterFreshStatusProbe() async throws {
@@ -1997,6 +2037,57 @@ final class FoundationSessionManagementBackendTests: XCTestCase {
             XCTFail("a swapped recovery package must stop before the official CLI")
         } catch {
             // See the rollout replacement test above.
+        }
+        let hookCalls = await delete.prelaunchHookCallCount()
+        let deleteCalls = await delete.callCount()
+        XCTAssertEqual(hookCalls, 1)
+        XCTAssertEqual(deleteCalls, 0)
+    }
+
+    func testPrelaunchVerificationRejectsWriterThatAppearsAfterRecoveryValidation() async throws {
+        let fixture = try makeFixture(messageCount: 1, archived: true)
+        let appServer = SessionManagementAppServerMock(
+            threads: [fixture.appServerThread(status: .notLoaded)],
+            status: .notLoaded
+        )
+        let preparationBackend = makeBackend(appServer: appServer)
+        let confirmation = try await preparationBackend.prepareDeletionConfirmation(
+            selectedThreadIDs: [fixture.threadID],
+            dataSource: fixture.dataSource
+        )
+        let thread = try XCTUnwrap(confirmation.impact.affected.first)
+        let recovery = try await preparationBackend.createRecoveryPackage(
+            thread: thread,
+            dataSource: fixture.dataSource,
+            expectedSnapshot: confirmation.rolloutSnapshotsByThreadID[thread.id]
+        )
+        let writer = SessionManagementWriterProbe()
+        let delete = SessionManagementOfficialDeleteMock(
+            beforePrelaunchVerification: { writer.beginWriting() }
+        )
+        let deletionBackend = makeBackend(
+            appServer: appServer,
+            officialDelete: delete,
+            openFileHoldersDetector: { _ in writer.isWriting ? [777] : [] }
+        )
+
+        do {
+            _ = try await deletionBackend.delete(
+                rootID: thread.id,
+                expectation: SessionManagementDeletionExpectation(
+                    confirmation: confirmation,
+                    pendingRootIndex: 0,
+                    requiresRecoveryEvidence: true
+                ),
+                recoveryPackages: [thread.id: recovery],
+                dataSource: fixture.dataSource
+            )
+            XCTFail("a writer appearing at prelaunch must stop the official CLI")
+        } catch let error as SessionManagementBackendError {
+            guard case .externalWriterDetected(let writers) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(writers, ["会话文件占用进程 PID 777"])
         }
         let hookCalls = await delete.prelaunchHookCallCount()
         let deleteCalls = await delete.callCount()
@@ -2783,6 +2874,32 @@ private final class SessionManagementProtectedIDsSequence: @unchecked Sendable {
         let response = responses[min(index, responses.count - 1)]
         index += 1
         return response
+    }
+}
+
+private final class SessionManagementProbedPaths: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var values: [String] {
+        lock.withLock { storage }
+    }
+
+    func append(_ path: String) {
+        lock.withLock { storage.append(path) }
+    }
+}
+
+private final class SessionManagementWriterProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var writing = false
+
+    var isWriting: Bool {
+        lock.withLock { writing }
+    }
+
+    func beginWriting() {
+        lock.withLock { writing = true }
     }
 }
 

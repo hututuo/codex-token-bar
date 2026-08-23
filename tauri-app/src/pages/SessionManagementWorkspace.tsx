@@ -728,8 +728,8 @@ export function SessionManagementWorkspace({
                 <option value="tokens">Token 最多</option>
               </select>
             </div>
-            {collection === "large" ? (
-              <div className="session-management-large-filters" aria-label="大容量筛选">
+            <div className="session-management-large-filters" aria-label="会话筛选">
+              {collection === "large" ? (
                 <label>
                   <span>最小大小</span>
                   <select
@@ -741,22 +741,22 @@ export function SessionManagementWorkspace({
                     <option value={1024 * 1024 * 1024}>1 GiB</option>
                   </select>
                 </label>
-                <label>
-                  <span>闲置至少</span>
-                  <select
-                    onChange={(event) => setIdleDays(event.currentTarget.value === "all"
-                      ? null
-                      : Number(event.currentTarget.value))}
-                    value={idleDays ?? "all"}
-                  >
-                    <option value="all">不限</option>
-                    <option value="7">7 天</option>
-                    <option value="30">30 天</option>
-                    <option value="90">90 天</option>
-                  </select>
-                </label>
-              </div>
-            ) : null}
+              ) : null}
+              <label>
+                <span>闲置至少</span>
+                <select
+                  onChange={(event) => setIdleDays(event.currentTarget.value === "all"
+                    ? null
+                    : Number(event.currentTarget.value))}
+                  value={idleDays ?? "all"}
+                >
+                  <option value="all">不限</option>
+                  <option value="7">7 天</option>
+                  <option value="30">30 天</option>
+                  <option value="90">90 天</option>
+                </select>
+              </label>
+            </div>
             <div className="session-management-selection-bar">
               <label>
                 <input
@@ -992,7 +992,8 @@ function ThreadRow({
           <span>{formatSessionTimestamp(thread.recencyAt ?? thread.updatedAt)}</span>
         </div>
         <div className="session-management-thread-badges">
-          {thread.forkedFromId || thread.forkChildCount > 0 ? <span>Fork</span> : null}
+          {thread.forkedFromId ? <span>Fork 分支</span> : null}
+          {thread.forkChildCount > 0 ? <span>Fork 来源</span> : null}
           {thread.isSubagent ? <span>Subagent</span> : null}
           {thread.similarityGroupId ? <span>可能相似</span> : null}
           {thread.protectionReasons.map((reason) => <span className="is-protected" key={reason}>{reason}</span>)}

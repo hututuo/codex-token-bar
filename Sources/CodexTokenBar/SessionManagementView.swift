@@ -729,8 +729,13 @@ struct SessionManagementView: View {
                         }
                         if thread.isSubagent {
                             compactBadge("Subagent", color: AppTheme.accentCyan)
-                        } else if thread.hasForkLineage {
-                            compactBadge("Fork", color: AppTheme.accentBlue)
+                        } else {
+                            if thread.isForkBranch {
+                                compactBadge("Fork 分支", color: AppTheme.accentBlue)
+                            }
+                            if thread.isForkSource {
+                                compactBadge("Fork 来源", color: AppTheme.accentCyan)
+                            }
                         }
                         if thread.similarityGroupID != nil {
                             compactBadge("可能相似", color: AppTheme.accentOrange)

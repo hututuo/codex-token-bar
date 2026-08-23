@@ -22,7 +22,7 @@ test("session collections keep main, fork and subagent relationships separate", 
       recent: 3,
       archived: 1,
       large: 0,
-      forks: 2,
+      forks: 1,
       similar: 0,
       subagents: 1,
     });
@@ -64,6 +64,25 @@ test("filter searches the complete metadata set, sorts large and least-recent se
       idleDays: 90,
       now: NOW,
     }).map((entry) => entry.id), ["agent-large", "old-large"]);
+  });
+});
+
+test("fork collection contains only generated branches and supports old-session filtering", async () => {
+  await withSsrModules(async (load) => {
+    const { filterSessionThreads } = await load("/src/sessionManagement/model.ts");
+    const threads = [
+      thread({ id: "source", forkChildCount: 2, recencyAt: 1_735_689_600 }),
+      thread({ id: "old-fork", forkedFromId: "source", recencyAt: 1_735_689_600 }),
+      thread({ id: "new-fork", forkedFromId: "source", recencyAt: 1_785_283_200 }),
+    ];
+
+    assert.deepEqual(filterSessionThreads(threads, {
+      collection: "forks",
+      query: "",
+      sort: "leastRecent",
+      idleDays: 90,
+      now: NOW,
+    }).map((entry) => entry.id), ["old-fork"]);
   });
 });
 

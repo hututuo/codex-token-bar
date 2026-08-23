@@ -243,6 +243,14 @@ struct SessionManagementThread: Identifiable, Equatable, Sendable {
     var hasForkLineage: Bool {
         forkedFromID != nil || forkChildCount > 0
     }
+
+    var isForkBranch: Bool {
+        forkedFromID != nil
+    }
+
+    var isForkSource: Bool {
+        forkChildCount > 0
+    }
 }
 
 struct SessionManagementProject: Identifiable, Equatable, Sendable {
@@ -485,7 +493,7 @@ enum SessionManagementPresentation {
             case .large:
                 return (thread.fileBytes ?? -1) >= largeThreadThreshold
             case .forks:
-                return thread.hasForkLineage && !thread.isSubagent
+                return thread.isForkBranch && !thread.isSubagent
             case .similar:
                 return thread.similarityGroupID != nil && !thread.isSubagent
             case .subagents:

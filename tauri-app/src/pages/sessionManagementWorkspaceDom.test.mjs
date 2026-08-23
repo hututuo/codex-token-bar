@@ -13,6 +13,7 @@ test("session management progressively discloses real catalog data and keeps dan
   await withMountedWorkspace(async ({ act, calls, container, window }) => {
     await flushPromises(act);
     assert.match(container.textContent, /206 个会话/);
+    assert.match(container.textContent, /闲置至少/);
     assert.match(container.textContent, /当前显示 100 \/ 205/);
     assert.equal(container.querySelectorAll(".session-management-thread-row").length, 100);
 

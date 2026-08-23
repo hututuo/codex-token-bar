@@ -95,6 +95,7 @@ enum SessionManagementBackendError: LocalizedError, Equatable {
     case compressedContextUnsupported
     case mutationBlocked(SessionManagementThreadStatus)
     case externalWriterDetected([String])
+    case liveDeletionRequiresArchive([String])
     case dataSourceIdentityUnavailable
     case dataSourceIdentityChanged
     case autoResumeStateUnavailable(String)
@@ -129,7 +130,9 @@ enum SessionManagementBackendError: LocalizedError, Equatable {
             }
             return "会话当前状态为“\(status.label)”，已暂停归档或删除。"
         case .externalWriterDetected(let writers):
-            return "无法排除其他 Codex writer 正在使用会话，官方写操作已关闭。请先退出 Codex 后刷新。检测到：\(writers.joined(separator: "、"))"
+            return "目标会话文件可能正在被其他进程使用，危险操作已关闭。检测到：\(writers.joined(separator: "、"))"
+        case .liveDeletionRequiresArchive(let ids):
+            return "Codex 仍在运行；为冻结会话谱系，本次范围中的未归档会话需先官方归档再删除：\(ids.joined(separator: "、"))"
         case .dataSourceIdentityUnavailable:
             return "无法绑定 Codex 数据目录的物理身份，危险操作已安全关闭。"
         case .dataSourceIdentityChanged:
@@ -385,12 +388,10 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
                 "Codex App Server 运行态读取失败；目录仍可浏览，但官方归档、恢复和删除已关闭：\(error.localizedDescription)"
             )
         }
-        let externalWriters = externalWriterDetector()
-        if !externalWriters.isEmpty {
-            officialMutationsAvailable = false
-            deletionVerificationComplete = false
+        let liveDeletionRequiresArchive = !externalWriterDetector().isEmpty
+        if liveDeletionRequiresArchive {
             warnings.append(
-                "检测到其他 Codex writer，官方归档、恢复和删除保持关闭；先退出 Codex 后再刷新。"
+                "Codex 正在运行：已归档且未加载的会话仍可删除；未归档会话请先执行官方归档。"
             )
         }
         let protectedThreadIDs: Set<String>
@@ -407,6 +408,7 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             local: local.threads,
             appServer: liveThreads,
             officialMutationsAvailable: officialMutationsAvailable,
+            liveDeletionRequiresArchive: liveDeletionRequiresArchive,
             autoResumeProtectedThreadIDs: protectedThreadIDs
         )
         threads.sort {
@@ -449,7 +451,6 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
         let coordination = try acquireCoordination(dataSource: dataSource)
         defer { coordination.release() }
         try mutationGate()
-        try ensureNoExternalWriter()
         try ensureRolloutRootsTrusted(dataSource)
 
         let initialCatalog = try await loadCatalog(dataSource: dataSource)
@@ -468,6 +469,7 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
                 "所选会话已从严格目录消失"
             )
         }
+        try ensureLiveDeletionScopeAllowed(initialImpact.affected)
         if let blocked = initialImpact.affected.first(where: {
             !$0.status.permitsMutation
                 || !$0.rolloutIdentityVerified
@@ -530,6 +532,7 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             threads: finalCatalog.threads,
             selectedThreadIDs: selectedThreadIDs
         )
+        try ensureLiveDeletionScopeAllowed(finalImpact.affected)
         guard Self.deletionScopeMatches(finalImpact, initialImpact),
               finalImpact.affected.allSatisfy({
                   $0.status.permitsMutation
@@ -594,7 +597,6 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             ownerID: coordinationOwnerID
         )
         try mutationGate()
-        try ensureNoExternalWriter()
         try ensureRolloutRootsTrusted(dataSource)
         try ensureAutoResumeNotProtected(threadID)
         try ensureRolloutNotOpenElsewhere(threadID: threadID, dataSource: dataSource)
@@ -622,7 +624,6 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             ownerID: coordinationOwnerID
         )
         try mutationGate()
-        try ensureNoExternalWriter()
         try ensureRolloutRootsTrusted(dataSource)
         try ensureAutoResumeNotProtected(threadID)
         try ensureRolloutNotOpenElsewhere(threadID: threadID, dataSource: dataSource)
@@ -671,7 +672,6 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
         let coordination = try acquireCoordination(dataSource: dataSource)
         defer { coordination.release() }
         try mutationGate()
-        try ensureNoExternalWriter()
         try ensureRolloutRootsTrusted(dataSource)
         let codexPath = try codexBinaryProvider()
         let validated = try await validateDeletionExpectation(
@@ -679,6 +679,7 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             codexPath: codexPath,
             dataSource: dataSource
         )
+        try ensureLiveDeletionScopeAllowed(validated.pendingAffected)
         try coordination.acquireAutoResumeLeases(
             threadIDs: expectation.pendingAffectedThreadIDs,
             codexHome: dataSource.codexHome,
@@ -707,6 +708,7 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             codexPath: codexPath,
             dataSource: dataSource
         )
+        try ensureLiveDeletionScopeAllowed(finalValidated.pendingAffected)
         for affected in finalValidated.pendingAffected {
             guard let recovery = recoveryPackages[affected.id] else {
                 throw SessionManagementBackendError.recoveryEvidenceMismatch(
@@ -720,6 +722,20 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
                     expectation.rolloutSnapshotsByThreadID[affected.id],
                 dataSource: dataSource,
                 fileManager: fileManager
+            )
+        }
+        for affected in finalValidated.pendingAffected {
+            let finalStatus = try await appServer.readSessionManagementThreadStatus(
+                codexPath: codexPath,
+                dataSource: dataSource,
+                threadID: affected.id
+            )
+            guard finalStatus.permitsMutation else {
+                throw SessionManagementBackendError.mutationBlocked(finalStatus)
+            }
+            try ensureRolloutNotOpenElsewhere(
+                threadID: affected.id,
+                dataSource: dataSource
             )
         }
         let evidenceLease = try Self.pinDeletionEvidence(
@@ -737,6 +753,15 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             threadID: rootID,
             prelaunchVerification: {
                 try evidenceLease.verifyBeforeDelete(fileManager: self.fileManager)
+                try self.ensureLiveDeletionScopeAllowed(
+                    finalValidated.pendingAffected
+                )
+                for affected in finalValidated.pendingAffected {
+                    try self.ensureRolloutNotOpenElsewhere(
+                        threadID: affected.id,
+                        dataSource: dataSource
+                    )
+                }
             }
         )
         try evidenceLease.verifyAfterDelete(fileManager: fileManager)
@@ -968,13 +993,6 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
         return result
     }
 
-    private func ensureNoExternalWriter() throws {
-        let writers = externalWriterDetector()
-        guard writers.isEmpty else {
-            throw SessionManagementBackendError.externalWriterDetected(writers)
-        }
-    }
-
     private func ensureDataSourceIdentity(_ dataSource: CodexDataSource) throws {
         guard let expected = dataSource.homeIdentity else {
             throw SessionManagementBackendError.dataSourceIdentityUnavailable
@@ -984,6 +1002,18 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             fileManager: fileManager
         ) == expected else {
             throw SessionManagementBackendError.dataSourceIdentityChanged
+        }
+    }
+
+    private func ensureLiveDeletionScopeAllowed(
+        _ threads: [SessionManagementThread]
+    ) throws {
+        guard !externalWriterDetector().isEmpty else { return }
+        let unarchived = threads.filter { !$0.archived }.map(\.id).sorted()
+        guard unarchived.isEmpty else {
+            throw SessionManagementBackendError.liveDeletionRequiresArchive(
+                unarchived
+            )
         }
     }
 
@@ -1101,7 +1131,6 @@ final class FoundationSessionManagementBackend: SessionManagementServicing, @unc
             ownerID: coordinationOwnerID
         )
         try mutationGate()
-        try ensureNoExternalWriter()
         try ensureRolloutRootsTrusted(dataSource)
         try ensureAutoResumeNotProtected(thread.id)
         let freshCatalog = try await loadCatalog(dataSource: dataSource)
@@ -1791,6 +1820,7 @@ private extension FoundationSessionManagementBackend {
         local: [SessionManagementThread],
         appServer: [SessionManagementAppServerThread],
         officialMutationsAvailable: Bool,
+        liveDeletionRequiresArchive: Bool = false,
         autoResumeProtectedThreadIDs: Set<String> = []
     ) -> [SessionManagementThread] {
         var byID = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
@@ -1897,6 +1927,12 @@ private extension FoundationSessionManagementBackend {
             thread.canArchive = safe && !thread.archived
             thread.canUnarchive = safe && thread.archived
             thread.canDelete = safe
+                && (!liveDeletionRequiresArchive || thread.archived)
+            if liveDeletionRequiresArchive, !thread.archived {
+                thread.protectionReasons.append(
+                    "Codex 运行中需先官方归档再删除"
+                )
+            }
             byID[id] = thread
         }
         return Array(byID.values)
@@ -2610,6 +2646,8 @@ private extension FoundationSessionManagementBackend {
             throw SessionManagementBackendError.rolloutIdentityMismatch(sourceLabel)
         }
         try handle.seek(toOffset: 0)
+        let historyBase = payload["history_base"] as? [String: Any]
+            ?? payload["historyBase"] as? [String: Any]
         return SessionMetadata(
             id: id,
             cwd: payload["cwd"] as? String ?? "",
@@ -2620,6 +2658,8 @@ private extension FoundationSessionManagementBackend {
             forkedFromID: firstNonemptyOptional([
                 payload["forked_from_id"] as? String,
                 payload["forkedFromId"] as? String,
+                historyBase?["thread_id"] as? String,
+                historyBase?["threadId"] as? String,
             ]),
             parentThreadID: firstNonemptyOptional([
                 payload["parent_thread_id"] as? String,

@@ -73,10 +73,10 @@ export function buildSessionCollections(
     collection("archived", "官方归档", threads.filter((thread) => thread.archived).length, "Codex 官方归档"),
     collection("large", "大容量", threads.filter((thread) => (
       (thread.fileBytes ?? 0) >= DEFAULT_LARGE_SESSION_BYTES
-    )).length, "按真实文件大小"),
+    )).length, "按 rollout 逻辑文件大小"),
     collection("forks", "Fork 分支", threads.filter((thread) => (
-      !thread.isSubagent && (thread.forkedFromId !== null || thread.forkChildCount > 0)
-    )).length, "用户 Fork 谱系"),
+      !thread.isSubagent && thread.forkedFromId !== null
+    )).length, "由 Fork 产生的分支，不含来源会话"),
     collection("similar", "可能相似", threads.filter((thread) => (
       !thread.isSubagent && thread.similarityGroupId !== null
     )).length, "本地指纹候选"),
@@ -135,7 +135,7 @@ export function filterSessionThreads(
       case "large":
         return (thread.fileBytes ?? 0) >= minimumSizeBytes;
       case "forks":
-        return !thread.isSubagent && (thread.forkedFromId !== null || thread.forkChildCount > 0);
+        return !thread.isSubagent && thread.forkedFromId !== null;
       case "similar":
         return !thread.isSubagent && thread.similarityGroupId !== null;
       case "subagents":

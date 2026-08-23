@@ -124,6 +124,21 @@ fn list_catalog_with_protocol(
     protocol: &mut dyn SessionProtocol,
 ) -> Result<SessionManagementCatalog, String> {
     let mut warnings = Vec::new();
+    let live_deletion_requires_archive = match live_delete_requires_archive() {
+        Ok(value) => value,
+        Err(error) => {
+            warnings.push(format!(
+                "无法确认 Codex 是否仍在运行；未归档会话的永久删除已安全关闭：{error}"
+            ));
+            true
+        }
+    };
+    if live_deletion_requires_archive {
+        warnings.push(
+            "Codex 正在运行：已归档且未加载的会话仍可删除；未归档会话请先执行官方归档。"
+                .into(),
+        );
+    }
     let active_rows = match protocol.list_threads(false) {
         Ok(rows) => rows,
         Err(error) => {
@@ -325,7 +340,8 @@ fn list_catalog_with_protocol(
             protection_reasons,
             can_archive: !archived && safe,
             can_unarchive: archived && safe,
-            can_delete: safe,
+            can_delete: safe
+                && live_delete_archive_gate(live_deletion_requires_archive, archived),
         });
     }
     apply_relationship_counts(&mut threads);
@@ -1634,6 +1650,11 @@ fn prepare_delete_impact(
                 thread.protection_reasons.join("；")
             ));
         }
+        if !thread.can_delete {
+            return Err(format!(
+                "受影响会话 {affected_id} 当前不可删除；Codex 运行时需先官方归档并保持未加载"
+            ));
+        }
         if normalize_status(&thread.status) != "notloaded" {
             return Err(format!(
                 "受影响会话 {affected_id} 的实时状态为 {}；只有 notLoaded 会话可删除",
@@ -1919,20 +1940,7 @@ fn capabilities(codex_home: &Path) -> SessionManagementCapabilities {
             available: false,
             reason: Some(format!("找不到可用 Codex CLI：{error}")),
         },
-        Ok(_) => match crate::platform::codex_desktop_is_running() {
-            Ok(false) => available(),
-            Ok(true) => SessionManagementCapability {
-                available: false,
-                reason: Some(
-                    "检测到 Codex 桌面端仍在运行；请先完全退出 Codex，避免跨进程 writer 冲突"
-                        .into(),
-                ),
-            },
-            Err(error) => SessionManagementCapability {
-                available: false,
-                reason: Some(format!("无法排除 Codex writer，已安全禁用：{error}")),
-            },
-        },
+        Ok(_) => available(),
     };
     let _ = codex_home;
     SessionManagementCapabilities {
@@ -1955,28 +1963,26 @@ fn capabilities(codex_home: &Path) -> SessionManagementCapabilities {
     }
 }
 
+fn live_delete_archive_gate(requires_archive: bool, archived: bool) -> bool {
+    !requires_archive || archived
+}
+
+#[cfg(not(test))]
+fn live_delete_requires_archive() -> Result<bool, String> {
+    crate::platform::codex_desktop_is_running()
+}
+
+#[cfg(test)]
+fn live_delete_requires_archive() -> Result<bool, String> {
+    Ok(false)
+}
+
 fn mutation_writer_gate(codex_home: &Path, thread_id: &str) -> Result<(), String> {
-    match crate::platform::codex_desktop_is_running() {
-        Ok(false) => {}
-        Ok(true) => {
-            return Err(
-                "Codex 桌面端仍在运行；当前 Codex 版本缺少跨进程 owner 保护，请完全退出后重试"
-                    .into(),
-            )
-        }
-        Err(error) => return Err(format!("无法确认 Codex 桌面端状态，已拒绝写操作：{error}")),
-    }
     let rollout = resolve_verified_rollout(codex_home, thread_id)?;
-    let sqlite_home = crate::core::provider_repair::resolve_sqlite_home_path(codex_home)
-        .map_err(|error| format!("无法确认 Codex SQLite Home，已拒绝写操作：{error}"))?;
-    let candidates = vec![rollout, sqlite_home.join("state_5.sqlite")];
-    let held = crate::platform::files_open_in_other_processes(&candidates)
+    let held = crate::platform::files_open_in_other_processes(std::slice::from_ref(&rollout))
         .map_err(|error| format!("无法检查 rollout writer，已拒绝写操作：{error}"))?;
     if !held.is_empty() {
-        return Err(format!(
-            "目标会话或状态库仍被其他进程打开：{}",
-            held.join("；")
-        ));
+        return Err(format!("目标会话仍被其他进程打开：{}", held.join("；")));
     }
     Ok(())
 }
@@ -2332,8 +2338,16 @@ struct SessionMetaPayload {
     session_id: Option<String>,
     #[serde(default, alias = "forkedFromId")]
     forked_from_id: Option<String>,
+    #[serde(default, alias = "historyBase")]
+    history_base: Option<SessionHistoryBase>,
     #[serde(default, alias = "parentThreadId")]
     parent_thread_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SessionHistoryBase {
+    #[serde(default, alias = "threadId")]
+    thread_id: Option<String>,
 }
 
 fn read_session_meta(path: &Path) -> Result<SessionMeta, String> {
@@ -2356,7 +2370,9 @@ fn read_session_meta_from_reader(reader: impl Read) -> Result<SessionMeta, Strin
         cwd: payload.cwd,
         source: session_meta_source(&payload.source),
         session_id: payload.session_id,
-        forked_from_id: payload.forked_from_id,
+        forked_from_id: payload.forked_from_id.or_else(|| {
+            payload.history_base.and_then(|base| base.thread_id)
+        }),
         parent_thread_id: payload.parent_thread_id,
     })
 }
@@ -6474,5 +6490,26 @@ mod tests {
                 "{status} must fail closed"
             );
         }
+    }
+
+    #[test]
+    fn session_meta_history_base_identifies_a_fork_when_legacy_field_is_absent() {
+        let id = Uuid::new_v4().to_string();
+        let source = Uuid::new_v4().to_string();
+        let line = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"history_base\":{{\"thread_id\":\"{source}\"}}}}}}\n"
+        );
+
+        let metadata = read_session_meta_from_reader(line.as_bytes()).unwrap();
+
+        assert_eq!(metadata.id, id);
+        assert_eq!(metadata.forked_from_id.as_deref(), Some(source.as_str()));
+    }
+
+    #[test]
+    fn running_codex_allows_archived_delete_but_blocks_unarchived_delete() {
+        assert!(live_delete_archive_gate(true, true));
+        assert!(!live_delete_archive_gate(true, false));
+        assert!(live_delete_archive_gate(false, false));
     }
 }
