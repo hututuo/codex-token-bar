@@ -28,6 +28,7 @@
   --orange: #ff8a2d;
   --red: #d64545;
   --purple: #bf59f0;
+  --chart-cost: #5c40d1;
   --heatmap-empty: #e8edf3;
   background: var(--page);
   color: var(--text);
@@ -54,6 +55,7 @@
     --orange: #ffa35b;
     --red: #f26d6d;
     --purple: #d57bff;
+    --chart-cost: #9e8cff;
     --heatmap-empty: #283241;
   }
 }
@@ -7288,6 +7290,8 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .recent-chart-controls {
+  position: relative;
+  z-index: 8;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -7406,7 +7410,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .legend-dot--cost {
-  background: #cc8b26;
+  background: var(--chart-cost);
 }
 
 .legend-dot--five {
@@ -7451,7 +7455,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .toggle-cost.is-active {
-  color: #cc8b26;
+  color: var(--chart-cost);
 }
 
 .toggle-five.is-active {
@@ -7714,7 +7718,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .hover-cost {
-  stroke: #cc8b26;
+  stroke: var(--chart-cost);
 }
 
 .hover-five {
@@ -7774,7 +7778,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .chart-observation-points--cost {
-  fill: #cc8b26;
+  fill: var(--chart-cost);
   opacity: 0.95;
   pointer-events: none;
 }

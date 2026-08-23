@@ -1140,9 +1140,9 @@ struct DashboardView: View {
                     )
                     : nil
             )
-            // Live-rate publications invalidate DashboardView frequently. Keep an
-            // unchanged historical chart out of those unrelated render passes.
-            .equatable()
+            // RecentUsageChart owns interactive @AppStorage visibility toggles.
+            // Wrapping the whole view in EquatableView suppresses those internal
+            // updates whenever the external history arrays remain unchanged.
 
             CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
         }

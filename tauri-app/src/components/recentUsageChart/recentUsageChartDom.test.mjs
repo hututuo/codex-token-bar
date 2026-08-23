@@ -674,7 +674,7 @@ test("24h hover and fixed selection preview expose model shares without persiste
         let costPoints = chart.querySelectorAll(".chart-observation-point--cost");
         assert.equal(costPoints.length, 2);
         const costRadii = [...costPoints].map((element) => Number(element.getAttribute("r")));
-        assert.deepEqual(costRadii, [1.6, 1.6]);
+        assert.deepEqual(costRadii, [1.68, 1.68]);
         const costLegendValue = container.querySelector(".legend-dot--cost")?.parentElement?.querySelector("strong")?.textContent;
         assert.match(costLegendValue ?? "", /^\$/);
         const costToggle = [...container.querySelectorAll(".chart-line-toggle")]
@@ -688,6 +688,24 @@ test("24h hover and fixed selection preview expose model shares without persiste
         await React.act(async () => costToggle.click());
         costPoints = chart.querySelectorAll(".chart-observation-point--cost");
         assert.equal(costPoints.length, 2);
+
+        for (const [label, selector] of [
+          ["Token", ".chart-line--token"],
+          ["调用", ".chart-line--calls"],
+          ["命中率", ".chart-observation-points--hit"],
+        ]) {
+          const toggle = [...container.querySelectorAll(".chart-line-toggle")]
+            .find((button) => button.textContent?.replace(/[●○]/g, "").trim() === label);
+          assert.ok(toggle, label);
+          assert.equal(toggle.getAttribute("aria-pressed"), "true", label);
+          assert.ok(chart.querySelector(selector), label);
+          await React.act(async () => toggle.click());
+          assert.equal(toggle.getAttribute("aria-pressed"), "false", label);
+          assert.equal(chart.querySelector(selector), null, label);
+          await React.act(async () => toggle.click());
+          assert.equal(toggle.getAttribute("aria-pressed"), "true", label);
+          assert.ok(chart.querySelector(selector), label);
+        }
         chart.getBoundingClientRect = () => ({
           bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
           toJSON: () => ({}),
@@ -752,8 +770,10 @@ test("quota estimate card follows the chart at the lower left like the Swift lay
   assert.equal(source.includes("className=\"quota-estimate-scope-note\""), true);
 })
 
-test("cost observations use one amber-gold color across the chart controls", async () => {
+test("cost observations use one indigo color across the chart controls", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  assert.match(css, /--chart-cost:\s*#5c40d1;/);
+  assert.match(css, /--chart-cost:\s*#9e8cff;/);
   for (const selector of [
     ".legend-dot--cost",
     ".toggle-cost.is-active",
@@ -762,7 +782,7 @@ test("cost observations use one amber-gold color across the chart controls", asy
   ]) {
     const escaped = selector.replaceAll(".", "\\.");
     const rule = css.match(new RegExp(`${escaped}\\s*\\{(?<body>[\\s\\S]*?)\\n\\}`));
-    assert.match(rule?.groups?.body ?? "", /#cc8b26/);
+    assert.match(rule?.groups?.body ?? "", /var\(--chart-cost\)/);
   }
 });
 

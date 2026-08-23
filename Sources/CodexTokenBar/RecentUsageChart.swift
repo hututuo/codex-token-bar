@@ -988,6 +988,7 @@ struct RecentUsageChart: View, Equatable {
     let sharedAccountAttributionContext: QuotaSelectionAttributionContext?
     private static let dataLineWidth: CGFloat = 1.55
     private static let hoverRingLineWidth: CGFloat = 1.55
+    static let costPointRadius: CGFloat = 1.68
     @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
     @AppStorage("recentChartShowTokens") private var showTokens = true
     @AppStorage("recentChartShowCalls") private var showCalls = true
@@ -1146,7 +1147,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: AppTheme.accentAmber, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
+                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
@@ -1159,7 +1160,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLineToggle(title: "Token", color: .blue, isOn: $showTokens)
                     ChartLineToggle(title: "调用", color: .orange, isOn: $showCalls)
                     ChartLineToggle(title: "命中率", color: AppTheme.accentCyan, isOn: $showCacheHitRate)
-                    ChartLineToggle(title: "金额", color: AppTheme.accentAmber, isOn: $showCost)
+                    ChartLineToggle(title: "金额", color: AppTheme.chartCost, isOn: $showCost)
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLineToggle(title: "5h", color: .purple, isOn: $showFiveHourQuota)
                     }
@@ -1454,7 +1455,10 @@ struct RecentUsageChart: View, Equatable {
                 tokenLine: linePath(points: plotData.tokenPoints),
                 callLine: linePath(points: plotData.callPoints),
                 cachePoints: observedOptionalPointPath(points: plotData.cachePoints),
-                costPoints: observedOptionalPointPath(points: plotData.costPoints),
+                costPoints: observedOptionalPointPath(
+                    points: plotData.costPoints,
+                    radius: Self.costPointRadius
+                ),
                 fiveHourQuotaLine: optionalLinePath(points: plotData.fiveHourQuotaPoints),
                 sevenDayQuotaLine: optionalLinePath(points: plotData.sevenDayQuotaPoints)
             )
@@ -1527,7 +1531,7 @@ struct RecentUsageChart: View, Equatable {
 
             if showCost && plotData.costPoints.contains(where: { $0 != nil }) {
                 renderFrame.costPoints
-                .fill(AppTheme.accentAmber)
+                .fill(AppTheme.chartCost)
             }
 
             if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
@@ -1586,7 +1590,7 @@ struct RecentUsageChart: View, Equatable {
                     Circle()
                         .fill(AppTheme.pageBackground)
                         .frame(width: 8, height: 8)
-                        .overlay(Circle().stroke(AppTheme.accentAmber, lineWidth: Self.hoverRingLineWidth))
+                        .overlay(Circle().stroke(AppTheme.chartCost, lineWidth: Self.hoverRingLineWidth))
                         .position(costPoint)
                 }
 

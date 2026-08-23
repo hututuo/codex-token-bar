@@ -68,6 +68,7 @@ interface RecentUsageChartProps {
 }
 
 const CHART_WIDTH = 980;
+const COST_POINT_RADIUS = 1.68;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
@@ -459,7 +460,7 @@ export function RecentUsageChart({
                     cx={point.x}
                     cy={point.y + plotTop}
                     key={plotData.renderStartIndex + index}
-                    r="1.6"
+                    r={COST_POINT_RADIUS}
                   />
                 ) : null)}
               </g> : null}

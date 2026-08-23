@@ -94,7 +94,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testCostObservationPointPathUsesTheSharedFixedRadius() {
+    func testCostObservationPointPathUsesTheFivePercentLargerFixedRadius() {
         let chart = RecentUsageChart(
             bins: [],
             hourlyBins: [],
@@ -103,15 +103,19 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             quotaRecentBins: [],
             quotaHourlyBins: []
         )
-        let path = chart.observedOptionalPointPath(points: [
-            CGPoint(x: 0, y: 20),
-            nil,
-            CGPoint(x: 30, y: 10),
-        ])
+        let path = chart.observedOptionalPointPath(
+            points: [
+                CGPoint(x: 0, y: 20),
+                nil,
+                CGPoint(x: 30, y: 10),
+            ],
+            radius: RecentUsageChart.costPointRadius
+        )
 
         XCTAssertFalse(path.isEmpty)
-        XCTAssertEqual(path.boundingRect.minX, -1.6, accuracy: 0.0001)
-        XCTAssertEqual(path.boundingRect.maxX, 31.6, accuracy: 0.0001)
+        XCTAssertEqual(RecentUsageChart.costPointRadius, 1.68, accuracy: 0.0001)
+        XCTAssertEqual(path.boundingRect.minX, -1.68, accuracy: 0.0001)
+        XCTAssertEqual(path.boundingRect.maxX, 31.68, accuracy: 0.0001)
     }
 
     @MainActor
@@ -1951,11 +1955,13 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     func testRecentUsageChartExposesClickToEstimateQuotaUI() throws {
         let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
         let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
+        let dashboardSource = try String(contentsOfFile: "Sources/CodexTokenBar/DashboardView.swift", encoding: .utf8)
 
         XCTAssertTrue(source.contains("@AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)"))
         XCTAssertTrue(source.contains("@AppStorage(\"recentChartShowCost\")"))
         XCTAssertTrue(source.contains("ChartLineToggle(title: \"金额\""))
-        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.accentAmber, label: \"金额\""))
+        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: \"金额\""))
+        XCTAssertTrue(source.contains("static let costPointRadius: CGFloat = 1.68"))
         XCTAssertTrue(source.contains(".offset(x: -buttonWidth - 6)"))
         XCTAssertTrue(source.contains(".offset(x: buttonWidth + 6)"))
         XCTAssertTrue(source.contains("consumptionSelectionState"))
@@ -1969,6 +1975,14 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertFalse(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
         XCTAssertTrue(componentSource.contains("selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText"))
+        let chartStart = try XCTUnwrap(dashboardSource.range(of: "            RecentUsageChart(")).lowerBound
+        let nextSection = try XCTUnwrap(
+            dashboardSource.range(of: "            CacheHitRankingSection", range: chartStart..<dashboardSource.endIndex)
+        ).lowerBound
+        XCTAssertFalse(
+            dashboardSource[chartStart..<nextSection].contains(".equatable()"),
+            "The chart owns interactive visibility state and must not sit behind an external EquatableView"
+        )
     }
 
     func testEstimateSummaryLivesBelowPlotInsteadOfInsideTheHitLayer() throws {

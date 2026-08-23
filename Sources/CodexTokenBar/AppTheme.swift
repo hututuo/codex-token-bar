@@ -67,6 +67,10 @@ enum AppTheme {
         light: rgba(0.880, 0.430, 0.100),
         dark: rgba(1.000, 0.620, 0.260)
     )
+    static let chartCost = adaptive(
+        light: rgba(0.360, 0.250, 0.820),
+        dark: rgba(0.620, 0.550, 1.000)
+    )
     static let accentRed = accentColor(for: .red)
     static let accentAmber = accentColor(for: .amber)
     static let accentGreen = accentColor(for: .green)
