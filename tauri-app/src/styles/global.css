@@ -7406,7 +7406,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .legend-dot--cost {
-  background: #ec4899;
+  background: #cc8b26;
 }
 
 .legend-dot--five {
@@ -7451,7 +7451,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .toggle-cost.is-active {
-  color: #ec4899;
+  color: #cc8b26;
 }
 
 .toggle-five.is-active {
@@ -7677,7 +7677,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .hover-cost {
-  stroke: #ec4899;
+  stroke: #cc8b26;
 }
 
 .hover-five {
@@ -7737,7 +7737,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .chart-observation-points--cost {
-  fill: #ec4899;
+  fill: #cc8b26;
   opacity: 0.95;
   pointer-events: none;
 }

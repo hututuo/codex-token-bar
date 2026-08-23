@@ -15,26 +15,21 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertEqual(scaleMap.heightFraction(for: 10, series: .calls), 1, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 1, series: .cacheHitRate), 1, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .quota), 1, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 0.45, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 0.7, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 0.95, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 5), 1.6, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 17.5), 2.9, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 30), 4.2, accuracy: 0.000_001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 0), 0, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 1.0 / 6.0, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 7.0 / 12.0, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 1, accuracy: 0.000_001)
     }
 
-    func testOnlyTokenScaleDomainFollowsTheVisibleWindow() {
-        let fixed = RecentChartFixedScaleMap(
-            callValues: [1, 2, 4, 8],
-            costs: [1, 2, 4, 8]
-        )
+    func testTokenAndCostScaleDomainsFollowTheVisibleWindow() {
+        let fixed = RecentChartFixedScaleMap(callValues: [1, 2, 4, 8])
         let firstWindow = RecentChartScaleMap(
             tokenValues: [50, 100],
+            costValues: [1, 2],
             fixed: fixed
         )
         let secondWindow = RecentChartScaleMap(
             tokenValues: [200, 400],
+            costValues: [4, 8],
             fixed: fixed
         )
 
@@ -42,10 +37,10 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         XCTAssertEqual(secondWindow.heightFraction(for: 400, series: .tokens), 0.65, accuracy: 0.000_001)
         XCTAssertEqual(firstWindow.heightFraction(for: 8, series: .calls), 1, accuracy: 0.000_001)
         XCTAssertEqual(secondWindow.heightFraction(for: 8, series: .calls), 1, accuracy: 0.000_001)
-        XCTAssertEqual(firstWindow.heightFraction(for: 1, series: .cost), 0.45, accuracy: 0.000_001)
-        XCTAssertEqual(secondWindow.heightFraction(for: 1, series: .cost), 0.45, accuracy: 0.000_001)
-        XCTAssertEqual(firstWindow.heightFraction(for: 8, series: .cost), 0.95, accuracy: 0.000_001)
-        XCTAssertEqual(secondWindow.heightFraction(for: 8, series: .cost), 0.95, accuracy: 0.000_001)
+        XCTAssertEqual(firstWindow.heightFraction(for: 1, series: .cost), 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(firstWindow.heightFraction(for: 2, series: .cost), 1, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 4, series: .cost), 0.5, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 8, series: .cost), 1, accuracy: 0.000_001)
     }
 
     @MainActor
@@ -69,10 +64,7 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
         )
         let plot = CGRect(x: 0, y: 27, width: 990, height: 215)
         let step = plot.width / CGFloat(bins.count - 1)
-        let fixed = RecentChartFixedScaleMap(
-            callValues: bins.map(\.calls),
-            costs: Array(repeating: 0, count: bins.count)
-        )
+        let fixed = RecentChartFixedScaleMap(callValues: bins.map(\.calls))
         let plotData = RecentChartPlotData(
             bins: bins,
             prepared: prepared,

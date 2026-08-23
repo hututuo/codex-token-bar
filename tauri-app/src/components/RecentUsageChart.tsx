@@ -17,7 +17,7 @@ import {
   plotChartPoints,
   prepareRecentChartData,
   recentChartBucketCosts,
-  recentChartScaleMap,
+  recentChartFixedScaleMap,
   quotaConsumptionSelection,
   quotaComparisonScopeText,
   quotaSelectionAttribution,
@@ -112,12 +112,8 @@ export function RecentUsageChart({
       .reduce((total, cost) => total + cost, 0);
   }, [bucketCostsUSD, visibleWindowSummary.startIndex, visibleWindowSummary.endIndex]);
   const fixedScaleMap = useMemo(
-    () => recentChartScaleMap({
-      tokenValues: [1],
-      callValues: data.points.map((point) => point.calls),
-      costs: bucketCostsUSD,
-    }),
-    [data.points, bucketCostsUSD],
+    () => recentChartFixedScaleMap(data.points.map((point) => point.calls)),
+    [data.points],
   );
   const renderWindow = data.points.length === 0 || visibleWindowSummary.endIndex < visibleWindowSummary.startIndex
     ? null
@@ -428,7 +424,7 @@ export function RecentUsageChart({
                     cx={point.x}
                     cy={point.y + plotTop}
                     key={plotData.renderStartIndex + index}
-                    r={plotData.costPointRadii[index] ?? 1.6}
+                    r="1.6"
                   />
                 ) : null)}
               </g> : null}
@@ -580,7 +576,6 @@ function HoverGuides({
   const callPoint = visiblePlotPoint(plotData.callPoints, plotData.renderStartIndex, index);
   const cachePoint = visiblePlotPoint(plotData.cachePoints, plotData.renderStartIndex, index);
   const costPoint = visiblePlotPoint(plotData.costPoints, plotData.renderStartIndex, index);
-  const costPointRadius = plotData.costPointRadii[index - plotData.renderStartIndex] ?? 0;
   const fiveHourPoint = visiblePlotPoint(plotData.fiveHourQuotaPoints, plotData.renderStartIndex, index);
   const sevenDayPoint = visiblePlotPoint(plotData.sevenDayQuotaPoints, plotData.renderStartIndex, index);
   const point = data.points[index];
@@ -601,7 +596,7 @@ function HoverGuides({
         <HoverRing
           className="hover-cost"
           point={offsetPoint(costPoint, plotTop)}
-          radius={Math.max(costPointRadius + 2, 4.2)}
+          radius={4}
         />
       ) : null}
       {fiveHourQuotaPresent && visibility.fiveHourQuota && fiveHourPoint ? <HoverRing className="hover-five" point={offsetPoint(fiveHourPoint, plotTop)} radius={3.5} /> : null}

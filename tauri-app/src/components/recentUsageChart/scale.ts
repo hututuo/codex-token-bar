@@ -18,13 +18,8 @@ export interface RecentChartScaleMap {
   quota: RecentChartScaleSpec;
 }
 
-/** Token alone keeps a 35% top gutter. Percentage series retain their true 0–100% axis. */
+/** Token keeps a 35% top gutter. Cost and Token both follow the visible window. */
 export const RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO = 0.65;
-export const RECENT_CHART_COST_LOW_HEIGHT_RATIO = 0.45;
-export const RECENT_CHART_COST_AVERAGE_HEIGHT_RATIO = 0.7;
-export const RECENT_CHART_COST_HIGH_HEIGHT_RATIO = 0.95;
-export const RECENT_CHART_COST_POINT_MINIMUM_RADIUS = 1.6;
-export const RECENT_CHART_COST_POINT_MAXIMUM_RADIUS = 4.2;
 
 export function recentChartScaleMap({
   tokenValues,
@@ -35,34 +30,29 @@ export function recentChartScaleMap({
   callValues: number[];
   costs: number[];
 }): RecentChartScaleMap {
-  const renderableCosts = costs.filter(isRenderableRecentChartCost);
-  const costMinimum = Math.min(...renderableCosts, Number.POSITIVE_INFINITY);
-  const costMaximum = Math.max(...renderableCosts, 0);
-  const costAverage = renderableCosts.length > 0
-    ? renderableCosts.reduce((total, cost) => total + cost, 0) / renderableCosts.length
-    : 0;
-
   return {
+    ...recentChartFixedScaleMap(callValues),
     tokens: recentChartTokenScale(tokenValues),
+    cost: recentChartCostScale(costs),
+  };
+}
+
+export function recentChartFixedScaleMap(callValues: number[]): RecentChartScaleMap {
+  return {
+    tokens: recentChartTokenScale([1]),
     calls: linearScale(maximumOf(callValues), 1),
     cacheHitRate: linearScale(1, 1),
-    cost: {
-      transform: "log1p",
-      minimum: Number.isFinite(costMinimum) ? costMinimum : 0,
-      maximum: costMaximum,
-      outputMinimum: RECENT_CHART_COST_LOW_HEIGHT_RATIO,
-      outputMaximum: RECENT_CHART_COST_HIGH_HEIGHT_RATIO,
-      ...(costAverage > 0 ? {
-        midpoint: costAverage,
-        outputMidpoint: RECENT_CHART_COST_AVERAGE_HEIGHT_RATIO,
-      } : {}),
-    },
+    cost: recentChartCostScale([1]),
     quota: linearScale(1, 1),
   };
 }
 
 export function recentChartTokenScale(tokenValues: number[]): RecentChartScaleSpec {
   return linearScale(maximumOf(tokenValues), RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO);
+}
+
+export function recentChartCostScale(costs: number[]): RecentChartScaleSpec {
+  return linearScale(maximumOf(costs), 1);
 }
 
 /** Returns the visual height fraction measured upward from the plot baseline. */
@@ -128,22 +118,6 @@ export function recentChartY(
 ): number {
   const safePlotHeight = finiteNonnegative(plotHeight);
   return (1 - recentChartHeightFraction(value, scale)) * safePlotHeight;
-}
-
-export function recentChartCostPointRadius(
-  cost: number,
-  scale: RecentChartScaleSpec,
-): number {
-  if (!isRenderableRecentChartCost(cost)) return 0;
-  const visualSpan = RECENT_CHART_COST_HIGH_HEIGHT_RATIO - RECENT_CHART_COST_LOW_HEIGHT_RATIO;
-  if (visualSpan <= Number.EPSILON) return RECENT_CHART_COST_POINT_MINIMUM_RADIUS;
-  const normalized = clamp(
-    (recentChartHeightFraction(cost, scale) - RECENT_CHART_COST_LOW_HEIGHT_RATIO) / visualSpan,
-    0,
-    1,
-  );
-  return RECENT_CHART_COST_POINT_MINIMUM_RADIUS
-    + (RECENT_CHART_COST_POINT_MAXIMUM_RADIUS - RECENT_CHART_COST_POINT_MINIMUM_RADIUS) * normalized;
 }
 
 export function isRenderableRecentChartCost(cost: number): boolean {

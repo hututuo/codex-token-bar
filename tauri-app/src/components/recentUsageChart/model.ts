@@ -11,7 +11,8 @@ import {
 } from "../quotaPeriodBoundary.ts";
 import {
   isRenderableRecentChartCost,
-  recentChartCostPointRadius,
+  recentChartCostScale,
+  recentChartFixedScaleMap,
   recentChartScaleMap,
   recentChartTokenScale,
   recentChartY,
@@ -20,13 +21,9 @@ import {
 } from "./scale.ts";
 
 export {
-  RECENT_CHART_COST_AVERAGE_HEIGHT_RATIO,
-  RECENT_CHART_COST_HIGH_HEIGHT_RATIO,
-  RECENT_CHART_COST_LOW_HEIGHT_RATIO,
-  RECENT_CHART_COST_POINT_MAXIMUM_RADIUS,
-  RECENT_CHART_COST_POINT_MINIMUM_RADIUS,
   RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO,
-  recentChartCostPointRadius,
+  recentChartCostScale,
+  recentChartFixedScaleMap,
   recentChartHeightFraction,
   recentChartScaleMap,
   recentChartTokenScale,
@@ -425,14 +422,15 @@ export function plotChartPoints(
   const scalePoints = scaleWindow === null
     ? data.points
     : data.points.slice(scaleWindow.startIndex, scaleWindow.endIndex + 1);
-  const fixedScaleMap = options.fixedScaleMap ?? recentChartScaleMap({
-    tokenValues: [1],
-    callValues: data.points.map((point) => point.calls),
-    costs: bucketCostsUSD,
-  });
+  const scaleCosts = scaleWindow === null
+    ? bucketCostsUSD
+    : bucketCostsUSD.slice(scaleWindow.startIndex, scaleWindow.endIndex + 1);
+  const fixedScaleMap = options.fixedScaleMap
+    ?? recentChartFixedScaleMap(data.points.map((point) => point.calls));
   const scaleMap: RecentChartScaleMap = {
     ...fixedScaleMap,
     tokens: recentChartTokenScale(scalePoints.map((point) => point.tokens)),
+    cost: recentChartCostScale(scaleCosts),
   };
   const renderWindow = clampedScaleWindow(options.renderWindow, data.points.length);
   const renderStartIndex = renderWindow?.startIndex ?? 0;
@@ -471,7 +469,6 @@ export function plotChartPoints(
       renderStartIndex,
       data.points.length,
     ),
-    costPointRadii: scaledCostPointRadii(renderCosts, scaleMap.cost),
     fiveHourQuotaPoints: optionalQuotaPoints(
       renderPoints,
       "fiveHourRemainingPercent",
@@ -535,15 +532,6 @@ export function scaledCostPoints(
       y: recentChartY(cost, scale, plotHeight),
     };
   });
-}
-
-export function scaledCostPointRadii(
-  costs: number[],
-  scale: RecentChartScaleSpec = recentChartScaleMap({ tokenValues: [1], callValues: [1], costs }).cost,
-): Array<number | null> {
-  return costs.map((cost) => isRenderableRecentChartCost(cost)
-    ? recentChartCostPointRadius(cost, scale)
-    : null);
 }
 
 function clampedScaleWindow(

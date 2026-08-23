@@ -552,7 +552,6 @@ struct RecentChartPlotData: Equatable {
     let callPoints: [CGPoint]
     let cachePoints: [CGPoint?]
     let costPoints: [CGPoint?]
-    let costPointRadii: [CGFloat?]
     let bucketCostsUSD: [Double]
     let fiveHourQuotaPoints: [CGPoint?]
     let sevenDayQuotaPoints: [CGPoint?]
@@ -582,6 +581,7 @@ struct RecentChartPlotData: Equatable {
         }
         let scaleMap = RecentChartScaleMap(
             tokenValues: scaleIndices.map { bins[$0].tokens },
+            costValues: scaleIndices.map { calculatedBucketCostsUSD[$0] },
             fixed: fixedScales
         )
         let renderIndices: [Int]
@@ -634,11 +634,6 @@ struct RecentChartPlotData: Equatable {
                 )
             )
         }
-        costPointRadii = renderIndices.map { index in
-            guard let cost = calculatedBucketCostsUSD[safe: index],
-                  RecentChartScaleMap.isRenderableCost(cost) else { return nil }
-            return scaleMap.costPointRadius(for: cost)
-        }
         fiveHourQuotaPoints = renderIndices.map { index in
             guard let value = prepared.fiveHourRemainingPercents[safe: index],
                   let percent = value else { return nil }
@@ -679,11 +674,6 @@ struct RecentChartPlotData: Equatable {
     func costPoint(at globalIndex: Int) -> CGPoint? {
         guard let index = localIndex(for: globalIndex) else { return nil }
         return costPoints[safe: index] ?? nil
-    }
-
-    func costPointRadius(at globalIndex: Int) -> CGFloat? {
-        guard let index = localIndex(for: globalIndex) else { return nil }
-        return costPointRadii[safe: index] ?? nil
     }
 
     func fiveHourQuotaPoint(at globalIndex: Int) -> CGPoint? {
@@ -1124,7 +1114,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: .pink, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
+                    ChartLegend(color: AppTheme.accentAmber, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
@@ -1137,7 +1127,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLineToggle(title: "Token", color: .blue, isOn: $showTokens)
                     ChartLineToggle(title: "调用", color: .orange, isOn: $showCalls)
                     ChartLineToggle(title: "命中率", color: AppTheme.accentCyan, isOn: $showCacheHitRate)
-                    ChartLineToggle(title: "金额", color: .pink, isOn: $showCost)
+                    ChartLineToggle(title: "金额", color: AppTheme.accentAmber, isOn: $showCost)
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLineToggle(title: "5h", color: .purple, isOn: $showFiveHourQuota)
                     }
@@ -1425,10 +1415,7 @@ struct RecentUsageChart: View, Equatable {
                 tokenLine: linePath(points: plotData.tokenPoints),
                 callLine: linePath(points: plotData.callPoints),
                 cachePoints: observedOptionalPointPath(points: plotData.cachePoints),
-                costPoints: observedOptionalPointPath(
-                    points: plotData.costPoints,
-                    radii: plotData.costPointRadii
-                ),
+                costPoints: observedOptionalPointPath(points: plotData.costPoints),
                 fiveHourQuotaLine: optionalLinePath(points: plotData.fiveHourQuotaPoints),
                 sevenDayQuotaLine: optionalLinePath(points: plotData.sevenDayQuotaPoints)
             )
@@ -1501,7 +1488,7 @@ struct RecentUsageChart: View, Equatable {
 
             if showCost && plotData.costPoints.contains(where: { $0 != nil }) {
                 renderFrame.costPoints
-                .fill(.pink)
+                .fill(AppTheme.accentAmber)
             }
 
             if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
@@ -1519,7 +1506,6 @@ struct RecentUsageChart: View, Equatable {
                 let callPoint = plotData.callPoint(at: activeIndex)
                 let cachePoint = plotData.cachePoint(at: activeIndex)
                 let costPoint = plotData.costPoint(at: activeIndex)
-                let costPointRadius = plotData.costPointRadius(at: activeIndex)
                 let fiveHourPoint = plotData.fiveHourQuotaPoint(at: activeIndex)
                 let sevenDayPoint = plotData.sevenDayQuotaPoint(at: activeIndex)
 
@@ -1558,11 +1544,10 @@ struct RecentUsageChart: View, Equatable {
                 }
 
                 if showCost, let costPoint {
-                    let ringDiameter = max((costPointRadius ?? 0) * 2 + 4, 8.4)
                     Circle()
                         .fill(AppTheme.pageBackground)
-                        .frame(width: ringDiameter, height: ringDiameter)
-                        .overlay(Circle().stroke(.pink, lineWidth: Self.hoverRingLineWidth))
+                        .frame(width: 8, height: 8)
+                        .overlay(Circle().stroke(AppTheme.accentAmber, lineWidth: Self.hoverRingLineWidth))
                         .position(costPoint)
                 }
 
@@ -1859,10 +1844,7 @@ struct RecentUsageChart: View, Equatable {
             for: updatedData,
             priceModel: selectedQuotaEstimateModel
         )
-        let updatedFixedScales = Self.fixedScales(
-            for: updatedData,
-            bucketCostsUSD: updatedBucketCostsUSD
-        )
+        let updatedFixedScales = Self.fixedScales(for: updatedData)
         guard updatedData != preparedData else {
             var renderInputsChanged = false
             if updatedBucketCostsUSD != cachedBucketCostsUSD {
@@ -1897,20 +1879,14 @@ struct RecentUsageChart: View, Equatable {
         )
         guard updated != cachedBucketCostsUSD else { return }
         cachedBucketCostsUSD = updated
-        cachedFixedScales = Self.fixedScales(
-            for: preparedData,
-            bucketCostsUSD: updated
-        )
         renderGeneration &+= 1
     }
 
     private static func fixedScales(
-        for prepared: RecentChartPreparedData,
-        bucketCostsUSD: [Double]
+        for prepared: RecentChartPreparedData
     ) -> RecentChartFixedScaleMap {
         RecentChartFixedScaleMap(
-            callValues: prepared.bins.map(\.calls),
-            costs: bucketCostsUSD
+            callValues: prepared.bins.map(\.calls)
         )
     }
 

@@ -94,7 +94,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testCostObservationPointPathUsesPerBucketRadii() {
+    func testCostObservationPointPathUsesTheSharedFixedRadius() {
         let chart = RecentUsageChart(
             bins: [],
             hourlyBins: [],
@@ -103,14 +103,15 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             quotaRecentBins: [],
             quotaHourlyBins: []
         )
-        let path = chart.observedOptionalPointPath(
-            points: [CGPoint(x: 0, y: 20), nil, CGPoint(x: 30, y: 10)],
-            radii: [1.6, nil, 4.2]
-        )
+        let path = chart.observedOptionalPointPath(points: [
+            CGPoint(x: 0, y: 20),
+            nil,
+            CGPoint(x: 30, y: 10),
+        ])
 
         XCTAssertFalse(path.isEmpty)
         XCTAssertEqual(path.boundingRect.minX, -1.6, accuracy: 0.0001)
-        XCTAssertEqual(path.boundingRect.maxX, 34.2, accuracy: 0.0001)
+        XCTAssertEqual(path.boundingRect.maxX, 31.6, accuracy: 0.0001)
     }
 
     @MainActor
@@ -1931,18 +1932,15 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .quota), 1, accuracy: 0.0001)
     }
 
-    func testRecentChartCostPointScaleCentersAverageAtSeventyPercent() {
+    func testRecentChartCostScaleMapsVisibleMaximumToOneHundredPercent() {
         let scaleMap = RecentChartScaleMap(
             tokenValues: [100],
             callValues: [10],
             costs: [5, 17.5, 30, 0]
         )
-        XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 0.45, accuracy: 0.0001)
-        XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 0.7, accuracy: 0.0001)
-        XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 0.95, accuracy: 0.0001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 5), 1.6, accuracy: 0.0001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 17.5), 2.9, accuracy: 0.0001)
-        XCTAssertEqual(scaleMap.costPointRadius(for: 30), 4.2, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 1.0 / 6.0, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 7.0 / 12.0, accuracy: 0.0001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 1, accuracy: 0.0001)
         XCTAssertTrue(RecentChartScaleMap.isRenderableCost(5))
         XCTAssertFalse(RecentChartScaleMap.isRenderableCost(0))
     }
@@ -1954,6 +1952,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("@AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)"))
         XCTAssertTrue(source.contains("@AppStorage(\"recentChartShowCost\")"))
         XCTAssertTrue(source.contains("ChartLineToggle(title: \"金额\""))
+        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.accentAmber, label: \"金额\""))
         XCTAssertTrue(source.contains(".offset(x: -buttonWidth - 6)"))
         XCTAssertTrue(source.contains(".offset(x: buttonWidth + 6)"))
         XCTAssertTrue(source.contains("consumptionSelectionState"))

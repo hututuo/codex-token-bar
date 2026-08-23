@@ -674,8 +674,7 @@ test("24h hover and fixed selection preview expose model shares without persiste
         let costPoints = chart.querySelectorAll(".chart-observation-point--cost");
         assert.equal(costPoints.length, 2);
         const costRadii = [...costPoints].map((element) => Number(element.getAttribute("r")));
-        assert.ok(costRadii.every((radius) => radius >= 1.6 && radius <= 4.2));
-        assert.notEqual(costRadii[0], costRadii[1]);
+        assert.deepEqual(costRadii, [1.6, 1.6]);
         const costLegendValue = container.querySelector(".legend-dot--cost")?.parentElement?.querySelector("strong")?.textContent;
         assert.match(costLegendValue ?? "", /^\$/);
         const costToggle = [...container.querySelectorAll(".chart-line-toggle")]
@@ -744,6 +743,20 @@ test("quota estimate card follows the chart at the lower left like the Swift lay
   assert.doesNotMatch(cardRule.groups.body, /(?:^|\n)\s*top:/);
   assert.doesNotMatch(cardRule.groups.body, /(?:^|\n)\s*left:/);
 })
+
+test("cost observations use one amber-gold color across the chart controls", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  for (const selector of [
+    ".legend-dot--cost",
+    ".toggle-cost.is-active",
+    ".hover-cost",
+    ".chart-observation-points--cost",
+  ]) {
+    const escaped = selector.replaceAll(".", "\\.");
+    const rule = css.match(new RegExp(`${escaped}\\s*\\{(?<body>[\\s\\S]*?)\\n\\}`));
+    assert.match(rule?.groups?.body ?? "", /#cc8b26/);
+  }
+});
 
 test("hover detail keeps a clear gutter above the chart plot", async () => {
   const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");

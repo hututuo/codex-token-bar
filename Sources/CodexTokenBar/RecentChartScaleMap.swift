@@ -25,63 +25,54 @@ struct RecentChartScaleSpec: Equatable {
 }
 
 /// Series whose vertical domains stay stable while the viewport moves.
-/// Only the Token domain is allowed to follow the visible bucket window.
+/// Token and cost are supplied separately because their domains follow the
+/// visible bucket window.
 struct RecentChartFixedScaleMap: Equatable {
     let calls: RecentChartScaleSpec
     let cacheHitRate: RecentChartScaleSpec
-    let cost: RecentChartScaleSpec
     let quota: RecentChartScaleSpec
 
-    init(callValues: [Int], costs: [Double]) {
-        let renderableCosts = costs.filter(RecentChartScaleMap.isRenderableCost)
-        let costMinimum = renderableCosts.min() ?? 0
-        let costMaximum = renderableCosts.max() ?? 0
-        let costAverage = renderableCosts.isEmpty
-            ? nil
-            : renderableCosts.reduce(0, +) / Double(renderableCosts.count)
-
+    init(callValues: [Int]) {
         calls = RecentChartScaleMap.linearScale(
             maximum: Double(callValues.reduce(0) { max($0, $1) }),
             outputMaximum: 1
         )
         cacheHitRate = RecentChartScaleMap.linearScale(maximum: 1, outputMaximum: 1)
-        cost = RecentChartScaleSpec(
-            transform: .logOnePlus,
-            minimum: costMinimum,
-            maximum: costMaximum,
-            outputMinimum: RecentChartScaleMap.costLowHeightRatio,
-            outputMaximum: RecentChartScaleMap.costHighHeightRatio,
-            midpoint: costAverage,
-            outputMidpoint: costAverage == nil ? nil : RecentChartScaleMap.costAverageHeightRatio
-        )
         quota = RecentChartScaleMap.linearScale(maximum: 100, outputMaximum: 1)
     }
 
-    static let empty = RecentChartFixedScaleMap(callValues: [], costs: [])
+    static let empty = RecentChartFixedScaleMap(callValues: [])
 }
 
 struct RecentChartScaleMap: Equatable {
     static let tokenPeakHeightRatio: CGFloat = 0.65
-    static let costLowHeightRatio: CGFloat = 0.45
-    static let costAverageHeightRatio: CGFloat = 0.7
-    static let costHighHeightRatio: CGFloat = 0.95
-    static let costPointMinimumRadius: CGFloat = 1.6
-    static let costPointMaximumRadius: CGFloat = 4.2
 
     private let tokens: RecentChartScaleSpec
+    private let cost: RecentChartScaleSpec
     private let fixed: RecentChartFixedScaleMap
 
     init(tokenValues: [Int], callValues: [Int], costs: [Double]) {
         self.init(
             tokenValues: tokenValues,
-            fixed: RecentChartFixedScaleMap(callValues: callValues, costs: costs)
+            costValues: costs,
+            fixed: RecentChartFixedScaleMap(callValues: callValues)
         )
     }
 
-    init(tokenValues: [Int], fixed: RecentChartFixedScaleMap) {
+    init(
+        tokenValues: [Int],
+        costValues: [Double],
+        fixed: RecentChartFixedScaleMap
+    ) {
         tokens = Self.linearScale(
             maximum: Double(tokenValues.reduce(0) { max($0, $1) }),
             outputMaximum: Self.tokenPeakHeightRatio
+        )
+        cost = Self.linearScale(
+            maximum: costValues.reduce(0) { maximum, value in
+                max(maximum, value.isFinite ? max(value, 0) : 0)
+            },
+            outputMaximum: 1
         )
         self.fixed = fixed
     }
@@ -99,19 +90,6 @@ struct RecentChartScaleMap: Equatable {
         return (1 - heightFraction(for: value, series: series)) * safePlotHeight
     }
 
-    func costPointRadius(for cost: Double) -> CGFloat {
-        guard Self.isRenderableCost(cost) else { return 0 }
-        let height = heightFraction(for: cost, series: .cost)
-        let visualSpan = Self.costHighHeightRatio - Self.costLowHeightRatio
-        guard visualSpan > 0 else { return Self.costPointMinimumRadius }
-        let normalized = min(
-            max((height - Self.costLowHeightRatio) / visualSpan, 0),
-            1
-        )
-        return Self.costPointMinimumRadius
-            + (Self.costPointMaximumRadius - Self.costPointMinimumRadius) * normalized
-    }
-
     static func isRenderableCost(_ cost: Double) -> Bool {
         cost.isFinite && cost > 0
     }
@@ -121,7 +99,7 @@ struct RecentChartScaleMap: Equatable {
         case .tokens: tokens
         case .calls: fixed.calls
         case .cacheHitRate: fixed.cacheHitRate
-        case .cost: fixed.cost
+        case .cost: cost
         case .quota: fixed.quota
         }
     }
