@@ -174,27 +174,50 @@ private struct CodexRadarWindowBlock: View {
     let snapshot: CodexRadarSnapshot?
 
     var body: some View {
+        TimelineView(CodexRadarCountdownTimelineSchedule(
+            deadline: CodexRadarPresentationText.countdownDeadline(snapshot: snapshot)
+        )) { context in
+            content(at: context.date)
+        }
+        .padding(.trailing, 10)
+    }
+
+    @ViewBuilder
+    private func content(at now: Date) -> some View {
+        let actionText = CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: now)
+        let hasVisibleCountdown = CodexRadarPresentationText.effectiveAction(snapshot: snapshot) == "速登窗口"
+            && actionText != "速登窗口"
+        let trimmedWindowTitle = snapshot?.window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let visibleWindowTitle = trimmedWindowTitle?.isEmpty == false
+            ? trimmedWindowTitle!
+            : "窗口进行中"
         VStack(alignment: .leading, spacing: 6) {
             CodexRadarBlockTitle(
-                "速登窗口",
+                hasVisibleCountdown ? actionText : "速登窗口",
                 systemImage: "bolt.badge.clock",
-                accent: AppTheme.radarActionColor(snapshot?.recommendedAction)
+                accent: AppTheme.radarActionColor(CodexRadarPresentationText.effectiveAction(snapshot: snapshot))
             )
-            Text(snapshot.map { $0.window.message.isEmpty ? "暂无窗口信息" : $0.window.message } ?? "等待 Codex 雷达")
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            Text(hasVisibleCountdown
+                ? visibleWindowTitle
+                : (snapshot == nil
+                    ? "等待 Codex 雷达"
+                    : CodexRadarPresentationText.windowSummaryDisplay(
+                        snapshot: snapshot,
+                        now: now
+                    )))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             HStack(spacing: 10) {
                 CodexRadarTinyMetric(
                     label: "建议动作",
-                    value: CodexRadarPresentationText.action(snapshot?.recommendedAction),
-                    valueColor: AppTheme.radarActionColor(snapshot?.recommendedAction)
+                    value: actionText,
+                    valueColor: AppTheme.radarActionColor(CodexRadarPresentationText.effectiveAction(snapshot: snapshot))
                 )
                 CodexRadarTinyMetric(label: "24h", value: probabilityText(snapshot?.prediction.probability24hPercent))
                 CodexRadarTinyMetric(label: "48h", value: probabilityText(snapshot?.prediction.probability48hPercent))
             }
         }
-        .padding(.trailing, 10)
     }
 }
 
@@ -600,8 +623,8 @@ private struct CodexRadarDetailOverview: View {
             CodexRadarDetailSubsection(title: "窗口摘要") {
                 CodexRadarKeyValueGrid(
                     rows: [
-                        ("窗口状态", snapshot.window.message),
-                        ("建议动作", CodexRadarPresentationText.action(snapshot.recommendedAction)),
+                        ("窗口状态", CodexRadarPresentationText.windowSummaryDisplay(snapshot: snapshot)),
+                        ("建议动作", CodexRadarPresentationText.actionDisplay(snapshot: snapshot)),
                         ("24h 概率", probabilityText(snapshot.prediction.probability24hPercent)),
                         ("48h 概率", probabilityText(snapshot.prediction.probability48hPercent)),
                         ("预计窗口", snapshot.prediction.expectedWindow ?? "--"),
@@ -609,7 +632,7 @@ private struct CodexRadarDetailOverview: View {
                         ("上次关闭", snapshot.window.closedAt ?? "--"),
                         ("来源", snapshot.window.sourceUrl ?? "--")
                     ],
-                    valueColors: ["建议动作": AppTheme.radarActionColor(snapshot.recommendedAction)]
+                    valueColors: ["建议动作": AppTheme.radarActionColor(CodexRadarPresentationText.effectiveAction(snapshot: snapshot))]
                 )
             }
 

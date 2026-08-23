@@ -118,6 +118,35 @@ test("public Codex Radar summary fetch uses current.json without authorization",
   });
 });
 
+test("open speed window enriches public JSON with the Radar homepage countdown", async () => {
+  await withSsrModules(async (load) => {
+    const { __resetCodexRadarCacheForTests, readCodexRadarState } = await load("/src/api/codexRadarClient.ts");
+    __resetCodexRadarCacheForTests();
+    const speedWindow = snapshotFixture({
+      window_open: true,
+      recommended_action: "use_remaining_tokens",
+      window: {
+        open: true,
+        status: "open",
+        action: "use_remaining_tokens",
+        message: "速蹬窗口开启",
+        title: "Codex 用量限制重置",
+        scope: "所有付费计划",
+      },
+    });
+    const calls = withFetchQueue([
+      jsonResponse(speedWindow),
+      textResponse(feedFixture("radar-speed")),
+      textResponse('<section data-speed-window="open"><div data-window-closes-at="2026-08-24T05:00:00+08:00"></div></section>'),
+    ]);
+
+    const state = await readCodexRadarState(null, { force: true });
+
+    assert.equal(state.snapshot?.window.countdownDeadline, "2026-08-24T05:00:00+08:00");
+    assert.equal(String(calls[2].input), "https://codexradar.com/");
+  });
+});
+
 test("successful Radar refreshes publish one shared snapshot to every surface", async () => {
   await withSsrModules(async (load) => {
     const {

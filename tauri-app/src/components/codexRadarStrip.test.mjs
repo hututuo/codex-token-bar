@@ -34,7 +34,7 @@ test("Codex Radar summary and detail share one crowd snapshot", () => {
   assert.match(source, /crowdRadarStatus\.startsWith\("众测刷新失败"\)/);
   assert.match(source, /codex-radar-stale-note/);
   assert.doesNotMatch(overlaySource, /readCodexCrowdRadarSnapshot\(/);
-  assert.match(overlaySource, /valueColors=\{\{ "建议动作": radarActionAccent\(snapshot\.recommendedAction\) \}\}/);
+  assert.match(overlaySource, /valueColors=\{\{ "建议动作": radarActionAccent\(radarEffectiveActionDisplayText\(snapshot\)\) \}\}/);
 });
 
 test("Codex Radar refreshes the public summary and crowd source on the ten-minute cadence", () => {

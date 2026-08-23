@@ -33,6 +33,76 @@ enum CodexRadarPresentationText {
         }
     }
 
+    /// Returns the action that is actually usable for display. Some Radar
+    /// payloads leave the top-level `recommendedAction` empty while the
+    /// authoritative value is still present on `window.action`.
+    static func effectiveAction(snapshot: CodexRadarSnapshot?) -> String {
+        let recommended = snapshot?.recommendedAction.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawValue = recommended.isEmpty ? snapshot?.window.action : recommended
+        return action(rawValue)
+    }
+
+    /// Shows a live countdown only when Radar provides a future window end.
+    /// The fallback deliberately stays at the four-character window label;
+    /// an inferred end time must never be presented as authoritative.
+    static func actionDisplay(snapshot: CodexRadarSnapshot?, now: Date = Date()) -> String {
+        guard effectiveAction(snapshot: snapshot) == "速登窗口" else {
+            return effectiveAction(snapshot: snapshot)
+        }
+        guard let endDate = countdownDeadline(snapshot: snapshot),
+              endDate > now else {
+            return "速登窗口"
+        }
+        return "速登 \(countdownText(until: endDate, now: now))"
+    }
+
+    static func countdownDeadline(snapshot: CodexRadarSnapshot?) -> Date? {
+        guard effectiveAction(snapshot: snapshot) == "速登窗口",
+              let snapshot,
+              snapshot.window.open != false,
+              snapshot.windowOpen != false,
+              let deadline = snapshot.window.countdownDeadline ?? snapshot.window.closedAt else {
+            return nil
+        }
+        return parseISO8601(deadline)
+    }
+
+    static func windowSummaryDisplay(snapshot: CodexRadarSnapshot?, now: Date = Date()) -> String {
+        guard effectiveAction(snapshot: snapshot) == "速登窗口" else {
+            if let message = snapshot?.window.message, !message.isEmpty {
+                return message
+            }
+            return "暂无窗口信息"
+        }
+        return actionDisplay(snapshot: snapshot, now: now)
+    }
+
+    private static func parseISO8601(_ rawValue: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: rawValue) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: rawValue)
+    }
+
+    private static func countdownText(until endDate: Date, now: Date) -> String {
+        let seconds = max(1, Int(ceil(endDate.timeIntervalSince(now))))
+        if seconds < 60 {
+            return "\(seconds)秒"
+        }
+        let minutes = Int(ceil(Double(seconds) / 60.0))
+        if minutes < 60 {
+            return "\(minutes)分"
+        }
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        if remainingMinutes == 0 {
+            return "\(hours)小时"
+        }
+        return "\(hours)小时\(remainingMinutes)分"
+    }
+
     static func compactModelName(_ rawValue: String) -> String {
         let familyNames = ["Sol", "Luna", "Terra"]
         let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -111,7 +181,7 @@ struct CodexRadarSnapshot: Decodable, Equatable, Sendable {
     let windowOpen: Bool?
     let status: String
     let recommendedAction: String
-    let window: CodexRadarWindow
+    var window: CodexRadarWindow
     let prediction: CodexRadarPrediction
     let tiboPresence: CodexRadarTiboPresence?
     let recentWindows: [CodexRadarRecentWindow]
@@ -212,10 +282,11 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
     let scope: String
     let openedAt: String?
     let closedAt: String?
+    var countdownDeadline: String?
     let sourceUrl: String?
 
     private enum CodingKeys: String, CodingKey {
-        case open, status, action, message, title, scope, openedAt, closedAt, sourceUrl
+        case open, status, action, message, title, scope, openedAt, closedAt, countdownDeadline, sourceUrl
     }
 
     init(
@@ -227,6 +298,7 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
         scope: String,
         openedAt: String?,
         closedAt: String?,
+        countdownDeadline: String? = nil,
         sourceUrl: String?
     ) {
         self.open = open
@@ -237,6 +309,7 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
         self.scope = scope
         self.openedAt = openedAt
         self.closedAt = closedAt
+        self.countdownDeadline = countdownDeadline
         self.sourceUrl = sourceUrl
     }
 
@@ -250,6 +323,7 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
         scope = container.codexRadarString(forKey: .scope) ?? ""
         openedAt = container.codexRadarString(forKey: .openedAt)
         closedAt = container.codexRadarString(forKey: .closedAt)
+        countdownDeadline = container.codexRadarString(forKey: .countdownDeadline)
         sourceUrl = container.codexRadarString(forKey: .sourceUrl)
     }
 
@@ -262,6 +336,7 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
         scope: "",
         openedAt: nil,
         closedAt: nil,
+        countdownDeadline: nil,
         sourceUrl: nil
     )
 
@@ -272,6 +347,7 @@ struct CodexRadarWindow: Decodable, Equatable, Sendable {
             || !message.isEmpty
             || !title.isEmpty
             || !scope.isEmpty
+            || countdownDeadline != nil
             || sourceUrl != nil
     }
 }

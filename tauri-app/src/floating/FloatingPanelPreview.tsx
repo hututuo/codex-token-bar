@@ -1,13 +1,16 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   codexRadarDiagnosticLabel,
   compactRadarModelName,
   displayRadarNumber,
   primaryModelMeasurementRow,
-  radarActionDisplayText,
+  radarActionDisplayTextForSnapshot,
+  radarEffectiveActionDisplayText,
+  radarSpeedWindowDeadlineMs,
   secondaryModelRows,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
+import { subscribeRadarCountdown } from "../domain/codexRadar/countdown";
 import { formatLiveRateValue, rateFillStyle, sanitizeRateFullScale } from "../components/liveRate/rateDisplay";
 import type {
   FloatingContentGroup,
@@ -490,7 +493,7 @@ function FloatingContentRow({
           <FloatingRateMeter
             fullScale={settings.tokenRateFullScale}
             snapshot={snapshot}
-            statusText={attachedUsageStatus ? floatingRateBarStatusText(snapshot) : undefined}
+            statusText={attachedUsageStatus ? floatingRateBarStatusText(snapshot, radarSnapshot) : undefined}
           />
         </div>
       );
@@ -499,7 +502,7 @@ function FloatingContentRow({
         <div className="floating-row floating-usage-status" style={style}>
           <span className="floating-usage-status-card">
             <FloatingStatusText
-              text={floatingStandaloneStatusText(snapshot)}
+              text={floatingStandaloneStatusText(snapshot, radarSnapshot)}
             />
           </span>
         </div>
@@ -699,8 +702,14 @@ export function floatingEmbeddedRunningThreadLabels(summary: RunningThreadSummar
 export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSnapshot | null; style: CSSProperties }) {
   const primary = snapshot ? primaryModelMeasurementRow(snapshot.modelIq) : undefined;
   const diagnosticLabel = snapshot ? codexRadarDiagnosticLabel(snapshot) : null;
-  const actionText = radarActionDisplayText(snapshot?.recommendedAction);
-  const isSpeedWindow = actionText === "速登窗口";
+  const [radarNowMs, setRadarNowMs] = useState(() => Date.now());
+  const radarWindowDeadlineMs = radarSpeedWindowDeadlineMs(snapshot);
+  useEffect(() => {
+    return subscribeRadarCountdown(radarWindowDeadlineMs, setRadarNowMs);
+  }, [radarWindowDeadlineMs]);
+  const effectiveActionText = radarEffectiveActionDisplayText(snapshot);
+  const actionText = radarActionDisplayTextForSnapshot(snapshot, radarNowMs);
+  const isSpeedWindow = effectiveActionText === "速登窗口";
   const modelLimit = isSpeedWindow ? 2 : 3;
   const secondaryText = snapshot
     ? floatingRadarSecondaryIQText(snapshot, modelLimit)
@@ -710,7 +719,7 @@ export function FloatingRadarRow({ snapshot, style }: { snapshot?: CodexRadarSna
     : undefined;
   const radarStyle = {
     ...style,
-    "--radar-action-color": radarActionAccent(snapshot?.recommendedAction),
+    "--radar-action-color": radarActionAccent(effectiveActionText),
     "--radar-score-color": primary ? radarScoreAccent(primary.point) : semanticMetricColor(70),
     "--radar-secondary-color": secondaryAccentPoint ? radarScoreAccent(secondaryAccentPoint) : semanticMetricColor(70),
   } as CSSProperties;

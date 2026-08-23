@@ -63,6 +63,8 @@ export interface CodexRadarWindow {
   scope: string;
   openedAt?: string | null;
   closedAt?: string | null;
+  /** Expected end supplied by the Radar homepage announcement clock. */
+  countdownDeadline?: string | null;
   sourceUrl?: string | null;
 }
 
@@ -319,6 +321,7 @@ export function normalizeCodexRadarSnapshot(raw: unknown): CodexRadarSnapshot {
       scope: stringValue(read(window, "scope")),
       openedAt: nullableString(read(window, "openedAt", "opened_at")),
       closedAt: nullableString(read(window, "closedAt", "closed_at")),
+      countdownDeadline: nullableString(read(window, "countdownDeadline", "countdown_deadline")),
       sourceUrl: nullableString(read(window, "sourceUrl", "source_url")),
     },
     prediction: {
@@ -467,9 +470,31 @@ export function codexRadarSurfaceStatus(snapshot: CodexRadarSnapshot | null, dia
     return diagnostics[0].message;
   }
   if (snapshot) {
-    return `10分钟刷新 · ${snapshot.monitoredAt || "已读取"}`;
+    return `10分钟刷新 · ${codexRadarRefreshTimestamp(snapshot)}`;
   }
   return "Codex 雷达待读取";
+}
+
+/**
+ * The server's monitored_at describes when Radar generated its payload and
+ * can legitimately lag behind a successful local fetch. Surface the local
+ * refresh timestamp first so the UI answers "when did this app read it?".
+ */
+export function codexRadarRefreshTimestamp(snapshot: CodexRadarSnapshot | null | undefined): string {
+  const raw = snapshot?.lastSuccessfulRefreshAt || snapshot?.monitoredAt || "";
+  if (!raw) {
+    return "已读取";
+  }
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) {
+    return raw;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 export function codexRadarDiagnosticLabel(snapshot: CodexRadarSnapshot | null, diagnostics: CodexRadarDiagnostic[] = []): string {
@@ -651,6 +676,81 @@ export function radarActionDisplayText(action: string | null | undefined): strin
     "use remaining tokens": "速登窗口",
   };
   return localized[normalized] ?? (action?.trim() || "--");
+}
+
+/**
+ * Some Radar payloads leave `recommendedAction` empty while the authoritative
+ * action is still present on `window.action`.
+ */
+export function radarEffectiveActionDisplayText(
+  snapshot: CodexRadarSnapshot | null | undefined,
+): string {
+  const recommended = snapshot?.recommendedAction?.trim() ?? "";
+  return radarActionDisplayText(recommended || snapshot?.window.action || null);
+}
+
+export function radarSpeedWindowDeadlineMs(
+  snapshot: CodexRadarSnapshot | null | undefined,
+): number | null {
+  if (radarEffectiveActionDisplayText(snapshot) !== "速登窗口") {
+    return null;
+  }
+  if (snapshot?.window.open === false || snapshot?.windowOpen === false) {
+    return null;
+  }
+  const deadline = snapshot?.window.countdownDeadline || snapshot?.window.closedAt;
+  if (!deadline) {
+    return null;
+  }
+  const timestamp = Date.parse(deadline);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+/**
+ * The public JSON intentionally leaves `window.closed_at` empty while the
+ * Radar homepage shows an expected reset clock in a data attribute. Keep the
+ * HTML extraction small and fail closed when that optional page markup changes.
+ */
+export function parseCodexRadarWindowCountdownDeadline(html: string): string | null {
+  const match = /<section\b[^>]*data-speed-window\s*=\s*["']open["'][^>]*>[\s\S]*?data-window-closes-at\s*=\s*["']([^"']+)["']/i.exec(html);
+  return match?.[1]?.trim() || null;
+}
+
+export function radarActionDisplayTextForSnapshot(
+  snapshot: CodexRadarSnapshot | null | undefined,
+  nowMs = Date.now(),
+): string {
+  const action = radarEffectiveActionDisplayText(snapshot);
+  if (action !== "速登窗口") {
+    return action;
+  }
+  const deadlineMs = radarSpeedWindowDeadlineMs(snapshot);
+  if (deadlineMs === null || deadlineMs <= nowMs) {
+    return "速登窗口";
+  }
+  const seconds = Math.max(1, Math.ceil((deadlineMs - nowMs) / 1_000));
+  if (seconds < 60) {
+    return `速登 ${seconds}秒`;
+  }
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) {
+    return `速登 ${minutes}分`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes === 0
+    ? `速登 ${hours}小时`
+    : `速登 ${hours}小时${remainingMinutes}分`;
+}
+
+export function radarWindowSummaryDisplayText(
+  snapshot: CodexRadarSnapshot | null | undefined,
+  nowMs = Date.now(),
+): string {
+  if (radarEffectiveActionDisplayText(snapshot) === "速登窗口") {
+    return radarActionDisplayTextForSnapshot(snapshot, nowMs);
+  }
+  return snapshot?.window.message?.trim() || "暂无窗口信息";
 }
 
 function normalizeRadarActionKey(action: string | null | undefined): string {

@@ -3,15 +3,19 @@ import {
   codexRadarSurfaceStatus,
   normalizeCodexRadarSnapshot,
   parseCodexRadarFeedXml,
+  parseCodexRadarWindowCountdownDeadline,
+  radarEffectiveActionDisplayText,
   type CodexRadarDiagnostic,
   type CodexRadarFeedItem,
   type CodexRadarReadState,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
 import { isTauriRuntimeAvailable, withTimeout } from "../platform/runtime";
+import { callCommandStrict } from "./command";
 import { recordPerformanceEvent } from "./startupClient";
 
 const CODEX_RADAR_ENDPOINT = "https://codexradar.com/current.json";
+const CODEX_RADAR_HTML_ENDPOINT = "https://codexradar.com/";
 const CODEX_RADAR_CACHE_MS = 600_000;
 
 let cachedSnapshot: { snapshot: CodexRadarSnapshot; readAt: number } | null = null;
@@ -53,19 +57,30 @@ export async function readCodexRadarState(
 }
 
 async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null): Promise<CodexRadarReadState> {
-  const refreshedAt = new Date().toISOString();
   const startedAt = performance.now();
   traceRadarPerformance(`radar_state start has_previous=${previousSnapshot ? 1 : 0}`);
   try {
     const baseSnapshot = await fetchCodexRadarRootSnapshot();
-    const feed = await fetchCodexRadarFeedState(baseSnapshot.links.rss, previousSnapshot);
+    const [feed, countdownDeadline] = await Promise.all([
+      fetchCodexRadarFeedState(baseSnapshot.links.rss, previousSnapshot),
+      fetchCodexRadarAnnouncementDeadline(baseSnapshot),
+    ]);
+    const snapshotWithCountdown = countdownDeadline === undefined
+      ? baseSnapshot
+      : {
+        ...baseSnapshot,
+        window: {
+          ...baseSnapshot.window,
+          countdownDeadline,
+        },
+      };
     const snapshot = withRadarState({
-      ...baseSnapshot,
+      ...snapshotWithCountdown,
       feedItems: feed.items,
     }, {
       diagnostics: feed.diagnostics,
       feedStaleDataDisplayed: feed.staleDataDisplayed,
-      lastSuccessfulRefreshAt: refreshedAt,
+      lastSuccessfulRefreshAt: new Date().toISOString(),
     });
     cachedSnapshot = {
       snapshot,
@@ -92,7 +107,7 @@ async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null)
             retryable: true,
           },
         ],
-        lastFailureAt: refreshedAt,
+        lastFailureAt: new Date().toISOString(),
         staleDataDisplayed: true,
       });
       cachedSnapshot = {
@@ -106,10 +121,75 @@ async function fetchCodexRadarState(previousSnapshot: CodexRadarSnapshot | null)
       diagnostics: [diagnostic],
       statusText: diagnostic.message,
       lastSuccessfulRefreshAt: null,
-      lastFailureAt: refreshedAt,
+      lastFailureAt: new Date().toISOString(),
       staleDataDisplayed: false,
       feedStaleDataDisplayed: false,
     });
+  }
+}
+
+async function fetchCodexRadarAnnouncementDeadline(
+  snapshot: CodexRadarSnapshot,
+): Promise<string | null | undefined> {
+  if (radarEffectiveActionDisplayText(snapshot) !== "速登窗口") {
+    return null;
+  }
+  if (snapshot.window.open === false || snapshot.windowOpen === false) {
+    return null;
+  }
+
+  if (isTauriRuntimeAvailable()) {
+    return fetchCodexRadarAnnouncementDeadlineNative();
+  }
+
+  const startedAt = performance.now();
+  try {
+    const response = await withTimeout(
+      fetch(CODEX_RADAR_HTML_ENDPOINT, {
+        cache: "no-store",
+        headers: {
+          Accept: "text/html",
+        },
+      }),
+      8_000,
+    );
+    if (!response.ok) {
+      throw new Error(`Codex Radar HTML HTTP ${response.status}`);
+    }
+    const deadline = parseCodexRadarWindowCountdownDeadline(await response.text());
+    traceRadarPerformance(
+      `radar_html success elapsed_ms=${Math.round(performance.now() - startedAt)} has_deadline=${deadline ? 1 : 0}`,
+    );
+    return deadline;
+  } catch (error) {
+    traceRadarPerformance(
+      `radar_html failure elapsed_ms=${Math.round(performance.now() - startedAt)} cause=${error instanceof Error ? error.message : String(error)}`,
+    );
+    // The page clock is supplemental. Keep a JSON-provided deadline if the
+    // optional HTML request is unavailable rather than failing Radar itself.
+    return undefined;
+  }
+}
+
+async function fetchCodexRadarAnnouncementDeadlineNative(): Promise<string | null | undefined> {
+  const startedAt = performance.now();
+  try {
+    const deadline = await callCommandStrict<string | null>(
+      "read_codex_radar_window_countdown",
+      undefined,
+      9_000,
+    );
+    traceRadarPerformance(
+      `radar_html native_success elapsed_ms=${Math.round(performance.now() - startedAt)} has_deadline=${deadline ? 1 : 0}`,
+    );
+    return deadline;
+  } catch (error) {
+    traceRadarPerformance(
+      `radar_html native_failure elapsed_ms=${Math.round(performance.now() - startedAt)} cause=${error instanceof Error ? error.message : String(error)}`,
+    );
+    // The page clock is supplemental. Keep a JSON-provided deadline if the
+    // native homepage request is unavailable rather than failing Radar itself.
+    return undefined;
   }
 }
 

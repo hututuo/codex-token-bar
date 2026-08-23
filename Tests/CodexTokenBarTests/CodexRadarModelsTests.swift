@@ -25,6 +25,40 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("glm-5.3 max"), "GLM5.3 max")
     }
 
+    func testSpeedWindowDisplayFallsBackToWindowActionAndCountsDownToClosedAt() throws {
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(Self.sampleJSON.utf8)) as? [String: Any]
+        )
+        root["window_open"] = true
+        root["recommended_action"] = NSNull()
+        var window = try XCTUnwrap(root["window"] as? [String: Any])
+        window["open"] = true
+        window["action"] = "use_remaining_tokens"
+        window["closed_at"] = "2026-06-23T09:01:30+08:00"
+        root["window"] = window
+
+        let data = try JSONSerialization.data(withJSONObject: root)
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
+        let now = ISO8601DateFormatter().date(from: "2026-06-23T09:00:31+08:00")!
+
+        XCTAssertEqual(CodexRadarPresentationText.effectiveAction(snapshot: snapshot), "速登窗口")
+        XCTAssertEqual(
+            CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: now),
+            "速登 59秒"
+        )
+
+        window["closed_at"] = NSNull()
+        root["window"] = window
+        let noEndSnapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: root)
+        )
+        XCTAssertEqual(
+            CodexRadarPresentationText.actionDisplay(snapshot: noEndSnapshot, now: now),
+            "速登窗口"
+        )
+    }
+
     func testCurrentSolMaxScoreOutranksOlderTerraAndKeepsItsEffortInCompactLabel() {
         let solMax = Self.modelIQPoint(
             score: 150,
@@ -342,6 +376,65 @@ final class CodexRadarModelsTests: XCTestCase {
 
         XCTAssertEqual(snapshot.schemaVersion, "2.0")
         XCTAssertEqual(snapshot.modelIQ.quotaRadar?.basisWindowLabel, "7d")
+    }
+
+    func testReaderUsesRadarHomepageCountdownWhenPublicJSONHasNoClosedAt() async throws {
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(Self.sampleJSON.utf8)) as? [String: Any]
+        )
+        root["window_open"] = true
+        root["recommended_action"] = "use_remaining_tokens"
+        var window = try XCTUnwrap(root["window"] as? [String: Any])
+        window["open"] = true
+        window["action"] = "use_remaining_tokens"
+        window["closed_at"] = NSNull()
+        root["window"] = window
+        let jsonData = try JSONSerialization.data(withJSONObject: root)
+        let homepage = """
+        <section class="site-announcement site-announcement-reset" data-speed-window="open">
+          <div data-window-closes-at="2026-08-24T05:00:00+08:00"></div>
+        </section>
+        """
+        let reader = LiveCodexRadarReader(
+            transport: { request in
+                (jsonData, HTTPURLResponse(
+                    url: request.url ?? URL(string: "https://codexradar.com/current.json")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            },
+            announcementTransport: { request in
+                (Data(homepage.utf8), HTTPURLResponse(
+                    url: request.url ?? URL(string: "https://codexradar.com/")!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )!)
+            }
+        )
+
+        let snapshot = try await reader.readRadar()
+
+        XCTAssertEqual(
+            snapshot.window.countdownDeadline,
+            "2026-08-24T05:00:00+08:00"
+        )
+        XCTAssertEqual(
+            CodexRadarPresentationText.actionDisplay(
+                snapshot: snapshot,
+                now: ISO8601DateFormatter().date(from: "2026-08-23T17:00:00+08:00")!
+            ),
+            "速登 12小时"
+        )
+    }
+
+    func testRadarHomepageCountdownParserFailsClosedWhenAnnouncementIsMissing() {
+        XCTAssertNil(
+            CodexRadarWindowCountdownParser.deadline(
+                in: "<section data-speed-window=\"closed\"><div data-window-closes-at=\"2026-08-24T05:00:00+08:00\"></div></section>"
+            )
+        )
     }
 
     func testPublicReaderUsesCurrentJSONWithoutAuthorization() async throws {

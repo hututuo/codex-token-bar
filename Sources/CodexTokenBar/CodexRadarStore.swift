@@ -31,20 +31,32 @@ struct LiveCodexRadarReader: CodexRadarReading, Sendable {
     typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
     private let endpoint: URL
+    private let homepageEndpoint: URL
     private let transport: Transport
+    private let announcementTransport: Transport?
+
+    fileprivate static let networkTransport: Transport = { request in
+        let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CodexRadarReaderError.invalidResponse
+        }
+        return (data, httpResponse)
+    }
+
+    static func live() -> LiveCodexRadarReader {
+        LiveCodexRadarReader(announcementTransport: Self.networkTransport)
+    }
 
     init(
         endpoint: URL = URL(string: "https://codexradar.com/current.json")!,
-        transport: @escaping Transport = { request in
-            let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw CodexRadarReaderError.invalidResponse
-            }
-            return (data, httpResponse)
-        }
+        homepageEndpoint: URL = URL(string: "https://codexradar.com/")!,
+        transport: Transport? = nil,
+        announcementTransport: Transport? = nil
     ) {
         self.endpoint = endpoint
-        self.transport = transport
+        self.homepageEndpoint = homepageEndpoint
+        self.transport = transport ?? Self.networkTransport
+        self.announcementTransport = announcementTransport
     }
 
     func readRadar() async throws -> CodexRadarSnapshot {
@@ -61,7 +73,30 @@ struct LiveCodexRadarReader: CodexRadarReading, Sendable {
         guard !data.isEmpty else {
             throw CodexRadarReaderError.emptyPayload
         }
-        return try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
+        let snapshot = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self, from: data)
+        guard let announcementTransport,
+              snapshot.window.countdownDeadline == nil,
+              snapshot.window.open != false,
+              snapshot.windowOpen != false,
+              CodexRadarPresentationText.effectiveAction(snapshot: snapshot) == "速登窗口" else {
+            return snapshot
+        }
+
+        var homepageRequest = URLRequest(url: homepageEndpoint)
+        homepageRequest.timeoutInterval = 8
+        homepageRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        homepageRequest.setValue("CodexTokenBar", forHTTPHeaderField: "User-Agent")
+        homepageRequest.setValue("text/html", forHTTPHeaderField: "Accept")
+        guard let (homepageData, homepageResponse) = try? await announcementTransport(homepageRequest),
+              (200..<300).contains(homepageResponse.statusCode),
+              let html = String(data: homepageData, encoding: .utf8),
+              let deadline = CodexRadarWindowCountdownParser.deadline(in: html) else {
+            return snapshot
+        }
+
+        var enriched = snapshot
+        enriched.window.countdownDeadline = deadline
+        return enriched
     }
 }
 
@@ -73,13 +108,7 @@ struct LiveCodexRadarDetailReader: CodexRadarDetailReading, Sendable {
 
     init(
         endpoint: URL = URL(string: "https://codexradar.com/api/v1/current")!,
-        transport: @escaping Transport = { request in
-            let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw CodexRadarReaderError.invalidResponse
-            }
-            return (data, httpResponse)
-        }
+        transport: @escaping Transport = LiveCodexRadarReader.networkTransport
     ) {
         self.endpoint = endpoint
         self.transport = transport
@@ -135,13 +164,7 @@ struct LiveCodexRadarFeedReader: CodexRadarFeedReading, Sendable {
     private let transport: Transport
 
     init(
-        transport: @escaping Transport = { request in
-            let (data, response) = try await CodexRadarNetworkSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw CodexRadarReaderError.invalidResponse
-            }
-            return (data, httpResponse)
-        }
+        transport: @escaping Transport = LiveCodexRadarReader.networkTransport
     ) {
         self.transport = transport
     }
@@ -226,7 +249,7 @@ final class CodexRadarStore: ObservableObject {
     private var detailRefreshGeneration = 0
 
     init(
-        reader: any CodexRadarReading = LiveCodexRadarReader(),
+        reader: any CodexRadarReading = LiveCodexRadarReader.live(),
         feedReader: any CodexRadarFeedReading = LiveCodexRadarFeedReader(),
         detailReader: any CodexRadarDetailReading = LiveCodexRadarDetailReader(),
         crowdReader: any CodexCrowdRadarReading = LiveCodexCrowdRadarReader(),

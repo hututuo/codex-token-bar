@@ -42,7 +42,13 @@ struct CodexRadarPresentationState: Equatable {
 
     var stripStatusText: String {
         guard let snapshot else { return status }
-        let refreshLabel = snapshot.monitoredAt.isEmpty ? "已读取" : snapshot.monitoredAt
+        let localRefreshPrefix = "Codex 雷达 · 更新于 "
+        let refreshLabel: String
+        if status.hasPrefix(localRefreshPrefix) {
+            refreshLabel = String(status.dropFirst(localRefreshPrefix.count))
+        } else {
+            refreshLabel = snapshot.monitoredAt.isEmpty ? "已读取" : snapshot.monitoredAt
+        }
         if staleDataDisplayed {
             return firstDiagnosticMessage ?? "读取失败，显示旧雷达"
         }

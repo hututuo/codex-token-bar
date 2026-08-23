@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::async_runtime;
 
 const CODEX_RADAR_FULL_ENDPOINT: &str = "https://codexradar.com/api/v1/current";
+const CODEX_RADAR_HOME_ENDPOINT: &str = "https://codexradar.com/";
 const CODEX_CROWD_RADAR_TABLE_ENDPOINT: &str =
     "https://codexradar.com/api/intelligence-efficiency";
 const CODEX_CROWD_RADAR_TABLE_LEGACY_ENDPOINT: &str =
@@ -22,6 +23,10 @@ const CODEX_CROWD_RADAR_LEADERBOARD_ENDPOINT: &str =
 const CODEX_CROWD_RADAR_LEADERBOARD_LEGACY_ENDPOINT: &str =
     "https://api.codexradar.com/api/v1/leaderboard";
 const CODEX_RADAR_TIMEOUT: Duration = Duration::from_secs(20);
+const CODEX_RADAR_HOME_TIMEOUT: Duration = Duration::from_secs(8);
+const CODEX_RADAR_HOME_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const CODEX_RADAR_COUNTDOWN_SUCCESS_CACHE_TTL: Duration = Duration::from_secs(30);
+const CODEX_RADAR_COUNTDOWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(2);
 const CODEX_CROWD_RADAR_TIMEOUT: Duration = Duration::from_secs(18);
 const CODEX_CROWD_RADAR_PRIMARY_TIMEOUT: Duration = Duration::from_secs(12);
 const CODEX_CROWD_RADAR_LEGACY_TIMEOUT: Duration = Duration::from_secs(6);
@@ -40,6 +45,111 @@ const KEY_MASK: [u8; 23] = [
     83, 33, 141, 11, 68, 159, 226, 23, 106, 195, 61, 136, 241, 44, 5, 185, 112, 222, 73,
     17, 166, 92, 47,
 ];
+
+#[derive(Default)]
+struct RadarCountdownFetchState {
+    in_flight: bool,
+    success: Option<RadarCountdownCachedSuccess>,
+    failure: Option<RadarCountdownCachedFailure>,
+}
+
+struct RadarCountdownCachedSuccess {
+    deadline: Option<String>,
+    fetched_at: Instant,
+}
+
+struct RadarCountdownCachedFailure {
+    message: String,
+    failed_at: Instant,
+}
+
+struct RadarCountdownFetchCoordinator {
+    state: Mutex<RadarCountdownFetchState>,
+    wake: Condvar,
+}
+
+impl RadarCountdownFetchCoordinator {
+    fn get_or_fetch(&self) -> Result<Option<String>, String> {
+        self.get_or_fetch_with(fetch_codex_radar_window_countdown)
+    }
+
+    fn get_or_fetch_with<F>(&self, fetch: F) -> Result<Option<String>, String>
+    where
+        F: FnOnce() -> Result<Option<String>, String>,
+    {
+        self.get_or_fetch_inner(Some(fetch))
+    }
+
+    fn get_or_fetch_inner<F>(&self, mut fetch: Option<F>) -> Result<Option<String>, String>
+    where
+        F: FnOnce() -> Result<Option<String>, String>,
+    {
+        loop {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            if let Some(success) = state.success.as_ref() {
+                if success.fetched_at.elapsed() <= CODEX_RADAR_COUNTDOWN_SUCCESS_CACHE_TTL {
+                    return Ok(success.deadline.clone());
+                }
+            }
+
+            if state.in_flight {
+                state = self
+                    .wake
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                drop(state);
+                continue;
+            }
+
+            if let Some(failure) = state.failure.as_ref() {
+                if failure.failed_at.elapsed() <= CODEX_RADAR_COUNTDOWN_FAILURE_COOLDOWN {
+                    return Err(failure.message.clone());
+                }
+            }
+
+            state.in_flight = true;
+            drop(state);
+
+            let result = fetch
+                .take()
+                .expect("Radar countdown fetch closure is consumed only by the owner")();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.in_flight = false;
+            match &result {
+                Ok(deadline) => {
+                    state.success = Some(RadarCountdownCachedSuccess {
+                        deadline: deadline.clone(),
+                        fetched_at: Instant::now(),
+                    });
+                    state.failure = None;
+                }
+                Err(message) => {
+                    state.failure = Some(RadarCountdownCachedFailure {
+                        message: message.clone(),
+                        failed_at: Instant::now(),
+                    });
+                }
+            }
+            self.wake.notify_all();
+            return result;
+        }
+    }
+}
+
+fn radar_countdown_fetch_coordinator() -> &'static RadarCountdownFetchCoordinator {
+    static COORDINATOR: OnceLock<RadarCountdownFetchCoordinator> = OnceLock::new();
+    COORDINATOR.get_or_init(|| RadarCountdownFetchCoordinator {
+        state: Mutex::new(RadarCountdownFetchState::default()),
+        wake: Condvar::new(),
+    })
+}
 
 #[derive(Default)]
 struct CrowdRadarFetchState {
@@ -156,6 +266,19 @@ pub async fn read_codex_radar_full_snapshot(
         .map_err(|error| error.to_string())?
 }
 
+/// Reads the expected end of the currently open speed window from the Radar
+/// homepage announcement. The public JSON intentionally leaves `closed_at`
+/// empty while the page clock still exposes this supplemental deadline.
+#[tauri::command]
+pub async fn read_codex_radar_window_countdown(
+    window: tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    require_window_label(&window, "read_codex_radar_window_countdown")?;
+    async_runtime::spawn_blocking(|| radar_countdown_fetch_coordinator().get_or_fetch())
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub async fn read_codex_crowd_radar_payload(
     window: tauri::WebviewWindow,
@@ -186,6 +309,79 @@ fn fetch_codex_radar_full_snapshot() -> Result<Value, String> {
     response
         .json::<Value>()
         .map_err(|error| format!("Codex Radar detail parse failed: {error}"))
+}
+
+fn fetch_codex_radar_window_countdown() -> Result<Option<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(CODEX_RADAR_HOME_TIMEOUT)
+        .no_gzip()
+        .build()
+        .map_err(|error| format!("Codex Radar homepage client failed: {error}"))?;
+
+    let response = client
+        .get(CODEX_RADAR_HOME_ENDPOINT)
+        .headers(public_html_headers())
+        .send()
+        .map_err(|error| format!("Codex Radar homepage fetch failed: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Codex Radar homepage HTTP {}", response.status()));
+    }
+
+    let mut body = String::new();
+    response
+        .take(CODEX_RADAR_HOME_MAX_BYTES + 1)
+        .read_to_string(&mut body)
+        .map_err(|error| format!("Codex Radar homepage read failed: {error}"))?;
+    if body.len() as u64 > CODEX_RADAR_HOME_MAX_BYTES {
+        return Err("Codex Radar homepage is too large".into());
+    }
+
+    Ok(parse_window_countdown_deadline(&body))
+}
+
+fn parse_window_countdown_deadline(html: &str) -> Option<String> {
+    let mut search_from = 0;
+    while let Some(relative_marker) = html[search_from..].find("data-speed-window") {
+        let marker_start = search_from + relative_marker;
+        let Some(section_start) = html[..marker_start].rfind("<section") else {
+            search_from = marker_start.saturating_add("data-speed-window".len());
+            continue;
+        };
+        let Some(relative_opening_end) = html[marker_start..].find('>') else {
+            break;
+        };
+        let opening_end = marker_start + relative_opening_end;
+        let opening = &html[section_start..=opening_end];
+        if html_attribute_value(opening, "data-speed-window") != Some("open") {
+            search_from = opening_end.saturating_add(1);
+            continue;
+        }
+
+        let section_end = html[opening_end.saturating_add(1)..]
+            .find("</section")
+            .map(|offset| opening_end.saturating_add(1) + offset)
+            .unwrap_or(html.len());
+        let section = &html[opening_end.saturating_add(1)..section_end];
+        if let Some(deadline) = html_attribute_value(section, "data-window-closes-at") {
+            return Some(deadline.to_owned());
+        }
+        search_from = section_end.saturating_add(1);
+    }
+    None
+}
+
+fn html_attribute_value<'a>(html: &'a str, attribute: &str) -> Option<&'a str> {
+    let marker = format!("{attribute}=");
+    let start = html.find(&marker)? + marker.len();
+    let remainder = &html[start..];
+    let quote = remainder.as_bytes().first().copied()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let value = &remainder[1..];
+    let end = value.find(quote as char)?;
+    Some(value[..end].trim())
 }
 
 fn fetch_codex_crowd_radar_payload_uncached() -> Result<Value, String> {
@@ -598,6 +794,14 @@ fn public_json_headers() -> HeaderMap {
     headers
 }
 
+fn public_html_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("text/html"));
+    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    headers.insert(USER_AGENT, HeaderValue::from_static("CodexTokenBar"));
+    headers
+}
+
 fn authorization_header_value() -> Result<HeaderValue, String> {
     let key = decode_key()?;
     HeaderValue::from_str(&format!("Bearer {key}"))
@@ -705,6 +909,71 @@ mod tests {
     }
 
     #[test]
+    fn radar_countdown_fetch_coordinator_shares_one_deadline_across_webviews() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let coordinator = Arc::new(RadarCountdownFetchCoordinator {
+            state: Mutex::new(RadarCountdownFetchState::default()),
+            wake: Condvar::new(),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let coordinator = Arc::clone(&coordinator);
+                let calls = Arc::clone(&calls);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    coordinator.get_or_fetch_with(|| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(40));
+                        Ok(Some("2026-08-24T05:00:00+08:00".to_string()))
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            assert_eq!(
+                handle.join().expect("countdown single-flight worker"),
+                Ok(Some("2026-08-24T05:00:00+08:00".to_string()))
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let cached = coordinator
+            .get_or_fetch_with(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some("should not replace cached deadline".to_string()))
+            })
+            .expect("cached countdown deadline");
+        assert_eq!(cached.as_deref(), Some("2026-08-24T05:00:00+08:00"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let empty_coordinator = RadarCountdownFetchCoordinator {
+            state: Mutex::new(RadarCountdownFetchState::default()),
+            wake: Condvar::new(),
+        };
+        let empty_calls = AtomicUsize::new(0);
+        assert_eq!(
+            empty_coordinator.get_or_fetch_with(|| {
+                empty_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }),
+            Ok(None)
+        );
+        assert_eq!(
+            empty_coordinator.get_or_fetch_with(|| {
+                empty_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some("unexpected".to_string()))
+            }),
+            Ok(None)
+        );
+        assert_eq!(empty_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn crowd_radar_fetch_coordinator_single_flights_and_cools_down_failures() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Barrier};
@@ -798,6 +1067,30 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("gzip")
         );
+    }
+
+    #[test]
+    fn radar_homepage_parser_reads_open_window_deadline() {
+        let html = r#"
+            <section class="site-announcement site-announcement-reset"
+                     data-speed-window='open'>
+              <div data-window-closes-at="2026-08-24T05:00:00+08:00"></div>
+            </section>
+        "#;
+        assert_eq!(
+            parse_window_countdown_deadline(html).as_deref(),
+            Some("2026-08-24T05:00:00+08:00")
+        );
+    }
+
+    #[test]
+    fn radar_homepage_parser_fails_closed_without_open_announcement() {
+        let html = r#"
+            <section data-speed-window="closed">
+              <div data-window-closes-at="2026-08-24T05:00:00+08:00"></div>
+            </section>
+        "#;
+        assert_eq!(parse_window_countdown_deadline(html), None);
     }
 
     #[test]

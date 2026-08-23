@@ -245,8 +245,8 @@ test("paged row arrows hug the outer edge while keeping a forgiving hit target",
 test("floating pace text keeps the Swift-style status and card count in one line", () => {
   assert.match(previewSource, /FloatingStatusText/);
   assert.doesNotMatch(previewSource, /floatingResetCreditLabel/);
-  assert.match(previewSource, /floatingRateBarStatusText\(snapshot\)/);
-  assert.match(previewSource, /floatingStandaloneStatusText\(snapshot\)/);
+  assert.match(previewSource, /floatingRateBarStatusText\(snapshot, radarSnapshot\)/);
+  assert.match(previewSource, /floatingStandaloneStatusText\(snapshot, radarSnapshot\)/);
   assert.doesNotMatch(previewSource, /卡--/);
   assert.doesNotMatch(stylesSource, /\.floating-status-badge\s*{/);
   assert.match(stylesSource, /\.floating-status-text\s*{[\s\S]*?display: block;/);

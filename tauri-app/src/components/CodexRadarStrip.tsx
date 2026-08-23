@@ -20,6 +20,7 @@ import {
 } from "../api/codexCrowdRadarClient";
 import {
   codexRadarDiagnosticLabel,
+  codexRadarRefreshTimestamp,
   codexRadarSurfaceStatus,
   compactRadarModelName,
   type CodexRadarChartSeries,
@@ -34,12 +35,16 @@ import {
   primaryModelMeasurementRow,
   quotaChartSeries,
   quotaRadarAvailableWindows,
-  radarActionDisplayText,
+  radarActionDisplayTextForSnapshot,
+  radarEffectiveActionDisplayText,
+  radarSpeedWindowDeadlineMs,
+  radarWindowSummaryDisplayText,
   selectCodexRadarDetailSnapshot,
   secondaryModelRows,
   shortDateLabel,
   type CodexRadarSnapshot,
 } from "../domain/codexRadar/model";
+import { subscribeRadarCountdown } from "../domain/codexRadar/countdown";
 import { radarActionAccent, radarScoreAccent, semanticMetricColor } from "../styles/semanticColors";
 
 const RADAR_REFRESH_INTERVAL_MS = 600_000;
@@ -58,6 +63,7 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const [crowdRadarStatus, setCrowdRadarStatus] = useState("众测雷达待读取");
   const [crowdRadarError, setCrowdRadarError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
+  const [radarNowMs, setRadarNowMs] = useState(() => Date.now());
   const [detailSnapshot, setDetailSnapshot] = useState<CodexRadarSnapshot | null>(null);
   const [detailStatus, setDetailStatus] = useState("详细信息待读取");
   const [detailRefreshing, setDetailRefreshing] = useState(false);
@@ -78,6 +84,12 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const detailLifecycleGenerationRef = useRef(0);
   const radarMountedRef = useRef(false);
   const radarLifecycleGenerationRef = useRef(0);
+
+  const radarWindowDeadlineMs = radarSpeedWindowDeadlineMs(snapshot);
+
+  useEffect(() => {
+    return subscribeRadarCountdown(radarWindowDeadlineMs, setRadarNowMs);
+  }, [radarWindowDeadlineMs]);
 
   function clearDetailRecoveryTimer() {
     if (detailRecoveryTimerRef.current !== null) {
@@ -409,6 +421,15 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
   const hasBothQuotaWindows = hasFiveHourQuota && hasSevenDayQuota;
   const probability24h = snapshot?.prediction.probability24H ?? snapshot?.prediction.probability24h;
   const probability48h = snapshot?.prediction.probability48H ?? snapshot?.prediction.probability48h;
+  const effectiveActionText = radarEffectiveActionDisplayText(snapshot);
+  const actionDisplayText = radarActionDisplayTextForSnapshot(snapshot, radarNowMs);
+  const windowSummaryText = radarWindowSummaryDisplayText(snapshot, radarNowMs);
+  const windowBlockTitle = effectiveActionText === "速登窗口" && actionDisplayText !== "速登窗口"
+    ? actionDisplayText
+    : "速登窗口";
+  const windowBlockDetail = windowBlockTitle !== "速登窗口"
+    ? snapshot?.window.title?.trim() || "窗口进行中"
+    : (snapshot ? windowSummaryText : "等待 Codex 雷达");
 
   return (
     <section className={showDetails ? "codex-radar-strip codex-radar-strip--details-open" : "codex-radar-strip"} aria-label="Codex 雷达">
@@ -438,10 +459,10 @@ function CodexRadarStripView({ refreshGeneration = 0 }: CodexRadarStripProps) {
       <CodexRadarDiagnosticsNotice diagnostics={diagnostics} snapshot={snapshot} />
 
       <div className="codex-radar-grid">
-        <RadarBlock accentColor={radarActionAccent(snapshot?.recommendedAction)} icon="W" title="速登窗口">
-          <strong>{snapshot ? (snapshot.window.message || "暂无窗口信息") : "等待 Codex 雷达"}</strong>
+        <RadarBlock accentColor={radarActionAccent(effectiveActionText)} icon="W" title={windowBlockTitle}>
+          <strong>{windowBlockDetail}</strong>
           <div className="radar-mini-row">
-            <RadarMini accentColor={radarActionAccent(snapshot?.recommendedAction)} label="建议" value={radarActionDisplayText(snapshot?.recommendedAction)} />
+            <RadarMini accentColor={radarActionAccent(effectiveActionText)} label="建议" value={actionDisplayText} />
             <RadarMini label="24h" value={percentText(probability24h)} />
             <RadarMini label="48h" value={percentText(probability48h)} />
           </div>
@@ -594,7 +615,7 @@ export function CodexRadarDetailOverlay({
         <div className="codex-radar-detail-head">
           <div>
             <strong>Codex 雷达详细信息</strong>
-            <span>{displaySnapshot ? `${detailStatus} · ${displaySnapshot.monitoredAt}` : status}</span>
+            <span>{displaySnapshot ? `${detailStatus} · ${codexRadarRefreshTimestamp(displaySnapshot)}` : status}</span>
           </div>
           <button className="codex-radar-detail-refresh" disabled={isDetailRefreshing || isRefreshing} onClick={onRefresh} type="button">
             {isDetailRefreshing ? "刷新中" : "刷新详细"}
@@ -711,8 +732,8 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
         <RadarDetailSubsection title="窗口摘要">
           <RadarKeyValueGrid
             rows={[
-              ["窗口状态", snapshot.window.message || "--"],
-              ["建议动作", radarActionDisplayText(snapshot.recommendedAction)],
+              ["窗口状态", radarWindowSummaryDisplayText(snapshot)],
+              ["建议动作", radarActionDisplayTextForSnapshot(snapshot)],
               ["24h 概率", percentText(probability24h)],
               ["48h 概率", percentText(probability48h)],
               ["预计窗口", snapshot.prediction.expectedWindow || "--"],
@@ -720,7 +741,7 @@ const CodexRadarDetailBody = memo(function CodexRadarDetailBody({
               ["上次关闭", snapshot.window.closedAt || "--"],
               ["来源", snapshot.window.sourceUrl || "--"],
             ]}
-            valueColors={{ "建议动作": radarActionAccent(snapshot.recommendedAction) }}
+            valueColors={{ "建议动作": radarActionAccent(radarEffectiveActionDisplayText(snapshot)) }}
           />
         </RadarDetailSubsection>
         <RadarDetailSubsection title="预测说明">

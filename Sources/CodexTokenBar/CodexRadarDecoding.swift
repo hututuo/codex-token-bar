@@ -24,7 +24,7 @@ enum CodexRadarJSONKeyMatcher {
         "recommendedAction", "window", "prediction", "tiboPresence", "recentWindows", "links",
         "modelIq", "codexEnvironment", "data", "result", "snapshot", "payload",
         "open", "action", "message", "title", "scope",
-        "openedAt", "closedAt", "sourceUrl", "level", "probability24H", "probability48H",
+        "openedAt", "closedAt", "countdownDeadline", "sourceUrl", "level", "probability24H", "probability48H",
         "expectedWindow", "summary", "summaryEn", "positiveSignals", "negativeSignals", "updatedAt",
         "mode", "locationLabelZh", "locationLabelEn", "probability", "confidence",
         "evidenceSummaryZh", "evidenceSummaryEn", "sourceUrls", "shouldDisplay", "safetyNoteZh",

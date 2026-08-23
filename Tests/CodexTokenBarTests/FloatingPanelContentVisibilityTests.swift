@@ -408,6 +408,81 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         XCTAssertEqual(model.standaloneUsageStatus, snapshot.standaloneUsageStatus)
     }
 
+    func testFloatingPanelPresentationUsesSpeedWindowFunPhraseForUsageStatus() throws {
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(CodexRadarModelsTests.sampleJSON.utf8)) as? [String: Any]
+        )
+        root["window_open"] = true
+        root["recommended_action"] = "use_remaining_tokens"
+        var window = try XCTUnwrap(root["window"] as? [String: Any])
+        window["open"] = true
+        window["action"] = "use_remaining_tokens"
+        root["window"] = window
+        let radarSnapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: root)
+        )
+
+        let rateAttachedVisibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: false,
+            showQuota: false,
+            showRadar: false,
+            groupOrder: [.rateAndBar, .usageStatus]
+        )
+        var quota = AccountQuotaSnapshot(
+            fiveHour: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: Date(timeIntervalSince1970: 2_000)),
+            sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 40, resetsAt: Date(timeIntervalSince1970: 20_000)),
+            status: "额度已读取",
+            updatedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        quota.resetCreditsAvailableCount = 2
+        let tokenSnapshot = makeTokenDisplaySnapshot(quota: quota)
+        let rateAttachedModel = FloatingPanelPresentationModel(
+            snapshot: tokenSnapshot,
+            visibility: rateAttachedVisibility,
+            radarSnapshot: radarSnapshot
+        )
+        XCTAssertTrue(rateAttachedModel.rateBarUsageStatus?.hasPrefix("加快蹬") == true)
+        XCTAssertTrue(rateAttachedModel.rateBarUsageStatus?.contains("2卡") == true)
+
+        let standaloneVisibility = FloatingPanelContentVisibility(
+            showRateAndBar: true,
+            showUsageStatus: true,
+            showMetrics: true,
+            showQuota: false,
+            showRadar: false,
+            groupOrder: [.rateAndBar, .metrics, .usageStatus]
+        )
+        let standaloneModel = FloatingPanelPresentationModel(
+            snapshot: tokenSnapshot,
+            visibility: standaloneVisibility,
+            radarSnapshot: radarSnapshot
+        )
+        XCTAssertTrue(standaloneModel.standaloneUsageStatus?.hasPrefix("加快蹬") == true)
+        XCTAssertTrue(standaloneModel.standaloneUsageStatus?.contains("2卡") == true)
+        XCTAssertTrue(standaloneModel.accessibilityValue.contains("加快蹬"))
+
+        var normalRoot = root
+        normalRoot["window_open"] = false
+        normalRoot["recommended_action"] = "wait"
+        var normalWindow = try XCTUnwrap(normalRoot["window"] as? [String: Any])
+        normalWindow["open"] = false
+        normalWindow["action"] = "wait"
+        normalRoot["window"] = normalWindow
+        let normalRadarSnapshot = try JSONDecoder.codexRadar.decode(
+            CodexRadarSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: normalRoot)
+        )
+        let normalModel = FloatingPanelPresentationModel(
+            snapshot: tokenSnapshot,
+            visibility: standaloneVisibility,
+            radarSnapshot: normalRadarSnapshot
+        )
+        XCTAssertEqual(normalModel.standaloneUsageStatus, tokenSnapshot.standaloneUsageStatus)
+    }
+
     func testFloatingPanelPresentationOmitsUsageStatusWhenHidden() {
         let snapshot = makeTokenDisplaySnapshot(quota: .empty)
         let visibility = FloatingPanelContentVisibility(
@@ -1271,7 +1346,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
         )
         XCTAssertTrue(surfaceSource.contains("TokenDisplayRadarStrip(presentation: radarPresentation)"))
         XCTAssertTrue(componentsSource.contains("struct TokenDisplayRadarStrip"))
-        XCTAssertTrue(componentsSource.contains("CodexRadarPresentationText.action(snapshot?.recommendedAction)"))
+        XCTAssertTrue(componentsSource.contains("CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: context.date)"))
         XCTAssertFalse(componentsSource.contains("tokenDisplayRadarProbabilityText(snapshot?.prediction.probability24hPercent)"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 2.scaled(by: displayScale)"))
         XCTAssertTrue(componentsSource.contains("alignment: .leading, spacing: 1.scaled(by: displayScale)"))
@@ -1284,7 +1359,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             in: componentsSource,
             endingBefore: "private func tokenDisplayRadarSecondaryIQText"
         ))
-        XCTAssertTrue(radarStrip.contains("Text(actionText)"))
+        XCTAssertTrue(radarStrip.contains("Text(CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: context.date))"))
         XCTAssertTrue(radarStrip.contains("presentation.compactMarkerText"))
         XCTAssertTrue(radarStrip.contains("presentation.compactAccessibilityText"))
         XCTAssertTrue(radarStrip.contains("let actionPrimaryColor = AppTheme.radarActionRole"))

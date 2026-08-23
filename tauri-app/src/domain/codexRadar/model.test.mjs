@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { codexRadarSnapshotHasContent, compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, primaryModelMeasurementRow, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
+import { codexRadarRefreshTimestamp, codexRadarSnapshotHasContent, codexRadarSurfaceStatus, compactRadarModelName, modelIqChartSeries, normalizeCodexRadarSnapshot, parseCodexRadarFeedXml, parseCodexRadarWindowCountdownDeadline, primaryModelMeasurementRow, primaryModelRow, quotaChartSeries, quotaRadarAvailableWindows, radarActionDisplayText, radarActionDisplayTextForSnapshot, radarEffectiveActionDisplayText, radarSpeedWindowDeadlineMs, secondaryModelRows, selectCodexRadarDetailSnapshot, shortDateLabel } from "./model.ts";
 
 const snapshot = {
   modelIq: {
@@ -97,6 +97,67 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   assert.equal(compactRadarModelName("grok-4.6 xhigh"), "G4.6 XH");
   assert.equal(compactRadarModelName("k3 high"), "K3 H");
   assert.equal(compactRadarModelName("glm-5.3 max"), "GLM5.3 max");
+});
+
+test("speed-window display falls back to window action and counts down to closedAt", () => {
+  const snapshot = normalizeCodexRadarSnapshot({
+    window_open: true,
+    recommended_action: null,
+    window: {
+      open: true,
+      action: "use_remaining_tokens",
+      closed_at: "2026-06-23T09:01:30+08:00",
+    },
+  });
+  const nowMs = Date.parse("2026-06-23T09:00:31+08:00");
+
+  assert.equal(radarEffectiveActionDisplayText(snapshot), "速登窗口");
+  assert.equal(radarSpeedWindowDeadlineMs(snapshot), Date.parse("2026-06-23T09:01:30+08:00"));
+  assert.equal(radarActionDisplayTextForSnapshot(snapshot, nowMs), "速登 59秒");
+  assert.equal(radarActionDisplayTextForSnapshot(
+    normalizeCodexRadarSnapshot({
+      ...snapshot,
+      window: { ...snapshot.window, closedAt: null },
+    }),
+    nowMs,
+  ), "速登窗口");
+});
+
+test("Radar surface status prefers the local successful refresh time over monitoredAt", () => {
+  const refreshed = normalizeCodexRadarSnapshot({
+    ...snapshot,
+    monitored_at: "2026-07-22T06:57:20.626603+08:00",
+    last_successful_refresh_at: "2026-08-23T12:34:56+00:00",
+  });
+
+  assert.match(codexRadarRefreshTimestamp(refreshed), /\d{2}:\d{2}:\d{2}/);
+  assert.match(codexRadarSurfaceStatus(refreshed), /^10分钟刷新 · \d{2}:\d{2}:\d{2}$/);
+  assert.doesNotMatch(codexRadarSurfaceStatus(refreshed), /2026-07-22/);
+});
+
+test("Radar homepage announcement supplies the expected speed-window deadline", () => {
+  const html = `
+    <section class="site-announcement site-announcement-reset" data-speed-window="open">
+      <div data-window-closes-at="2026-08-24T05:00:00+08:00"></div>
+    </section>
+  `;
+  assert.equal(
+    parseCodexRadarWindowCountdownDeadline(html),
+    "2026-08-24T05:00:00+08:00",
+  );
+  const snapshot = normalizeCodexRadarSnapshot({
+    window_open: true,
+    recommended_action: "use_remaining_tokens",
+    window: {
+      open: true,
+      action: "use_remaining_tokens",
+      countdown_deadline: "2026-08-24T05:00:00+08:00",
+    },
+  });
+  assert.equal(
+    radarSpeedWindowDeadlineMs(snapshot),
+    Date.parse("2026-08-24T05:00:00+08:00"),
+  );
 });
 
 test("current Sol max score outranks older Terra and keeps its effort in the compact label", () => {

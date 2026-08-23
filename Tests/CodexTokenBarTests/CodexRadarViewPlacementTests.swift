@@ -90,8 +90,8 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let radarSource = try String(contentsOf: radarView, encoding: .utf8)
         let compactSource = try String(contentsOf: compactSurface, encoding: .utf8)
 
-        XCTAssertTrue(radarSource.contains("valueColors: [\"建议动作\": AppTheme.radarActionColor(snapshot.recommendedAction)]"))
-        XCTAssertTrue(compactSource.contains("let actionPrimaryColor = AppTheme.radarActionRole(snapshot?.recommendedAction) == .red"))
+        XCTAssertTrue(radarSource.contains("valueColors: [\"建议动作\": AppTheme.radarActionColor(CodexRadarPresentationText.effectiveAction(snapshot: snapshot))]"))
+        XCTAssertTrue(compactSource.contains("let actionPrimaryColor = AppTheme.radarActionRole(effectiveActionText) == .red"))
         XCTAssertTrue(compactSource.contains(".foregroundStyle(actionPrimaryColor)"))
     }
 

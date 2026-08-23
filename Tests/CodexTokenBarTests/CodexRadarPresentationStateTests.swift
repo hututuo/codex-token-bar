@@ -145,9 +145,20 @@ final class CodexRadarPresentationStateTests: XCTestCase {
             radarPresentation: state
         )
 
-        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))"))
+        XCTAssertTrue(model.accessibilityParts.contains("雷达建议 \(CodexRadarPresentationText.actionDisplay(snapshot: snapshot))"))
         XCTAssertTrue(model.accessibilityParts.contains(snapshot.modelIQ.primaryModelRow.point.scoreDisplayText))
         XCTAssertNil(state.compactMarkerText)
+    }
+
+    func testStripStatusUsesLocalSuccessfulRefreshStatusInsteadOfServerMonitoredAt() throws {
+        let snapshot = try makeSnapshot()
+        let state = CodexRadarPresentationState(
+            snapshot: snapshot,
+            status: "Codex 雷达 · 更新于 18:34:56"
+        )
+
+        XCTAssertEqual(state.stripStatusText, "10分钟刷新 · 18:34:56")
+        XCTAssertFalse(state.stripStatusText.contains(snapshot.monitoredAt))
     }
 
     func testFloatingPresentationUsesPublicSummaryFieldsWithoutAdvancedRadarSections() throws {

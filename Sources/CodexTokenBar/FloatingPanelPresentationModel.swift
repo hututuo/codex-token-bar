@@ -28,8 +28,20 @@ struct FloatingPanelPresentationModel: Equatable {
     ) {
         let radarPresentation = radarPresentation ?? CodexRadarPresentationState(snapshot: radarSnapshot)
         rows = visibility.layoutRows.map { FloatingPanelPresentationRow(groups: $0.groups) }
-        rateBarUsageStatus = visibility.embedsUsageStatusInRateRow ? snapshot.compactUsageStatus : nil
-        standaloneUsageStatus = visibility.showsStandaloneUsageStatus ? snapshot.standaloneUsageStatus : nil
+        let resolvedCompactUsageStatus = Self.radarFunUsageStatus(
+            for: radarPresentation.snapshot,
+            base: snapshot.compactUsageStatus
+        ) ?? snapshot.compactUsageStatus
+        let resolvedStandaloneUsageStatus = Self.radarFunUsageStatus(
+            for: radarPresentation.snapshot,
+            base: snapshot.standaloneUsageStatus
+        ) ?? snapshot.standaloneUsageStatus
+        rateBarUsageStatus = visibility.embedsUsageStatusInRateRow
+            ? resolvedCompactUsageStatus
+            : nil
+        standaloneUsageStatus = visibility.showsStandaloneUsageStatus
+            ? resolvedStandaloneUsageStatus
+            : nil
         needsTopSafetyInset = visibility.needsTopControlInset
 
         var parts: [String] = []
@@ -61,7 +73,7 @@ struct FloatingPanelPresentationModel: Equatable {
             ))
         }
         if visibility.showUsageStatus {
-            parts.append(snapshot.compactUsageStatus)
+            parts.append(resolvedCompactUsageStatus)
         }
         if visibility.showQuota, let fiveHour = snapshot.quota.fiveHour {
             parts.append("5 小时额度剩余 \(fiveHour.remainingPercent)%，\(fiveHour.accessibleResetText) 重置")
@@ -71,7 +83,7 @@ struct FloatingPanelPresentationModel: Equatable {
         }
         if visibility.showRadar {
             if let radarSnapshot = radarPresentation.snapshot {
-                parts.append("雷达建议 \(CodexRadarPresentationText.action(radarSnapshot.recommendedAction))")
+                parts.append("雷达建议 \(CodexRadarPresentationText.actionDisplay(snapshot: radarSnapshot))")
                 if let primary = radarSnapshot.modelIQ.primaryModelPoint {
                     parts.append(primary.scoreDisplayText)
                 }
@@ -85,5 +97,20 @@ struct FloatingPanelPresentationModel: Equatable {
             }
         }
         accessibilityParts = parts
+    }
+
+    private static func radarFunUsageStatus(for snapshot: CodexRadarSnapshot?, base: String) -> String? {
+        guard CodexRadarPresentationText.effectiveAction(snapshot: snapshot) == "速登窗口" else {
+            return nil
+        }
+        let normalized = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "加快蹬" }
+        if let openingParenthesis = normalized.firstIndex(of: "("), openingParenthesis != normalized.startIndex {
+            return "加快蹬\(normalized[openingParenthesis...])"
+        }
+        if normalized == "节奏待读取" {
+            return "加快蹬"
+        }
+        return "加快蹬 · \(normalized)"
     }
 }

@@ -225,11 +225,11 @@ struct TokenDisplayRadarStrip: View {
         let primary = snapshot?.modelIQ.primaryModelPoint
         let actionPalette = actionTextPalette ?? textPalette
         let modelPalette = modelTextPalette ?? textPalette
-        let actionAccent = AppTheme.radarActionColor(snapshot?.recommendedAction)
-        let actionText = CodexRadarPresentationText.action(snapshot?.recommendedAction)
-        let isSpeedWindow = actionText == "速登窗口"
+        let effectiveActionText = CodexRadarPresentationText.effectiveAction(snapshot: snapshot)
+        let actionAccent = AppTheme.radarActionColor(effectiveActionText)
+        let isSpeedWindow = effectiveActionText == "速登窗口"
         let modelLimit = isSpeedWindow ? 2 : 3
-        let actionPrimaryColor = AppTheme.radarActionRole(snapshot?.recommendedAction) == .red
+        let actionPrimaryColor = AppTheme.radarActionRole(effectiveActionText) == .red
             ? actionAccent
             : actionPalette.primaryColor
         let primaryAccent = primary.map {
@@ -244,9 +244,13 @@ struct TokenDisplayRadarStrip: View {
                     Circle()
                         .fill(actionAccent)
                         .frame(width: 4.scaled(by: displayScale), height: 4.scaled(by: displayScale))
-                    Text(actionText)
-                        .font(.system(size: 11.2.scaled(by: displayScale), weight: .bold))
-                        .foregroundStyle(actionPrimaryColor)
+                    TimelineView(CodexRadarCountdownTimelineSchedule(
+                        deadline: CodexRadarPresentationText.countdownDeadline(snapshot: snapshot)
+                    )) { context in
+                        Text(CodexRadarPresentationText.actionDisplay(snapshot: snapshot, now: context.date))
+                            .font(.system(size: 11.2.scaled(by: displayScale), weight: .bold))
+                            .foregroundStyle(actionPrimaryColor)
+                    }
                     if let marker = presentation.compactMarkerText {
                         Text(marker)
                             .font(.system(size: 6.8.scaled(by: displayScale), weight: .bold, design: .rounded))
@@ -299,7 +303,7 @@ struct TokenDisplayRadarStrip: View {
             return presentation.compactAccessibilityText ?? "等待读取"
         }
         let score = snapshot.modelIQ.primaryModelPoint?.scoreDisplayText ?? "IQ --"
-        let base = "建议 \(CodexRadarPresentationText.action(snapshot.recommendedAction))，\(score)"
+        let base = "建议 \(CodexRadarPresentationText.actionDisplay(snapshot: snapshot))，\(score)"
         guard let compactAccessibility = presentation.compactAccessibilityText else {
             return base
         }
