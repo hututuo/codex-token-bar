@@ -55,6 +55,25 @@ extension RecentUsageChart {
         }
     }
 
+    /// Cost is encoded twice: vertical position shows the mapped amount and
+    /// radius makes relative bucket size readable without adding another line.
+    func observedOptionalPointPath(points: [CGPoint?], radii: [CGFloat?]) -> Path {
+        Path { path in
+            for index in points.indices {
+                guard let point = points[index],
+                      let radius = radii[safe: index],
+                      let radius,
+                      radius > 0 else { continue }
+                path.addEllipse(in: CGRect(
+                    x: point.x - radius,
+                    y: point.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                ))
+            }
+        }
+    }
+
     private func appendOptionalSegment(_ points: [CGPoint], to path: inout Path) {
         guard points.count == 1, let point = points.first else {
             appendSmoothPolyline(points, to: &path)

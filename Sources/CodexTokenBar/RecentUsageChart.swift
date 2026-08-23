@@ -552,6 +552,7 @@ struct RecentChartPlotData: Equatable {
     let callPoints: [CGPoint]
     let cachePoints: [CGPoint?]
     let costPoints: [CGPoint?]
+    let costPointRadii: [CGFloat?]
     let bucketCostsUSD: [Double]
     let fiveHourQuotaPoints: [CGPoint?]
     let sevenDayQuotaPoints: [CGPoint?]
@@ -633,6 +634,11 @@ struct RecentChartPlotData: Equatable {
                 )
             )
         }
+        costPointRadii = renderIndices.map { index in
+            guard let cost = calculatedBucketCostsUSD[safe: index],
+                  RecentChartScaleMap.isRenderableCost(cost) else { return nil }
+            return scaleMap.costPointRadius(for: cost)
+        }
         fiveHourQuotaPoints = renderIndices.map { index in
             guard let value = prepared.fiveHourRemainingPercents[safe: index],
                   let percent = value else { return nil }
@@ -673,6 +679,11 @@ struct RecentChartPlotData: Equatable {
     func costPoint(at globalIndex: Int) -> CGPoint? {
         guard let index = localIndex(for: globalIndex) else { return nil }
         return costPoints[safe: index] ?? nil
+    }
+
+    func costPointRadius(at globalIndex: Int) -> CGFloat? {
+        guard let index = localIndex(for: globalIndex) else { return nil }
+        return costPointRadii[safe: index] ?? nil
     }
 
     func fiveHourQuotaPoint(at globalIndex: Int) -> CGPoint? {
@@ -959,6 +970,7 @@ struct RecentUsageChart: View, Equatable {
     @AppStorage("recentChartShowTokens") private var showTokens = true
     @AppStorage("recentChartShowCalls") private var showCalls = true
     @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
+    @AppStorage("recentChartShowCost") private var showCost = true
     @AppStorage("recentChartShowFiveHourQuota") private var showFiveHourQuota = true
     @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
@@ -1055,6 +1067,14 @@ struct RecentUsageChart: View, Equatable {
         preparedData.visibleWindowSummary(for: scrollPresentation)
     }
 
+    private var visibleWindowCostUSD: Double {
+        let summary = visibleWindowSummary
+        guard summary.endIndex >= summary.startIndex else { return 0 }
+        return (summary.startIndex...summary.endIndex).reduce(0) { total, index in
+            total + (cachedBucketCostsUSD[safe: index] ?? 0)
+        }
+    }
+
     private var preparationInput: RecentChartPreparationInput {
         RecentChartPreparationInput(
             bins: bins,
@@ -1104,7 +1124,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: .pink, label: "金额", value: "每桶")
+                    ChartLegend(color: .pink, label: "金额", value: visibleWindowCostUSD.quotaEstimatorMoneyText)
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
@@ -1117,6 +1137,7 @@ struct RecentUsageChart: View, Equatable {
                     ChartLineToggle(title: "Token", color: .blue, isOn: $showTokens)
                     ChartLineToggle(title: "调用", color: .orange, isOn: $showCalls)
                     ChartLineToggle(title: "命中率", color: AppTheme.accentCyan, isOn: $showCacheHitRate)
+                    ChartLineToggle(title: "金额", color: .pink, isOn: $showCost)
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLineToggle(title: "5h", color: .purple, isOn: $showFiveHourQuota)
                     }
@@ -1404,7 +1425,10 @@ struct RecentUsageChart: View, Equatable {
                 tokenLine: linePath(points: plotData.tokenPoints),
                 callLine: linePath(points: plotData.callPoints),
                 cachePoints: observedOptionalPointPath(points: plotData.cachePoints),
-                costPoints: observedOptionalPointPath(points: plotData.costPoints),
+                costPoints: observedOptionalPointPath(
+                    points: plotData.costPoints,
+                    radii: plotData.costPointRadii
+                ),
                 fiveHourQuotaLine: optionalLinePath(points: plotData.fiveHourQuotaPoints),
                 sevenDayQuotaLine: optionalLinePath(points: plotData.sevenDayQuotaPoints)
             )
@@ -1475,7 +1499,7 @@ struct RecentUsageChart: View, Equatable {
                     .fill(AppTheme.accentCyan)
             }
 
-            if plotData.costPoints.contains(where: { $0 != nil }) {
+            if showCost && plotData.costPoints.contains(where: { $0 != nil }) {
                 renderFrame.costPoints
                 .fill(.pink)
             }
@@ -1495,6 +1519,7 @@ struct RecentUsageChart: View, Equatable {
                 let callPoint = plotData.callPoint(at: activeIndex)
                 let cachePoint = plotData.cachePoint(at: activeIndex)
                 let costPoint = plotData.costPoint(at: activeIndex)
+                let costPointRadius = plotData.costPointRadius(at: activeIndex)
                 let fiveHourPoint = plotData.fiveHourQuotaPoint(at: activeIndex)
                 let sevenDayPoint = plotData.sevenDayQuotaPoint(at: activeIndex)
 
@@ -1532,10 +1557,11 @@ struct RecentUsageChart: View, Equatable {
                         .position(cachePoint)
                 }
 
-                if let costPoint {
+                if showCost, let costPoint {
+                    let ringDiameter = max((costPointRadius ?? 0) * 2 + 4, 8.4)
                     Circle()
                         .fill(AppTheme.pageBackground)
-                        .frame(width: 8.4, height: 8.4)
+                        .frame(width: ringDiameter, height: ringDiameter)
                         .overlay(Circle().stroke(.pink, lineWidth: Self.hoverRingLineWidth))
                         .position(costPoint)
                 }
@@ -1778,7 +1804,7 @@ struct RecentUsageChart: View, Equatable {
         if showTokens { visibleSeries.append("Token") }
         if showCalls { visibleSeries.append("调用") }
         if showCacheHitRate, windowSummary.hasCacheCalls { visibleSeries.append("命中率") }
-        if !preparedData.bins.isEmpty { visibleSeries.append("每桶金额") }
+        if showCost, !preparedData.bins.isEmpty { visibleSeries.append("每桶金额") }
         if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour { visibleSeries.append("5 小时额度") }
         if showSevenDayQuota, quotaSeriesVisibility.drawsSevenDay { visibleSeries.append("7 天额度") }
 

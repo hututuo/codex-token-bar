@@ -11,6 +11,7 @@ import {
 } from "../quotaPeriodBoundary.ts";
 import {
   isRenderableRecentChartCost,
+  recentChartCostPointRadius,
   recentChartScaleMap,
   recentChartTokenScale,
   recentChartY,
@@ -22,7 +23,10 @@ export {
   RECENT_CHART_COST_AVERAGE_HEIGHT_RATIO,
   RECENT_CHART_COST_HIGH_HEIGHT_RATIO,
   RECENT_CHART_COST_LOW_HEIGHT_RATIO,
+  RECENT_CHART_COST_POINT_MAXIMUM_RADIUS,
+  RECENT_CHART_COST_POINT_MINIMUM_RADIUS,
   RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO,
+  recentChartCostPointRadius,
   recentChartHeightFraction,
   recentChartScaleMap,
   recentChartTokenScale,
@@ -97,6 +101,7 @@ export interface SeriesVisibility {
   tokens: boolean;
   calls: boolean;
   cacheHitRate: boolean;
+  cost: boolean;
   fiveHourQuota: boolean;
   sevenDayQuota: boolean;
 }
@@ -277,6 +282,7 @@ export const DEFAULT_SERIES_VISIBILITY: SeriesVisibility = {
   tokens: true,
   calls: true,
   cacheHitRate: true,
+  cost: true,
   fiveHourQuota: true,
   sevenDayQuota: true,
 };
@@ -465,6 +471,7 @@ export function plotChartPoints(
       renderStartIndex,
       data.points.length,
     ),
+    costPointRadii: scaledCostPointRadii(renderCosts, scaleMap.cost),
     fiveHourQuotaPoints: optionalQuotaPoints(
       renderPoints,
       "fiveHourRemainingPercent",
@@ -528,6 +535,15 @@ export function scaledCostPoints(
       y: recentChartY(cost, scale, plotHeight),
     };
   });
+}
+
+export function scaledCostPointRadii(
+  costs: number[],
+  scale: RecentChartScaleSpec = recentChartScaleMap({ tokenValues: [1], callValues: [1], costs }).cost,
+): Array<number | null> {
+  return costs.map((cost) => isRenderableRecentChartCost(cost)
+    ? recentChartCostPointRadius(cost, scale)
+    : null);
 }
 
 function clampedScaleWindow(

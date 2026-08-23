@@ -18,11 +18,13 @@ export interface RecentChartScaleMap {
   quota: RecentChartScaleSpec;
 }
 
-/** Token alone keeps a 20% top gutter. Percentage series retain their true 0–100% axis. */
-export const RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO = 0.8;
+/** Token alone keeps a 35% top gutter. Percentage series retain their true 0–100% axis. */
+export const RECENT_CHART_TOKEN_PEAK_HEIGHT_RATIO = 0.65;
 export const RECENT_CHART_COST_LOW_HEIGHT_RATIO = 0.45;
 export const RECENT_CHART_COST_AVERAGE_HEIGHT_RATIO = 0.7;
 export const RECENT_CHART_COST_HIGH_HEIGHT_RATIO = 0.95;
+export const RECENT_CHART_COST_POINT_MINIMUM_RADIUS = 1.6;
+export const RECENT_CHART_COST_POINT_MAXIMUM_RADIUS = 4.2;
 
 export function recentChartScaleMap({
   tokenValues,
@@ -126,6 +128,22 @@ export function recentChartY(
 ): number {
   const safePlotHeight = finiteNonnegative(plotHeight);
   return (1 - recentChartHeightFraction(value, scale)) * safePlotHeight;
+}
+
+export function recentChartCostPointRadius(
+  cost: number,
+  scale: RecentChartScaleSpec,
+): number {
+  if (!isRenderableRecentChartCost(cost)) return 0;
+  const visualSpan = RECENT_CHART_COST_HIGH_HEIGHT_RATIO - RECENT_CHART_COST_LOW_HEIGHT_RATIO;
+  if (visualSpan <= Number.EPSILON) return RECENT_CHART_COST_POINT_MINIMUM_RADIUS;
+  const normalized = clamp(
+    (recentChartHeightFraction(cost, scale) - RECENT_CHART_COST_LOW_HEIGHT_RATIO) / visualSpan,
+    0,
+    1,
+  );
+  return RECENT_CHART_COST_POINT_MINIMUM_RADIUS
+    + (RECENT_CHART_COST_POINT_MAXIMUM_RADIUS - RECENT_CHART_COST_POINT_MINIMUM_RADIUS) * normalized;
 }
 
 export function isRenderableRecentChartCost(cost: number): boolean {

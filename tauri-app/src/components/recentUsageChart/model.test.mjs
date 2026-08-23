@@ -15,6 +15,7 @@ import {
   quotaEstimateWindowVisibility,
   recentChartGeometry,
   recentChartHeightFraction,
+  recentChartCostPointRadius,
   recentChartScaleMap,
   recentChartScrollLayout,
   recentChartScrollPresentation,
@@ -24,6 +25,7 @@ import {
   recentChartVisibleWindowIndices,
   recentChartVisibleWindowSummary,
   scaledCostPoints,
+  scaledCostPointRadii,
   smoothPath,
   shouldReopenPreviewOnHoverMove,
   tokenAreaPath,
@@ -73,7 +75,7 @@ test("token peak leaves headroom below the top edge", () => {
     recentUsage30d: [],
   });
   const plotted = plotChartPoints(data, 100, 100, "gpt56Sol");
-  assert.ok(Math.abs(plotted.tokenPoints[1].y - 20) < 1e-9);
+  assert.ok(Math.abs(plotted.tokenPoints[1].y - 35) < 1e-9);
   assert.equal(plotted.callPoints[1].y, 100);
   assert.ok(plotted.tokenPoints[0].y > plotted.tokenPoints[1].y);
 });
@@ -84,7 +86,7 @@ test("the unified scale map gives each series its explicit visual range", () => 
     callValues: [5, 10],
     costs: [5, 17.5, 30, 0],
   });
-  assert.equal(recentChartHeightFraction(100, scaleMap.tokens), 0.8);
+  assert.equal(recentChartHeightFraction(100, scaleMap.tokens), 0.65);
   assert.equal(recentChartHeightFraction(10, scaleMap.calls), 1);
   assert.equal(recentChartHeightFraction(1, scaleMap.cacheHitRate), 1);
   assert.equal(recentChartHeightFraction(1, scaleMap.quota), 1);
@@ -100,6 +102,11 @@ test("the unified scale map gives each series its explicit visual range", () => 
   assert.ok(Math.abs(visibleCosts[1].y - 30) < 1e-9);
   assert.ok(Math.abs(visibleCosts[2].y - 5) < 1e-9);
   assert.equal(costs[3], null);
+  assert.equal(recentChartCostPointRadius(5, scaleMap.cost), 1.6);
+  assert.equal(recentChartCostPointRadius(17.5, scaleMap.cost), 2.9);
+  assert.equal(recentChartCostPointRadius(30, scaleMap.cost), 4.2);
+  assert.equal(recentChartCostPointRadius(0, scaleMap.cost), 0);
+  assert.deepEqual(scaledCostPointRadii([5, 17.5, 30, 0], scaleMap.cost), [1.6, 2.9, 4.2, null]);
 
   const data = prepareRecentChartData("24h", {
     recentUsage24h: [
@@ -115,6 +122,9 @@ test("the unified scale map gives each series its explicit visual range", () => 
   assert.equal(plotted.costPoints.length, 3);
   assert.equal(plotted.costPoints.filter(Boolean).length, 2);
   assert.equal(plotted.costPoints[2], null);
+  assert.equal(plotted.costPointRadii[0], 1.6);
+  assert.equal(plotted.costPointRadii[1], 4.2);
+  assert.equal(plotted.costPointRadii[2], null);
 });
 
 test("only the token scale adapts to the visible bucket window and fixed scales reuse precomputed costs", () => {
@@ -140,8 +150,8 @@ test("only the token scale adapts to the visible bucket window and fixed scales 
 
   assert.equal(firstWindow.scaleMap.tokens.maximum, 100);
   assert.equal(secondWindow.scaleMap.tokens.maximum, 400);
-  assert.ok(Math.abs(firstWindow.tokenPoints[1].y - 20) < 1e-9);
-  assert.ok(Math.abs(secondWindow.tokenPoints[3].y - 20) < 1e-9);
+  assert.ok(Math.abs(firstWindow.tokenPoints[1].y - 35) < 1e-9);
+  assert.ok(Math.abs(secondWindow.tokenPoints[3].y - 35) < 1e-9);
   assert.equal(firstWindow.scaleMap.cost.minimum, 1);
   assert.equal(firstWindow.scaleMap.cost.maximum, 8);
   assert.equal(secondWindow.scaleMap.cost.minimum, 1);

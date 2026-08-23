@@ -7450,6 +7450,10 @@ input[type="range"]::-moz-range-thumb {
   color: #008fb0;
 }
 
+.toggle-cost.is-active {
+  color: #ec4899;
+}
+
 .toggle-five.is-active {
   color: var(--purple);
 }
@@ -7526,11 +7530,11 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .recent-chart-page-button--backward {
-  left: -17px;
+  left: -36px;
 }
 
 .recent-chart-page-button--forward {
-  right: -17px;
+  right: -36px;
 }
 
 .recent-chart-page-button:hover:not(:disabled) {

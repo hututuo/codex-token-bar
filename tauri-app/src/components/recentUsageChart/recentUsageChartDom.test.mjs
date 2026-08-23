@@ -658,7 +658,11 @@ test("24h hover and fixed selection preview expose model shares without persiste
         await React.act(async () => root.render(React.createElement(RecentUsageChart, {
           recentUsage24h: [
             modelPoint(0, [["gpt-5.6-sol", 75_000], ["gpt-5.6-luna", 25_000]]),
-            modelPoint(300, [["gpt-5.6-sol", 25_000], ["gpt-5.6-luna", 75_000]]),
+            {
+              ...modelPoint(300, [["gpt-5.6-sol", 25_000], ["gpt-5.6-luna", 75_000]]),
+              tokens: 200_000,
+              outputTokens: 100_000,
+            },
           ],
           recentUsage7d: [],
           recentUsage30d: [],
@@ -667,9 +671,24 @@ test("24h hover and fixed selection preview expose model shares without persiste
         const chart = container.querySelector("svg.usage-chart");
         assert.ok(chart);
         assert.equal(chart.querySelectorAll(".chart-model-points circle").length, 0);
-        const costPoints = chart.querySelectorAll(".chart-observation-point--cost");
+        let costPoints = chart.querySelectorAll(".chart-observation-point--cost");
         assert.equal(costPoints.length, 2);
-        assert.equal(costPoints[0].getAttribute("r"), "1.6");
+        const costRadii = [...costPoints].map((element) => Number(element.getAttribute("r")));
+        assert.ok(costRadii.every((radius) => radius >= 1.6 && radius <= 4.2));
+        assert.notEqual(costRadii[0], costRadii[1]);
+        const costLegendValue = container.querySelector(".legend-dot--cost")?.parentElement?.querySelector("strong")?.textContent;
+        assert.match(costLegendValue ?? "", /^\$/);
+        const costToggle = [...container.querySelectorAll(".chart-line-toggle")]
+          .find((button) => button.textContent?.replace(/[●○]/g, "").trim() === "金额");
+        assert.ok(costToggle);
+        assert.equal(costToggle.getAttribute("aria-pressed"), "true");
+        await React.act(async () => costToggle.click());
+        assert.equal(chart.querySelectorAll(".chart-observation-point--cost").length, 0);
+        assert.equal(costToggle.getAttribute("aria-pressed"), "false");
+        assert.equal(JSON.parse(window.localStorage.getItem("recentChartVisibility")).cost, false);
+        await React.act(async () => costToggle.click());
+        costPoints = chart.querySelectorAll(".chart-observation-point--cost");
+        assert.equal(costPoints.length, 2);
         chart.getBoundingClientRect = () => ({
           bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0,
           toJSON: () => ({}),
@@ -692,6 +711,7 @@ test("24h hover and fixed selection preview expose model shares without persiste
         })));
         const selection = container.querySelector(".chart-selection-summary-bubble");
         assert.ok(selection);
+        assert.match(selection.textContent, /金额 \$/);
         assert.match(selection.textContent, /Sol 50%/);
         assert.match(selection.textContent, /Luna 50%/);
       } finally {
@@ -745,6 +765,14 @@ test("hover detail uses explicit single-line rows instead of automatic wrapping"
   assert.match(bubbleRule.groups.body, /width:\s*max-content;/);
   assert.match(rowRule.groups.body, /white-space:\s*nowrap;/);
   assert.match(modelsRule.groups.body, /flex-wrap:\s*nowrap;/);
+});
+
+test("chart paging arrows sit fully outside the plot instead of covering data", async () => {
+  const css = await readFile(new URL("../../styles/global.css", import.meta.url), "utf8");
+  const backwardRule = css.match(/\.recent-chart-page-button--backward\s*\{(?<body>[\s\S]*?)\n\}/);
+  const forwardRule = css.match(/\.recent-chart-page-button--forward\s*\{(?<body>[\s\S]*?)\n\}/);
+  assert.match(backwardRule?.groups?.body ?? "", /left:\s*-36px;/);
+  assert.match(forwardRule?.groups?.body ?? "", /right:\s*-36px;/);
 });
 
 function installDomGlobals(window) {

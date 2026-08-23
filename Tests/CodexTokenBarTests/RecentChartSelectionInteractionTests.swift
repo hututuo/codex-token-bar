@@ -11,13 +11,17 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
             costs: [5, 17.5, 30, 0]
         )
 
-        XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .tokens), 0.8, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .tokens), 0.65, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 10, series: .calls), 1, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 1, series: .cacheHitRate), 1, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 100, series: .quota), 1, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 5, series: .cost), 0.45, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 17.5, series: .cost), 0.7, accuracy: 0.000_001)
         XCTAssertEqual(scaleMap.heightFraction(for: 30, series: .cost), 0.95, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.costPointRadius(for: 5), 1.6, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.costPointRadius(for: 17.5), 2.9, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.costPointRadius(for: 30), 4.2, accuracy: 0.000_001)
+        XCTAssertEqual(scaleMap.costPointRadius(for: 0), 0, accuracy: 0.000_001)
     }
 
     func testOnlyTokenScaleDomainFollowsTheVisibleWindow() {
@@ -34,8 +38,8 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
             fixed: fixed
         )
 
-        XCTAssertEqual(firstWindow.heightFraction(for: 100, series: .tokens), 0.8, accuracy: 0.000_001)
-        XCTAssertEqual(secondWindow.heightFraction(for: 400, series: .tokens), 0.8, accuracy: 0.000_001)
+        XCTAssertEqual(firstWindow.heightFraction(for: 100, series: .tokens), 0.65, accuracy: 0.000_001)
+        XCTAssertEqual(secondWindow.heightFraction(for: 400, series: .tokens), 0.65, accuracy: 0.000_001)
         XCTAssertEqual(firstWindow.heightFraction(for: 8, series: .calls), 1, accuracy: 0.000_001)
         XCTAssertEqual(secondWindow.heightFraction(for: 8, series: .calls), 1, accuracy: 0.000_001)
         XCTAssertEqual(firstWindow.heightFraction(for: 1, series: .cost), 0.45, accuracy: 0.000_001)

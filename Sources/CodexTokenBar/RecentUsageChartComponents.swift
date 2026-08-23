@@ -1064,6 +1064,9 @@ struct ChartSelectionSummaryBubble: View {
             Text("请求 \(selection.breakdown.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
+            Text("金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)")
+                .font(.system(size: 10))
+                .foregroundStyle(.pink)
             if selection.breakdown.calls > 0 {
                 Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")
                     .font(.system(size: 10))
@@ -1100,6 +1103,7 @@ struct ChartSelectionSummaryBubble: View {
             timeRange,
             "\(selection.breakdown.totalTokens.abbreviatedTokens) token",
             "\(selection.breakdown.calls) 次请求",
+            "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)",
             "缓存命中率 \(selection.breakdown.cacheHitRate.percentString)"
         ]
         if let models = ModelUsagePresentation.compactText(

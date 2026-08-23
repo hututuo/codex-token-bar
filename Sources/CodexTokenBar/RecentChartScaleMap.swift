@@ -61,10 +61,12 @@ struct RecentChartFixedScaleMap: Equatable {
 }
 
 struct RecentChartScaleMap: Equatable {
-    static let tokenPeakHeightRatio: CGFloat = 0.8
+    static let tokenPeakHeightRatio: CGFloat = 0.65
     static let costLowHeightRatio: CGFloat = 0.45
     static let costAverageHeightRatio: CGFloat = 0.7
     static let costHighHeightRatio: CGFloat = 0.95
+    static let costPointMinimumRadius: CGFloat = 1.6
+    static let costPointMaximumRadius: CGFloat = 4.2
 
     private let tokens: RecentChartScaleSpec
     private let fixed: RecentChartFixedScaleMap
@@ -95,6 +97,19 @@ struct RecentChartScaleMap: Equatable {
     ) -> CGFloat {
         let safePlotHeight = max(plotHeight, 0)
         return (1 - heightFraction(for: value, series: series)) * safePlotHeight
+    }
+
+    func costPointRadius(for cost: Double) -> CGFloat {
+        guard Self.isRenderableCost(cost) else { return 0 }
+        let height = heightFraction(for: cost, series: .cost)
+        let visualSpan = Self.costHighHeightRatio - Self.costLowHeightRatio
+        guard visualSpan > 0 else { return Self.costPointMinimumRadius }
+        let normalized = min(
+            max((height - Self.costLowHeightRatio) / visualSpan, 0),
+            1
+        )
+        return Self.costPointMinimumRadius
+            + (Self.costPointMaximumRadius - Self.costPointMinimumRadius) * normalized
     }
 
     static func isRenderableCost(_ cost: Double) -> Bool {
