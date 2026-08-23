@@ -974,6 +974,101 @@ enum RecentChartSelectionInvalidationPresentation {
     static let message = "历史数据已刷新，原选区时间已失效，请重新选择。"
 }
 
+struct RecentChartSeriesVisibility: Equatable, Sendable {
+    static let tokensDefaultsKey = "recentChartShowTokens"
+    static let callsDefaultsKey = "recentChartShowCalls"
+    static let cacheHitRateDefaultsKey = "recentChartShowCacheHitRate"
+    static let costDefaultsKey = "recentChartShowCost"
+    static let fiveHourQuotaDefaultsKey = "recentChartShowFiveHourQuota"
+    static let sevenDayQuotaDefaultsKey = "recentChartShowSevenDayQuota"
+
+    var showTokens: Bool
+    var showCalls: Bool
+    var showCacheHitRate: Bool
+    var showCost: Bool
+    var showFiveHourQuota: Bool
+    var showSevenDayQuota: Bool
+
+    init(defaults: UserDefaults = .standard) {
+        showTokens = Self.bool(forKey: Self.tokensDefaultsKey, defaults: defaults)
+        showCalls = Self.bool(forKey: Self.callsDefaultsKey, defaults: defaults)
+        showCacheHitRate = Self.bool(forKey: Self.cacheHitRateDefaultsKey, defaults: defaults)
+        showCost = Self.bool(forKey: Self.costDefaultsKey, defaults: defaults)
+        showFiveHourQuota = Self.bool(forKey: Self.fiveHourQuotaDefaultsKey, defaults: defaults)
+        showSevenDayQuota = Self.bool(forKey: Self.sevenDayQuotaDefaultsKey, defaults: defaults)
+    }
+
+    func persist(to defaults: UserDefaults = .standard) {
+        defaults.set(showTokens, forKey: Self.tokensDefaultsKey)
+        defaults.set(showCalls, forKey: Self.callsDefaultsKey)
+        defaults.set(showCacheHitRate, forKey: Self.cacheHitRateDefaultsKey)
+        defaults.set(showCost, forKey: Self.costDefaultsKey)
+        defaults.set(showFiveHourQuota, forKey: Self.fiveHourQuotaDefaultsKey)
+        defaults.set(showSevenDayQuota, forKey: Self.sevenDayQuotaDefaultsKey)
+    }
+
+    private static func bool(forKey key: String, defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
+    }
+}
+
+@MainActor
+final class RecentChartSeriesVisibilityStore: ObservableObject {
+    @Published private(set) var value: RecentChartSeriesVisibility
+
+    private let defaults: UserDefaults
+    private let persistenceDelay: Duration
+    private var persistenceTask: Task<Void, Never>?
+    private var hasPendingPersistence = false
+
+    init(
+        defaults: UserDefaults = .standard,
+        persistenceDelay: Duration = .milliseconds(120)
+    ) {
+        self.defaults = defaults
+        self.persistenceDelay = persistenceDelay
+        value = RecentChartSeriesVisibility(defaults: defaults)
+    }
+
+    func binding(for keyPath: WritableKeyPath<RecentChartSeriesVisibility, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { self.value[keyPath: keyPath] },
+            set: { self.set(keyPath, to: $0) }
+        )
+    }
+
+    func set(
+        _ keyPath: WritableKeyPath<RecentChartSeriesVisibility, Bool>,
+        to newValue: Bool
+    ) {
+        guard value[keyPath: keyPath] != newValue else { return }
+        value[keyPath: keyPath] = newValue
+        schedulePersistence()
+    }
+
+    func flushPendingPersistence() {
+        guard hasPendingPersistence else { return }
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        hasPendingPersistence = false
+        value.persist(to: defaults)
+    }
+
+    private func schedulePersistence() {
+        let snapshot = value
+        let delay = persistenceDelay
+        hasPendingPersistence = true
+        persistenceTask?.cancel()
+        persistenceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            snapshot.persist(to: self.defaults)
+            self.hasPendingPersistence = false
+            self.persistenceTask = nil
+        }
+    }
+}
+
 struct RecentUsageChart: View, Equatable {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
@@ -990,13 +1085,8 @@ struct RecentUsageChart: View, Equatable {
     private static let hoverRingLineWidth: CGFloat = 1.55
     static let costPointRadius: CGFloat = 1.68
     @AppStorage("recentChartRange") private var selectedRangeRaw = RecentChartRange.twentyFourHours.rawValue
-    @AppStorage("recentChartShowTokens") private var showTokens = true
-    @AppStorage("recentChartShowCalls") private var showCalls = true
-    @AppStorage("recentChartShowCacheHitRate") private var showCacheHitRate = true
-    @AppStorage("recentChartShowCost") private var showCost = true
-    @AppStorage("recentChartShowFiveHourQuota") private var showFiveHourQuota = true
-    @AppStorage("recentChartShowSevenDayQuota") private var showSevenDayQuota = true
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
+    @StateObject private var seriesVisibility = RecentChartSeriesVisibilityStore()
     @State private var hoveredIndex: Int?
     @State private var consumptionSelectionState = RecentChartConsumptionSelectionState()
     @State private var consumptionSelectionTimeAnchor: RecentChartSelectionTimeAnchor?
@@ -1074,6 +1164,13 @@ struct RecentUsageChart: View, Equatable {
     private var selectedRange: RecentChartRange {
         RecentChartRange(rawValue: selectedRangeRaw) ?? .twentyFourHours
     }
+
+    private var showTokens: Bool { seriesVisibility.value.showTokens }
+    private var showCalls: Bool { seriesVisibility.value.showCalls }
+    private var showCacheHitRate: Bool { seriesVisibility.value.showCacheHitRate }
+    private var showCost: Bool { seriesVisibility.value.showCost }
+    private var showFiveHourQuota: Bool { seriesVisibility.value.showFiveHourQuota }
+    private var showSevenDayQuota: Bool { seriesVisibility.value.showSevenDayQuota }
 
     private var selectedRangeBinding: Binding<RecentChartRange> {
         Binding(
@@ -1157,15 +1254,39 @@ struct RecentUsageChart: View, Equatable {
                 }
 
                 HStack(spacing: 5) {
-                    ChartLineToggle(title: "Token", color: .blue, isOn: $showTokens)
-                    ChartLineToggle(title: "调用", color: .orange, isOn: $showCalls)
-                    ChartLineToggle(title: "命中率", color: AppTheme.accentCyan, isOn: $showCacheHitRate)
-                    ChartLineToggle(title: "金额", color: AppTheme.chartCost, isOn: $showCost)
+                    ChartLineToggle(
+                        title: "Token",
+                        color: .blue,
+                        isOn: seriesVisibility.binding(for: \.showTokens)
+                    )
+                    ChartLineToggle(
+                        title: "调用",
+                        color: .orange,
+                        isOn: seriesVisibility.binding(for: \.showCalls)
+                    )
+                    ChartLineToggle(
+                        title: "命中率",
+                        color: AppTheme.accentCyan,
+                        isOn: seriesVisibility.binding(for: \.showCacheHitRate)
+                    )
+                    ChartLineToggle(
+                        title: "金额",
+                        color: AppTheme.chartCost,
+                        isOn: seriesVisibility.binding(for: \.showCost)
+                    )
                     if quotaSeriesVisibility.showsFiveHour {
-                        ChartLineToggle(title: "5h", color: .purple, isOn: $showFiveHourQuota)
+                        ChartLineToggle(
+                            title: "5h",
+                            color: .purple,
+                            isOn: seriesVisibility.binding(for: \.showFiveHourQuota)
+                        )
                     }
                     if quotaSeriesVisibility.showsSevenDay {
-                        ChartLineToggle(title: "7d", color: .green, isOn: $showSevenDayQuota)
+                        ChartLineToggle(
+                            title: "7d",
+                            color: .green,
+                            isOn: seriesVisibility.binding(for: \.showSevenDayQuota)
+                        )
                     }
                 }
             }
@@ -1822,6 +1943,9 @@ struct RecentUsageChart: View, Equatable {
         }
         .onChange(of: quotaEstimateModelRaw) { _, _ in
             refreshBucketCosts()
+        }
+        .onDisappear {
+            seriesVisibility.flushPendingPersistence()
         }
     }
 

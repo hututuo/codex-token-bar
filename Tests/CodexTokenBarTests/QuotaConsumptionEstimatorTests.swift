@@ -1,9 +1,38 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
 final class QuotaConsumptionEstimatorTests: XCTestCase {
+    @MainActor
+    func testRecentChartVisibilityUpdatesLocallyBeforeDeferredPersistence() throws {
+        let suiteName = "RecentChartVisibilityTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(false, forKey: RecentChartSeriesVisibility.tokensDefaultsKey)
+        let store = RecentChartSeriesVisibilityStore(
+            defaults: defaults,
+            persistenceDelay: .seconds(60)
+        )
+        var publishedUpdates = 0
+        let observation = store.objectWillChange.sink {
+            publishedUpdates += 1
+        }
+
+        XCTAssertFalse(store.value.showTokens)
+        store.set(\.showTokens, to: true)
+
+        XCTAssertTrue(store.value.showTokens)
+        XCTAssertEqual(publishedUpdates, 1)
+        XCTAssertEqual(defaults.object(forKey: RecentChartSeriesVisibility.tokensDefaultsKey) as? Bool, false)
+
+        store.flushPendingPersistence()
+
+        XCTAssertEqual(defaults.object(forKey: RecentChartSeriesVisibility.tokensDefaultsKey) as? Bool, true)
+        withExtendedLifetime(observation) {}
+    }
+
     func testQuotaSeriesVisibilityUsesCurrentOfficialWindowsInsteadOfHistoricalColumns() {
         let visibility = RecentChartQuotaSeriesVisibility(
             currentFiveHourPresent: false,
@@ -1958,8 +1987,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let dashboardSource = try String(contentsOfFile: "Sources/CodexTokenBar/DashboardView.swift", encoding: .utf8)
 
         XCTAssertTrue(source.contains("@AppStorage(SharedAccountUsageAttributionSettings.priceModelKey)"))
-        XCTAssertTrue(source.contains("@AppStorage(\"recentChartShowCost\")"))
-        XCTAssertTrue(source.contains("ChartLineToggle(title: \"金额\""))
+        XCTAssertFalse(source.contains("@AppStorage(\"recentChartShow"))
+        XCTAssertTrue(source.contains("@StateObject private var seriesVisibility"))
+        XCTAssertTrue(source.contains("RecentChartSeriesVisibilityStore"))
+        XCTAssertTrue(source.contains("title: \"金额\""))
         XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: \"金额\""))
         XCTAssertTrue(source.contains("static let costPointRadius: CGFloat = 1.68"))
         XCTAssertTrue(source.contains(".offset(x: -buttonWidth - 6)"))
