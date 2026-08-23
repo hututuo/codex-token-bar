@@ -1,4 +1,4 @@
-import type { TokenCacheUsage, TokenCacheBreakdown } from "../../types/usage";
+import type { CacheHitRankingItem, TokenCacheUsage, TokenCacheBreakdown } from "../../types/usage";
 
 export type CacheRankingScope = "sessions" | "turns";
 export type CacheRankingSortOrder = "lowHit" | "latest";
@@ -19,6 +19,14 @@ export interface CacheRankingDisplayItem {
   context: string | null;
   breakdown: TokenCacheBreakdown;
   sortDate: string | null;
+}
+
+export function cacheRankingItemMatchesQuery(item: CacheRankingDisplayItem, query: string) {
+  return cacheRankingSearchMatches([item.title, item.subtitle, item.context], query);
+}
+
+export function legacyCacheRankingItemMatchesQuery(item: CacheHitRankingItem, query: string) {
+  return cacheRankingSearchMatches([item.title, item.subtitle], query);
 }
 
 export function buildCacheRankingItems(
@@ -155,4 +163,10 @@ function clampRate(rate: number) {
     return 0;
   }
   return Math.min(1, Math.max(0, rate));
+}
+
+function cacheRankingSearchMatches(fields: Array<string | null | undefined>, query: string) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return true;
+  return fields.some((field) => field?.toLocaleLowerCase().includes(normalizedQuery));
 }

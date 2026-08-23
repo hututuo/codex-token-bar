@@ -9,44 +9,65 @@ function renderComponent(Component, props) {
   return renderToStaticMarkup(React.createElement(Component, props));
 }
 
-test("cache hit ranking renders hit-rate tone classes for current and legacy rows", async () => {
+test("cache hit ranking keeps the outer ten-row surface and opens a searchable detail dialog", async () => {
   await withSsrModules(async (load) => {
-    const { CacheHitRanking } = await load("/src/components/CacheHitRanking.tsx");
-
-    const currentHtml = renderComponent(CacheHitRanking, {
-      cacheUsage: {
-        sessions: [
-          {
-            id: "low",
-            title: "低命中会话",
-            lastUpdated: "2026-07-07T09:00:00Z",
-            breakdown: {
-              inputTokens: 2_000,
-              cachedInputTokens: 800,
-              outputTokens: 0,
-              totalTokens: 2_000,
-              calls: 2,
-            },
+    const { CacheHitRanking, CacheHitRankingDetail } = await load("/src/components/CacheHitRanking.tsx");
+    const { buildCacheRankingItems } = await load("/src/components/cacheHitRanking/model.ts");
+    const cacheUsage = {
+      sessions: [
+        {
+          id: "low",
+          title: "低命中会话",
+          lastUpdated: "2026-07-07T09:00:00Z",
+          breakdown: {
+            inputTokens: 2_000,
+            cachedInputTokens: 800,
+            outputTokens: 0,
+            totalTokens: 2_000,
+            calls: 2,
           },
-          {
-            id: "high",
-            title: "高命中会话",
-            lastUpdated: "2026-07-07T10:00:00Z",
-            breakdown: {
-              inputTokens: 2_000,
-              cachedInputTokens: 1_960,
-              outputTokens: 0,
-              totalTokens: 2_000,
-              calls: 2,
-            },
+        },
+        {
+          id: "high",
+          title: "高命中会话",
+          lastUpdated: "2026-07-07T10:00:00Z",
+          breakdown: {
+            inputTokens: 2_000,
+            cachedInputTokens: 1_960,
+            outputTokens: 0,
+            totalTokens: 2_000,
+            calls: 2,
           },
-        ],
-        turns: [],
-      },
-      legacyItems: [],
+        },
+      ],
+      turns: [],
+    };
+    const rankingItems = buildCacheRankingItems(cacheUsage, {
+      scope: "sessions",
+      sortOrder: "lowHit",
+      excludesSingleTurnSessions: true,
+      excludesFirstTurns: true,
+      limit: Number.POSITIVE_INFINITY,
     });
+    const stateProps = {
+      cacheUsage,
+      legacyItems: [],
+      rankingItems,
+      onClose: () => {},
+      scope: "sessions",
+      sortOrder: "lowHit",
+      excludesSingleTurnSessions: true,
+      excludesFirstTurns: true,
+      onScopeChange: () => {},
+      onSortOrderChange: () => {},
+      onToggleSingleTurnSessions: () => {},
+      onToggleFirstTurns: () => {},
+    };
 
-    const legacyHtml = renderComponent(CacheHitRanking, {
+    const outerHtml = renderComponent(CacheHitRanking, { cacheUsage, legacyItems: [] });
+    const detailHtml = renderComponent(CacheHitRankingDetail, stateProps);
+    const legacyHtml = renderComponent(CacheHitRankingDetail, {
+      ...stateProps,
       cacheUsage: { sessions: [], turns: [] },
       legacyItems: [
         {
@@ -58,13 +79,21 @@ test("cache hit ranking renders hit-rate tone classes for current and legacy row
           inputTokens: 1_000,
         },
       ],
+      rankingItems: [],
     });
 
-    assert.match(currentHtml, /cache-hit-tone--orange/);
-    assert.match(currentHtml, /cache-hit-tone--strong-blue/);
-    assert.match(currentHtml, /<em class=\"cache-hit-tone--orange\">40%<\/em>/);
-    assert.match(currentHtml, /<em class=\"cache-hit-tone--strong-blue\">98%<\/em>/);
+    assert.equal(outerHtml.match(/class="ranking-row"/g)?.length, 2);
+    assert.match(outerHtml, /ranking-check/);
+    assert.match(outerHtml, /低命中/);
+    assert.match(outerHtml, /查看完整排行/);
+    assert.match(outerHtml, /cache-hit-tone--orange/);
+    assert.match(outerHtml, /cache-hit-tone--strong-blue/);
+    assert.match(detailHtml, /role="dialog"/);
+    assert.match(detailHtml, /type="search"/);
+    assert.match(detailHtml, /搜索缓存命中排行/);
+    assert.match(detailHtml, /已显示 2 \/ 共 2/);
     assert.match(legacyHtml, /cache-hit-tone--orange/);
-    assert.match(legacyHtml, /hit-meter cache-hit-tone--orange/);
+    assert.match(legacyHtml, /已显示 1 \/ 共 1/);
+    assert.doesNotMatch(legacyHtml, /继续加载/);
   });
 });

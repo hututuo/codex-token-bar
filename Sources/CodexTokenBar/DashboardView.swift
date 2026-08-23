@@ -108,6 +108,7 @@ struct DashboardView: View {
     @State private var showingSetupGuide = false
     @State private var showingResetCreditDetails = false
     @State private var showingCodexRadarDetails = false
+    @State private var showingCacheHitRankingDetails = false
     @State private var showingSharedAccountAttributionDetails = false
     @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
@@ -206,6 +207,27 @@ struct DashboardView: View {
                             }
 
                         radarDetailOverlayCard
+                        .frame(width: min(900, max(680, proxy.size.width - 108)))
+                        .frame(maxHeight: max(520, proxy.size.height - 90))
+                        .padding(.top, 58)
+                    }
+                }
+                .zIndex(9)
+            }
+
+            if showingCacheHitRankingDetails {
+                GeometryReader { proxy in
+                    ZStack(alignment: .top) {
+                        AppTheme.pageBackground.opacity(0.34)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                showingCacheHitRankingDetails = false
+                            }
+
+                        CacheHitRankingDetailView(
+                            cacheUsage: store.snapshot.cacheUsage,
+                            onClose: { showingCacheHitRankingDetails = false }
+                        )
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
                         .frame(maxHeight: max(520, proxy.size.height - 90))
                         .padding(.top, 58)
@@ -350,6 +372,7 @@ struct DashboardView: View {
         .onExitCommand {
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingCacheHitRankingDetails = false
             showingSharedAccountAttributionDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
@@ -392,6 +415,7 @@ struct DashboardView: View {
             showingContentSettingsMenu = false
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingCacheHitRankingDetails = false
             showingSharedAccountAttributionDetails = false
         }
         .onChange(of: showingPaletteMenu) {
@@ -411,6 +435,7 @@ struct DashboardView: View {
             showingInterfaceScaleMenu = false
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingCacheHitRankingDetails = false
             showingSharedAccountAttributionDetails = false
         }
         .onDisappear {
@@ -419,6 +444,7 @@ struct DashboardView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
             showingCodexRadarDetails = false
+            showingCacheHitRankingDetails = false
             showingSharedAccountAttributionDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
@@ -427,6 +453,7 @@ struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             showingCodexRadarDetails = false
+            showingCacheHitRankingDetails = false
             showingSharedAccountAttributionDetails = false
             closePaletteMenu()
             showingUnreadEffectMenu = false
@@ -1099,6 +1126,7 @@ struct DashboardView: View {
                 feedStaleDataDisplayed: radarStore.feedStaleDataDisplayed,
                 onRefresh: radarStore.refresh,
                 onShowDetails: {
+                    showingCacheHitRankingDetails = false
                     showingSharedAccountAttributionDetails = false
                     showingCodexRadarDetails = true
                 }
@@ -1144,7 +1172,15 @@ struct DashboardView: View {
             // Wrapping the whole view in EquatableView suppresses those internal
             // updates whenever the external history arrays remain unchanged.
 
-            CacheHitRankingSection(cacheUsage: store.snapshot.cacheUsage)
+            CacheHitRankingSection(
+                cacheUsage: store.snapshot.cacheUsage,
+                cacheUsageRevision: store.snapshot.generatedAt,
+                onOpenDetails: {
+                    showingCodexRadarDetails = false
+                    showingSharedAccountAttributionDetails = false
+                    showingCacheHitRankingDetails = true
+                }
+            )
         }
         .padding(.horizontal, 54)
         .padding(.vertical, 20)

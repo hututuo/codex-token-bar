@@ -5,6 +5,8 @@ import {
   cacheHitRate,
   cacheHitMeterWidthPercent,
   cacheHitTone,
+  cacheRankingItemMatchesQuery,
+  legacyCacheRankingItemMatchesQuery,
   rankingSubtitle,
   uncachedInputTokens,
 } from "./model.ts";
@@ -91,6 +93,49 @@ test("buildCacheRankingItems can include single-turn sessions", () => {
   });
 
   assert.equal(items[0].title, "单轮会话");
+});
+
+test("buildCacheRankingItems accepts an explicit page limit", () => {
+  const items = buildCacheRankingItems(cacheUsage, {
+    scope: "sessions",
+    sortOrder: "lowHit",
+    excludesSingleTurnSessions: false,
+    excludesFirstTurns: true,
+    limit: 2,
+  });
+
+  assert.equal(items.length, 2);
+  assert.deepEqual(items.map((item) => item.title), ["单轮会话", "低命中会话"]);
+});
+
+test("cache ranking search matches current context and legacy title/subtitle", () => {
+  const [current] = buildCacheRankingItems(cacheUsage, {
+    scope: "turns",
+    sortOrder: "lowHit",
+    excludesSingleTurnSessions: true,
+    excludesFirstTurns: true,
+    limit: 1,
+  });
+
+  assert.equal(cacheRankingItemMatchesQuery(current, "未知时间问题"), true);
+  assert.equal(cacheRankingItemMatchesQuery(current, "低命中会话"), false);
+  assert.equal(cacheRankingItemMatchesQuery(current, "  " ), true);
+  assert.equal(legacyCacheRankingItemMatchesQuery({
+    rank: 1,
+    title: "旧排行标题",
+    subtitle: "旧排行说明",
+    hitRate: 0.82,
+    cachedTokens: 820,
+    inputTokens: 1_000,
+  }, "排行说明"), true);
+  assert.equal(legacyCacheRankingItemMatchesQuery({
+    rank: 1,
+    title: "旧排行标题",
+    subtitle: "旧排行说明",
+    hitRate: 0.82,
+    cachedTokens: 820,
+    inputTokens: 1_000,
+  }, "不存在"), false);
 });
 
 test("turn ranking excludes first turns and displays question answer snippets", () => {

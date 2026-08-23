@@ -8003,6 +8003,130 @@ input[type="range"]::-moz-range-thumb {
   margin-top: 12px;
 }
 
+.cache-ranking-section-title-row {
+  align-items: flex-start;
+}
+
+.cache-ranking-open-button {
+  height: 25px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-soft));
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: var(--weight-medium);
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.cache-ranking-open-button:hover,
+.cache-ranking-open-button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 90%, var(--panel-soft));
+}
+
+.cache-ranking-open-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 2px;
+}
+
+.cache-ranking-detail-layer {
+  background: color-mix(in srgb, var(--page) 36%, transparent);
+}
+
+.cache-ranking-detail-card {
+  width: min(980px, calc(100vw - 108px));
+}
+
+.cache-ranking-detail-head {
+  grid-template-columns: minmax(0, 1fr) 28px;
+}
+
+.cache-ranking-detail-content {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+}
+
+.cache-ranking-detail-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.cache-ranking-search {
+  display: inline-flex;
+  min-width: min(240px, 100%);
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cache-ranking-search input {
+  width: min(230px, 26vw);
+  height: 28px;
+  min-width: 150px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 0 9px;
+}
+
+.cache-ranking-search input:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  outline-offset: 1px;
+}
+
+.cache-ranking-detail-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: var(--weight-regular);
+  white-space: nowrap;
+}
+
+.cache-ranking-detail-toolbar .ranking-controls {
+  flex-wrap: wrap;
+}
+
+.cache-ranking-detail-content > .ranking-list {
+  margin-top: 0;
+}
+
+.cache-ranking-load-more {
+  justify-self: center;
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--panel-solid));
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: var(--weight-medium);
+  padding: 0 14px;
+}
+
+.cache-ranking-load-more:hover,
+.cache-ranking-load-more:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 90%, var(--panel-solid));
+}
+
+.cache-ranking-load-more:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 2px;
+}
+
 .ranking-row {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) 154px 54px 92px 118px;
@@ -10146,6 +10270,14 @@ html:not(.floating-document):not(.status-document) .brand-mark {
     grid-template-columns: 1fr;
   }
 
+  .cache-ranking-detail-layer {
+    padding: 48px 14px 24px;
+  }
+
+  .cache-ranking-detail-card {
+    width: min(980px, calc(100vw - 28px));
+  }
+
   .stats-strip,
   .repair-steps,
   .repair-actions {
@@ -10172,6 +10304,32 @@ html:not(.floating-document):not(.status-document) .brand-mark {
 }
 
 @media (max-width: 680px) {
+  .cache-ranking-section-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .cache-ranking-section-title-row .ranking-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .cache-ranking-detail-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .cache-ranking-search {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .cache-ranking-search input {
+    width: 100%;
+    min-width: 0;
+  }
+
   .stats-model-cost-primary-grid,
   .stats-model-cost-secondary-grid {
     grid-template-columns: 1fr;
